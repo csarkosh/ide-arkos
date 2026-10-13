@@ -12,7 +12,6 @@ pub fn socket_path() -> PathBuf {
     app_support().join("sarkosd.sock")
 }
 
-#[allow(dead_code)] // consumed by the workspace persistence task
 pub fn workspace_file(project: &Path) -> PathBuf {
     let mut h = DefaultHasher::new();
     project.hash(&mut h);

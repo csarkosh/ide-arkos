@@ -1,8 +1,6 @@
 //! The terminal state behind one tab: an alacritty grid fed by the daemon, plus scroll state.
 //! `TerminalCore` has no GPUI dependency so its behaviour is unit tested; `Terminal` wraps it as
 //! a GPUI entity and owns the socket side.
-// Not constructed until Task 10 wires it into the window.
-#![allow(dead_code)]
 use crate::client::Client;
 use crate::keys::keystroke_to_bytes;
 use crate::layout::{CellKind, CellStyle};
@@ -44,6 +42,8 @@ pub struct Wakeup {
 }
 
 pub struct RowsForPaint {
+    // Not read in milestone 1; kept for milestone 2's per-tab scroll position.
+    #[allow(dead_code)]
     pub display_offset: usize,
     /// The line just above the viewport, present when scrolled into history.
     pub above: Option<Vec<(char, CellStyle, CellKind)>>,
@@ -116,6 +116,11 @@ impl TerminalCore {
             }
             _ => false,
         }
+    }
+
+    /// True while a synchronized update is open and its rows are held back.
+    pub fn sync_pending(&self) -> bool {
+        self.parser.sync_timeout().sync_timeout().is_some()
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -242,6 +247,9 @@ impl Terminal {
     }
 
     /// Applies one daemon event. Returns true when a repaint is needed.
+    // Not called in milestone 1, where the window batches events through `handle_events`; kept
+    // for milestone 2's per-tab event routing.
+    #[allow(dead_code)]
     pub fn handle_event(&mut self, ev: &Event, cx: &mut Context<Self>) -> bool {
         self.handle_events(std::slice::from_ref(ev), cx)
     }
@@ -380,9 +388,11 @@ mod tests {
         let mut t = TerminalCore::new(20, 5, 100);
         t.apply_output(b"\x1b[?2026hhidden");
         assert_eq!(text_of(&t.rows_for_paint().visible[0]), "");
+        assert!(t.sync_pending());
         assert!(!t.flush_sync_if_due());
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(t.flush_sync_if_due());
+        assert!(!t.sync_pending());
         assert_eq!(text_of(&t.rows_for_paint().visible[0]), "hidden");
     }
 

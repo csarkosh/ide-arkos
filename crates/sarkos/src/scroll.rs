@@ -1,8 +1,6 @@
 //! Smooth scrolling as a pure function of time (spec 3). Position is in lines of history:
 //! 0.0 is the live bottom, larger is further up. Non-integer values are drawn as a fractional
 //! pixel offset by the element.
-// Used from Task 10 onward.
-#![allow(dead_code)]
 
 pub struct ScrollAnimator {
     pub current: f32,
@@ -45,6 +43,8 @@ impl ScrollAnimator {
         true
     }
 
+    // Not called in milestone 1; kept for milestone 2, where tabs show new output below a scrolled view.
+    #[allow(dead_code)]
     pub fn is_at_bottom(&self) -> bool {
         self.current == 0.0 && self.target == 0.0
     }
