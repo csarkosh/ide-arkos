@@ -155,6 +155,9 @@ fn main() {
     };
     let client = Arc::new(client);
     let project = std::env::current_dir().expect("cwd");
+    // Synchronous on purpose: one small file read, done before the window opens, so it cannot
+    // stall painting or input. Saves happen on the background executor.
+    let saved = workspace::load(&project);
 
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
@@ -193,7 +196,6 @@ fn main() {
 
         // Decide which session to show: the workspace's saved one if the daemon still has it.
         let list_id = client.send(Request::ListSessions);
-        let saved = workspace::load(&project);
         let mut pending_create: Option<u32> = None;
         let mut pending_attach: Option<(u32, SessionId)> = None;
         let project_for_task = project.clone();
@@ -253,7 +255,13 @@ fn main() {
                             }
                             Response::SessionCreated { id: sid } if Some(id) == pending_create => {
                                 pending_create = None;
-                                workspace::save(&project_for_task, sid);
+                                let project = project_for_task.clone();
+                                cx.background_spawn(async move {
+                                    if let Err(e) = workspace::save(&project, sid) {
+                                        eprintln!("sarkos: cannot save workspace: {e}");
+                                    }
+                                })
+                                .detach();
                                 let aid = client_for_task.send(Request::Attach { session: sid });
                                 pending_attach = Some((aid, sid));
                             }
