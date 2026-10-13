@@ -1,7 +1,7 @@
-# Lattice: a terminal layout manager for Claude Code sessions
+# sarkos: a terminal layout manager for Claude Code sessions
 
 **Status:** design approved in conversation on 2026-10-13; this document is the written spec.
-**Working name:** Lattice (UI binary `lattice`, daemon binary `latticed`). A rename is a find and replace.
+**Name:** sarkos (UI binary `sarkos`, daemon binary `sarkosd`). Repository: `csarkosh/ide-sarkos`. License: GPL-3.0.
 
 ## 1. Why this exists
 
@@ -12,7 +12,7 @@ recovered; the only way back was to kill it, which killed the terminals and the 
 sessions inside them. VS Code's terminal scrolling is also jumpy and gets worse as scrollback
 grows.
 
-Lattice does one job: lay out terminal panes for multiple Claude Code sessions, plus a
+sarkos does one job: lay out terminal panes for multiple Claude Code sessions, plus a
 browser pane and a small sidebar, in a window that is light on memory, smooth to scroll,
 easy to tinker with, and that can never lose a session because its UI froze.
 
@@ -61,11 +61,11 @@ possible later escape hatch but is not designed in.
 
 Two binaries in one Cargo workspace.
 
-### 2.1 `latticed`, the daemon
+### 2.1 `sarkosd`, the daemon
 
 Headless, no GPUI dependency. Owns every pseudo-terminal (`portable-pty`) and the shell
 inside it. Listens on a Unix domain socket at
-`~/Library/Application Support/Lattice/latticed.sock`. The UI launches it on demand if it is
+`~/Library/Application Support/sarkos/sarkosd.sock`. The UI launches it on demand if it is
 not running; it keeps running when the UI exits. Idle cost: a few MB, zero CPU.
 
 Per session it keeps: id, title, cwd, shell, pid, alive flag, last activity time, nice level,
@@ -79,7 +79,7 @@ reported, not fatal; a malformed client message disconnects that client only; th
 is recreated on start and a stale socket from a crashed daemon is detected (connect fails)
 and replaced.
 
-### 2.2 `lattice`, the UI
+### 2.2 `sarkos`, the UI
 
 The GPUI app. Connects to the socket, lists sessions, reattaches those named in the
 workspace file, renders. Holds no process state that matters and can be force-quit at any
@@ -104,8 +104,8 @@ Requests and replies carry a request id.
 | Output | daemon to UI | session id, bytes |
 | SessionEvent | daemon to UI | session id, one of: exited(code), title(string), state(ClaudeState), bell |
 
-The `lattice` binary doubles as the hook CLI: `lattice notify --state <working|waiting|idle>`
-reads the session id from `LATTICE_SESSION_ID` in its environment and sends SetState.
+The `sarkos` binary doubles as the hook CLI: `sarkos notify --state <working|waiting|idle>`
+reads the session id from `SARKOS_SESSION_ID` in its environment and sends SetState.
 
 ### 2.4 Watchdog
 
@@ -195,7 +195,7 @@ shortcut exists (considered and dropped).
 
 **Persistence.** Layout tree, tab order, active tabs, split ratios, each tab's session id or
 viewer path, sidebar width and collapsed states, and the browser URL are written to
-`~/Library/Application Support/Lattice/workspaces/<hash-of-project-path>.json` on every
+`~/Library/Application Support/sarkos/workspaces/<hash-of-project-path>.json` on every
 change, debounced. On launch the app reads it, reattaches each tab to its session and
 rebuilds the layout. A missing session reopens as a fresh shell in the same cwd with a note in
 the tab. One window is one workspace (project folder); another folder is another window.
@@ -207,8 +207,8 @@ sessions waiting on the user (section 5). Sidebar on the left.
 ## 5. Claude Code session awareness
 
 Claude Code's hooks run shell commands on lifecycle events. The daemon sets
-`LATTICE_SESSION_ID` in every shell it spawns; hook commands inherit it, so
-`lattice notify --state …` reaches the daemon over the socket and names the right session.
+`SARKOS_SESSION_ID` in every shell it spawns; hook commands inherit it, so
+`sarkos notify --state …` reaches the daemon over the socket and names the right session.
 
 | Claude Code event | State sent |
 |---|---|
@@ -260,14 +260,14 @@ highlighting; binaries show a short notice.
 
 ## 7. Config and themes
 
-**Config file.** `~/.config/lattice/config.toml`, created with commented defaults on first run,
+**Config file.** `~/.config/sarkos/config.toml`, created with commented defaults on first run,
 opened by Cmd+, in the default editor. Watched and applied live. A bad edit shows a
 non-blocking banner with the line number and keeps the last good config. Sections: `font`,
 `terminal` (scrollback, shell, nice level), `keybindings`, `sidebar`, `browser` (default URL),
 `daemon` (watchdog timeout, replay buffer size), `theme` (name), `appearance` (follow system
 light/dark or fixed).
 
-**Themes.** One TOML file each in `~/.config/lattice/themes/`; built-ins are embedded in the
+**Themes.** One TOML file each in `~/.config/sarkos/themes/`; built-ins are embedded in the
 binary and extractable. A theme is a flat set of named colours:
 
 - chrome: window background, title bar, status bar, sidebar, tab bar, active tab, inactive
@@ -288,7 +288,7 @@ the Desktop); the values above are eyeballed placeholders until then. A second b
 
 ### 7.1 Eye-comfort defaults (from the research doc)
 
-Cyrus ends most workdays with a headache. The research (published separately on
+The research on screen work and headaches (published separately on
 csarko.sh/research) supports these defaults: line height **1.45** (wider line spacing is the
 best-supported lever against text-stripe visual stress); **14 pt** rather than 13 (larger
 text reads easier); **moderate contrast** with no pure black or pure white; dark theme kept as
@@ -371,12 +371,12 @@ Each milestone ends with Cyrus using it for real work before the next starts.
 ## 12. Repository layout
 
 ```
-lattice/
+ide-sarkos/
   Cargo.toml            workspace
   crates/
     protocol/           message types, framing (shared)
-    latticed/           the daemon
-    lattice/            the GPUI app and the `notify` hook CLI
+    sarkosd/            the daemon
+    sarkos/             the GPUI app and the `notify` hook CLI
   docs/
     superpowers/specs/  this spec and later ones
     superpowers/plans/  implementation plans
