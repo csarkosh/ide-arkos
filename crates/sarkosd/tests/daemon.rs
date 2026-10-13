@@ -35,10 +35,15 @@ impl Daemon {
     }
 
     fn connect(&self) -> Conn {
+        self.connect_as(std::process::id())
+    }
+
+    /// Connects and says Hello with `ui_pid` as the UI's pid.
+    fn connect_as(&self, ui_pid: u32) -> Conn {
         let stream = UnixStream::connect(&self.socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
-        let r = c.request(Request::Hello { ui_pid: std::process::id(), ui_exe: None });
+        let r = c.request(Request::Hello { ui_pid, ui_exe: None });
         assert_eq!(r, Response::Ok);
         c
     }
@@ -509,6 +514,15 @@ fn stalled_client_is_dropped_after_the_stall_timeout() {
     assert!(started.elapsed() < Duration::from_secs(3), "stalled client was not dropped within 3 s");
     // The PTY resumed: the reading client gets the rest of the flood.
     assert!(reading.join().unwrap(), "reading client never saw the end of the flood");
+}
+
+#[test]
+fn hello_with_pid_zero_is_never_signalled() {
+    let d = Daemon::start(&["--watchdog-secs", "1"]);
+    let mut c = d.connect_as(0);
+    // Two watchdog periods with no heartbeat: a pid of 0 must not be treated as a UI.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(matches!(c.request(Request::ListSessions), Response::Sessions(_)), "daemon stopped answering");
 }
 
 #[test]

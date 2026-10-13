@@ -156,7 +156,8 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         Request::Hello { ui_pid, ui_exe } => {
             let mut st = state.lock().unwrap();
             if let Some(rec) = st.clients.get_mut(&client_id) {
-                rec.ui_pid = Some(ui_pid);
+                // Pid 0 would make the watchdog signal the daemon's own process group.
+                rec.ui_pid = (ui_pid != 0).then_some(ui_pid);
                 rec.ui_exe = ui_exe;
                 rec.last_heartbeat = Instant::now();
             }

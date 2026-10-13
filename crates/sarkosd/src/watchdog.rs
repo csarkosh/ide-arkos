@@ -29,6 +29,10 @@ fn scan(state: &Shared, timeout: Duration) {
         let mut st = state.lock().unwrap();
         for rec in st.clients.values_mut() {
             let Some(pid) = rec.ui_pid else { continue };
+            // Signalling pid 0 would hit the daemon's whole process group, and its own pid itself.
+            if pid == 0 || pid == std::process::id() {
+                continue;
+            }
             // A disconnected client's pid may have been reused by an unrelated process.
             if !rec.connected || now.duration_since(rec.last_heartbeat) < timeout {
                 continue;
