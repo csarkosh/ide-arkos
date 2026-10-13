@@ -15,21 +15,21 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use gpui::{Context, FocusHandle, Keystroke};
 use protocol::{Event, Request, SessionId};
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// Collects alacritty events during one `advance` so they can be reported after it.
+/// Collects alacritty events during one `advance` so they can be reported after it. Shared
+/// through `Arc<Mutex>` so the core is `Send` and a replay can be parsed off the main thread;
+/// the lock is never contended.
 #[derive(Clone, Default)]
 struct Listener {
-    events: Rc<RefCell<VecDeque<TermEvent>>>,
+    events: Arc<Mutex<VecDeque<TermEvent>>>,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: TermEvent) {
-        self.events.borrow_mut().push_back(event);
+        self.events.lock().unwrap().push_back(event);
     }
 }
 
@@ -79,7 +79,8 @@ impl TerminalCore {
             self.scroll.target += d;
         }
         let mut w = Wakeup { repaint: !bytes.is_empty(), ..Default::default() };
-        for ev in self.listener.events.borrow_mut().drain(..) {
+        let events: Vec<TermEvent> = self.listener.events.lock().unwrap().drain(..).collect();
+        for ev in events {
             match ev {
                 TermEvent::Title(t) => w.title = Some(t),
                 TermEvent::ResetTitle => w.title = Some(String::new()),
@@ -499,5 +500,33 @@ mod tests {
         assert_eq!(c, 'X');
         assert!(style.bold);
         assert_eq!(style.fg, NAVY.ansi[1]);
+    }
+
+    /// A TUI's replay is cursor addressed for the PTY's size; parsed at the wrong width it lands
+    /// in the wrong cells, which is why the window applies it at its measured grid.
+    #[test]
+    fn replay_with_wide_cursor_addressing_needs_the_real_width() {
+        let replay = b"\x1b[2J\x1b[1;1Hleft\x1b[1;100Hright\x1b[3;120Hend";
+        let mut wide = TerminalCore::new(124, 10, 100);
+        wide.apply_output(replay);
+        let rows = wide.rows_for_paint();
+        let line0 = text_of(&rows.visible[0]);
+        assert_eq!(&line0[..4], "left");
+        assert_eq!(&line0[99..], "right");
+        assert_eq!(&text_of(&rows.visible[2])[119..], "end");
+
+        let mut narrow = TerminalCore::new(80, 10, 100);
+        narrow.apply_output(replay);
+        let rows = narrow.rows_for_paint();
+        let line0 = text_of(&rows.visible[0]);
+        assert_ne!(line0.get(99..), Some("right"), "80 columns cannot place column 100");
+        assert_ne!(text_of(&rows.visible[2]).get(119..), Some("end"));
+    }
+
+    /// The replay is parsed on the background executor, so the core must move between threads.
+    #[test]
+    fn terminal_core_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<TerminalCore>();
     }
 }
