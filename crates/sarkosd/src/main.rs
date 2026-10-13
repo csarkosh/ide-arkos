@@ -20,6 +20,7 @@ fn main() {
     let mut replay = DEFAULT_REPLAY_BYTES;
     let mut watchdog = DEFAULT_WATCHDOG_SECS;
     let mut pending_cap = session::CLIENT_PENDING_CAP;
+    let mut backpressure = session::Backpressure::default();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -31,6 +32,15 @@ fn main() {
             "--client-pending-bytes" => {
                 pending_cap = args.next().and_then(|v| v.parse().ok()).expect("--client-pending-bytes needs a number")
             }
+            "--subscriber-high-water" => {
+                let high: usize = args.next().and_then(|v| v.parse().ok()).expect("--subscriber-high-water needs a number");
+                backpressure.high_water = high;
+                backpressure.low_water = high / 2;
+            }
+            "--subscriber-stall-secs" => {
+                let secs: u64 = args.next().and_then(|v| v.parse().ok()).expect("--subscriber-stall-secs needs a number");
+                backpressure.stall = Duration::from_secs(secs);
+            }
             "--watchdog-secs" => watchdog = args.next().and_then(|v| v.parse().ok()).expect("--watchdog-secs needs a number"),
             other => {
                 eprintln!("sarkosd: unknown argument {other}");
@@ -38,7 +48,7 @@ fn main() {
             }
         }
     }
-    let opts = server::Options { replay_capacity: replay, watchdog: Duration::from_secs(watchdog), client_pending_cap: pending_cap };
+    let opts = server::Options { replay_capacity: replay, watchdog: Duration::from_secs(watchdog), client_pending_cap: pending_cap, backpressure };
     if let Err(e) = server::run(&socket, opts) {
         eprintln!("sarkosd: {e:#}");
         std::process::exit(1);

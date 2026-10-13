@@ -1,6 +1,6 @@
 //! Accepts clients on the Unix socket, one reader and one writer thread each, and dispatches
 //! requests to sessions. Shared state is one mutex; every operation under it is short.
-use crate::session::{ClientId, ClientSink, Session, SpawnSpec};
+use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId};
@@ -19,6 +19,7 @@ pub struct Options {
     pub watchdog: Duration,
     /// Output bytes a client may have pending before it is dropped as hung.
     pub client_pending_cap: usize,
+    pub backpressure: Backpressure,
 }
 
 pub struct ClientRecord {
@@ -102,6 +103,8 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                         break 'outer;
                     }
                 }
+                // Lets a PTY paused on this client's backlog resume.
+                writer_sink.written();
             }
         })
         .expect("spawn writer");
@@ -171,7 +174,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 st.next_session += 1;
                 SessionId(st.next_session)
             };
-            match Session::spawn(SpawnSpec { id, cwd, shell, env, nice, rows, cols, replay_capacity: opts.replay_capacity }) {
+            match Session::spawn(SpawnSpec { id, cwd, shell, env, nice, rows, cols, replay_capacity: opts.replay_capacity, backpressure: opts.backpressure }) {
                 Ok(s) => {
                     state.lock().unwrap().sessions.insert(id, s);
                     Response::SessionCreated { id }

@@ -410,3 +410,131 @@ fn non_reading_client_is_dropped_past_the_byte_cap() {
     // The reading client on the same session got the whole flood.
     assert!(reading.join().unwrap(), "reading client never saw the end of the flood");
 }
+
+/// Reads at most 16 KiB per call and sleeps 20 ms after each: about 0.8 MB/s, well under what
+/// a `yes` flood produces, so the daemon must hold the PTY back to keep this client.
+struct SlowStream(UnixStream);
+
+impl std::io::Read for SlowStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(16 * 1024);
+        let got = self.0.read(&mut buf[..n])?;
+        std::thread::sleep(Duration::from_millis(20));
+        Ok(got)
+    }
+}
+
+#[test]
+fn backpressure_slows_the_pty_instead_of_dropping() {
+    // Without backpressure this reader would pass the 1 MiB cap within about a second.
+    let d = Daemon::start(&["--client-pending-bytes", "1048576", "--subscriber-high-water", "262144"]);
+    let mut c = d.connect();
+    let id = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: id }), Response::Attached { .. }));
+    let stream = c.r.get_ref().try_clone().unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut slow = BufReader::new(SlowStream(stream));
+    let bytes = 2 * FLOOD_BYTES;
+    c.send(Request::Input { session: id, bytes: format!("stty -onlcr; yes | head -c {bytes}; echo BP-DONE-$((40+2))\n").into_bytes() });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut stream_bytes = Vec::new();
+    loop {
+        assert!(Instant::now() < deadline, "flood did not finish");
+        match read_frame::<_, ServerMessage>(&mut slow) {
+            Ok(Some(ServerMessage::Event(Event::Output { bytes, .. }))) => {
+                stream_bytes.extend_from_slice(&bytes);
+                let tail = &stream_bytes[stream_bytes.len().saturating_sub(bytes.len() + 16)..];
+                if tail.windows(10).any(|w| w == b"BP-DONE-42") {
+                    break;
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("slow client was disconnected"),
+            Err(e) => panic!("slow client read failed: {e}"),
+        }
+    }
+    let text = String::from_utf8_lossy(&stream_bytes);
+    let start = text.rfind("$((40+2))\r\n").expect("echoed command line") + "$((40+2))\r\n".len();
+    let end = text.find("BP-DONE-42").unwrap();
+    assert_eq!(end - start, bytes, "flood bytes lost or duplicated");
+    assert!(text[start..end] == "y\n".repeat(bytes / 2), "flood bytes out of order");
+}
+
+#[test]
+fn stalled_client_is_dropped_after_the_stall_timeout() {
+    use std::io::Read;
+    let d = Daemon::start(&["--subscriber-high-water", "262144", "--subscriber-stall-secs", "1"]);
+    let mut reader = d.connect();
+    let id = reader.create("/bin/sh");
+    reader.request(Request::Attach { session: id });
+    let mut stalled = UnixStream::connect(&d.socket).unwrap();
+    // Set now: macOS refuses socket options once the daemon has shut the connection down.
+    stalled.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    {
+        let mut w = BufWriter::new(stalled.try_clone().unwrap());
+        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Attach { session: id } }).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    let started = Instant::now();
+    reader.send(Request::Input { session: id, bytes: format!("yes | head -c {FLOOD_BYTES}; echo STALL-DONE-$((40+2))\n").into_bytes() });
+    let reading = std::thread::spawn(move || {
+        let mut tail: Vec<u8> = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if let ServerMessage::Event(Event::Output { bytes, .. }) = reader.next_message() {
+                tail.extend_from_slice(&bytes);
+                if tail.windows(13).any(|w| w == b"STALL-DONE-42") {
+                    return true;
+                }
+                let keep = tail.len().saturating_sub(16);
+                tail.drain(..keep);
+            }
+        }
+        false
+    });
+    // The stalled client pauses the PTY almost at once and is dropped one stall timeout later.
+    // Reading it any earlier would make it a reader, so wait first.
+    std::thread::sleep(Duration::from_secs(2));
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match stalled.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => break,
+        }
+        assert!(started.elapsed() < Duration::from_secs(3), "stalled client was not dropped within 3 s");
+    }
+    assert!(started.elapsed() < Duration::from_secs(3), "stalled client was not dropped within 3 s");
+    // The PTY resumed: the reading client gets the rest of the flood.
+    assert!(reading.join().unwrap(), "reading client never saw the end of the flood");
+}
+
+#[test]
+fn kill_wakes_a_pty_paused_by_a_stalled_client() {
+    // The default 10 s stall timeout keeps the PTY paused for the whole test unless kill wakes it.
+    let d = Daemon::start(&["--subscriber-high-water", "262144"]);
+    let mut c = d.connect();
+    let id = c.create("/bin/sh");
+    c.request(Request::Attach { session: id });
+    let stalled = UnixStream::connect(&d.socket).unwrap();
+    {
+        let mut w = BufWriter::new(stalled.try_clone().unwrap());
+        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Attach { session: id } }).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    c.send(Request::Input { session: id, bytes: b"yes\n".to_vec() });
+    // Let the stalled client pause the PTY.
+    std::thread::sleep(Duration::from_millis(1000));
+    let killed = Instant::now();
+    c.send(Request::Kill { session: id });
+    loop {
+        assert!(killed.elapsed() < Duration::from_secs(5), "kill did not end a paused session");
+        if let ServerMessage::Event(Event::Exited { session, .. }) = c.next_message() {
+            assert_eq!(session, id);
+            break;
+        }
+    }
+    drop(stalled);
+}
