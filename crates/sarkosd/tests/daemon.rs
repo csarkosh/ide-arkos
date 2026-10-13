@@ -251,3 +251,54 @@ fn socket_is_private() {
     let mode = std::fs::metadata(&d.socket).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+#[test]
+fn watchdog_kills_a_silent_ui_and_relaunches_it() {
+    let d = Daemon::start(&["--watchdog-secs", "2"]);
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("relaunched");
+    // The "UI" is a sleep; the "relaunch" is a script that touches a marker file.
+    let script = dir.path().join("relaunch.sh");
+    std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut fake_ui = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+
+    let stream = UnixStream::connect(&d.socket).unwrap();
+    let mut w = BufWriter::new(stream.try_clone().unwrap());
+    let mut r = BufReader::new(stream);
+    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: Some(script.clone()) } }).unwrap();
+    let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
+    // No heartbeats. Within 2 s plus one scan the daemon must act.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Ok(Some(_)) = fake_ui.try_wait() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "watchdog never killed the silent UI");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "watchdog never relaunched the UI");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn watchdog_leaves_a_heartbeating_ui_alone() {
+    let d = Daemon::start(&["--watchdog-secs", "2"]);
+    let mut fake_ui = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+    let stream = UnixStream::connect(&d.socket).unwrap();
+    let mut w = BufWriter::new(stream.try_clone().unwrap());
+    let mut r = BufReader::new(stream);
+    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: None } }).unwrap();
+    let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
+    for seq in 0..5u64 {
+        std::thread::sleep(Duration::from_millis(800));
+        write_frame(&mut w, &ClientMessage { id: 2 + seq as u32, request: Request::Heartbeat { seq } }).unwrap();
+        let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
+    }
+    assert!(fake_ui.try_wait().unwrap().is_none(), "UI was killed despite heartbeats");
+    let _ = fake_ui.kill();
+}
