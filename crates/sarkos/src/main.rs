@@ -1,6 +1,7 @@
 mod client;
 mod keys;
 mod paths;
+mod scroll;
 
 use futures::StreamExt;
 use gpui::{
