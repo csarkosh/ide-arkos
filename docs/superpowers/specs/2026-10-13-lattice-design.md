@@ -22,10 +22,10 @@ easy to tinker with, and that can never lose a session because its UI froze.
 |---|---|
 | Layout like the VS Code screenshot: draggable panes forming 1:2, 2x2, 3x2 grids; resizable both ways; tabs per pane | Binary split tree, VS Code drop zones, tabs within panes (section 4) |
 | Same colour scheme as the screenshot; more presets later | Theme files, default sampled from the screenshot (section 7) |
-| Minimal memory and CPU | Budgets in section 8; no web engine, no JIT, bounded scrollback, virtualized rendering |
+| Minimal memory and CPU | Budgets in section 9; no web engine, no JIT, bounded scrollback, virtualized rendering |
 | Terminals only, for Claude Code sessions | Tabs hold a terminal or a read-only file viewer; no editor |
 | Must self-recover when CPU/GPU is pegged; never lose sessions | Sessions live in a separate daemon; a daemon-side watchdog relaunches a stuck UI (section 2) |
-| Embedded browser like Cursor's, to watch Claude work | A real Chrome window docked over a pane via the Accessibility API (section 6) |
+| Embedded browser like Cursor's, to watch Claude work | A real Chrome window docked over a pane via the Accessibility API (section 8) |
 | Smooth scrolling that stays smooth in long sessions; virtualization is fine | Fractional scroll position, eased animation, visible rows only (section 3) |
 | Later additions during design | Tabs within panes; a left sidebar with a file tree and a lazy git worktree explorer; a read-only viewer with diff gutters; Claude Code session state icons on tabs; VS Code keybindings; friendly empty states; eye-comfort defaults from research |
 
@@ -87,8 +87,8 @@ time. Its main thread runs at user-interactive quality of service.
 
 ### 2.3 Protocol
 
-Length-prefixed binary frames (u32 length, then a `serde`-encoded message via `bincode` or
-`postcard`; one of the two, chosen in the plan). Requests and replies carry a request id.
+Length-prefixed binary frames (u32 length, then a `serde`-encoded message via `postcard`).
+Requests and replies carry a request id.
 
 | Message | Direction | Payload |
 |---|---|---|
@@ -139,7 +139,7 @@ taller line height (section 7) leaves no gaps in Claude Code's frames.
 pane requests one repaint. At most one frame per display refresh under a flood of output. Late
 frames draw the latest state; animations are time-based, not frame-based.
 
-**Text.** CoreText via GPUI. Default Menlo 14 pt, line height 1.45 (section 7.3).
+**Text.** CoreText via GPUI. Default Menlo 14 pt, line height 1.45 (section 7.1).
 
 **Input.** Keystrokes go to the daemon as bytes; bracketed paste is supported (Claude Code
 relies on it for multi-line input). Mouse selection and copy are local; copy uses the system
@@ -286,7 +286,7 @@ sampled from the screenshot once it is copied into `docs/reference/` (the shell 
 the Desktop); the values above are eyeballed placeholders until then. A second built-in,
 "Navy Light", is a soft light counterpart with the same hue relationships.
 
-### 7.3 Eye-comfort defaults (from the research doc)
+### 7.1 Eye-comfort defaults (from the research doc)
 
 Cyrus ends most workdays with a headache. The research (published separately on
 csarko.sh/research) supports these defaults: line height **1.45** (wider line spacing is the
