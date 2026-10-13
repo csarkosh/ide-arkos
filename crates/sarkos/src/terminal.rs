@@ -211,9 +211,10 @@ impl TerminalCore {
     }
 }
 
-/// Strips the bracketed-paste end marker so pasted text cannot escape the bracket.
+/// Drops every control character except tab, newline and carriage return (this removes ESC and
+/// the C1 range), so pasted text can neither end the bracketed paste nor inject escape sequences.
 pub(crate) fn sanitize_paste(text: &str) -> String {
-    text.replace("\x1b[201~", "")
+    text.chars().filter(|&c| c == '\t' || c == '\n' || c == '\r' || !c.is_control()).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -405,7 +406,9 @@ mod tests {
 
     #[test]
     fn paste_end_marker_is_stripped() {
-        assert_eq!(sanitize_paste("a\x1b[201~b"), "ab");
+        assert_eq!(sanitize_paste("a\x1b[201~b"), "a[201~b");
+        assert_eq!(sanitize_paste("\x1b[2\x1b[201~01~"), "[2[201~01~");
+        assert_eq!(sanitize_paste("line1\r\n\tx"), "line1\r\n\tx");
     }
 
     #[test]
