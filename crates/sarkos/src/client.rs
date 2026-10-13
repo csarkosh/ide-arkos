@@ -1,11 +1,12 @@
 //! The UI's connection to sarkosd: a writer thread fed by `send`, a reader thread that forwards
 //! every `ServerMessage` into a futures channel the GPUI side awaits. Nothing here blocks the
-//! caller.
+//! caller. The reader stops pulling frames while too much output sits unread in the channel, so
+//! a flood backs up into the daemon, whose backpressure then pauses the PTY.
 
 use anyhow::{Context, Result};
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Request, ServerMessage};
+use protocol::{ClientMessage, Event, Request, ServerMessage};
 use std::io::{BufReader, BufWriter};
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -14,20 +15,52 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::mpsc::{channel, Sender};
 use std::time::{Duration, Instant};
+
+/// Output bytes the reader may leave unread in the channel before it stops reading the socket.
+pub const CLIENT_UNREAD_CAP: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+struct Unread {
+    bytes: usize,
+    closed: bool,
+}
+
+/// Unread output bytes in the channel, shared by the reader thread and the UI.
+type UnreadGate = Arc<(Mutex<Unread>, Condvar)>;
 
 pub struct Client {
     tx: Sender<ClientMessage>,
     next_id: AtomicU32,
     disconnect_reason: Arc<Mutex<Option<String>>>,
+    unread: UnreadGate,
+    /// Kept so dropping the client can close the socket and release a waiting reader.
+    stream: UnixStream,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        let (lock, cvar) = &*self.unread;
+        lock.lock().unwrap().closed = true;
+        cvar.notify_all();
+    }
 }
 
 impl Client {
     pub fn connect(socket: &Path) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
+        Client::connect_with_cap(socket, CLIENT_UNREAD_CAP)
+    }
+
+    /// Connects with `cap` unread output bytes allowed in the channel before the reader waits.
+    pub fn connect_with_cap(socket: &Path, cap: usize) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
         let stream = UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
         let reader_stream = stream.try_clone().context("clone socket")?;
+        let shutdown_stream = stream.try_clone().context("clone socket")?;
+        let unread: UnreadGate = Arc::new((Mutex::new(Unread::default()), Condvar::new()));
+        let unread_for_reader = unread.clone();
         let (tx, rx) = channel::<ClientMessage>();
         let (ev_tx, ev_rx): (UnboundedSender<ServerMessage>, UnboundedReceiver<ServerMessage>) = unbounded();
         std::thread::Builder::new()
@@ -47,11 +80,30 @@ impl Client {
             .name("sarkosd-reader".into())
             .spawn(move || {
                 let mut r = BufReader::new(reader_stream);
+                let (lock, cvar) = &*unread_for_reader;
                 let reason = loop {
                     match read_frame::<_, ServerMessage>(&mut r) {
                         Ok(Some(msg)) => {
+                            let output = match &msg {
+                                ServerMessage::Event(Event::Output { bytes, .. }) => bytes.len(),
+                                _ => 0,
+                            };
+                            // Counted before the send so the UI never consumes bytes not yet added.
+                            if output > 0 {
+                                lock.lock().unwrap().bytes += output;
+                            }
                             if ev_tx.unbounded_send(msg).is_err() {
                                 return;
+                            }
+                            // Control messages never wait; only reading further frames does.
+                            if output > 0 {
+                                let mut u = lock.lock().unwrap();
+                                while u.bytes > cap && !u.closed {
+                                    u = cvar.wait(u).unwrap();
+                                }
+                                if u.closed {
+                                    return;
+                                }
                             }
                         }
                         Ok(None) => break "daemon closed the connection".to_string(),
@@ -62,7 +114,7 @@ impl Client {
                 *reason_for_reader.lock().unwrap() = Some(reason);
             })
             .context("spawn reader")?;
-        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason };
+        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream };
         client.send(Request::Hello { ui_pid: std::process::id(), ui_exe: std::env::current_exe().ok() });
         Ok((client, ev_rx))
     }
@@ -72,6 +124,18 @@ impl Client {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(ClientMessage { id, request });
         id
+    }
+
+    /// Reports that the UI has applied `bytes` of output taken from the channel, letting a reader
+    /// waiting on the unread cap continue.
+    pub fn consumed_output(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let (lock, cvar) = &*self.unread;
+        let mut u = lock.lock().unwrap();
+        u.bytes = u.bytes.saturating_sub(bytes);
+        cvar.notify_all();
     }
 
     /// Why the connection ended, once the receiver has finished. None while still connected.
@@ -137,7 +201,7 @@ impl Client {
 mod tests {
     use super::*;
     use protocol::codec::{read_frame, write_frame};
-    use protocol::{ClientMessage, Request, Response};
+    use protocol::{ClientMessage, Event, Request, Response};
     use std::io::{BufReader, BufWriter};
     use std::os::unix::net::UnixListener;
     use futures::executor::block_on;
@@ -197,6 +261,49 @@ mod tests {
         std::fs::write(&socket, b"precious").unwrap();
         assert!(Client::ensure_stale_socket_removed(&socket).is_err());
         assert!(socket.exists());
+    }
+
+    #[test]
+    fn reader_stops_pulling_output_past_the_unread_cap() {
+        const FRAME: usize = 16 * 1024;
+        const FRAMES: usize = 64;
+        const CAP: usize = 64 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("flood.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        // Writes 1 MiB of output in 16 KiB frames, each filled with its own index.
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut w = BufWriter::new(stream);
+            for i in 0..FRAMES {
+                let msg = ServerMessage::Event(Event::Output { session: protocol::SessionId(1), bytes: vec![i as u8; FRAME] });
+                write_frame(&mut w, &msg).unwrap();
+            }
+        });
+        let (client, mut rx) = Client::connect_with_cap(&socket, CAP).unwrap();
+        let mut got: Vec<u8> = Vec::new();
+        let mut rounds = 0;
+        while got.len() < FRAME * FRAMES {
+            // Give the reader time to run as far ahead as the cap lets it.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let mut batch = 0;
+            while let Ok(msg) = rx.try_recv() {
+                if let ServerMessage::Event(Event::Output { bytes, .. }) = msg {
+                    batch += bytes.len();
+                    got.extend_from_slice(&bytes);
+                }
+            }
+            assert!(batch > 0, "nothing arrived after {} bytes", got.len());
+            // The reader waits once the unread total passes the cap: at most one frame over it.
+            assert!(batch <= CAP + FRAME, "{batch} unread bytes in the channel with a {CAP} byte cap");
+            client.consumed_output(batch);
+            rounds += 1;
+        }
+        assert!(rounds >= FRAMES * FRAME / (CAP + FRAME), "the cap never held the reader back");
+        for (i, chunk) in got.chunks(FRAME).enumerate() {
+            assert!(chunk.iter().all(|b| *b == i as u8), "frame {i} out of order");
+        }
+        server.join().unwrap();
     }
 
     #[test]

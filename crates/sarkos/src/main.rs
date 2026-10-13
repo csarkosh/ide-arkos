@@ -287,6 +287,8 @@ fn main() {
                 if step.is_err() {
                     return;
                 }
+                // The batch's output is applied: let the reader thread pull more from the socket.
+                client_for_task.consumed_output(bytes);
                 yield_now().await;
             }
             let reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
