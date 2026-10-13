@@ -1,0 +1,220 @@
+//! Accepts clients on the Unix socket, one reader and one writer thread each, and dispatches
+//! requests to sessions. Shared state is one mutex; every operation under it is short.
+use crate::session::{ClientId, Session, SpawnSpec};
+use anyhow::{Context, Result};
+use protocol::codec::{read_frame, write_frame};
+use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId};
+use std::collections::HashMap;
+use std::io::{BufReader, BufWriter};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy)]
+pub struct Options {
+    pub replay_capacity: usize,
+    pub watchdog: Duration,
+}
+
+pub struct ClientRecord {
+    #[allow(dead_code)] // kept so the watchdog can reach a client
+    pub tx: Sender<ServerMessage>,
+    pub attached: Vec<SessionId>,
+    pub last_heartbeat: Instant,
+    pub ui_pid: Option<u32>,
+    pub ui_exe: Option<PathBuf>,
+    pub connected: bool,
+}
+
+#[derive(Default)]
+pub struct State {
+    pub sessions: HashMap<SessionId, Arc<Session>>,
+    pub clients: HashMap<ClientId, ClientRecord>,
+    next_session: u64,
+    next_client: u64,
+}
+
+pub type Shared = Arc<Mutex<State>>;
+
+pub fn run(socket: &Path, opts: Options) -> Result<()> {
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if socket.exists() {
+        // A previous daemon died. Nobody can be listening if connect fails.
+        if UnixStream::connect(socket).is_ok() {
+            anyhow::bail!("another sarkosd is already listening on {}", socket.display());
+        }
+        std::fs::remove_file(socket).ok();
+    }
+    let listener = UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
+    let state: Shared = Arc::new(Mutex::new(State::default()));
+    crate::watchdog::start(state.clone(), opts.watchdog);
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => spawn_client(stream, state.clone(), opts),
+            Err(e) => eprintln!("sarkosd: accept failed: {e}"),
+        }
+    }
+    Ok(())
+}
+
+fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
+    let (tx, rx) = channel::<ServerMessage>();
+    let client_id = {
+        let mut st = state.lock().unwrap();
+        st.next_client += 1;
+        let id = st.next_client;
+        st.clients.insert(
+            id,
+            ClientRecord { tx: tx.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, connected: true },
+        );
+        id
+    };
+    let writer_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sarkosd: clone stream: {e}");
+            return;
+        }
+    };
+    std::thread::Builder::new()
+        .name(format!("client-writer-{client_id}"))
+        .spawn(move || {
+            let mut w = BufWriter::new(writer_stream);
+            while let Ok(msg) = rx.recv() {
+                if write_frame(&mut w, &msg).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn writer");
+    std::thread::Builder::new()
+        .name(format!("client-reader-{client_id}"))
+        .spawn(move || {
+            let mut r = BufReader::new(stream);
+            loop {
+                match read_frame::<_, ClientMessage>(&mut r) {
+                    Ok(Some(msg)) => {
+                        let response = dispatch(&state, client_id, &tx, msg.request, opts);
+                        if tx.send(ServerMessage::Response { id: msg.id, response }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("sarkosd: client {client_id}: bad frame: {e}");
+                        break;
+                    }
+                }
+            }
+            disconnect(&state, client_id);
+        })
+        .expect("spawn reader");
+}
+
+fn disconnect(state: &Shared, client_id: ClientId) {
+    let mut st = state.lock().unwrap();
+    if let Some(rec) = st.clients.get_mut(&client_id) {
+        rec.connected = false;
+        let attached = std::mem::take(&mut rec.attached);
+        for sid in attached {
+            if let Some(s) = st.sessions.get(&sid) {
+                s.unsubscribe(client_id);
+            }
+        }
+    }
+    st.clients.remove(&client_id);
+}
+
+fn dispatch(state: &Shared, client_id: ClientId, tx: &Sender<ServerMessage>, request: Request, opts: Options) -> Response {
+    let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
+    match request {
+        Request::Hello { ui_pid, ui_exe } => {
+            let mut st = state.lock().unwrap();
+            if let Some(rec) = st.clients.get_mut(&client_id) {
+                rec.ui_pid = Some(ui_pid);
+                rec.ui_exe = ui_exe;
+                rec.last_heartbeat = Instant::now();
+            }
+            Response::Ok
+        }
+        Request::Heartbeat { .. } => {
+            if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                rec.last_heartbeat = Instant::now();
+            }
+            Response::Ok
+        }
+        Request::CreateSession { cwd, shell, env, nice, rows, cols } => {
+            let id = {
+                let mut st = state.lock().unwrap();
+                st.next_session += 1;
+                SessionId(st.next_session)
+            };
+            match Session::spawn(SpawnSpec { id, cwd, shell, env, nice, rows, cols, replay_capacity: opts.replay_capacity }) {
+                Ok(s) => {
+                    state.lock().unwrap().sessions.insert(id, s);
+                    Response::SessionCreated { id }
+                }
+                Err(e) => Response::Error(format!("spawn failed: {e:#}")),
+            }
+        }
+        Request::Attach { session: sid } => match session(sid) {
+            Some(s) => {
+                let (replay, alive) = s.subscribe(client_id, tx.clone());
+                if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                    if !rec.attached.contains(&sid) {
+                        rec.attached.push(sid);
+                    }
+                }
+                Response::Attached { replay, alive }
+            }
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::Detach { session: sid } => {
+            if let Some(s) = session(sid) {
+                s.unsubscribe(client_id);
+            }
+            if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                rec.attached.retain(|x| *x != sid);
+            }
+            Response::Ok
+        }
+        Request::Input { session: sid, bytes } => match session(sid) {
+            Some(s) => match s.write(&bytes) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error(format!("write failed: {e:#}")),
+            },
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::Resize { session: sid, rows, cols } => match session(sid) {
+            Some(s) => match s.resize(rows, cols) {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error(format!("resize failed: {e:#}")),
+            },
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::Kill { session: sid } => match session(sid) {
+            Some(s) => match s.kill() {
+                Ok(()) => Response::Ok,
+                Err(e) => Response::Error(format!("kill failed: {e:#}")),
+            },
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::ListSessions => {
+            let st = state.lock().unwrap();
+            let mut list: Vec<_> = st.sessions.values().map(|s| s.info()).collect();
+            list.sort_by_key(|s| s.id.0);
+            Response::Sessions(list)
+        }
+        Request::SetState { session: sid, state: claude } => match session(sid) {
+            Some(s) => {
+                s.set_state(claude);
+                Response::Ok
+            }
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+    }
+}
