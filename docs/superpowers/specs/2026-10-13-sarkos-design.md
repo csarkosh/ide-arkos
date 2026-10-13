@@ -277,7 +277,10 @@ binary and extractable. A theme is a flat set of named colours:
 - tree: pastel added, modified, deleted, untracked, ignored;
 - viewer: syntax colours mapped onto the highlighter's scopes.
 
-**Default theme ("Navy", from the screenshot).** Deep navy background near `#0d1117`; tab
+**Default theme ("Navy", from the screenshot, tuned by the research).** The general
+scheme stays the screenshot's dark navy; the exact values are chosen after the eye-comfort
+research doc is written, so that contrast, foreground brightness and the accent colours
+follow what the evidence supports (section 7.1). Starting points: deep navy background near `#0d1117`; tab
 bar and status bar a darker band near `#0a0e14`; borders near `#1f2630`; foreground a soft
 off-white near `#c8ccd4` (about 9:1 against the background rather than 14:1 for pure white).
 Pastels for the tree: soft mint (added), soft amber (modified), dusty rose (deleted), muted
@@ -301,28 +304,38 @@ provide.
 
 ## 8. Browser pane (Chrome docking)
 
-A browser tab's content area is a placeholder rectangle; a dedicated Chrome window is kept
-positioned exactly over it.
+A browser tab's content area is a placeholder rectangle; a real Chrome window is kept
+positioned exactly over it, so it reads as embedded.
 
-**Launch.** Opening a browser tab runs Chrome in app mode (`--app=<url>`, no tab strip or
-address bar) with a URL from a prompt (default `http://localhost:3000`, remembered per
-workspace). The app identifies the new window through the Accessibility API by the title it
-set.
+**Which window.** Claude Code's browser tools bring their own windows. The Claude in Chrome
+extension works inside an "MCP tab group" and, when none exists, creates a new Chrome window
+to hold it; the Chrome DevTools MCP launches its own Chrome instance. So Claude already has a
+default window, and sarkos docks that one rather than launching a window and hoping Claude
+uses it. Nothing has to be said to Claude. The rule: while any session in the workspace is in
+the **working** state (section 5) and a browser pane exists with nothing docked, the first new
+Chrome window to appear is docked automatically. A palette command, "Dock a Chrome window",
+lists open Chrome windows for the manual case, and "Undock" releases one. A browser pane can
+also be opened by the user with a URL, in which case sarkos launches a normal Chrome window
+(not app mode, so the tab strip stays and tabs Claude adds remain visible) in the existing
+profile and docks it.
+
+**Identification.** Chrome windows are found through the Accessibility API (the Chrome
+application's window list; titles are the active tab's title). The docked window is tracked by
+its AX element, not its title, so tab changes do not lose it. Window creation is detected by
+polling the window list at a low rate while a browser pane is waiting, and stopped otherwise.
 
 **Tracking.** Whenever the placeholder's screen rectangle changes (split drag, sidebar toggle,
-window move or resize), the app writes the Chrome window's `AXPosition` and `AXSize`. When the
-browser tab is not active in its pane, or the app window is minimized or hidden, the Chrome
-window is hidden. Closing the tab closes that Chrome window only.
+window move or resize), sarkos writes the Chrome window's `AXPosition` and `AXSize`. When the
+browser tab is not active in its pane, or the sarkos window is minimized or hidden, the Chrome
+window is hidden. Closing the tab undocks the window and leaves it where it is; it does not
+close Claude's window.
 
 **Focus and stacking.** Clicking the placeholder raises and focuses the Chrome window.
-Clicking elsewhere in the app raises the app window and immediately re-raises the Chrome
+Clicking elsewhere in sarkos raises the sarkos window and immediately re-raises the Chrome
 window above it. A brief flash during that re-raise is the accepted seam.
 
-**Permissions.** The first browser tab triggers the one-time Accessibility permission prompt,
-with an explanation screen in the app. Without permission the tab shows instructions instead.
-
-**Claude's browser tools** (the Claude in Chrome extension, the devtools MCP) drive this window
-like any other Chrome window; nothing special is needed.
+**Permissions.** The first browser pane triggers the one-time Accessibility permission prompt,
+with an explanation screen. Without permission the pane shows instructions instead.
 
 ## 9. Resilience and performance budgets
 
