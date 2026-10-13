@@ -22,6 +22,9 @@ use terminal::{Terminal, TerminalCore};
 use terminal_element::TerminalElement;
 
 const BG: u32 = 0x11161f;
+const FG: u32 = 0xd6dae0;
+/// A slightly lighter navy for the one-line status banner above the terminal.
+const BANNER_BG: u32 = 0x1a2130;
 const SCROLLBACK: usize = 20_000;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
@@ -48,14 +51,30 @@ impl Root {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(terminal) = self.terminal.clone() else {
-            return div().size_full().bg(rgb(BG)).text_color(rgb(0xd6dae0)).p_4().child(self.status.clone());
+            return div().size_full().bg(rgb(BG)).text_color(rgb(FG)).p_4().child(self.status.clone());
         };
-        let focus = terminal.read(cx).focus.clone();
+        let (focus, alive, exit_code) = {
+            let t = terminal.read(cx);
+            (t.focus.clone(), t.alive, t.exit_code)
+        };
+        // Connection problems and errors outrank the session's own state.
+        let banner = if !self.status.is_empty() {
+            Some(self.status.clone())
+        } else if !alive {
+            Some(match exit_code {
+                Some(code) => format!("session ended (exit code {code})"),
+                None => "session ended".to_string(),
+            })
+        } else {
+            None
+        };
         if !focus.is_focused(window) {
             window.focus(&focus);
         }
         div()
             .size_full()
+            .flex()
+            .flex_col()
             .bg(rgb(BG))
             .track_focus(&focus)
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _window, cx| {
@@ -82,7 +101,19 @@ impl Render for Root {
                     t.scroll_lines(lines, cx);
                 });
             }))
-            .child(TerminalElement::new(terminal))
+            .children(banner.map(|text| {
+                div()
+                    .w_full()
+                    .flex_none()
+                    .p(px(4.))
+                    .bg(rgb(BANNER_BG))
+                    .text_color(rgb(FG))
+                    .font_family(terminal_element::FONT_FAMILY)
+                    .text_size(px(terminal_element::FONT_SIZE))
+                    .child(text)
+            }))
+            // The terminal stays painted beneath the banner so scrollback remains readable.
+            .child(div().flex_1().min_h_0().child(TerminalElement::new(terminal)))
     }
 }
 
@@ -139,6 +170,14 @@ fn main() {
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
+        // gpui keeps running without windows; quit with the last one so the heartbeat stops and
+        // no windowless process lingers.
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
 
         // Heartbeat from the main thread, once a second (spec 2.4).
         let hb_client = client.clone();

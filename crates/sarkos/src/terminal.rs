@@ -235,6 +235,8 @@ pub struct Terminal {
     pub focus: FocusHandle,
     pub title: String,
     pub alive: bool,
+    /// The shell's exit code, once the session has ended and the daemon reported one.
+    pub exit_code: Option<i32>,
     pub cell: Option<CellMetrics>,
     pub bell_pending: bool,
     /// When the element last painted, for time-based scroll animation.
@@ -243,7 +245,7 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(core: TerminalCore, session: SessionId, client: Arc<Client>, cx: &mut Context<Self>) -> Self {
-        Self { core, session, client, focus: cx.focus_handle(), title: String::new(), alive: true, cell: None, bell_pending: false, last_frame: None }
+        Self { core, session, client, focus: cx.focus_handle(), title: String::new(), alive: true, exit_code: None, cell: None, bell_pending: false, last_frame: None }
     }
 
     /// Applies one daemon event. Returns true when a repaint is needed.
@@ -262,9 +264,10 @@ impl Terminal {
         for ev in events {
             match ev {
                 Event::Output { session, bytes } if *session == self.session => pending.push(bytes),
-                Event::Exited { session, .. } if *session == self.session => {
+                Event::Exited { session, code } if *session == self.session => {
                     self.flush_output(&mut pending);
                     self.alive = false;
+                    self.exit_code = *code;
                     changed = true;
                 }
                 _ => {}

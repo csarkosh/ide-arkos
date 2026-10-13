@@ -58,6 +58,12 @@ fn split_offset(current: f32) -> (usize, f32) {
     (off as usize, (cur - off).clamp(0.0, 1.0 - f32::EPSILON))
 }
 
+/// Seconds since the last animated frame, or one nominal frame when animation is starting.
+/// Capped so a stalled frame cannot leap the animation.
+fn frame_dt(last: Option<Instant>, now: Instant) -> f32 {
+    last.map(|l| now.duration_since(l).as_secs_f32()).unwrap_or(0.016).min(0.1)
+}
+
 impl IntoElement for TerminalElement {
     type Element = Self;
     fn into_element(self) -> Self::Element {
@@ -113,9 +119,11 @@ impl Element for TerminalElement {
             t.core.flush_sync_if_due();
             let sync_open = t.core.sync_pending();
             let now = Instant::now();
-            let dt = t.last_frame.map(|l| now.duration_since(l).as_secs_f32()).unwrap_or(0.016).min(0.1);
-            t.last_frame = Some(now);
+            let dt = frame_dt(t.last_frame, now);
             let animating = t.core.scroll.tick(dt);
+            // Once settled, forget the frame time: the next scroll after idle starts from one
+            // nominal frame instead of the capped gap, which would jump most of the distance.
+            t.last_frame = if animating || sync_open { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
             (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open)
@@ -170,7 +178,9 @@ impl Element for TerminalElement {
 
 #[cfg(test)]
 mod tests {
-    use super::split_offset;
+    use super::{frame_dt, split_offset};
+    use crate::scroll::ScrollAnimator;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn split_offset_clamps_negative_drift() {
@@ -179,5 +189,18 @@ mod tests {
         let (off, frac) = split_offset(3.25);
         assert_eq!(off, 3);
         assert!((frac - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn first_frame_after_idle_does_not_snap() {
+        let now = Instant::now();
+        assert_eq!(frame_dt(None, now), 0.016);
+        assert_eq!(frame_dt(Some(now - Duration::from_secs(5)), now), 0.1);
+        // A wheel notch of three lines: starting from a nominal frame moves about a quarter of
+        // the way, where the capped idle gap would have moved about 80%.
+        let mut s = ScrollAnimator::new();
+        s.scroll_by(3.0, 100.0);
+        s.tick(frame_dt(None, now));
+        assert!(s.current < 1.0, "first frame moved {} lines", s.current);
     }
 }
