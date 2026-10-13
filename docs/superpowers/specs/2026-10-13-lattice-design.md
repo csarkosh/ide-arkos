@@ -1,0 +1,384 @@
+# Lattice: a terminal layout manager for Claude Code sessions
+
+**Status:** design approved in conversation on 2026-10-13; this document is the written spec.
+**Working name:** Lattice (UI binary `lattice`, daemon binary `latticed`). A rename is a find and replace.
+
+## 1. Why this exists
+
+Cyrus runs several Claude Code sessions at once in VS Code (Cursor), laid out as a grid of
+terminal panes. Those sessions drive CPU and GPU heavy work (local model inference for
+asset generation). On a 16 GB M4 Mac with RAM at 93 percent, VS Code froze and never
+recovered; the only way back was to kill it, which killed the terminals and the Claude Code
+sessions inside them. VS Code's terminal scrolling is also jumpy and gets worse as scrollback
+grows.
+
+Lattice does one job: lay out terminal panes for multiple Claude Code sessions, plus a
+browser pane and a small sidebar, in a window that is light on memory, smooth to scroll,
+easy to tinker with, and that can never lose a session because its UI froze.
+
+### 1.1 Requirements (as stated, with decisions)
+
+| Requirement | Decision |
+|---|---|
+| Layout like the VS Code screenshot: draggable panes forming 1:2, 2x2, 3x2 grids; resizable both ways; tabs per pane | Binary split tree, VS Code drop zones, tabs within panes (section 4) |
+| Same colour scheme as the screenshot; more presets later | Theme files, default sampled from the screenshot (section 7) |
+| Minimal memory and CPU | Budgets in section 8; no web engine, no JIT, bounded scrollback, virtualized rendering |
+| Terminals only, for Claude Code sessions | Tabs hold a terminal or a read-only file viewer; no editor |
+| Must self-recover when CPU/GPU is pegged; never lose sessions | Sessions live in a separate daemon; a daemon-side watchdog relaunches a stuck UI (section 2) |
+| Embedded browser like Cursor's, to watch Claude work | A real Chrome window docked over a pane via the Accessibility API (section 6) |
+| Smooth scrolling that stays smooth in long sessions; virtualization is fine | Fractional scroll position, eased animation, visible rows only (section 3) |
+| Later additions during design | Tabs within panes; a left sidebar with a file tree and a lazy git worktree explorer; a read-only viewer with diff gutters; Claude Code session state icons on tabs; VS Code keybindings; friendly empty states; eye-comfort defaults from research |
+
+### 1.2 Non-goals
+
+No text editing, no search across files, no git staging or committing, no extensions, no
+Linux or Windows support in the first version, no embedded Chromium (CEF), no WKWebView.
+
+### 1.3 Language and stack
+
+Rust end to end. Reasons: `alacritty_terminal` (0.25.x) is the best available terminal
+emulation library and the heavy lifting is terminal emulation and the daemon; footprint is
+decided by architecture, not language; one language keeps tinkering cheap. The UI uses GPUI
+(the framework Zed is built on, published on crates.io at 0.2.x, pre-1.0, pinned to an exact
+version) for its Metal renderer, CoreText text shaping with full font fallback (emoji, braille
+spinners, box drawing all render without configuration), flex layout, scroll containers and
+virtualized lists. Zed's own terminal view wraps `alacritty_terminal` in GPUI and is the
+reference for that integration.
+
+Rejected: winit plus wgpu with a hand-rolled toolkit (lightest, but months of toolkit work
+before any UX); egui (fastest to prototype, but no system font fallback, weaker Retina text);
+Swift/AppKit shell over a Rust core (best native integration, but a second language and an
+FFI seam exactly where tinkering happens); WKWebView via `wry` (Safari engine quirks, and
+Claude Code's browser tools drive real Chrome, so it would show nothing of Claude's work);
+CEF (hundreds of MB, the Electron footprint being escaped).
+
+Known risk accepted: all three UI stacks render through Metal. When inference saturates the
+GPU, frames queue behind that work and may lag. They cannot deadlock the app, and the
+watchdog restarts a stalled UI without touching sessions. A CPU software renderer is a
+possible later escape hatch but is not designed in.
+
+## 2. Process architecture
+
+Two binaries in one Cargo workspace.
+
+### 2.1 `latticed`, the daemon
+
+Headless, no GPUI dependency. Owns every pseudo-terminal (`portable-pty`) and the shell
+inside it. Listens on a Unix domain socket at
+`~/Library/Application Support/Lattice/latticed.sock`. The UI launches it on demand if it is
+not running; it keeps running when the UI exits. Idle cost: a few MB, zero CPU.
+
+Per session it keeps: id, title, cwd, shell, pid, alive flag, last activity time, nice level,
+Claude state (section 5), and a **replay buffer**: a ring of the raw output bytes, default
+16 MB per session, configurable. On attach the daemon sends the buffer, then streams live
+bytes, so a reattached UI rebuilds the screen and scrollback exactly. Nothing survives daemon
+death or a reboot.
+
+Robustness rules: never allocate per output byte beyond the ring buffer; a shell exiting is
+reported, not fatal; a malformed client message disconnects that client only; the socket file
+is recreated on start and a stale socket from a crashed daemon is detected (connect fails)
+and replaced.
+
+### 2.2 `lattice`, the UI
+
+The GPUI app. Connects to the socket, lists sessions, reattaches those named in the
+workspace file, renders. Holds no process state that matters and can be force-quit at any
+time. Its main thread runs at user-interactive quality of service.
+
+### 2.3 Protocol
+
+Length-prefixed binary frames (u32 length, then a `serde`-encoded message via `bincode` or
+`postcard`; one of the two, chosen in the plan). Requests and replies carry a request id.
+
+| Message | Direction | Payload |
+|---|---|---|
+| CreateSession | UI to daemon | cwd, shell, env, nice level, rows, cols. Reply: session id |
+| Attach | UI to daemon | session id. Reply: replay buffer, then a stream of Output frames |
+| Detach | UI to daemon | session id |
+| Input | UI to daemon | session id, bytes |
+| Resize | UI to daemon | session id, rows, cols |
+| Kill | UI to daemon | session id |
+| ListSessions | UI to daemon | none. Reply: the per-session record above |
+| Heartbeat | UI to daemon | monotonic counter |
+| SetState | hook CLI to daemon | session id, Claude state (section 5) |
+| Output | daemon to UI | session id, bytes |
+| SessionEvent | daemon to UI | session id, one of: exited(code), title(string), state(ClaudeState), bell |
+
+The `lattice` binary doubles as the hook CLI: `lattice notify --state <working|waiting|idle>`
+reads the session id from `LATTICE_SESSION_ID` in its environment and sends SetState.
+
+### 2.4 Watchdog
+
+The UI sends a Heartbeat from its main thread every second. If the daemon sees none for the
+configured window (default 30 s) while the UI process is still alive, it kills and relaunches
+the UI. The relaunched UI reattaches every session from the workspace file. Sessions are never
+touched. This holds regardless of what the renderer or the GPU is doing.
+
+### 2.5 Scheduling
+
+UI main thread: user-interactive QoS. Each session can be spawned at a configurable nice
+level (per-tab option, default 0), so a heavy Claude Code job and its children yield to the
+UI when the system is pegged.
+
+## 3. The terminal pane
+
+**Emulation.** One `alacritty_terminal` instance per terminal tab, in the UI process, fed by
+the daemon stream on a background task. Scrollback is a bounded ring, default 20,000 lines,
+configurable up to whatever memory allows (a full 100,000 line buffer at 200 columns can
+approach 1 GB in the worst case; typical sessions are far smaller because blank cells are not
+stored).
+
+**Rendering.** Only the rows in the viewport are drawn. Scroll position is a floating point
+line offset. Wheel and trackpad input update a target; each frame moves the position toward
+it with a short ease-out, so scrolling glides, and rows are drawn at the fractional pixel
+offset. New output does not pull the view down while scrolled up; a small "jump to bottom"
+affordance appears. Box-drawing glyphs are drawn by the renderer to fill the full cell, so the
+taller line height (section 7) leaves no gaps in Claude Code's frames.
+
+**Frame pacing.** Output is coalesced: the emulator applies all bytes that arrived, then the
+pane requests one repaint. At most one frame per display refresh under a flood of output. Late
+frames draw the latest state; animations are time-based, not frame-based.
+
+**Text.** CoreText via GPUI. Default Menlo 14 pt, line height 1.45 (section 7.3).
+
+**Input.** Keystrokes go to the daemon as bytes; bracketed paste is supported (Claude Code
+relies on it for multi-line input). Mouse selection and copy are local; copy uses the system
+clipboard. BEL marks the tab (section 5).
+
+## 4. Layout, tabs, drag and drop
+
+**Model.** A binary split tree. Internal node: orientation (horizontal or vertical) and a
+ratio. Leaf: a pane with an ordered list of tabs and an active index. The screenshot layout is
+a vertical split at about 0.5 whose right child is a horizontal split at 0.5. A tab is either a
+terminal (session id) or a viewer (path, worktree root).
+
+**Resizing.** Every split edge is a 4 px handle with a wider invisible hit area. Dragging
+updates the ratio live; double-click resets to equal. A minimum pane size (default 160 px wide,
+80 px tall) stops a pane being squeezed below readable.
+
+**Tabs.** Per-pane tab bar as in the screenshot: icon, title, close button; plus button and
+overflow menu at the right of the active pane. Title defaults to the shell name and follows the
+terminal title escape sequence. Tabs reorder by drag within a pane.
+
+**Drag and drop between panes.** Dragging a tab out of its bar shows a drop overlay with five
+zones on the hovered pane: center (move into pane), left, right, top, bottom (split that pane
+and place the tab in the new pane on that side). VS Code's gesture exactly.
+
+**Empty state.** A pane whose last tab is closed with Cmd+W stays open and shows a friendly
+screen: a short greeting, the three or four bindings you'd want next, and a small ambient
+animation that plays on appearance and on hover, then settles to a static frame (an idle empty
+pane costs no frames). It honours the system Reduce Motion setting. A pane auto-closes only
+when its last tab is dragged into another pane. Cmd+W on an empty pane closes it; the last
+pane in the workspace never closes, it shows the empty state.
+
+**Keyboard.** VS Code's macOS defaults for terminals in the editor area. Every binding lives in
+the config file and can be changed, chords included.
+
+| Action | Binding | VS Code equivalent |
+|---|---|---|
+| Focus pane N (left to right, top to bottom) | Cmd+1 … Cmd+9 | focus editor group N |
+| Focus pane in a direction | Cmd+K, Cmd+Left/Right/Up/Down | focus left/right/above/below group |
+| Split right / split down | Cmd+\ / Cmd+K, Cmd+\ | split editor / split editor orthogonal |
+| Maximize pane (toggle) | Cmd+K, Cmd+M | toggle maximize editor group |
+| Move active tab to previous/next pane | Ctrl+Cmd+Left/Right | move editor into previous/next group |
+| Next / previous tab | Cmd+Option+Right/Left, also Cmd+Shift+] / [ | next/previous editor |
+| Cycle tabs, most recently used | Ctrl+Tab | quick open previous editor |
+| Close tab / reopen closed / close all in pane | Cmd+W / Cmd+Shift+T / Cmd+K, W | same |
+| Move tab left/right in the bar | Cmd+K, Cmd+Shift+Left/Right | move editor left/right |
+| New terminal tab in focused pane | Ctrl+Shift+` | closest match: VS Code's new terminal opens in the panel, and "new terminal in editor area" has no default |
+| Clear scrollback / find / font size | Cmd+K / Cmd+F / Cmd+= and Cmd+- | same, when terminal focused |
+| Toggle sidebar / focus file tree / focus worktrees | Cmd+B / Cmd+Shift+E / Ctrl+Shift+G | sidebar / explorer / source control (borrowed) |
+| Open config / command palette | Cmd+, / Cmd+Shift+P | settings / palette |
+
+The browser pane is a pane, so Cmd+1 to 9 reaches it. No bell-jump or browser-focus
+shortcut exists (considered and dropped).
+
+**Persistence.** Layout tree, tab order, active tabs, split ratios, each tab's session id or
+viewer path, sidebar width and collapsed states, and the browser URL are written to
+`~/Library/Application Support/Lattice/workspaces/<hash-of-project-path>.json` on every
+change, debounced. On launch the app reads it, reattaches each tab to its session and
+rebuilds the layout. A missing session reopens as a fresh shell in the same cwd with a note in
+the tab. One window is one workspace (project folder); another folder is another window.
+
+**Window chrome.** Top bar with the project name (as in the screenshot). Bottom status bar:
+project path on the left; on the right, daemon status, session count, and the count of
+sessions waiting on the user (section 5). Sidebar on the left.
+
+## 5. Claude Code session awareness
+
+Claude Code's hooks run shell commands on lifecycle events. The daemon sets
+`LATTICE_SESSION_ID` in every shell it spawns; hook commands inherit it, so
+`lattice notify --state …` reaches the daemon over the socket and names the right session.
+
+| Claude Code event | State sent |
+|---|---|
+| UserPromptSubmit | working |
+| PreToolUse | working |
+| Notification (permission or idle prompt) | waiting |
+| Stop | waiting |
+
+Tab states and icons: **working**, a small glyph with a slow, soft breathing pulse (about a
+2 s cycle, ticked at a low rate so a working tab costs a few percent of one core at most, and
+paused when the window is not visible); **waiting**, a solid dot in the theme's warm accent that
+stays until the tab is focused; **idle**, no icon; **dead**, shell exited, muted title. A terminal
+BEL also sets waiting, so the feature degrades gracefully without hooks (Claude Code can be
+set to ring the bell when it finishes).
+
+Setup is one palette command, "Install Claude Code hooks", that shows the exact change to
+`~/.claude/settings.json` before writing it, and is idempotent.
+
+## 6. Sidebar
+
+A fixed left column, Cmd+B to toggle, default 260 px, resizable by its edge. Two sections
+stacked vertically, each collapsible with a header: Explorer, then Worktrees.
+
+**File tree.** Rooted at the project folder. Lazy: a directory's children are read on expand.
+Respects `.gitignore` by default (toggle to show ignored), hides `.git`. A file system watcher
+updates expanded directories, debounced. Rows carry git status in the theme's pastel set
+(section 7); parent folders with changes carry a dot. Right click: reveal in Finder, copy path,
+copy relative path, open in default app. Dragging a file onto a terminal pastes its path.
+Single click opens a preview viewer tab in the focused pane that the next single click
+replaces; double click pins it (VS Code's preview behaviour).
+
+**Worktree explorer.** Runs `git worktree list` only: the list shows names and branches,
+collapsed. Expanding a worktree runs `git status` for that worktree on a background thread, with
+a soft inline loading shimmer in the row, then animates the changed files open with a short
+ease; collapsing drops the results. An expanded worktree refreshes on the watcher and a slow
+timer; collapsed ones never run status. A dirty count shows only once loaded. Clicking a changed
+file opens the viewer for that file in that worktree. Actions: open a terminal tab in the
+worktree's directory; create a worktree from a branch name with a prompt for the path; remove a
+worktree, refusing if dirty unless force is ticked. The main checkout is first and cannot be
+removed.
+
+**Viewer tab.** Read-only. Loads the file once, highlights with `syntect` (TextMate grammars,
+so colours match VS Code's), virtualized, line numbers in a gutter. Against the worktree's HEAD
+it computes a line diff and marks the gutter: green bar for added, blue bar for modified, red
+triangle where lines were deleted. A toolbar toggle (Cmd+Shift+D while focused) expands to an
+inline diff showing deleted lines in red between the current ones. Re-renders when the watcher
+sees the file change. Cmd+F finds in the file. Files over 5 MB (configurable) open without
+highlighting; binaries show a short notice.
+
+## 7. Config and themes
+
+**Config file.** `~/.config/lattice/config.toml`, created with commented defaults on first run,
+opened by Cmd+, in the default editor. Watched and applied live. A bad edit shows a
+non-blocking banner with the line number and keeps the last good config. Sections: `font`,
+`terminal` (scrollback, shell, nice level), `keybindings`, `sidebar`, `browser` (default URL),
+`daemon` (watchdog timeout, replay buffer size), `theme` (name), `appearance` (follow system
+light/dark or fixed).
+
+**Themes.** One TOML file each in `~/.config/lattice/themes/`; built-ins are embedded in the
+binary and extractable. A theme is a flat set of named colours:
+
+- chrome: window background, title bar, status bar, sidebar, tab bar, active tab, inactive
+  tab, border, split handle, focus ring;
+- terminal: background, foreground, cursor, selection, the 16 ANSI colours;
+- semantic: working pulse, waiting dot, bell, error banner;
+- tree: pastel added, modified, deleted, untracked, ignored;
+- viewer: syntax colours mapped onto the highlighter's scopes.
+
+**Default theme ("Navy", from the screenshot).** Deep navy background near `#0d1117`; tab
+bar and status bar a darker band near `#0a0e14`; borders near `#1f2630`; foreground a soft
+off-white near `#c8ccd4` (about 9:1 against the background rather than 14:1 for pure white).
+Pastels for the tree: soft mint (added), soft amber (modified), dusty rose (deleted), muted
+lavender (untracked), grey (ignored). Waiting dot: a warm accent. Exact hex values are
+sampled from the screenshot once it is copied into `docs/reference/` (the shell cannot read
+the Desktop); the values above are eyeballed placeholders until then. A second built-in,
+"Navy Light", is a soft light counterpart with the same hue relationships.
+
+### 7.3 Eye-comfort defaults (from the research doc)
+
+Cyrus ends most workdays with a headache. The research (published separately on
+csarko.sh/research) supports these defaults: line height **1.45** (wider line spacing is the
+best-supported lever against text-stripe visual stress); **14 pt** rather than 13 (larger
+text reads easier); **moderate contrast** with no pure black or pure white; dark theme kept as
+default with a light preset available (polarity evidence is a wash, light helps slightly with
+astigmatism and bright rooms); no blue-light feature (no evidence). Font family stays a
+one-line config change so Menlo can be judged against taller-x-height faces such as
+JetBrains Mono by eye. The research also says the single highest-yield action is a full eye
+examination (cycloplegic refraction, near point of convergence), which the app cannot
+provide.
+
+## 8. Browser pane (Chrome docking)
+
+A browser tab's content area is a placeholder rectangle; a dedicated Chrome window is kept
+positioned exactly over it.
+
+**Launch.** Opening a browser tab runs Chrome in app mode (`--app=<url>`, no tab strip or
+address bar) with a URL from a prompt (default `http://localhost:3000`, remembered per
+workspace). The app identifies the new window through the Accessibility API by the title it
+set.
+
+**Tracking.** Whenever the placeholder's screen rectangle changes (split drag, sidebar toggle,
+window move or resize), the app writes the Chrome window's `AXPosition` and `AXSize`. When the
+browser tab is not active in its pane, or the app window is minimized or hidden, the Chrome
+window is hidden. Closing the tab closes that Chrome window only.
+
+**Focus and stacking.** Clicking the placeholder raises and focuses the Chrome window.
+Clicking elsewhere in the app raises the app window and immediately re-raises the Chrome
+window above it. A brief flash during that re-raise is the accepted seam.
+
+**Permissions.** The first browser tab triggers the one-time Accessibility permission prompt,
+with an explanation screen in the app. Without permission the tab shows instructions instead.
+
+**Claude's browser tools** (the Claude in Chrome extension, the devtools MCP) drive this window
+like any other Chrome window; nothing special is needed.
+
+## 9. Resilience and performance budgets
+
+- Never block the UI thread: socket reads, PTY parsing, git, file reads and watchers run on
+  background tasks; the UI thread applies parsed state and draws. Channels are bounded;
+  producers coalesce rather than queue.
+- Degrade under load, then recover: late frames draw current state; animations are
+  time-based; the watchdog covers a stuck UI.
+- Memory budgets, measured in milestone 6: UI idle with four terminals under **120 MB**
+  resident; daemon under **15 MB**. Scrollback is the only unbounded input and is capped per
+  tab. The tree holds only expanded directories. A viewer holds one file; background viewer
+  tabs drop highlighting state.
+- Daemon rules as in section 2.1.
+
+## 10. Testing
+
+- Daemon protocol: unit tests for framing and every message type; an integration test that
+  spawns a real shell, writes a command, reads output, detaches, reattaches, and confirms the
+  replay buffer reproduces the screen.
+- Layout tree: property tests for split, close, move and ratio operations; the tree stays
+  valid and every pane stays reachable by Cmd+1 to 9 numbering.
+- Terminal rendering: headless snapshot tests of grid to glyph layout for fixed byte
+  sequences, including box drawing and wide characters.
+- Smooth scroll: a deterministic test of the animation curve against time; a manual check
+  with a 100,000 line scrollback.
+- Watchdog: an integration test freezes a fake client's heartbeat and confirms the daemon
+  relaunches it with sessions intact.
+- Chrome docking and the Claude Code hooks: manual checklist (they depend on other apps).
+
+## 11. Milestones
+
+1. **Daemon plus one terminal.** Daemon, protocol, a GPUI window with one terminal tab,
+   smooth scrolling, reattach after a UI kill. Proves GPUI with the emulator, and session
+   survival.
+2. **Layout and tabs.** Split tree, tabs, drag and drop, keyboard map, workspace
+   persistence, the Navy theme sampled from the screenshot, config with live reload.
+3. **Session awareness.** Claude Code hooks, tab state icons with the slow pulse, status bar
+   count, empty states.
+4. **Sidebar.** File tree, lazy worktree explorer, the viewer with diff gutters.
+5. **Browser pane.** Chrome docking through the Accessibility API.
+6. **Polish.** Navy Light, watchdog hardening, memory measurement against budgets, whatever
+   the first weeks of daily use turn up.
+
+Each milestone ends with Cyrus using it for real work before the next starts.
+
+## 12. Repository layout
+
+```
+lattice/
+  Cargo.toml            workspace
+  crates/
+    protocol/           message types, framing (shared)
+    latticed/           the daemon
+    lattice/            the GPUI app and the `notify` hook CLI
+  docs/
+    superpowers/specs/  this spec and later ones
+    superpowers/plans/  implementation plans
+    reference/          the VS Code screenshot the theme is sampled from
+```
