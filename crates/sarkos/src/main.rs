@@ -1,5 +1,7 @@
 mod client;
 mod keys;
+mod layout;
+mod palette;
 mod paths;
 mod scroll;
 
