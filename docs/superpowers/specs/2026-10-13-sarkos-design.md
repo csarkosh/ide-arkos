@@ -27,7 +27,7 @@ easy to tinker with, and that can never lose a session because its UI froze.
 | Must self-recover when CPU/GPU is pegged; never lose sessions | Sessions live in a separate daemon; a daemon-side watchdog relaunches a stuck UI (section 2) |
 | Embedded browser like Cursor's, to watch Claude work | A real Chrome window docked over a pane via the Accessibility API (section 8) |
 | Smooth scrolling that stays smooth in long sessions; virtualization is fine | Fractional scroll position, eased animation, visible rows only (section 3) |
-| Later additions during design | Tabs within panes; a left sidebar with a file tree and a lazy git worktree explorer; a read-only viewer with diff gutters; Claude Code session state icons on tabs; VS Code keybindings; friendly empty states; eye-comfort defaults from research |
+| Later additions during design | Tabs within panes; a left sidebar with a file tree and a lazy git worktree explorer; a read-only viewer with diff gutters; Claude Code session state icons on tabs; VS Code keybindings; friendly empty states; headache-proof defaults from the research (section 7.1) |
 
 ### 1.2 Non-goals
 
@@ -139,7 +139,7 @@ taller line height (section 7) leaves no gaps in Claude Code's frames.
 pane requests one repaint. At most one frame per display refresh under a flood of output. Late
 frames draw the latest state; animations are time-based, not frame-based.
 
-**Text.** CoreText via GPUI. Default Menlo 14 pt, line height 1.45 (section 7.1).
+**Text.** CoreText via GPUI. Default Menlo at 16 px with line height 1.5 (section 7.1).
 
 **Input.** Keystrokes go to the daemon as bytes; bracketed paste is supported (Claude Code
 relies on it for multi-line input). Mouse selection and copy are local; copy uses the system
@@ -202,7 +202,7 @@ the tab. One window is one workspace (project folder); another folder is another
 
 **Window chrome.** Top bar with the project name (as in the screenshot). Bottom status bar:
 project path on the left; on the right, daemon status, session count, and the count of
-sessions waiting on the user (section 5). Sidebar on the left.
+sessions waiting on the user (section 5), and the break nudge when due (section 7.1). Sidebar on the left.
 
 ## 5. Claude Code session awareness
 
@@ -281,26 +281,42 @@ binary and extractable. A theme is a flat set of named colours:
 scheme stays the screenshot's dark navy; the exact values are chosen after the eye-comfort
 research doc is written, so that contrast, foreground brightness and the accent colours
 follow what the evidence supports (section 7.1). Starting points: deep navy background near `#0d1117`; tab
-bar and status bar a darker band near `#0a0e14`; borders near `#1f2630`; foreground a soft
-off-white near `#c8ccd4` (about 9:1 against the background rather than 14:1 for pure white).
+bar and status bar a darker band near `#0a0e14`; borders near `#1f2630`; foreground a light
+grey near `#d6dae0` (about 12:1 against the background; high luminance, not dim, per section 7.1).
 Pastels for the tree: soft mint (added), soft amber (modified), dusty rose (deleted), muted
 lavender (untracked), grey (ignored). Waiting dot: a warm accent. Exact hex values are
 sampled from the screenshot once it is copied into `docs/reference/` (the shell cannot read
 the Desktop); the values above are eyeballed placeholders until then. A second built-in,
 "Navy Light", is a soft light counterpart with the same hue relationships.
 
-### 7.1 Eye-comfort defaults (from the research doc)
+### 7.1 Headache-proof defaults (from the research doc)
 
-The research on screen work and headaches (published separately on
-csarko.sh/research) supports these defaults: line height **1.45** (wider line spacing is the
-best-supported lever against text-stripe visual stress); **14 pt** rather than 13 (larger
-text reads easier); **moderate contrast** with no pure black or pure white; dark theme kept as
-default with a light preset available (polarity evidence is a wash, light helps slightly with
-astigmatism and bright rooms); no blue-light feature (no evidence). Font family stays a
-one-line config change so Menlo can be judged against taller-x-height faces such as
-JetBrains Mono by eye. The research also says the single highest-yield action is a full eye
-examination (cycloplegic refraction, near point of convergence), which the app cannot
-provide.
+The research (published on csarko.sh/research as "Check your eyes before your theme") found
+that no display setting has ever been tested with headache as an outcome, and that the
+variables which move measured outcomes are luminance reaching the eye, angular text size, line
+pitch relative to x-height, and flicker. "Dark versus light" is a proxy for the first and
+nothing else. sarkos therefore ships these defaults, each labelled in the config as a
+preference with its evidence status, never as a health feature:
+
+| Default | Value | Why |
+|---|---|---|
+| Font size | **16 px** (configurable; a "size for my distance" palette command converts viewing distance and display DPI to the size that puts x-height at 0.25 degrees) | Reading speed collapses below 0.2 degrees of x-height, and the dark-theme legibility penalty grows as text shrinks. 12 to 13 px on a 14-inch MacBook Pro at 60 cm is well below that. 16 px is the compromise between that finding and keeping 80 columns in a half-width pane; the helper lets the user go larger. |
+| Line height | **1.5** (range 1.4 to 1.6; 1.0 to 1.2 is not offered as a preset) | Rows of text at a 14 px, 1.2 pitch land near 3 cycles per degree, the peak of the pattern-glare curve. 1.5 brings the x-height to line-pitch ratio to about 35 percent and moves the row grating off the peak; reading speed plateaus by 1.2 to 1.5x so there is no cost. Box-drawing glyphs are stretched to fill the cell (section 3). |
+| Foreground luminance | A **light grey, not dim**, about `#d6dae0`, on the navy, about 12:1 | Legibility favours high luminance; a dim dark theme with small text is the worst configuration the literature identifies. Pure white on pure black versus a softened palette is untested, so the softening is modest and labelled a preference. |
+| Background | The screenshot's navy, lifted slightly from near-black to about `#11161f` | Keeps the scheme; avoids pure black. Exact values are sampled from the screenshot in milestone 2. |
+| ANSI and syntax colours | Every colour carries **luminance contrast of at least 4.5:1** against the background, preferably higher; no saturated low-luminance colours on the dark background | Images with high colour contrast and little luminance contrast are rated uncomfortable and reported to induce headaches in hypersensitive observers. The tree's pastels satisfy this by construction: high luminance, low saturation. |
+| Letter spacing | Font default; no tracking option | Both tighter and wider spacing slow skilled readers. |
+| Appearance | **Follow the macOS appearance** by default; Navy for dark, Navy Light for light; no health claim for either | Fatigue trials between polarities are null; the bad cell is a screen that mismatches the room's brightness. Following the system setting tracks the user's own room choice. |
+| Warm tint, blue-light mode | **None shipped** | Blue-light filtering fails a double-masked RCT and a Cochrane review; software warm tints have no eye-strain trial, and the warmest setting was worst in the one lab study. |
+| Refresh rate | Nothing claimed | No evidence for static text. |
+| Break reminder | **On by default: a quiet status-bar nudge after 60 minutes of activity suggesting a 5-minute break**, user-adjustable to 30 on, 5 off, or off. Never a modal, never a 20-second pop-up | Hourly 5-minute breaks have field-trial support; the 20-20-20 rule's 20-second glances were null in their only controlled test. |
+| Motion | The working pulse and empty-state animation are slow, low-contrast, and honour Reduce Motion | Flicker and high-contrast modulation are the environmental factors with headache evidence; the UI must not add any. |
+| Font family | Menlo by default, a one-line config change | No controlled study exists for any named coding font. The one monospaced face in Wilkins' 20-font analysis was the least striped, which is encouraging but unnamed. Judge Menlo against taller-x-height faces by eye. |
+
+The config file's generated comments carry a short, non-diagnostic note: if headaches persist,
+the literature puts a comprehensive eye examination that tests convergence and small
+astigmatism, not just acuity, ahead of any setting, and lists the red flags that mean a
+physician first. The README links the research doc.
 
 ## 8. Browser pane (Chrome docking)
 
@@ -411,8 +427,8 @@ with an explanation screen. Without permission the pane shows instructions inste
    count, empty states.
 4. **Sidebar.** File tree, lazy worktree explorer, the viewer with diff gutters.
 5. **Browser pane.** Chrome docking through the Accessibility API.
-6. **Polish.** Navy Light, watchdog hardening, memory measurement against budgets, whatever
-   the first weeks of daily use turn up.
+6. **Polish.** Navy Light, the "size for my distance" helper, the break reminder, watchdog
+   hardening, memory measurement against budgets, whatever the first weeks of daily use turn up.
 
 Each milestone ends with Cyrus using it for real work before the next starts.
 
