@@ -1,0 +1,20 @@
+[package]
+name = "sarkos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+protocol.workspace = true
+serde.workspace = true
+postcard.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+# runtime_shaders: compiles the Metal shaders at launch, so the build needs only Command Line Tools, not Xcode.
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+alacritty_terminal = "0.26"
+futures = "0.3"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile.workspace = true

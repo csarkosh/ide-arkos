@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[workspace.dependencies]
+protocol = { path = "crates/protocol" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+anyhow = "1"
+libc = "0.2"
+tempfile = "3"
+
+[profile.release]
+debug = 1
