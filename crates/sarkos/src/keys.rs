@@ -33,6 +33,9 @@ pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
         "pagedown" => b"\x1b[6~".to_vec(),
         _ => {
             if m.control {
+                if key.chars().count() != 1 {
+                    return None;
+                }
                 let c = key.chars().next()?;
                 let code = match c {
                     'a'..='z' => (c as u8) - b'a' + 1,
@@ -126,6 +129,12 @@ mod tests {
     fn command_combos_are_not_terminal_input() {
         assert_eq!(keystroke_to_bytes(&ks("v", None, cmd()), false), None);
         assert_eq!(keystroke_to_bytes(&ks("q", None, cmd()), false), None);
+    }
+
+    #[test]
+    fn ctrl_with_named_key_is_not_a_control_byte() {
+        assert_eq!(keystroke_to_bytes(&ks("f1", None, ctrl()), false), None);
+        assert_eq!(keystroke_to_bytes(&ks("insert", None, ctrl()), false), None);
     }
 
     #[test]
