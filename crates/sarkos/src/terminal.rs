@@ -14,7 +14,7 @@ use alacritty_terminal::index::Line;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use gpui::{Context, FocusHandle, Keystroke};
 use protocol::{Event, Request, SessionId};
 use std::cell::RefCell;
@@ -67,8 +67,18 @@ impl TerminalCore {
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
+        let before = self.term.grid().display_offset();
         self.parser.advance(&mut self.term, bytes);
-        let mut w = Wakeup { repaint: true, ..Default::default() };
+        self.flush_sync_if_due();
+        // Alacritty raises display_offset as lines arrive while scrolled up; keep the animator
+        // in step so the next frame does not pull the view down.
+        let after = self.term.grid().display_offset();
+        if after != before {
+            let d = after as f32 - before as f32;
+            self.scroll.current += d;
+            self.scroll.target += d;
+        }
+        let mut w = Wakeup { repaint: !bytes.is_empty(), ..Default::default() };
         for ev in self.listener.events.borrow_mut().drain(..) {
             match ev {
                 TermEvent::Title(t) => w.title = Some(t),
@@ -80,6 +90,32 @@ impl TerminalCore {
         }
         self.scroll.clamp_max(self.history_size() as f32);
         w
+    }
+
+    /// Applies chunks in order and merges their wakeups into one.
+    pub fn apply_all<'a>(&mut self, chunks: impl IntoIterator<Item = &'a [u8]>) -> Wakeup {
+        let mut out = Wakeup::default();
+        for c in chunks {
+            let w = self.apply_output(c);
+            out.repaint |= w.repaint;
+            if w.title.is_some() {
+                out.title = w.title;
+            }
+            out.bell |= w.bell;
+            out.pty_write.extend_from_slice(&w.pty_write);
+        }
+        out
+    }
+
+    /// Ends a synchronized update whose deadline has passed. Returns true when it flushed.
+    pub fn flush_sync_if_due(&mut self) -> bool {
+        match self.parser.sync_timeout().sync_timeout() {
+            Some(deadline) if deadline <= Instant::now() => {
+                self.parser.stop_sync(&mut self.term);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -123,6 +159,9 @@ impl TerminalCore {
     /// Cursor as (col, viewport line), or None when scrolled so it is off screen.
     pub fn cursor(&self) -> Option<(usize, usize)> {
         let content = self.term.renderable_content();
+        if content.cursor.shape == CursorShape::Hidden {
+            return None;
+        }
         let p = content.cursor.point;
         let line = p.line.0 + content.display_offset as i32;
         if line < 0 || line >= self.term.screen_lines() as i32 {
@@ -172,6 +211,11 @@ impl TerminalCore {
     }
 }
 
+/// Strips the bracketed-paste end marker so pasted text cannot escape the bracket.
+pub(crate) fn sanitize_paste(text: &str) -> String {
+    text.replace("\x1b[201~", "")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: f32,
@@ -196,30 +240,49 @@ impl Terminal {
         Self { core, session, client, focus: cx.focus_handle(), title: String::new(), alive: true, cell: None, bell_pending: false, last_frame: None }
     }
 
-    /// Applies a daemon event. Returns true when a repaint is needed.
+    /// Applies one daemon event. Returns true when a repaint is needed.
     pub fn handle_event(&mut self, ev: &Event, cx: &mut Context<Self>) -> bool {
-        match ev {
-            Event::Output { session, bytes } if *session == self.session => {
-                let w = self.core.apply_output(bytes);
-                if let Some(t) = w.title {
-                    self.title = t;
+        self.handle_events(std::slice::from_ref(ev), cx)
+    }
+
+    /// Applies a batch of daemon events in order. Consecutive output is merged into one grid
+    /// update, one input write, and at most one `cx.notify()`.
+    pub fn handle_events(&mut self, events: &[Event], cx: &mut Context<Self>) -> bool {
+        let mut changed = false;
+        let mut pending: Vec<&[u8]> = Vec::new();
+        for ev in events {
+            match ev {
+                Event::Output { session, bytes } if *session == self.session => pending.push(bytes),
+                Event::Exited { session, .. } if *session == self.session => {
+                    self.flush_output(&mut pending);
+                    self.alive = false;
+                    changed = true;
                 }
-                if w.bell {
-                    self.bell_pending = true;
-                }
-                if !w.pty_write.is_empty() {
-                    self.client.send(Request::Input { session: self.session, bytes: w.pty_write });
-                }
-                cx.notify();
-                true
+                _ => {}
             }
-            Event::Exited { session, .. } if *session == self.session => {
-                self.alive = false;
-                cx.notify();
-                true
-            }
-            _ => false,
         }
+        changed |= self.flush_output(&mut pending);
+        if changed {
+            cx.notify();
+        }
+        changed
+    }
+
+    fn flush_output(&mut self, pending: &mut Vec<&[u8]>) -> bool {
+        if pending.is_empty() {
+            return false;
+        }
+        let w = self.core.apply_all(pending.drain(..));
+        if let Some(t) = w.title {
+            self.title = t;
+        }
+        if w.bell {
+            self.bell_pending = true;
+        }
+        if !w.pty_write.is_empty() {
+            self.client.send(Request::Input { session: self.session, bytes: w.pty_write });
+        }
+        true
     }
 
     pub fn handle_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
@@ -242,7 +305,7 @@ impl Terminal {
         let mut bytes = Vec::with_capacity(text.len() + 12);
         if self.core.bracketed_paste() {
             bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(sanitize_paste(text).as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
         } else {
             bytes.extend_from_slice(text.as_bytes());
@@ -258,6 +321,7 @@ impl Terminal {
 
     /// Resizes the grid and the PTY when the pane's cell grid changes.
     pub fn ensure_size(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.max(2), rows.max(1));
         if cols == self.core.columns() && rows == self.core.screen_lines() {
             return;
         }
@@ -295,13 +359,62 @@ mod tests {
     }
 
     #[test]
-    fn apply_output_coalesces_wakeups() {
+    fn apply_all_coalesces_wakeups() {
         let mut t = TerminalCore::new(20, 5, 100);
-        // One call with many lines is one wakeup, not one per line.
-        let big: Vec<u8> = (0..1000).flat_map(|i| format!("line {i}\r\n").into_bytes()).collect();
-        let w = t.apply_output(&big);
+        let lines: Vec<Vec<u8>> = (0..1000).map(|i| format!("line {i}\r\n").into_bytes()).collect();
+        let w = t.apply_all(lines.iter().map(|l| l.as_slice()));
         assert!(w.repaint);
         assert_eq!(t.history_size(), 100, "scrollback is capped");
+        let mut chunks: Vec<&[u8]> = vec![b"a"; 10];
+        chunks[2] = b"\x1b]0;t3\x07";
+        chunks[6] = b"\x07";
+        let w = t.apply_all(chunks);
+        assert_eq!(w.title.as_deref(), Some("t3"));
+        assert!(w.bell);
+        assert!(!t.apply_all(Vec::<&[u8]>::new()).repaint);
+    }
+
+    #[test]
+    fn sync_update_flushes_after_deadline() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        t.apply_output(b"\x1b[?2026hhidden");
+        assert_eq!(text_of(&t.rows_for_paint().visible[0]), "");
+        assert!(!t.flush_sync_if_due());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(t.flush_sync_if_due());
+        assert_eq!(text_of(&t.rows_for_paint().visible[0]), "hidden");
+    }
+
+    #[test]
+    fn ensure_size_clamps_tiny_sizes() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        t.resize(1, 0);
+        assert_eq!((t.columns(), t.screen_lines()), (2, 1));
+        t.resize(1, 0);
+        assert_eq!((t.columns(), t.screen_lines()), (2, 1));
+    }
+
+    #[test]
+    fn hidden_cursor_is_none() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        t.apply_output(b"\x1b[?25l");
+        assert_eq!(t.cursor(), None);
+        t.apply_output(b"\x1b[?25h");
+        assert!(t.cursor().is_some());
+    }
+
+    #[test]
+    fn paste_end_marker_is_stripped() {
+        assert_eq!(sanitize_paste("a\x1b[201~b"), "ab");
+    }
+
+    #[test]
+    fn replay_from_inside_osc_recovers() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        let w = t.apply_output(b";cut title\x07echo ok\r\n");
+        let rows = t.rows_for_paint();
+        assert!(rows.visible.iter().any(|r| text_of(r).contains("echo ok")));
+        assert_eq!(w.title, None);
     }
 
     #[test]
@@ -310,9 +423,11 @@ mod tests {
         for i in 0..50 {
             t.apply_output(format!("l{i}\r\n").as_bytes());
         }
-        t.set_display_offset(10);
+        t.scroll.jump_to(10.0);
+        t.set_display_offset(t.scroll.current as usize);
         let before = text_of(&t.rows_for_paint().visible[0]);
         t.apply_output(b"more\r\nmore\r\n");
+        t.set_display_offset(t.scroll.current as usize);
         let after = text_of(&t.rows_for_paint().visible[0]);
         assert_eq!(before, after, "new output must not yank the view down");
     }
@@ -352,7 +467,11 @@ mod tests {
         t.apply_output(b"1;32mgreen\x1b[0m plain");
         let rows = t.rows_for_paint();
         let line = text_of(&rows.visible[0]);
-        assert!(line.ends_with("plain"), "got {line:?}");
+        assert_eq!(line, "1;32mgreen plain");
+        let (_, style, _) = rows.visible[0][11];
+        assert_eq!(rows.visible[0][11].0, 'p');
+        assert_eq!(style.fg, NAVY.fg);
+        assert!(!style.bold);
     }
 
     #[test]
