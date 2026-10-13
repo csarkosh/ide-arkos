@@ -9,12 +9,15 @@ mod terminal_element;
 mod workspace;
 
 use futures::channel::mpsc::TryRecvError;
+use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Application, Bounds, Context, Entity, KeyDownEvent, ScrollDelta,
-    ScrollWheelEvent, Window, WindowBounds, WindowOptions,
+    canvas, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, KeyDownEvent,
+    ScrollDelta, ScrollWheelEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
+use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
@@ -33,9 +36,36 @@ struct Root {
     client: Arc<client::Client>,
     terminal: Option<Entity<Terminal>>,
     status: String,
+    /// The (cols, rows) grid the window last measured while it had no terminal.
+    grid: Option<(usize, usize)>,
+    /// A restore waiting for the first measurement.
+    grid_waiter: Option<oneshot::Sender<(usize, usize)>>,
 }
 
 impl Root {
+    fn new(client: Arc<client::Client>) -> Self {
+        Self { client, terminal: None, status: "connecting to sarkosd".into(), grid: None, grid_waiter: None }
+    }
+
+    fn report_grid(&mut self, grid: (usize, usize)) {
+        self.grid = Some(grid);
+        if let Some(tx) = self.grid_waiter.take() {
+            let _ = tx.send(grid);
+        }
+    }
+
+    /// The grid a new terminal will be shown at: the current terminal's if one is being
+    /// replaced, else the last measurement.
+    fn current_grid(&self, cx: &App) -> Option<(usize, usize)> {
+        match &self.terminal {
+            Some(t) => {
+                let core = &t.read(cx).core;
+                Some((core.columns(), core.screen_lines()))
+            }
+            None => self.grid,
+        }
+    }
+
     /// Applies queued daemon events to the terminal: one grid update and at most one notify.
     fn apply_events(&mut self, pending: &mut Vec<Event>, cx: &mut Context<Self>) {
         if pending.is_empty() {
@@ -51,7 +81,23 @@ impl Root {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(terminal) = self.terminal.clone() else {
-            return div().size_full().bg(rgb(BG)).text_color(rgb(FG)).p_4().child(self.status.clone());
+            // No terminal yet: measure the grid the terminal will get (the whole window, since the
+            // banner clears once it is shown) so a replay can be parsed at that size.
+            let root = cx.weak_entity();
+            let measure = canvas(
+                move |bounds, window, cx| {
+                    let grid = terminal_element::grid_for(bounds, window);
+                    let _ = root.update(cx, |root, _| root.report_grid(grid));
+                },
+                |_, _, _, _| {},
+            )
+            .size_full();
+            return div()
+                .size_full()
+                .relative()
+                .bg(rgb(BG))
+                .child(measure)
+                .child(banner_bar(self.status.clone()).absolute().top_0().left_0());
         };
         let (focus, alive, exit_code) = {
             let t = terminal.read(cx);
@@ -101,20 +147,22 @@ impl Render for Root {
                     t.scroll_lines(lines, cx);
                 });
             }))
-            .children(banner.map(|text| {
-                div()
-                    .w_full()
-                    .flex_none()
-                    .p(px(4.))
-                    .bg(rgb(BANNER_BG))
-                    .text_color(rgb(FG))
-                    .font_family(terminal_element::FONT_FAMILY)
-                    .text_size(px(terminal_element::FONT_SIZE))
-                    .child(text)
-            }))
+            .children(banner.map(banner_bar))
             // The terminal stays painted beneath the banner so scrollback remains readable.
             .child(div().flex_1().min_h_0().child(TerminalElement::new(terminal)))
     }
+}
+
+fn banner_bar(text: String) -> Div {
+    div()
+        .w_full()
+        .flex_none()
+        .p(px(4.))
+        .bg(rgb(BANNER_BG))
+        .text_color(rgb(FG))
+        .font_family(terminal_element::FONT_FAMILY)
+        .text_size(px(terminal_element::FONT_SIZE))
+        .child(text)
 }
 
 fn output_len(msg: &ServerMessage) -> usize {
@@ -122,6 +170,135 @@ fn output_len(msg: &ServerMessage) -> usize {
         ServerMessage::Event(Event::Output { bytes, .. }) => bytes.len(),
         _ => 0,
     }
+}
+
+/// What the launch has asked the daemon for, so its responses can be matched.
+struct Launch {
+    client: Arc<client::Client>,
+    project: PathBuf,
+    list_id: u32,
+    saved: Option<SessionId>,
+    pending_create: Option<u32>,
+    pending_attach: Option<(u32, SessionId)>,
+}
+
+/// An attach response whose replay still has to be parsed before the session can be shown.
+struct Restore {
+    session: SessionId,
+    replay: Vec<u8>,
+    alive: bool,
+}
+
+impl Launch {
+    /// Handles queued messages in order. Stops at an attach response and returns it, leaving the
+    /// messages after it in `queue`: they belong after the replay, so they wait until it is applied.
+    fn process(&mut self, root: &mut Root, queue: &mut VecDeque<ServerMessage>, cx: &mut Context<Root>) -> Option<Restore> {
+        let mut pending: Vec<Event> = Vec::new();
+        while let Some(msg) = queue.pop_front() {
+            let (id, response) = match msg {
+                ServerMessage::Event(ev) => {
+                    pending.push(ev);
+                    continue;
+                }
+                ServerMessage::Response { id, response } => (id, response),
+            };
+            // Events that came before this response are applied first, keeping order.
+            root.apply_events(&mut pending, cx);
+            match response {
+                Response::Sessions(list) if id == self.list_id => {
+                    match self.saved.filter(|s| list.iter().any(|i| i.id == *s)) {
+                        Some(sid) => {
+                            let aid = self.client.send(Request::Attach { session: sid });
+                            self.pending_attach = Some((aid, sid));
+                        }
+                        None => {
+                            let cid = self.client.send(Request::CreateSession {
+                                cwd: self.project.clone(),
+                                shell: None,
+                                env: vec![],
+                                nice: 0,
+                                rows: 24,
+                                cols: 80,
+                            });
+                            self.pending_create = Some(cid);
+                        }
+                    }
+                }
+                Response::SessionCreated { id: sid } if Some(id) == self.pending_create => {
+                    self.pending_create = None;
+                    let project = self.project.clone();
+                    cx.background_spawn(async move {
+                        if let Err(e) = workspace::save(&project, sid) {
+                            eprintln!("sarkos: cannot save workspace: {e}");
+                        }
+                    })
+                    .detach();
+                    let aid = self.client.send(Request::Attach { session: sid });
+                    self.pending_attach = Some((aid, sid));
+                }
+                Response::Attached { replay, alive } if self.pending_attach.map(|p| p.0) == Some(id) => {
+                    let (_, sid) = self.pending_attach.take().unwrap();
+                    eprintln!("sarkos: attached to session {} ({} replay bytes)", sid.0, replay.len());
+                    root.status = "restoring session".into();
+                    cx.notify();
+                    return Some(Restore { session: sid, replay, alive });
+                }
+                Response::Error(e) => {
+                    root.status = format!("sarkosd error: {e}");
+                    eprintln!("sarkos: {}", root.status);
+                    cx.notify();
+                }
+                _ => {}
+            }
+        }
+        root.apply_events(&mut pending, cx);
+        None
+    }
+}
+
+/// Shows an attached session: waits for the window's grid, parses the replay at that size on the
+/// background executor, then builds the terminal on the main thread.
+async fn restore(root: &Entity<Root>, r: Restore, cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let known = root.update(cx, |root, cx| match root.current_grid(cx) {
+        Some(grid) => Ok(grid),
+        None => {
+            let (tx, rx) = oneshot::channel();
+            root.grid_waiter = Some(tx);
+            Err(rx)
+        }
+    })?;
+    let (cols, rows) = match known {
+        Ok(grid) => grid,
+        Err(rx) => rx.await?,
+    };
+    let Restore { session, replay, alive } = r;
+    let started = std::time::Instant::now();
+    let (core, title) = cx
+        .background_spawn(async move {
+            let mut core = TerminalCore::new(cols, rows, SCROLLBACK);
+            // The previous UI already answered any queries in the replay and rang its bells, so
+            // only the title is kept from this wakeup.
+            let title = core.apply_output(&replay).title;
+            (core, title)
+        })
+        .await;
+    eprintln!("sarkos: replay parsed at {cols}x{rows} in {:?}", started.elapsed());
+    root.update(cx, |root, cx| {
+        let client = root.client.clone();
+        // The PTY still has the previous window's size. Setting this grid's size is a no-op when
+        // they match (the kernel signals SIGWINCH only on a change) and makes the program redraw
+        // when they differ; the element will not resend it, since the core is already this size.
+        client.send(Request::Resize { session, rows: rows as u16, cols: cols as u16 });
+        let terminal = cx.new(|cx| {
+            let mut t = Terminal::new(core, session, client, cx);
+            t.alive = alive;
+            t.title = title.unwrap_or_default();
+            t
+        });
+        root.terminal = Some(terminal);
+        root.status = String::new();
+        cx.notify();
+    })
 }
 
 /// Returns Pending once. A channel with queued messages resolves `next()` immediately, so without
@@ -169,7 +346,7 @@ fn main() {
                     titlebar: Some(gpui::TitlebarOptions { title: Some("sarkos".into()), ..Default::default() }),
                     ..Default::default()
                 },
-                move |_, cx| cx.new(|_| Root { client: client_for_view, terminal: None, status: "connecting to sarkosd".into() }),
+                move |_, cx| cx.new(|_| Root::new(client_for_view)),
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
@@ -196,9 +373,8 @@ fn main() {
 
         // Decide which session to show: the workspace's saved one if the daemon still has it.
         let list_id = client.send(Request::ListSessions);
-        let mut pending_create: Option<u32> = None;
-        let mut pending_attach: Option<(u32, SessionId)> = None;
-        let project_for_task = project.clone();
+        let mut launch =
+            Launch { client: client.clone(), project: project.clone(), list_id, saved, pending_create: None, pending_attach: None };
         let client_for_task = client.clone();
         cx.spawn(async move |cx| {
             let mut closed = false;
@@ -207,12 +383,12 @@ fn main() {
                 // Take everything already queued, up to the byte budget, so a flood becomes one
                 // grid update and one notify per batch instead of one per message.
                 let mut bytes = output_len(&first);
-                let mut batch = vec![first];
+                let mut queue = VecDeque::from([first]);
                 while bytes <= BATCH_BUDGET {
                     match events.try_recv() {
                         Ok(msg) => {
                             bytes += output_len(&msg);
-                            batch.push(msg);
+                            queue.push_back(msg);
                         }
                         Err(TryRecvError::Closed) => {
                             closed = true;
@@ -221,79 +397,15 @@ fn main() {
                         Err(TryRecvError::Empty) => break,
                     }
                 }
-                let step = root.update(cx, |root, cx| {
-                    let mut pending: Vec<Event> = Vec::new();
-                    for msg in batch {
-                        let (id, response) = match msg {
-                            ServerMessage::Event(ev) => {
-                                pending.push(ev);
-                                continue;
-                            }
-                            ServerMessage::Response { id, response } => (id, response),
-                        };
-                        // Events that came before this response are applied first, keeping order.
-                        root.apply_events(&mut pending, cx);
-                        match response {
-                            Response::Sessions(list) if id == list_id => {
-                                match saved.filter(|s| list.iter().any(|i| i.id == *s)) {
-                                    Some(sid) => {
-                                        let aid = client_for_task.send(Request::Attach { session: sid });
-                                        pending_attach = Some((aid, sid));
-                                    }
-                                    None => {
-                                        let cid = client_for_task.send(Request::CreateSession {
-                                            cwd: project_for_task.clone(),
-                                            shell: None,
-                                            env: vec![],
-                                            nice: 0,
-                                            rows: 24,
-                                            cols: 80,
-                                        });
-                                        pending_create = Some(cid);
-                                    }
-                                }
-                            }
-                            Response::SessionCreated { id: sid } if Some(id) == pending_create => {
-                                pending_create = None;
-                                let project = project_for_task.clone();
-                                cx.background_spawn(async move {
-                                    if let Err(e) = workspace::save(&project, sid) {
-                                        eprintln!("sarkos: cannot save workspace: {e}");
-                                    }
-                                })
-                                .detach();
-                                let aid = client_for_task.send(Request::Attach { session: sid });
-                                pending_attach = Some((aid, sid));
-                            }
-                            Response::Attached { replay, alive } if pending_attach.map(|p| p.0) == Some(id) => {
-                                let (_, sid) = pending_attach.take().unwrap();
-                                let mut core = TerminalCore::new(80, 24, SCROLLBACK);
-                                // The previous UI already answered any queries in the replay and
-                                // rang its bells, so only the title is kept from this wakeup.
-                                let title = core.apply_output(&replay).title;
-                                let client = root.client.clone();
-                                let terminal = cx.new(|cx| {
-                                    let mut t = Terminal::new(core, sid, client, cx);
-                                    t.alive = alive;
-                                    t.title = title.unwrap_or_default();
-                                    t
-                                });
-                                root.terminal = Some(terminal);
-                                root.status = String::new();
-                                cx.notify();
-                            }
-                            Response::Error(e) => {
-                                root.status = format!("sarkosd error: {e}");
-                                eprintln!("sarkos: {}", root.status);
-                                cx.notify();
-                            }
-                            _ => {}
-                        }
+                loop {
+                    let Ok(step) = root.update(cx, |root, cx| launch.process(root, &mut queue, cx)) else { return };
+                    let Some(attached) = step else { break };
+                    // The channel is not read while the replay is restored, so live output waits
+                    // behind it in order, and past the unread cap the daemon pauses the PTY.
+                    if let Err(e) = restore(&root, attached, cx).await {
+                        eprintln!("sarkos: restoring the session failed: {e:#}");
+                        return;
                     }
-                    root.apply_events(&mut pending, cx);
-                });
-                if step.is_err() {
-                    return;
                 }
                 // The batch's output is applied: let the reader thread pull more from the socket.
                 client_for_task.consumed_output(bytes);

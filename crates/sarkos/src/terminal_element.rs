@@ -49,6 +49,19 @@ fn measure_cell(window: &mut Window) -> CellMetrics {
     CellMetrics { width: f32::from(layout.width), height: FONT_SIZE * LINE_HEIGHT }
 }
 
+/// The cell grid that fits `bounds` at `cell`, as (cols, rows).
+fn grid_in(bounds: Bounds<Pixels>, cell: CellMetrics) -> (usize, usize) {
+    let cols = (f32::from(bounds.size.width) / cell.width).floor().max(2.0) as usize;
+    let rows = (f32::from(bounds.size.height) / cell.height).floor().max(1.0) as usize;
+    (cols, rows)
+}
+
+/// The grid a terminal element in `bounds` would size itself to. The window measures with this
+/// before a terminal exists, so a replay can be parsed at the size it will be shown at.
+pub fn grid_for(bounds: Bounds<Pixels>, window: &mut Window) -> (usize, usize) {
+    grid_in(bounds, measure_cell(window))
+}
+
 /// Splits a scroll position into alacritty's integer display offset and the fraction of a line
 /// drawn as a pixel offset. The animator can sit slightly below zero after a negative offset
 /// delta, so it is clamped first; the fraction is always in [0, 1).
@@ -96,8 +109,7 @@ impl Element for TerminalElement {
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> Prepaint {
         let cell = measure_cell(window);
-        let cols = (f32::from(bounds.size.width) / cell.width).floor().max(2.0) as usize;
-        let rows = (f32::from(bounds.size.height) / cell.height).floor().max(1.0) as usize;
+        let (cols, rows) = grid_in(bounds, cell);
         self.terminal.update(cx, |t, _| {
             t.cell = Some(cell);
             t.ensure_size(cols, rows);
