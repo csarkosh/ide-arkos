@@ -122,8 +122,8 @@ fn create_attach_echo_detach_reattach_replays() {
     let id = c.create("/bin/sh");
     let attached = c.request(Request::Attach { session: id });
     assert!(matches!(attached, Response::Attached { alive: true, .. }));
-    c.send(Request::Input { session: id, bytes: b"echo hello-sarkos\n".to_vec() });
-    c.wait_for_output(id, "hello-sarkos");
+    c.send(Request::Input { session: id, bytes: b"echo hello-$((40+2))\n".to_vec() });
+    c.wait_for_output(id, "hello-42");
     assert_eq!(c.request(Request::Detach { session: id }), Response::Ok);
     drop(c);
 
@@ -131,13 +131,13 @@ fn create_attach_echo_detach_reattach_replays() {
     match c2.request(Request::Attach { session: id }) {
         Response::Attached { replay, alive } => {
             assert!(alive);
-            assert!(String::from_utf8_lossy(&replay).contains("hello-sarkos"), "replay was {:?}", String::from_utf8_lossy(&replay));
+            assert!(String::from_utf8_lossy(&replay).contains("hello-42"), "replay was {:?}", String::from_utf8_lossy(&replay));
         }
         other => panic!("unexpected {other:?}"),
     }
     // Still live after reattach.
-    c2.send(Request::Input { session: id, bytes: b"echo second-line\n".to_vec() });
-    c2.wait_for_output(id, "second-line");
+    c2.send(Request::Input { session: id, bytes: b"echo second-$((50+8))\n".to_vec() });
+    c2.wait_for_output(id, "second-58");
 }
 
 #[test]
@@ -182,15 +182,15 @@ fn reattach_after_shell_exit() {
     let mut c = d.connect();
     let id = c.create("/bin/sh");
     c.request(Request::Attach { session: id });
-    c.send(Request::Input { session: id, bytes: b"echo before-exit; exit\n".to_vec() });
-    c.wait_for_output(id, "before-exit");
+    c.send(Request::Input { session: id, bytes: b"echo before-$((6*7)); exit\n".to_vec() });
+    c.wait_for_output(id, "before-42");
     drop(c);
     std::thread::sleep(Duration::from_millis(300));
     let mut c2 = d.connect();
     match c2.request(Request::Attach { session: id }) {
         Response::Attached { replay, alive } => {
             assert!(!alive, "shell should have exited");
-            assert!(String::from_utf8_lossy(&replay).contains("before-exit"));
+            assert!(String::from_utf8_lossy(&replay).contains("before-42"));
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -202,15 +202,17 @@ fn replay_truncated_to_capacity() {
     let mut c = d.connect();
     let id = c.create("/bin/sh");
     c.request(Request::Attach { session: id });
-    c.send(Request::Input { session: id, bytes: b"printf 'abcdefghij%.0s' 1 2 3 4 5 6 7 8 9 10; echo END\n".to_vec() });
-    c.wait_for_output(id, "END");
+    c.send(Request::Input { session: id, bytes: b"echo OLDMARK-$((1+1)); printf 'abcdefghij%.0s' 1 2 3 4 5 6 7 8 9 10; echo NEWMARK-$((3+4))\n".to_vec() });
+    c.wait_for_output(id, "NEWMARK-7");
     c.request(Request::Detach { session: id });
     drop(c);
     let mut c2 = d.connect();
     match c2.request(Request::Attach { session: id }) {
         Response::Attached { replay, .. } => {
             assert!(replay.len() <= 64);
-            assert!(String::from_utf8_lossy(&replay).contains("END"));
+            let text = String::from_utf8_lossy(&replay);
+            assert!(text.contains("NEWMARK-7"), "newest output missing: {text:?}");
+            assert!(!text.contains("OLDMARK-2"), "oldest output should have been dropped: {text:?}");
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -240,4 +242,12 @@ fn session_env_carries_its_id() {
     c.request(Request::Attach { session: id });
     c.send(Request::Input { session: id, bytes: b"echo id=$SARKOS_SESSION_ID\n".to_vec() });
     c.wait_for_output(id, &format!("id={}", id.0));
+}
+
+#[test]
+fn socket_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = Daemon::start(&[]);
+    let mode = std::fs::metadata(&d.socket).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
 }

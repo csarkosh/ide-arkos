@@ -1,6 +1,6 @@
 //! Accepts clients on the Unix socket, one reader and one writer thread each, and dispatches
 //! requests to sessions. Shared state is one mutex; every operation under it is short.
-use crate::session::{ClientId, Session, SpawnSpec};
+use crate::session::{ClientId, ClientSink, Session, SpawnSpec, CLIENT_QUEUE};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId};
@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Sender};
+use std::net::Shutdown;
+use std::os::unix::fs::PermissionsExt;
+use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,7 +22,7 @@ pub struct Options {
 
 pub struct ClientRecord {
     #[allow(dead_code)] // kept so the watchdog can reach a client
-    pub tx: Sender<ServerMessage>,
+    pub tx: ClientSink,
     pub attached: Vec<SessionId>,
     pub last_heartbeat: Instant,
     pub ui_pid: Option<u32>,
@@ -41,6 +43,7 @@ pub type Shared = Arc<Mutex<State>>;
 pub fn run(socket: &Path, opts: Options) -> Result<()> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).ok();
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).ok();
     }
     if socket.exists() {
         // A previous daemon died. Nobody can be listening if connect fails.
@@ -50,6 +53,7 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
         std::fs::remove_file(socket).ok();
     }
     let listener = UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).context("chmod socket")?;
     let state: Shared = Arc::new(Mutex::new(State::default()));
     crate::watchdog::start(state.clone(), opts.watchdog);
     for stream in listener.incoming() {
@@ -62,23 +66,25 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
 }
 
 fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
-    let (tx, rx) = channel::<ServerMessage>();
+    let (tx, rx) = sync_channel::<ServerMessage>(CLIENT_QUEUE);
+    let (writer_stream, shutdown_stream) = match (stream.try_clone(), stream.try_clone()) {
+        (Ok(a), Ok(b)) => (a, b),
+        _ => {
+            eprintln!("sarkosd: clone stream failed");
+            return;
+        }
+    };
+    writer_stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    let sink = ClientSink::new(tx, shutdown_stream);
     let client_id = {
         let mut st = state.lock().unwrap();
         st.next_client += 1;
         let id = st.next_client;
         st.clients.insert(
             id,
-            ClientRecord { tx: tx.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, connected: true },
+            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, connected: true },
         );
         id
-    };
-    let writer_stream = match stream.try_clone() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sarkosd: clone stream: {e}");
-            return;
-        }
     };
     std::thread::Builder::new()
         .name(format!("client-writer-{client_id}"))
@@ -86,6 +92,8 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
             let mut w = BufWriter::new(writer_stream);
             while let Ok(msg) = rx.recv() {
                 if write_frame(&mut w, &msg).is_err() {
+                    // Timed out or broken: end the connection so the reader thread cleans up.
+                    let _ = w.get_ref().shutdown(Shutdown::Both);
                     break;
                 }
             }
@@ -98,8 +106,8 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
             loop {
                 match read_frame::<_, ClientMessage>(&mut r) {
                     Ok(Some(msg)) => {
-                        let response = dispatch(&state, client_id, &tx, msg.request, opts);
-                        if tx.send(ServerMessage::Response { id: msg.id, response }).is_err() {
+                        let response = dispatch(&state, client_id, &sink, msg.request, opts);
+                        if !sink.send(ServerMessage::Response { id: msg.id, response }) {
                             break;
                         }
                     }
@@ -129,7 +137,7 @@ fn disconnect(state: &Shared, client_id: ClientId) {
     st.clients.remove(&client_id);
 }
 
-fn dispatch(state: &Shared, client_id: ClientId, tx: &Sender<ServerMessage>, request: Request, opts: Options) -> Response {
+fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, request: Request, opts: Options) -> Response {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
     match request {
         Request::Hello { ui_pid, ui_exe } => {
