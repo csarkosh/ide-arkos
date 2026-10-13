@@ -327,6 +327,16 @@ tabs was rejected: it would need one Chrome window per tab, tabs cannot be moved
 windows through the Accessibility API, and it would fight Chrome's tab groups, which is also
 where Claude's tool keeps its tabs.
 
+**Vertical space.** A normal Chrome window spends about 80 px on its tab strip and
+toolbar. Two mitigations: the browser pane's first-run screen recommends Chrome's native
+"Show Tabs Vertically" (a right-click option on the tab strip in current stable Chrome), which
+removes the tab strip row and leaves only the toolbar; and when a browser tab is active, the
+sarkos tab bar for that pane collapses to a slim strip, since Chrome's toolbar already shows a
+title. Stock Chrome offers no supported way to hide the toolbar in a windowed mode, and sarkos
+does not try. For a window the user opens by URL, the prompt offers "open as a single page",
+which launches Chrome in app mode (thin title bar, no toolbar, one tab); windows Claude's tools
+create are never app mode.
+
 **Dock by dragging a window in.** Any independent Chrome window can be dragged into sarkos.
 While a Chrome window is being moved by the user (an AX window-moved notification with the
 mouse button down, read from a global pointer monitor, which the Accessibility permission
