@@ -41,10 +41,15 @@ fn main() {
         let client_for_view = client.clone();
         let root = cx
             .open_window(
-                WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions { title: Some("sarkos".into()), ..Default::default() }),
+                    ..Default::default()
+                },
                 move |_, cx| cx.new(|_| Root { client: client_for_view, status: "connecting".into() }),
             )
             .expect("open window");
+        let client_for_task = client.clone();
         let list_id = client.send(Request::ListSessions);
         let root_entity = root.entity(cx).expect("root entity");
         cx.spawn(async move |cx| {
@@ -62,6 +67,12 @@ fn main() {
                     break;
                 }
             }
+            let reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
+            eprintln!("sarkos: {reason}");
+            let _ = root_entity.update(cx, |root, cx| {
+                root.status = reason;
+                cx.notify();
+            });
         })
         .detach();
     });

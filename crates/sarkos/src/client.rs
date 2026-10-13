@@ -7,17 +7,21 @@ use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, ServerMessage};
 use std::io::{BufReader, BufWriter};
+use std::io::ErrorKind;
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Sender};
 use std::time::{Duration, Instant};
 
 pub struct Client {
     tx: Sender<ClientMessage>,
     next_id: AtomicU32,
+    disconnect_reason: Arc<Mutex<Option<String>>>,
 }
 
 impl Client {
@@ -37,18 +41,28 @@ impl Client {
                 }
             })
             .context("spawn writer")?;
+        let disconnect_reason = Arc::new(Mutex::new(None));
+        let reason_for_reader = disconnect_reason.clone();
         std::thread::Builder::new()
             .name("sarkosd-reader".into())
             .spawn(move || {
                 let mut r = BufReader::new(reader_stream);
-                while let Ok(Some(msg)) = read_frame::<_, ServerMessage>(&mut r) {
-                    if ev_tx.unbounded_send(msg).is_err() {
-                        break;
+                let reason = loop {
+                    match read_frame::<_, ServerMessage>(&mut r) {
+                        Ok(Some(msg)) => {
+                            if ev_tx.unbounded_send(msg).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => break "daemon closed the connection".to_string(),
+                        Err(e) => break format!("connection to daemon failed: {e}"),
                     }
-                }
+                };
+                // Set before ev_tx drops so a receiver that sees the end can read the reason.
+                *reason_for_reader.lock().unwrap() = Some(reason);
             })
             .context("spawn reader")?;
-        let client = Client { tx, next_id: AtomicU32::new(1) };
+        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason };
         client.send(Request::Hello { ui_pid: std::process::id(), ui_exe: std::env::current_exe().ok() });
         Ok((client, ev_rx))
     }
@@ -60,10 +74,25 @@ impl Client {
         id
     }
 
-    /// Removes a socket file that exists but accepts no connections.
-    pub fn ensure_stale_socket_removed(socket: &Path) {
-        if socket.exists() && UnixStream::connect(socket).is_err() {
-            let _ = std::fs::remove_file(socket);
+    /// Why the connection ended, once the receiver has finished. None while still connected.
+    pub fn disconnect_reason(&self) -> Option<String> {
+        self.disconnect_reason.lock().unwrap().clone()
+    }
+
+    /// Removes a socket file that exists but refuses connections. Any other file type or connect
+    /// error is returned to the caller and the path is left alone.
+    pub fn ensure_stale_socket_removed(socket: &Path) -> Result<()> {
+        let meta = match std::fs::symlink_metadata(socket) {
+            Ok(m) => m,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e).with_context(|| format!("stat {}", socket.display())),
+        };
+        match UnixStream::connect(socket) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::ConnectionRefused && meta.file_type().is_socket() => {
+                std::fs::remove_file(socket).with_context(|| format!("remove stale socket {}", socket.display()))
+            }
+            Err(e) => Err(e).with_context(|| format!("cannot use {}", socket.display())),
         }
     }
 
@@ -72,7 +101,7 @@ impl Client {
         if let Ok(c) = Client::connect(socket) {
             return Ok(c);
         }
-        Client::ensure_stale_socket_removed(socket);
+        Client::ensure_stale_socket_removed(socket)?;
         let log = socket.with_file_name("sarkosd.log");
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -91,7 +120,13 @@ impl Client {
         loop {
             match Client::connect(socket) {
                 Ok(c) => return Ok(c),
-                Err(e) if Instant::now() >= deadline => return Err(e),
+                Err(e) if Instant::now() >= deadline => {
+                    return Err(e.context(format!(
+                        "started {} but it never accepted a connection; see {}",
+                        daemon_exe.display(),
+                        log.display()
+                    )))
+                }
                 Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
         }
@@ -151,7 +186,28 @@ mod tests {
         // A socket file nobody listens on.
         drop(UnixListener::bind(&socket).unwrap());
         assert!(socket.exists());
-        Client::ensure_stale_socket_removed(&socket);
+        Client::ensure_stale_socket_removed(&socket).unwrap();
         assert!(!socket.exists());
+    }
+
+    #[test]
+    fn regular_file_at_socket_path_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("not-a-socket");
+        std::fs::write(&socket, b"precious").unwrap();
+        assert!(Client::ensure_stale_socket_removed(&socket).is_err());
+        assert!(socket.exists());
+    }
+
+    #[test]
+    fn server_hangup_ends_receiver_and_sets_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("hangup.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || drop(listener.accept().unwrap()));
+        let (client, mut rx) = Client::connect(&socket).unwrap();
+        server.join().unwrap();
+        assert!(block_on(rx.next()).is_none());
+        assert_eq!(client.disconnect_reason().as_deref(), Some("daemon closed the connection"));
     }
 }
