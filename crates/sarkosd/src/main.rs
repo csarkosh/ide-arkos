@@ -19,6 +19,7 @@ fn main() {
     let mut socket = default_socket();
     let mut replay = DEFAULT_REPLAY_BYTES;
     let mut watchdog = DEFAULT_WATCHDOG_SECS;
+    let mut pending_cap = session::CLIENT_PENDING_CAP;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -27,6 +28,9 @@ fn main() {
             }
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),
             "--replay-bytes" => replay = args.next().and_then(|v| v.parse().ok()).expect("--replay-bytes needs a number"),
+            "--client-pending-bytes" => {
+                pending_cap = args.next().and_then(|v| v.parse().ok()).expect("--client-pending-bytes needs a number")
+            }
             "--watchdog-secs" => watchdog = args.next().and_then(|v| v.parse().ok()).expect("--watchdog-secs needs a number"),
             other => {
                 eprintln!("sarkosd: unknown argument {other}");
@@ -34,7 +38,7 @@ fn main() {
             }
         }
     }
-    let opts = server::Options { replay_capacity: replay, watchdog: Duration::from_secs(watchdog) };
+    let opts = server::Options { replay_capacity: replay, watchdog: Duration::from_secs(watchdog), client_pending_cap: pending_cap };
     if let Err(e) = server::run(&socket, opts) {
         eprintln!("sarkosd: {e:#}");
         std::process::exit(1);

@@ -302,3 +302,111 @@ fn watchdog_leaves_a_heartbeating_ui_alone() {
     assert!(fake_ui.try_wait().unwrap().is_none(), "UI was killed despite heartbeats");
     let _ = fake_ui.kill();
 }
+
+/// Bytes of `yes` output each flood test asks for: one million `y\n` lines.
+const FLOOD_BYTES: usize = 2_000_000;
+
+#[test]
+fn continuous_reader_survives_a_flood() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect();
+    let id = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: id }), Response::Attached { .. }));
+    // The arithmetic keeps the marker out of the echoed command line. `-onlcr` stops the line
+    // discipline rewriting `\n`, which on macOS can also emit a stray `\r` when its output blocks.
+    let cmd = format!("stty -onlcr; yes | head -c {FLOOD_BYTES}; echo FLOOD-DONE-$((40+2))\n");
+    c.send(Request::Input { session: id, bytes: cmd.into_bytes() });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut stream = Vec::new();
+    let mut largest = 0;
+    loop {
+        assert!(Instant::now() < deadline, "flood did not finish");
+        // `next_message` panics if the daemon closes the connection.
+        if let ServerMessage::Event(Event::Output { session, bytes }) = c.next_message() {
+            assert_eq!(session, id);
+            largest = largest.max(bytes.len());
+            stream.extend_from_slice(&bytes);
+            if stream.windows(13).any(|w| w == b"FLOOD-DONE-42") {
+                break;
+            }
+        }
+    }
+    // Everything between the echoed command line (the line discipline and the shell can both
+    // echo it, so take the last) and the marker must be the flood, complete and in order.
+    let text = String::from_utf8_lossy(&stream);
+    let start = text.rfind("$((40+2))\r\n").expect("echoed command line") + "$((40+2))\r\n".len();
+    let end = text.find("FLOOD-DONE-42").unwrap();
+    let flood = &text[start..end];
+    assert_eq!(flood.len(), FLOOD_BYTES, "flood bytes lost or duplicated");
+    assert!(flood == "y\n".repeat(FLOOD_BYTES / 2), "flood bytes out of order");
+    assert!(largest > 64 * 1024, "output was never coalesced: largest frame {largest} bytes");
+    // Still connected.
+    assert!(matches!(c.request(Request::ListSessions), Response::Sessions(_)));
+}
+
+#[test]
+fn non_reading_client_is_dropped_past_the_byte_cap() {
+    use std::io::Read;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    const CAP: usize = 1 << 20;
+    let d = Daemon::start(&["--client-pending-bytes", &CAP.to_string()]);
+    let mut reader = d.connect();
+    let id = reader.create("/bin/sh");
+    reader.request(Request::Attach { session: id });
+
+    // A client that attaches and then never reads.
+    let mut stalled = UnixStream::connect(&d.socket).unwrap();
+    // Set now: macOS refuses socket options once the daemon has shut the connection down.
+    stalled.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    {
+        let mut w = BufWriter::new(stalled.try_clone().unwrap());
+        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: std::process::id(), ui_exe: None } }).unwrap();
+        write_frame(&mut w, &ClientMessage { id: 2, request: Request::Attach { session: id } }).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    let started = Instant::now();
+    let cmd = format!("yes | head -c {FLOOD_BYTES}; echo CAP-DONE-$((40+2))\n");
+    reader.send(Request::Input { session: id, bytes: cmd.into_bytes() });
+    // The reading client drains on its own thread, counting what it has received. It looks for
+    // the marker in a short tail only, so it keeps pace with the PTY.
+    let received = Arc::new(AtomicUsize::new(0));
+    let counter = received.clone();
+    let reading = std::thread::spawn(move || {
+        let mut tail: Vec<u8> = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if let ServerMessage::Event(Event::Output { bytes, .. }) = reader.next_message() {
+                counter.fetch_add(bytes.len(), Ordering::Relaxed);
+                tail.extend_from_slice(&bytes);
+                if tail.windows(11).any(|w| w == b"CAP-DONE-42") {
+                    return true;
+                }
+                let keep = tail.len().saturating_sub(16);
+                tail.drain(..keep);
+            }
+        }
+        false
+    });
+    // Once the PTY has produced the cap plus a margin for socket buffers, the stalled client's
+    // pending output has passed the cap.
+    while received.load(Ordering::Relaxed) < CAP + CAP / 2 {
+        assert!(started.elapsed() < Duration::from_secs(5), "flood too slow to test the cap");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The stalled client was shut down: draining what reached its socket ends in EOF or an error.
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match stalled.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => break,
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "stalled client was not dropped within 5 s");
+    }
+    assert!(started.elapsed() < Duration::from_secs(5), "stalled client was not dropped within 5 s");
+    // The reading client on the same session got the whole flood.
+    assert!(reading.join().unwrap(), "reading client never saw the end of the flood");
+}

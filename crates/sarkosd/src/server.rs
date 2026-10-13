@@ -1,6 +1,6 @@
 //! Accepts clients on the Unix socket, one reader and one writer thread each, and dispatches
 //! requests to sessions. Shared state is one mutex; every operation under it is short.
-use crate::session::{ClientId, ClientSink, Session, SpawnSpec, CLIENT_QUEUE};
+use crate::session::{ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId};
@@ -10,7 +10,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +17,8 @@ use std::time::{Duration, Instant};
 pub struct Options {
     pub replay_capacity: usize,
     pub watchdog: Duration,
+    /// Output bytes a client may have pending before it is dropped as hung.
+    pub client_pending_cap: usize,
 }
 
 pub struct ClientRecord {
@@ -66,7 +67,6 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
 }
 
 fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
-    let (tx, rx) = sync_channel::<ServerMessage>(CLIENT_QUEUE);
     let (writer_stream, shutdown_stream) = match (stream.try_clone(), stream.try_clone()) {
         (Ok(a), Ok(b)) => (a, b),
         _ => {
@@ -75,26 +75,32 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
         }
     };
     writer_stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-    let sink = ClientSink::new(tx, shutdown_stream);
-    let client_id = {
+    let (client_id, sink) = {
         let mut st = state.lock().unwrap();
         st.next_client += 1;
         let id = st.next_client;
+        let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
             ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, connected: true },
         );
-        id
+        (id, sink)
     };
+    let writer_sink = sink.clone();
     std::thread::Builder::new()
         .name(format!("client-writer-{client_id}"))
         .spawn(move || {
             let mut w = BufWriter::new(writer_stream);
-            while let Ok(msg) = rx.recv() {
-                if write_frame(&mut w, &msg).is_err() {
-                    // Timed out or broken: end the connection so the reader thread cleans up.
-                    let _ = w.get_ref().shutdown(Shutdown::Both);
-                    break;
+            // Everything queued since the last pass is written in order; merged output means a
+            // flood costs a few large frames rather than one per PTY read.
+            'outer: while let Some(items) = writer_sink.take() {
+                for item in items {
+                    if write_frame(&mut w, &item.into_message()).is_err() {
+                        // Timed out or broken: end the connection so the reader thread cleans up.
+                        let _ = w.get_ref().shutdown(Shutdown::Both);
+                        writer_sink.close();
+                        break 'outer;
+                    }
                 }
             }
         })
@@ -106,9 +112,11 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
             loop {
                 match read_frame::<_, ClientMessage>(&mut r) {
                     Ok(Some(msg)) => {
-                        let response = dispatch(&state, client_id, &sink, msg.request, opts);
-                        if !sink.send(ServerMessage::Response { id: msg.id, response }) {
-                            break;
+                        // Attach queues its own response so it lands before any live output.
+                        if let Some(response) = dispatch(&state, client_id, &sink, msg.id, msg.request, opts) {
+                            if !sink.send(ServerMessage::Response { id: msg.id, response }) {
+                                break;
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -119,6 +127,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                 }
             }
             disconnect(&state, client_id);
+            sink.close();
         })
         .expect("spawn reader");
 }
@@ -137,9 +146,10 @@ fn disconnect(state: &Shared, client_id: ClientId) {
     st.clients.remove(&client_id);
 }
 
-fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, request: Request, opts: Options) -> Response {
+/// Handles one request. Returns the response to queue, or None when it was already queued.
+fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
-    match request {
+    let response = match request {
         Request::Hello { ui_pid, ui_exe } => {
             let mut st = state.lock().unwrap();
             if let Some(rec) = st.clients.get_mut(&client_id) {
@@ -171,13 +181,13 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, request: Reque
         }
         Request::Attach { session: sid } => match session(sid) {
             Some(s) => {
-                let (replay, alive) = s.subscribe(client_id, tx.clone());
+                s.subscribe(client_id, tx.clone(), id);
                 if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                     if !rec.attached.contains(&sid) {
                         rec.attached.push(sid);
                     }
                 }
-                Response::Attached { replay, alive }
+                return None;
             }
             None => Response::Error(format!("no session {}", sid.0)),
         },
@@ -224,5 +234,6 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, request: Reque
             }
             None => Response::Error(format!("no session {}", sid.0)),
         },
-    }
+    };
+    Some(response)
 }

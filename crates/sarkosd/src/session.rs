@@ -2,44 +2,125 @@
 use crate::ring::RingBuffer;
 use anyhow::{Context, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use protocol::{ClaudeState, Event, ServerMessage, SessionId, SessionInfo};
-use std::collections::HashMap;
+use protocol::{ClaudeState, Event, Response, ServerMessage, SessionId, SessionInfo};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc::{channel, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type ClientId = u64;
 
-/// Frames a client may have queued before the daemon treats it as hung and drops it.
-pub const CLIENT_QUEUE: usize = 256;
+/// Output bytes a client may have pending before the daemon treats it as hung and drops it.
+pub const CLIENT_PENDING_CAP: usize = 16 * 1024 * 1024;
 
-/// A bounded handoff to one client's writer thread. A full queue means the client is not
-/// draining; the stream is shut down so its reader thread ends and the client is disconnected.
+/// One queued frame. Consecutive output for the same session is merged into one `Output` item,
+/// so a flood becomes a few large frames instead of one frame per PTY read.
+pub enum Item {
+    Output { session: SessionId, bytes: Vec<u8> },
+    Message(ServerMessage),
+}
+
+impl Item {
+    pub fn into_message(self) -> ServerMessage {
+        match self {
+            Item::Output { session, bytes } => ServerMessage::Event(Event::Output { session, bytes }),
+            Item::Message(m) => m,
+        }
+    }
+}
+
+struct Pending {
+    items: VecDeque<Item>,
+    /// Output bytes queued and not yet taken by the writer.
+    bytes: usize,
+    closed: bool,
+}
+
+struct SinkInner {
+    client: ClientId,
+    cap: usize,
+    pending: Mutex<Pending>,
+    ready: Condvar,
+    stream: UnixStream,
+}
+
+/// The handoff to one client's writer thread. Sending never blocks: items are queued in order
+/// and the writer drains them all at once. A client whose pending output passes the byte cap is
+/// not draining; its stream is shut down so its reader thread ends and it is disconnected.
 #[derive(Clone)]
 pub struct ClientSink {
-    tx: SyncSender<ServerMessage>,
-    stream: Arc<UnixStream>,
+    inner: Arc<SinkInner>,
 }
 
 impl ClientSink {
-    pub fn new(tx: SyncSender<ServerMessage>, stream: UnixStream) -> Self {
-        Self { tx, stream: Arc::new(stream) }
+    pub fn new(client: ClientId, stream: UnixStream, cap: usize) -> Self {
+        let pending = Pending { items: VecDeque::new(), bytes: 0, closed: false };
+        Self { inner: Arc::new(SinkInner { client, cap, pending: Mutex::new(pending), ready: Condvar::new(), stream }) }
     }
 
-    /// Returns false when the client is gone or was just dropped for being too slow.
+    /// Queues a response or a control event. Returns false when the client is gone.
     pub fn send(&self, msg: ServerMessage) -> bool {
-        match self.tx.try_send(msg) {
-            Ok(()) => true,
-            Err(TrySendError::Full(_)) => {
-                let _ = self.stream.shutdown(Shutdown::Both);
-                false
-            }
-            Err(TrySendError::Disconnected(_)) => false,
+        let mut p = self.inner.pending.lock().unwrap();
+        if p.closed {
+            return false;
         }
+        p.items.push_back(Item::Message(msg));
+        self.inner.ready.notify_one();
+        true
+    }
+
+    /// Queues PTY output, merging it into the last item when that is output for the same
+    /// session. Returns false when the client is gone or was just dropped for being too slow.
+    pub fn send_output(&self, session: SessionId, bytes: &[u8]) -> bool {
+        let mut p = self.inner.pending.lock().unwrap();
+        if p.closed {
+            return false;
+        }
+        if p.bytes + bytes.len() > self.inner.cap {
+            let pending = p.bytes;
+            p.closed = true;
+            p.items.clear();
+            p.bytes = 0;
+            drop(p);
+            eprintln!(
+                "sarkosd: client {} dropped: {} output bytes pending for session {} (cap {})",
+                self.inner.client, pending + bytes.len(), session.0, self.inner.cap
+            );
+            let _ = self.inner.stream.shutdown(Shutdown::Both);
+            self.inner.ready.notify_one();
+            return false;
+        }
+        p.bytes += bytes.len();
+        match p.items.back_mut() {
+            Some(Item::Output { session: s, bytes: b }) if *s == session => b.extend_from_slice(bytes),
+            _ => p.items.push_back(Item::Output { session, bytes: bytes.to_vec() }),
+        }
+        self.inner.ready.notify_one();
+        true
+    }
+
+    /// Waits until something is queued and takes all of it. None once the sink is closed and
+    /// everything queued before the close has been taken.
+    pub fn take(&self) -> Option<VecDeque<Item>> {
+        let mut p = self.inner.pending.lock().unwrap();
+        while p.items.is_empty() && !p.closed {
+            p = self.inner.ready.wait(p).unwrap();
+        }
+        if p.items.is_empty() {
+            return None;
+        }
+        p.bytes = 0;
+        Some(std::mem::take(&mut p.items))
+    }
+
+    /// Refuses further sends; the writer thread drains what is already queued, then exits.
+    pub fn close(&self) {
+        self.inner.pending.lock().unwrap().closed = true;
+        self.inner.ready.notify_one();
     }
 }
 
@@ -174,8 +255,8 @@ impl Session {
         let mut st = self.state.lock().unwrap();
         st.replay.push(bytes);
         st.last_activity_unix_ms = now_ms();
-        let event = ServerMessage::Event(Event::Output { session: self.id, bytes: bytes.to_vec() });
-        st.subscribers.retain(|_, tx| tx.send(event.clone()));
+        let id = self.id;
+        st.subscribers.retain(|_, tx| tx.send_output(id, bytes));
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
@@ -205,14 +286,15 @@ impl Session {
         st.subscribers.retain(|_, tx| tx.send(event.clone()));
     }
 
-    /// Registers a subscriber and returns the replay buffer plus liveness, atomically with respect
-    /// to new output, so nothing is missed or duplicated between the replay and the live stream.
-    pub fn subscribe(&self, client: ClientId, tx: ClientSink) -> (Vec<u8>, bool) {
+    /// Queues the `Attached` response (replay plus liveness) for request `id` and registers the
+    /// subscriber, atomically with respect to new output: nothing is missed or duplicated between
+    /// the replay and the live stream, and no live output reaches the client before the response.
+    pub fn subscribe(&self, client: ClientId, tx: ClientSink, id: u32) {
         let mut st = self.state.lock().unwrap();
-        let replay = st.replay.snapshot();
-        let alive = st.alive;
-        st.subscribers.insert(client, tx);
-        (replay, alive)
+        let response = Response::Attached { replay: st.replay.snapshot(), alive: st.alive };
+        if tx.send(ServerMessage::Response { id, response }) {
+            st.subscribers.insert(client, tx);
+        }
     }
 
     pub fn unsubscribe(&self, client: ClientId) {
