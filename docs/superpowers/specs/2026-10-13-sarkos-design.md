@@ -319,6 +319,14 @@ also be opened by the user with a URL, in which case sarkos launches a normal Ch
 (not app mode, so the tab strip stays and tabs Claude adds remain visible) in the existing
 profile and docks it.
 
+**The unit is a window, never a Chrome tab.** A docked Chrome window keeps its own tab strip
+at the top of the pane with every tab it had; switching tabs happens in Chrome, with Chrome's
+shortcuts when that window has focus. sarkos has one browser tab per docked window, titled
+after the active Chrome tab (the window title). Exploding a window's tabs into separate sarkos
+tabs was rejected: it would need one Chrome window per tab, tabs cannot be moved between
+windows through the Accessibility API, and it would fight Chrome's tab groups, which is also
+where Claude's tool keeps its tabs.
+
 **Dock by dragging a window in.** Any independent Chrome window can be dragged into sarkos.
 While a Chrome window is being moved by the user (an AX window-moved notification with the
 mouse button down, read from a global pointer monitor, which the Accessibility permission
