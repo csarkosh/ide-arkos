@@ -1,4 +1,5 @@
 mod client;
+mod keys;
 mod paths;
 
 use futures::StreamExt;
