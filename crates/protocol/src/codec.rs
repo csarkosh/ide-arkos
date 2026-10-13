@@ -16,13 +16,27 @@ pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()>
     w.flush()
 }
 
-/// Reads one frame. Returns `Ok(None)` only when the stream ends exactly on a frame boundary.
+/// Reads one frame. Returns `Ok(None)` only when the stream ends before any byte of a length
+/// prefix, i.e. exactly on a frame boundary. A stream that ends partway through the prefix or
+/// the body is an `UnexpectedEof` error.
 pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
-    match r.read_exact(&mut len_buf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
+    let mut filled = 0;
+    while filled < len_buf.len() {
+        match r.read(&mut len_buf[filled..]) {
+            Ok(0) => {
+                if filled == 0 {
+                    return Ok(None);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "stream ended inside a frame length prefix",
+                ));
+            }
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
     }
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_FRAME {
@@ -80,6 +94,12 @@ mod tests {
         write_frame(&mut buf, &ClientMessage { id: 1, request: Request::ListSessions }).unwrap();
         buf.truncate(buf.len() - 1);
         let err = read_frame::<_, ClientMessage>(&mut Cursor::new(buf)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn partial_length_prefix_is_an_error() {
+        let err = read_frame::<_, ClientMessage>(&mut Cursor::new(vec![0u8, 0])).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 }
