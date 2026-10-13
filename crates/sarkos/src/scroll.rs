@@ -1,7 +1,7 @@
 //! Smooth scrolling as a pure function of time (spec 3). Position is in lines of history:
 //! 0.0 is the live bottom, larger is further up. Non-integer values are drawn as a fractional
 //! pixel offset by the element.
-// Used from Task 9 onward.
+// Used from Task 10 onward.
 #![allow(dead_code)]
 
 pub struct ScrollAnimator {

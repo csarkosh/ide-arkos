@@ -1,7 +1,5 @@
 //! Maps a GPUI keystroke to the bytes a terminal expects (xterm conventions).
-// Used from Task 9 onward.
-#![allow(dead_code)]
-use gpui::{Keystroke, Modifiers};
+use gpui::Keystroke;
 
 pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
     let m = &k.modifiers;
@@ -71,6 +69,7 @@ pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::Modifiers;
 
     fn ks(key: &str, key_char: Option<&str>, m: Modifiers) -> Keystroke {
         Keystroke { modifiers: m, key: key.to_string(), key_char: key_char.map(|s| s.to_string()) }

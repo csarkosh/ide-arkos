@@ -1,6 +1,6 @@
 //! Turns one row of terminal cells into text runs with a starting column, so the painter can
 //! shape each run once and place it at an exact cell x. Pure: no GPUI, so it is unit tested.
-// Used from Task 9 onward.
+// Used from Task 10 onward.
 #![allow(dead_code)]
 use crate::palette::Rgb;
 

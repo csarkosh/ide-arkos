@@ -1,8 +1,6 @@
 //! The Navy theme's colours, hardcoded for milestone 1 (theme files arrive in milestone 2).
 //! Values follow spec 7.1: a lifted navy background, a bright grey foreground, and ANSI colours
 //! that each clear 4.5:1 luminance contrast on the background.
-// Used from Task 9 onward.
-#![allow(dead_code)]
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

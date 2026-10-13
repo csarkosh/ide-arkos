@@ -4,6 +4,7 @@ mod layout;
 mod palette;
 mod paths;
 mod scroll;
+mod terminal;
 
 use futures::StreamExt;
 use gpui::{
