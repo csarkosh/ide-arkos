@@ -314,10 +314,27 @@ default window, and sarkos docks that one rather than launching a window and hop
 uses it. Nothing has to be said to Claude. The rule: while any session in the workspace is in
 the **working** state (section 5) and a browser pane exists with nothing docked, the first new
 Chrome window to appear is docked automatically. A palette command, "Dock a Chrome window",
-lists open Chrome windows for the manual case, and "Undock" releases one. A browser pane can
+lists open Chrome windows for the keyboard-only case, and "Undock" releases one. A browser pane can
 also be opened by the user with a URL, in which case sarkos launches a normal Chrome window
 (not app mode, so the tab strip stays and tabs Claude adds remain visible) in the existing
 profile and docks it.
+
+**Dock by dragging a window in.** Any independent Chrome window can be dragged into sarkos.
+While a Chrome window is being moved by the user (an AX window-moved notification with the
+mouse button down, read from a global pointer monitor, which the Accessibility permission
+already allows), and the pointer is over the sarkos window, sarkos shows the same five-zone
+drop overlay used for tab drags (section 4). Releasing over a zone creates a browser tab in
+that pane, or splits the pane, and docks the window there. Releasing elsewhere leaves the
+window alone.
+
+**Undock by dragging out.** Two symmetric gestures release a docked window: dragging the
+browser tab out of its sarkos tab bar and dropping it outside the sarkos window, or dragging
+the Chrome window's own title bar (which stays visible at the top of the pane) so that the
+window leaves the pane rectangle by more than a threshold. Either way the Chrome window
+becomes independent again at the drop position, the browser tab closes, and nothing in Chrome
+changes. Dragging a Chrome tab out of a docked window's tab strip is Chrome's own gesture and
+makes a new independent window as usual; the auto-dock rule ignores windows that appear while
+the mouse button is down, so a user's drag-out is never re-captured.
 
 **Identification.** Chrome windows are found through the Accessibility API (the Chrome
 application's window list; titles are the active tab's title). The docked window is tracked by
