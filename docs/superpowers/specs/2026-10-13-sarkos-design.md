@@ -289,6 +289,21 @@ sampled from the screenshot once it is copied into `docs/reference/` (the shell 
 the Desktop); the values above are eyeballed placeholders until then. A second built-in,
 "Navy Light", is a soft light counterpart with the same hue relationships.
 
+**Text presets.** Font size and line height are switched the same way themes are. A text
+preset is a named pair in the config, and the palette command "Text preset" cycles or picks
+one, applying it live to every terminal and viewer and re-measuring the cell grid. Built-ins:
+
+| Preset | Size | Line height | Intent |
+|---|---|---|---|
+| Compact | 14 px | 1.3 | More columns when a 2x2 grid is open; below the research's comfort floor, so labelled as such |
+| Comfortable (default) | 16 px | 1.5 | The section 7.1 defaults |
+| Relaxed | 18 px | 1.6 | Closer to the 0.25 degree x-height target at 60 cm on a laptop screen |
+
+Users add their own presets in the config. Cmd+= and Cmd+- still nudge the size of the
+focused terminal without changing the preset, and the "size for my distance" helper writes a
+custom preset. The active preset is saved with the workspace, since a 2x2 grid and a single
+pane want different sizes.
+
 ### 7.1 Headache-proof defaults (from the research doc)
 
 The research (published on csarko.sh/research as "Check your eyes before your theme") found
