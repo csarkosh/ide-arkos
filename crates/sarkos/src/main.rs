@@ -13,6 +13,7 @@ mod find;
 mod hook_cli;
 mod keys;
 mod keymap;
+mod links;
 mod launch_agent;
 mod layout;
 mod line_edit;

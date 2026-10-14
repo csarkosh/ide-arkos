@@ -376,6 +376,17 @@ pub struct Terminal {
     pub line_height: f32,
     /// The find bar's state while it is open (Cmd+F).
     pub find: Option<crate::find::FindState>,
+    /// The link under the mouse at the last paint: underlined, and what Cmd+click opens.
+    pub hovered_link: Option<HoveredLink>,
+}
+
+/// A link under the pointer: its row in the visible grid, its columns, and the URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoveredLink {
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
+    pub url: String,
 }
 
 impl Terminal {
@@ -394,6 +405,7 @@ impl Terminal {
             font_size: crate::terminal_element::DEFAULT_FONT_SIZE,
             line_height: crate::terminal_element::DEFAULT_LINE_HEIGHT,
             find: None,
+            hovered_link: None,
         }
     }
 
