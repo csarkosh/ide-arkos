@@ -1,13 +1,14 @@
 //! One pane: its tab bar and the active tab's content (a terminal, a busy notice while a shell
 //! starts or a replay is parsed, or the empty state).
 
+use crate::drag;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
-    canvas, div, prelude::*, px, rgb, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollDelta, ScrollWheelEvent, Window,
+    canvas, div, prelude::*, px, rgb, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
+    MouseDownEvent, ScrollDelta, ScrollWheelEvent, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
@@ -42,7 +43,7 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
     ElementId::NamedInteger(format!("{kind}-{pane}").into(), idx as u64)
 }
 
-pub fn render_pane(root: &mut Root, pane: PaneId, _rect: Rect, _window: &mut Window, cx: &mut Context<Root>) -> Div {
+pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, _window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focused = root.tree.focused == pane;
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
@@ -71,6 +72,37 @@ pub fn render_pane(root: &mut Root, pane: PaneId, _rect: Rect, _window: &mut Win
     .top_0()
     .left_0()
     .size_full();
+    // The five drop zones of a dragged tab: the hovered one is tinted.
+    let overlay = match root.drop_target {
+        Some(drag::DropTarget::Pane { pane: p, zone }) if p == pane => {
+            let (x, y, w, h) = drag::zone_rect(zone, rect.w, rect.h - TAB_BAR_H);
+            Some(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(gpui::rgba(0x3a7bd566)))
+        }
+        _ => None,
+    };
+    let content = div()
+        .id(("body", pane))
+        .flex_1()
+        .min_h_0()
+        .relative()
+        .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
+            // gpui calls every drag-move listener, hovered or not.
+            if ev.bounds.contains(&ev.event.position) {
+                let zone = drag::zone_for(ev.bounds, ev.event.position);
+                root.drop_target = Some(drag::DropTarget::Pane { pane, zone });
+                cx.notify();
+            }
+        }))
+        .on_drop(cx.listener(move |root, d: &drag::TabDrag, _window, cx| match root.drop_target {
+            Some(target @ drag::DropTarget::Pane { pane: p, .. }) if p == pane => root.drop_tab(d, target, cx),
+            _ => {
+                root.drop_target = None;
+                cx.notify();
+            }
+        }))
+        .child(measure)
+        .child(body)
+        .children(overlay);
     div()
         .size_full()
         .flex()
@@ -85,11 +117,12 @@ pub fn render_pane(root: &mut Root, pane: PaneId, _rect: Rect, _window: &mut Win
             }),
         )
         .child(bar)
-        .child(div().flex_1().min_h_0().relative().child(measure).child(body))
+        .child(content)
 }
 
-fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &mut Context<Root>) -> Div {
+fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &mut Context<Root>) -> Stateful<Div> {
     let mut bar = div()
+        .id(("bar", pane))
         .h(px(TAB_BAR_H))
         .w_full()
         .flex_none()
@@ -100,7 +133,23 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
         .text_color(rgb(FG))
         .font_family("Menlo")
         .text_size(px(12.0))
-        .child(div().px(px(8.0)).text_color(rgb(DIM)).child(format!("{number}")));
+        .child(div().px(px(8.0)).text_color(rgb(DIM)).child(format!("{number}")))
+        .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
+            // Off every tab, the bar appends. The bar's listener runs before its tabs', which
+            // then claim the hover with an exact insertion point.
+            if ev.bounds.contains(&ev.event.position) {
+                root.drop_target = Some(drag::DropTarget::TabBar { pane, at: usize::MAX });
+                cx.notify();
+            }
+        }))
+        .on_drop(cx.listener(move |root, d: &drag::TabDrag, _window, cx| {
+            let target = match root.drop_target {
+                Some(t @ drag::DropTarget::TabBar { pane: p, .. }) if p == pane => t,
+                // `move_tab` clamps, so this appends.
+                _ => drag::DropTarget::TabBar { pane, at: usize::MAX },
+            };
+            root.drop_tab(d, target, cx);
+        }));
     for (idx, tab) in p.tabs.iter().enumerate() {
         let label = match tab {
             Tab::Terminal { session } => {
@@ -117,6 +166,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         };
         let is_active = idx == p.active;
+        let drag_value = p.ids.get(idx).map(|id| drag::TabDrag { pane, idx, tab: *id, label: label.clone(), position: Default::default() });
         bar = bar.child(
             div()
                 .id(tab_id("tab", pane, idx))
@@ -129,6 +179,16 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 .text_color(rgb(if is_active { FG } else { DIM }))
                 .cursor_pointer()
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
+                .when_some(drag_value, |el, value| {
+                    el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
+                })
+                .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
+                    if ev.bounds.contains(&ev.event.position) {
+                        let at = drag::insert_index(ev.bounds, ev.event.position, idx);
+                        root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
+                        cx.notify();
+                    }
+                }))
                 .child(label)
                 .child(
                     div()

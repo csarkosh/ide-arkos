@@ -338,10 +338,22 @@ impl Tree {
     }
 
     pub fn split(&mut self, pane: PaneId, side: Side, tab: Tab) -> Option<PaneId> {
+        self.split_inner(pane, side, None, tab)
+    }
+
+    /// Splits `pane` and puts an existing tab in the new pane, keeping the tab's id.
+    pub fn split_with_tab(&mut self, pane: PaneId, side: Side, id: TabId, tab: Tab) -> Option<PaneId> {
+        self.split_inner(pane, side, Some(id), tab)
+    }
+
+    fn split_inner(&mut self, pane: PaneId, side: Side, id: Option<TabId>, tab: Tab) -> Option<PaneId> {
         self.pane(pane)?;
         let new_id = self.fresh_id();
         let split_id = self.fresh_id();
-        let tab_id = self.fresh_id();
+        let tab_id = match id {
+            Some(id) => id,
+            None => self.fresh_id(),
+        };
         let new_pane = Pane { id: new_id, tabs: vec![tab], active: 0, mru: vec![0], ids: vec![tab_id] };
         if !self.root.split_leaf(pane, side, new_pane, split_id) {
             return None;
@@ -392,6 +404,12 @@ impl Tree {
     /// Removes a tab; the pane stays even when it empties (the empty state).
     pub fn close_tab(&mut self, pane: PaneId, idx: usize) -> Option<Tab> {
         self.remove_tab(pane, idx).map(|(tab, _)| tab)
+    }
+
+    /// Removes a tab for moving elsewhere, with its id so the move keeps it. Same removal as
+    /// `close_tab`; the name says the intent.
+    pub fn take_tab(&mut self, pane: PaneId, idx: usize) -> Option<(TabId, Tab)> {
+        self.remove_tab(pane, idx).map(|(tab, id)| (id, tab))
     }
 
     /// Removes a tab and returns it with its id, for moves that keep the id.
@@ -636,6 +654,22 @@ mod tests {
 
     fn bounds() -> Rect {
         Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 }
+    }
+
+    #[test]
+    fn split_with_tab_moves_an_existing_tab_into_a_new_pane() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        t.add_tab(a, term(2));
+        let moved = t.tab_id(a, 1).unwrap();
+        let (id, tab) = t.take_tab(a, 1).unwrap();
+        assert_eq!(id, moved);
+        let b = t.split_with_tab(a, Side::Bottom, id, tab).unwrap();
+        assert_eq!(t.pane(a).unwrap().tabs, vec![term(1)]);
+        assert_eq!(t.pane(b).unwrap().tabs, vec![term(2)]);
+        assert_eq!(t.panes(), vec![a, b]);
+        // The moved tab keeps its id, so busy marks and pendings keyed by it still find it.
+        assert_eq!(t.locate(moved), Some((b, 0)));
     }
 
     #[test]

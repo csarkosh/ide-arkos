@@ -1,0 +1,119 @@
+//! Dragging a tab (spec 4): a ghost chip follows the pointer; the hovered tab bar shows where
+//! it would land; the hovered pane shows five drop zones (center, left, right, top, bottom).
+
+use crate::tree::{PaneId, TabId};
+use gpui::{div, prelude::*, px, rgb, Bounds, Context, Pixels, Point, Render, Window};
+
+const CHIP_BG: u32 = 0x1a2130;
+const CHIP_FG: u32 = 0xd6dae0;
+
+/// What a tab drag carries. `tab` is the tab's stable id: the drop re-locates the tab by it, so
+/// `pane` and `idx` (where the drag started) only describe the start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabDrag {
+    pub pane: PaneId,
+    pub idx: usize,
+    pub tab: TabId,
+    pub label: String,
+    pub position: Point<Pixels>,
+}
+
+impl TabDrag {
+    pub fn at(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+/// The ghost chip gpui draws under the pointer while dragging.
+impl Render for TabDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().pl(self.position.x + px(8.0)).pt(self.position.y + px(8.0)).child(
+            div()
+                .px(px(10.0))
+                .py(px(4.0))
+                .bg(rgb(CHIP_BG))
+                .text_color(rgb(CHIP_FG))
+                .font_family("Menlo")
+                .text_size(px(12.0))
+                .opacity(0.9)
+                .child(self.label.clone()),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone {
+    Center,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropTarget {
+    TabBar { pane: PaneId, at: usize },
+    Pane { pane: PaneId, zone: Zone },
+}
+
+/// The inner half of the pane (by each axis) is the center zone; outside it, the nearest edge.
+pub fn zone_for(bounds: Bounds<Pixels>, pos: Point<Pixels>) -> Zone {
+    let x = f32::from(pos.x - bounds.origin.x) / f32::from(bounds.size.width).max(1.0);
+    let y = f32::from(pos.y - bounds.origin.y) / f32::from(bounds.size.height).max(1.0);
+    if (0.25..=0.75).contains(&x) && (0.25..=0.75).contains(&y) {
+        return Zone::Center;
+    }
+    let candidates = [(x, Zone::Left), (1.0 - x, Zone::Right), (y, Zone::Top), (1.0 - y, Zone::Bottom)];
+    candidates.iter().fold((f32::MAX, Zone::Center), |best, (d, z)| if *d < best.0 { (*d, *z) } else { best }).1
+}
+
+/// Hovering the left half of tab `idx` inserts before it, the right half after it.
+pub fn insert_index(tab_bounds: Bounds<Pixels>, pos: Point<Pixels>, idx: usize) -> usize {
+    let mid = tab_bounds.origin.x + tab_bounds.size.width / 2.0;
+    if pos.x < mid {
+        idx
+    } else {
+        idx + 1
+    }
+}
+
+/// The rectangle a zone highlights inside a pane's bounds, as (x, y, w, h) relative to the pane.
+pub fn zone_rect(zone: Zone, w: f32, h: f32) -> (f32, f32, f32, f32) {
+    match zone {
+        Zone::Center => (0.0, 0.0, w, h),
+        Zone::Left => (0.0, 0.0, w / 2.0, h),
+        Zone::Right => (w / 2.0, 0.0, w / 2.0, h),
+        Zone::Top => (0.0, 0.0, w, h / 2.0),
+        Zone::Bottom => (0.0, h / 2.0, w, h / 2.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, px, size, Bounds};
+
+    fn b(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+        Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) }
+    }
+
+    #[test]
+    fn zones_split_the_pane_into_center_and_four_edges() {
+        let pane = b(100.0, 100.0, 400.0, 200.0);
+        assert_eq!(zone_for(pane, point(px(300.0), px(200.0))), Zone::Center);
+        assert_eq!(zone_for(pane, point(px(110.0), px(200.0))), Zone::Left);
+        assert_eq!(zone_for(pane, point(px(490.0), px(200.0))), Zone::Right);
+        assert_eq!(zone_for(pane, point(px(300.0), px(105.0))), Zone::Top);
+        assert_eq!(zone_for(pane, point(px(300.0), px(295.0))), Zone::Bottom);
+        // Corners go to the nearer edge by distance.
+        assert_eq!(zone_for(pane, point(px(104.0), px(110.0))), Zone::Left);
+    }
+
+    #[test]
+    fn insert_index_depends_on_which_half_of_the_tab_is_hovered() {
+        let tab = b(200.0, 0.0, 100.0, 28.0);
+        assert_eq!(insert_index(tab, point(px(210.0), px(10.0)), 3), 3);
+        assert_eq!(insert_index(tab, point(px(290.0), px(10.0)), 3), 4);
+    }
+}

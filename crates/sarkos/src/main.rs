@@ -1,4 +1,5 @@
 mod client;
+mod drag;
 mod keys;
 mod keymap;
 mod layout;
@@ -17,7 +18,7 @@ use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, FocusHandle, KeyBinding,
+    actions, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle, KeyBinding,
     Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
@@ -67,6 +68,9 @@ pub struct Root {
     pub pane_order: Vec<PaneId>,
     /// Panes tabs were closed from, most recent last, for Cmd+Shift+T.
     pub closed: Vec<PaneId>,
+    /// Where a dragged tab would land if released now. Cleared on drop, on a release anywhere
+    /// else, and on the first move after a release outside the window.
+    pub drop_target: Option<drag::DropTarget>,
 }
 
 impl Root {
@@ -88,6 +92,7 @@ impl Root {
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
             pane_order: Vec::new(),
             closed: Vec::new(),
+            drop_target: None,
         }
     }
 
@@ -195,6 +200,52 @@ impl Root {
             }
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
+    /// still lands the right one, and one whose tab closed does nothing. The source pane closes
+    /// only when the drag emptied it, and never when it is the last pane (spec 4).
+    pub fn drop_tab(&mut self, d: &drag::TabDrag, target: drag::DropTarget, cx: &mut Context<Self>) {
+        self.drop_target = None;
+        let Some((source, idx)) = self.tree.locate(d.tab) else {
+            cx.notify();
+            return;
+        };
+        match target {
+            drag::DropTarget::TabBar { pane, at } => {
+                // Back onto its own place, `move_tab` changes nothing.
+                self.tree.move_tab(source, idx, pane, Some(at));
+            }
+            drag::DropTarget::Pane { pane, zone: drag::Zone::Center } => {
+                if pane == source {
+                    cx.notify();
+                    return;
+                }
+                self.tree.move_tab(source, idx, pane, None);
+            }
+            drag::DropTarget::Pane { pane, zone } => {
+                let side = match zone {
+                    drag::Zone::Left => Side::Left,
+                    drag::Zone::Right => Side::Right,
+                    drag::Zone::Top => Side::Top,
+                    drag::Zone::Bottom => Side::Bottom,
+                    drag::Zone::Center => unreachable!(),
+                };
+                let lone = self.tree.pane(source).map(|p| p.tabs.len()).unwrap_or(0) == 1;
+                if self.tree.pane(pane).is_none() || (pane == source && lone) {
+                    cx.notify();
+                    return;
+                }
+                if let Some((id, tab)) = self.tree.take_tab(source, idx) {
+                    self.tree.split_with_tab(pane, side, id, tab);
+                }
+            }
+        }
+        if self.tree.pane(source).map(|p| p.tabs.is_empty()).unwrap_or(false) {
+            self.tree.close_pane(source);
         }
         self.save(cx);
         cx.notify();
@@ -477,7 +528,18 @@ impl Render for Root {
             .bg(rgb(BG))
             .flex()
             .flex_col()
+            .on_drag_move(cx.listener(|root, _ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
+                // Capture listeners run parent first, so this forgets the last target before
+                // the bar, tab or pane under the pointer claims it; over none of them, none.
+                root.drop_target = None;
+                cx.notify();
+            }))
             .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+                if root.drop_target.is_some() && ev.pressed_button != Some(MouseButton::Left) {
+                    // A tab drag released outside the window, where no mouse-up reaches us.
+                    root.drop_target = None;
+                    cx.notify();
+                }
                 if root.resizing.is_some() && ev.pressed_button != Some(MouseButton::Left) {
                     // Released outside the window, where no mouse-up reaches us: end the drag.
                     root.resizing = None;
@@ -498,6 +560,10 @@ impl Render for Root {
                 cx.listener(|root, _ev: &MouseUpEvent, _window, cx| {
                     if root.resizing.take().is_some() {
                         root.save(cx);
+                    }
+                    // A drop stops the event before it gets here; this is a release elsewhere.
+                    if root.drop_target.take().is_some() {
+                        cx.notify();
                     }
                 }),
             )
