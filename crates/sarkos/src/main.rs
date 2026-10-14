@@ -34,6 +34,7 @@ mod theme;
 mod tree;
 mod update;
 mod viewer;
+mod viewer_element;
 mod workspace;
 
 use futures::channel::oneshot;
@@ -49,6 +50,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
+use viewer::Viewer;
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, SidebarSaved, Workspace, FORMAT_VERSION};
 use keymap::Quit;
@@ -203,6 +205,8 @@ pub struct Root {
     /// Syntax colours for viewer tabs in the theme's `viewer` colours. `None` until the grammars
     /// finish loading on the background executor after launch; a theme change rethemes it.
     pub highlighter: Option<Arc<highlight::Highlighter>>,
+    /// Each viewer tab's file, loaded when the tab is first shown; dropped with the tab.
+    pub viewers: HashMap<TabId, Entity<Viewer>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// The config file's problem shown under the connection banner; `None` when all is well.
@@ -310,6 +314,7 @@ impl Root {
             config,
             theme: Arc::new(theme),
             highlighter: None,
+            viewers: HashMap::new(),
             system_is_dark,
             config_error: None,
             theme_error: None,
@@ -339,8 +344,10 @@ impl Root {
         let (colors, text) = (self.theme.viewer.clone(), self.theme.chrome.text);
         cx.spawn(async move |this, cx| {
             let built = cx.background_executor().spawn(async move { highlight::Highlighter::new(&colors, text) }).await;
-            let _ = this.update(cx, |root, _| {
+            let _ = this.update(cx, |root, cx| {
                 root.highlighter = Some(Arc::new(built.with_theme(&root.theme.viewer, root.theme.chrome.text)));
+                // Viewers opened before the grammars were ready are plain until now.
+                root.reload_all_viewers(cx);
             });
         })
         .detach();
@@ -348,11 +355,12 @@ impl Root {
 
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
         let palette = Arc::new(theme.palette());
-        // A viewer open now re-highlights on its next reload (Task 5 re-highlights at once).
         if let Some(h) = &self.highlighter {
             self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
         }
         self.theme = Arc::new(theme);
+        // Every open viewer re-highlights in the new colours.
+        self.reload_all_viewers(cx);
         for t in self.sessions.terminals.values() {
             t.update(cx, |t, cx| {
                 t.core.set_palette(palette.clone());
@@ -437,7 +445,7 @@ impl Root {
         self.config.font.family.clone().into()
     }
 
-    /// Switches every terminal to a preset (spec 7). Per-terminal nudges from Cmd+= are reset.
+    /// Switches every terminal and viewer to a preset (spec 7). Per-tab nudges from Cmd+= are reset.
     pub fn apply_text_preset(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
         let Some(p) = self.config.font.presets.get(name).copied() else { return false };
         self.text_preset = name.to_string();
@@ -447,6 +455,13 @@ impl Root {
             t.update(cx, |t, cx| {
                 t.font_size = p.size;
                 t.line_height = p.line_height;
+                cx.notify();
+            });
+        }
+        for v in self.viewers.values() {
+            v.update(cx, |v, cx| {
+                v.font_size = p.size;
+                v.line_height = p.line_height;
                 cx.notify();
             });
         }
@@ -485,7 +500,7 @@ impl Root {
     }
 
     /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
-    /// Enter). Task 5 gives the tab its content; here the tab exists and is active.
+    /// Enter). The tab's viewer is made and loaded when the pane first shows it.
     pub fn open_viewer(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
         let pane = self.tree.focused;
@@ -498,6 +513,10 @@ impl Root {
                 idx
             }
             OpenPlan::Replace(idx) => {
+                // Same tab id, another file: the old viewer goes, the render makes the new one.
+                if let Some(id) = self.tree.tab_id(pane, idx) {
+                    self.viewers.remove(&id);
+                }
                 self.tree.replace_tab(pane, idx, Tab::Viewer { path: path.to_path_buf() });
                 idx
             }
@@ -583,18 +602,82 @@ impl Root {
     }
 
     /// What the poll fingerprints: the expanded directories (and the root), and the open
-    /// viewers' files (Task 5 adds them).
-    pub fn watched_paths(&self) -> Vec<PathBuf> {
+    /// viewers' files.
+    pub fn watched_paths(&self, cx: &App) -> Vec<PathBuf> {
         let mut v = vec![self.project.clone()];
         v.extend(self.explorer.expanded_dirs());
+        v.extend(self.viewers.values().map(|viewer| viewer.read(cx).path.clone()));
         v
     }
 
+    /// A changed directory is read again, a changed viewer file reloaded.
     pub fn paths_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         for p in paths {
-            self.explorer.invalidate(p);
+            if !self.reload_viewers_for(p, cx) {
+                self.explorer.invalidate(p);
+            }
         }
         self.load_pending_dirs(cx);
+    }
+
+    /// The viewer of a viewer tab, made (and its load started) the first time the tab is shown.
+    pub fn viewer_for(&mut self, tab: TabId, path: &Path, cx: &mut Context<Self>) -> Entity<Viewer> {
+        if let Some(v) = self.viewers.get(&tab) {
+            return v.clone();
+        }
+        let (font_size, line_height) = (self.font_size, self.line_height);
+        let v = cx.new(|cx| Viewer::new(path.to_path_buf(), font_size, line_height, cx));
+        self.viewers.insert(tab, v.clone());
+        self.load_viewer(tab, cx);
+        v
+    }
+
+    /// Reads, classifies and highlights a viewer's file on the background executor and applies
+    /// the result. A deleted or unreadable file shows why.
+    pub fn load_viewer(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        self.load(tab, false, cx);
+    }
+
+    /// Reloads every viewer showing `path` whose file changed since it was loaded; returns
+    /// whether any viewer shows it.
+    pub fn reload_viewers_for(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| v.read(cx).path == path).map(|(t, _)| *t).collect();
+        for &tab in &tabs {
+            self.load(tab, true, cx);
+        }
+        !tabs.is_empty()
+    }
+
+    fn reload_all_viewers(&mut self, cx: &mut Context<Self>) {
+        let tabs: Vec<TabId> = self.viewers.keys().copied().collect();
+        for tab in tabs {
+            self.load_viewer(tab, cx);
+        }
+    }
+
+    /// One background load. With `if_changed`, a file whose fingerprint matches the loaded one
+    /// is left alone (the poll's first look at a viewer's file can report a change it already shows).
+    fn load(&mut self, tab: TabId, if_changed: bool, cx: &mut Context<Self>) {
+        let Some(viewer) = self.viewers.get(&tab).cloned() else { return };
+        let (path, known, seq) = viewer.update(cx, |v, _| {
+            v.loads += 1;
+            let known = if if_changed && v.loaded { v.fingerprint } else { None };
+            (v.path.clone(), known, v.loads)
+        });
+        let highlighter = self.highlighter.clone();
+        let limit = self.config.viewer.highlight_limit_bytes;
+        let weak = viewer.downgrade();
+        cx.spawn(async move |_, cx| {
+            let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit) }).await;
+            let Some(loaded) = loaded else { return };
+            let _ = weak.update(cx, |v, cx| {
+                if seq > v.applied {
+                    v.applied = seq;
+                    v.apply(loaded, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn save(&mut self, cx: &mut App) {
@@ -670,6 +753,15 @@ impl Root {
         grid_choice(self.grids.get(&pane).copied(), terminal)
     }
 
+    /// The focused pane's active viewer, once its tab has been shown.
+    pub fn active_viewer(&self) -> Option<Entity<Viewer>> {
+        let p = self.tree.pane(self.tree.focused)?;
+        match p.tabs.get(p.active)? {
+            Tab::Viewer { .. } => self.viewers.get(p.ids.get(p.active)?).cloned(),
+            Tab::Terminal { .. } => None,
+        }
+    }
+
     pub fn active_terminal(&self, _cx: &App) -> Option<Entity<Terminal>> {
         let p = self.tree.pane(self.tree.focused)?;
         match p.tabs.get(p.active)? {
@@ -743,6 +835,7 @@ impl Root {
         if self.preview_tab == Some(id) {
             self.preview_tab = None;
         }
+        self.viewers.remove(&id);
         if let Tab::Terminal { session } = tab {
             if session != SessionId(0) {
                 let ended = self.sessions.terminals.get(&session).map(|t| !t.read(cx).alive).unwrap_or(false);
@@ -1123,6 +1216,12 @@ impl Root {
                         cx.notify();
                     });
                     cx.notify();
+                } else if let Some(v) = self.active_viewer() {
+                    v.update(cx, |v, cx| {
+                        v.font_size = (v.font_size + d).clamp(8.0, 48.0);
+                        cx.notify();
+                    });
+                    cx.notify();
                 }
             }
             OpenConfig => self.open_config(cx),
@@ -1140,7 +1239,9 @@ impl Root {
             }
             CommandPalette => self.toggle_palette(cx),
             Find => {
-                if let Some(t) = self.active_terminal(cx) {
+                if let Some(v) = self.active_viewer() {
+                    v.update(cx, |v, cx| v.open_find(cx));
+                } else if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| t.open_find(cx));
                 }
             }
@@ -1592,20 +1693,24 @@ impl Render for Root {
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
         let side_col = sidebar::render(self, cx);
-        // Focus follows the tree: the focused pane's terminal (its find bar while that is open),
-        // or the pane's own handle. The palette holds it while it is open, the file tree after
-        // Shift+Cmd+E.
+        // Focus follows the tree: the focused pane's terminal or viewer (its find bar while that
+        // is open), or the pane's own handle. The palette holds it while it is open, the file
+        // tree after Shift+Cmd+E.
         let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
             Some(f)
         } else if self.sidebar_focused {
             Some(self.sidebar.focus.clone())
         } else {
-            match self.active_terminal(cx) {
-                Some(t) => {
+            match (self.active_terminal(cx), self.active_viewer()) {
+                (Some(t), _) => {
                     let t = t.read(cx);
                     Some(t.find.as_ref().map_or_else(|| t.focus.clone(), |f| f.focus.clone()))
                 }
-                None => self.pane_focus.get(&self.tree.focused).cloned(),
+                (None, Some(v)) => {
+                    let v = v.read(cx);
+                    Some(v.find.as_ref().map_or_else(|| v.focus.clone(), |f| f.focus.clone()))
+                }
+                (None, None) => self.pane_focus.get(&self.tree.focused).cloned(),
             }
         };
         if let Some(f) = wanted {

@@ -2,17 +2,20 @@
 //! too big to highlight, binary), split into lines and highlighted; a find over the lines; a
 //! scroll position in lines; reloaded when the poll sees the file change.
 
-use crate::line_edit::LineEdit;
+use crate::config_watch::fingerprint;
+use crate::highlight::Highlighter;
+use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::scroll::ScrollAnimator;
-use gpui::{Context, FocusHandle};
-use std::path::PathBuf;
+use crate::theme::Theme;
+use crate::tree::PaneId;
+use crate::Root;
+use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 /// Bytes a binary check looks at: a NUL in the first 8 KiB means not text.
 pub const SNIFF: usize = 8 * 1024;
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 pub const MAX_HITS: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,16 +28,13 @@ pub struct Span {
     pub italic: bool,
 }
 
-#[allow(dead_code)] // Task 5 opens viewer tabs with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Content {
     Text { lines: Vec<String>, spans: Vec<Vec<Span>> },
-    TooBig(u64),
     Binary,
     Unreadable(String),
 }
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Classified {
     Text(String),
@@ -42,7 +42,6 @@ pub enum Classified {
     Binary,
 }
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hit {
     pub line: usize,
@@ -50,7 +49,6 @@ pub struct Hit {
     pub end: usize,
 }
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 pub fn classify(bytes: &[u8], limit: usize) -> Classified {
     if bytes[..bytes.len().min(SNIFF)].contains(&0) {
         return Classified::Binary;
@@ -61,16 +59,15 @@ pub fn classify(bytes: &[u8], limit: usize) -> Classified {
     Classified::Text(String::from_utf8_lossy(bytes).into_owned())
 }
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
-/// Lines without their terminators; a trailing newline adds no empty last line.
+/// Lines without their terminators; a trailing newline adds no empty last line. A tab becomes
+/// four spaces (a shaped line draws it as one glyph) and a lone carriage return goes.
 pub fn split_lines(text: &str) -> Vec<String> {
     if text.is_empty() {
         return Vec::new();
     }
-    text.lines().map(str::to_string).collect()
+    text.lines().map(|l| if l.contains(['\t', '\r']) { l.replace('\r', "").replace('\t', "    ") } else { l.to_string() }).collect()
 }
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 /// Every case-insensitive occurrence, in reading order, as byte ranges, at most `MAX_HITS`.
 pub fn find_hits(lines: &[String], needle: &str) -> Vec<Hit> {
     let mut out = Vec::new();
@@ -100,13 +97,11 @@ pub fn find_hits(lines: &[String], needle: &str) -> Vec<Hit> {
     out
 }
 
-#[cfg_attr(not(test), expect(dead_code))] // Task 5's viewer tab uses it; until then only the tests do.
 /// The next hit index, wrapping.
 pub fn step(current: usize, len: usize, delta: isize) -> usize {
     crate::keymap::tab_cycle(current, len, delta)
 }
 
-#[allow(dead_code)] // Task 5 opens viewer tabs with it.
 pub struct ViewerFind {
     pub query: LineEdit,
     pub hits: Vec<Hit>,
@@ -114,14 +109,14 @@ pub struct ViewerFind {
     pub focus: FocusHandle,
 }
 
-#[allow(dead_code)] // Task 5 opens viewer tabs with it.
 /// What the background load produced, applied on the UI thread.
 pub struct Loaded {
     pub content: Content,
     pub fingerprint: Option<(u128, u64)>,
+    /// Over the highlight limit: shown without colours, under a banner.
+    pub plain: bool,
 }
 
-#[allow(dead_code)] // Task 5 opens viewer tabs with it.
 pub struct Viewer {
     pub path: PathBuf,
     pub content: Content,
@@ -136,9 +131,14 @@ pub struct Viewer {
     /// Rows the element showed at its last paint, for page keys and the scroll limit.
     pub rows_visible: usize,
     pub fingerprint: Option<(u128, u64)>,
+    /// The file is over the highlight limit and shown plain.
+    pub plain: bool,
+    /// Numbers every load started; `applied` is the newest that landed, so a slower, older
+    /// load never lands over a newer one.
+    pub loads: u64,
+    pub applied: u64,
 }
 
-#[allow(dead_code)] // Task 5 opens viewer tabs with it.
 impl Viewer {
     pub fn new(path: PathBuf, font_size: f32, line_height: f32, cx: &mut Context<Self>) -> Self {
         Viewer {
@@ -153,6 +153,9 @@ impl Viewer {
             last_frame: None,
             rows_visible: 1,
             fingerprint: None,
+            plain: false,
+            loads: 0,
+            applied: 0,
         }
     }
 
@@ -171,6 +174,7 @@ impl Viewer {
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         self.content = loaded.content;
         self.fingerprint = loaded.fingerprint;
+        self.plain = loaded.plain;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -220,6 +224,27 @@ impl Viewer {
         cx.notify();
     }
 
+    /// Keys typed into the find bar: Escape closes, Enter and Shift+Enter (and Down and Up)
+    /// step, the rest edits the query and searches again.
+    pub fn find_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        match f.query.handle(ks) {
+            Edit::Changed => self.refind(cx),
+            Edit::Submit | Edit::Down => self.find_step(1, cx),
+            Edit::SubmitBack | Edit::Up => self.find_step(-1, cx),
+            Edit::Cancel => self.close_find(cx),
+            // A cursor move changes only the bar.
+            Edit::Unchanged => cx.notify(),
+        }
+    }
+
+    pub fn find_paste(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(f) = &mut self.find {
+            f.query.insert_str(text);
+        }
+        self.refind(cx);
+    }
+
     /// Scrolls so the current hit's line is in view, a third of the way down.
     fn show_current_hit(&mut self) {
         let Some(f) = &self.find else { return };
@@ -227,6 +252,106 @@ impl Viewer {
         let target = (h.line as f32 - (self.rows_visible as f32 / 3.0).floor()).max(0.0);
         self.scroll.target = target.min(self.max_scroll());
     }
+}
+
+/// A viewer's file, read and highlighted: call it on the background executor. `None` when the
+/// fingerprint is still `known` (nothing to reload). Over `limit` the text is shown plain;
+/// binaries and unreadable files say so.
+pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize) -> Option<Loaded> {
+    let fingerprint = fingerprint(path);
+    if known.is_some() && fingerprint == known {
+        return None;
+    }
+    let plain = |text: &str| {
+        let lines = split_lines(text);
+        let spans = vec![Vec::new(); lines.len()];
+        Content::Text { lines, spans }
+    };
+    let (content, is_plain) = match std::fs::read(path) {
+        Err(e) => (Content::Unreadable(e.to_string()), false),
+        Ok(bytes) => match classify(&bytes, limit) {
+            Classified::Binary => (Content::Binary, false),
+            Classified::TooBig => (plain(&String::from_utf8_lossy(&bytes)), true),
+            Classified::Text(text) => match highlighter {
+                Some(h) => {
+                    let lines = split_lines(&text);
+                    let spans = h.highlight(path, &lines);
+                    (Content::Text { lines, spans }, false)
+                }
+                // The grammars are still loading: plain for now, coloured when they land.
+                None => (plain(&text), false),
+            },
+        },
+    };
+    Some(Loaded { content, fingerprint, plain: is_plain })
+}
+
+pub fn count_text(current: usize, len: usize) -> String {
+    match len {
+        0 => "no matches".to_string(),
+        // The search stops at MAX_HITS; there may be more.
+        _ => format!("{} of {len}{}", current + 1, if len >= MAX_HITS { "+" } else { "" }),
+    }
+}
+
+/// The viewer's find bar, `find::render`'s chrome: the query, the count, a close button. Keys
+/// go to `find_key`, Cmd+V pastes; a click focuses `pane`.
+pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
+    let (query, count, focus) = {
+        let f = viewer.read(cx).find.as_ref()?;
+        (f.query.clone(), count_text(f.current, f.hits.len()), f.focus.clone())
+    };
+    let (v_keys, v_close) = (viewer.clone(), viewer.clone());
+    Some(
+        div()
+            .absolute()
+            .top(px(6.0))
+            .right(px(14.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(10.0))
+            .py(px(5.0))
+            .rounded(px(6.0))
+            .bg(theme.chrome.banner.hsla())
+            .border_1()
+            .border_color(theme.chrome.border.hsla())
+            .text_color(theme.chrome.text.hsla())
+            .font_family(family.clone())
+            .text_size(px(12.0))
+            .track_focus(&focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                    root.focus_pane(pane, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
+                // The viewer's own key handler would scroll on the same key.
+                cx.stop_propagation();
+                let ks = &ev.keystroke;
+                if ks.modifiers.platform && ks.key == "v" {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        v_keys.update(cx, |v, cx| v.find_paste(&text, cx));
+                    }
+                    return;
+                }
+                v_keys.update(cx, |v, cx| v.find_key(ks, cx));
+            }))
+            .child(div().w(px(220.0)).child(line_edit::render(&query, "find", theme, family, 12.0)))
+            .child(div().text_color(theme.chrome.text_dim.hsla()).child(count))
+            .child(
+                div()
+                    .id(("viewer-find-close", viewer.entity_id()))
+                    .text_color(theme.chrome.text_dim.hsla())
+                    .hover(|s| s.text_color(theme.chrome.text.hsla()))
+                    .cursor_pointer()
+                    .child("×")
+                    .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_close.update(cx, |v, cx| v.close_find(cx)))),
+            ),
+    )
 }
 
 #[cfg(test)]
@@ -255,6 +380,14 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_becomes_four_spaces_and_a_lone_carriage_return_goes() {
+        assert_eq!(split_lines("a\tb"), ["a    b"]);
+        assert_eq!(split_lines("\tx\n"), ["    x"]);
+        assert_eq!(split_lines("a\rb\r"), ["ab"], "a lone CR is not drawn");
+        assert_eq!(split_lines("a\r\nb\r\n"), ["a", "b"]);
+    }
+
+    #[test]
     fn find_is_case_insensitive_in_order_and_capped() {
         let lines: Vec<String> = ["Hello hello", "nothing", "HELLO"].iter().map(|s| s.to_string()).collect();
         let hits = find_hits(&lines, "hello");
@@ -266,6 +399,55 @@ mod tests {
         let h = find_hits(&unicode, "caf\u{e9}");
         assert_eq!(h.len(), 2);
         assert_eq!(&unicode[0][h[1].start..h[1].end], "CAF\u{c9}", "byte ranges land on char boundaries");
+    }
+
+    #[test]
+    fn a_changed_fingerprint_reloads_and_keeps_the_scroll_clamped() {
+        // The pure part of a reload: a shorter file pulls the scroll back; the find re-runs.
+        let mut content = Content::Text { lines: (0..100).map(|i| format!("line {i}")).collect(), spans: vec![Vec::new(); 100] };
+        let mut scroll = ScrollAnimator::new();
+        scroll.jump_to(80.0);
+        let shorter = Content::Text { lines: (0..20).map(|i| format!("line {i}")).collect(), spans: vec![Vec::new(); 20] };
+        let before = std::mem::replace(&mut content, shorter);
+        assert!(matches!(before, Content::Text { ref lines, .. } if lines.len() == 100));
+        let max = match &content {
+            Content::Text { lines, .. } => lines.len().saturating_sub(1) as f32,
+            _ => 0.0,
+        };
+        scroll.clamp_max(max);
+        assert_eq!(scroll.current, 19.0);
+        let hits = match &content {
+            Content::Text { lines, .. } => find_hits(lines, "line 1"),
+            _ => Vec::new(),
+        };
+        assert_eq!(hits.len(), 11, "line 1 and line 10 to 19");
+    }
+
+    #[test]
+    fn a_file_is_read_as_text_plain_over_the_limit_binary_or_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = dir.path().join("a.txt");
+        std::fs::write(&text, "one\n\ttwo\n").unwrap();
+        let l = read_file(&text, None, None, 100).expect("loaded");
+        assert_eq!(l.content, Content::Text { lines: vec!["one".into(), "    two".into()], spans: vec![Vec::new(), Vec::new()] });
+        assert!(!l.plain && l.fingerprint.is_some());
+        assert!(read_file(&text, l.fingerprint, None, 100).is_none(), "an unchanged file is not read again");
+        let big = read_file(&text, None, None, 4).expect("loaded");
+        assert!(big.plain, "over the limit: the text, plain, under a banner");
+        assert!(matches!(big.content, Content::Text { ref lines, .. } if lines.len() == 2));
+        let bin = dir.path().join("b.bin");
+        std::fs::write(&bin, b"\x89PNG\0\0").unwrap();
+        assert_eq!(read_file(&bin, None, None, 100).unwrap().content, Content::Binary);
+        let gone = read_file(&dir.path().join("gone"), l.fingerprint, None, 100).expect("a deleted file is a change");
+        assert!(matches!(gone.content, Content::Unreadable(_)));
+        assert_eq!(gone.fingerprint, None);
+    }
+
+    #[test]
+    fn the_count_says_where_the_current_hit_is_and_when_the_search_was_capped() {
+        assert_eq!(count_text(0, 0), "no matches");
+        assert_eq!(count_text(2, 5), "3 of 5");
+        assert_eq!(count_text(0, MAX_HITS), "1 of 10000+");
     }
 
     #[test]

@@ -14,10 +14,17 @@ Session awareness and recovery after a restart: each tab shows what its Claude C
 doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the
 shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
-each Claude Code conversation resumed. Milestone 4 (the sidebar) is next.
+each Claude Code conversation resumed. Milestone 4b (worktrees, git status in the tree, diff gutters) is next.
 
 Things only a person at the screen can check, in order of value:
 
+- Cmd+B, expand `src`, click a file: a dimmed preview tab with colours and line numbers; click
+  another file: the same tab shows it; double click: a second tab; edit the file in another app:
+  the viewer follows within a second
+- expand `node_modules` or `target` in a big project: the window stays responsive
+- a PNG and a 50 MB log from the tree: a notice, and plain text, with the window responsive
+- Shift+Cmd+E, Down, Right, Down, Enter: a file opens from the keyboard
+- right click a file, Copy relative path, paste into a terminal
 - "Install Claude Code hooks", then `claude` in a tab: the glyph breathes while it works, a dot
   appears when it stops, the title bar's right side says "1 waiting", clicking the tab clears
   both; with Reduce Motion on, the glyph holds still
@@ -109,6 +116,24 @@ edited value rewrites it. The window never unloads the login item, since after a
 running daemon is the login item's own process: a rewritten file is loaded at the next login, and
 turning it off deletes the file but does not stop a daemon already running.
 
+## Sidebar and viewer
+
+Cmd+B shows the sidebar: a file tree rooted at the folder, read one directory at a time as you
+expand it, with `.git` hidden and anything `.gitignore` ignores left out (the palette's "Show
+ignored files" lists them dimmed). It follows the file system within a second. A single click
+opens a file in a preview tab in the focused pane, which the next single click replaces; a
+double click, Enter in the tree, or dragging the tab pins it. Right click: Reveal in Finder,
+Copy path, Copy relative path, Open in default app. Drag a file onto a terminal to paste its
+path. Shift+Cmd+E puts the keyboard in the tree: arrows move and expand, Enter opens, Space
+previews, Escape goes back to the pane.
+
+The viewer is read-only: syntax colours from your theme's `[viewer]` section through syntect's
+TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a second
+of the file changing on disk. Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
+plain; binaries show a notice. The text preset applies to viewers as to terminals, and Cmd+= and
+Cmd+- resize the focused one. Git status colours, the worktree explorer and the diff gutters
+come in milestone 4b.
+
 ## Keyboard
 
 The VS Code map, in a terminal-friendly form.
@@ -147,7 +172,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+K | clear to start: history and screen go, the prompt line moves to the top, as in Terminal.app |
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
-| Cmd+F | find in the terminal |
+| Cmd+F | find in the terminal or viewer |
 | Cmd+B | toggle the sidebar |
 | Shift+Cmd+E | focus the file tree |
 | Cmd+, | open config file |
@@ -182,8 +207,8 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
-the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), and `sidebar` and `browser` for
-later milestones.
+the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `sidebar` (its width and whether it starts
+collapsed), `viewer` (`highlight_limit_bytes`), and `browser` for a later milestone.
 
 Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen

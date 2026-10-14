@@ -1,5 +1,5 @@
-//! One pane: its tab bar and the active tab's content (a terminal, a busy notice while a shell
-//! starts or a replay is parsed, or the empty state).
+//! One pane: its tab bar and the active tab's content (a terminal, a file viewer, a busy notice
+//! while a shell starts or a replay is parsed, or the empty state).
 
 use crate::drag;
 use crate::find;
@@ -9,6 +9,8 @@ use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
 use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
+use crate::viewer::{self, Content};
+use crate::viewer_element::ViewerElement;
 use crate::Root;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
@@ -126,7 +128,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => render_terminal(terminal, pane, root.family(), &theme, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
-        Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
+        Some(Tab::Viewer { path }) => match p.ids.get(p.active).copied() {
+            Some(tab) => render_viewer(root, pane, tab, path, cx),
+            None => div(),
+        },
     };
     // Every pane measures the grid a terminal would get, whatever it shows, so a restore into
     // any of its tabs always gets a size (it paints nothing).
@@ -486,6 +491,94 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
         .children(find::render(&terminal, pane, theme, family, cx))
+}
+
+/// What a viewer tab shows under its find bar.
+enum Kind {
+    Loading,
+    Text { plain: bool },
+    Binary,
+    Unreadable(String),
+}
+
+/// A viewer tab: the file's lines through `ViewerElement`, or a notice when there are none to show.
+/// Arrows, Page Up and Down, Space, Home and End scroll; the wheel scrolls smoothly.
+fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
+    let viewer = root.viewer_for(tab, path, cx);
+    let theme = root.theme.clone();
+    let family = root.family();
+    let (focus, kind, font_size) = {
+        let v = viewer.read(cx);
+        let kind = match &v.content {
+            _ if !v.loaded => Kind::Loading,
+            Content::Text { .. } => Kind::Text { plain: v.plain },
+            Content::Binary => Kind::Binary,
+            Content::Unreadable(e) => Kind::Unreadable(e.clone()),
+        };
+        (v.focus.clone(), kind, v.font_size)
+    };
+    let dim = theme.chrome.text_dim.hsla();
+    let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
+    let body = match kind {
+        Kind::Text { plain } => {
+            let element = ViewerElement::new(viewer.clone(), family.clone(), theme.chrome.window_bg, theme.chrome.text_dim, theme.chrome.text, theme.semantic.find_match, theme.semantic.find_current);
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .children(plain.then(|| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0)).child("over the highlight limit, shown plain")))
+                .child(div().flex_1().min_h_0().child(element))
+        }
+        Kind::Loading => notice("loading".into()),
+        Kind::Binary => notice("a binary file; nothing to show".into()),
+        Kind::Unreadable(e) => notice(format!("cannot read this file: {e}")),
+    };
+    let (v_keys, v_wheel) = (viewer.clone(), viewer.clone());
+    div()
+        .size_full()
+        .relative()
+        .key_context("Viewer")
+        .track_focus(&focus)
+        .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
+            let ks = &ev.keystroke;
+            if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
+                return;
+            }
+            v_keys.update(cx, |v, cx| {
+                let page = v.rows_visible as f32;
+                match ks.key.as_str() {
+                    "down" => v.scroll_lines(1.0, cx),
+                    "up" => v.scroll_lines(-1.0, cx),
+                    "pagedown" | "space" => v.scroll_lines(page, cx),
+                    "pageup" => v.scroll_lines(-page, cx),
+                    "home" => {
+                        v.scroll.jump_to(0.0);
+                        cx.notify();
+                    }
+                    "end" => {
+                        let m = v.max_scroll();
+                        v.scroll.jump_to(m);
+                        cx.notify();
+                    }
+                    "escape" => v.close_find(cx),
+                    _ => {}
+                }
+            });
+        }))
+        .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
+            v_wheel.update(cx, |v, cx| {
+                let line_h = v.font_size * v.line_height;
+                // The wheel's y is positive when the content should move down: scroll up.
+                let lines = match ev.delta {
+                    ScrollDelta::Lines(p) => -p.y,
+                    ScrollDelta::Pixels(p) => -f32::from(p.y) / line_h,
+                };
+                v.scroll_lines(lines, cx);
+            });
+        }))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
+        .child(body)
+        .children(viewer::find_bar(&viewer, pane, &theme, family, cx))
 }
 
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by

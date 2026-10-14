@@ -20,7 +20,7 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
         let mut last: HashMap<PathBuf, Option<(u128, u64)>> = HashMap::new();
         loop {
             cx.background_executor().timer(POLL).await;
-            let Ok(paths) = root.update(cx, |root, _| root.watched_paths()) else { return };
+            let Ok(paths) = root.update(cx, |root, cx| root.watched_paths(cx)) else { return };
             let now = cx
                 .background_executor()
                 .spawn(async move { paths.into_iter().map(|p| (p.clone(), fingerprint(&p))).collect::<HashMap<_, _>>() })
