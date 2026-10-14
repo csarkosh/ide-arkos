@@ -54,6 +54,20 @@ const BATCH_BUDGET: usize = 1 << 20;
 const ERROR_PREFIX: &str = "sarkosd error: ";
 /// The status until the daemon answers the session list.
 const CONNECTING: &str = "connecting to sarkosd";
+/// How long a one-off notice stays up when no command replaces or clears it first.
+const NOTICE_FOR: Duration = Duration::from_secs(6);
+
+/// The status bar's word on the daemon, from the connection banner alone: empty once the daemon
+/// answered, `CONNECTING` until then, an `ERROR_PREFIX` error or a disconnect reason otherwise.
+fn daemon_label(status: &str) -> &'static str {
+    if status.is_empty() {
+        "sarkosd connected"
+    } else if status == CONNECTING {
+        "sarkosd connecting"
+    } else {
+        "sarkosd: see banner"
+    }
+}
 
 pub struct Root {
     pub tree: Tree,
@@ -99,6 +113,11 @@ pub struct Root {
     /// The theme that did not load, shown under `config_error`. Set and cleared by whatever last
     /// tried to switch theme, so a config reload and a theme problem never clobber each other.
     pub theme_error: Option<String>,
+    /// A one-off result (themes extracted, the editor failed to open), shown under `theme_error`
+    /// until the next command or for `NOTICE_FOR`. Never in `status`, which is the connection's.
+    pub notice: Option<String>,
+    /// Bumped by every notice, so an older notice's timer leaves a newer notice up.
+    pub notice_seq: u64,
     /// The command palette while it is open (Cmd+Shift+P).
     pub palette: Option<command_palette::Palette>,
     /// Each pane's tab strip scroll state, so the active tab can be kept in view.
@@ -151,6 +170,8 @@ impl Root {
             system_is_dark,
             config_error: None,
             theme_error: None,
+            notice: None,
+            notice_seq: 0,
             palette: None,
             bar_scroll: HashMap::new(),
             tab_menu: None,
@@ -493,10 +514,28 @@ impl Root {
     pub fn open_config(&mut self, cx: &mut Context<Self>) {
         let path = paths::config_file();
         if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
-            self.status = format!("cannot open {}: {e}", path.display());
-            eprintln!("sarkos: {}", self.status);
-            cx.notify();
+            let text = format!("cannot open {}: {e}", path.display());
+            eprintln!("sarkos: {text}");
+            self.show_notice(text, cx);
         }
+    }
+
+    /// Shows a one-off notice as its own banner and takes it down after `NOTICE_FOR`, unless a
+    /// newer notice or a command has replaced or cleared it by then.
+    pub fn show_notice(&mut self, text: String, cx: &mut Context<Self>) {
+        self.notice_seq += 1;
+        let seq = self.notice_seq;
+        self.notice = Some(text);
+        cx.notify();
+        cx.spawn(async move |root, cx| {
+            cx.background_executor().timer(NOTICE_FOR).await;
+            let _ = root.update(cx, |root, cx| {
+                if root.notice_seq == seq && root.notice.take().is_some() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Cmd+Shift+P: opens the palette with every action, preset and theme, or closes it.
@@ -628,6 +667,10 @@ impl Root {
     pub fn run(&mut self, cmd: keymap::Command, window: &mut Window, cx: &mut Context<Self>) {
         use keymap::Command::*;
         let focused = self.tree.focused;
+        // The user has moved on: the last notice goes (a command may put up a new one).
+        if self.notice.take().is_some() {
+            cx.notify();
+        }
         match cmd {
             FocusPane(i) => {
                 if let Some(p) = self.tree.pane_at(i) {
@@ -745,12 +788,12 @@ impl Root {
             }
             ReloadConfig => self.reload_config(cx),
             ExtractThemes => {
-                match theme::extract(&paths::themes_dir()) {
-                    Ok(wrote) if wrote.is_empty() => self.status = format!("built-in themes are already in {}", paths::themes_dir().display()),
-                    Ok(wrote) => self.status = format!("wrote {} theme files to {}", wrote.len(), paths::themes_dir().display()),
-                    Err(e) => self.status = format!("cannot extract themes: {e}"),
-                }
-                cx.notify();
+                let text = match theme::extract(&paths::themes_dir()) {
+                    Ok(wrote) if wrote.is_empty() => format!("built-in themes are already in {}", paths::themes_dir().display()),
+                    Ok(wrote) => format!("wrote {} theme files to {}", wrote.len(), paths::themes_dir().display()),
+                    Err(e) => format!("cannot extract themes: {e}"),
+                };
+                self.show_notice(text, cx);
             }
             CommandPalette => self.toggle_palette(cx),
             Find => {
@@ -910,7 +953,12 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         let theme = self.theme.clone();
-        let banners: Vec<String> = [self.status.clone(), self.config_error.clone().unwrap_or_default(), self.theme_error.clone().unwrap_or_default()]
+        let banners: Vec<String> = [
+            self.status.clone(),
+            self.config_error.clone().unwrap_or_default(),
+            self.theme_error.clone().unwrap_or_default(),
+            self.notice.clone().unwrap_or_default(),
+        ]
             .into_iter()
             .filter(|b| !b.is_empty())
             .collect();
@@ -950,7 +998,7 @@ impl Render for Root {
         }
         let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
-        let daemon = if self.status.is_empty() { "sarkosd connected" } else { "sarkosd: see banner" };
+        let daemon = daemon_label(&self.status);
         let family = self.family();
         let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
@@ -1282,7 +1330,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_grid, shell_name};
+    use super::{daemon_label, pick_grid, shell_name, CONNECTING, ERROR_PREFIX};
+
+    #[test]
+    fn the_daemon_label_follows_the_connection_not_notices() {
+        assert_eq!(daemon_label(""), "sarkosd connected");
+        assert_eq!(daemon_label(CONNECTING), "sarkosd connecting");
+        assert_eq!(daemon_label(&format!("{ERROR_PREFIX}no such session")), "sarkosd: see banner");
+        assert_eq!(daemon_label("daemon connection ended"), "sarkosd: see banner");
+    }
 
     #[test]
     fn shell_name_is_the_basename_of_shell() {
