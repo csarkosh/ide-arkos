@@ -21,7 +21,6 @@ pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-#[allow(dead_code)] // Task 3 loads themes from it
 pub fn themes_dir() -> PathBuf {
     config_dir().join("themes")
 }

@@ -1,6 +1,8 @@
-//! The Navy theme's colours, hardcoded for milestone 1 (theme files arrive in milestone 2).
-//! Values follow spec 7.1: a lifted navy background, a bright grey foreground, and ANSI colours
-//! that each clear 4.5:1 luminance contrast on the background.
+//! Colours and the terminal palette. The window draws from the active theme (`theme.rs`);
+//! `NAVY` is milestone 1's palette, kept as the default a `TerminalCore` starts with (the
+//! window gives every core the theme's palette) and as the unit tests' reference. Values follow
+//! spec 7.1: a lifted navy background, a bright grey foreground, and ANSI colours that each
+//! clear 4.5:1 luminance contrast on the background.
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +60,6 @@ impl<'de> serde::Deserialize<'de> for Rgb {
 }
 
 /// WCAG relative luminance, 0 (black) to 1 (white).
-#[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
 pub fn luminance(c: Rgb) -> f64 {
     fn ch(v: u8) -> f64 {
         let v = v as f64 / 255.0;
@@ -68,22 +69,20 @@ pub fn luminance(c: Rgb) -> f64 {
 }
 
 /// WCAG contrast ratio, 1 to 21.
-#[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
+#[cfg_attr(not(test), allow(dead_code))] // Only the contrast tests here and in theme.rs read it.
 pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     let (l1, l2) = (luminance(a), luminance(b));
     let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
     (hi + 0.05) / (lo + 0.05)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
     pub bg: Rgb,
     pub fg: Rgb,
     pub cursor: Rgb,
-    #[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
     pub selection: Rgb,
-    #[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
     pub find_match: Rgb,
-    #[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
     pub find_current: Rgb,
     pub ansi: [Rgb; 16],
 }

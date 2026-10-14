@@ -4,21 +4,15 @@
 use crate::drag;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
+use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
-    canvas, div, prelude::*, px, rgb, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
+    canvas, div, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
     MouseDownEvent, ScrollDelta, ScrollWheelEvent, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
-const BG: u32 = 0x11161f;
-const FG: u32 = 0xd6dae0;
-const BAR_BG: u32 = 0x0d1117;
-const TAB_ACTIVE: u32 = 0x11161f;
-const TAB_INACTIVE: u32 = 0x0d1117;
-const DIM: u32 = 0x8a93a3;
-const FOCUS_RING: u32 = 0x3a7bd5;
 
 /// The text on a tab: the terminal's title (or `fallback`, the shell's name), then its state.
 pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32>, note: bool, busy: Option<&str>) -> String {
@@ -45,6 +39,7 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
 
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focused = root.tree.focused == pane;
+    let theme = root.theme.clone();
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
@@ -56,7 +51,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
-            Some(terminal) => render_terminal(terminal, cx),
+            Some(terminal) => render_terminal(terminal, &theme, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
@@ -80,7 +75,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let overlay = match root.drop_target {
         Some(drag::DropTarget::Pane { pane: p, zone }) if p == pane => {
             let (x, y, w, h) = drag::zone_rect(zone, rect.w, rect.h - TAB_BAR_H);
-            Some(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(gpui::rgba(0x3a7bd566)))
+            Some(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(theme.chrome.focus_ring.alpha(0.4)))
         }
         _ => None,
     };
@@ -111,9 +106,9 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .size_full()
         .flex()
         .flex_col()
-        .bg(rgb(BG))
+        .bg(theme.chrome.window_bg.hsla())
         .border_1()
-        .border_color(rgb(if focused { FOCUS_RING } else { BAR_BG }))
+        .border_color(if focused { theme.chrome.focus_ring } else { theme.chrome.border }.hsla())
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
@@ -125,6 +120,9 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
 }
 
 fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &mut Context<Root>) -> Stateful<Div> {
+    let theme = root.theme.clone();
+    let c = &theme.chrome;
+    let (fg, dim) = (c.text, c.text_dim);
     let mut bar = div()
         .id(("bar", pane))
         .h(px(TAB_BAR_H))
@@ -133,11 +131,11 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
         .flex()
         .flex_row()
         .items_center()
-        .bg(rgb(BAR_BG))
-        .text_color(rgb(FG))
+        .bg(c.tab_bar.hsla())
+        .text_color(fg.hsla())
         .font_family("Menlo")
         .text_size(px(12.0))
-        .child(div().px(px(8.0)).text_color(rgb(DIM)).child(format!("{number}")))
+        .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
@@ -170,7 +168,15 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         };
         let is_active = idx == p.active;
-        let drag_value = p.ids.get(idx).map(|id| drag::TabDrag { pane, idx, tab: *id, label: label.clone(), position: Default::default() });
+        let drag_value = p.ids.get(idx).map(|id| drag::TabDrag {
+            pane,
+            idx,
+            tab: *id,
+            label: label.clone(),
+            position: Default::default(),
+            bg: c.banner,
+            fg,
+        });
         bar = bar.child(
             div()
                 .id(tab_id("tab", pane, idx))
@@ -179,8 +185,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .bg(rgb(if is_active { TAB_ACTIVE } else { TAB_INACTIVE }))
-                .text_color(rgb(if is_active { FG } else { DIM }))
+                .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
+                .text_color(if is_active { fg } else { dim }.hsla())
                 .cursor_pointer()
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
                 .when_some(drag_value, |el, value| {
@@ -197,8 +203,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 .child(
                     div()
                         .id(tab_id("close", pane, idx))
-                        .text_color(rgb(DIM))
-                        .hover(|s| s.text_color(rgb(FG)))
+                        .text_color(dim.hsla())
+                        .hover(move |s| s.text_color(fg.hsla()))
                         .child("×")
                         .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                             // The tab underneath would otherwise activate the index the close just freed.
@@ -212,15 +218,15 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
         div()
             .id(("plus", pane))
             .px(px(10.0))
-            .text_color(rgb(DIM))
-            .hover(|s| s.text_color(rgb(FG)))
+            .text_color(dim.hsla())
+            .hover(move |s| s.text_color(fg.hsla()))
             .cursor_pointer()
             .child("+")
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
     )
 }
 
-fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, theme: &Theme, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let font_size = terminal.read(cx).font_size;
     let t_keys = terminal.clone();
@@ -272,8 +278,8 @@ fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
                 .px(px(10.0))
                 .py(px(4.0))
                 .rounded(px(10.0))
-                .bg(rgb(0x1a2130))
-                .text_color(rgb(FG))
+                .bg(theme.chrome.banner.hsla())
+                .text_color(theme.chrome.text.hsla())
                 .font_family("Menlo")
                 .text_size(px(12.0))
                 .cursor_pointer()
@@ -287,18 +293,20 @@ fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
 fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Context<Root>) -> Div {
     let text = tab.and_then(|id| root.sessions.busy.get(&id)).copied().unwrap_or("starting shell");
     let font_size = root.font_size;
+    let dim = root.theme.chrome.text_dim;
     let focus = pane_focus(root, pane, cx);
     div()
         .size_full()
         .relative()
         .track_focus(&focus)
-        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(rgb(DIM)).font_family("Menlo").text_size(px(font_size)).child(text))
+        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(dim.hsla()).font_family("Menlo").text_size(px(font_size)).child(text))
 }
 
 /// The friendly empty state (spec 4).
 fn render_no_tabs(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focus = pane_focus(root, pane, cx);
-    crate::empty_pane::render(root, pane, rect.w, rect.h - TAB_BAR_H, focus, window, cx)
+    let theme = root.theme.clone();
+    crate::empty_pane::render(root, pane, rect.w, rect.h - TAB_BAR_H, focus, &theme, window, cx)
 }
 
 /// A pane without a terminal still needs something to focus so Cmd+N and typing land somewhere.

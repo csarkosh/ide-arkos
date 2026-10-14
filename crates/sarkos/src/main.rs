@@ -2,7 +2,6 @@ mod app_nap;
 mod chrome;
 mod client;
 mod closed_stack;
-#[allow(dead_code)] // nothing outside its tests calls it until the config is wired into the app
 mod config;
 mod drag;
 mod empty_pane;
@@ -18,7 +17,6 @@ mod split_view;
 mod sessions;
 mod terminal;
 mod terminal_element;
-#[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
 mod theme;
 mod tree;
 mod workspace;
@@ -27,7 +25,7 @@ use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
+    div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
     Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
@@ -43,10 +41,6 @@ use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
 use keymap::Quit;
 
-const BG: u32 = 0x11161f;
-const FG: u32 = 0xd6dae0;
-/// A slightly lighter navy for the one-line status banner above the panes.
-const BANNER_BG: u32 = 0x1a2130;
 const BANNER_H: f32 = 28.0;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
@@ -87,6 +81,14 @@ pub struct Root {
     pub empty_anim: HashMap<PaneId, std::time::Instant>,
     /// The basename of `$SHELL`, shown on a tab whose program set no title.
     pub shell_name: String,
+    /// The last good config; `apply_config` (Task 6) replaces it.
+    pub config: config::Config,
+    pub theme: Arc<theme::Theme>,
+    /// What macOS reports; `appearance.mode = "system"` follows it.
+    pub system_is_dark: bool,
+    /// The config or theme problem shown under the connection banner; `None` when all is well.
+    /// Kept apart from `status`, which belongs to the connection and clears when it answers.
+    pub config_error: Option<String>,
 }
 
 /// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
@@ -99,7 +101,7 @@ fn shell_name(shell: Option<&str>) -> String {
 }
 
 impl Root {
-    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>) -> Self {
+    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool) -> Self {
         // A fresh workspace starts with one pane holding a placeholder session that the launch
         // replaces with a real shell (reconcile sees it is not in the daemon's list).
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
@@ -120,6 +122,46 @@ impl Root {
             drop_target: None,
             empty_anim: HashMap::new(),
             shell_name: shell_name(std::env::var("SHELL").ok().as_deref()),
+            config,
+            theme: Arc::new(theme),
+            system_is_dark,
+            config_error: None,
+        }
+    }
+
+    /// The theme the config and the current appearance name, loaded from the themes folder.
+    pub fn resolve_theme(&self) -> Result<theme::Theme, String> {
+        let name = theme::pick_name(self.config.appearance.mode, self.system_is_dark, &self.config.theme);
+        theme::load(name, &paths::themes_dir())
+    }
+
+    pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
+        let palette = Arc::new(theme.palette());
+        self.theme = Arc::new(theme);
+        for t in self.sessions.terminals.values() {
+            t.update(cx, |t, cx| {
+                t.core.set_palette(palette.clone());
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    /// macOS switched between light and dark. In "system" mode the theme follows; a theme that
+    /// fails to load leaves the current one and says why in the banner.
+    pub fn set_system_appearance(&mut self, dark: bool, cx: &mut Context<Self>) {
+        self.system_is_dark = dark;
+        if self.config.appearance.mode != config::AppearanceMode::System {
+            return;
+        }
+        match self.resolve_theme() {
+            Ok(t) if t != *self.theme => self.set_theme(t, cx),
+            Ok(_) => {}
+            Err(e) => {
+                self.config_error = Some(format!("theme: {e}; keeping {}", self.theme.name));
+                eprintln!("sarkos: theme: {e}");
+                cx.notify();
+            }
         }
     }
 
@@ -595,7 +637,7 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
         }
     };
     let started = std::time::Instant::now();
-    let (core, title) = cx
+    let (mut core, title) = cx
         .background_spawn(async move {
             let mut core = TerminalCore::new(cols, rows, SCROLLBACK);
             // The previous UI already answered any queries in the replay; keep only the title.
@@ -614,6 +656,9 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
         // they match and makes the program redraw when they differ.
         let client = root.sessions.transport.clone();
         client.send(Request::Resize { session, rows: rows as u16, cols: cols as u16 });
+        // Cells resolve against the palette at paint, so it is set here rather than before the
+        // parse: a theme switch while the replay parsed then cannot leave this terminal stale.
+        core.set_palette(Arc::new(root.theme.palette()));
         let terminal = cx.new(|cx| {
             let mut t = Terminal::new(core, session, root.sessions.client.clone().expect("client"), cx);
             t.alive = alive;
@@ -641,7 +686,9 @@ fn pick_grid(visible: bool, own: Option<(usize, usize)>, maximized: Option<(usiz
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
-        let banner_h = if self.status.is_empty() { 0.0 } else { BANNER_H };
+        let theme = self.theme.clone();
+        let banners: Vec<String> = [self.status.clone(), self.config_error.clone().unwrap_or_default()].into_iter().filter(|b| !b.is_empty()).collect();
+        let banner_h = BANNER_H * banners.len() as f32;
         let (top, bottom) = (chrome::TOP_BAR_H, chrome::STATUS_BAR_H);
         // A window shorter than its chrome would give a negative height; lay out at zero instead.
         let content = Rect {
@@ -670,11 +717,11 @@ impl Render for Root {
         let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
         let daemon = if self.status.is_empty() { "sarkosd connected" } else { "sarkosd: see banner" };
-        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0);
+        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, &theme);
         let root_div = div()
             .size_full()
             .key_context("Root")
-            .bg(rgb(BG))
+            .bg(theme.chrome.window_bg.hsla())
             .flex()
             .flex_col()
             .on_drag_move(cx.listener(|root, _ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -716,8 +763,8 @@ impl Render for Root {
                     }
                 }),
             )
-            .child(chrome::top_bar(&project_name))
-            .children((!self.status.is_empty()).then(|| banner_bar(self.status.clone())))
+            .child(chrome::top_bar(&project_name, &theme))
+            .children(banners.into_iter().map(|text| banner_bar(text, &theme)))
             .child(div().flex_1().min_h_0().child(body))
             .child(status_bar);
         keymap::attach(root_div, cx)
@@ -735,7 +782,7 @@ fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, client: &client::
     workspace::flush_now(queue);
 }
 
-fn banner_bar(text: String) -> Div {
+fn banner_bar(text: String, theme: &theme::Theme) -> Div {
     div()
         .w_full()
         .h(px(BANNER_H))
@@ -743,8 +790,8 @@ fn banner_bar(text: String) -> Div {
         .px(px(8.0))
         .flex()
         .items_center()
-        .bg(rgb(BANNER_BG))
-        .text_color(rgb(FG))
+        .bg(theme.chrome.banner.hsla())
+        .text_color(theme.chrome.text.hsla())
         .font_family(terminal_element::FONT_FAMILY)
         .text_size(px(13.0))
         .child(text)
@@ -799,6 +846,14 @@ fn main() {
     // stall painting or input. Saves happen on the background executor.
     let saved = workspace::load(&project);
     let save_queue = SharedSaveQueue::default();
+    let config_path = paths::config_file();
+    let (config, config_error) = match config::load(&config_path) {
+        Ok(c) => (c, None),
+        Err(e) => {
+            eprintln!("sarkos: {e}");
+            (config::Config::default(), Some(e.to_string()))
+        }
+    };
 
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
@@ -811,6 +866,16 @@ fn main() {
         let saved_layout = saved.is_some();
         let view_project = project.clone();
         let view_saved = saved.clone();
+        let system_is_dark = theme::is_dark(cx.window_appearance());
+        let name = theme::pick_name(config.appearance.mode, system_is_dark, &config.theme).to_string();
+        let (theme, theme_error) = match theme::load(&name, &paths::themes_dir()) {
+            Ok(t) => (t, None),
+            Err(e) => {
+                eprintln!("sarkos: theme: {e}; using navy");
+                (theme::builtin("navy").expect("navy is built in"), Some(format!("theme: {e}")))
+            }
+        };
+        let (view_config, view_theme) = (config, theme);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -823,16 +888,30 @@ fn main() {
                     )),
                     ..Default::default()
                 },
-                move |_, cx| {
-                    cx.new(|_| {
-                        let mut root = Root::new(client_for_view, view_project, view_saved);
+                move |window, cx| {
+                    let view = cx.new(|_| {
+                        let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark);
                         root.save_queue = view_queue;
                         root
-                    })
+                    });
+                    let observed = view.clone();
+                    window
+                        .observe_window_appearance(move |window, cx| {
+                            let dark = theme::is_dark(window.appearance());
+                            observed.update(cx, |root, cx| root.set_system_appearance(dark, cx));
+                        })
+                        .detach();
+                    view
                 },
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
+        // The config's problem first: a bad config file also explains a theme that did not load.
+        let launch_error = config_error.or(theme_error);
+        root.update(cx, |root, cx| {
+            root.config_error = launch_error;
+            cx.notify();
+        });
         let (quit_root, quit_queue, quit_client) = (root.clone(), save_queue.clone(), client.clone());
         cx.on_action(move |_: &Quit, cx| {
             flush_on_quit(&quit_root, &quit_queue, &quit_client, cx);

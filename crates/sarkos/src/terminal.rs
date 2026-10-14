@@ -54,7 +54,7 @@ pub struct TerminalCore {
     term: Term<Listener>,
     parser: Processor,
     listener: Listener,
-    palette: &'static Palette,
+    palette: Arc<Palette>,
     pub scroll: ScrollAnimator,
 }
 
@@ -63,7 +63,7 @@ impl TerminalCore {
         let listener = Listener::default();
         let config = Config { scrolling_history: scrollback, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: &NAVY, scroll: ScrollAnimator::new() }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new() }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
@@ -91,6 +91,15 @@ impl TerminalCore {
         }
         self.scroll.clamp_max(self.history_size() as f32);
         w
+    }
+
+    /// Swaps the colours every cell resolves against at paint. Nothing is re-parsed.
+    pub fn set_palette(&mut self, palette: Arc<Palette>) {
+        self.palette = palette;
+    }
+
+    pub fn palette(&self) -> &Palette {
+        &self.palette
     }
 
     /// Applies chunks in order and merges their wakeups into one.
@@ -600,5 +609,27 @@ mod tests {
         assert!(t.scroll.is_at_bottom());
         let rows = t.rows_for_paint();
         assert_eq!(text_of(&rows.visible[0]), "line8");
+    }
+
+    #[test]
+    fn set_palette_recolours_parsed_cells() {
+        use crate::palette::{rgb, Palette, NAVY};
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"\x1b[31mred\x1b[0m plain");
+        let before = core.rows_for_paint();
+        assert_eq!(before.visible[0][0].1.fg, NAVY.ansi[1]);
+        assert_eq!(before.visible[0][4].1.fg, NAVY.fg);
+        assert_eq!(before.visible[0][4].1.bg, NAVY.bg);
+        let mut light = Palette { ..NAVY };
+        light.bg = rgb(0xf4f6fa);
+        light.fg = rgb(0x1e2633);
+        light.ansi[1] = rgb(0xb3261e);
+        core.set_palette(std::sync::Arc::new(light));
+        // Nothing was re-parsed: the same cells resolve against the new palette at paint time.
+        let after = core.rows_for_paint();
+        assert_eq!(after.visible[0][0].1.fg, rgb(0xb3261e));
+        assert_eq!(after.visible[0][4].1.fg, rgb(0x1e2633));
+        assert_eq!(after.visible[0][4].1.bg, rgb(0xf4f6fa));
+        assert_eq!(core.palette().bg, rgb(0xf4f6fa));
     }
 }

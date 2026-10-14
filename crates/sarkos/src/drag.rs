@@ -1,11 +1,9 @@
 //! Dragging a tab (spec 4): a ghost chip follows the pointer; the hovered tab bar shows where
 //! it would land; the hovered pane shows five drop zones (center, left, right, top, bottom).
 
+use crate::palette::Rgb;
 use crate::tree::{PaneId, TabId};
-use gpui::{div, prelude::*, px, rgb, Bounds, Context, Pixels, Point, Render, Window};
-
-const CHIP_BG: u32 = 0x1a2130;
-const CHIP_FG: u32 = 0xd6dae0;
+use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, Window};
 
 /// What a tab drag carries. `tab` is the tab's stable id: the drop re-locates the tab by it, so
 /// `pane` and `idx` (where the drag started) only describe the start.
@@ -16,6 +14,9 @@ pub struct TabDrag {
     pub tab: TabId,
     pub label: String,
     pub position: Point<Pixels>,
+    /// The chip's colours, from the theme where the drag started.
+    pub bg: Rgb,
+    pub fg: Rgb,
 }
 
 impl TabDrag {
@@ -32,8 +33,8 @@ impl Render for TabDrag {
             div()
                 .px(px(10.0))
                 .py(px(4.0))
-                .bg(rgb(CHIP_BG))
-                .text_color(rgb(CHIP_FG))
+                .bg(self.bg.hsla())
+                .text_color(self.fg.hsla())
                 .font_family("Menlo")
                 .text_size(px(12.0))
                 .opacity(0.9)

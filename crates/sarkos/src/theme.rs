@@ -134,6 +134,7 @@ pub fn load(name: &str, dir: &Path) -> Result<Theme, String> {
 }
 
 /// Built-in names plus every `*.toml` stem in `dir`, sorted and deduplicated.
+#[cfg_attr(not(test), allow(dead_code))] // The command palette's theme list reads it from Task 8 on.
 pub fn names(dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = BUILTIN.iter().map(|(n, _)| n.to_string()).collect();
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -153,6 +154,7 @@ pub fn names(dir: &Path) -> Vec<String> {
 
 /// Writes each built-in theme into `dir` unless a file of that name is already there, so a user
 /// can copy one to start their own. Returns the paths written.
+#[cfg_attr(not(test), allow(dead_code))] // The extract-themes command calls it from Task 6 on.
 pub fn extract(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
     let mut wrote = Vec::new();
@@ -188,6 +190,21 @@ impl Theme {
     pub fn is_light(&self) -> bool {
         luminance(self.chrome.window_bg) > 0.5
     }
+}
+
+/// Which theme name the config picks for the current appearance (spec 7.1: follow the system
+/// by default, Navy for dark and Navy Light for light).
+pub fn pick_name(mode: crate::config::AppearanceMode, system_is_dark: bool, cfg: &crate::config::ThemeConfig) -> &str {
+    use crate::config::AppearanceMode::*;
+    match (mode, system_is_dark) {
+        (Dark, _) | (System, true) => &cfg.dark,
+        (Light, _) | (System, false) => &cfg.light,
+    }
+}
+
+pub fn is_dark(appearance: gpui::WindowAppearance) -> bool {
+    use gpui::WindowAppearance::*;
+    matches!(appearance, Dark | VibrantDark)
 }
 
 #[cfg(test)]
@@ -324,5 +341,18 @@ mod tests {
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), "edited");
+    }
+
+    #[test]
+    fn appearance_mode_picks_the_theme() {
+        use crate::config::{AppearanceMode, ThemeConfig};
+        let cfg = ThemeConfig { dark: "navy".into(), light: "navy-light".into() };
+        assert_eq!(pick_name(AppearanceMode::System, true, &cfg), "navy");
+        assert_eq!(pick_name(AppearanceMode::System, false, &cfg), "navy-light");
+        assert_eq!(pick_name(AppearanceMode::Dark, false, &cfg), "navy");
+        assert_eq!(pick_name(AppearanceMode::Light, true, &cfg), "navy-light");
+        use gpui::WindowAppearance::*;
+        assert!(is_dark(Dark) && is_dark(VibrantDark));
+        assert!(!is_dark(Light) && !is_dark(VibrantLight));
     }
 }

@@ -1,7 +1,7 @@
 //! Paints a `Terminal`'s visible rows at a fractional line offset (spec 3). Only the rows in the
 //! viewport plus one above are shaped and painted, which is the virtualization.
 use crate::layout::{build_runs, CellKind, CellStyle};
-use crate::palette::{Rgb, NAVY};
+use crate::palette::Rgb;
 use crate::terminal::{CellMetrics, Terminal};
 use gpui::{
     fill, font, point, px, size, App, Bounds, ContentMask, Element, ElementId, Entity, FontWeight, GlobalElementId, Hsla,
@@ -127,10 +127,9 @@ impl Element for TerminalElement {
         let cell = prepaint.cell;
         let lh = px(cell.height);
         let cw = cell.width;
-        window.paint_quad(fill(bounds, hsla(NAVY.bg)));
-
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
-        let (rows, frac, cursor, animating) = self.terminal.update(cx, |t, _| {
+        // The colours come from the terminal's palette, which follows the theme.
+        let (rows, frac, cursor, animating, bg, cursor_color) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -144,8 +143,10 @@ impl Element for TerminalElement {
             t.last_frame = if animating || sync_open { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open)
+            let palette = t.core.palette();
+            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, palette.bg, palette.cursor)
         });
+        window.paint_quad(fill(bounds, hsla(bg)));
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let origin = bounds.origin;
@@ -154,7 +155,7 @@ impl Element for TerminalElement {
                 for run in &runs {
                     let x = origin.x + px(run.col as f32 * cw);
                     let w = px(if run.wide { 2.0 * cw } else { run.text.chars().count() as f32 * cw });
-                    if run.style.bg != NAVY.bg {
+                    if run.style.bg != bg {
                         window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, hsla(run.style.bg)));
                     }
                     if run.text.trim().is_empty() {
@@ -181,7 +182,7 @@ impl Element for TerminalElement {
                 if frac == 0.0 {
                     let x = origin.x + px(col as f32 * cw);
                     let y = origin.y + px(line as f32 * cell.height);
-                    let mut c = hsla(NAVY.cursor);
+                    let mut c = hsla(cursor_color);
                     c.a = 0.85;
                     window.paint_quad(fill(Bounds { origin: point(x, y), size: size(px(cw), lh) }, c));
                 }
