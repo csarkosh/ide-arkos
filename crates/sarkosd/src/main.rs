@@ -1,6 +1,7 @@
 mod handover;
 mod pty;
 mod reaper;
+mod recovery;
 mod ring;
 mod server;
 mod session;
@@ -24,6 +25,7 @@ fn default_socket() -> PathBuf {
 }
 
 fn main() {
+    recovery::block_termination_signals();
     let mut args = std::env::args().skip(1);
     let mut socket = default_socket();
     let mut replay = DEFAULT_REPLAY_BYTES;

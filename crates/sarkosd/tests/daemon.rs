@@ -10,12 +10,16 @@ use std::time::{Duration, Instant};
 struct Daemon {
     child: Child,
     socket: PathBuf,
-    _dir: tempfile::TempDir,
+    _dir: Option<tempfile::TempDir>,
 }
 
 impl Daemon {
     fn start(extra: &[&str]) -> Daemon {
-        let dir = tempfile::tempdir().unwrap();
+        Daemon::start_in(tempfile::tempdir().unwrap(), extra)
+    }
+
+    /// A daemon whose socket, and so its sessions dir, is in `dir`: a later daemon can share it.
+    fn start_in(dir: tempfile::TempDir, extra: &[&str]) -> Daemon {
         let socket = dir.path().join("d.sock");
         let child = Command::new(env!("CARGO_BIN_EXE_sarkosd"))
             .arg("--socket")
@@ -31,7 +35,32 @@ impl Daemon {
             assert!(Instant::now() < deadline, "daemon did not create its socket");
             std::thread::sleep(Duration::from_millis(20));
         }
-        Daemon { child, socket, _dir: dir }
+        Daemon { child, socket, _dir: Some(dir) }
+    }
+
+    fn dir(&self) -> &std::path::Path {
+        self._dir.as_ref().unwrap().path()
+    }
+
+    fn sessions_dir(&self) -> PathBuf {
+        self.socket.with_file_name("sessions")
+    }
+
+    /// SIGTERM, as a shutdown sends it. The daemon must exit 0 within five seconds. The dir is
+    /// handed back so a successor can recover from it.
+    fn sigterm(mut self) -> tempfile::TempDir {
+        // SAFETY: the pid is our unreaped child.
+        unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success(), "sarkosd exited with {status} on SIGTERM");
+                break;
+            }
+            assert!(Instant::now() < deadline, "sarkosd did not exit within 5 s of SIGTERM");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self._dir.take().unwrap()
     }
 
     fn connect(&self) -> Conn {
@@ -127,6 +156,10 @@ impl Conn {
                 ServerMessage::Event(_) => continue,
             }
         }
+    }
+
+    fn attach(&mut self, session: SessionId) {
+        assert!(matches!(self.request(Request::Attach { session }), Response::Attached { .. }));
     }
 
     fn create(&mut self, shell: &str) -> SessionId {
@@ -1226,4 +1259,79 @@ fn hello_version_3_gets_the_range_and_goodbye_is_ok() {
     assert!(matches!(r, Response::Hello { protocol_min: 1, protocol_max: 3, .. }), "{r:?}");
     assert_eq!(c.request(Request::Goodbye), Response::Ok);
     assert_eq!(c.request(Request::Goodbye), Response::Ok, "a second Goodbye is harmless");
+}
+
+fn replay_file(d: &Daemon, sid: SessionId) -> PathBuf {
+    d.sessions_dir().join(format!("{}.replay", sid.0))
+}
+
+fn wait_for_file_containing(path: &std::path::Path, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(bytes) = std::fs::read(path) {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            if text.contains(needle) {
+                return text;
+            }
+        }
+        assert!(Instant::now() < deadline, "{} never contained {needle:?}", path.display());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn history_is_written_to_disk_shortly_after_output_stops_and_appended_after() {
+    let d = Daemon::start(&["--flush-quiet-millis", "200"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    c.request(Request::Input { session: sid, bytes: b"echo hello flush\n".to_vec() });
+    c.wait_for_output(sid, "hello flush");
+    let text = wait_for_file_containing(&replay_file(&d, sid), "hello flush");
+    let manifest = std::fs::read(d.sessions_dir().join("manifest.bin")).expect("the manifest is written with the first flush");
+    assert_eq!(&manifest[..4], b"SKMF");
+    c.request(Request::Input { session: sid, bytes: b"echo second line\n".to_vec() });
+    c.wait_for_output(sid, "second line");
+    let later = wait_for_file_containing(&replay_file(&d, sid), "second line");
+    assert!(later.starts_with(&text), "the file grew by appending");
+    assert!(later.find("hello flush").unwrap() < later.find("second line").unwrap());
+    // A killed session's file goes with it once the reaper forgets the session.
+}
+
+#[test]
+fn sigterm_writes_the_last_output_and_exits_zero() {
+    let d = Daemon::start(&["--flush-quiet-millis", "60000"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    c.request(Request::Input { session: sid, bytes: b"i=0; while [ $i -lt 3000 ]; do echo line $i; i=$((i+1)); done; echo END-$((6*7))\n".to_vec() });
+    // The terminal echoes the command line too, so the marker is one only the shell prints.
+    c.wait_for_output(sid, "END-42");
+    assert!(!replay_file(&d, sid).exists(), "the periodic flush never ran");
+    let dir = d.sigterm();
+    let bytes = std::fs::read(dir.path().join("sessions").join(format!("{}.replay", sid.0))).expect("written on SIGTERM");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("line 2999"), "the last lines are there");
+    assert!(text.rfind("END-42").unwrap() > text.rfind("line 2999").unwrap());
+    assert!(dir.path().join("sessions").join("manifest.bin").exists());
+}
+
+#[test]
+fn windows_survive_an_upgrade_and_reach_the_manifest() {
+    let d = Daemon::start(&["--flush-quiet-millis", "200"]);
+    let project = d.dir().join("a-project-window");
+    let manifest = d.sessions_dir().join("manifest.bin");
+    // Not a UI (pid 0), so the watchdog leaves it alone; the window list keys on the folder.
+    let mut w = d.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: 0, ui_exe: None, ui_cwd: project.clone() };
+    assert!(matches!(w.request(hello), Response::Hello { .. }));
+    wait_for_file_containing(&manifest, &project.to_string_lossy());
+    // Nothing changes the table from here, so only the resumed image writes a manifest again.
+    std::fs::remove_file(&manifest).unwrap();
+    w.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_sarkosd")) });
+    w.expect_disconnect(Duration::from_secs(10));
+    // Postcard keeps a path as its UTF-8 bytes behind a length prefix.
+    wait_for_file_containing(&manifest, &project.to_string_lossy());
+    let mut c = d.reconnect();
+    assert!(matches!(c.request(Request::ListSessions), Response::Sessions(_)), "the resumed daemon serves");
 }

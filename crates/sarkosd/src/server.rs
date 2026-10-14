@@ -82,6 +82,11 @@ impl State {
     pub fn next_session(&self) -> u64 {
         self.next_session
     }
+
+    #[expect(dead_code)] // used by --recover in a later task
+    pub fn set_next_session(&mut self, v: u64) {
+        self.next_session = v;
+    }
 }
 
 pub type Shared = Arc<Mutex<State>>;
@@ -161,10 +166,14 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
     serve(listener, Arc::new(Mutex::new(st)), opts)
 }
 
-/// The watchdog, the reaper and the accept loop, shared by a fresh start and a resume.
+/// The watchdog, the reaper, the flusher, the signal watcher and the accept loop, shared by a
+/// fresh start and a resume.
 fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     crate::watchdog::start(state.clone(), opts.watchdog);
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
+    let dir = crate::recovery::sessions_dir(&opts.socket);
+    let flusher = crate::recovery::start(state.clone(), dir, opts.flush_quiet);
+    crate::recovery::watch_termination(state.clone(), flusher, opts.flush_quiet);
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => spawn_client(stream, state.clone(), opts.clone()),

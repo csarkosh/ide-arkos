@@ -236,6 +236,13 @@ impl ClientSink {
     }
 }
 
+/// What the flusher writes: the bytes since its last offset, or the whole ring.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReplayDelta {
+    Append { total: u64, bytes: Vec<u8> },
+    Rewrite { total: u64, all: Vec<u8> },
+}
+
 pub struct SpawnSpec {
     pub id: SessionId,
     pub cwd: PathBuf,
@@ -318,6 +325,9 @@ struct SessionState {
     exited_at: Option<Instant>,
     last_activity_unix_ms: u64,
     claude: ClaudeState,
+    /// When output first arrived after the last flush to disk; `None` while the file is up to date.
+    dirty_since: Option<Instant>,
+    last_output: Instant,
 }
 
 fn now_ms() -> u64 {
@@ -369,6 +379,8 @@ impl Session {
                 exited_at: None,
                 last_activity_unix_ms: now_ms(),
                 claude: ClaudeState::Idle,
+                dirty_since: (!spec.seed.is_empty()).then(Instant::now),
+                last_output: Instant::now(),
             }),
             backpressure: spec.backpressure,
             ending: AtomicBool::new(false),
@@ -466,6 +478,10 @@ impl Session {
         let mut st = self.state.lock().unwrap();
         st.replay.push(bytes);
         st.last_activity_unix_ms = now_ms();
+        st.last_output = Instant::now();
+        if st.dirty_since.is_none() {
+            st.dirty_since = Some(st.last_output);
+        }
         let id = self.id;
         st.subscribers.retain(|_, tx| tx.send_output(id, bytes));
     }
@@ -703,6 +719,9 @@ impl Session {
                 exited_at,
                 last_activity_unix_ms: record.last_activity_unix_ms,
                 claude: record.claude,
+                // The new image rewrites the file once.
+                dirty_since: Some(Instant::now()),
+                last_output: Instant::now(),
             }),
             backpressure,
             // A pending kill drains to EOF without pausing, as it did in the old image; so does a
@@ -741,22 +760,18 @@ impl Session {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn shell(&self) -> &str {
         &self.shell
     }
 
-    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn nice(&self) -> i32 {
         self.nice
     }
 
-    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn env(&self) -> &[(String, String)] {
         &self.env
     }
 
-    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn cwd(&self) -> &Path {
         &self.cwd
     }
@@ -785,6 +800,33 @@ impl Session {
     /// `info` releases the state lock before `agent` takes its own, so the two never nest.
     pub fn detail(&self) -> SessionDetail {
         SessionDetail { info: self.info(), recovered: self.recovered, agent: self.agent() }
+    }
+
+    pub fn replay_capacity(&self) -> usize {
+        self.state.lock().unwrap().replay.capacity()
+    }
+
+    /// Unflushed output that stopped `quiet` ago, or has been flowing for `max_wait`: a chatty
+    /// session is still written every `max_wait`.
+    pub fn flush_due(&self, quiet: Duration, max_wait: Duration) -> bool {
+        let st = self.state.lock().unwrap();
+        match st.dirty_since {
+            None => false,
+            Some(since) => st.last_output.elapsed() >= quiet || since.elapsed() >= max_wait,
+        }
+    }
+
+    /// The bytes since stream position `from`, or the whole ring when `from` is `None` or the
+    /// ring dropped some of them. Clears the dirty mark under the same lock, so output arriving
+    /// after this call makes the session dirty again.
+    pub fn take_delta(&self, from: Option<u64>) -> ReplayDelta {
+        let mut st = self.state.lock().unwrap();
+        st.dirty_since = None;
+        let total = st.replay.total();
+        match from.and_then(|f| st.replay.since(f)) {
+            Some(bytes) => ReplayDelta::Append { total, bytes },
+            None => ReplayDelta::Rewrite { total, all: st.replay.snapshot() },
+        }
     }
 }
 
@@ -1077,6 +1119,61 @@ mod tests {
         assert_eq!(s.detail().agent, None);
         // The seed is the ring's first content.
         assert_eq!(s.snapshot().replay, b"old output");
+        let _ = s.kill();
+    }
+
+    #[test]
+    fn output_makes_a_session_due_for_a_flush_and_take_delta_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = SpawnSpec {
+            id: SessionId(3),
+            cwd: dir.path().to_path_buf(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 8,
+            backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
+        };
+        let s = Session::spawn_for_test(spec, false).unwrap();
+        assert_eq!(s.replay_capacity(), 8);
+        assert!(!s.flush_due(Duration::ZERO, Duration::ZERO), "nothing was ever printed");
+        s.on_output(b"abc");
+        assert!(!s.flush_due(Duration::from_secs(60), Duration::from_secs(60)), "output is recent and the wait is young");
+        assert!(s.flush_due(Duration::ZERO, Duration::from_secs(60)), "quiet for long enough");
+        assert!(matches!(s.take_delta(None), ReplayDelta::Rewrite { total: 3, all } if all == b"abc"));
+        assert!(!s.flush_due(Duration::ZERO, Duration::ZERO), "flushed");
+        s.on_output(b"de");
+        assert!(matches!(s.take_delta(Some(3)), ReplayDelta::Append { total: 5, bytes } if bytes == b"de"));
+        s.on_output(b"0123456789");
+        assert!(matches!(s.take_delta(Some(5)), ReplayDelta::Rewrite { total: 15, all } if all == b"23456789"), "the ring dropped unflushed bytes");
+        assert!(matches!(s.take_delta(Some(15)), ReplayDelta::Append { total: 15, bytes } if bytes.is_empty()));
+        let _ = s.kill();
+    }
+
+    #[test]
+    fn a_seeded_ring_is_due_at_once_so_a_recovered_history_is_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = SpawnSpec {
+            id: SessionId(4),
+            cwd: dir.path().to_path_buf(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 64,
+            backpressure: Backpressure::default(),
+            seed: b"old".to_vec(),
+            recovered: true,
+            agent: None,
+        };
+        let s = Session::spawn_for_test(spec, false).unwrap();
+        assert!(s.flush_due(Duration::ZERO, Duration::from_secs(60)));
         let _ = s.kill();
     }
 }

@@ -6,12 +6,14 @@ pub struct RingBuffer {
     cap: usize,
     start: usize,
     len: usize,
+    /// Bytes ever pushed, so a reader can name a position in the stream the ring may no longer hold.
+    total: u64,
 }
 
 impl RingBuffer {
     pub fn new(cap: usize) -> Self {
         assert!(cap > 0, "replay capacity must be positive");
-        Self { buf: vec![0; cap], cap, start: 0, len: 0 }
+        Self { buf: vec![0; cap], cap, start: 0, len: 0, total: 0 }
     }
 
     /// A ring holding `bytes` (the tail of them when longer than `cap`): the replay carried
@@ -28,6 +30,7 @@ impl RingBuffer {
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
+        self.total += bytes.len() as u64;
         let bytes = if bytes.len() > self.cap { &bytes[bytes.len() - self.cap..] } else { bytes };
         for &b in bytes {
             let end = (self.start + self.len) % self.cap;
@@ -46,6 +49,25 @@ impl RingBuffer {
             out.push(self.buf[(self.start + i) % self.cap]);
         }
         out
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
+
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// The bytes at stream positions `from..total`, when the ring still holds them all; `None`
+    /// when some were dropped (the caller writes the snapshot instead) or `from` is past the end.
+    pub fn since(&self, from: u64) -> Option<Vec<u8>> {
+        let oldest_kept = self.total - self.len as u64;
+        if from < oldest_kept || from > self.total {
+            return None;
+        }
+        let skip = (from - oldest_kept) as usize;
+        Some(self.snapshot()[skip..].to_vec())
     }
 }
 
@@ -98,5 +120,28 @@ mod tests {
         let mut r = RingBuffer::from_bytes(4, b"ab");
         r.push(b"cde");
         assert_eq!(r.snapshot(), b"bcde");
+    }
+
+    #[test]
+    fn total_counts_every_byte_pushed_and_since_gives_the_unflushed_tail() {
+        let mut r = RingBuffer::new(4);
+        assert_eq!((r.total(), r.capacity()), (0, 4));
+        r.push(b"ab");
+        assert_eq!(r.total(), 2);
+        assert_eq!(r.since(0), Some(b"ab".to_vec()));
+        assert_eq!(r.since(1), Some(b"b".to_vec()));
+        assert_eq!(r.since(2), Some(vec![]), "nothing new");
+        r.push(b"cde");
+        assert_eq!(r.total(), 5, "the dropped byte still counts");
+        assert_eq!(r.since(2), Some(b"cde".to_vec()));
+        assert_eq!(r.since(1), Some(b"bcde".to_vec()), "offset 1 is the oldest byte kept");
+        assert_eq!(r.since(0), None, "offset 0 was dropped: rewrite from the snapshot");
+        assert_eq!(r.since(9), None, "past the end is not a position in the stream");
+        r.push(b"0123456789");
+        assert_eq!(r.total(), 15);
+        assert_eq!(r.since(11), Some(b"6789".to_vec()));
+        let f = RingBuffer::from_bytes(8, b"abc");
+        assert_eq!(f.total(), 3);
+        assert_eq!(f.since(0), Some(b"abc".to_vec()));
     }
 }
