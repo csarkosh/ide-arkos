@@ -168,12 +168,14 @@ terminal title escape sequence. Tabs reorder by drag within a pane.
 zones on the hovered pane: center (move into pane), left, right, top, bottom (split that pane
 and place the tab in the new pane on that side). VS Code's gesture exactly.
 
-**Empty state.** A pane whose last tab is closed with Cmd+W stays open and shows a friendly
-screen: a short greeting, the three or four bindings you'd want next, and a small ambient
-animation that plays on appearance and on hover, then settles to a static frame (an idle empty
-pane costs no frames). It honours the system Reduce Motion setting. A pane auto-closes only
-when its last tab is dragged into another pane. Cmd+W on an empty pane closes it; the last
-pane in the workspace never closes, it shows the empty state.
+**Empty state.** A pane closes with its last tab (Cmd+W, the tab's close button, "close all in
+pane", or its last tab dragged into another pane), its space going to its neighbour. The last pane
+in the workspace never closes: it shows a friendly screen instead: a short greeting, the three or
+four bindings you'd want next, and a small ambient animation that plays on appearance and on
+hover, then settles to a static frame (an idle empty pane costs no frames). It honours the
+system Reduce Motion setting. A folder opened with no saved layout starts on that screen rather
+than on a shell nobody asked for (revised 2026-10-14; before, an emptied pane stayed open and a
+new folder started one shell).
 
 **Keyboard.** VS Code's macOS defaults for terminals in the editor area. Every binding lives in
 the config file and can be changed, chords included.

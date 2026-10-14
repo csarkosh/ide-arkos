@@ -164,6 +164,8 @@ Notes:
   kept for Shift+Cmd+T, since nothing is left to end or bring back.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
+- A pane closes with its last tab and its neighbour takes the space; the last pane stays and
+  shows the empty screen, which is also what a folder with no saved layout opens on.
 - Cmd+B, Shift+Cmd+E and Ctrl+Shift+G arrive with the sidebar in milestone 4. Every binding can
   be changed in the config file; see Config.
 

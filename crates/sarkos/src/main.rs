@@ -217,11 +217,10 @@ fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
 
 impl Root {
     fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool) -> Self {
-        // A fresh workspace starts with one pane holding a placeholder session that the launch
-        // replaces with a real shell (reconcile sees it is not in the daemon's list).
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
-        let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
+        // No saved layout: the empty screen, not a shell nobody asked for.
+        let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
@@ -533,6 +532,7 @@ impl Root {
                     self.sessions.kill(session);
                     self.sessions.detach(session);
                     self.sessions.tab_closed(id);
+                    self.close_emptied_pane(pane);
                     self.save(cx);
                     cx.notify();
                     return;
@@ -549,8 +549,17 @@ impl Root {
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
         }
+        self.close_emptied_pane(pane);
         self.save(cx);
         cx.notify();
+    }
+
+    /// A pane whose last tab just closed goes with it, its space to its neighbour; the last pane
+    /// stays and shows the empty screen.
+    fn close_emptied_pane(&mut self, pane: PaneId) {
+        if self.tree.close_pane_if_empty(pane) {
+            self.forget_pane(pane);
+        }
     }
 
     /// Puts a closed tab's session back in `pane` and reattaches it. The daemon kept it; one that

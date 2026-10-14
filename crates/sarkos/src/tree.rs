@@ -283,6 +283,19 @@ impl Tree {
         Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None }
     }
 
+    /// One pane with no tabs: what a folder with no saved layout opens on, the empty screen.
+    pub fn empty() -> Tree {
+        let pane = Pane { id: 1, tabs: Vec::new(), active: 0, mru: Vec::new(), ids: Vec::new() };
+        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None }
+    }
+
+    /// Closes `pane` when it has no tabs left, unless it is the last one, which stays and shows
+    /// the empty screen. Returns whether the pane went.
+    pub fn close_pane_if_empty(&mut self, pane: PaneId) -> bool {
+        let empty = self.pane(pane).is_some_and(|p| p.tabs.is_empty());
+        empty && self.close_pane(pane)
+    }
+
     fn fresh_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -665,6 +678,36 @@ fn overlap(a: f32, aw: f32, b: f32, bw: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_tree_is_one_pane_with_no_tabs_that_takes_tabs() {
+        let mut t = Tree::empty();
+        assert_eq!(t.panes().len(), 1);
+        let root = t.panes()[0];
+        assert_eq!(t.focused, root);
+        assert!(t.pane(root).unwrap().tabs.is_empty());
+        assert!(t.pane(root).unwrap().ids.is_empty());
+        let idx = t.add_tab(root, Tab::Terminal { session: SessionId(7) });
+        assert_eq!(idx, 0);
+        assert_eq!(t.pane(root).unwrap().active, 0);
+        assert!(t.tab_id(root, 0).is_some(), "the new tab gets a fresh id");
+    }
+
+    #[test]
+    fn a_pane_closes_with_its_last_tab_unless_it_is_the_last_pane() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let root = t.panes()[0];
+        let right = t.split(root, Side::Right, Tab::Terminal { session: SessionId(2) }).unwrap();
+        assert!(!t.close_pane_if_empty(right), "a pane with a tab stays");
+        t.close_tab(right, 0);
+        assert!(t.close_pane_if_empty(right), "its last tab gone, the pane goes");
+        assert_eq!(t.panes(), vec![root]);
+        assert_eq!(t.focused, root, "focus moves to what is left");
+        t.close_tab(root, 0);
+        assert!(!t.close_pane_if_empty(root), "the last pane never closes");
+        assert_eq!(t.panes(), vec![root]);
+        assert!(t.pane(root).unwrap().tabs.is_empty(), "it shows the empty screen");
+    }
     use proptest::prelude::*;
 
     fn term(n: u64) -> Tab {
