@@ -137,6 +137,11 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
+    if root.tab_menu == Some(pane) && !show_overflow(p.tabs.len()) {
+        // Down to one tab: the ⋯ button is gone, so its menu goes too and does not come back
+        // with the next tab.
+        root.tab_menu = None;
+    }
     let menu = (root.tab_menu == Some(pane)).then(|| {
         let mut m = div()
             .id(("menu", pane))

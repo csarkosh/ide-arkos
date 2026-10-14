@@ -372,7 +372,12 @@ impl Root {
     }
 
     pub fn toggle_tab_menu(&mut self, pane: PaneId, cx: &mut Context<Self>) {
-        self.tab_menu = if self.tab_menu == Some(pane) { None } else { Some(pane) };
+        if self.tab_menu == Some(pane) {
+            self.tab_menu = None;
+        } else {
+            self.tab_menu = Some(pane);
+            self.focus_pane(pane, cx);
+        }
         cx.notify();
     }
 
