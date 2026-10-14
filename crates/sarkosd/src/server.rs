@@ -83,7 +83,6 @@ impl State {
         self.next_session
     }
 
-    #[expect(dead_code)] // used by --recover in a later task
     pub fn set_next_session(&mut self, v: u64) {
         self.next_session = v;
     }
@@ -91,7 +90,12 @@ impl State {
 
 pub type Shared = Arc<Mutex<State>>;
 
-pub fn run(opts: Options) -> Result<()> {
+/// How `run_with` fails when a daemon already serves the socket; `--recover` treats it as success.
+pub const ALREADY_LISTENING: &str = "another sarkosd is already listening on";
+
+/// A fresh start. `recover`: rebuild the table from the manifest before serving (the launchd
+/// agent's start).
+pub fn run_with(opts: Options, recover: bool) -> Result<()> {
     let socket = opts.socket.as_path();
     let parent = socket.parent().ok_or_else(|| anyhow::anyhow!("socket path has no parent"))?;
     let created_parent = !parent.exists();
@@ -103,7 +107,7 @@ pub fn run(opts: Options) -> Result<()> {
         Ok(meta) if meta.file_type().is_socket() => {
             // A previous daemon died. Nobody can be listening if connect fails.
             if UnixStream::connect(socket).is_ok() {
-                anyhow::bail!("another sarkosd is already listening on {}", socket.display());
+                anyhow::bail!("{ALREADY_LISTENING} {}", socket.display());
             }
             std::fs::remove_file(socket).with_context(|| format!("remove stale socket {}", socket.display()))?;
         }
@@ -115,7 +119,13 @@ pub fn run(opts: Options) -> Result<()> {
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).context("chmod socket")?;
     let mut st = State::new();
     st.listener_fd = listener.as_raw_fd();
-    serve(listener, Arc::new(Mutex::new(st)), opts)
+    let state: Shared = Arc::new(Mutex::new(st));
+    if recover {
+        let dir = crate::recovery::sessions_dir(&opts.socket);
+        let done = crate::recovery::recover(&state, &dir, &opts);
+        eprintln!("sarkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
+    }
+    serve(listener, state, opts)
 }
 
 /// The new image after an upgrade: adopt the listener and every session, then serve.

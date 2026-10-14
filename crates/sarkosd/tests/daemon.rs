@@ -1368,3 +1368,117 @@ fn a_session_that_exits_leaves_the_manifest_long_before_the_reaper_forgets_it() 
     // The reaper keeps the dead session listed for ten minutes; the manifest drops it at once.
     wait_for_file_without(&manifest, &cwd.to_string_lossy(), Duration::from_secs(3));
 }
+
+fn detailed(c: &mut Conn) -> Vec<protocol::SessionDetail> {
+    match c.request(Request::ListSessionsDetailed) {
+        Response::SessionsDetailed(l) => l,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn recover_brings_back_sessions_with_their_history_and_runs_the_resume_command() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let mut c = a.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    c.request(Request::Input { session: sid, bytes: b"echo before restart\n".to_vec() });
+    c.wait_for_output(sid, "before restart");
+    let agent = AgentRecord { kind: "test".into(), id: "t1".into(), resume: vec!["echo".into(), "RESUMED t1".into()] };
+    assert_eq!(c.request(Request::SetAgent { session: sid, agent: agent.clone() }), Response::Ok);
+    wait_for_file_containing(&replay_file(&a, sid), "before restart");
+    let dir = a.sigterm();
+    let b = Daemon::start_in(dir, &["--recover"]);
+    let mut c = b.connect();
+    let list = detailed(&mut c);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].info.id, sid, "the id is kept, so the saved layout finds it");
+    assert!(list[0].recovered && list[0].info.alive);
+    assert_eq!(list[0].agent, Some(agent));
+    let Response::Attached { replay, alive: true } = c.request(Request::Attach { session: sid }) else { panic!("not attached alive") };
+    let mut text = String::from_utf8_lossy(&replay).into_owned();
+    let before = text.find("before restart").expect("the old history comes first");
+    let divider = text.find("resumed after restart").expect("then the divider");
+    assert!(before < divider);
+    if !text.contains("RESUMED t1") {
+        text.push_str(&String::from_utf8_lossy(&c.wait_for_output(sid, "RESUMED t1")));
+    }
+    assert!(text.find("RESUMED t1").unwrap() > divider, "the typed resume command ran in the new shell");
+    let newer = c.create("/bin/sh");
+    assert!(newer.0 > sid.0, "ids stay unique after a recovery");
+}
+
+#[test]
+fn recover_reopens_windows_that_were_open_and_not_those_that_said_goodbye() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let (script, marker) = relaunch_script(a.path());
+    let keep = tempfile::tempdir().unwrap();
+    let gone = tempfile::tempdir().unwrap();
+    let hello = |cwd: &std::path::Path| Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: Some(script.clone()), ui_cwd: cwd.to_path_buf() };
+    let mut w1 = a.connect_raw();
+    assert!(matches!(w1.request(hello(keep.path())), Response::Hello { .. }));
+    let mut w2 = a.connect_raw();
+    assert!(matches!(w2.request(hello(gone.path())), Response::Hello { .. }));
+    assert_eq!(w2.request(Request::Goodbye), Response::Ok);
+    std::thread::sleep(Duration::from_millis(400));
+    let dir = a.sigterm();
+    let _b = Daemon::start_in(dir, &["--recover"]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the window for the kept project was not reopened");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let want = keep.path().canonicalize().unwrap();
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), want.to_string_lossy());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), want.to_string_lossy(), "the project that said goodbye stays closed");
+}
+
+#[test]
+fn recover_puts_a_session_whose_folder_is_gone_in_home() {
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let mut c = a.connect();
+    let folder = tempfile::tempdir().unwrap();
+    let sid = match c.request(Request::CreateSession { cwd: folder.path().to_path_buf(), shell: Some("/bin/sh".into()), env: vec![], nice: 0, rows: 24, cols: 80 }) {
+        Response::SessionCreated { id } => id,
+        other => panic!("{other:?}"),
+    };
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(a.sessions_dir().join("manifest.bin").exists());
+    drop(folder);
+    let dir = a.sigterm();
+    let b = Daemon::start_in(dir, &["--recover"]);
+    let mut c = b.connect();
+    let list = detailed(&mut c);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].info.id, sid, "the same session, recovered");
+    assert_eq!(list[0].info.cwd, PathBuf::from(std::env::var("HOME").unwrap()));
+    assert!(list[0].info.alive);
+}
+
+#[test]
+fn recover_without_a_manifest_is_a_plain_start() {
+    let d = Daemon::start(&["--recover"]);
+    let mut c = d.connect();
+    assert!(detailed(&mut c).is_empty());
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+}
+
+#[test]
+fn recover_while_a_daemon_is_listening_exits_zero_and_leaves_it() {
+    let a = Daemon::start(&[]);
+    let mut second = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--socket").arg(&a.socket).arg("--recover").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(s) = second.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "the second sarkosd did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status}");
+    let mut c = a.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+}

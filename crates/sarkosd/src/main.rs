@@ -36,6 +36,7 @@ fn main() {
     let mut pending_cap = session::CLIENT_PENDING_CAP;
     let mut backpressure = session::Backpressure::default();
     let mut resume = None;
+    let mut recover = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -51,6 +52,7 @@ fn main() {
                 println!("{} {}", handover::OLDEST_READ, handover::FORMAT);
                 return;
             }
+            "--recover" => recover = true,
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),
             "--resume" => resume = Some(PathBuf::from(args.next().expect("--resume needs a path"))),
             "--replay-bytes" => replay = args.next().and_then(|v| v.parse().ok()).expect("--replay-bytes needs a number"),
@@ -109,7 +111,11 @@ fn main() {
         socket,
         flush_quiet: Duration::from_millis(flush_quiet_millis),
     };
-    if let Err(e) = server::run(opts) {
+    if let Err(e) = server::run_with(opts, recover) {
+        if recover && e.to_string().contains(server::ALREADY_LISTENING) {
+            eprintln!("sarkosd: already running; nothing to recover");
+            return;
+        }
         eprintln!("sarkosd: {e:#}");
         std::process::exit(1);
     }

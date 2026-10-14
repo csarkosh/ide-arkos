@@ -103,7 +103,6 @@ pub fn write_manifest(dir: &Path, m: &Manifest) -> io::Result<()> {
 }
 
 /// `Ok(None)` when there is no manifest; an error names what is wrong with one that exists.
-#[cfg_attr(not(test), expect(dead_code))] // read by --recover in a later task
 pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>, String> {
     let path = manifest_path(dir);
     let bytes = match std::fs::read(&path) {
@@ -122,6 +121,143 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>, String> {
         return Err(format!("cannot decode {}: manifest format {format} is not the {MANIFEST_FORMAT} this sarkosd reads", path.display()));
     }
     postcard::from_bytes(body).map(Some).map_err(decode_err)
+}
+
+/// Dim "── resumed after restart ──" between the old history and the new shell. Written into
+/// the ring, never parsed: the window's emulator draws it like any other output.
+pub const DIVIDER: &[u8] = b"\r\n\x1b[2m\xe2\x94\x80\xe2\x94\x80 resumed after restart \xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n";
+
+pub fn tail(mut bytes: Vec<u8>, cap: usize) -> Vec<u8> {
+    if bytes.len() > cap {
+        bytes.drain(..bytes.len() - cap);
+    }
+    bytes
+}
+
+/// What a recovered ring starts with: the newest history that fits, then the divider.
+pub fn seed_for(old: Vec<u8>, cap: usize) -> Vec<u8> {
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let mut seed = tail(old, cap.saturating_sub(DIVIDER.len()));
+    seed.extend_from_slice(DIVIDER);
+    seed
+}
+
+/// One command line for `sh` or `zsh`: every argument single-quoted, then a newline. The only
+/// thing recovery ever types into a shell.
+pub fn shell_line(argv: &[String]) -> Vec<u8> {
+    let mut line = argv.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ");
+    line.push('\n');
+    line.into_bytes()
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Recovered {
+    pub sessions: usize,
+    pub windows: usize,
+}
+
+/// Rebuilds the table from the manifest: each session as a new shell in its folder (the home
+/// folder when that is gone) with its history under the divider and its agent's resume command
+/// typed in; then a window for each project that had one. Files the manifest does not name are
+/// removed. Runs once, after the socket is bound and before it is served.
+pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Recovered {
+    let manifest = match read_manifest(dir) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            eprintln!("sarkosd: no manifest in {}: nothing to recover", dir.display());
+            return Recovered::default();
+        }
+        Err(e) => {
+            eprintln!("sarkosd: cannot read the manifest: {e}; starting without it");
+            let _ = std::fs::remove_file(manifest_path(dir));
+            return Recovered::default();
+        }
+    };
+    eprintln!("sarkosd: recovering {} sessions and {} windows from a manifest written by {}", manifest.sessions.len(), manifest.windows.len(), manifest.written_by);
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+    let mut done = Recovered::default();
+    for m in &manifest.sessions {
+        let id = SessionId(m.id);
+        if state.lock().unwrap().sessions.contains_key(&id) {
+            eprintln!("sarkosd: session {}: listed twice in the manifest, recovered once", m.id);
+            continue;
+        }
+        let old = std::fs::read(replay_path(dir, id)).unwrap_or_default();
+        let cwd = if m.cwd.is_dir() {
+            m.cwd.clone()
+        } else {
+            eprintln!("sarkosd: session {}: {} is gone, recovering it in {}", m.id, m.cwd.display(), home.display());
+            home.clone()
+        };
+        let spec = crate::session::SpawnSpec {
+            id,
+            cwd,
+            shell: (!m.shell.is_empty()).then(|| m.shell.clone()),
+            env: m.env.clone(),
+            nice: m.nice,
+            rows: m.rows,
+            cols: m.cols,
+            replay_capacity: opts.replay_capacity,
+            backpressure: opts.backpressure,
+            seed: seed_for(old, opts.replay_capacity),
+            recovered: true,
+            agent: m.agent.clone(),
+        };
+        match Session::spawn(spec) {
+            Ok(s) => {
+                if let Some(agent) = &m.agent {
+                    if let Err(e) = s.write(&shell_line(&agent.resume)) {
+                        eprintln!("sarkosd: session {}: cannot type the resume command: {e:#}", m.id);
+                    }
+                }
+                let mut st = state.lock().unwrap();
+                if st.next_session() <= m.id {
+                    st.set_next_session(m.id + 1);
+                }
+                st.sessions.insert(id, s);
+                done.sessions += 1;
+            }
+            Err(e) => eprintln!("sarkosd: session {}: cannot recreate its shell: {e:#}", m.id),
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let stale = name
+                .to_string_lossy()
+                .strip_suffix(".replay")
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|id| !manifest.sessions.iter().any(|m| m.id == id));
+            if stale {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    for w in &manifest.windows {
+        let Some(exe) = &w.exe else {
+            eprintln!("sarkosd: window for {}: no binary recorded, not reopened", w.cwd.display());
+            continue;
+        };
+        if !w.cwd.is_dir() {
+            eprintln!("sarkosd: window for {}: the folder is gone, not reopened", w.cwd.display());
+            continue;
+        }
+        if !crate::server::is_sarkos_binary(exe) {
+            eprintln!("sarkosd: window for {}: {} is not a sarkos binary owned by this user, not reopened", w.cwd.display(), exe.display());
+            continue;
+        }
+        match crate::watchdog::launch_ui(exe, Some(&w.cwd)) {
+            Ok(()) => {
+                state.lock().unwrap().windows.insert(w.cwd.clone(), Some(exe.clone()));
+                done.windows += 1;
+            }
+            Err(e) => eprintln!("sarkosd: window for {}: cannot start {}: {e}", w.cwd.display(), exe.display()),
+        }
+    }
+    state.lock().unwrap().manifest_dirty = true;
+    done
 }
 
 /// The ring's bytes as they are, mode 0600: appended while the file is sane, else rewritten.
@@ -296,6 +432,33 @@ pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tail_keeps_the_newest_bytes() {
+        assert_eq!(tail(b"0123456789".to_vec(), 4), b"6789");
+        assert_eq!(tail(b"abc".to_vec(), 4), b"abc");
+        assert_eq!(tail(Vec::new(), 4), b"");
+    }
+
+    #[test]
+    fn the_seed_is_the_old_history_then_the_divider_or_nothing() {
+        assert_eq!(seed_for(Vec::new(), 1024), Vec::<u8>::new(), "a session with no history shows no divider");
+        let seed = seed_for(b"old output".to_vec(), 1024);
+        assert!(seed.starts_with(b"old output"));
+        assert!(seed.ends_with(DIVIDER));
+        assert!(String::from_utf8_lossy(DIVIDER).contains("resumed after restart"));
+        let big = seed_for(vec![b'x'; 2000], 1024);
+        assert_eq!(big.len(), 1024, "old history plus divider fit the ring");
+        assert!(big.ends_with(DIVIDER));
+    }
+
+    #[test]
+    fn shell_line_quotes_each_argument_and_ends_the_line() {
+        let argv: Vec<String> = ["claude", "--resume", "ab-12"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(shell_line(&argv), b"'claude' '--resume' 'ab-12'\n");
+        let odd: Vec<String> = vec!["echo".into(), "it's".into()];
+        assert_eq!(shell_line(&odd), b"'echo' 'it'\\''s'\n");
+    }
 
     #[test]
     fn the_sessions_dir_and_file_names_sit_next_to_the_socket() {
