@@ -270,6 +270,8 @@ mod tests {
 
     #[test]
     fn mark_ignored_does_nothing_outside_a_repository() {
+        // Runs git: see FORK_LOCK.
+        let _fork = crate::client::fork_lock();
         let dir = project();
         let mut entries = list_dir(dir.path()).unwrap();
         mark_ignored(dir.path(), &mut entries);
@@ -278,6 +280,8 @@ mod tests {
 
     #[test]
     fn mark_ignored_follows_gitignore_in_a_repository() {
+        // Runs git: see FORK_LOCK.
+        let _fork = crate::client::fork_lock();
         let dir = project();
         let git = |args: &[&str]| {
             let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
@@ -298,6 +302,8 @@ mod tests {
 
     #[test]
     fn a_symlinked_directory_lists_as_a_directory_and_its_children_list() {
+        // Runs git: see FORK_LOCK.
+        let _fork = crate::client::fork_lock();
         let dir = project();
         let root = dir.path().to_path_buf();
         std::os::unix::fs::symlink(root.join("src"), root.join("link")).unwrap();
@@ -319,6 +325,8 @@ mod tests {
 
     #[test]
     fn mark_ignored_runs_no_command_from_the_repository_config() {
+        // Runs git: see FORK_LOCK.
+        let _fork = crate::client::fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         fs::create_dir(&repo).unwrap();
@@ -394,6 +402,8 @@ mod tests {
 
     #[test]
     fn mark_ignored_does_not_deadlock_on_many_ignored_entries() {
+        // Runs git: see FORK_LOCK.
+        let _fork = crate::client::fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(["init", "-q"]).status().unwrap();
         assert!(st.success());
