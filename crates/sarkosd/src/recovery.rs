@@ -5,7 +5,7 @@
 //! so tests get their own under their temp socket.
 
 use crate::server::{Shared, State};
-use crate::session::{ReplayDelta, Session};
+use crate::session::{ReplayDelta, Session, SpawnSpec};
 use protocol::{AgentRecord, SessionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -197,7 +197,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             eprintln!("sarkosd: session {}: {} is gone, recovering it in {}", m.id, m.cwd.display(), home.display());
             home.clone()
         };
-        let spec = crate::session::SpawnSpec {
+        let spec = SpawnSpec {
             id,
             cwd,
             shell: (!m.shell.is_empty()).then(|| m.shell.clone()),
@@ -211,7 +211,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             recovered: true,
             agent: m.agent.clone(),
         };
-        match Session::spawn(spec) {
+        match spawn_recovered(spec, Session::spawn) {
             Ok(s) => {
                 if let Some(agent) = &m.agent {
                     if !typeable(&agent.resume) {
@@ -266,6 +266,20 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
     }
     state.lock().unwrap().manifest_dirty = true;
     done
+}
+
+/// Spawns a recovered session with its recorded shell and, when that shell cannot start (moved
+/// or uninstalled since), once more with the default shell, so the session and its history are
+/// not lost. `spawn` is `Session::spawn`; the tests pass a spawn without a reader.
+fn spawn_recovered(spec: SpawnSpec, spawn: impl Fn(SpawnSpec) -> anyhow::Result<Arc<Session>>) -> anyhow::Result<Arc<Session>> {
+    let Some(shell) = spec.shell.clone() else {
+        return spawn(spec);
+    };
+    let fallback = SpawnSpec { shell: None, ..spec.clone() };
+    spawn(spec).or_else(|e| {
+        eprintln!("sarkosd: session {}: cannot start {shell}: {e:#}; recovering it with the default shell", fallback.id.0);
+        spawn(fallback)
+    })
 }
 
 /// The ring's bytes as they are, mode 0600: appended while the file is sane, else rewritten.
@@ -440,6 +454,58 @@ pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec_with(shell: Option<&str>) -> crate::session::SpawnSpec {
+        crate::session::SpawnSpec {
+            id: SessionId(41),
+            cwd: std::env::temp_dir(),
+            shell: shell.map(str::to_string),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 1024,
+            backpressure: crate::session::Backpressure::default(),
+            seed: b"history".to_vec(),
+            recovered: true,
+            agent: None,
+        }
+    }
+
+    #[test]
+    fn a_recorded_shell_that_cannot_start_falls_back_to_the_default_shell() {
+        let shells = Mutex::new(Vec::new());
+        let spawn = |spec: crate::session::SpawnSpec| {
+            shells.lock().unwrap().push(spec.shell.clone());
+            Session::spawn_for_test(spec, false)
+        };
+        let s = spawn_recovered(spec_with(Some("/nonexistent/shell")), spawn).expect("recovered with the default shell");
+        assert_eq!(*shells.lock().unwrap(), [Some("/nonexistent/shell".to_string()), None]);
+        assert_ne!(s.shell(), "/nonexistent/shell");
+        assert!(s.info().alive);
+        assert!(matches!(s.take_delta(None), ReplayDelta::Rewrite { all, .. } if all.starts_with(b"history")), "the history comes along");
+        s.kill().unwrap();
+    }
+
+    #[test]
+    fn a_shell_that_starts_is_spawned_once_and_a_failing_default_is_not_retried() {
+        let calls = Mutex::new(0);
+        let s = spawn_recovered(spec_with(Some("/bin/sh")), |spec| {
+            *calls.lock().unwrap() += 1;
+            Session::spawn_for_test(spec, false)
+        })
+        .unwrap();
+        assert_eq!(s.shell(), "/bin/sh");
+        assert_eq!(*calls.lock().unwrap(), 1);
+        s.kill().unwrap();
+        let calls = Mutex::new(0);
+        let failed = spawn_recovered(spec_with(None), |_| {
+            *calls.lock().unwrap() += 1;
+            Err(anyhow::anyhow!("no shell"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(*calls.lock().unwrap(), 1, "the default shell has nothing to fall back to");
+    }
 
     #[test]
     fn only_a_resume_command_without_control_characters_is_typed() {

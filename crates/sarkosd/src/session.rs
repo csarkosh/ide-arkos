@@ -243,6 +243,7 @@ pub enum ReplayDelta {
     Rewrite { total: u64, all: Vec<u8> },
 }
 
+#[derive(Clone)]
 pub struct SpawnSpec {
     pub id: SessionId,
     pub cwd: PathBuf,
