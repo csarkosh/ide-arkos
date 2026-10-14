@@ -18,6 +18,8 @@ mod split_view;
 mod sessions;
 mod terminal;
 mod terminal_element;
+#[cfg_attr(not(test), allow(dead_code))] // Read from Task 4 on.
+mod theme;
 mod tree;
 mod workspace;
 
