@@ -319,13 +319,14 @@ impl Terminal {
     }
 
     pub fn handle_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
-        if !self.alive {
-            return;
-        }
         // Shift+PageUp/PageDown scroll locally; everything else goes to the shell.
         if ks.modifiers.shift && (ks.key == "pageup" || ks.key == "pagedown") {
             let page = self.core.screen_lines() as f32;
             self.scroll_lines(if ks.key == "pageup" { page } else { -page }, cx);
+            return;
+        }
+        // Local scrolling above still works on an ended session; nothing is sent to the daemon.
+        if !self.alive {
             return;
         }
         if let Some(bytes) = keystroke_to_bytes(ks, self.core.app_cursor()) {
