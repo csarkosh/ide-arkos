@@ -11,8 +11,22 @@ Written in Rust with GPUI. The design is in
 ## Status
 
 Milestone 1 of 6: the daemon and one terminal pane. See the spec for the rest. Still needing a
-human check, because the automated run could not drive the window: typing, scrolling feel,
-resize, and a TUI.
+human check, because the automated run could not drive the window:
+
+- Typing.
+- Scroll direction and glide.
+- Shift+PageUp and Shift+PageDown.
+- Resize and reflow.
+- A TUI such as `claude`.
+- Cmd+V bracketed paste into `claude`.
+- Quit on window close.
+- After `kill -9` of the window: replayed history visible, smooth scrolling through it, typing works.
+- The "restoring session" banner and window responsiveness during a large replay.
+- A TUI killed and relaunched at a different window size.
+- The watchdog with `claude` working (`kill -STOP` the window for 40 s).
+- Spinner and fallback glyph alignment.
+- Two projects after a daemon restart.
+- A window minimized for 2 minutes still heartbeating.
 
 ## Build and run
 
