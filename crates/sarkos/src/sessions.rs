@@ -39,6 +39,8 @@ pub enum Pending {
     Kill { session: SessionId },
     /// The daemon replacing itself; answered only on failure (success ends the connection).
     Upgrade,
+    /// The daemon starting the installed window once this one disconnects.
+    Relaunch,
     #[allow(dead_code)] // In Task 4's interface; nothing in milestone 2a sends an untracked request yet
     Other,
 }
@@ -57,6 +59,10 @@ pub enum Outcome {
     UpgradeFailed(String),
     /// A version 2 daemon's answer to Hello: what it runs and which protocol versions it speaks.
     DaemonHello { version: String, protocol_min: u32, protocol_max: u32 },
+    /// The daemon will start the installed window once this one is gone: the window may quit.
+    RelaunchAccepted,
+    /// The daemon will not relaunch the window, which therefore stays.
+    RelaunchRefused(String),
 }
 
 /// One launch step for one saved terminal tab.
@@ -228,6 +234,12 @@ impl SessionManager {
         self.pending.insert(id, Pending::Upgrade);
     }
 
+    /// Asks the daemon to start `exe` in this project once this window disconnects.
+    pub fn relaunch(&mut self, exe: PathBuf) {
+        let id = self.transport.send(Request::RelaunchClient { exe, cwd: self.project.clone() });
+        self.pending.insert(id, Pending::Relaunch);
+    }
+
     pub fn list(&mut self) {
         let id = self.transport.send(Request::ListSessions);
         self.pending.insert(id, Pending::List);
@@ -310,6 +322,7 @@ impl SessionManager {
                     self.busy.remove(&tab);
                 }
                 Some(Pending::Upgrade) => return Outcome::UpgradeFailed(e.clone()),
+                Some(Pending::Relaunch) => return Outcome::RelaunchRefused(e.clone()),
                 Some(Pending::Kill { session }) if e.starts_with("no session") => {
                     // Reaped before the kill arrived: the session is gone, which is what we asked.
                     eprintln!("sarkos: session {} was already gone when killed", session.0);
@@ -336,6 +349,8 @@ impl SessionManager {
                 Outcome::Attached { session, tab, replay, alive, note }
             }
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
+            (Some(Pending::Relaunch), Response::Ok) => Outcome::RelaunchAccepted,
+            (Some(Pending::Relaunch), _) => Outcome::RelaunchRefused(format!("unexpected response {response:?} to {pending:?}")),
             (Some(Pending::Attach { session, tab, .. }), _) => {
                 self.busy.remove(&tab);
                 Outcome::AttachFailed { session, tab, error: format!("unexpected response {response:?} to {pending:?}") }
@@ -723,6 +738,28 @@ mod tests {
         let r2 = Recorder::new();
         m.set_client_for_test(r2.clone());
         assert!(matches!(r2.requests()[..], [Request::Kill { session: SessionId(9) }]));
+    }
+
+    #[test]
+    fn an_accepted_relaunch_lets_the_window_quit() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.relaunch(PathBuf::from("/Applications/bin/sarkos"));
+        assert!(matches!(&r.requests()[..], [Request::RelaunchClient { exe, cwd }] if exe == Path::new("/Applications/bin/sarkos") && cwd == Path::new("/p")));
+        assert_eq!(m.handle_response(1, Response::Ok), Outcome::RelaunchAccepted);
+        assert_eq!(m.pending_count(), 0);
+    }
+
+    #[test]
+    fn a_refused_relaunch_keeps_the_window() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.relaunch(PathBuf::from("/tmp/evil"));
+        let refused = "/tmp/evil is not a sarkos binary owned by this user";
+        assert_eq!(m.handle_response(1, Response::Error(refused.into())), Outcome::RelaunchRefused(refused.into()));
+        // Any other answer is not an acceptance either.
+        m.relaunch(PathBuf::from("/tmp/sarkos"));
+        assert!(matches!(m.handle_response(2, Response::Sessions(vec![])), Outcome::RelaunchRefused(_)));
     }
 
     #[test]

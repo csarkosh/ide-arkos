@@ -909,7 +909,8 @@ impl Root {
         .detach();
     }
 
-    /// Asks the daemon to start the installed window in this project once we are gone, then quits.
+    /// Asks the daemon to start the installed window in this project once we are gone. The window
+    /// quits when the daemon accepts (`Outcome::RelaunchAccepted`) and stays when it refuses.
     pub fn relaunch_now(&mut self, cx: &mut Context<Self>) {
         // Quitting with nothing to relaunch would leave no window: a binary launched from a
         // Homebrew Cellar path is gone once `brew cleanup` removes that version.
@@ -923,15 +924,19 @@ impl Root {
             }
         };
         self.updating = Some(UpdateStage::Relaunching);
-        self.sessions.transport.send(Request::RelaunchClient { exe, cwd: self.project.clone() });
+        self.sessions.relaunch(exe);
+    }
+
+    /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen
+    /// them later) and the pending layout save is written.
+    pub fn flush_for_quit(&mut self) {
         let killed = self.end_closed_tabs();
-        if let Some(client) = self.sessions.client.clone() {
-            if !client.wait_sent(Duration::from_millis(500)) {
-                eprintln!("sarkos: could not send the relaunch request ({killed} kills pending)");
-            }
+        // The process may exit before the writer thread sends the Kills; wait for them, briefly.
+        // The client is the current connection's, whichever reconnect that is.
+        if killed > 0 && !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
+            eprintln!("sarkos: could not send {killed} kill requests before quitting");
         }
         workspace::flush_now(&self.save_queue);
-        cx.quit();
     }
 
     /// A connection is up (the first one, or a reconnect): its session list reconciles the tree.
@@ -962,6 +967,11 @@ impl Root {
         // the dead client: the reconnect attaches the session again.
         self.connection_generation += 1;
         self.sessions.disconnect();
+        // The relaunch request went with the connection, unanswered: keep the window.
+        if self.updating == Some(UpdateStage::Relaunching) {
+            self.updating = None;
+            self.show_notice("update interrupted: sarkosd disconnected before relaunching this window; try again".into(), cx);
+        }
         // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
         self.status = if self.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", self.status) } else { reason };
         let is_final = connection::is_final(&self.status);
@@ -1046,6 +1056,15 @@ impl Root {
                 eprintln!("sarkos: update failed: {e}");
                 self.updating = None;
                 self.show_notice(format!("update failed: {e}"), cx);
+            }
+            Outcome::RelaunchAccepted => {
+                self.flush_for_quit();
+                cx.quit();
+            }
+            Outcome::RelaunchRefused(e) => {
+                eprintln!("sarkos: relaunch refused: {e}");
+                self.updating = None;
+                self.show_notice(format!("cannot relaunch: {e}"), cx);
             }
             Outcome::Error(e) => {
                 self.status = format!("{ERROR_PREFIX}{e}");
@@ -1256,19 +1275,6 @@ fn menus() -> Vec<Menu> {
     vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]
 }
 
-/// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen them
-/// later) and the pending layout save is written.
-fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, cx: &mut App) {
-    let killed = root.update(cx, |root, _| root.end_closed_tabs());
-    // The process may exit before the writer thread sends the Kills; wait for them, briefly.
-    // The client is the current connection's, whichever reconnect that is.
-    let client = root.read(cx).sessions.client.clone();
-    if killed > 0 && !client.is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
-        eprintln!("sarkos: could not send {killed} kill requests before quitting");
-    }
-    workspace::flush_now(queue);
-}
-
 fn banner_bar(text: String, family: gpui::SharedString, theme: &theme::Theme) -> Div {
     div()
         .w_full()
@@ -1390,17 +1396,17 @@ fn main() {
             root.theme_error = theme_error;
             cx.notify();
         });
-        let (quit_root, quit_queue) = (root.clone(), save_queue.clone());
+        let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
-            flush_on_quit(&quit_root, &quit_queue, cx);
+            quit_root.update(cx, |root, _| root.flush_for_quit());
             cx.quit();
         });
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
         // no windowless process lingers.
-        let (close_root, close_queue) = (root.clone(), save_queue.clone());
+        let close_root = root.clone();
         cx.on_window_closed(move |cx| {
             if cx.windows().is_empty() {
-                flush_on_quit(&close_root, &close_queue, cx);
+                close_root.update(cx, |root, _| root.flush_for_quit());
                 cx.quit();
             }
         })
