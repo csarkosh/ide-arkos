@@ -496,7 +496,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
 /// What a viewer tab shows under its find bar.
 enum Kind {
     Loading,
-    Text { plain: bool },
+    Text { plain: Option<crate::viewer::Plain> },
     TooLarge(u64),
     Binary,
     Unreadable(String),
@@ -528,7 +528,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 .size_full()
                 .flex()
                 .flex_col()
-                .children(plain.then(|| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0)).child("over the highlight limit, shown plain")))
+                .children(plain.map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0)).child(why.banner())))
                 .child(div().flex_1().min_h_0().child(element))
         }
         Kind::Loading => notice("loading".into()),

@@ -11,6 +11,17 @@ use std::time::Instant;
 
 pub const GUTTER_PAD: f32 = 8.0;
 const LEFT_PAD: f32 = 8.0;
+/// The most of one line a frame shapes and paints; the rest is past any screen's right edge.
+pub const MAX_PAINT_BYTES: usize = 16 * 1024;
+
+/// The part of `line` to paint: at most `MAX_PAINT_BYTES`, cut back to a char boundary, and
+/// whether anything was cut.
+pub fn paint_cut(line: &str) -> (&str, bool) {
+    if line.len() <= MAX_PAINT_BYTES {
+        return (line, false);
+    }
+    (&line[..line.floor_char_boundary(MAX_PAINT_BYTES)], true)
+}
 
 pub fn gutter_width(line_count: usize, cell_w: f32) -> f32 {
     let digits = line_count.max(1).to_string().len() as f32;
@@ -159,22 +170,28 @@ impl Element for ViewerElement {
                 if line.is_empty() {
                     continue;
                 }
-                // The spans cover the line; anything else (a plain file) is one run.
-                let spans = frame.spans.get(i).filter(|s| s.last().map(|l| l.end) == Some(line.len()));
+                let (shown, cut) = paint_cut(line);
+                // The spans cover the line; anything else (a plain file, a cut line) is one run.
+                let spans = frame.spans.get(i).filter(|s| s.last().map(|l| l.end) == Some(shown.len()));
                 let runs: Vec<TextRun> = match spans {
                     Some(spans) => spans.iter().map(|s| self.run(s.end - s.start, s.color, s.bold, s.italic)).collect(),
-                    None => vec![self.run(line.len(), self.text_fg, false, false)],
+                    None => vec![self.run(shown.len(), self.text_fg, false, false)],
                 };
                 let x = origin.x + px(gutter + LEFT_PAD);
-                let shaped = window.text_system().shape_line(line.clone().into(), font_size, &runs, None);
+                let shaped = window.text_system().shape_line(shown.to_string().into(), font_size, &runs, None);
                 // Find hits on this line: quads under the text, measured on the shaped line.
-                for h in frame.hits.iter().filter(|h| h.line == n) {
-                    let (x0, x1) = (shaped.x_for_index(h.start), shaped.x_for_index(h.end));
+                for h in frame.hits.iter().filter(|h| h.line == n && h.start < shown.len()) {
+                    let (x0, x1) = (shaped.x_for_index(h.start), shaped.x_for_index(h.end.min(shown.len())));
                     let mut col = hsla(if frame.current == Some(*h) { self.find_current } else { self.find_match });
                     col.a = 0.45;
                     window.paint_quad(fill(Bounds { origin: point(x + x0, y), size: size(x1 - x0, px(line_h)) }, col));
                 }
                 let _ = shaped.paint(point(x, y), px(line_h), window, cx);
+                if cut {
+                    // A dim marker where the painted part ends.
+                    let more = window.text_system().shape_line("…".into(), font_size, &[self.run("…".len(), self.gutter_fg, false, false)], None);
+                    let _ = more.paint(point(x + shaped.width, y), px(line_h), window, cx);
+                }
             }
         });
     }
@@ -197,6 +214,23 @@ mod tests {
         assert_eq!(gutter_width(10, 10.0), 2.0 * 10.0 + GUTTER_PAD * 2.0);
         assert_eq!(gutter_width(12345, 8.0), 5.0 * 8.0 + GUTTER_PAD * 2.0);
         assert_eq!(gutter_width(0, 8.0), 1.0 * 8.0 + GUTTER_PAD * 2.0, "an empty file still has a gutter");
+    }
+
+    #[test]
+    fn a_long_line_is_cut_for_painting_on_a_char_boundary() {
+        assert_eq!(paint_cut("short"), ("short", false));
+        assert_eq!(paint_cut(""), ("", false));
+        let exact = "a".repeat(MAX_PAINT_BYTES);
+        assert_eq!(paint_cut(&exact), (exact.as_str(), false), "at the limit nothing is cut");
+        let long = "a".repeat(MAX_PAINT_BYTES * 3);
+        assert_eq!(paint_cut(&long), (&long[..MAX_PAINT_BYTES], true));
+        // Three-byte chars: 16384 is one byte past a multiple of three, inside a char.
+        let wide = "\u{20ac}".repeat(MAX_PAINT_BYTES);
+        assert!(!wide.is_char_boundary(MAX_PAINT_BYTES));
+        let (shown, cut) = paint_cut(&wide);
+        assert!(cut);
+        assert_eq!(shown.len(), MAX_PAINT_BYTES - 1, "back to the start of the char the limit splits");
+        assert!(shown.ends_with('\u{20ac}'));
     }
 
     #[test]

@@ -21,6 +21,27 @@ pub const SNIFF: usize = 8 * 1024;
 pub const MAX_HITS: usize = 10_000;
 /// Files above this are not read at all: a notice says how big they are.
 pub const MAX_PLAIN_BYTES: u64 = 64 << 20;
+/// A file with a line longer than this (a minified bundle, a one-line JSON dump) is shown
+/// plain: the grammars would chew on the whole line at once.
+pub const MAX_LINE_BYTES: usize = 8 * 1024;
+
+/// Why a text file is shown without colours, under a banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plain {
+    /// Over the configured highlight limit.
+    TooBig,
+    /// A line over `MAX_LINE_BYTES`.
+    LongLine,
+}
+
+impl Plain {
+    pub fn banner(self) -> &'static str {
+        match self {
+            Plain::TooBig => "over the highlight limit, shown plain",
+            Plain::LongLine => "a line is longer than 8 KB, shown plain",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
@@ -140,8 +161,8 @@ pub struct ViewerFind {
 pub struct Loaded {
     pub content: Content,
     pub fingerprint: Option<(u128, u64)>,
-    /// Over the highlight limit: shown without colours, under a banner.
-    pub plain: bool,
+    /// Shown without colours, under a banner saying why.
+    pub plain: Option<Plain>,
 }
 
 pub struct Viewer {
@@ -158,8 +179,8 @@ pub struct Viewer {
     /// Rows the element showed at its last paint, for page keys and the scroll limit.
     pub rows_visible: usize,
     pub fingerprint: Option<(u128, u64)>,
-    /// The file is over the highlight limit and shown plain.
-    pub plain: bool,
+    /// The file is shown plain, and why.
+    pub plain: Option<Plain>,
     /// Numbers every load started; `applied` is the newest that landed, so a slower, older
     /// load never lands over a newer one.
     pub loads: u64,
@@ -182,7 +203,7 @@ impl Viewer {
             last_frame: None,
             rows_visible: 1,
             fingerprint: None,
-            plain: false,
+            plain: None,
             loads: 0,
             applied: 0,
             find_seq: 0,
@@ -316,37 +337,39 @@ impl Viewer {
 }
 
 /// A viewer's file, read and highlighted: call it on the background executor. `None` when the
-/// fingerprint is still `known` (nothing to reload). Over `limit` the text is shown plain;
-/// binaries and unreadable files say so.
+/// fingerprint is still `known` (nothing to reload). Over `limit`, or with a line over
+/// `MAX_LINE_BYTES`, the text is shown plain; binaries and unreadable files say so.
 pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
         return None;
     }
-    let plain = |text: &str| {
-        let lines = split_lines(text);
+    let plain = |lines: Vec<String>| {
         let spans = vec![Vec::new(); lines.len()];
         Content::Text { lines: Arc::new(lines), spans }
     };
-    let (content, is_plain) = match read_capped(path) {
-        Err(e) => (Content::Unreadable(e.to_string()), false),
-        Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), false),
-        Ok(Capped::Binary) => (Content::Binary, false),
+    let (content, why_plain) = match read_capped(path) {
+        Err(e) => (Content::Unreadable(e.to_string()), None),
+        Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
+        Ok(Capped::Binary) => (Content::Binary, None),
         Ok(Capped::Bytes(bytes)) => match classify(&bytes, limit) {
-            Classified::Binary => (Content::Binary, false),
-            Classified::TooBig => (plain(&String::from_utf8_lossy(&bytes)), true),
-            Classified::Text(text) => match highlighter {
-                Some(h) => {
-                    let lines = split_lines(&text);
-                    let spans = h.highlight(path, &lines);
-                    (Content::Text { lines: Arc::new(lines), spans }, false)
+            Classified::Binary => (Content::Binary, None),
+            Classified::TooBig => (plain(split_lines(&String::from_utf8_lossy(&bytes))), Some(Plain::TooBig)),
+            Classified::Text(text) => {
+                let lines = split_lines(&text);
+                match highlighter {
+                    _ if lines.iter().any(|l| l.len() > MAX_LINE_BYTES) => (plain(lines), Some(Plain::LongLine)),
+                    Some(h) => {
+                        let spans = h.highlight(path, &lines);
+                        (Content::Text { lines: Arc::new(lines), spans }, None)
+                    }
+                    // The grammars are still loading: plain for now, coloured when they land.
+                    None => (plain(lines), None),
                 }
-                // The grammars are still loading: plain for now, coloured when they land.
-                None => (plain(&text), false),
-            },
+            }
         },
     };
-    Some(Loaded { content, fingerprint, plain: is_plain })
+    Some(Loaded { content, fingerprint, plain: why_plain })
 }
 
 enum Capped {
@@ -526,10 +549,10 @@ mod tests {
         std::fs::write(&text, "one\n\ttwo\n").unwrap();
         let l = read_file(&text, None, None, 100).expect("loaded");
         assert_eq!(l.content, Content::Text { lines: Arc::new(vec!["one".into(), "    two".into()]), spans: vec![Vec::new(), Vec::new()] });
-        assert!(!l.plain && l.fingerprint.is_some());
+        assert!(l.plain.is_none() && l.fingerprint.is_some());
         assert!(read_file(&text, l.fingerprint, None, 100).is_none(), "an unchanged file is not read again");
         let big = read_file(&text, None, None, 4).expect("loaded");
-        assert!(big.plain, "over the limit: the text, plain, under a banner");
+        assert_eq!(big.plain, Some(Plain::TooBig), "over the limit: the text, plain, under a banner");
         assert!(matches!(big.content, Content::Text { ref lines, .. } if lines.len() == 2));
         let bin = dir.path().join("b.bin");
         std::fs::write(&bin, b"\x89PNG\0\0").unwrap();
@@ -542,6 +565,19 @@ mod tests {
         let gone = read_file(&dir.path().join("gone"), l.fingerprint, None, 100).expect("a deleted file is a change");
         assert!(matches!(gone.content, Content::Unreadable(_)));
         assert_eq!(gone.fingerprint, None);
+    }
+
+    #[test]
+    fn a_file_with_a_line_over_the_line_limit_loads_plain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("min.js");
+        let long = "x".repeat(MAX_LINE_BYTES + 1);
+        std::fs::write(&path, format!("short\n{long}\n")).unwrap();
+        let l = read_file(&path, None, None, 1 << 20).expect("loaded");
+        assert_eq!(l.plain, Some(Plain::LongLine), "shown plain, under its own banner");
+        assert!(matches!(l.content, Content::Text { ref lines, .. } if lines.len() == 2 && lines[1] == long), "the line is kept whole; only painting cuts it");
+        std::fs::write(&path, format!("short\n{}\n", "x".repeat(MAX_LINE_BYTES))).unwrap();
+        assert_eq!(read_file(&path, None, None, 1 << 20).unwrap().plain, None, "at the limit it is highlighted");
     }
 
     #[test]

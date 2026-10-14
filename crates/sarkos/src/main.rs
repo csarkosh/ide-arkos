@@ -661,7 +661,7 @@ impl Root {
     fn reload_all_viewers(&mut self, cx: &mut Context<Self>) {
         let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| {
             let v = v.read(cx);
-            !v.plain && matches!(v.content, viewer::Content::Text { .. })
+            v.plain.is_none() && matches!(v.content, viewer::Content::Text { .. })
         }).map(|(t, _)| *t).collect();
         for tab in tabs {
             self.load_viewer(tab, cx);
