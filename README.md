@@ -102,7 +102,9 @@ unfinished tool, and the agent continues from there once asked; recovery only re
 sends a message. Everything stays on this Mac. `[recovery] start_at_login` in the config pins
 it on or off; "ask", the default, shows a one-line notice at launch until you decide. While the
 login item is installed it follows the binary and the `[daemon]` settings: a moved binary or an
-edited value rewrites it.
+edited value rewrites it. The window never unloads the login item, since after a recovery the
+running daemon is the login item's own process: a rewritten file is loaded at the next login, and
+turning it off deletes the file but does not stop a daemon already running.
 
 ## Keyboard
 
