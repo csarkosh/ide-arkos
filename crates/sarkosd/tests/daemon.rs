@@ -672,7 +672,10 @@ fn hello_below_the_minimum_protocol_is_refused() {
     let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
     let hello = Request::Hello { protocol_version: 0, ui_pid: 0, ui_exe: None, ui_cwd: std::env::temp_dir() };
     match c.request(hello) {
-        Response::Error(e) => assert!(e.contains("client 0") && e.contains("Update Sarkos IDE now"), "{e}"),
+        Response::Error(e) => {
+            assert!(e.contains("client 0") && e.contains("this window is older than sarkosd"), "{e}");
+            assert!(!e.contains("pkill"), "restarting the daemon cannot help an older window: {e}");
+        }
         other => panic!("unexpected {other:?}"),
     }
     // Then the daemon hangs up.
@@ -822,11 +825,15 @@ fn hello_version_1_gets_ok_and_version_2_gets_the_daemon_version() {
 }
 
 #[test]
-fn hello_with_a_newer_protocol_is_refused_with_the_update_hint() {
+fn hello_with_a_newer_protocol_is_refused_with_the_pkill_hint() {
     let d = Daemon::start(&[]);
     let mut c = d.connect_raw();
     match c.request(Request::Hello { protocol_version: 3, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
-        Response::Error(e) => assert!(e.contains("Update Sarkos IDE now"), "{e}"),
+        Response::Error(e) => {
+            assert!(e.starts_with("protocol version mismatch"), "the window's is_final matches this: {e}");
+            assert!(e.contains("this sarkosd is older than the window") && e.contains("pkill -x sarkosd (ends every session)"), "{e}");
+            assert!(!e.contains("Update"), "Update now cannot reach a daemon that refused the window: {e}");
+        }
         other => panic!("unexpected {other:?}"),
     }
 }

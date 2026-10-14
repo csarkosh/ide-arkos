@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn only_a_protocol_refusal_is_final() {
-        let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3; update the daemon: run Update Sarkos IDE now; daemon closed the connection");
+        let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3; this sarkosd is older than the window: run pkill -x sarkosd (ends every session) and open Sarkos IDE again; daemon closed the connection");
         assert!(is_final(&refused));
         assert!(!is_final("daemon closed the connection"));
         assert!(!is_final(&format!("{ERROR_PREFIX}no session 4; daemon closed the connection")));

@@ -208,9 +208,16 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                     Ok(Some(msg)) => {
                         if let Request::Hello { protocol_version, .. } = msg.request {
                             if !(PROTOCOL_MIN..=PROTOCOL_VERSION).contains(&protocol_version) {
+                                // The window's `connection::is_final` matches the prefix: a refused
+                                // window stops reconnecting, so the hint names a fix that needs no
+                                // connection.
+                                let hint = if protocol_version > PROTOCOL_VERSION {
+                                    "this sarkosd is older than the window: run pkill -x sarkosd (ends every session) and open Sarkos IDE again"
+                                } else {
+                                    "this window is older than sarkosd: quit it and open the installed Sarkos IDE"
+                                };
                                 let error = format!(
-                                    "protocol version mismatch: daemon speaks {PROTOCOL_MIN} to {PROTOCOL_VERSION}, client {protocol_version}; \
-                                     update the daemon: run Update Sarkos IDE now"
+                                    "protocol version mismatch: daemon speaks {PROTOCOL_MIN} to {PROTOCOL_VERSION}, client {protocol_version}; {hint}"
                                 );
                                 eprintln!("sarkosd: client {client_id} dropped: {error}");
                                 // Closing below lets the writer send this before the socket closes.

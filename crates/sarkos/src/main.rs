@@ -872,7 +872,7 @@ impl Root {
         if self.sessions.is_offline() {
             // A refused window never reconnects, so the daemon cannot be asked to update itself.
             let text = if connection::is_final(&self.status) {
-                "sarkosd is older than this window: run pkill -x sarkosd and open Sarkos IDE again"
+                "sarkosd is older than this window: run pkill -x sarkosd (ends every session) and open Sarkos IDE again"
             } else {
                 "sarkosd is not connected; try again once it is"
             };
