@@ -405,6 +405,20 @@ pub fn resolve_preset(saved: Option<&str>, default: &str, presets: &BTreeMap<Str
     (default.to_string(), BUILTIN_PRESETS[1].1)
 }
 
+/// The preset to apply after `[font]` changed from `old` to `new` while the workspace uses
+/// `current`; `None` leaves every terminal as it is, nudges included. An edited default is
+/// applied now; otherwise only a change to the current preset (new values, or gone, when the
+/// default takes over) applies one.
+pub fn preset_after_reload(current: &str, old: &FontConfig, new: &FontConfig) -> Option<String> {
+    if new.preset != old.preset {
+        return Some(resolve_preset(None, &new.preset, &new.presets).0);
+    }
+    if new.presets.contains_key(current) && old.presets.get(current) == new.presets.get(current) {
+        return None;
+    }
+    Some(resolve_preset(Some(current), &new.preset, &new.presets).0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +432,31 @@ mod tests {
         assert_eq!(resolve_preset(None, "gone", &presets).0, "comfortable");
         let none = BTreeMap::new();
         assert_eq!(resolve_preset(None, "gone", &none), ("gone".to_string(), TextPreset { size: 16.0, line_height: 1.5 }));
+    }
+
+    #[test]
+    fn a_reload_reapplies_a_preset_only_when_the_current_one_changed() {
+        let old = FontConfig::default();
+        // Only the family: no preset to apply, so per-terminal nudges survive.
+        let family = FontConfig { family: "SF Mono".into(), ..FontConfig::default() };
+        assert_eq!(preset_after_reload("relaxed", &old, &family), None);
+        // Another preset changed or was added: the current one is untouched.
+        let mut other = FontConfig::default();
+        other.presets.insert("compact".into(), TextPreset { size: 13.0, line_height: 1.3 });
+        other.presets.insert("big".into(), TextPreset { size: 24.0, line_height: 1.5 });
+        assert_eq!(preset_after_reload("relaxed", &old, &other), None);
+        // The current preset's values changed: it is applied again under the same name.
+        let mut changed = FontConfig::default();
+        changed.presets.insert("relaxed".into(), TextPreset { size: 20.0, line_height: 1.6 });
+        assert_eq!(preset_after_reload("relaxed", &old, &changed).as_deref(), Some("relaxed"));
+        // The current preset was renamed away: the config's default takes over.
+        let mut with_big = FontConfig { preset: "compact".into(), ..FontConfig::default() };
+        with_big.presets.insert("big".into(), TextPreset { size: 24.0, line_height: 1.5 });
+        let renamed = FontConfig { preset: "compact".into(), ..FontConfig::default() };
+        assert_eq!(preset_after_reload("big", &with_big, &renamed).as_deref(), Some("compact"));
+        // The default itself was edited: every terminal follows it now.
+        let relaxed = FontConfig { preset: "relaxed".into(), ..FontConfig::default() };
+        assert_eq!(preset_after_reload("comfortable", &old, &relaxed).as_deref(), Some("relaxed"));
     }
 
     #[test]

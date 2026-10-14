@@ -251,9 +251,13 @@ impl Root {
             cx.set_menus(menus());
         }
         self.switch_theme(cx);
-        if old.font != self.config.font {
-            let (name, _) = config::resolve_preset(Some(&self.text_preset), &self.config.font.preset, &self.config.font.presets);
+        if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
             self.apply_text_preset(&name, cx);
+        }
+        if old.font.family != self.config.font.family {
+            // The cell size changes with the family (`family()` reads the config; the
+            // `cx.notify()` below re-renders): panes re-measure before a restore trusts a grid.
+            self.grids.clear();
         }
         let t = &self.config.terminal;
         self.sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
