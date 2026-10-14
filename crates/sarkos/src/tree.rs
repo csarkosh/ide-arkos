@@ -182,29 +182,43 @@ impl Node {
         None
     }
 
-    fn layout_into(&self, bounds: Rect, out: &mut Layout) {
+    /// Lays the tree out in `bounds`. With `equal` every stored ratio is ignored and taken as 0.5.
+    fn layout_into(&self, bounds: Rect, equal: bool, out: &mut Layout) {
         match self {
             Node::Leaf(p) => out.panes.push((p.id, bounds)),
             Node::Split { id, orientation, ratio, first, second } => {
-                let (first_b, handle, second_b) = split_rects(bounds, *orientation, *ratio);
+                let ratio = if equal { 0.5 } else { *ratio };
+                let (first_b, handle, second_b) = split_rects(bounds, *orientation, ratio, first, second);
                 out.handles.push((*id, *orientation, handle, bounds));
-                first.layout_into(first_b, out);
-                second.layout_into(second_b, out);
+                first.layout_into(first_b, equal, out);
+                second.layout_into(second_b, equal, out);
+            }
+        }
+    }
+
+    /// The smallest extent this subtree needs along `orientation`.
+    fn min_extent(&self, orientation: Orientation) -> f32 {
+        match self {
+            Node::Leaf(_) => match orientation {
+                Orientation::Horizontal => MIN_PANE_W,
+                Orientation::Vertical => MIN_PANE_H,
+            },
+            Node::Split { orientation: o, first, second, .. } => {
+                let (a, b) = (first.min_extent(orientation), second.min_extent(orientation));
+                if *o == orientation { a + b + HANDLE } else { a.max(b) }
             }
         }
     }
 }
 
-/// Orders panes left to right within a band of equal top edge, bands top to bottom. A depth-first
-/// walk is not enough: a column split on the left must not be numbered before a pane to its right
-/// that starts higher than the column's second pane.
+/// Orders panes by band (top edge, 0.5 px tolerance), then by left edge.
 fn reading_order(panes: &mut [(PaneId, Rect)]) {
     panes.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
     let mut start = 0;
     while start < panes.len() {
         let band_y = panes[start].1.y;
         let mut end = start + 1;
-        while end < panes.len() && panes[end].1.y - band_y < 0.01 {
+        while end < panes.len() && panes[end].1.y - band_y <= 0.5 {
             end += 1;
         }
         panes[start..end].sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
@@ -217,37 +231,32 @@ fn placeholder() -> Node {
 }
 
 /// Splits `bounds` along `orientation` at `ratio`, leaving a handle between the halves. Each half
-/// keeps at least the minimum pane size when the whole is big enough for two minimums.
-fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32) -> (Rect, Rect, Rect) {
-    match orientation {
-        Orientation::Horizontal => {
-            // In a sliver narrower than two handles the handle shrinks so it never outgrows its split.
-            let gap = HANDLE.min(bounds.w / 2.0);
-            let total = bounds.w - gap;
-            let first_w = clamp_first(total, ratio, MIN_PANE_W);
-            let first = Rect { x: bounds.x, y: bounds.y, w: first_w, h: bounds.h };
-            let handle = Rect { x: bounds.x + first_w, y: bounds.y, w: gap, h: bounds.h };
-            let second = Rect { x: bounds.x + first_w + gap, y: bounds.y, w: total - first_w, h: bounds.h };
-            (first, handle, second)
-        }
-        Orientation::Vertical => {
-            let gap = HANDLE.min(bounds.h / 2.0);
-            let total = bounds.h - gap;
-            let first_h = clamp_first(total, ratio, MIN_PANE_H);
-            let first = Rect { x: bounds.x, y: bounds.y, w: bounds.w, h: first_h };
-            let handle = Rect { x: bounds.x, y: bounds.y + first_h, w: bounds.w, h: gap };
-            let second = Rect { x: bounds.x, y: bounds.y + first_h + gap, w: bounds.w, h: total - first_h };
-            (first, handle, second)
-        }
-    }
-}
-
-fn clamp_first(total: f32, ratio: f32, min: f32) -> f32 {
+/// keeps at least what its subtree needs when the whole has room for both.
+fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32, first: &Node, second: &Node) -> (Rect, Rect, Rect) {
+    let (extent, min_first, min_second) = (
+        match orientation {
+            Orientation::Horizontal => bounds.w,
+            Orientation::Vertical => bounds.h,
+        },
+        first.min_extent(orientation),
+        second.min_extent(orientation),
+    );
+    // In a sliver narrower than two handles the handle shrinks so it never outgrows its split.
+    let gap = HANDLE.min(extent / 2.0);
+    let total = extent - gap;
     let wanted = total * ratio;
-    if total >= 2.0 * min {
-        wanted.clamp(min, total - min)
-    } else {
-        wanted.clamp(0.0, total)
+    let first_len = if total >= min_first + min_second { wanted.clamp(min_first, total - min_second) } else { wanted.clamp(0.0, total) };
+    match orientation {
+        Orientation::Horizontal => (
+            Rect { x: bounds.x, y: bounds.y, w: first_len, h: bounds.h },
+            Rect { x: bounds.x + first_len, y: bounds.y, w: gap, h: bounds.h },
+            Rect { x: bounds.x + first_len + gap, y: bounds.y, w: total - first_len, h: bounds.h },
+        ),
+        Orientation::Vertical => (
+            Rect { x: bounds.x, y: bounds.y, w: bounds.w, h: first_len },
+            Rect { x: bounds.x, y: bounds.y + first_len, w: bounds.w, h: gap },
+            Rect { x: bounds.x, y: bounds.y + first_len + gap, w: bounds.w, h: total - first_len },
+        ),
     }
 }
 
@@ -264,11 +273,17 @@ impl Tree {
     }
 
     /// Pane ids in reading order: left to right, top to bottom. This is the Cmd+1 to Cmd+9 order.
-    pub fn panes(&self) -> Vec<PaneId> {
+    /// The tree laid out with every ratio taken as 0.5, panes in reading order. Numbering comes
+    /// from this, so dragging a handle never renumbers panes.
+    pub(crate) fn equal_ratio_layout(&self, bounds: Rect) -> Layout {
         let mut out = Layout::default();
-        self.root.layout_into(NOMINAL, &mut out);
+        self.root.layout_into(bounds, true, &mut out);
         reading_order(&mut out.panes);
-        out.panes.into_iter().map(|(id, _)| id).collect()
+        out
+    }
+
+    pub fn panes(&self) -> Vec<PaneId> {
+        self.equal_ratio_layout(NOMINAL).panes.into_iter().map(|(id, _)| id).collect()
     }
 
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
@@ -404,7 +419,7 @@ impl Tree {
             return false;
         }
         if from == to {
-            let target = at.unwrap_or(n_from - 1);
+            let target = at.unwrap_or(n_from);
             let landing = if target > idx { target - 1 } else { target };
             if landing == idx {
                 return true;
@@ -501,8 +516,9 @@ impl Tree {
                 return out;
             }
         }
-        self.root.layout_into(bounds, &mut out);
-        reading_order(&mut out.panes);
+        self.root.layout_into(bounds, false, &mut out);
+        let rank: std::collections::HashMap<PaneId, usize> = self.panes().into_iter().enumerate().map(|(i, id)| (id, i)).collect();
+        out.panes.sort_by_key(|(id, _)| rank[id]);
         out
     }
 
@@ -716,6 +732,32 @@ mod tests {
     }
 
     #[test]
+    fn nested_same_axis_splits_keep_the_minimum_for_each_pane() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        let b = t.split(a, Side::Right, term(2)).unwrap();
+        let c = t.split(b, Side::Right, term(3)).unwrap();
+        let outer = t.layout(bounds()).handles[0].0;
+        t.set_ratio(outer, 0.95);
+        let l = t.layout(bounds());
+        let r = |id| l.panes.iter().find(|(p, _)| *p == id).unwrap().1;
+        assert!(r(b).w >= MIN_PANE_W - 0.01, "b is {}", r(b).w);
+        assert!(r(c).w >= MIN_PANE_W - 0.01, "c is {}", r(c).w);
+        assert!(r(a).w >= MIN_PANE_W - 0.01);
+    }
+
+    #[test]
+    fn move_tab_to_end_of_the_same_pane() {
+        let mut t = Tree::new(term(1));
+        let p = t.focused;
+        t.add_tab(p, term(2));
+        t.add_tab(p, term(3));
+        assert!(t.move_tab(p, 0, p, None));
+        assert_eq!(t.pane(p).unwrap().tabs, vec![term(2), term(3), term(1)]);
+        assert_eq!(t.pane(p).unwrap().active, 2);
+    }
+
+    #[test]
     fn maximize_gives_one_pane_the_whole_window() {
         let mut t = Tree::new(term(1));
         let a = t.focused;
@@ -886,14 +928,36 @@ mod tests {
             for op in &ops {
                 apply(&mut t, op, &mut next);
             }
+            let eq = t.equal_ratio_layout(bounds());
+            let rect = |id: PaneId| eq.panes.iter().find(|(p, _)| *p == id).unwrap().1;
+            let panes = t.panes();
+            prop_assert_eq!(panes.len(), eq.panes.len());
+            // Reading order: the next pane is in a lower band, or in the same band further right.
+            for w in panes.windows(2) {
+                let (a, b) = (rect(w[0]), rect(w[1]));
+                prop_assert!(b.y > a.y + 0.5 || ((a.y - b.y).abs() <= 0.5 && b.x > a.x), "{a:?} then {b:?}");
+            }
+        }
+
+        #[test]
+        fn ratio_changes_never_renumber_panes(ops in proptest::collection::vec(op(), 0..30), ratios in proptest::collection::vec((0..8usize, 0.0f32..1.0, proptest::bool::ANY), 0..20)) {
+            let mut t = Tree::new(term(1));
+            let mut next = 1;
+            for op in &ops {
+                apply(&mut t, op, &mut next);
+            }
             t.maximized = None;
-            let l = t.layout(bounds());
-            // Reading order: for consecutive panes, either the next one starts further right on
-            // the same band, or it starts lower.
-            for w in l.panes.windows(2) {
-                let (a, b) = (w[0].1, w[1].1);
-                let same_band = (a.y - b.y).abs() < 0.01;
-                prop_assert!(if same_band { b.x > a.x } else { b.y > a.y || b.x < a.x + a.w }, "{a:?} then {b:?}");
+            let before = t.panes();
+            for (s, r, reset) in ratios {
+                let handles = t.layout(bounds()).handles;
+                if handles.is_empty() {
+                    continue;
+                }
+                let id = handles[s % handles.len()].0;
+                if reset { t.reset_ratio(id) } else { t.set_ratio(id, r) }
+                prop_assert_eq!(t.panes(), before.clone());
+                let live: Vec<PaneId> = t.layout(bounds()).panes.iter().map(|(id, _)| *id).collect();
+                prop_assert_eq!(live, before.clone());
             }
         }
 
