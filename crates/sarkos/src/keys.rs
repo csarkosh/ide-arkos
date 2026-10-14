@@ -7,6 +7,21 @@ pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
         return None;
     }
     let key = k.key.as_str();
+    let mods = 1 + m.shift as u8 + 2 * m.alt as u8 + 4 * m.control as u8;
+    if mods > 1 {
+        let suffix = match key {
+            "up" => Some('A'),
+            "down" => Some('B'),
+            "right" => Some('C'),
+            "left" => Some('D'),
+            "home" => Some('H'),
+            "end" => Some('F'),
+            _ => None,
+        };
+        if let Some(c) = suffix {
+            return Some(format!("\x1b[1;{mods}{c}").into_bytes());
+        }
+    }
     let arrow = |csi: &str, ss3: &str| -> Vec<u8> {
         if app_cursor { format!("\x1bO{ss3}").into_bytes() } else { format!("\x1b[{csi}").into_bytes() }
     };
@@ -21,8 +36,6 @@ pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
         "space" => b" ".to_vec(),
         "up" => arrow("A", "A"),
         "down" => arrow("B", "B"),
-        "right" if m.alt => b"\x1bf".to_vec(),
-        "left" if m.alt => b"\x1bb".to_vec(),
         "right" => arrow("C", "C"),
         "left" => arrow("D", "D"),
         "home" => b"\x1b[H".to_vec(),
@@ -112,8 +125,19 @@ mod tests {
     fn arrows_follow_cursor_mode() {
         assert_eq!(keystroke_to_bytes(&ks("up", None, none()), false), Some(b"\x1b[A".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("up", None, none()), true), Some(b"\x1bOA".to_vec()));
-        assert_eq!(keystroke_to_bytes(&ks("left", None, alt()), false), Some(b"\x1bb".to_vec()));
-        assert_eq!(keystroke_to_bytes(&ks("right", None, alt()), false), Some(b"\x1bf".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("left", None, alt()), false), Some(b"\x1b[1;3D".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("right", None, alt()), false), Some(b"\x1b[1;3C".to_vec()));
+    }
+
+    #[test]
+    fn modified_arrows_use_xterm_parameters() {
+        assert_eq!(keystroke_to_bytes(&ks("up", None, shift()), false), Some(b"\x1b[1;2A".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("left", None, ctrl()), false), Some(b"\x1b[1;5D".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("right", None, alt()), false), Some(b"\x1b[1;3C".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("end", None, shift()), false), Some(b"\x1b[1;2F".to_vec()));
+        // Modifiers win over application cursor mode, as in xterm.
+        assert_eq!(keystroke_to_bytes(&ks("up", None, shift()), true), Some(b"\x1b[1;2A".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("up", None, none()), true), Some(b"\x1bOA".to_vec()));
     }
 
     #[test]

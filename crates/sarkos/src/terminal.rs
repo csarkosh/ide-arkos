@@ -158,6 +158,12 @@ impl TerminalCore {
     }
 
     /// Moves alacritty's integer display offset to `off` (clamped to history).
+    /// True while the view shows history: either the grid is offset or the animator is heading
+    /// there. Drives the jump-to-bottom affordance.
+    pub fn scrolled_up(&self) -> bool {
+        self.display_offset() > 0 || self.scroll.target > 0.5 || self.scroll.current > 0.5
+    }
+
     pub fn set_display_offset(&mut self, off: usize) {
         let cur = self.term.grid().display_offset() as i32;
         let want = off.min(self.history_size()) as i32;
@@ -306,7 +312,16 @@ impl Terminal {
         true
     }
 
+    pub fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.core.scroll.jump_to(0.0);
+        self.core.set_display_offset(0);
+        cx.notify();
+    }
+
     pub fn handle_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
+        if !self.alive {
+            return;
+        }
         // Shift+PageUp/PageDown scroll locally; everything else goes to the shell.
         if ks.modifiers.shift && (ks.key == "pageup" || ks.key == "pagedown") {
             let page = self.core.screen_lines() as f32;
@@ -323,6 +338,9 @@ impl Terminal {
     }
 
     pub fn paste(&mut self, text: &str) {
+        if !self.alive {
+            return;
+        }
         let mut bytes = Vec::with_capacity(text.len() + 12);
         if self.core.bracketed_paste() {
             bytes.extend_from_slice(b"\x1b[200~");
@@ -424,6 +442,20 @@ mod tests {
         assert_eq!(t.cursor(), None);
         t.apply_output(b"\x1b[?25h");
         assert!(t.cursor().is_some());
+    }
+
+    #[test]
+    fn scrolled_up_tracks_the_animator_and_the_grid() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        for i in 0..10 {
+            t.apply_output(format!("l{i}\r\n").as_bytes());
+        }
+        assert!(!t.scrolled_up());
+        t.scroll.scroll_by(2.0, t.history_size() as f32);
+        assert!(t.scrolled_up(), "a scroll target above the bottom counts");
+        t.scroll.jump_to(0.0);
+        t.set_display_offset(0);
+        assert!(!t.scrolled_up());
     }
 
     #[test]

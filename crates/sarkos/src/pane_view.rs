@@ -225,8 +225,11 @@ fn render_terminal(root: &mut Root, terminal: Entity<Terminal>, cx: &mut Context
     let font_size = root.font_size;
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
+    let scrolled_up = terminal.read(cx).core.scrolled_up();
+    let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
     div()
         .size_full()
+        .relative()
         .key_context("Terminal")
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
@@ -258,7 +261,25 @@ fn render_terminal(root: &mut Root, terminal: Entity<Terminal>, cx: &mut Context
                 t.scroll_lines(lines, cx);
             });
         }))
-        .child(TerminalElement::new(terminal, font_size))
+        .child(TerminalElement::new(terminal.clone(), font_size))
+        .children(scrolled_up.then(|| {
+            let t = terminal.clone();
+            div()
+                .id(jump_id)
+                .absolute()
+                .bottom(px(10.0))
+                .right(px(14.0))
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(10.0))
+                .bg(rgb(0x1a2130))
+                .text_color(rgb(FG))
+                .font_family("Menlo")
+                .text_size(px(12.0))
+                .cursor_pointer()
+                .child("jump to bottom")
+                .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
+        }))
 }
 
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by
