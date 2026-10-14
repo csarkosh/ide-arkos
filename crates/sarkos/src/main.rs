@@ -3,6 +3,7 @@ mod chrome;
 mod client;
 mod closed_stack;
 mod config;
+mod config_watch;
 mod drag;
 mod empty_pane;
 mod keys;
@@ -29,7 +30,7 @@ use gpui::{
     Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
-use sessions::{reconcile, Outcome, Reconcile, SessionManager, SCROLLBACK};
+use sessions::{reconcile, Outcome, Reconcile, SessionManager};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,14 +85,17 @@ pub struct Root {
     pub empty_anim: HashMap<PaneId, std::time::Instant>,
     /// The basename of `$SHELL`, shown on a tab whose program set no title.
     pub shell_name: String,
-    /// The last good config; `apply_config` (Task 6) replaces it.
+    /// The last good config; `apply_config` replaces it.
     pub config: config::Config,
     pub theme: Arc<theme::Theme>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
-    /// The config or theme problem shown under the connection banner; `None` when all is well.
+    /// The config file's problem shown under the connection banner; `None` when all is well.
     /// Kept apart from `status`, which belongs to the connection and clears when it answers.
     pub config_error: Option<String>,
+    /// The theme that did not load, shown under `config_error`. Set and cleared by whatever last
+    /// tried to switch theme, so a config reload and a theme problem never clobber each other.
+    pub theme_error: Option<String>,
 }
 
 /// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
@@ -109,9 +113,12 @@ impl Root {
         // replaces with a real shell (reconcile sees it is not in the daemon's list).
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
+        let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
+        let t = &config.terminal;
+        sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
         Self {
             tree,
-            sessions: SessionManager::new(client.clone(), Some(client), project.clone()),
+            sessions,
             save_queue: SharedSaveQueue::default(),
             project,
             status: CONNECTING.into(),
@@ -132,6 +139,7 @@ impl Root {
             theme: Arc::new(theme),
             system_is_dark,
             config_error: None,
+            theme_error: None,
         }
     }
 
@@ -160,15 +168,56 @@ impl Root {
         if self.config.appearance.mode != config::AppearanceMode::System {
             return;
         }
-        match self.resolve_theme() {
-            Ok(t) if t != *self.theme => self.set_theme(t, cx),
-            Ok(_) => {}
-            Err(e) => {
-                self.config_error = Some(format!("theme: {e}; keeping {}", self.theme.name));
-                eprintln!("sarkos: theme: {e}");
-                cx.notify();
-            }
+        self.switch_theme(cx);
+    }
+
+    /// Loads the theme the config and appearance name and switches to it if it differs. A theme
+    /// that fails to load keeps the current one; `theme_error` says so until a load succeeds.
+    fn switch_theme(&mut self, cx: &mut Context<Self>) {
+        let (switch, banner) = theme::keep_or_switch(&self.theme, self.resolve_theme());
+        if let Some(t) = switch {
+            self.set_theme(t, cx);
         }
+        if let Some(e) = &banner {
+            eprintln!("sarkos: {e}");
+        }
+        self.theme_error = banner;
+        cx.notify();
+    }
+
+    /// The file changed (or was deleted and recreated): parse it, keep the last good config on
+    /// an error, apply what changed. Called by the watcher and by the palette's "Reload config".
+    pub fn reload_config(&mut self, cx: &mut Context<Self>) {
+        let (cfg, banner) = config::reload_decision(&self.config, config::load(&paths::config_file()));
+        self.config_error = banner;
+        if let Some(e) = &self.config_error {
+            eprintln!("sarkos: {e}");
+        } else {
+            eprintln!("sarkos: config reloaded");
+            self.apply_config(cfg, cx);
+        }
+        cx.notify();
+    }
+
+    /// Applies every live setting. The `[daemon]` section only matters when the window starts
+    /// the daemon; the file says so.
+    pub fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
+        let old = std::mem::replace(&mut self.config, cfg);
+        if old.keybindings != self.config.keybindings {
+            cx.clear_key_bindings();
+            cx.bind_keys(keymap::bindings_for(&self.config.keybindings));
+            // The menu bar shows (and on macOS answers) the keys bound when it was set.
+            cx.set_menus(menus());
+        }
+        self.switch_theme(cx);
+        if old.font != self.config.font {
+            let (name, _) = config::resolve_preset(Some(&self.text_preset), &self.config.font.preset, &self.config.font.presets);
+            self.apply_text_preset(&name, cx);
+        }
+        let t = &self.config.terminal;
+        self.sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
+        cx.background_executor().spawn(async { motion::refresh() }).detach();
+        cx.notify();
     }
 
     pub fn family(&self) -> gpui::SharedString {
@@ -577,6 +626,15 @@ impl Root {
             TextPreset(name) => {
                 self.apply_text_preset(&name, cx);
             }
+            ReloadConfig => self.reload_config(cx),
+            ExtractThemes => {
+                match theme::extract(&paths::themes_dir()) {
+                    Ok(wrote) if wrote.is_empty() => self.status = format!("built-in themes are already in {}", paths::themes_dir().display()),
+                    Ok(wrote) => self.status = format!("wrote {} theme files to {}", wrote.len(), paths::themes_dir().display()),
+                    Err(e) => self.status = format!("cannot extract themes: {e}"),
+                }
+                cx.notify();
+            }
         }
         let _ = window;
     }
@@ -669,10 +727,11 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
             },
         }
     };
+    let scrollback = root.read_with(cx, |root, _| root.sessions.scrollback)?;
     let started = std::time::Instant::now();
     let (mut core, title) = cx
         .background_spawn(async move {
-            let mut core = TerminalCore::new(cols, rows, SCROLLBACK);
+            let mut core = TerminalCore::new(cols, rows, scrollback);
             // The previous UI already answered any queries in the replay; keep only the title.
             let title = core.apply_output(&replay).title;
             (core, title)
@@ -721,7 +780,10 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         let theme = self.theme.clone();
-        let banners: Vec<String> = [self.status.clone(), self.config_error.clone().unwrap_or_default()].into_iter().filter(|b| !b.is_empty()).collect();
+        let banners: Vec<String> = [self.status.clone(), self.config_error.clone().unwrap_or_default(), self.theme_error.clone().unwrap_or_default()]
+            .into_iter()
+            .filter(|b| !b.is_empty())
+            .collect();
         let banner_h = BANNER_H * banners.len() as f32;
         let (top, bottom) = (chrome::TOP_BAR_H, chrome::STATUS_BAR_H);
         // A window shorter than its chrome would give a negative height; lay out at zero instead.
@@ -806,6 +868,11 @@ impl Render for Root {
     }
 }
 
+/// The menu bar. Set again when the key bindings change so it shows the bound keys.
+fn menus() -> Vec<Menu> {
+    vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]
+}
+
 /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen them
 /// later) and the pending layout save is written.
 fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, client: &client::Client, cx: &mut App) {
@@ -867,8 +934,24 @@ fn main() {
     if qos != 0 {
         eprintln!("sarkos: could not set user-interactive QoS (error {qos})");
     }
+    motion::refresh();
     app_nap::hold();
-    let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe()) {
+    let config_path = paths::config_file();
+    let (config, config_error) = match config::load(&config_path) {
+        Ok(c) => (c, None),
+        Err(e) => {
+            eprintln!("sarkos: {e}");
+            (config::Config::default(), Some(e.to_string()))
+        }
+    };
+    // Used only when this window starts the daemon; a running one keeps its own settings.
+    let daemon_args = vec![
+        "--watchdog-secs".to_string(),
+        config.daemon.watchdog_secs.to_string(),
+        "--replay-bytes".to_string(),
+        config.daemon.replay_bytes.to_string(),
+    ];
+    let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("sarkos: cannot reach sarkosd: {e:#}");
@@ -881,20 +964,12 @@ fn main() {
     // stall painting or input. Saves happen on the background executor.
     let saved = workspace::load(&project);
     let save_queue = SharedSaveQueue::default();
-    let config_path = paths::config_file();
-    let (config, config_error) = match config::load(&config_path) {
-        Ok(c) => (c, None),
-        Err(e) => {
-            eprintln!("sarkos: {e}");
-            (config::Config::default(), Some(e.to_string()))
-        }
-    };
 
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
         // once the window exists.
-        cx.bind_keys(keymap::bindings());
-        cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
+        cx.bind_keys(keymap::bindings_for(&config.keybindings));
+        cx.set_menus(menus());
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let client_for_view = client.clone();
         let view_queue = save_queue.clone();
@@ -906,8 +981,11 @@ fn main() {
         let (theme, theme_error) = match theme::load(&name, &paths::themes_dir()) {
             Ok(t) => (t, None),
             Err(e) => {
-                eprintln!("sarkos: theme: {e}; using navy");
-                (theme::builtin("navy").expect("navy is built in"), Some(format!("theme: {e}")))
+                // A broken user navy-light.toml still gives a light window.
+                let t = theme::builtin(&name).or_else(|| theme::builtin("navy")).expect("navy is built in");
+                let banner = format!("theme: {e}; using built-in {}", t.name);
+                eprintln!("sarkos: {banner}");
+                (t, Some(banner))
             }
         };
         let (view_config, view_theme) = (config, theme);
@@ -941,10 +1019,9 @@ fn main() {
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
-        // The config's problem first: a bad config file also explains a theme that did not load.
-        let launch_error = config_error.or(theme_error);
         root.update(cx, |root, cx| {
-            root.config_error = launch_error;
+            root.config_error = config_error;
+            root.theme_error = theme_error;
             cx.notify();
         });
         let (quit_root, quit_queue, quit_client) = (root.clone(), save_queue.clone(), client.clone());
@@ -962,6 +1039,7 @@ fn main() {
             }
         })
         .detach();
+        config_watch::start(root.clone(), config_path.clone(), cx);
 
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();

@@ -202,6 +202,15 @@ pub fn pick_name(mode: crate::config::AppearanceMode, system_is_dark: bool, cfg:
     }
 }
 
+/// A theme that fails to load keeps the current one and says so; the same theme is not re-applied.
+pub fn keep_or_switch(current: &Theme, wanted: Result<Theme, String>) -> (Option<Theme>, Option<String>) {
+    match wanted {
+        Ok(t) if t == *current => (None, None),
+        Ok(t) => (Some(t), None),
+        Err(e) => (None, Some(format!("theme: {e}; keeping {}", current.name))),
+    }
+}
+
 pub fn is_dark(appearance: gpui::WindowAppearance) -> bool {
     use gpui::WindowAppearance::*;
     matches!(appearance, Dark | VibrantDark)
@@ -354,5 +363,18 @@ mod tests {
         use gpui::WindowAppearance::*;
         assert!(is_dark(Dark) && is_dark(VibrantDark));
         assert!(!is_dark(Light) && !is_dark(VibrantLight));
+    }
+
+    #[test]
+    fn missing_theme_keeps_the_current_one() {
+        let navy = builtin("navy").unwrap();
+        let (switch, banner) = keep_or_switch(&navy, Err("theme \"nvay\" is not built in".into()));
+        assert_eq!(switch, None);
+        let banner = banner.unwrap();
+        assert!(banner.contains("nvay") && banner.contains("keeping navy"), "{banner}");
+        let (switch, banner) = keep_or_switch(&navy, Ok(navy.clone()));
+        assert_eq!((switch, banner), (None, None), "the same theme is not re-applied");
+        let light = builtin("navy-light").unwrap();
+        assert_eq!(keep_or_switch(&navy, Ok(light.clone())), (Some(light), None));
     }
 }

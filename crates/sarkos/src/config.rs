@@ -249,6 +249,14 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     }
 }
 
+/// A reload keeps the last good config when the new one does not parse (spec 7).
+pub fn reload_decision(current: &Config, loaded: Result<Config, ConfigError>) -> (Config, Option<String>) {
+    match loaded {
+        Ok(cfg) => (cfg, None),
+        Err(e) => (current.clone(), Some(e.to_string())),
+    }
+}
+
 /// Written on first run. Every key is present with its default so an edit is a one-word change;
 /// the comments carry spec 7.1's evidence notes, each a preference, never a health feature.
 pub const DEFAULT_CONFIG: &str = r##"# Sarkos IDE configuration. Watched while the app runs: a saved edit applies at once, and a bad
@@ -498,5 +506,17 @@ mod tests {
         assert_eq!(load(&file).unwrap(), Config::default());
         assert!(!file.exists());
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn bad_reload_keeps_the_last_good_config() {
+        let mut good = Config::default();
+        good.font.family = "Monaco".into();
+        let (cfg, banner) = reload_decision(&good, parse("[font]\nfamily = \n"));
+        assert_eq!(cfg, good);
+        assert!(banner.as_deref().unwrap_or("").starts_with("config.toml line 2: "), "{banner:?}");
+        let (cfg, banner) = reload_decision(&good, parse("[font]\nfamily = \"Menlo\"\n"));
+        assert_eq!(cfg.font.family, "Menlo");
+        assert_eq!(banner, None);
     }
 }

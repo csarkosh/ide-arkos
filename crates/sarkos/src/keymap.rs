@@ -44,6 +44,10 @@ pub enum Command {
     OpenConfig,
     /// Switch every terminal to the named text preset (the palette runs it).
     TextPreset(String),
+    /// Re-read config.toml now (the palette runs it; the watcher does the same on every save).
+    ReloadConfig,
+    /// Write the built-in themes into the themes folder (the palette runs it).
+    ExtractThemes,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -183,6 +187,7 @@ pub fn bindings_for(overrides: &BTreeMap<String, String>) -> Vec<KeyBinding> {
         .collect()
 }
 
+#[cfg(test)]
 pub fn bindings() -> Vec<KeyBinding> {
     bindings_for(&BTreeMap::new())
 }

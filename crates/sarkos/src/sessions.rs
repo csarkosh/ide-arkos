@@ -131,11 +131,23 @@ pub struct SessionManager {
     /// Sessions whose replay is being parsed; their live events wait in `backlog`.
     restoring: HashSet<SessionId>,
     backlog: HashMap<SessionId, Vec<Event>>,
+    /// The `[terminal]` section: scrollback for terminals built from now on, and the shell and
+    /// nice level new sessions start with.
+    pub scrollback: usize,
+    pub shell: Option<String>,
+    pub nice: i32,
 }
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashSet::new(), restoring: HashSet::new(), backlog: HashMap::new() }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashSet::new(), restoring: HashSet::new(), backlog: HashMap::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+    }
+
+    /// The `[terminal]` section, applied to shells started from now on (spec 7).
+    pub fn set_defaults(&mut self, scrollback: usize, shell: Option<String>, nice: i32) {
+        self.scrollback = scrollback;
+        self.shell = shell;
+        self.nice = nice;
     }
 
     pub fn list(&mut self) {
@@ -146,9 +158,9 @@ impl SessionManager {
     pub fn create(&mut self, tab: TabId, note: bool) {
         let id = self.transport.send(Request::CreateSession {
             cwd: self.project.clone(),
-            shell: None,
+            shell: self.shell.clone(),
             env: vec![],
-            nice: 0,
+            nice: self.nice,
             rows: 24,
             cols: 80,
         });
@@ -391,6 +403,22 @@ mod tests {
         let sub = here.join("sub");
         std::fs::create_dir(&sub).unwrap();
         assert!(reattachable(SessionId(7), &list, &sub.join("..")), "paths compare canonically");
+    }
+
+    #[test]
+    fn create_uses_the_configured_shell_and_nice() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.set_defaults(5_000, Some("/bin/bash".into()), 5);
+        assert_eq!(m.scrollback, 5_000);
+        m.create(1, false);
+        match &r.requests()[0] {
+            Request::CreateSession { shell, nice, .. } => {
+                assert_eq!(shell.as_deref(), Some("/bin/bash"));
+                assert_eq!(*nice, 5);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
