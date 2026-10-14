@@ -34,6 +34,20 @@ Things only a person at the screen can check, in order of value:
 - the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
   after, and look for no "relaunching" line in `~/Library/Application Support/sarkos/sarkosd.log`
 - `ps` after thirty seconds idle with four terminals
+- with a pane maximized, Cmd+1 to Cmd+9, the Cmd+K arrows and Ctrl+Cmd+Left/Right exit the
+  maximize and typing keeps reaching the focused pane
+- Ctrl+Tab switching to the most recently used tab, and back
+- Cmd+W then Cmd+Shift+T within a minute bringing back the same shell with its history; after
+  a minute, `ps` showing that shell gone
+- Cmd+K then W closing every tab in a pane
+- closing a tab while it still says "restoring session"
+- shrinking the window to its minimum size: one pane still fits and nothing panics
+- Cmd+= and Cmd+- changing only the focused terminal's text
+- Cmd+W on an empty pane that is not the last one closing it; the last pane's empty state does
+  not offer Cmd+W
+- Option+Left and Option+Right jumping words inside `claude`
+- upgrading from milestone 1: the session it showed comes back in the only pane; then
+  `pkill -x sarkosd` (see "Build and run") ends it, and the next launch starts fresh shells
 
 ## Keyboard
 
@@ -80,6 +94,10 @@ Notes:
   chords fire at once. Cmd+K alone does nothing in a busy or empty pane.
 - Pane numbers are structural reading order: rows top to bottom, left to right within a row,
   computed as if every split were at half, so dragging a handle never renumbers a pane.
+- Cmd+W (and the tab's ×, and Cmd+K then W) keeps a closed terminal's shell alive for a
+  minute: Cmd+Shift+T within that minute brings the same shell back, history and all, in the
+  pane it was closed from. After the minute the shell ends, and Cmd+Shift+T opens a new one.
+  Quitting ends every closed tab's shell at once.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
 - Cmd+F, Cmd+,, Cmd+Shift+P, Cmd+B, Cmd+Shift+E and Ctrl+Shift+G are not bound until
@@ -96,6 +114,11 @@ The daemon keeps running after the window closes; sessions survive the UI being 
 `~/Library/Application Support/sarkos/sarkosd.log`. A protocol change between the window and the
 daemon requires restarting the daemon; the window reports the mismatch in its status banner.
 `pkill -x sarkosd` stops the daemon and ends every session.
+
+Upgrading from milestone 1: the window finds milestone 1's saved session and moves it to the
+new workspace format on first launch. A daemon started by milestone 1 keeps running without
+this milestone's lifecycle fixes, though; `pkill -x sarkosd` restarts it (the window starts a
+new one) and ends every session, so do it when nothing important is running.
 
 ## Tests
 
