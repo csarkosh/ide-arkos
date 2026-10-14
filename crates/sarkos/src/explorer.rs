@@ -46,17 +46,29 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<EntryInfo>> {
     Ok(out)
 }
 
+/// Settings every git call on the opened folder passes first: the folder's own `.git/config`
+/// may name a program (`core.fsmonitor`, hooks) that git would otherwise run for a read-only
+/// query.
+pub const GIT_SAFE_ARGS: [&str; 4] = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
+
+/// `git -C <root>` with `GIT_SAFE_ARGS`, for every git call on the opened folder.
+pub fn git(root: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(GIT_SAFE_ARGS).arg("-C").arg(root);
+    cmd
+}
+
 /// Marks the entries `.gitignore` ignores, by asking git from the repository root. Outside a
 /// repository, or without git, nothing is marked. One process per call: the caller runs it
 /// once per expanded directory, off the UI thread. Git refuses a path beyond a symlinked
 /// directory (exit 128), so nothing inside one is marked.
 pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     if entries.is_empty() {
         return;
     }
-    let Ok(mut child) = Command::new("git").arg("-C").arg(root).args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+    let Ok(mut child) = git(root).args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
         return;
     };
     let Some(mut stdin) = child.stdin.take() else { return };
@@ -280,6 +292,35 @@ mod tests {
         let mut sub = list_dir(&dir.path().join("src")).unwrap();
         mark_ignored(dir.path(), &mut sub);
         assert!(sub.iter().all(|e| !e.ignored));
+    }
+
+    #[test]
+    fn mark_ignored_runs_no_command_from_the_repository_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git").arg("-C").arg(&repo).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+            assert!(st.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        fs::write(repo.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(repo.join("a.log"), "").unwrap();
+        fs::write(repo.join("kept.rs"), "").unwrap();
+        git(&["add", ".gitignore", "kept.rs"]);
+        let marker = dir.path().join("ran");
+        let script = dir.path().join("fsmonitor.sh");
+        fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "core.fsmonitor", script.to_str().unwrap()]);
+        git(&["update-index", "--fsmonitor"]);
+        let _ = fs::remove_file(&marker);
+        let mut entries = list_dir(&repo).unwrap();
+        mark_ignored(&repo, &mut entries);
+        assert!(!marker.exists(), "the repository's core.fsmonitor ran");
+        let ignored: Vec<&str> = entries.iter().filter(|e| e.ignored).map(|e| e.name.as_str()).collect();
+        assert_eq!(ignored, ["a.log"], "the marks are still right");
     }
 
     #[test]
