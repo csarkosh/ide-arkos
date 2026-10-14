@@ -52,6 +52,8 @@ const ERROR_PREFIX: &str = "sarkosd error: ";
 const CONNECTING: &str = "connecting to sarkosd";
 /// How long a one-off notice stays up when no command replaces or clears it first.
 const NOTICE_FOR: Duration = Duration::from_secs(6);
+/// How often kills the daemon refused during an upgrade are sent again.
+const KILL_RETRY: Duration = Duration::from_secs(1);
 
 /// The status bar's word on the daemon, from the connection banner alone: empty once the daemon
 /// answered, `CONNECTING` until then, an `ERROR_PREFIX` error or a disconnect reason otherwise.
@@ -1413,6 +1415,16 @@ fn main() {
         cx.spawn(async move |cx| loop {
             cx.background_executor().timer(CLOSE_TICK).await;
             if tick_root.update(cx, |root, _| root.expire_closed(Instant::now())).is_err() {
+                break;
+            }
+        })
+        .detach();
+        // A kill refused while the daemon held the upgrade slot goes out again: on the reconnect
+        // a finished upgrade brings, or from here when the upgrade failed and none follows.
+        let retry_root = root.clone();
+        cx.spawn(async move |cx| loop {
+            cx.background_executor().timer(KILL_RETRY).await;
+            if retry_root.update(cx, |root, _| root.sessions.resend_kills()).is_err() {
                 break;
             }
         })

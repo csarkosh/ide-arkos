@@ -15,6 +15,9 @@ use std::sync::Arc;
 
 pub const SCROLLBACK: usize = 20_000;
 
+/// How the daemon's refusal of a create or kill starts while an upgrade holds its slot.
+const UPGRADE_BUSY: &str = "an upgrade is in progress";
+
 /// Sends requests to the daemon. `Client` is the real one; tests record.
 pub trait Transport: Send + Sync {
     fn send(&self, request: Request) -> u32;
@@ -139,8 +142,8 @@ pub struct SessionManager {
     backlog: HashMap<SessionId, Vec<Event>>,
     /// Between `disconnect` and the next `set_client`: kills wait in `kills_to_resend`.
     offline: bool,
-    /// Kills asked for while disconnected (a closed tab's grace ran out), sent on the next
-    /// connection.
+    /// Kills asked for while disconnected (a closed tab's grace ran out) or refused during an
+    /// upgrade, sent on the next connection or by `resend_kills`.
     kills_to_resend: Vec<SessionId>,
     /// The `[terminal]` section: scrollback for terminals built from now on, and the shell and
     /// nice level new sessions start with.
@@ -173,6 +176,16 @@ impl SessionManager {
     fn connected(&mut self) {
         self.pending.clear();
         self.offline = false;
+        self.resend_kills();
+    }
+
+    /// Sends the kills that are waiting, unless the connection is down: then the next one does.
+    /// The window calls this every second, for kills refused by an upgrade that failed its check
+    /// and so brought no reconnect.
+    pub fn resend_kills(&mut self) {
+        if self.offline {
+            return;
+        }
         for session in std::mem::take(&mut self.kills_to_resend) {
             self.kill(session);
         }
@@ -182,6 +195,13 @@ impl SessionManager {
     /// in flight can be answered, and no tab is busy with anything from the old connection.
     pub fn disconnect(&mut self) {
         self.offline = true;
+        // A kill nobody answered may never have been read (one queued behind an upgrade's exec).
+        // Sending it again is harmless: a session already gone answers as killed.
+        let unanswered = self.pending.values().filter_map(|p| match p {
+            Pending::Kill { session } => Some(*session),
+            _ => None,
+        });
+        self.kills_to_resend.extend(unanswered);
         self.terminals.clear();
         self.pending.clear();
         self.busy.clear();
@@ -294,6 +314,12 @@ impl SessionManager {
                     // Reaped before the kill arrived: the session is gone, which is what we asked.
                     eprintln!("sarkos: session {} was already gone when killed", session.0);
                     return Outcome::Killed { session };
+                }
+                Some(Pending::Kill { session }) if e.starts_with(UPGRADE_BUSY) => {
+                    // Refused, not failed: dropped here, the shell would live on unseen.
+                    eprintln!("sarkos: kill of session {} refused during an upgrade; sending it again", session.0);
+                    self.kills_to_resend.push(session);
+                    return Outcome::None;
                 }
                 _ => {}
             }
@@ -654,11 +680,49 @@ mod tests {
         m.kill(SessionId(9));
         // A kill refused while the daemon holds the upgrade slot is not the upgrade failing.
         let busy = "an upgrade is in progress; retry in a moment";
-        assert_eq!(m.handle_response(2, Response::Error(busy.into())), Outcome::Error(busy.into()));
+        assert_eq!(m.handle_response(2, Response::Error(busy.into())), Outcome::None);
         assert_eq!(m.handle_response(1, Response::Error("execv failed".into())), Outcome::UpgradeFailed("execv failed".into()));
         assert!(!m.is_offline());
         m.disconnect();
         assert!(m.is_offline());
+    }
+
+    #[test]
+    fn a_kill_refused_during_an_upgrade_is_sent_again_without_a_banner() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.kill(SessionId(9));
+        let busy = "an upgrade is in progress; retry in a moment";
+        assert_eq!(m.handle_response(1, Response::Error(busy.into())), Outcome::None);
+        assert_eq!(m.kills_to_resend, vec![SessionId(9)]);
+        // The upgrade failed its check, so no reconnect follows: the retry tick sends it again.
+        m.resend_kills();
+        assert!(m.kills_to_resend.is_empty());
+        assert!(matches!(r.requests()[..], [Request::Kill { session: SessionId(9) }, Request::Kill { session: SessionId(9) }]));
+        assert_eq!(m.handle_response(2, Response::Ok), Outcome::Killed { session: SessionId(9) });
+        // Nothing goes out while the connection is down; the next one sends it.
+        m.kill(SessionId(10));
+        assert_eq!(m.handle_response(3, Response::Error(busy.into())), Outcome::None);
+        m.disconnect();
+        m.resend_kills();
+        assert_eq!(r.requests().len(), 3);
+        let r2 = Recorder::new();
+        m.set_client_for_test(r2.clone());
+        assert!(matches!(r2.requests()[..], [Request::Kill { session: SessionId(10) }]));
+    }
+
+    #[test]
+    fn a_kill_unanswered_when_the_connection_drops_is_sent_again() {
+        // The upgrading window's own kill waits unread behind its Upgrade, and the exec closes
+        // the connection: nothing will answer it.
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.upgrade(PathBuf::from("/bin/sarkosd"));
+        m.kill(SessionId(9));
+        m.disconnect();
+        let r2 = Recorder::new();
+        m.set_client_for_test(r2.clone());
+        assert!(matches!(r2.requests()[..], [Request::Kill { session: SessionId(9) }]));
     }
 
     #[test]
