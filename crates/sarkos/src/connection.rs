@@ -30,6 +30,12 @@ pub fn should_start_daemon(lost_for: Duration) -> bool {
     lost_for >= START_DAEMON_AFTER
 }
 
+/// Whether a disconnect ends the reconnecting: the daemon refused this window's protocol, and
+/// would refuse every retry the same way.
+pub fn is_final(status: &str) -> bool {
+    status.starts_with(ERROR_PREFIX) && status.contains("protocol version mismatch")
+}
+
 /// Binds `first`, then keeps the window connected until it closes.
 pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_args: Vec<String>, first: (Arc<Client>, UnboundedReceiver<ServerMessage>), cx: &mut App) {
     cx.spawn(async move |cx| {
@@ -44,7 +50,14 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
             };
             heartbeat(root.clone(), client.clone(), generation, cx);
             let Some(reason) = pump(&root, &client, &mut events, cx).await else { return };
-            if root.update(cx, |root, cx| root.disconnected(reason, cx)).is_err() {
+            let Ok(status) = root.update(cx, |root, cx| {
+                root.disconnected(reason, cx);
+                root.status.clone()
+            }) else {
+                return;
+            };
+            if is_final(&status) {
+                eprintln!("sarkos: not reconnecting: {status}");
                 return;
             }
             let lost_at = Instant::now();
@@ -202,6 +215,15 @@ mod tests {
         assert_eq!(backoff(3), Duration::from_millis(2000));
         assert_eq!(backoff(4), Duration::from_millis(2000));
         assert_eq!(backoff(40), Duration::from_millis(2000), "no overflow");
+    }
+
+    #[test]
+    fn only_a_protocol_refusal_is_final() {
+        let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3; update the daemon: run Update Sarkos IDE now; daemon closed the connection");
+        assert!(is_final(&refused));
+        assert!(!is_final("daemon closed the connection"));
+        assert!(!is_final(&format!("{ERROR_PREFIX}no session 4; daemon closed the connection")));
+        assert!(!is_final("protocol version mismatch"), "only as an error the daemon sent");
     }
 
     #[test]

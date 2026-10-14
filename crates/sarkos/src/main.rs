@@ -73,6 +73,15 @@ fn daemon_label_with(status: &str, reconnecting: bool) -> &'static str {
     }
 }
 
+/// The busy mark a terminal tab shows after a disconnect.
+fn disconnect_mark(is_final: bool) -> &'static str {
+    if is_final {
+        "daemon refused"
+    } else {
+        "reconnecting"
+    }
+}
+
 /// A reconnect's status waits `BANNER_AFTER` before it becomes a banner; the status bar says
 /// "reconnecting" at once. Any other status shows at once.
 fn banner_visible(reconnecting_since: Option<Instant>, now: Instant) -> bool {
@@ -855,23 +864,28 @@ impl Root {
     }
 
     /// The connection ended. Every terminal tab waits for the reconnect; the daemon kept the
-    /// sessions, so the next attach replays them.
+    /// sessions, so the next attach replays them. A refused protocol is final: no reconnect
+    /// follows, and the banner says why at once.
     pub fn disconnected(&mut self, reason: String, cx: &mut Context<Self>) {
-        eprintln!("sarkos: {reason}; reconnecting");
         // A restore still parsing this connection's replay must not install a terminal bound to
         // the dead client: the reconnect attaches the session again.
         self.connection_generation += 1;
         self.sessions.disconnect();
+        // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
+        self.status = if self.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", self.status) } else { reason };
+        let is_final = connection::is_final(&self.status);
+        if !is_final {
+            eprintln!("sarkos: {}; reconnecting", self.status);
+        }
+        let mark = disconnect_mark(is_final);
         for (pane, idx, tab) in self.tree.tabs() {
             if let Tab::Terminal { .. } = tab {
                 if let Some(id) = self.tree.tab_id(pane, idx) {
-                    self.sessions.busy.insert(id, "reconnecting");
+                    self.sessions.busy.insert(id, mark);
                 }
             }
         }
-        // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
-        self.status = if self.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", self.status) } else { reason };
-        self.reconnecting_since = Some(Instant::now());
+        self.reconnecting_since = if is_final { None } else { Some(Instant::now()) };
         cx.notify();
     }
 
@@ -1366,5 +1380,13 @@ mod tests {
         assert!(banner_visible(None, t0), "a status that is not a reconnect shows at once");
         assert_eq!(daemon_label_with("daemon closed the connection", true), "sarkosd reconnecting");
         assert_eq!(daemon_label_with("", false), "sarkosd connected");
+    }
+
+    #[test]
+    fn a_refused_window_says_so_on_its_tabs() {
+        use super::{connection::is_final, disconnect_mark};
+        let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3");
+        assert_eq!(disconnect_mark(is_final(&refused)), "daemon refused");
+        assert_eq!(disconnect_mark(is_final("daemon closed the connection")), "reconnecting");
     }
 }
