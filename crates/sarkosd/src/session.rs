@@ -589,7 +589,7 @@ impl Session {
 
     /// The last `rows, cols` set.
     pub fn size(&self) -> (u16, u16) {
-        *self.size.lock().unwrap()
+        *self.size.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Ends the shell. The exit check and the signal happen under the same lock, so a child that
@@ -747,8 +747,14 @@ impl Session {
         session
     }
 
+    /// The state lock, taken even when a panic elsewhere poisoned it: the ring is still bytes and
+    /// the flags still say what they said, so the flusher and the manifest read on.
+    fn state_even_poisoned(&self) -> std::sync::MutexGuard<'_, SessionState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     pub fn info(&self) -> SessionInfo {
-        let st = self.state.lock().unwrap();
+        let st = self.state_even_poisoned();
         SessionInfo {
             id: self.id,
             title: String::new(),
@@ -794,7 +800,7 @@ impl Session {
     }
 
     pub fn agent(&self) -> Option<AgentRecord> {
-        self.agent.lock().unwrap().clone()
+        self.agent.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// `info` releases the state lock before `agent` takes its own, so the two never nest.
@@ -803,13 +809,13 @@ impl Session {
     }
 
     pub fn replay_capacity(&self) -> usize {
-        self.state.lock().unwrap().replay.capacity()
+        self.state_even_poisoned().replay.capacity()
     }
 
     /// Unflushed output that stopped `quiet` ago, or has been flowing for `max_wait`: a chatty
     /// session is still written every `max_wait`.
     pub fn flush_due(&self, quiet: Duration, max_wait: Duration) -> bool {
-        let st = self.state.lock().unwrap();
+        let st = self.state_even_poisoned();
         match st.dirty_since {
             None => false,
             Some(since) => st.last_output.elapsed() >= quiet || since.elapsed() >= max_wait,
@@ -820,13 +826,27 @@ impl Session {
     /// ring dropped some of them. Clears the dirty mark under the same lock, so output arriving
     /// after this call makes the session dirty again.
     pub fn take_delta(&self, from: Option<u64>) -> ReplayDelta {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state_even_poisoned();
         st.dirty_since = None;
         let total = st.replay.total();
         match from.and_then(|f| st.replay.since(f)) {
             Some(bytes) => ReplayDelta::Append { total, bytes },
             None => ReplayDelta::Rewrite { total, all: st.replay.snapshot() },
         }
+    }
+}
+
+#[cfg(test)]
+impl Session {
+    /// Poisons the state lock the way a panic in the reader would.
+    pub(crate) fn poison_state_for_test(self: &Arc<Self>) {
+        let s = self.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = s.state.lock().unwrap();
+            panic!("deliberate panic to poison session {}'s state", s.id.0);
+        })
+        .join();
+        assert!(self.state.is_poisoned());
     }
 }
 

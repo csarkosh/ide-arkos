@@ -173,7 +173,7 @@ fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     let dir = crate::recovery::sessions_dir(&opts.socket);
     let flusher = crate::recovery::start(state.clone(), dir, opts.flush_quiet);
-    crate::recovery::watch_termination(state.clone(), flusher, opts.flush_quiet);
+    crate::recovery::watch_termination(state.clone(), flusher);
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => spawn_client(stream, state.clone(), opts.clone()),
@@ -493,7 +493,11 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         },
         Request::Resize { session: sid, rows, cols } => match session(sid) {
             Some(s) => match s.resize(rows, cols) {
-                Ok(()) => Response::Ok,
+                Ok(()) => {
+                    // The manifest records the size a restart recreates the session at.
+                    state.lock().unwrap().manifest_dirty = true;
+                    Response::Ok
+                }
                 Err(e) => Response::Error(format!("resize failed: {e:#}")),
             },
             None => Response::Error(format!("no session {}", sid.0)),

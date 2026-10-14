@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 struct Daemon {
     child: Child,
     socket: PathBuf,
-    _dir: Option<tempfile::TempDir>,
+    dir: Option<tempfile::TempDir>,
 }
 
 impl Daemon {
@@ -35,11 +35,11 @@ impl Daemon {
             assert!(Instant::now() < deadline, "daemon did not create its socket");
             std::thread::sleep(Duration::from_millis(20));
         }
-        Daemon { child, socket, _dir: Some(dir) }
+        Daemon { child, socket, dir: Some(dir) }
     }
 
-    fn dir(&self) -> &std::path::Path {
-        self._dir.as_ref().unwrap().path()
+    fn path(&self) -> &std::path::Path {
+        self.dir.as_ref().unwrap().path()
     }
 
     fn sessions_dir(&self) -> PathBuf {
@@ -60,7 +60,7 @@ impl Daemon {
             assert!(Instant::now() < deadline, "sarkosd did not exit within 5 s of SIGTERM");
             std::thread::sleep(Duration::from_millis(20));
         }
-        self._dir.take().unwrap()
+        self.dir.take().unwrap()
     }
 
     fn connect(&self) -> Conn {
@@ -1307,7 +1307,9 @@ fn sigterm_writes_the_last_output_and_exits_zero() {
     c.request(Request::Input { session: sid, bytes: b"i=0; while [ $i -lt 3000 ]; do echo line $i; i=$((i+1)); done; echo END-$((6*7))\n".to_vec() });
     // The terminal echoes the command line too, so the marker is one only the shell prints.
     c.wait_for_output(sid, "END-42");
-    assert!(!replay_file(&d, sid).exists(), "the periodic flush never ran");
+    // Whatever a periodic pass wrote goes: only the SIGTERM pass can write the file now, and it
+    // rewrites the whole ring into a file that vanished.
+    let _ = std::fs::remove_file(replay_file(&d, sid));
     let dir = d.sigterm();
     let bytes = std::fs::read(dir.path().join("sessions").join(format!("{}.replay", sid.0))).expect("written on SIGTERM");
     let text = String::from_utf8_lossy(&bytes);
@@ -1319,7 +1321,7 @@ fn sigterm_writes_the_last_output_and_exits_zero() {
 #[test]
 fn windows_survive_an_upgrade_and_reach_the_manifest() {
     let d = Daemon::start(&["--flush-quiet-millis", "200"]);
-    let project = d.dir().join("a-project-window");
+    let project = d.path().join("a-project-window");
     let manifest = d.sessions_dir().join("manifest.bin");
     // Not a UI (pid 0), so the watchdog leaves it alone; the window list keys on the folder.
     let mut w = d.connect_raw();
@@ -1334,4 +1336,35 @@ fn windows_survive_an_upgrade_and_reach_the_manifest() {
     wait_for_file_containing(&manifest, &project.to_string_lossy());
     let mut c = d.reconnect();
     assert!(matches!(c.request(Request::ListSessions), Response::Sessions(_)), "the resumed daemon serves");
+}
+
+fn wait_for_file_without(path: &std::path::Path, needle: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let bytes = std::fs::read(path).unwrap_or_default();
+        if !String::from_utf8_lossy(&bytes).contains(needle) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{} still contains {needle:?}", path.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_session_that_exits_leaves_the_manifest_long_before_the_reaper_forgets_it() {
+    let d = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let cwd = d.path().join("a-session-that-exits");
+    std::fs::create_dir(&cwd).unwrap();
+    let manifest = d.sessions_dir().join("manifest.bin");
+    let mut c = d.connect();
+    let sid = match c.request(Request::CreateSession { cwd: cwd.clone(), shell: Some("/bin/sh".into()), env: vec![], nice: 0, rows: 24, cols: 80 }) {
+        Response::SessionCreated { id } => id,
+        other => panic!("unexpected {other:?}"),
+    };
+    c.attach(sid);
+    wait_for_file_containing(&manifest, &cwd.to_string_lossy());
+    c.send(Request::Input { session: sid, bytes: b"exit\n".to_vec() });
+    assert_eq!(wait_for_exit(&mut c, sid, Duration::from_secs(5)), Some(0));
+    // The reaper keeps the dead session listed for ten minutes; the manifest drops it at once.
+    wait_for_file_without(&manifest, &cwd.to_string_lossy(), Duration::from_secs(3));
 }

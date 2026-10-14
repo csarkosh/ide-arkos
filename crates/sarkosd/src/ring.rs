@@ -67,7 +67,13 @@ impl RingBuffer {
             return None;
         }
         let skip = (from - oldest_kept) as usize;
-        Some(self.snapshot()[skip..].to_vec())
+        let first = (self.start + skip) % self.cap;
+        let end = first + (self.len - skip);
+        if end <= self.cap {
+            Some(self.buf[first..end].to_vec())
+        } else {
+            Some([&self.buf[first..], &self.buf[..end - self.cap]].concat())
+        }
     }
 }
 

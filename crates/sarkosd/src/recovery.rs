@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -62,6 +63,13 @@ pub struct Manifest {
     pub windows: Vec<ManifestWindow>,
 }
 
+/// The live sessions' ids, sorted: a death changes the manifest without anyone marking it.
+fn live_ids(st: &State) -> Vec<SessionId> {
+    let mut ids: Vec<SessionId> = st.sessions.values().filter(|s| s.info().alive).map(|s| s.id).collect();
+    ids.sort_by_key(|id| id.0);
+    ids
+}
+
 /// The manifest for the table as it is: live sessions by id, windows by folder.
 pub fn manifest_of(st: &State) -> Manifest {
     let mut sessions: Vec<ManifestSession> = st
@@ -79,9 +87,10 @@ pub fn manifest_of(st: &State) -> Manifest {
     Manifest { format: MANIFEST_FORMAT, written_by: crate::version_string(), sessions, windows }
 }
 
+/// Creates the dir when missing and makes it private whatever mode it had.
 fn ensure_dir(dir: &Path) -> io::Result<()> {
-    if !dir.exists() {
-        std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(dir)?;
+    if std::fs::metadata(dir)?.permissions().mode() & 0o777 != 0o700 {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
@@ -140,20 +149,29 @@ pub struct Flusher {
     dir: PathBuf,
     /// The stream position each session's file ends at, for this daemon life.
     offsets: HashMap<SessionId, u64>,
+    /// The live sessions the last manifest written listed, sorted.
+    last_live: Vec<SessionId>,
 }
 
 impl Flusher {
     pub fn new(dir: PathBuf) -> Self {
-        Flusher { dir, offsets: HashMap::new() }
+        Flusher { dir, offsets: HashMap::new(), last_live: Vec::new() }
     }
 
     /// One pass: every session due (all of them when `force`), the files of sessions gone from
-    /// the table, then the manifest when it changed (or `force`).
+    /// the table, then the manifest when it changed (or `force`). A lock poisoned by a panic
+    /// elsewhere still holds usable data, so it is taken anyway; a panic flushing one session
+    /// costs only that session its write.
     pub fn tick(&mut self, state: &Shared, quiet: Duration, force: bool) {
-        let sessions: Vec<Arc<Session>> = state.lock().unwrap().sessions.values().cloned().collect();
+        let sessions: Vec<Arc<Session>> = state.lock().unwrap_or_else(|p| p.into_inner()).sessions.values().cloned().collect();
         for s in &sessions {
-            if force || s.flush_due(quiet, MAX_WAIT) {
-                self.flush_session(s);
+            let flushed = catch_unwind(AssertUnwindSafe(|| {
+                if force || s.flush_due(quiet, MAX_WAIT) {
+                    self.flush_session(s);
+                }
+            }));
+            if flushed.is_err() {
+                eprintln!("sarkosd: writing session {}'s history panicked; the other sessions are still written", s.id.0);
             }
         }
         let gone: Vec<SessionId> = self.offsets.keys().filter(|id| !sessions.iter().any(|s| s.id == **id)).copied().collect();
@@ -162,9 +180,11 @@ impl Flusher {
             let _ = std::fs::remove_file(replay_path(&self.dir, id));
         }
         let manifest = {
-            let mut st = state.lock().unwrap();
-            if force || st.manifest_dirty {
+            let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
+            let live = live_ids(&st);
+            if force || st.manifest_dirty || live != self.last_live {
                 st.manifest_dirty = false;
+                self.last_live = live;
                 Some(manifest_of(&st))
             } else {
                 None
@@ -209,9 +229,16 @@ pub fn start(state: Shared, dir: PathBuf, quiet: Duration) -> Arc<Mutex<Flusher>
     let worker = flusher.clone();
     std::thread::Builder::new()
         .name("recovery-flusher".into())
-        .spawn(move || loop {
-            std::thread::sleep(tick);
-            worker.lock().unwrap_or_else(|p| p.into_inner()).tick(&state, quiet, false);
+        .spawn(move || {
+            let mut logged = false;
+            loop {
+                std::thread::sleep(tick);
+                let pass = catch_unwind(AssertUnwindSafe(|| worker.lock().unwrap_or_else(|p| p.into_inner()).tick(&state, quiet, false)));
+                if pass.is_err() && !logged {
+                    eprintln!("sarkosd: a flush pass panicked; the flusher keeps going");
+                    logged = true;
+                }
+            }
         })
         .expect("spawn flusher");
     flusher
@@ -240,7 +267,7 @@ pub fn block_termination_signals() {
 
 /// On SIGTERM (what launchd sends at logout and shutdown) or SIGHUP: write every ring and the
 /// manifest, then exit 0. Closing the masters sends the shells SIGHUP, as the shutdown would.
-pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>, quiet: Duration) {
+pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>) {
     std::thread::Builder::new()
         .name("termination".into())
         .spawn(move || {
@@ -254,7 +281,12 @@ pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>, quiet: Dur
             }
             let name = if sig == libc::SIGTERM { "SIGTERM" } else { "SIGHUP" };
             eprintln!("sarkosd: {name}: writing every session's history and the manifest before exiting");
-            flusher.lock().unwrap_or_else(|p| p.into_inner()).tick(&state, quiet, true);
+            // SIGTERM and SIGHUP are blocked in every thread, so this thread must reach the exit:
+            // a panic here would leave a daemon only SIGKILL can stop.
+            let pass = catch_unwind(AssertUnwindSafe(|| flusher.lock().unwrap_or_else(|p| p.into_inner()).tick(&state, Duration::ZERO, true)));
+            if pass.is_err() {
+                eprintln!("sarkosd: the final flush panicked; exiting anyway");
+            }
             eprintln!("sarkosd: exiting");
             std::process::exit(0);
         })
@@ -323,5 +355,70 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"xy");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(&sessions).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    fn seeded(id: u64, seed: &[u8]) -> Arc<Session> {
+        let spec = crate::session::SpawnSpec {
+            id: SessionId(id),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 1024,
+            backpressure: crate::session::Backpressure::default(),
+            seed: seed.to_vec(),
+            recovered: false,
+            agent: None,
+        };
+        Session::spawn_for_test(spec, false).unwrap()
+    }
+
+    #[test]
+    fn poisoned_locks_cost_no_session_its_history_and_never_panic_the_flusher() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (seeded(1, b"history-a"), seeded(2, b"history-b"));
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().sessions.extend([(a.id, a.clone()), (b.id, b.clone())]);
+        a.poison_state_for_test();
+        let table = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = table.lock().unwrap();
+            panic!("deliberate panic to poison the table");
+        })
+        .join();
+        assert!(state.is_poisoned());
+        let mut f = Flusher::new(dir.path().join("sessions"));
+        f.tick(&state, Duration::ZERO, true);
+        assert_eq!(std::fs::read(replay_path(&f.dir, a.id)).unwrap(), b"history-a", "a poisoned ring is still bytes");
+        assert_eq!(std::fs::read(replay_path(&f.dir, b.id)).unwrap(), b"history-b");
+        let m = read_manifest(&f.dir).unwrap().expect("the manifest is written under a poisoned table");
+        assert_eq!(m.sessions.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1, 2]);
+        // `kill` wakes subscribers under the poisoned lock, so end `a`'s shell by its pid.
+        // SAFETY: the pid is this test's unreaped child.
+        unsafe { libc::kill(a.info().pid.unwrap() as libc::pid_t, libc::SIGHUP) };
+        let _ = b.kill();
+    }
+
+    #[test]
+    fn a_death_rewrites_the_manifest_without_the_dirty_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = seeded(5, b"");
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().sessions.insert(s.id, s.clone());
+        let mut f = Flusher::new(dir.path().join("sessions"));
+        f.tick(&state, Duration::ZERO, true);
+        assert_eq!(read_manifest(&f.dir).unwrap().unwrap().sessions.len(), 1);
+        s.kill().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while s.info().alive {
+            assert!(std::time::Instant::now() < deadline, "the shell never exited");
+            s.poll_exit();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!state.lock().unwrap().manifest_dirty);
+        f.tick(&state, Duration::from_secs(60), false);
+        assert!(read_manifest(&f.dir).unwrap().unwrap().sessions.is_empty(), "the dead session left the manifest");
     }
 }
