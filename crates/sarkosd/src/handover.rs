@@ -83,6 +83,35 @@ pub fn read(path: &Path) -> Result<Handover, String> {
     postcard::from_bytes(body).map_err(decode_err)
 }
 
+/// The records whose descriptors the new image may adopt, checked before any is: the numbers
+/// come from a file, and adopting one that is stdio (below 3), the listener, or named by two
+/// records would hand a session someone else's descriptor. A bad listener fails the resume; a
+/// bad master loses that session, with a log line.
+pub fn adoptable(h: &Handover) -> Result<Vec<&SessionRecord>, String> {
+    if h.listener_fd < 3 {
+        return Err(format!("the handover names fd {} as the listener, below 3", h.listener_fd));
+    }
+    let mut uses = std::collections::HashMap::new();
+    for rec in &h.sessions {
+        *uses.entry(rec.master_fd).or_insert(0usize) += 1;
+    }
+    let mut ok = Vec::new();
+    for rec in &h.sessions {
+        let why = if rec.master_fd < 3 {
+            "below 3"
+        } else if rec.master_fd == h.listener_fd {
+            "the listener's"
+        } else if uses[&rec.master_fd] > 1 {
+            "named by another session too"
+        } else {
+            ok.push(rec);
+            continue;
+        };
+        eprintln!("sarkosd: session {} lost in the handover: its fd {} is {why}", rec.id, rec.master_fd);
+    }
+    Ok(ok)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +159,21 @@ mod tests {
         assert_eq!(read(&file).unwrap(), sample());
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names.len(), 1, "no temp file left behind: {names:?}");
+    }
+
+    #[test]
+    fn descriptors_below_3_or_named_twice_are_not_adopted() {
+        let mut h = sample();
+        h.listener_fd = 2;
+        assert!(adoptable(&h).unwrap_err().contains("listener"), "stdio is never the listener");
+        let base = sample().sessions[0].clone();
+        let with = |id: u64, fd: i32| SessionRecord { id, master_fd: fd, ..base.clone() };
+        let mut h = sample();
+        // 5 is the listener; 9 is named twice, so neither record can be trusted with it.
+        h.sessions = vec![with(1, 9), with(2, 9), with(3, 1), with(4, 5), with(5, 10), with(6, -1)];
+        let ids: Vec<u64> = adoptable(&h).unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![5]);
+        assert_eq!(adoptable(&sample()).unwrap().len(), 1);
     }
 
     #[test]

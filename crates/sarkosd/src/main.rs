@@ -72,6 +72,8 @@ fn main() {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("sarkosd: cannot resume: {e}");
+                // It may still hold every session's terminal contents; nothing can use it now.
+                let _ = std::fs::remove_file(&path);
                 std::process::exit(1);
             }
         };

@@ -1103,6 +1103,7 @@ fn resume_with_a_corrupt_handover_file_exits_without_touching_anything() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("handover"));
+    assert!(!file.exists(), "an unreadable handover still holds terminal contents; it is deleted");
 }
 
 #[test]

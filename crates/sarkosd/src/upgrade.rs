@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 /// How long `--check-handover` may take before the candidate is rejected.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long each reader gets to park before the snapshot is taken anyway.
+/// How long each reader gets to park; one that has not by then fails the upgrade.
 const PARK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The binary must be ours, the user's, runnable, and able to read this format.
@@ -90,12 +90,24 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         let st = state.lock().unwrap();
         (st.sessions.values().cloned().collect::<Vec<_>>(), st.listener_fd, st.next_session())
     };
+    let path = handover_path(&opts.socket);
+    // Everything but the descriptor flags, which are put back under the spawn lock.
+    let restore = |why: String| -> String {
+        for s in &sessions {
+            s.unpause();
+        }
+        let _ = std::fs::remove_file(&path);
+        abort(state);
+        eprintln!("sarkosd: upgrade to {} failed: {why}; the old daemon keeps running", exe.display());
+        why
+    };
     for s in &sessions {
         s.pause();
     }
     for s in &sessions {
+        // A reader still reading after the snapshot would lose what it reads: never lose output.
         if !s.wait_parked(PARK_TIMEOUT) {
-            eprintln!("sarkosd: session {} reader did not park within {PARK_TIMEOUT:?}; continuing", s.id.0);
+            return restore(format!("session {} did not park", s.id.0));
         }
     }
     let records: Vec<_> = sessions.iter().map(|s| s.snapshot()).collect();
@@ -113,17 +125,6 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         stall_secs: opts.backpressure.stall.as_secs(),
         next_session,
         sessions: records,
-    };
-    let path = handover_path(&opts.socket);
-    // Everything but the descriptor flags, which are put back under the spawn lock.
-    let restore = |why: String| -> String {
-        for s in &sessions {
-            s.unpause();
-        }
-        let _ = std::fs::remove_file(&path);
-        abort(state);
-        eprintln!("sarkosd: upgrade to {} failed: {why}; the old daemon keeps running", exe.display());
-        why
     };
     if let Err(e) = handover::write(&path, &h) {
         return restore(format!("cannot write {}: {e}", path.display()));

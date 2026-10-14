@@ -105,6 +105,8 @@ pub fn run(opts: Options) -> Result<()> {
 /// The new image after an upgrade: adopt the listener and every session, then serve.
 pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
     use std::os::fd::FromRawFd;
+    // Before anything is adopted: the numbers come from a file.
+    let records = crate::handover::adoptable(&h).map_err(anyhow::Error::msg)?;
     crate::pty::set_inheritable_fd(h.listener_fd, false).context("listener close-on-exec")?;
     // SAFETY: the descriptor was passed through execve by the old image for this purpose, and
     // nothing else in this process owns the number.
@@ -121,7 +123,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
     let mut st = State::new();
     st.next_session = h.next_session;
     st.listener_fd = h.listener_fd;
-    for rec in &h.sessions {
+    for rec in records {
         // SAFETY: the old image cleared close-on-exec on this master for the exec and recorded
         // its number; it passed through execve for this purpose and nothing else owns it.
         let master = match unsafe { crate::pty::Pty::adopt(rec.master_fd) } {
