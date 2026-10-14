@@ -21,10 +21,12 @@ Things only a person at the screen can check, in order of value:
 - "Install Claude Code hooks", then `claude` in a tab: the glyph breathes while it works, a dot
   appears when it stops, the title bar's right side says "1 waiting", clicking the tab clears
   both; with Reduce Motion on, the glyph holds still
-- "Start at login", then `pkill -TERM sarkosd` with four tabs open: the log shows "SIGTERM:
-  writing every session's history"; `launchctl kickstart gui/$(id -u)/sh.csarko.sarkosd` (what
-  login does) brings a window back with every tab's history under the divider and
-  `claude --resume` typed into the ones that ran Claude; the tabs say "(resumed after restart)"
+- "Start at login" with four tabs open, then `kill -9 $(pgrep -x sarkos)` to end the window
+  without a goodbye (not Cmd+Q, which says goodbye so nothing reopens; a window left open would
+  make a second one), then `pkill -TERM sarkosd`: the log shows "SIGTERM: writing every session's
+  history"; `launchctl kickstart gui/$(id -u)/sh.csarko.sarkosd` (what login does) brings one
+  window back with every tab's history under the divider and `claude --resume` typed into the
+  ones that ran Claude; the tabs say "(resumed after restart)"
 - a real restart with the same four tabs: the window is back after login with the same result
 - Cmd+Q a window, then the restart: that project does not reopen
 - `start_at_login = "off"` in the config: the plist is gone within a second; `"on"`: it is back
