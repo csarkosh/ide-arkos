@@ -1,6 +1,6 @@
 //! Remembers a project's layout: the split tree with every tab's session (spec 4). Saved on
 //! every change, debounced, atomically, and off the UI thread.
-use crate::paths::workspace_file;
+use crate::paths::{legacy_workspace_file, workspace_file};
 use crate::tree::{Tab, Tree};
 use gpui::App;
 use protocol::SessionId;
@@ -29,7 +29,29 @@ struct V1 {
 
 /// One small read; callers may run it on the main thread before the window opens.
 pub fn load(project: &Path) -> Option<Workspace> {
-    load_from(&workspace_file(project), project)
+    load_or_migrate(&workspace_file(project), &legacy_workspace_file(project), project)
+}
+
+/// Loads `file`. When it does not exist yet but milestone 1's differently named `legacy` file
+/// does, loads that instead, saves it under the new name and removes the old one, so an upgrade
+/// keeps the session milestone 1 was showing.
+fn load_or_migrate(file: &Path, legacy: &Path, project: &Path) -> Option<Workspace> {
+    if file.exists() || legacy == file || !legacy.exists() {
+        return load_from(file, project);
+    }
+    let ws = load_from(legacy, project)?;
+    match save_to(file, &ws) {
+        Ok(()) => {
+            eprintln!("sarkos: moved workspace {} to {}", legacy.display(), file.display());
+            match std::fs::remove_file(legacy) {
+                Ok(()) => eprintln!("sarkos: removed old workspace {}", legacy.display()),
+                Err(e) => eprintln!("sarkos: cannot remove old workspace {}: {e}", legacy.display()),
+            }
+        }
+        // The layout still loads; the next save writes the new name.
+        Err(e) => eprintln!("sarkos: cannot save migrated workspace {}: {e}", file.display()),
+    }
+    Some(ws)
 }
 
 /// Writes to disk; run it off the UI thread (see `request_save`).
@@ -228,6 +250,24 @@ mod tests {
         assert_eq!(ws.tree, Tree::new(Tab::Terminal { session: SessionId(42) }));
         std::fs::write(&file, r#"{ "sessions": [] }"#).unwrap();
         assert_eq!(load_from(&file, Path::new("/p")), None);
+    }
+
+    #[test]
+    fn load_migrates_a_legacy_named_file() {
+        use crate::paths::{legacy_workspace_file_in, workspace_file_in};
+        let dir = tempfile::tempdir().unwrap();
+        let project = Path::new("/projects/upgraded");
+        let (file, legacy) = (workspace_file_in(dir.path(), project), legacy_workspace_file_in(dir.path(), project));
+        assert_ne!(file, legacy);
+        std::fs::write(&legacy, r#"{ "sessions": [42] }"#).unwrap();
+        let ws = load_or_migrate(&file, &legacy, project).expect("the milestone 1 file is found");
+        assert_eq!(ws.tree, Tree::new(Tab::Terminal { session: SessionId(42) }));
+        assert!(!legacy.exists(), "the old name is removed");
+        assert_eq!(load_from(&file, project), Some(ws.clone()), "and saved under the new name");
+        // From then on the new file wins, even if an old one reappears.
+        std::fs::write(&legacy, r#"{ "sessions": [7] }"#).unwrap();
+        assert_eq!(load_or_migrate(&file, &legacy, project), Some(ws));
+        assert!(legacy.exists(), "an old file next to a new one is left alone");
     }
 
     #[test]
