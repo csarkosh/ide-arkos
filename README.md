@@ -97,7 +97,8 @@ Notes:
 - Cmd+W (and the tab's ×, and Cmd+K then W) keeps a closed terminal's shell alive for a
   minute: Shift+Cmd+T within that minute brings the same shell back, history and all, in the
   pane it was closed from. After the minute the shell ends, and Shift+Cmd+T opens a new one.
-  Quitting ends every closed tab's shell at once.
+  Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
+  kept: closing it ends the session at once.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
 - Cmd+B, Shift+Cmd+E and Ctrl+Shift+G arrive with the sidebar in milestone 4. Every binding can
