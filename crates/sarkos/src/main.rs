@@ -134,6 +134,13 @@ pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<Tab
     OpenPlan::Add
 }
 
+/// Whether a command leaves the keys in the file tree (Shift+Cmd+E). Every other command acts
+/// on the focused pane, so the keys go back to it.
+pub fn keeps_tree_focus(cmd: &keymap::Command) -> bool {
+    use keymap::Command::*;
+    matches!(cmd, ToggleSidebar | FocusFileTree | ShowIgnoredFiles | CommandPalette)
+}
+
 /// Where a palette-driven update is: the daemon replacing itself (the window relaunches once it
 /// reconnects), or the window asking to be relaunched and quitting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1112,6 +1119,11 @@ impl Root {
         if self.notice.take().is_some() {
             cx.notify();
         }
+        // A command on the focused pane (Cmd+F, Cmd+T, a split) takes the keys back from the tree.
+        if self.sidebar_focused && !keeps_tree_focus(&cmd) {
+            self.sidebar_focused = false;
+            cx.notify();
+        }
         match cmd {
             FocusPane(i) => {
                 if let Some(p) = self.tree.pane_at(i) {
@@ -2009,9 +2021,20 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_label, open_plan, pick_grid, says_goodbye, shell_name, OpenPlan, Side, Tree, CONNECTING, ERROR_PREFIX};
+    use super::{daemon_label, keeps_tree_focus, open_plan, pick_grid, says_goodbye, shell_name, OpenPlan, Side, Tree, CONNECTING, ERROR_PREFIX};
     use protocol::SessionId;
     use std::path::Path;
+
+    #[test]
+    fn only_the_sidebar_commands_and_the_palette_keep_the_keys_in_the_tree() {
+        use crate::keymap::Command;
+        for cmd in [Command::ToggleSidebar, Command::FocusFileTree, Command::ShowIgnoredFiles, Command::CommandPalette] {
+            assert!(keeps_tree_focus(&cmd), "{cmd:?}");
+        }
+        for cmd in [Command::Find, Command::NewTerminal, Command::FontDelta(1.0)] {
+            assert!(!keeps_tree_focus(&cmd), "{cmd:?}: the keys go back to the focused pane");
+        }
+    }
 
     #[test]
     fn a_preview_is_replaced_and_a_pin_is_kept() {
