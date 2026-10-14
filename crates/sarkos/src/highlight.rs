@@ -23,8 +23,9 @@ fn item(selector: &str, c: Rgb) -> ThemeItem {
 }
 
 /// A syntect theme from the nine viewer colours (spec 7: "viewer: syntax colours mapped onto
-/// the highlighter's scopes"). Later items win for a more specific scope, so operators and
-/// numbers come after keywords and constants. The bundled grammars scope declaration keywords
+/// the highlighter's scopes"). syntect picks the item whose selector matches most specifically,
+/// not the first or last listed, so `keyword.operator` beats `keyword` and
+/// `punctuation.definition.comment` beats `punctuation`. The bundled grammars scope declaration keywords
 /// (`fn`, `let`, `struct`, `def`, `class`, `function`) as `storage.type`, so it is a keyword.
 pub fn scope_theme(colors: &ViewerColors, text: Rgb) -> Theme {
     Theme {
@@ -33,12 +34,12 @@ pub fn scope_theme(colors: &ViewerColors, text: Rgb) -> Theme {
         settings: ThemeSettings { foreground: Some(color(text)), ..Default::default() },
         scopes: vec![
             item("keyword, storage.modifier, storage.type", colors.keyword),
-            item("string", colors.string),
-            item("comment", colors.comment),
+            item("string, punctuation.definition.string", colors.string),
+            item("comment, punctuation.definition.comment", colors.comment),
             item("constant", colors.constant),
             item("constant.numeric", colors.number),
             item("entity.name.function, support.function, variable.function", colors.function),
-            item("entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, support.type", colors.type_name),
+            item("entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, entity.name.trait, entity.name.impl, support.type, support.class", colors.type_name),
             item("keyword.operator", colors.operator),
             item("punctuation", colors.punctuation),
         ],
@@ -64,13 +65,12 @@ impl Highlighter {
     }
 
     /// One span list per line, contiguous and covering the line; an empty line has none. A file
-    /// no grammar claims gets one plain span per line.
+    /// no grammar claims gets one plain span per line. Reads nothing from disk: the grammar comes
+    /// from the file name, then its extension, then the first line already loaded.
     pub fn highlight(&self, path: &Path, lines: &[String]) -> Vec<Vec<Span>> {
-        let syntax = self
-            .syntaxes
-            .find_syntax_for_file(path)
-            .ok()
-            .flatten()
+        let by_ext = |s: Option<&std::ffi::OsStr>| s.and_then(|s| s.to_str()).and_then(|s| self.syntaxes.find_syntax_by_extension(s));
+        let syntax = by_ext(path.file_name())
+            .or_else(|| by_ext(path.extension()))
             .or_else(|| lines.first().and_then(|l| self.syntaxes.find_syntax_by_first_line(l)));
         let Some(syntax) = syntax else {
             return lines.iter().map(|l| plain(l, self.text)).collect();
@@ -146,6 +146,9 @@ mod tests {
         assert_eq!(at(1, 13), colors().string, "the string literal");
         assert_eq!(at(1, 20), colors().comment, "the comment");
         assert_eq!(at(0, 3), colors().function, "main");
+        assert_eq!(at(1, 4), colors().keyword, "let");
+        assert_eq!(at(1, 12), colors().string, "the opening quote");
+        assert_eq!(at(1, 18), colors().comment, "the comment marker");
         // Every byte of every line is covered by exactly one span, in order.
         for (i, line) in lines.iter().enumerate() {
             let mut pos = 0;

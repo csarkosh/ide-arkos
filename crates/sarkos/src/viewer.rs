@@ -77,11 +77,10 @@ pub fn find_hits(lines: &[String], needle: &str) -> Vec<Hit> {
     if needle.is_empty() {
         return out;
     }
-    let needle_lc = needle.to_lowercase();
+    let n: Vec<char> = needle.to_lowercase().chars().collect();
     for (i, line) in lines.iter().enumerate() {
         // Lowercasing can change byte lengths (e.g. some scripts): search char by char instead.
         let chars: Vec<(usize, char)> = line.char_indices().collect();
-        let n: Vec<char> = needle_lc.chars().collect();
         let mut c = 0;
         while c + n.len() <= chars.len() {
             let matches = (0..n.len()).all(|k| chars[c + k].1.to_lowercase().eq(n[k].to_lowercase()));
