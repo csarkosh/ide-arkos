@@ -4,7 +4,7 @@
 
 use crate::theme::Theme;
 use crate::Root;
-use gpui::{div, prelude::*, px, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, ScrollHandle, Stateful};
+use gpui::{div, prelude::*, px, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, ScrollHandle, Stateful};
 use std::path::{Path, PathBuf};
 
 pub const MIN_W: f32 = 160.0;
@@ -130,15 +130,11 @@ pub struct ContextMenu {
     pub at: gpui::Point<gpui::Pixels>,
 }
 
-pub fn run_menu_action(action: &MenuAction, cx: &mut Context<Root>) {
+pub fn run_menu_action(action: &MenuAction, cx: &mut App) {
     match action {
         MenuAction::Reveal(p) => cx.reveal_path(p),
         MenuAction::CopyText(s) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.clone())),
-        MenuAction::OpenDefault(p) => {
-            if let Err(e) = std::process::Command::new("open").arg(p).spawn() {
-                eprintln!("sarkos: cannot open {}: {e}", p.display());
-            }
-        }
+        MenuAction::OpenDefault(p) => cx.open_with_system(p),
     }
 }
 
@@ -234,6 +230,8 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         .font_family(root.family())
         .text_size(px(12.0))
         .text_color(c.text.hsla())
+        // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
+        .occlude()
         .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
     let hover = c.tab_active.hsla();
     for (i, (label, action)) in context_menu_items(&menu.path, &root.project).into_iter().enumerate() {

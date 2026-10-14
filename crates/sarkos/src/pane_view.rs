@@ -432,7 +432,10 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         )
         // A file dragged from the tree types its path at the prompt.
         .on_drop(cx.listener(move |_root, d: &crate::drag::FileDrag, _window, cx| {
-            t_drop.update(cx, |t, _| t.paste(&crate::drag::paste_text(&d.path)));
+            match crate::drag::paste_text(&d.path) {
+                Some(text) => t_drop.update(cx, |t, _| t.paste(&text)),
+                None => eprintln!("sarkos: not pasting a path with a control character"),
+            }
         }))
         // The element finds the link under the pointer when it paints; a move over the
         // terminal asks for that paint (the inner div below asks on enter and exit).

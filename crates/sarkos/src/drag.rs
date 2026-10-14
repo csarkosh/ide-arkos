@@ -81,15 +81,16 @@ impl Render for FileDrag {
 }
 
 /// What a dropped file types into a terminal: the path, single-quoted when it has anything a
-/// shell would read, then a space so the next word starts clean.
-pub fn paste_text(path: &Path) -> String {
+/// shell would read, then a space so the next word starts clean. `None` when the path holds a
+/// control character (the daemon's `typeable` rule): a newline would run what follows it, an
+/// escape would reach the terminal, and quoting stops neither.
+pub fn paste_text(path: &Path) -> Option<String> {
+    if path.as_os_str().as_encoded_bytes().iter().any(|b| *b < 0x20 || *b == 0x7f) {
+        return None;
+    }
     let s = path.to_string_lossy();
     let plain = s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
-    if plain {
-        format!("{s} ")
-    } else {
-        format!("'{}' ", s.replace('\'', "'\\''"))
-    }
+    Some(if plain { format!("{s} ") } else { format!("'{}' ", s.replace('\'', "'\\''")) })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,9 +163,16 @@ mod tests {
 
     #[test]
     fn a_dropped_path_is_quoted_only_when_it_needs_it() {
-        assert_eq!(paste_text(Path::new("/Users/me/src/main.rs")), "/Users/me/src/main.rs ");
-        assert_eq!(paste_text(Path::new("/Users/me/My Docs/a b.txt")), "'/Users/me/My Docs/a b.txt' ");
-        assert_eq!(paste_text(Path::new("/x/it's.txt")), "'/x/it'\\''s.txt' ");
+        assert_eq!(paste_text(Path::new("/Users/me/src/main.rs")).as_deref(), Some("/Users/me/src/main.rs "));
+        assert_eq!(paste_text(Path::new("/Users/me/My Docs/a b.txt")).as_deref(), Some("'/Users/me/My Docs/a b.txt' "));
+        assert_eq!(paste_text(Path::new("/x/it's.txt")).as_deref(), Some("'/x/it'\\''s.txt' "));
+    }
+
+    #[test]
+    fn a_dropped_path_with_a_control_character_is_not_pasted() {
+        assert_eq!(paste_text(Path::new("/x/a\nrm -rf ~")), None, "a newline would run the rest");
+        assert_eq!(paste_text(Path::new("/x/\u{1b}]0;title\u{7}")), None, "an escape sequence would reach the terminal");
+        assert_eq!(paste_text(Path::new("/x/del\u{7f}")), None);
     }
 
     #[test]

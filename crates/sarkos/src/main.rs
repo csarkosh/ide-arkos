@@ -461,8 +461,6 @@ impl Root {
         }
     }
 
-    /// What the poll fingerprints: the expanded directories (and the root), and the open
-    /// viewers' files (Task 5 adds them).
     /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
     /// Enter). Task 5 gives the tab its content; here the tab exists and is active.
     pub fn open_viewer(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
@@ -506,9 +504,6 @@ impl Root {
     /// goes to the parent, Enter opens pinned, Space previews, Escape returns to the pane.
     pub fn tree_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
-            return;
-        }
-        if self.escape_closes_menu(ks, cx) {
             return;
         }
         let rows = self.explorer.rows();
@@ -555,10 +550,17 @@ impl Root {
             "escape" => self.sidebar_focused = false,
             _ => return,
         }
+        // Keep the selection on screen when the keys move it past the column's edge.
+        let rows = self.explorer.rows();
+        if let Some(i) = self.explorer.selected.as_ref().and_then(|s| rows.iter().position(|r| &r.path == s)) {
+            self.sidebar.scroll.scroll_to_item(i);
+        }
         self.save(cx);
         cx.notify();
     }
 
+    /// What the poll fingerprints: the expanded directories (and the root), and the open
+    /// viewers' files (Task 5 adds them).
     pub fn watched_paths(&self) -> Vec<PathBuf> {
         let mut v = vec![self.project.clone()];
         v.extend(self.explorer.expanded_dirs());
