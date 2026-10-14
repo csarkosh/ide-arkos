@@ -157,6 +157,13 @@ impl Render for Root {
     }
 }
 
+/// Whether a successful response should clear `status`. Only an error is cleared, and only once
+/// a terminal is shown: before that the banner is all the window has, so a failed launch stays
+/// visible. Connection and "session ended" banners are never cleared here.
+fn success_clears(status: &str, has_terminal: bool) -> bool {
+    has_terminal && status.starts_with(ERROR_PREFIX)
+}
+
 fn banner_bar(text: String) -> Div {
     div()
         .w_full()
@@ -239,6 +246,7 @@ impl Launch {
             self.answered = true;
             // Events that came before this response are applied first, keeping order.
             root.apply_events(&mut pending, cx);
+            let is_error = matches!(response, Response::Error(_));
             match response {
                 Response::Sessions(list) if id == self.list_id => {
                     match reattachable(self.saved, &list, &self.project) {
@@ -284,6 +292,11 @@ impl Launch {
                     cx.notify();
                 }
                 _ => {}
+            }
+            // Any later success means the error was transient; show the terminal's state again.
+            if !is_error && success_clears(&root.status, root.terminal.is_some()) {
+                root.status.clear();
+                cx.notify();
             }
         }
         root.apply_events(&mut pending, cx);
@@ -515,6 +528,16 @@ mod tests {
         assert_eq!(reattachable(Some(SessionId(9)), &list, here), None);
         assert_eq!(reattachable(Some(SessionId(10)), &list, here), None);
         assert_eq!(reattachable(None, &list, here), None);
+    }
+
+    #[test]
+    fn success_clears_only_an_error_shown_over_a_terminal() {
+        assert!(success_clears("sarkosd error: write failed", true));
+        // Before a terminal exists the error is all the window shows.
+        assert!(!success_clears("sarkosd error: spawn failed", false));
+        assert!(!success_clears("daemon closed the connection", true));
+        assert!(!success_clears("restoring session", true));
+        assert!(!success_clears("", true));
     }
 
     #[test]
