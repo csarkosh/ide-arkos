@@ -15,9 +15,9 @@ use gpui::{
     canvas, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, KeyDownEvent,
     ScrollDelta, ScrollWheelEvent, Window, WindowBounds, WindowOptions,
 };
-use protocol::{Event, Request, Response, ServerMessage, SessionId};
+use protocol::{Event, Request, Response, ServerMessage, SessionId, SessionInfo};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
@@ -174,6 +174,34 @@ fn output_len(msg: &ServerMessage) -> usize {
     }
 }
 
+/// The saved session to reattach: one the daemon still runs, still alive, and started in this
+/// project. Anything else is treated as missing so the launch creates a fresh shell (spec 4); the
+/// cwd check guards against an id from an earlier daemon naming another project's session.
+fn reattachable(saved: Option<SessionId>, list: &[SessionInfo], project: &Path) -> Option<SessionId> {
+    let saved = saved?;
+    let Some(info) = list.iter().find(|i| i.id == saved) else {
+        eprintln!("sarkos: saved session {} is gone, starting a new one", saved.0);
+        return None;
+    };
+    if !info.alive {
+        eprintln!("sarkos: saved session {} has ended, starting a new one", saved.0);
+        return None;
+    }
+    if !same_path(&info.cwd, project) {
+        eprintln!("sarkos: saved session {} belongs to {}, starting a new one", saved.0, info.cwd.display());
+        return None;
+    }
+    Some(saved)
+}
+
+/// Compares canonical paths, so symlinks and `..` do not count as a difference.
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// What the launch has asked the daemon for, so its responses can be matched.
 struct Launch {
     client: Arc<client::Client>,
@@ -211,7 +239,7 @@ impl Launch {
             root.apply_events(&mut pending, cx);
             match response {
                 Response::Sessions(list) if id == self.list_id => {
-                    match self.saved.filter(|s| list.iter().any(|i| i.id == *s)) {
+                    match reattachable(self.saved, &list, &self.project) {
                         Some(sid) => {
                             let aid = self.client.send(Request::Attach { session: sid });
                             self.pending_attach = Some((aid, sid));
@@ -382,7 +410,7 @@ fn main() {
         })
         .detach();
 
-        // Decide which session to show: the workspace's saved one if the daemon still has it.
+        // Decide which session to show: the workspace's saved one if the daemon still runs it here.
         let list_id = client.send(Request::ListSessions);
         let mut launch =
             Launch {
@@ -449,4 +477,47 @@ fn main() {
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::ClaudeState;
+
+    fn info(id: u64, cwd: &Path, alive: bool) -> SessionInfo {
+        SessionInfo {
+            id: SessionId(id),
+            title: String::new(),
+            cwd: cwd.to_path_buf(),
+            pid: None,
+            alive,
+            last_activity_unix_ms: 0,
+            state: ClaudeState::Idle,
+        }
+    }
+
+    #[test]
+    fn reattaches_only_a_live_session_in_this_project() {
+        let project = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let here = project.path();
+        let list = vec![info(7, here, true), info(8, here, false), info(9, other.path(), true)];
+        assert_eq!(reattachable(Some(SessionId(7)), &list, here), Some(SessionId(7)));
+        // Ended: a fresh shell instead of a permanent "session ended".
+        assert_eq!(reattachable(Some(SessionId(8)), &list, here), None);
+        // Another project's session, as after a daemon restart reused the id.
+        assert_eq!(reattachable(Some(SessionId(9)), &list, here), None);
+        assert_eq!(reattachable(Some(SessionId(10)), &list, here), None);
+        assert_eq!(reattachable(None, &list, here), None);
+    }
+
+    #[test]
+    fn project_paths_compare_canonically() {
+        let project = tempfile::tempdir().unwrap();
+        let sub = project.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let roundabout = sub.join("..");
+        let list = vec![info(7, project.path(), true)];
+        assert_eq!(reattachable(Some(SessionId(7)), &list, &roundabout), Some(SessionId(7)));
+    }
 }

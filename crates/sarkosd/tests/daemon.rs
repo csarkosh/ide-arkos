@@ -150,6 +150,8 @@ fn list_sessions_reports_the_session() {
     let d = Daemon::start(&[]);
     let mut c = d.connect();
     let id = c.create("/bin/sh");
+    // Ids start from the clock, not 1, so they stay unique across daemon restarts.
+    assert!(id.0 > 1 << 56, "session id {} does not come from the clock", id.0);
     match c.request(Request::ListSessions) {
         Response::Sessions(list) => {
             let s = list.iter().find(|s| s.id == id).expect("session listed");

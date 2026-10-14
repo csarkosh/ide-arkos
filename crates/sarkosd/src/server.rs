@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy)]
 pub struct Options {
@@ -42,6 +42,16 @@ pub struct State {
     next_client: u64,
 }
 
+impl State {
+    /// Session ids start from the clock (milliseconds since the epoch, shifted left 16 bits), so
+    /// ids stay unique across daemon lifetimes: a workspace saved before a restart cannot name
+    /// another project's new session.
+    fn new() -> Self {
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        Self { next_session: ms << 16, ..Default::default() }
+    }
+}
+
 pub type Shared = Arc<Mutex<State>>;
 
 pub fn run(socket: &Path, opts: Options) -> Result<()> {
@@ -58,7 +68,7 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
     }
     let listener = UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).context("chmod socket")?;
-    let state: Shared = Arc::new(Mutex::new(State::default()));
+    let state: Shared = Arc::new(Mutex::new(State::new()));
     crate::watchdog::start(state.clone(), opts.watchdog);
     for stream in listener.incoming() {
         match stream {
