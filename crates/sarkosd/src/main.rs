@@ -12,6 +12,11 @@ use std::time::Duration;
 const DEFAULT_REPLAY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_WATCHDOG_SECS: u64 = 30;
 
+/// `<name> <crate version> (<short git hash>)`, the same shape for both binaries.
+pub fn version_string() -> String {
+    format!("{} {} ({})", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), env!("SARKOS_GIT_HASH"))
+}
+
 fn default_socket() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME is set");
     PathBuf::from(home).join("Library/Application Support/sarkos/sarkosd.sock")
@@ -29,7 +34,11 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
-                println!("sarkosd {}", env!("CARGO_PKG_VERSION"));
+                println!("{}", version_string());
+                return;
+            }
+            "--check-handover" => {
+                println!("handover {}", handover::FORMAT);
                 return;
             }
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),

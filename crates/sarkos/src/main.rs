@@ -76,6 +76,8 @@ pub struct Root {
     pub project: PathBuf,
     /// Connection-level banner (errors, disconnects). Empty when all is well.
     pub status: String,
+    /// What the daemon said it runs, from a version 2 `Hello` answer. `None` for an old daemon.
+    pub daemon_version: Option<String>,
     /// The grid each pane last measured while it had no terminal to measure itself.
     pub grids: HashMap<PaneId, (usize, usize)>,
     pub grid_waiters: HashMap<PaneId, Vec<oneshot::Sender<(usize, usize)>>>,
@@ -152,6 +154,7 @@ impl Root {
             save_queue: SharedSaveQueue::default(),
             project,
             status: CONNECTING.into(),
+            daemon_version: None,
             grids: HashMap::new(),
             grid_waiters: HashMap::new(),
             pane_focus: HashMap::new(),
@@ -814,6 +817,9 @@ impl Root {
     pub fn handle_outcome(&mut self, outcome: Outcome, saved_layout: bool, cx: &mut Context<Self>) {
         match outcome {
             Outcome::None => {}
+            Outcome::DaemonHello { version, .. } => {
+                self.daemon_version = Some(version);
+            }
             Outcome::Sessions(list) => {
                 if self.status == CONNECTING {
                     // The banner goes away, so every pane grows: forget measurements taken under
@@ -1115,10 +1121,15 @@ async fn yield_now() {
     .await
 }
 
+/// `<name> <crate version> (<short git hash>)`, the same shape for both binaries.
+pub fn version_string() -> String {
+    format!("{} {} ({})", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), env!("SARKOS_GIT_HASH"))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") {
-        println!("sarkos {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", version_string());
         return;
     }
     // Spec 2.5: the UI thread is user-interactive so macOS schedules it ahead of the heavy work

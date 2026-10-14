@@ -51,7 +51,7 @@ impl Daemon {
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
         let r = c.request(Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid, ui_exe: None, ui_cwd: std::env::temp_dir() });
-        assert_eq!(r, Response::Ok);
+        assert!(matches!(r, Response::Ok | Response::Hello { .. }), "{r:?}");
         c
     }
 }
@@ -575,7 +575,8 @@ fn frozen_ui_with_busy_session_is_relaunched() {
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let mut ui = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
     let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: fake_ui.id(), ui_exe: Some(script), ui_cwd: dir.path().to_path_buf() };
-    assert_eq!(ui.request(hello), Response::Ok);
+    let r = ui.request(hello);
+    assert!(matches!(r, Response::Ok | Response::Hello { .. }), "{r:?}");
     let id = ui.create("/bin/sh");
     assert!(matches!(ui.request(Request::Attach { session: id }), Response::Attached { alive: true, .. }));
     // Busy for good: the PTY fills the UI's backlog and stays paused on it.
@@ -634,16 +635,16 @@ fn kill_wakes_a_pty_paused_by_a_stalled_client() {
 }
 
 #[test]
-fn hello_with_another_protocol_version_is_refused() {
+fn hello_below_the_minimum_protocol_is_refused() {
     let d = Daemon::start(&[]);
     let stream = UnixStream::connect(&d.socket).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
-    let hello = Request::Hello { protocol_version: 999, ui_pid: 0, ui_exe: None, ui_cwd: std::env::temp_dir() };
-    let expected = format!(
-        "protocol version mismatch: daemon {PROTOCOL_VERSION}, client 999; restart sarkosd (pkill -x sarkosd), which ends every session"
-    );
-    assert_eq!(c.request(hello), Response::Error(expected));
+    let hello = Request::Hello { protocol_version: 0, ui_pid: 0, ui_exe: None, ui_cwd: std::env::temp_dir() };
+    match c.request(hello) {
+        Response::Error(e) => assert!(e.contains("client 0") && e.contains("Update Sarkos IDE now"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
     // Then the daemon hangs up.
     assert!(matches!(read_frame::<_, ServerMessage>(&mut c.r), Ok(None) | Err(_)), "daemon kept the connection open");
     // And keeps serving everyone else.
@@ -772,4 +773,40 @@ fn kill_escalates_to_sigkill_when_the_shell_ignores_sighup() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(c.request(Request::Kill { session: sid }), Response::Ok);
     wait_for_exit(&mut c, sid, Duration::from_secs(3));
+}
+
+#[test]
+fn hello_version_1_gets_ok_and_version_2_gets_the_daemon_version() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect_raw();
+    let r = c.request(Request::Hello { protocol_version: 1, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() });
+    assert_eq!(r, Response::Ok, "a milestone 2b window keeps working");
+    let mut c2 = d.connect_raw();
+    match c2.request(Request::Hello { protocol_version: 2, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
+        Response::Hello { daemon_version, protocol_min, protocol_max } => {
+            assert!(daemon_version.starts_with("sarkosd "), "{daemon_version}");
+            assert_eq!((protocol_min, protocol_max), (1, 2));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn hello_with_a_newer_protocol_is_refused_with_the_update_hint() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect_raw();
+    match c.request(Request::Hello { protocol_version: 3, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
+        Response::Error(e) => assert!(e.contains("Update Sarkos IDE now"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn version_and_check_handover_flags() {
+    let out = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--version").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("sarkosd ") && text.contains('(') && text.trim_end().ends_with(')'), "{text:?}");
+    let out = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--check-handover").output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "handover 1");
 }

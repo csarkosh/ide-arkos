@@ -3,7 +3,7 @@
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
+use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId, PROTOCOL_MIN, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -36,6 +36,8 @@ pub struct ClientRecord {
     /// Where the watchdog relaunches the UI, so it reopens the same project.
     pub ui_cwd: Option<PathBuf>,
     pub connected: bool,
+    /// The protocol version its Hello announced; 0 until then.
+    pub protocol: u32,
 }
 
 #[derive(Default)]
@@ -107,7 +109,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
         let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
-            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true },
+            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0 },
         );
         (id, sink)
     };
@@ -145,10 +147,10 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                 match read_frame::<_, ClientMessage>(&mut r) {
                     Ok(Some(msg)) => {
                         if let Request::Hello { protocol_version, .. } = msg.request {
-                            if protocol_version != PROTOCOL_VERSION {
+                            if !(PROTOCOL_MIN..=PROTOCOL_VERSION).contains(&protocol_version) {
                                 let error = format!(
-                                    "protocol version mismatch: daemon {PROTOCOL_VERSION}, client {protocol_version}; \
-                                     restart sarkosd (pkill -x sarkosd), which ends every session"
+                                    "protocol version mismatch: daemon speaks {PROTOCOL_MIN} to {PROTOCOL_VERSION}, client {protocol_version}; \
+                                     update the daemon: run Update Sarkos IDE now"
                                 );
                                 eprintln!("sarkosd: client {client_id} dropped: {error}");
                                 // Closing below lets the writer send this before the socket closes.
@@ -194,7 +196,7 @@ fn disconnect(state: &Shared, client_id: ClientId) {
 fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
     let response = match request {
-        Request::Hello { protocol_version: _, ui_pid, ui_exe, ui_cwd } => {
+        Request::Hello { protocol_version, ui_pid, ui_exe, ui_cwd } => {
             let mut st = state.lock().unwrap();
             if let Some(rec) = st.clients.get_mut(&client_id) {
                 // As a pid_t, 0 is the daemon's process group, 1 is launchd, and anything above
@@ -214,9 +216,16 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 rec.ui_exe = ui_exe;
                 rec.ui_cwd = (!ui_cwd.as_os_str().is_empty()).then_some(ui_cwd);
                 rec.last_heartbeat = Instant::now();
+                rec.protocol = protocol_version;
             }
-            Response::Ok
+            if protocol_version >= 2 {
+                Response::Hello { daemon_version: crate::version_string(), protocol_min: PROTOCOL_MIN, protocol_max: PROTOCOL_VERSION }
+            } else {
+                Response::Ok
+            }
         }
+        // Tasks 4 and 6 replace these placeholders.
+        Request::Upgrade { .. } | Request::RelaunchClient { .. } => Response::Error("not yet".into()),
         Request::Heartbeat { .. } => {
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                 rec.last_heartbeat = Instant::now();

@@ -7,9 +7,12 @@ pub mod codec;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Bumped on any change to the wire format. A daemon answers a `Hello` with a different version
-/// with an error and disconnects, since it cannot decode the rest reliably.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Bumped only for a breaking change. New enum variants are appended, never inserted, and
+/// existing structs never change shape, so a daemon can keep serving older windows: it answers
+/// a `Hello` with the range it speaks (spec update-in-place section 5).
+pub const PROTOCOL_VERSION: u32 = 2;
+/// The oldest window a daemon still serves. Version 1 is milestone 2b's.
+pub const PROTOCOL_MIN: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub u64);
@@ -56,6 +59,11 @@ pub enum Request {
     ListSessions,
     Heartbeat { seq: u64 },
     SetState { session: SessionId, state: ClaudeState },
+    /// Replace the daemon with the binary at `exe` by exec-in-place (update-in-place spec,
+    /// section 2). Answered `Ok` just before the exec, or `Error` with the old daemon intact.
+    Upgrade { exe: PathBuf },
+    /// When this client disconnects, start `exe` in `cwd` (section 4). Answered `Ok` at once.
+    RelaunchClient { exe: PathBuf, cwd: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +80,8 @@ pub enum Response {
     Attached { replay: Vec<u8>, alive: bool },
     Sessions(Vec<SessionInfo>),
     Error(String),
+    /// The answer to a version 2 `Hello`: what runs and what it speaks.
+    Hello { daemon_version: String, protocol_min: u32, protocol_max: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -102,4 +102,26 @@ mod tests {
         let err = read_frame::<_, ClientMessage>(&mut Cursor::new(vec![0u8, 0])).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
+
+    #[test]
+    fn version_2_messages_round_trip_and_the_old_variants_keep_their_indices() {
+        use crate::{Request, Response};
+        use std::path::PathBuf;
+        for req in [
+            Request::Upgrade { exe: PathBuf::from("/opt/homebrew/bin/sarkosd") },
+            Request::RelaunchClient { exe: PathBuf::from("/opt/homebrew/bin/sarkos"), cwd: PathBuf::from("/p") },
+        ] {
+            let bytes = postcard::to_allocvec(&req).unwrap();
+            assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), req);
+        }
+        let hello = Response::Hello { daemon_version: "sarkosd 0.2.0 (abc1234)".into(), protocol_min: 1, protocol_max: 2 };
+        let bytes = postcard::to_allocvec(&hello).unwrap();
+        assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), hello);
+        // postcard writes an enum's variant index first; Ok is still variant 0 and Error still 4,
+        // so a version 1 window decodes every reply it can receive from this daemon.
+        assert_eq!(postcard::to_allocvec(&Response::Ok).unwrap(), vec![0]);
+        assert_eq!(postcard::to_allocvec(&Response::Error(String::new())).unwrap(), vec![4, 0]);
+        assert_eq!(crate::PROTOCOL_VERSION, 2);
+        assert_eq!(crate::PROTOCOL_MIN, 1);
+    }
 }

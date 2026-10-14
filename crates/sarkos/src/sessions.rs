@@ -48,6 +48,8 @@ pub enum Outcome {
     /// The daemon could not attach `session` for `tab`; the window gives the tab a fresh shell.
     AttachFailed { session: SessionId, tab: TabId, error: String },
     Error(String),
+    /// A version 2 daemon's answer to Hello: what it runs and which protocol versions it speaks.
+    DaemonHello { version: String, protocol_min: u32, protocol_max: u32 },
 }
 
 /// One launch step for one saved terminal tab.
@@ -215,6 +217,9 @@ impl SessionManager {
     /// Matches a response to its request. Errors always surface, even for ids nobody waits on.
     pub fn handle_response(&mut self, id: u32, response: Response) -> Outcome {
         let pending = self.pending.remove(&id);
+        if let Response::Hello { daemon_version, protocol_min, protocol_max } = &response {
+            return Outcome::DaemonHello { version: daemon_version.clone(), protocol_min: *protocol_min, protocol_max: *protocol_max };
+        }
         if let Response::Error(e) = &response {
             match pending {
                 Some(Pending::Attach { session, tab, .. }) => {
@@ -577,5 +582,17 @@ mod tests {
         assert_eq!(m.handle_response(1, Response::Error("no session 9".into())), Outcome::Killed { session: SessionId(9) });
         m.kill(SessionId(10));
         assert_eq!(m.handle_response(2, Response::Error("permission denied".into())), Outcome::Error("permission denied".into()), "other errors still surface");
+    }
+
+    #[test]
+    fn a_hello_answer_reports_the_daemon_version() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        let hello = Response::Hello { daemon_version: "sarkosd 0.2.0 (abc1234)".into(), protocol_min: 1, protocol_max: 2 };
+        assert_eq!(
+            m.handle_response(1, hello),
+            Outcome::DaemonHello { version: "sarkosd 0.2.0 (abc1234)".into(), protocol_min: 1, protocol_max: 2 }
+        );
+        assert_eq!(m.handle_response(1, Response::Ok), Outcome::None, "an old daemon answers Ok");
     }
 }
