@@ -11,6 +11,7 @@ mod empty_pane;
 mod explorer;
 mod explorer_watch;
 mod find;
+mod highlight;
 mod hook_cli;
 mod keys;
 mod keymap;
@@ -32,6 +33,7 @@ mod terminal_element;
 mod theme;
 mod tree;
 mod update;
+mod viewer;
 mod workspace;
 
 use futures::channel::oneshot;
@@ -198,6 +200,9 @@ pub struct Root {
     /// The last good config; `apply_config` replaces it.
     pub config: config::Config,
     pub theme: Arc<theme::Theme>,
+    /// Syntax colours for viewer tabs in the theme's `viewer` colours. `None` until the grammars
+    /// finish loading on the background executor after launch; a theme change rethemes it.
+    pub highlighter: Option<Arc<highlight::Highlighter>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// The config file's problem shown under the connection banner; `None` when all is well.
@@ -304,6 +309,7 @@ impl Root {
             shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
             config,
             theme: Arc::new(theme),
+            highlighter: None,
             system_is_dark,
             config_error: None,
             theme_error: None,
@@ -327,8 +333,25 @@ impl Root {
         theme::load(name, &paths::themes_dir())
     }
 
+    /// Loads the grammars off the UI thread, once, at launch. The result takes the theme's
+    /// colours at the moment it lands, so a theme change during the load is not lost.
+    fn build_highlighter(&mut self, cx: &mut Context<Self>) {
+        let (colors, text) = (self.theme.viewer.clone(), self.theme.chrome.text);
+        cx.spawn(async move |this, cx| {
+            let built = cx.background_executor().spawn(async move { highlight::Highlighter::new(&colors, text) }).await;
+            let _ = this.update(cx, |root, _| {
+                root.highlighter = Some(Arc::new(built.with_theme(&root.theme.viewer, root.theme.chrome.text)));
+            });
+        })
+        .detach();
+    }
+
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
         let palette = Arc::new(theme.palette());
+        // A viewer open now re-highlights on its next reload (Task 5 re-highlights at once).
+        if let Some(h) = &self.highlighter {
+            self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
+        }
         self.theme = Arc::new(theme);
         for t in self.sessions.terminals.values() {
             t.update(cx, |t, cx| {
@@ -1796,6 +1819,7 @@ fn main() {
                     let view = cx.new(|cx| {
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
                         root.save_queue = view_queue;
+                        root.build_highlighter(cx);
                         root
                     });
                     // The red button asks first; a close during macOS's terminate does not.

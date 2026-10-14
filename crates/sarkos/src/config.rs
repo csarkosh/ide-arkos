@@ -13,6 +13,7 @@ pub struct Config {
     /// Action name (see `keymap::ACTIONS`) to keystrokes in gpui syntax. `""` unbinds.
     pub keybindings: BTreeMap<String, String>,
     pub sidebar: SidebarConfig,
+    pub viewer: ViewerConfig,
     pub browser: BrowserConfig,
     pub daemon: DaemonConfig,
     pub theme: ThemeConfig,
@@ -94,6 +95,19 @@ impl Default for SidebarConfig {
     }
 }
 
+/// The viewer's limits: a file larger than `highlight_limit_bytes` opens without syntax colours.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ViewerConfig {
+    pub highlight_limit_bytes: usize,
+}
+
+impl Default for ViewerConfig {
+    fn default() -> Self {
+        Self { highlight_limit_bytes: 5 * 1024 * 1024 }
+    }
+}
+
 /// Milestone 5 reads this; parsed now so the file format does not change then.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -168,6 +182,7 @@ impl Default for Config {
             terminal: TerminalConfig::default(),
             keybindings: BTreeMap::new(),
             sidebar: SidebarConfig::default(),
+            viewer: ViewerConfig::default(),
             browser: BrowserConfig::default(),
             daemon: DaemonConfig::default(),
             theme: ThemeConfig::default(),
@@ -202,6 +217,9 @@ impl Config {
         }
         if self.daemon.watchdog_secs < 5 {
             return Err(format!("daemon.watchdog_secs {} must be at least 5", self.daemon.watchdog_secs));
+        }
+        if self.viewer.highlight_limit_bytes == 0 {
+            return Err("viewer.highlight_limit_bytes must be at least 1".into());
         }
         if self.daemon.replay_bytes == 0 {
             return Err("daemon.replay_bytes must be at least 1".into());
@@ -394,6 +412,10 @@ nice = 0
 # Width in px and whether it starts collapsed, for a folder opened for the first time; each folder then remembers its own.
 width = 260.0
 collapsed = false
+
+[viewer]
+# Files larger than this open in the viewer without syntax colours; binaries show a notice.
+highlight_limit_bytes = 5242880
 
 [browser]
 # Milestone 5. The URL a new browser pane opens. Empty opens a blank page.
@@ -637,5 +659,15 @@ mod tests {
         let (cfg, banner) = reload_decision(&good, parse("[font]\nfamily = \"Menlo\"\n"));
         assert_eq!(cfg.font.family, "Menlo");
         assert_eq!(banner, None);
+    }
+
+    #[test]
+    fn the_viewer_limit_defaults_to_five_mebibytes_and_must_be_positive() {
+        assert_eq!(Config::default().viewer.highlight_limit_bytes, 5 * 1024 * 1024);
+        let c: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 1000\n").unwrap();
+        assert_eq!(c.viewer.highlight_limit_bytes, 1000);
+        let zero: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 0\n").unwrap();
+        assert!(zero.validate().unwrap_err().contains("viewer.highlight_limit_bytes"));
+        assert!(toml::from_str::<Config>(DEFAULT_CONFIG).unwrap().validate().is_ok());
     }
 }
