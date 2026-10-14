@@ -1,9 +1,33 @@
 //! Where sarkos keeps its socket and workspace files (spec 2.1, 4).
 use std::path::{Path, PathBuf};
 
+fn home() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").expect("HOME is set"))
+}
+
+/// `$XDG_CONFIG_HOME/sarkos` when that is set and non-empty, else `~/.config/sarkos` (spec 7).
+pub fn config_dir_from(xdg: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
+    match xdg {
+        Some(x) if !x.is_empty() => PathBuf::from(x).join("sarkos"),
+        _ => home.join(".config").join("sarkos"),
+    }
+}
+
+pub fn config_dir() -> PathBuf {
+    config_dir_from(std::env::var_os("XDG_CONFIG_HOME").as_deref(), &home())
+}
+
+pub fn config_file() -> PathBuf {
+    config_dir().join("config.toml")
+}
+
+#[allow(dead_code)] // Task 3 loads themes from it
+pub fn themes_dir() -> PathBuf {
+    config_dir().join("themes")
+}
+
 fn app_support() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME is set");
-    PathBuf::from(home).join("Library/Application Support/sarkos")
+    home().join("Library/Application Support/sarkos")
 }
 
 pub fn socket_path() -> PathBuf {
@@ -82,5 +106,16 @@ mod tests {
         let f = legacy_workspace_file(project);
         assert_eq!(f.file_name().unwrap().to_str().unwrap(), want);
         assert_eq!(f.parent(), workspace_file(project).parent(), "both live in the same folder");
+    }
+
+    #[test]
+    fn config_dir_honours_xdg_config_home() {
+        use std::ffi::OsStr;
+        let home = Path::new("/Users/me");
+        assert_eq!(config_dir_from(None, home), PathBuf::from("/Users/me/.config/sarkos"));
+        assert_eq!(config_dir_from(Some(OsStr::new("")), home), PathBuf::from("/Users/me/.config/sarkos"));
+        assert_eq!(config_dir_from(Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/sarkos"));
+        assert!(config_file().ends_with("sarkos/config.toml"));
+        assert!(themes_dir().ends_with("sarkos/themes"));
     }
 }

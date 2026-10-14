@@ -23,7 +23,7 @@ use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle, KeyBinding,
+    div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
     Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
@@ -37,6 +37,7 @@ use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
+use keymap::Quit;
 
 const BG: u32 = 0x11161f;
 const FG: u32 = 0xd6dae0;
@@ -46,7 +47,6 @@ const BANNER_H: f32 = 28.0;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
 
-actions!(sarkos, [Quit]);
 
 /// Starts every status that reports a `Response::Error`.
 const ERROR_PREFIX: &str = "sarkosd error: ";
@@ -305,6 +305,17 @@ impl Root {
         sessions.len()
     }
 
+    /// Cmd+, (spec 7): opens the config file in the default text editor. Task 2 creates the file
+    /// at launch, so it exists by the time this runs.
+    pub fn open_config(&mut self, cx: &mut Context<Self>) {
+        let path = paths::config_file();
+        if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
+            self.status = format!("cannot open {}: {e}", path.display());
+            eprintln!("sarkos: {}", self.status);
+            cx.notify();
+        }
+    }
+
     /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
     /// still lands the right one, and one whose tab closed does nothing. The source pane closes
     /// only when the drag emptied it, and never when it is the last pane (spec 4).
@@ -486,6 +497,7 @@ impl Root {
                     cx.notify();
                 }
             }
+            OpenConfig => self.open_config(cx),
         }
         let _ = window;
     }
@@ -787,7 +799,6 @@ fn main() {
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
         // once the window exists.
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.bind_keys(keymap::bindings());
         cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
