@@ -500,7 +500,8 @@ impl Root {
             self.close_palette(cx);
             return;
         }
-        let items = command_palette::items(&self.config, &theme::names(&paths::themes_dir()), &self.text_preset, &self.theme.name);
+        let themes_dir = paths::themes_dir();
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir);
         self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
         cx.notify();
     }

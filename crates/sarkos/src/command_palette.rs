@@ -6,6 +6,7 @@ use crate::keymap::{self, Command, ACTIONS};
 use crate::line_edit::{self, LineEdit};
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent};
+use std::path::Path;
 
 pub const MAX_ROWS: usize = 12;
 const WIDTH: f32 = 560.0;
@@ -19,8 +20,9 @@ pub struct Item {
     pub command: Command,
 }
 
-/// Everything the palette offers, in display order.
-pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str) -> Vec<Item> {
+/// Everything the palette offers, in display order. `themes_dir` is where "Extract built-in
+/// themes" writes.
+pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path) -> Vec<Item> {
     let mut out = Vec::new();
     for a in ACTIONS {
         if a.name == "command palette" || a.name == "quit" {
@@ -35,19 +37,20 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
     }
     for (name, p) in &cfg.font.presets {
         let mut detail = format!("{} px, line height {}", p.size, p.line_height);
+        if name == "compact" {
+            detail.push_str(", below the research's comfort floor");
+        }
         if name == current_preset {
             detail.push_str(", current");
-        } else if name == "compact" {
-            detail.push_str(", below the research's comfort floor");
         }
         out.push(Item { label: format!("Text preset: {name}"), detail, command: Command::TextPreset(name.clone()) });
     }
     for name in themes {
-        let detail = if name == current_theme { "current".to_string() } else { "until relaunch; set [theme] in config.toml to keep".to_string() };
+        let detail = if name == current_theme { "current".to_string() } else { "until the config reloads; set [theme] in config.toml to keep".to_string() };
         out.push(Item { label: format!("Theme: {name}"), detail, command: Command::SetTheme(name.clone()) });
     }
     out.push(Item { label: "Reload config".into(), detail: String::new(), command: Command::ReloadConfig });
-    out.push(Item { label: "Extract built-in themes".into(), detail: "to ~/.config/sarkos/themes".into(), command: Command::ExtractThemes });
+    out.push(Item { label: "Extract built-in themes".into(), detail: format!("to {}", themes_dir.display()), command: Command::ExtractThemes });
     out
 }
 
@@ -196,7 +199,8 @@ mod tests {
     #[test]
     fn items_cover_actions_presets_themes_and_config() {
         let cfg = Config::default();
-        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy");
+        let dir = std::path::Path::new("/u/.config/sarkos/themes");
+        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir);
         let n_actions = crate::keymap::ACTIONS.len() - 2;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
         assert!(!items.iter().any(|i| i.label == "Command palette" || i.label == "Quit"));
@@ -209,13 +213,17 @@ mod tests {
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor");
         let theme = items.iter().find(|i| i.label == "Theme: navy-light").unwrap();
-        assert_eq!(theme.detail, "until relaunch; set [theme] in config.toml to keep");
+        assert_eq!(theme.detail, "until the config reloads; set [theme] in config.toml to keep");
         assert_eq!(theme.command, Command::SetTheme("navy-light".into()));
         assert_eq!(items.iter().find(|i| i.label == "Theme: navy").unwrap().detail, "current");
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
-        assert!(items.iter().any(|i| i.command == Command::ExtractThemes));
+        let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
+        assert_eq!(extract.detail, "to /u/.config/sarkos/themes");
+        let items = self::items(&cfg, &[], "compact", "navy", dir);
+        let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
+        assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor, current", "the floor note stays");
         let unbound = cfg_with("split right", "");
-        let items = self::items(&unbound, &[], "comfortable", "navy");
+        let items = self::items(&unbound, &[], "comfortable", "navy", dir);
         assert_eq!(items.iter().find(|i| i.label == "Split right").unwrap().detail, "");
     }
 
