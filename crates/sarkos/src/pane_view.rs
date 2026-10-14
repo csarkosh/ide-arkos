@@ -20,12 +20,12 @@ const TAB_INACTIVE: u32 = 0x0d1117;
 const DIM: u32 = 0x8a93a3;
 const FOCUS_RING: u32 = 0x3a7bd5;
 
-/// The text on a tab: the terminal's title (or "shell"), then its state.
-pub fn tab_label(title: &str, alive: bool, exit_code: Option<i32>, note: bool, busy: Option<&str>) -> String {
+/// The text on a tab: the terminal's title (or `fallback`, the shell's name), then its state.
+pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32>, note: bool, busy: Option<&str>) -> String {
     if let Some(b) = busy {
         return b.to_string();
     }
-    let name = if title.is_empty() { "shell" } else { title };
+    let name = if title.is_empty() { fallback } else { title };
     if !alive {
         return match exit_code {
             Some(c) => format!("{name} (ended, exit {c})"),
@@ -162,9 +162,9 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 match root.sessions.terminals.get(session) {
                     Some(t) => {
                         let t = t.read(cx);
-                        tab_label(&t.title, t.alive, t.exit_code, note, busy)
+                        tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy)
                     }
-                    None => tab_label("", true, None, note, busy.or(Some("starting shell"))),
+                    None => tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))),
                 }
             }
             Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -312,11 +312,12 @@ mod tests {
 
     #[test]
     fn tab_labels_show_state_after_the_title() {
-        assert_eq!(tab_label("zsh", true, None, false, None), "zsh");
-        assert_eq!(tab_label("", true, None, false, None), "shell");
-        assert_eq!(tab_label("zsh", false, Some(1), false, None), "zsh (ended, exit 1)");
-        assert_eq!(tab_label("zsh", false, None, false, None), "zsh (ended)");
-        assert_eq!(tab_label("zsh", true, None, true, None), "zsh (restarted)");
-        assert_eq!(tab_label("", true, None, false, Some("starting shell")), "starting shell");
+        assert_eq!(tab_label("vim", "zsh", true, None, false, None), "vim");
+        assert_eq!(tab_label("", "shell", true, None, false, None), "shell");
+        assert_eq!(tab_label("", "fish", true, None, false, None), "fish");
+        assert_eq!(tab_label("", "zsh", false, Some(1), false, None), "zsh (ended, exit 1)");
+        assert_eq!(tab_label("vim", "zsh", false, None, false, None), "vim (ended)");
+        assert_eq!(tab_label("", "zsh", true, None, true, None), "zsh (restarted)");
+        assert_eq!(tab_label("", "zsh", true, None, false, Some("starting shell")), "starting shell");
     }
 }

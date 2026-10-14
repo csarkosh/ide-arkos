@@ -21,6 +21,11 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("Cmd+W", "close this pane"),
 ];
 
+/// The hints to show. The last pane never closes, so it does not offer Cmd+W.
+pub fn hints(last_pane: bool) -> Vec<(&'static str, &'static str)> {
+    BINDINGS.iter().copied().filter(|(keys, _)| !(last_pane && *keys == "Cmd+W")).collect()
+}
+
 /// Three dots that drift along slow arcs and ease into their rest positions by `ANIM_SECS`.
 /// The curves are time-based, so a dropped frame changes nothing about where they end.
 pub fn dot_positions(elapsed: f32, w: f32, h: f32) -> [(f32, f32); 3] {
@@ -47,6 +52,7 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
         window.request_animation_frame();
     }
     let dots = dot_positions(elapsed, w, h);
+    let last_pane = root.tree.panes().len() == 1;
     let mut view = div()
         .id(("empty", pane))
         .size_full()
@@ -63,8 +69,8 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
         view = view.child(div().absolute().left(px(x - size / 2.0)).top(px(y - size / 2.0)).size(px(size)).rounded_full().bg(rgba((DOT << 8) | 0x33)));
     }
     let mut hints = div().flex().flex_col().gap(px(6.0)).text_color(rgb(DIM)).font_family("Menlo").text_size(px(13.0));
-    for (keys, what) in BINDINGS {
-        hints = hints.child(div().flex().flex_row().gap(px(12.0)).child(div().w(px(150.0)).text_color(rgb(FG)).child(*keys)).child(*what));
+    for (keys, what) in self::hints(last_pane) {
+        hints = hints.child(div().flex().flex_row().gap(px(12.0)).child(div().w(px(150.0)).text_color(rgb(FG)).child(keys)).child(what));
     }
     div().size_full().child(view.child(
         div()
@@ -84,6 +90,14 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_pane_does_not_offer_to_close() {
+        assert_eq!(hints(false).len(), 4);
+        assert!(hints(false).iter().any(|(k, _)| *k == "Cmd+W"));
+        assert_eq!(hints(true).len(), 3);
+        assert!(!hints(true).iter().any(|(k, _)| *k == "Cmd+W"));
+    }
 
     #[test]
     fn dots_move_then_settle() {

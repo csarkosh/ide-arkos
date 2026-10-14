@@ -81,6 +81,17 @@ pub struct Root {
     pub drop_target: Option<drag::DropTarget>,
     /// When each empty pane's animation started; settled panes keep an old instant.
     pub empty_anim: HashMap<PaneId, std::time::Instant>,
+    /// The basename of `$SHELL`, shown on a tab whose program set no title.
+    pub shell_name: String,
+}
+
+/// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
+fn shell_name(shell: Option<&str>) -> String {
+    shell
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "shell".into())
 }
 
 impl Root {
@@ -104,6 +115,7 @@ impl Root {
             closed: ClosedStack::default(),
             drop_target: None,
             empty_anim: HashMap::new(),
+            shell_name: shell_name(std::env::var("SHELL").ok().as_deref()),
         }
     }
 
@@ -116,8 +128,8 @@ impl Root {
         request_save(&self.save_queue, ws, cx);
     }
 
-    /// Drops everything kept per pane. Dropping its grid waiters makes a restore waiting on the
-    /// pane fail, and its error path aborts the restore.
+    /// Drops everything kept per pane. A restore waiting on the pane's grid then looks for its
+    /// tab again: in another pane it waits there, and closed it gives up.
     pub fn forget_pane(&mut self, pane: PaneId) {
         self.grids.remove(&pane);
         self.grid_waiters.remove(&pane);
@@ -236,6 +248,39 @@ impl Root {
             eprintln!("sarkos: reopening session {} in pane {pane}", session.0);
             self.sessions.attach(session, id, false);
         }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// A restore whose tab is gone. Ends the session unless something can still show it.
+    fn restore_tab_gone(&mut self, session: SessionId, tab: TabId) {
+        if self.tree.find_session(session).is_some() {
+            // Closed and reopened meanwhile: the new tab's own restore owns the session.
+            eprintln!("sarkos: tab {tab} closed during its restore; session {} was reopened elsewhere", session.0);
+        } else if self.closed.contains(session) {
+            // Closed by the user: already detached, and killed when its grace runs out.
+            eprintln!("sarkos: tab {tab} closed during its restore; session {} waits for Cmd+Shift+T", session.0);
+            self.sessions.abort_restore(session, tab);
+        } else {
+            eprintln!("sarkos: tab {tab} closed during its restore, ending session {}", session.0);
+            self.sessions.kill(session);
+            self.sessions.detach(session);
+            self.sessions.abort_restore(session, tab);
+        }
+    }
+
+    /// A tab whose session could not be shown becomes a fresh shell with the "(restarted)" note,
+    /// so no tab is left dead. `why` is logged.
+    fn restart_tab(&mut self, tab: TabId, session: SessionId, why: &str, cx: &mut Context<Self>) {
+        self.sessions.abort_restore(session, tab);
+        let Some((pane, idx)) = self.tree.locate(tab) else {
+            self.restore_tab_gone(session, tab);
+            return;
+        };
+        eprintln!("sarkos: cannot show session {} in tab {tab} ({why}); starting a new shell there", session.0);
+        self.sessions.detach(session);
+        self.tree.replace_tab(pane, idx, Tab::Terminal { session: SessionId(0) });
+        self.sessions.create(tab, true);
         self.save(cx);
         cx.notify();
     }
@@ -485,9 +530,9 @@ impl Root {
                 let root = cx.entity();
                 cx.spawn(async move |_, cx| {
                     if let Err(e) = restore(&root, session, tab, replay, alive, cx).await {
-                        eprintln!("sarkos: restoring session {} failed: {e:#}", session.0);
+                        let why = format!("restoring it failed: {e:#}");
                         let _ = root.update(cx, |root, cx| {
-                            root.sessions.abort_restore(session, tab);
+                            root.restart_tab(tab, session, &why, cx);
                             cx.notify();
                         });
                     }
@@ -495,6 +540,9 @@ impl Root {
                 .detach();
             }
             Outcome::Killed { .. } => {}
+            Outcome::AttachFailed { session, tab, error } => {
+                self.restart_tab(tab, session, &format!("sarkosd could not attach it: {error}"), cx);
+            }
             Outcome::Error(e) => {
                 self.status = format!("{ERROR_PREFIX}{e}");
                 eprintln!("sarkos: {}", self.status);
@@ -507,21 +555,27 @@ impl Root {
 /// Parses a replay off the main thread at the pane's grid, then installs the terminal.
 /// The tab is followed by id, so it may move or close while the replay is parsed.
 async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, cx: &mut AsyncApp) -> anyhow::Result<()> {
-    let known = root.update(cx, |root, cx| {
-        let (pane, _) = root.tree.locate(tab).ok_or_else(|| anyhow::anyhow!("tab {tab} closed before its restore began"))?;
-        anyhow::Ok(match root.pane_grid(pane, cx) {
-            Some(grid) => Ok(grid),
-            None => {
-                let (tx, rx) = oneshot::channel();
-                root.grid_waiters.entry(pane).or_default().push(tx);
-                cx.notify();
-                Err(rx)
-            }
-        })
-    })??;
-    let (cols, rows) = match known {
-        Ok(grid) => grid,
-        Err(rx) => rx.await?,
+    let (cols, rows) = loop {
+        let known = root.update(cx, |root, cx| {
+            let (pane, _) = root.tree.locate(tab).ok_or_else(|| anyhow::anyhow!("tab {tab} closed before its restore began"))?;
+            anyhow::Ok(match root.pane_grid(pane, cx) {
+                Some(grid) => Ok(grid),
+                None => {
+                    let (tx, rx) = oneshot::channel();
+                    root.grid_waiters.entry(pane).or_default().push(tx);
+                    cx.notify();
+                    Err(rx)
+                }
+            })
+        })??;
+        match known {
+            Ok(grid) => break grid,
+            Err(rx) => match rx.await {
+                Ok(grid) => break grid,
+                // The pane went away; the tab may have moved to another one, so look again.
+                Err(_) => continue,
+            },
+        }
     };
     let started = std::time::Instant::now();
     let (core, title) = cx
@@ -535,20 +589,7 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
     eprintln!("sarkos: session {} replay parsed at {cols}x{rows} in {:?}", session.0, started.elapsed());
     root.update(cx, |root, cx| {
         if root.tree.locate(tab).is_none() {
-            if root.tree.find_session(session).is_some() {
-                // Closed and reopened while parsing: the new tab's own restore owns the session.
-                eprintln!("sarkos: tab {tab} closed during its restore; session {} was reopened elsewhere", session.0);
-            } else if root.closed.contains(session) {
-                // Closed by the user: already detached, and killed when its grace runs out.
-                eprintln!("sarkos: tab {tab} closed during its restore; session {} waits for Cmd+Shift+T", session.0);
-                root.sessions.abort_restore(session, tab);
-            } else {
-                // Nothing will show this session again.
-                eprintln!("sarkos: tab {tab} closed during its restore, ending session {}", session.0);
-                root.sessions.kill(session);
-                root.sessions.detach(session);
-                root.sessions.abort_restore(session, tab);
-            }
+            root.restore_tab_gone(session, tab);
             cx.notify();
             return;
         }
@@ -892,7 +933,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::pick_grid;
+    use super::{pick_grid, shell_name};
+
+    #[test]
+    fn shell_name_is_the_basename_of_shell() {
+        assert_eq!(shell_name(Some("/bin/zsh")), "zsh");
+        assert_eq!(shell_name(Some("/opt/homebrew/bin/fish")), "fish");
+        assert_eq!(shell_name(Some("")), "shell");
+        assert_eq!(shell_name(None), "shell");
+    }
 
     #[test]
     fn hidden_panes_borrow_a_measured_grid() {

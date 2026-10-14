@@ -45,6 +45,8 @@ pub enum Outcome {
     Created { tab: TabId, session: SessionId, note: bool },
     Attached { session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, note: bool },
     Killed { session: SessionId },
+    /// The daemon could not attach `session` for `tab`; the window gives the tab a fresh shell.
+    AttachFailed { session: SessionId, tab: TabId, error: String },
     Error(String),
 }
 
@@ -203,7 +205,11 @@ impl SessionManager {
         let pending = self.pending.remove(&id);
         if let Response::Error(e) = &response {
             match pending {
-                Some(Pending::Create { tab, .. }) | Some(Pending::Attach { tab, .. }) => {
+                Some(Pending::Attach { session, tab, .. }) => {
+                    self.busy.remove(&tab);
+                    return Outcome::AttachFailed { session, tab, error: e.clone() };
+                }
+                Some(Pending::Create { tab, .. }) => {
                     self.busy.remove(&tab);
                 }
                 _ => {}
@@ -221,7 +227,11 @@ impl SessionManager {
                 Outcome::Attached { session, tab, replay, alive, note }
             }
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
-            (Some(Pending::Create { tab, .. }), _) | (Some(Pending::Attach { tab, .. }), _) => {
+            (Some(Pending::Attach { session, tab, .. }), _) => {
+                self.busy.remove(&tab);
+                Outcome::AttachFailed { session, tab, error: format!("unexpected response {response:?} to {pending:?}") }
+            }
+            (Some(Pending::Create { tab, .. }), _) => {
                 self.busy.remove(&tab);
                 Outcome::Error(format!("unexpected response {response:?} to {pending:?}"))
             }
@@ -426,6 +436,21 @@ mod tests {
         assert!(m.has_pending_for(10));
         assert_eq!(m.handle_response(1, Response::Error("spawn failed".into())), Outcome::Error("spawn failed".into()));
         assert!(!m.has_pending_for(10));
+    }
+
+    #[test]
+    fn a_failed_attach_names_its_tab_and_session() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
+        m.attach(SessionId(4), 20, false);
+        m.attach(SessionId(5), 21, false);
+        assert_eq!(
+            m.handle_response(1, Response::Error("no session 4".into())),
+            Outcome::AttachFailed { session: SessionId(4), tab: 20, error: "no session 4".into() }
+        );
+        assert!(!m.has_pending_for(20));
+        assert!(matches!(m.handle_response(2, Response::Ok), Outcome::AttachFailed { session: SessionId(5), tab: 21, .. }));
+        assert!(!m.has_pending_for(21));
     }
 
     #[test]
