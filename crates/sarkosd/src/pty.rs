@@ -7,6 +7,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 #[cfg(not(any(target_os = "macos")))]
@@ -18,6 +19,18 @@ const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
 
 pub struct Pty {
     master: OwnedFd,
+}
+
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serializes forks against PTY descriptors that are briefly inheritable. `openpty` returns its
+/// pair without close-on-exec, so a shell forked by another thread before the flag is set would
+/// inherit a terminal it does not own and keep that session's reader from ever seeing EOF.
+/// `Pty::open` and `spawn` take it; anything else in the daemon that starts a process, or clears
+/// close-on-exec on a master, must hold it too.
+pub fn spawn_lock() -> MutexGuard<'static, ()> {
+    // The lock guards no data, so a panic while it was held leaves nothing inconsistent.
+    SPAWN_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn winsize(rows: u16, cols: u16) -> libc::winsize {
@@ -44,24 +57,35 @@ impl Pty {
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
         let mut ws = winsize(rows, cols);
+        let _no_fork_until_cloexec = spawn_lock();
         // SAFETY: openpty writes two descriptors; the name and termios pointers are allowed null.
         let rc = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
-        set_cloexec(master, true)?;
-        set_cloexec(slave, true)?;
-        // SAFETY: both descriptors are fresh and owned by this process.
-        Ok((Pty { master: unsafe { OwnedFd::from_raw_fd(master) } }, unsafe { OwnedFd::from_raw_fd(slave) }))
+        // SAFETY: both descriptors are fresh and owned by this process. Owned before the fcntl
+        // calls, so a failing one closes them instead of leaking them.
+        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        set_cloexec(master.as_raw_fd(), true)?;
+        set_cloexec(slave.as_raw_fd(), true)?;
+        Ok((Pty { master }, slave))
     }
 
     /// Takes ownership of a master inherited across `execve` (spec 2.2) and makes it
     /// close-on-exec again, so the next handover decides afresh what to pass on.
+    ///
+    /// # Safety
+    ///
+    /// `fd` must be an open descriptor that the caller owns and that nothing else will use or
+    /// close: the returned `Pty` closes it on drop, and the caller must not use the number after
+    /// this call.
     #[cfg_attr(not(test), allow(dead_code))] // the handover's resume (Task 4) calls it
-    pub fn adopt(fd: RawFd) -> io::Result<Pty> {
-        set_cloexec(fd, true)?;
-        // SAFETY: the caller hands over ownership of an open descriptor.
-        Ok(Pty { master: unsafe { OwnedFd::from_raw_fd(fd) } })
+    pub unsafe fn adopt(fd: RawFd) -> io::Result<Pty> {
+        // SAFETY: the caller hands over ownership of an open descriptor (see `# Safety`). Owned
+        // first, so a failing fcntl closes it rather than leaving it to nobody.
+        let master = unsafe { OwnedFd::from_raw_fd(fd) };
+        set_cloexec(master.as_raw_fd(), true)?;
+        Ok(Pty { master })
     }
 
     pub fn raw_fd(&self) -> RawFd {
@@ -157,7 +181,10 @@ pub fn spawn(slave: OwnedFd, program: &str, args: &[&str], cwd: &Path, env: &[(S
             Ok(())
         });
     }
-    let child = cmd.spawn()?;
+    let child = {
+        let _no_open_pty_inheritable = spawn_lock();
+        cmd.spawn()?
+    };
     let pid = child.id() as libc::pid_t;
     // The Child must not reap on drop; std's Child does not wait in Drop, so forgetting it only
     // releases its stdio handles (clones of the slave, which we want closed in the parent).
@@ -264,13 +291,50 @@ mod tests {
         let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
         assert_eq!(flags & libc::FD_CLOEXEC, 0, "inheritable means no close-on-exec");
         std::mem::forget(pty); // the "old daemon" is gone; the fd number survives
-        let adopted = Pty::adopt(raw).unwrap();
+        // SAFETY: the forgotten `pty` owned `raw` and is gone, so the fd is open and ours alone.
+        let adopted = unsafe { Pty::adopt(raw) }.unwrap();
         // SAFETY: as above; `adopted` now owns it.
         let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
         assert_ne!(flags & libc::FD_CLOEXEC, 0, "adopt sets close-on-exec again");
         let out = read_until(&adopted, "after-adopt", Duration::from_secs(5));
         assert!(out.contains("after-adopt"), "{out:?}");
         wait_draining(&adopted, pid);
+    }
+
+    /// How many descriptors a shell spawned on a fresh PTY has open, counted by `ls /dev/fd`.
+    fn shell_fd_count() -> usize {
+        let (pty, slave) = Pty::open(24, 80).unwrap();
+        let script = "echo fds=$(ls /dev/fd | wc -l | tr -d ' ') end";
+        let pid = spawn(slave, "/bin/sh", &["-c", script], std::env::temp_dir().as_path(), &[]).unwrap();
+        let out = read_until(&pty, " end", Duration::from_secs(5));
+        wait_draining(&pty, pid);
+        let count = out.split("fds=").nth(1).and_then(|rest| rest.split(" end").next());
+        count.and_then(|n| n.trim().parse().ok()).unwrap_or_else(|| panic!("no count in {out:?}"))
+    }
+
+    #[test]
+    fn concurrent_spawns_give_each_shell_only_its_own_terminal() {
+        let alone = shell_fd_count();
+        let threads = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(threads));
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    (0..10)
+                        .map(|_| {
+                            barrier.wait();
+                            shell_fd_count()
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            for count in handle.join().unwrap() {
+                assert_eq!(count, alone, "a shell inherited another PTY's descriptors");
+            }
+        }
     }
 
     #[test]
