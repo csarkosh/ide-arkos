@@ -181,6 +181,18 @@ pub struct Root {
     pub window_active: bool,
     /// Where the working glyph's pulse starts; every working tab shares its phase.
     pub pulse_epoch: Instant,
+    /// The user is closing the window: the Quit action, or the red button
+    /// (`windowShouldClose:`). Never set by macOS's own terminate or the update relaunch.
+    pub user_closing: bool,
+    /// The Goodbye went out: the Quit action sends it, and the close its quit makes must not
+    /// send a second one.
+    said_goodbye: bool,
+}
+
+/// Whether a window closing tells the daemon the user is leaving, so a restart does not reopen
+/// it: only the last window, and only when the user closed it.
+pub fn says_goodbye(user_closing: bool, windows_left: usize) -> bool {
+    user_closing && windows_left == 0
 }
 
 /// The session of the focused pane's active terminal tab.
@@ -250,6 +262,8 @@ impl Root {
             updating: None,
             window_active: true,
             pulse_epoch: Instant::now(),
+            user_closing: false,
+            said_goodbye: false,
         }
     }
 
@@ -1051,8 +1065,13 @@ impl Root {
     }
 
     /// The user is quitting: tell the daemon not to reopen this window after a restart, then
-    /// the flush every quit does. Not for the relaunch an update makes (`RelaunchAccepted`).
+    /// the flush every quit does. Not for the relaunch an update makes (`RelaunchAccepted`) nor
+    /// macOS's terminate (`says_goodbye`). Says it once.
     pub fn leaving(&mut self) {
+        if self.said_goodbye {
+            return;
+        }
+        self.said_goodbye = true;
         self.sessions.goodbye();
         self.flush_for_quit(true);
     }
@@ -1501,6 +1520,12 @@ fn main() {
                         root.save_queue = view_queue;
                         root
                     });
+                    // The red button asks first; a close during macOS's terminate does not.
+                    let closing = view.clone();
+                    window.on_window_should_close(cx, move |_, cx| {
+                        closing.update(cx, |root, _| root.user_closing = true);
+                        true
+                    });
                     let observed = view.clone();
                     window
                         .observe_window_appearance(move |window, cx| {
@@ -1521,15 +1546,21 @@ fn main() {
         });
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
-            quit_root.update(cx, |root, _| root.leaving());
+            // Goodbye here, while everything runs; the close this quit makes finds it said.
+            quit_root.update(cx, |root, _| {
+                root.user_closing = true;
+                root.leaving();
+            });
             cx.quit();
         });
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
-        // no windowless process lingers.
+        // no windowless process lingers. macOS closes the window itself on terminate (logout,
+        // shutdown): that close flushes but says no Goodbye, so a restart reopens the window.
         let close_root = root.clone();
         cx.on_window_closed(move |cx| {
-            if cx.windows().is_empty() {
-                close_root.update(cx, |root, _| root.leaving());
+            let left = cx.windows().len();
+            if left == 0 {
+                close_root.update(cx, |root, _| if says_goodbye(root.user_closing, left) { root.leaving() } else { root.flush_for_quit(false) });
                 cx.quit();
             }
         })
@@ -1564,7 +1595,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_label, pick_grid, shell_name, CONNECTING, ERROR_PREFIX};
+    use super::{daemon_label, pick_grid, says_goodbye, shell_name, CONNECTING, ERROR_PREFIX};
+
+    #[test]
+    fn only_the_users_close_of_the_last_window_says_goodbye() {
+        assert!(says_goodbye(true, 0), "Quit, or the red button on the last window");
+        assert!(!says_goodbye(false, 0), "macOS's terminate at logout or shutdown, or the update relaunch");
+        assert!(!says_goodbye(true, 1), "a window is still open");
+        assert!(!says_goodbye(false, 1));
+    }
 
     #[test]
     fn the_daemon_label_follows_the_connection_not_notices() {
