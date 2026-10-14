@@ -11,12 +11,16 @@ use crate::theme::Theme;
 use crate::tree::PaneId;
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Bytes a binary check looks at: a NUL in the first 8 KiB means not text.
 pub const SNIFF: usize = 8 * 1024;
 pub const MAX_HITS: usize = 10_000;
+/// Files above this are not read at all: a notice says how big they are.
+pub const MAX_PLAIN_BYTES: u64 = 64 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
@@ -30,7 +34,10 @@ pub struct Span {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Content {
-    Text { lines: Vec<String>, spans: Vec<Vec<Span>> },
+    /// The lines are shared with a find running on the background executor.
+    Text { lines: Arc<Vec<String>>, spans: Vec<Vec<Span>> },
+    /// Over `MAX_PLAIN_BYTES`: the size, the file unread.
+    TooLarge(u64),
     Binary,
     Unreadable(String),
 }
@@ -75,7 +82,25 @@ pub fn find_hits(lines: &[String], needle: &str) -> Vec<Hit> {
         return out;
     }
     let n: Vec<char> = needle.to_lowercase().chars().collect();
+    let ascii = needle.is_ascii().then(|| needle.as_bytes());
     for (i, line) in lines.iter().enumerate() {
+        // The common case, an ASCII line and needle: compare bytes, no allocation.
+        if let Some(nb) = ascii.filter(|_| line.is_ascii()) {
+            let hay = line.as_bytes();
+            let mut b = 0;
+            while b + nb.len() <= hay.len() {
+                if hay[b..b + nb.len()].eq_ignore_ascii_case(nb) {
+                    out.push(Hit { line: i, start: b, end: b + nb.len() });
+                    if out.len() >= MAX_HITS {
+                        return out;
+                    }
+                    b += nb.len();
+                } else {
+                    b += 1;
+                }
+            }
+            continue;
+        }
         // Lowercasing can change byte lengths (e.g. some scripts): search char by char instead.
         let chars: Vec<(usize, char)> = line.char_indices().collect();
         let mut c = 0;
@@ -107,6 +132,8 @@ pub struct ViewerFind {
     pub hits: Vec<Hit>,
     pub current: usize,
     pub focus: FocusHandle,
+    /// A search is running on the background executor; `hits` are the previous ones.
+    pub searching: bool,
 }
 
 /// What the background load produced, applied on the UI thread.
@@ -137,13 +164,15 @@ pub struct Viewer {
     /// load never lands over a newer one.
     pub loads: u64,
     pub applied: u64,
+    /// Numbers every search started; only the latest one's hits land.
+    pub find_seq: u64,
 }
 
 impl Viewer {
     pub fn new(path: PathBuf, font_size: f32, line_height: f32, cx: &mut Context<Self>) -> Self {
         Viewer {
             path,
-            content: Content::Text { lines: Vec::new(), spans: Vec::new() },
+            content: Content::Text { lines: Arc::new(Vec::new()), spans: Vec::new() },
             loaded: false,
             scroll: ScrollAnimator::new(),
             focus: cx.focus_handle(),
@@ -156,6 +185,7 @@ impl Viewer {
             plain: false,
             loads: 0,
             applied: 0,
+            find_seq: 0,
         }
     }
 
@@ -178,12 +208,10 @@ impl Viewer {
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
-            f.hits = match &self.content {
-                Content::Text { lines, .. } => find_hits(lines, &f.query.text),
-                _ => Vec::new(),
-            };
-            f.current = f.current.min(f.hits.len().saturating_sub(1));
+            // The old hits point into the old lines.
+            f.hits.clear();
         }
+        self.search(false, cx);
         cx.notify();
     }
 
@@ -194,26 +222,59 @@ impl Viewer {
 
     pub fn open_find(&mut self, cx: &mut Context<Self>) {
         if self.find.is_none() {
-            self.find = Some(ViewerFind { query: LineEdit::new(), hits: Vec::new(), current: 0, focus: cx.focus_handle() });
+            self.find = Some(ViewerFind { query: LineEdit::new(), hits: Vec::new(), current: 0, focus: cx.focus_handle(), searching: false });
         }
         cx.notify();
     }
 
     pub fn close_find(&mut self, cx: &mut Context<Self>) {
         self.find = None;
+        // A search still running lands in no later bar.
+        self.find_seq += 1;
         cx.notify();
     }
 
     /// Re-runs the search after the query changed and jumps to the first hit.
     pub fn refind(&mut self, cx: &mut Context<Self>) {
-        let Some(f) = &mut self.find else { return };
-        f.hits = match &self.content {
-            Content::Text { lines, .. } => find_hits(lines, &f.query.text),
-            _ => Vec::new(),
-        };
-        f.current = 0;
-        self.show_current_hit();
+        self.search(true, cx);
         cx.notify();
+    }
+
+    /// Searches the lines for the query on the background executor. The result lands only if no
+    /// newer search started; with `jump` it points at the first hit and scrolls to it, else the
+    /// position is kept (a reload).
+    fn search(&mut self, jump: bool, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        self.find_seq += 1;
+        let seq = self.find_seq;
+        let lines = match &self.content {
+            Content::Text { lines, .. } if !f.query.text.is_empty() => lines.clone(),
+            _ => {
+                f.hits.clear();
+                f.current = 0;
+                f.searching = false;
+                return;
+            }
+        };
+        f.searching = true;
+        let query = f.query.text.clone();
+        cx.spawn(async move |this, cx| {
+            let hits = cx.background_executor().spawn(async move { find_hits(&lines, &query) }).await;
+            let _ = this.update(cx, |v, cx| {
+                if v.find_seq != seq {
+                    return;
+                }
+                let Some(f) = &mut v.find else { return };
+                f.current = if jump { 0 } else { f.current.min(hits.len().saturating_sub(1)) };
+                f.hits = hits;
+                f.searching = false;
+                if jump {
+                    v.show_current_hit();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn find_step(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -265,18 +326,20 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
     let plain = |text: &str| {
         let lines = split_lines(text);
         let spans = vec![Vec::new(); lines.len()];
-        Content::Text { lines, spans }
+        Content::Text { lines: Arc::new(lines), spans }
     };
-    let (content, is_plain) = match std::fs::read(path) {
+    let (content, is_plain) = match read_capped(path) {
         Err(e) => (Content::Unreadable(e.to_string()), false),
-        Ok(bytes) => match classify(&bytes, limit) {
+        Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), false),
+        Ok(Capped::Binary) => (Content::Binary, false),
+        Ok(Capped::Bytes(bytes)) => match classify(&bytes, limit) {
             Classified::Binary => (Content::Binary, false),
             Classified::TooBig => (plain(&String::from_utf8_lossy(&bytes)), true),
             Classified::Text(text) => match highlighter {
                 Some(h) => {
                     let lines = split_lines(&text);
                     let spans = h.highlight(path, &lines);
-                    (Content::Text { lines, spans }, false)
+                    (Content::Text { lines: Arc::new(lines), spans }, false)
                 }
                 // The grammars are still loading: plain for now, coloured when they land.
                 None => (plain(&text), false),
@@ -284,6 +347,30 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         },
     };
     Some(Loaded { content, fingerprint, plain: is_plain })
+}
+
+enum Capped {
+    TooLarge(u64),
+    Binary,
+    Bytes(Vec<u8>),
+}
+
+/// The file's bytes, unless it is over `MAX_PLAIN_BYTES` (not opened) or has a NUL in its first
+/// `SNIFF` bytes (nothing more read).
+fn read_capped(path: &Path) -> std::io::Result<Capped> {
+    let len = std::fs::metadata(path)?.len();
+    if len > MAX_PLAIN_BYTES {
+        return Ok(Capped::TooLarge(len));
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(len as usize);
+    (&mut file).take(SNIFF as u64).read_to_end(&mut bytes)?;
+    if bytes.contains(&0) {
+        return Ok(Capped::Binary);
+    }
+    // Capped again here: the file may have grown since the metadata was read.
+    file.take(MAX_PLAIN_BYTES - bytes.len() as u64).read_to_end(&mut bytes)?;
+    Ok(Capped::Bytes(bytes))
 }
 
 pub fn count_text(current: usize, len: usize) -> String {
@@ -299,7 +386,8 @@ pub fn count_text(current: usize, len: usize) -> String {
 pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
     let (query, count, focus) = {
         let f = viewer.read(cx).find.as_ref()?;
-        (f.query.clone(), count_text(f.current, f.hits.len()), f.focus.clone())
+        let count = if f.searching { "searching".to_string() } else { count_text(f.current, f.hits.len()) };
+        (f.query.clone(), count, f.focus.clone())
     };
     let (v_keys, v_close) = (viewer.clone(), viewer.clone());
     Some(
@@ -397,6 +485,10 @@ mod tests {
         assert_eq!(find_hits(&many, "a").len(), MAX_HITS, "capped");
         let unicode = vec!["caf\u{e9} CAF\u{c9}".to_string()];
         let h = find_hits(&unicode, "caf\u{e9}");
+        let mixed = vec!["\u{c9}COLE \u{e9}cole ecole".to_string(), "plain ASCII Ecole".to_string()];
+        let m = find_hits(&mixed, "\u{c9}cole");
+        assert_eq!(m.len(), 2, "a non-ASCII needle matches either case, and never the ASCII spelling");
+        assert_eq!(find_hits(&mixed, "ECOLE").len(), 2, "an ASCII needle on a non-ASCII line and on an ASCII line");
         assert_eq!(h.len(), 2);
         assert_eq!(&unicode[0][h[1].start..h[1].end], "CAF\u{c9}", "byte ranges land on char boundaries");
     }
@@ -404,10 +496,10 @@ mod tests {
     #[test]
     fn a_changed_fingerprint_reloads_and_keeps_the_scroll_clamped() {
         // The pure part of a reload: a shorter file pulls the scroll back; the find re-runs.
-        let mut content = Content::Text { lines: (0..100).map(|i| format!("line {i}")).collect(), spans: vec![Vec::new(); 100] };
+        let mut content = Content::Text { lines: Arc::new((0..100).map(|i| format!("line {i}")).collect()), spans: vec![Vec::new(); 100] };
         let mut scroll = ScrollAnimator::new();
         scroll.jump_to(80.0);
-        let shorter = Content::Text { lines: (0..20).map(|i| format!("line {i}")).collect(), spans: vec![Vec::new(); 20] };
+        let shorter = Content::Text { lines: Arc::new((0..20).map(|i| format!("line {i}")).collect()), spans: vec![Vec::new(); 20] };
         let before = std::mem::replace(&mut content, shorter);
         assert!(matches!(before, Content::Text { ref lines, .. } if lines.len() == 100));
         let max = match &content {
@@ -429,7 +521,7 @@ mod tests {
         let text = dir.path().join("a.txt");
         std::fs::write(&text, "one\n\ttwo\n").unwrap();
         let l = read_file(&text, None, None, 100).expect("loaded");
-        assert_eq!(l.content, Content::Text { lines: vec!["one".into(), "    two".into()], spans: vec![Vec::new(), Vec::new()] });
+        assert_eq!(l.content, Content::Text { lines: Arc::new(vec!["one".into(), "    two".into()]), spans: vec![Vec::new(), Vec::new()] });
         assert!(!l.plain && l.fingerprint.is_some());
         assert!(read_file(&text, l.fingerprint, None, 100).is_none(), "an unchanged file is not read again");
         let big = read_file(&text, None, None, 4).expect("loaded");
@@ -438,6 +530,10 @@ mod tests {
         let bin = dir.path().join("b.bin");
         std::fs::write(&bin, b"\x89PNG\0\0").unwrap();
         assert_eq!(read_file(&bin, None, None, 100).unwrap().content, Content::Binary);
+        let huge = dir.path().join("huge.log");
+        // Sparse: no disk or memory goes to the length.
+        std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
+        assert_eq!(read_file(&huge, None, None, 100).unwrap().content, Content::TooLarge(MAX_PLAIN_BYTES + 1), "not read at all");
         let gone = read_file(&dir.path().join("gone"), l.fingerprint, None, 100).expect("a deleted file is a change");
         assert!(matches!(gone.content, Content::Unreadable(_)));
         assert_eq!(gone.fingerprint, None);

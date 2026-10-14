@@ -14,7 +14,8 @@ Session awareness and recovery after a restart: each tab shows what its Claude C
 doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the
 shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
-each Claude Code conversation resumed. Milestone 4b (worktrees, git status in the tree, diff gutters) is next.
+each Claude Code conversation resumed. Milestone 4b (worktrees, git status in the tree, diff
+gutters) is next.
 
 Things only a person at the screen can check, in order of value:
 
@@ -130,9 +131,9 @@ previews, Escape goes back to the pane.
 The viewer is read-only: syntax colours from your theme's `[viewer]` section through syntect's
 TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a second
 of the file changing on disk. Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
-plain; binaries show a notice. The text preset applies to viewers as to terminals, and Cmd+= and
-Cmd+- resize the focused one. Git status colours, the worktree explorer and the diff gutters
-come in milestone 4b.
+plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
+terminals, and Cmd+= and Cmd+- resize the focused one. Git status colours, the worktree explorer
+and the diff gutters come in milestone 4b.
 
 ## Keyboard
 
@@ -207,8 +208,9 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
-the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `sidebar` (its width and whether it starts
-collapsed), `viewer` (`highlight_limit_bytes`), and `browser` for a later milestone.
+the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `sidebar` (its width and
+whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` for a later
+milestone.
 
 Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen

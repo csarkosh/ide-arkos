@@ -648,8 +648,13 @@ impl Root {
         !tabs.is_empty()
     }
 
+    /// Reloads the viewers whose colours depend on the highlighter: plain text, binaries and
+    /// files too large to show have nothing to recolour.
     fn reload_all_viewers(&mut self, cx: &mut Context<Self>) {
-        let tabs: Vec<TabId> = self.viewers.keys().copied().collect();
+        let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| {
+            let v = v.read(cx);
+            !v.plain && matches!(v.content, viewer::Content::Text { .. })
+        }).map(|(t, _)| *t).collect();
         for tab in tabs {
             self.load_viewer(tab, cx);
         }

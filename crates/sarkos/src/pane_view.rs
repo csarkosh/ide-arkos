@@ -497,6 +497,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
 enum Kind {
     Loading,
     Text { plain: bool },
+    TooLarge(u64),
     Binary,
     Unreadable(String),
 }
@@ -512,6 +513,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
             Content::Text { .. } => Kind::Text { plain: v.plain },
+            Content::TooLarge(n) => Kind::TooLarge(*n),
             Content::Binary => Kind::Binary,
             Content::Unreadable(e) => Kind::Unreadable(e.clone()),
         };
@@ -530,6 +532,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 .child(div().flex_1().min_h_0().child(element))
         }
         Kind::Loading => notice("loading".into()),
+        Kind::TooLarge(n) => notice(format!("{} MB, too large to show", n / (1024 * 1024))),
         Kind::Binary => notice("a binary file; nothing to show".into()),
         Kind::Unreadable(e) => notice(format!("cannot read this file: {e}")),
     };
