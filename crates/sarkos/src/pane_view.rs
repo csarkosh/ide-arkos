@@ -49,6 +49,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
     let bar = render_tab_bar(root, pane, &p, number, cx);
+    if !p.tabs.is_empty() {
+        // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
+        root.empty_anim.remove(&pane);
+    }
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
