@@ -32,7 +32,7 @@ Things only a person at the screen can check, in order of value:
 - a session that is gone from the daemon showing "(restarted)" on relaunch
 - a session ended in a background tab marks its tab without stealing focus
 - the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
-  after, and look for no "killing" line in `~/Library/Application Support/sarkos/sarkosd.log`
+  after, and look for no "relaunching" line in `~/Library/Application Support/sarkos/sarkosd.log`
 - `ps` after thirty seconds idle with four terminals
 
 ## Keyboard
