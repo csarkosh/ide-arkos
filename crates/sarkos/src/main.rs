@@ -5,6 +5,7 @@ mod closed_stack;
 mod command_palette;
 mod config;
 mod config_watch;
+mod connection;
 mod drag;
 mod empty_pane;
 mod find;
@@ -25,19 +26,16 @@ mod theme;
 mod tree;
 mod workspace;
 
-use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
-use futures::StreamExt;
 use gpui::{
     div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
     Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
-use protocol::{Event, Request, Response, ServerMessage, SessionId};
+use protocol::{Request, SessionId};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::{Duration, Instant};
 use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
@@ -46,9 +44,6 @@ use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
 use keymap::Quit;
 
 const BANNER_H: f32 = 28.0;
-/// Output bytes applied in one batch before the event loop yields to the frame loop.
-const BATCH_BUDGET: usize = 1 << 20;
-
 
 /// Starts every status that reports a `Response::Error`.
 const ERROR_PREFIX: &str = "sarkosd error: ";
@@ -69,6 +64,24 @@ fn daemon_label(status: &str) -> &'static str {
     }
 }
 
+/// `daemon_label`, except that while the window is reconnecting the bar says so at once.
+fn daemon_label_with(status: &str, reconnecting: bool) -> &'static str {
+    if reconnecting {
+        "sarkosd reconnecting"
+    } else {
+        daemon_label(status)
+    }
+}
+
+/// A reconnect's status waits `BANNER_AFTER` before it becomes a banner; the status bar says
+/// "reconnecting" at once. Any other status shows at once.
+fn banner_visible(reconnecting_since: Option<Instant>, now: Instant) -> bool {
+    match reconnecting_since {
+        Some(since) => now.duration_since(since) >= connection::BANNER_AFTER,
+        None => true,
+    }
+}
+
 pub struct Root {
     pub tree: Tree,
     pub sessions: SessionManager,
@@ -78,6 +91,14 @@ pub struct Root {
     pub status: String,
     /// What the daemon said it runs, from a version 2 `Hello` answer. `None` for an old daemon.
     pub daemon_version: Option<String>,
+    /// Bumped when a connection starts and when it ends, so tasks bound to an older one (its
+    /// heartbeat, a restore parsed from its replay) know to stop.
+    pub connection_generation: u64,
+    /// When the connection ended, while the window is reconnecting; `None` while connected.
+    pub reconnecting_since: Option<Instant>,
+    /// Whether a session the daemon no longer runs comes back with the "(restarted)" note: a
+    /// saved layout at launch, and always after a reconnect.
+    pub reconcile_with_note: bool,
     /// The grid each pane last measured while it had no terminal to measure itself.
     pub grids: HashMap<PaneId, (usize, usize)>,
     pub grid_waiters: HashMap<PaneId, Vec<oneshot::Sender<(usize, usize)>>>,
@@ -144,6 +165,7 @@ impl Root {
         // A fresh workspace starts with one pane holding a placeholder session that the launch
         // replaces with a real shell (reconcile sees it is not in the daemon's list).
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
+        let reconcile_with_note = saved.is_some();
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
@@ -155,6 +177,9 @@ impl Root {
             project,
             status: CONNECTING.into(),
             daemon_version: None,
+            connection_generation: 0,
+            reconnecting_since: None,
+            reconcile_with_note,
             grids: HashMap::new(),
             grid_waiters: HashMap::new(),
             pane_focus: HashMap::new(),
@@ -813,8 +838,45 @@ impl Root {
         let _ = window;
     }
 
+    /// A connection is up (the first one, or a reconnect): its session list reconciles the tree.
+    pub fn connected(&mut self, client: Arc<client::Client>, cx: &mut Context<Self>) {
+        self.sessions.set_client(client);
+        // Every connection after the first is a reconnect: a session the daemon lost meanwhile
+        // comes back as a fresh shell with the "(restarted)" note, as a relaunch does.
+        if self.connection_generation > 0 {
+            self.reconcile_with_note = true;
+        }
+        self.connection_generation += 1;
+        self.reconnecting_since = None;
+        self.status = CONNECTING.into();
+        self.grids.clear();
+        self.sessions.list();
+        cx.notify();
+    }
+
+    /// The connection ended. Every terminal tab waits for the reconnect; the daemon kept the
+    /// sessions, so the next attach replays them.
+    pub fn disconnected(&mut self, reason: String, cx: &mut Context<Self>) {
+        eprintln!("sarkos: {reason}; reconnecting");
+        // A restore still parsing this connection's replay must not install a terminal bound to
+        // the dead client: the reconnect attaches the session again.
+        self.connection_generation += 1;
+        self.sessions.disconnect();
+        for (pane, idx, tab) in self.tree.tabs() {
+            if let Tab::Terminal { .. } = tab {
+                if let Some(id) = self.tree.tab_id(pane, idx) {
+                    self.sessions.busy.insert(id, "reconnecting");
+                }
+            }
+        }
+        // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
+        self.status = if self.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", self.status) } else { reason };
+        self.reconnecting_since = Some(Instant::now());
+        cx.notify();
+    }
+
     /// Applies what the daemon answered.
-    pub fn handle_outcome(&mut self, outcome: Outcome, saved_layout: bool, cx: &mut Context<Self>) {
+    pub fn handle_outcome(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         match outcome {
             Outcome::None => {}
             Outcome::DaemonHello { version, .. } => {
@@ -830,7 +892,7 @@ impl Root {
                 for step in reconcile(&self.tree, &list, &self.project) {
                     match step {
                         Reconcile::Attach { tab, session } => self.sessions.attach(session, tab, false),
-                        Reconcile::Create { tab } => self.sessions.create(tab, saved_layout),
+                        Reconcile::Create { tab } => self.sessions.create(tab, self.reconcile_with_note),
                     }
                 }
                 cx.notify();
@@ -855,12 +917,16 @@ impl Root {
                 eprintln!("sarkos: attached to session {} ({} replay bytes)", session.0, replay.len());
                 self.sessions.begin_restore(session);
                 let root = cx.entity();
+                let generation = self.connection_generation;
                 cx.spawn(async move |_, cx| {
-                    if let Err(e) = restore(&root, session, tab, replay, alive, cx).await {
+                    if let Err(e) = restore(&root, session, tab, replay, alive, generation, cx).await {
                         let why = format!("restoring it failed: {e:#}");
                         let _ = root.update(cx, |root, cx| {
-                            root.restart_tab(tab, session, &why, cx);
-                            cx.notify();
+                            // After a reconnect the new connection's own attach owns the tab.
+                            if root.connection_generation == generation {
+                                root.restart_tab(tab, session, &why, cx);
+                                cx.notify();
+                            }
                         });
                     }
                 })
@@ -881,7 +947,9 @@ impl Root {
 
 /// Parses a replay off the main thread at the pane's grid, then installs the terminal.
 /// The tab is followed by id, so it may move or close while the replay is parsed.
-async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, cx: &mut AsyncApp) -> anyhow::Result<()> {
+/// A restore that outlives its connection (`generation`) installs nothing: the reconnect attaches
+/// the session again.
+async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, generation: u64, cx: &mut AsyncApp) -> anyhow::Result<()> {
     let (cols, rows) = loop {
         let known = root.update(cx, |root, cx| {
             let (pane, _) = root.tree.locate(tab).ok_or_else(|| anyhow::anyhow!("tab {tab} closed before its restore began"))?;
@@ -916,6 +984,10 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
         .await;
     eprintln!("sarkos: session {} replay parsed at {cols}x{rows} in {:?}", session.0, started.elapsed());
     root.update(cx, |root, cx| {
+        if root.connection_generation != generation {
+            eprintln!("sarkos: session {} replay was parsed for a connection that has ended; dropping it", session.0);
+            return;
+        }
         if root.tree.locate(tab).is_none() {
             root.restore_tab_gone(session, tab);
             cx.notify();
@@ -963,8 +1035,9 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         let theme = self.theme.clone();
+        let status = if banner_visible(self.reconnecting_since, Instant::now()) { self.status.clone() } else { String::new() };
         let banners: Vec<String> = [
-            self.status.clone(),
+            status,
             self.config_error.clone().unwrap_or_default(),
             self.theme_error.clone().unwrap_or_default(),
             self.notice.clone().unwrap_or_default(),
@@ -1008,7 +1081,7 @@ impl Render for Root {
         }
         let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
-        let daemon = daemon_label(&self.status);
+        let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
         let family = self.family();
         let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
@@ -1074,10 +1147,12 @@ fn menus() -> Vec<Menu> {
 
 /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen them
 /// later) and the pending layout save is written.
-fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, client: &client::Client, cx: &mut App) {
+fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, cx: &mut App) {
     let killed = root.update(cx, |root, _| root.end_closed_tabs());
     // The process may exit before the writer thread sends the Kills; wait for them, briefly.
-    if killed > 0 && !client.wait_sent(Duration::from_millis(500)) {
+    // The client is the current connection's, whichever reconnect that is.
+    let client = root.read(cx).sessions.client.clone();
+    if killed > 0 && !client.is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
         eprintln!("sarkos: could not send {killed} kill requests before quitting");
     }
     workspace::flush_now(queue);
@@ -1096,29 +1171,6 @@ fn banner_bar(text: String, family: gpui::SharedString, theme: &theme::Theme) ->
         .font_family(family)
         .text_size(px(13.0))
         .child(text)
-}
-
-fn output_len(msg: &ServerMessage) -> usize {
-    match msg {
-        ServerMessage::Event(Event::Output { bytes, .. }) => bytes.len(),
-        _ => 0,
-    }
-}
-
-/// Returns Pending once. A channel with queued messages resolves `next()` immediately, so without
-/// this a flood would keep the main thread in the event loop and starve painting and input.
-async fn yield_now() {
-    let mut yielded = false;
-    futures::future::poll_fn(|cx| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await
 }
 
 /// `<name> <crate version> (<short git hash>)`, the same shape for both binaries.
@@ -1155,7 +1207,7 @@ fn main() {
         "--replay-bytes".to_string(),
         config.daemon.replay_bytes.to_string(),
     ];
-    let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
+    let (client, events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("sarkos: cannot reach sarkosd: {e:#}");
@@ -1177,7 +1229,6 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let client_for_view = client.clone();
         let view_queue = save_queue.clone();
-        let saved_layout = saved.is_some();
         let view_project = project.clone();
         let view_saved = saved.clone();
         let system_is_dark = theme::is_dark(cx.window_appearance());
@@ -1228,22 +1279,24 @@ fn main() {
             root.theme_error = theme_error;
             cx.notify();
         });
-        let (quit_root, quit_queue, quit_client) = (root.clone(), save_queue.clone(), client.clone());
+        let (quit_root, quit_queue) = (root.clone(), save_queue.clone());
         cx.on_action(move |_: &Quit, cx| {
-            flush_on_quit(&quit_root, &quit_queue, &quit_client, cx);
+            flush_on_quit(&quit_root, &quit_queue, cx);
             cx.quit();
         });
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
         // no windowless process lingers.
-        let (close_root, close_queue, close_client) = (root.clone(), save_queue.clone(), client.clone());
+        let (close_root, close_queue) = (root.clone(), save_queue.clone());
         cx.on_window_closed(move |cx| {
             if cx.windows().is_empty() {
-                flush_on_quit(&close_root, &close_queue, &close_client, cx);
+                flush_on_quit(&close_root, &close_queue, cx);
                 cx.quit();
             }
         })
         .detach();
         config_watch::start(root.clone(), config_path.clone(), cx);
+        // The same client the root was built with; reconnects replace it from here on.
+        connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events), cx);
 
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();
@@ -1252,92 +1305,6 @@ fn main() {
             if tick_root.update(cx, |root, _| root.expire_closed(Instant::now())).is_err() {
                 break;
             }
-        })
-        .detach();
-
-        // Heartbeat from the main thread, once a second (spec 2.4).
-        let hb_client = client.clone();
-        cx.spawn(async move |cx| {
-            let mut seq = 0u64;
-            loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                hb_client.send(Request::Heartbeat { seq });
-                seq += 1;
-            }
-        })
-        .detach();
-
-        // Ask for the daemon's sessions; the answer reconciles the saved layout against them.
-        root.update(cx, |root, _| root.sessions.list());
-        let client_for_task = client.clone();
-        cx.spawn(async move |cx| {
-            let mut closed = false;
-            // Whether the daemon has answered anything, for the hint below.
-            let mut answered = false;
-            while !closed {
-                let Some(first) = events.next().await else { break };
-                // Take everything already queued, up to the byte budget, so a flood becomes one
-                // grid update and one notify per terminal per batch instead of one per message.
-                let mut bytes = output_len(&first);
-                let mut queue = VecDeque::from([first]);
-                while bytes <= BATCH_BUDGET {
-                    match events.try_recv() {
-                        Ok(msg) => {
-                            bytes += output_len(&msg);
-                            queue.push_back(msg);
-                        }
-                        Err(TryRecvError::Closed) => {
-                            closed = true;
-                            break;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                    }
-                }
-                let Ok(()) = root.update(cx, |root, cx| {
-                    let mut pending: Vec<Event> = Vec::new();
-                    for msg in queue.drain(..) {
-                        match msg {
-                            ServerMessage::Event(ev) => pending.push(ev),
-                            ServerMessage::Response { id, response } => {
-                                answered = true;
-                                // Events that came before this response are applied first, keeping order.
-                                if !pending.is_empty() {
-                                    root.sessions.route_events(&pending, cx);
-                                    pending.clear();
-                                }
-                                let is_error = matches!(response, Response::Error(_));
-                                let outcome = root.sessions.handle_response(id, response);
-                                root.handle_outcome(outcome, saved_layout, cx);
-                                // A later success means the error was transient.
-                                if !is_error && root.status.starts_with(ERROR_PREFIX) {
-                                    root.status.clear();
-                                    cx.notify();
-                                }
-                            }
-                        }
-                    }
-                    if !pending.is_empty() {
-                        root.sessions.route_events(&pending, cx);
-                    }
-                }) else {
-                    return;
-                };
-                // The batch's output is applied: let the reader thread pull more from the socket.
-                client_for_task.consumed_output(bytes);
-                yield_now().await;
-            }
-            let mut reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
-            if !answered {
-                // A daemon built before the protocol version existed cannot decode this UI's
-                // Hello and hangs up without a word.
-                reason.push_str("; if sarkosd is from an older build, restart it (pkill -x sarkosd), which ends every session");
-            }
-            eprintln!("sarkos: {reason}");
-            let _ = root.update(cx, |root, cx| {
-                // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
-                root.status = if root.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", root.status) } else { reason };
-                cx.notify();
-            });
         })
         .detach();
     });
@@ -1387,5 +1354,17 @@ mod tests {
         assert_eq!(grid_choice(Some((100, 30)), Some((80, 24))), Some((100, 30)));
         assert_eq!(grid_choice(None, Some((80, 24))), Some((80, 24)));
         assert_eq!(grid_choice(None, None), None);
+    }
+
+    #[test]
+    fn a_disconnect_banner_waits_ten_seconds_but_the_label_says_so_at_once() {
+        use super::{banner_visible, daemon_label_with};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        assert!(!banner_visible(Some(t0), t0 + Duration::from_secs(3)));
+        assert!(banner_visible(Some(t0), t0 + Duration::from_secs(10)));
+        assert!(banner_visible(None, t0), "a status that is not a reconnect shows at once");
+        assert_eq!(daemon_label_with("daemon closed the connection", true), "sarkosd reconnecting");
+        assert_eq!(daemon_label_with("", false), "sarkosd connected");
     }
 }

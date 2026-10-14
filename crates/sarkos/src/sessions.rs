@@ -145,6 +145,28 @@ impl SessionManager {
         Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashSet::new(), restoring: HashSet::new(), backlog: HashMap::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
+    /// A new connection: requests go to it from now on.
+    pub fn set_client(&mut self, client: Arc<Client>) {
+        self.transport = client.clone();
+        self.client = Some(client);
+    }
+
+    #[cfg(test)]
+    pub fn set_client_for_test(&mut self, transport: Arc<dyn Transport>) {
+        self.transport = transport;
+    }
+
+    /// The connection ended: every terminal is gone with it (the next attach replays), nothing
+    /// in flight can be answered, and no tab is busy with anything from the old connection.
+    pub fn disconnect(&mut self) {
+        self.terminals.clear();
+        self.pending.clear();
+        self.busy.clear();
+        self.notes.clear();
+        self.restoring.clear();
+        self.backlog.clear();
+    }
+
     /// The `[terminal]` section, applied to shells started from now on (spec 7).
     pub fn set_defaults(&mut self, scrollback: usize, shell: Option<String>, nice: i32) {
         self.scrollback = scrollback;
@@ -594,5 +616,29 @@ mod tests {
             Outcome::DaemonHello { version: "sarkosd 0.2.0 (abc1234)".into(), protocol_min: 1, protocol_max: 2 }
         );
         assert_eq!(m.handle_response(1, Response::Ok), Outcome::None, "an old daemon answers Ok");
+    }
+
+    #[test]
+    fn disconnect_forgets_terminals_pendings_and_marks() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.create(50, true);
+        m.attach(SessionId(3), 61, false);
+        m.begin_restore(SessionId(3));
+        m.notes.insert(SessionId(3));
+        assert_eq!(m.pending_count(), 2);
+        assert!(m.has_pending_for(50));
+        m.disconnect();
+        assert_eq!(m.pending_count(), 0);
+        assert!(!m.has_pending_for(50) && !m.has_pending_for(61));
+        assert!(!m.is_restoring(SessionId(3)));
+        assert!(m.notes.is_empty());
+        assert!(m.terminals.is_empty());
+        // A response from the old connection, arriving late, matches nothing.
+        assert_eq!(m.handle_response(1, Response::SessionCreated { id: SessionId(9) }), Outcome::None);
+        let r2 = Recorder::new();
+        m.set_client_for_test(r2.clone());
+        m.list();
+        assert_eq!(r2.requests().len(), 1, "requests go to the new transport");
     }
 }

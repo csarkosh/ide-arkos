@@ -207,6 +207,7 @@ impl Client {
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
+                unblock_signals();
                 Ok(())
             });
         }
@@ -225,6 +226,19 @@ impl Client {
                 Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
         }
+    }
+}
+
+/// Between fork and exec: no signal blocked. The reconnect loop starts the daemon from a
+/// background executor thread, a GCD worker that blocks nearly every signal; a blocked signal
+/// stays blocked across fork and exec, so that daemon would outlive `pkill -x sarkosd`, and so
+/// would its shells. Only async-signal-safe calls.
+fn unblock_signals() {
+    // SAFETY: sigemptyset and pthread_sigmask are async-signal-safe and get valid pointers.
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
     }
 }
 
@@ -256,6 +270,48 @@ mod tests {
             }
             seen
         })
+    }
+
+    #[test]
+    fn a_child_started_from_a_thread_that_blocks_sigterm_still_dies_of_it() {
+        // Like a GCD worker, the spawning thread blocks SIGTERM; the mask is per thread, so the
+        // rest of the test process is untouched.
+        let mut child = std::thread::spawn(|| {
+            unsafe {
+                let mut term: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut term);
+                libc::sigaddset(&mut term, libc::SIGTERM);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &term, std::ptr::null_mut());
+            }
+            let mut cmd = Command::new("/bin/sleep");
+            cmd.arg("30");
+            unsafe {
+                cmd.pre_exec(|| {
+                    unblock_signals();
+                    Ok(())
+                });
+            }
+            cmd.spawn().unwrap()
+        })
+        .join()
+        .unwrap();
+        // Give the child time to exec before the signal.
+        std::thread::sleep(Duration::from_millis(200));
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("the child kept SIGTERM blocked");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
     }
 
     #[test]
