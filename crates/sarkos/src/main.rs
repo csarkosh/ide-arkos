@@ -257,6 +257,7 @@ impl Root {
                 }
                 let idx = p.active;
                 if self.tree.move_tab(focused, idx, to, None) {
+                    self.focus_pane(to, cx);
                     self.save(cx);
                     cx.notify();
                 }

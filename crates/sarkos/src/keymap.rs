@@ -60,6 +60,10 @@ pub const SPEC_ROWS: &[(&str, &str)] = &[
 
 pub fn bindings() -> Vec<KeyBinding> {
     vec![
+        // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
+        // whose index is after the best exact match, so a later lone cmd-k would fire at once and
+        // the Cmd+K chords would never complete. Terminal-only, so chords work elsewhere too.
+        KeyBinding::new("cmd-k", ClearScrollback, Some("Terminal")),
         KeyBinding::new("cmd-1", FocusPane1, None),
         KeyBinding::new("cmd-2", FocusPane2, None),
         KeyBinding::new("cmd-3", FocusPane3, None),
@@ -89,8 +93,6 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-k cmd-shift-left", MoveTabLeft, None),
         KeyBinding::new("cmd-k cmd-shift-right", MoveTabRight, None),
         KeyBinding::new("ctrl-shift-`", NewTerminal, None),
-        // Only when a terminal has focus, so the Cmd+K chords above keep working elsewhere.
-        KeyBinding::new("cmd-k", ClearScrollback, Some("Terminal")),
         KeyBinding::new("cmd-=", FontBigger, None),
         KeyBinding::new("cmd--", FontSmaller, None),
     ]
@@ -145,6 +147,53 @@ mod tests {
             assert_eq!(hits.len(), 1, "{keys} ({name}) bound {} times", hits.len());
         }
         assert_eq!(b.len(), SPEC_ROWS.len(), "a binding exists that the spec table does not list");
+    }
+
+    fn action_names() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("cmd-1", "FocusPane1"), ("cmd-2", "FocusPane2"), ("cmd-3", "FocusPane3"), ("cmd-4", "FocusPane4"),
+            ("cmd-5", "FocusPane5"), ("cmd-6", "FocusPane6"), ("cmd-7", "FocusPane7"), ("cmd-8", "FocusPane8"),
+            ("cmd-9", "FocusPane9"),
+            ("cmd-k cmd-left", "FocusLeft"), ("cmd-k cmd-right", "FocusRight"), ("cmd-k cmd-up", "FocusUp"),
+            ("cmd-k cmd-down", "FocusDown"),
+            ("cmd-\\", "SplitRight"), ("cmd-k cmd-\\", "SplitDown"), ("cmd-k cmd-m", "ToggleMaximize"),
+            ("ctrl-cmd-left", "MoveTabToPrevPane"), ("ctrl-cmd-right", "MoveTabToNextPane"),
+            ("alt-cmd-right", "NextTab"), ("alt-cmd-left", "PrevTab"), ("cmd-shift-]", "NextTabAlt"),
+            ("cmd-shift-[", "PrevTabAlt"), ("ctrl-tab", "MruTab"),
+            ("cmd-w", "CloseTab"), ("cmd-shift-t", "ReopenClosedTab"), ("cmd-k w", "CloseAllInPane"),
+            ("cmd-k cmd-shift-left", "MoveTabLeft"), ("cmd-k cmd-shift-right", "MoveTabRight"),
+            ("ctrl-shift-`", "NewTerminal"), ("cmd-k", "ClearScrollback"),
+            ("cmd-=", "FontBigger"), ("cmd--", "FontSmaller"),
+        ]
+    }
+
+    #[test]
+    fn every_row_runs_the_action_it_describes() {
+        let names = action_names();
+        assert_eq!(names.len(), SPEC_ROWS.len());
+        let b = bindings();
+        for (keys, want) in names {
+            assert!(SPEC_ROWS.iter().any(|(k, _)| k == keys), "{keys} missing from SPEC_ROWS");
+            let kb = b
+                .iter()
+                .find(|kb| kb.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" ") == *keys)
+                .unwrap_or_else(|| panic!("{keys} unbound"));
+            assert_eq!(kb.action().name(), format!("sarkos::{want}"), "{keys}");
+        }
+    }
+
+    #[test]
+    fn cmd_k_stays_pending_in_a_terminal_so_chords_work() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let keymap = Keymap::new(bindings());
+        let ctx = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        let k = Keystroke::parse("cmd-k").unwrap();
+        let (_, pending) = keymap.bindings_for_input(&[k.clone()], &ctx);
+        assert!(pending, "a lone cmd-k must wait for a chord's second key");
+        let (matched, pending) = keymap.bindings_for_input(&[k, Keystroke::parse("cmd-\\").unwrap()], &ctx);
+        assert!(!pending);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].action().name(), "sarkos::SplitDown");
     }
 
     #[test]
