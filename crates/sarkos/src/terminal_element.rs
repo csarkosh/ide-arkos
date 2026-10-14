@@ -130,7 +130,7 @@ impl Element for TerminalElement {
         let cw = cell.width;
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
         // The colours come from the terminal's palette, which follows the theme.
-        let (rows, frac, cursor, animating, highlights, palette) = self.terminal.update(cx, |t, _| {
+        let (rows, frac, cursor, animating, highlights, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -144,10 +144,10 @@ impl Element for TerminalElement {
             t.last_frame = if animating || sync_open { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
-            t.refresh_find();
+            let find_owed = t.refresh_find();
             let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, palette.clone())
+            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         window.paint_quad(fill(bounds, hsla(bg)));
@@ -201,7 +201,8 @@ impl Element for TerminalElement {
             }
         });
 
-        if animating {
+        // A throttled find search runs in a later frame, even once the output has stopped.
+        if animating || find_owed {
             window.request_animation_frame();
         }
     }
