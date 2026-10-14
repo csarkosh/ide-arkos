@@ -273,7 +273,7 @@ impl Launch {
                     self.pending_create = None;
                     let project = self.project.clone();
                     cx.background_spawn(async move {
-                        if let Err(e) = workspace::save(&project, sid) {
+                        if let Err(e) = workspace::save(&project, &workspace::Workspace { version: workspace::FORMAT_VERSION, project: project.clone(), tree: tree::Tree::new(tree::Tab::Terminal { session: sid }) }) {
                             eprintln!("sarkos: cannot save workspace: {e}");
                         }
                     })
@@ -390,7 +390,12 @@ fn main() {
     let project = std::env::current_dir().expect("cwd");
     // Synchronous on purpose: one small file read, done before the window opens, so it cannot
     // stall painting or input. Saves happen on the background executor.
-    let saved = workspace::load(&project);
+    let saved = workspace::load(&project)
+        .and_then(|ws| ws.tree.pane(ws.tree.focused).and_then(|p| p.tabs.first().cloned()))
+        .and_then(|t| match t {
+            tree::Tab::Terminal { session } => Some(session),
+            _ => None,
+        });
 
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own.
