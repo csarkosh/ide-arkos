@@ -9,11 +9,22 @@ use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
-    canvas, div, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
+    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
+    KeyDownEvent, MouseButton, MouseDownEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
+/// How far the focused pane's glow reaches in from each edge.
+pub const GLOW_W: f32 = 12.0;
+/// The glow's opacity at the edge; it fades to nothing by `GLOW_W`.
+pub const GLOW_ALPHA: f32 = 0.3;
+
+/// The four strips of the focus glow for a pane `w` by `h`: (x, y, width, height, gradient
+/// angle), the angle being CSS's, the direction the colour fades towards (180 is downwards).
+pub fn glow_strips(w: f32, h: f32) -> [(f32, f32, f32, f32, f32); 4] {
+    let g = GLOW_W.min(w / 2.0).min(h / 2.0).max(0.0);
+    [(0.0, 0.0, w, g, 180.0), (0.0, h - g, w, g, 0.0), (0.0, 0.0, g, h, 90.0), (w - g, 0.0, g, h, 270.0)]
+}
 
 /// The text on a tab: the terminal's title (or `fallback`, the shell's name), then its state.
 pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32>, note: bool, busy: Option<&str>) -> String {
@@ -176,6 +187,16 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         }
         m
     });
+    // The focused pane glows at its edges instead of wearing a hard line: four strips that fade
+    // from the focus colour to nothing, drawn over the pane so they never move its content.
+    let glow = focused.then(|| {
+        let from = theme.chrome.focus_ring.alpha(GLOW_ALPHA);
+        let mut to = from;
+        to.a = 0.0;
+        glow_strips(rect.w, rect.h).map(|(x, y, w, h, angle)| {
+            div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)))
+        })
+    });
     div()
         .size_full()
         .relative()
@@ -183,7 +204,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .flex_col()
         .bg(theme.chrome.window_bg.hsla())
         .border_1()
-        .border_color(if focused { theme.chrome.focus_ring } else { theme.chrome.border }.hsla())
+        .border_color(theme.chrome.border.hsla())
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
@@ -193,6 +214,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(bar)
         .child(content)
         .children(menu)
+        .children(glow.into_iter().flatten())
 }
 
 fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels: &[String], cx: &mut Context<Root>) -> Stateful<Div> {
@@ -432,6 +454,18 @@ mod tests {
         assert_eq!(tab_label("vim", "zsh", false, None, false, None), "vim (ended)");
         assert_eq!(tab_label("", "zsh", true, None, true, None), "zsh (restarted)");
         assert_eq!(tab_label("", "zsh", true, None, false, Some("starting shell")), "starting shell");
+    }
+
+    #[test]
+    fn the_glow_hugs_every_edge_and_fits_a_tiny_pane() {
+        let [top, bottom, left, right] = glow_strips(200.0, 100.0);
+        assert_eq!(top, (0.0, 0.0, 200.0, GLOW_W, 180.0));
+        assert_eq!(bottom, (0.0, 100.0 - GLOW_W, 200.0, GLOW_W, 0.0));
+        assert_eq!(left, (0.0, 0.0, GLOW_W, 100.0, 90.0));
+        assert_eq!(right, (200.0 - GLOW_W, 0.0, GLOW_W, 100.0, 270.0));
+        let [top, ..] = glow_strips(10.0, 8.0);
+        assert_eq!(top.3, 4.0, "never wider than half the pane");
+        assert!(glow_strips(0.0, 0.0).iter().all(|s| s.2 >= 0.0 && s.3 >= 0.0));
     }
 
     #[test]

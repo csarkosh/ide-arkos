@@ -1,68 +1,73 @@
-//! The window chrome (spec 4): a top bar with the project name and a bottom status bar with the
-//! project path, a ready update, daemon status, session count and the count of sessions waiting
-//! on the user.
+//! The window chrome (spec 4, revised 2026-10-14 for a small display): one bar in the native
+//! title bar's space, drawn by the window over a transparent title bar. On the left, "Sarkos IDE"
+//! and the project path; on the right, only what needs saying: a ready update, daemon trouble,
+//! tabs waiting on the user. The old top bar and status bar are gone, so every row of height
+//! goes to the panes.
 
 use crate::theme::Theme;
-use gpui::{div, prelude::*, px, Div, SharedString};
+use gpui::{div, prelude::*, px, Div, FontWeight, MouseButton, MouseDownEvent, SharedString};
 use std::path::Path;
 
-pub const TOP_BAR_H: f32 = 30.0;
-pub const STATUS_BAR_H: f32 = 24.0;
+/// The native macOS title bar's height; the bar fills exactly that space.
+pub const TITLE_BAR_H: f32 = 28.0;
+/// Room for the traffic lights, which macOS keeps drawing where it always does.
+const TRAFFIC_LIGHTS_W: f32 = 80.0;
+/// The system UI font, by gpui's name for it: the bar looks like the title bar it replaces.
+const UI_FONT: &str = ".SystemUIFont";
 
-pub fn status_text(sessions: usize, waiting: usize) -> String {
-    let base = match sessions {
-        0 => "no sessions".to_string(),
-        1 => "1 session".to_string(),
-        n => format!("{n} sessions"),
-    };
-    if waiting > 0 {
-        format!("{base}, {waiting} waiting")
-    } else {
-        base
-    }
-}
-
-/// The right side of the status bar, left to right.
-pub fn status_items(update: Option<&str>, daemon: &str, sessions: usize, waiting: usize) -> Vec<String> {
+/// The right side of the bar, left to right: only exceptions. "connected" and the session
+/// count say nothing the tabs do not, so they are left out and the bar is empty when all is
+/// well. `daemon` is `None` while the connection is up.
+pub fn status_items(update: Option<&str>, daemon: Option<&str>, waiting: usize) -> Vec<String> {
     let mut v = Vec::new();
     if let Some(u) = update {
         v.push(u.to_string());
     }
-    v.push(daemon.to_string());
-    v.push(status_text(sessions, waiting));
+    if let Some(d) = daemon {
+        v.push(d.to_string());
+    }
+    if waiting > 0 {
+        v.push(format!("{waiting} waiting"));
+    }
     v
 }
 
-pub fn top_bar(project_name: &str, family: SharedString, theme: &Theme) -> Div {
+/// The bar. Dragging it moves the window and a double click zooms it, as the native bar did.
+/// In full screen the traffic lights are gone, so the text starts at the edge.
+pub fn title_bar(project: &Path, items: Vec<String>, fullscreen: bool, theme: &Theme) -> Div {
+    let c = &theme.chrome;
     div()
-        .h(px(TOP_BAR_H))
+        .h(px(TITLE_BAR_H))
         .w_full()
         .flex_none()
         .flex()
         .items_center()
-        .justify_center()
-        .bg(theme.chrome.title_bar.hsla())
-        .text_color(theme.chrome.text.hsla())
-        .font_family(family)
+        .pl(px(if fullscreen { 12.0 } else { TRAFFIC_LIGHTS_W }))
+        .pr(px(12.0))
+        .gap(px(10.0))
+        .bg(c.title_bar.hsla())
+        .text_color(c.text.hsla())
+        .font_family(SharedString::from(UI_FONT))
         .text_size(px(13.0))
-        .child(project_name.to_string())
-}
-
-pub fn status_bar(project: &Path, update: Option<&str>, daemon: &str, sessions: usize, waiting: usize, family: SharedString, theme: &Theme) -> Div {
-    div()
-        .h(px(STATUS_BAR_H))
-        .w_full()
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_between()
-        .px(px(10.0))
-        .bg(theme.chrome.status_bar.hsla())
-        .text_color(theme.chrome.text_dim.hsla())
-        .font_family(family)
-        .text_size(px(12.0))
-        .child(project.display().to_string())
-        .child(div().flex().gap(px(16.0)).children(status_items(update, daemon, sessions, waiting)))
+        .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _cx| {
+            if ev.click_count == 2 {
+                window.titlebar_double_click();
+            } else {
+                window.start_window_move();
+            }
+        })
+        .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Sarkos IDE"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .italic()
+                .font_weight(FontWeight::LIGHT)
+                .text_color(c.text_dim.hsla())
+                .child(project.display().to_string()),
+        )
+        .child(div().flex_none().flex().gap(px(16.0)).text_size(px(12.0)).text_color(c.text_dim.hsla()).children(items))
 }
 
 #[cfg(test)]
@@ -70,15 +75,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_text_counts_sessions_and_waiting() {
-        assert_eq!(status_text(1, 0), "1 session");
-        assert_eq!(status_text(4, 2), "4 sessions, 2 waiting");
-        assert_eq!(status_text(0, 0), "no sessions");
+    fn the_bar_says_nothing_while_all_is_well() {
+        assert!(status_items(None, None, 0).is_empty());
     }
 
     #[test]
-    fn status_text_mentions_a_ready_update_first() {
-        assert_eq!(status_items(Some("update ready: 0.2.0"), "sarkosd connected", 2, 0), vec!["update ready: 0.2.0", "sarkosd connected", "2 sessions"]);
-        assert_eq!(status_items(None, "sarkosd connected", 1, 0), vec!["sarkosd connected", "1 session"]);
+    fn the_bar_lists_exceptions_update_first() {
+        assert_eq!(status_items(Some("update ready: 0.2.0"), Some("sarkosd reconnecting"), 2), vec!["update ready: 0.2.0", "sarkosd reconnecting", "2 waiting"]);
+        assert_eq!(status_items(None, Some("sarkosd connecting"), 0), vec!["sarkosd connecting"]);
+        assert_eq!(status_items(None, None, 1), vec!["1 waiting"]);
     }
 }
