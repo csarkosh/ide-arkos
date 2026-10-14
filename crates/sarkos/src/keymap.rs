@@ -141,7 +141,6 @@ fn keystroke_error(keys: &str) -> Option<String> {
 
 /// Every problem with an override table, in table order: an action name that is not in
 /// `ACTIONS`, or keystrokes gpui cannot parse. Empty when the table is fine.
-#[allow(dead_code)] // Task 2 validates the config with it
 pub fn validate(overrides: &BTreeMap<String, String>) -> Vec<String> {
     let mut errors = Vec::new();
     for (name, keys) in overrides {

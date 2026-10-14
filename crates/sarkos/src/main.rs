@@ -2,6 +2,8 @@ mod app_nap;
 mod chrome;
 mod client;
 mod closed_stack;
+#[allow(dead_code)] // nothing outside its tests calls it until the config is wired into the app
+mod config;
 mod drag;
 mod empty_pane;
 mod keys;
