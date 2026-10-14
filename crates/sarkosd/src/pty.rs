@@ -27,7 +27,8 @@ static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 /// pair without close-on-exec, so a shell forked by another thread before the flag is set would
 /// inherit a terminal it does not own and keep that session's reader from ever seeing EOF.
 /// `Pty::open` and `spawn` take it; anything else in the daemon that starts a process, or clears
-/// close-on-exec on a master, must hold it too.
+/// close-on-exec on a master, must hold it too. Not reentrant: never call `Pty::open` or `spawn`
+/// while holding it, since both take it themselves.
 pub fn spawn_lock() -> MutexGuard<'static, ()> {
     // The lock guards no data, so a panic while it was held leaves nothing inconsistent.
     SPAWN_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -286,6 +287,9 @@ mod tests {
         let (pty, slave) = Pty::open(24, 80).unwrap();
         let pid = spawn(slave, "/bin/sh", &["-c", "sleep 0.2; echo after-adopt"], std::env::temp_dir().as_path(), &[]).unwrap();
         let raw = pty.raw_fd();
+        // Held while the master is inheritable, so a concurrently spawned test shell cannot
+        // inherit it and miscount its descriptors.
+        let no_fork = spawn_lock();
         pty.set_inheritable(true).unwrap();
         // SAFETY: fcntl F_GETFD on an open descriptor.
         let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
@@ -293,6 +297,7 @@ mod tests {
         std::mem::forget(pty); // the "old daemon" is gone; the fd number survives
         // SAFETY: the forgotten `pty` owned `raw` and is gone, so the fd is open and ours alone.
         let adopted = unsafe { Pty::adopt(raw) }.unwrap();
+        drop(no_fork);
         // SAFETY: as above; `adopted` now owns it.
         let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
         assert_ne!(flags & libc::FD_CLOEXEC, 0, "adopt sets close-on-exec again");
@@ -317,6 +322,8 @@ mod tests {
         let alone = shell_fd_count();
         let threads = 8;
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(threads));
+        // A failing round is caught and reported after the join, so every worker still reaches
+        // every barrier and a failure cannot leave the others waiting forever.
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 let barrier = barrier.clone();
@@ -324,14 +331,20 @@ mod tests {
                     (0..10)
                         .map(|_| {
                             barrier.wait();
-                            shell_fd_count()
+                            std::panic::catch_unwind(shell_fd_count).map_err(|e| {
+                                e.downcast_ref::<String>()
+                                    .cloned()
+                                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                                    .unwrap_or_default()
+                            })
                         })
                         .collect::<Vec<_>>()
                 })
             })
             .collect();
         for handle in handles {
-            for count in handle.join().unwrap() {
+            for round in handle.join().unwrap() {
+                let count = round.unwrap_or_else(|e| panic!("a spawn round failed: {e}"));
                 assert_eq!(count, alone, "a shell inherited another PTY's descriptors");
             }
         }

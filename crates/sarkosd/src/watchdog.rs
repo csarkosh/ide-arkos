@@ -66,7 +66,13 @@ fn scan(state: &Shared, timeout: Duration) {
                     Ok(())
                 });
             }
-            match cmd.spawn() {
+            // No fork while a session's PTY descriptors are still inheritable, or the relaunched
+            // UI would hold that terminal open for its whole life.
+            let spawned = {
+                let _no_open_pty_inheritable = crate::pty::spawn_lock();
+                cmd.spawn()
+            };
+            match spawned {
                 // Reap the child when it exits so it does not linger as a zombie.
                 Ok(mut child) => {
                     std::thread::spawn(move || {
