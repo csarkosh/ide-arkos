@@ -30,8 +30,10 @@ pub struct SessionInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
-    /// First message on a connection. `ui_pid` and `ui_exe` feed the watchdog (spec 2.4).
-    Hello { ui_pid: u32, ui_exe: Option<PathBuf> },
+    /// First message on a connection. `ui_pid`, `ui_exe` and `ui_cwd` feed the watchdog (spec 2.4):
+    /// a relaunched UI starts in `ui_cwd`, so it opens the same project's workspace. An empty
+    /// `ui_cwd` means the UI could not read its own and the relaunch keeps the daemon's.
+    Hello { ui_pid: u32, ui_exe: Option<PathBuf>, ui_cwd: PathBuf },
     CreateSession {
         cwd: PathBuf,
         shell: Option<String>,

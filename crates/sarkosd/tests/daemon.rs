@@ -43,7 +43,7 @@ impl Daemon {
         let stream = UnixStream::connect(&self.socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
-        let r = c.request(Request::Hello { ui_pid, ui_exe: None });
+        let r = c.request(Request::Hello { ui_pid, ui_exe: None, ui_cwd: std::env::temp_dir() });
         assert_eq!(r, Response::Ok);
         c
     }
@@ -262,9 +262,12 @@ fn watchdog_kills_a_silent_ui_and_relaunches_it() {
     let d = Daemon::start(&["--watchdog-secs", "2"]);
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("relaunched");
-    // The "UI" is a sleep; the "relaunch" is a script that touches a marker file.
+    // The UI's working directory, distinct from the daemon's, which is the test's own.
+    let ui_cwd = tempfile::tempdir().unwrap();
+    // The "UI" is a sleep; the "relaunch" is a script that records its working directory in a
+    // marker file, written whole by a rename so the test never reads it half written.
     let script = dir.path().join("relaunch.sh");
-    std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\npwd -P > '{m}.tmp' && mv '{m}.tmp' '{m}'\n", m = marker.display())).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut fake_ui = Command::new("/bin/sleep").arg("60").spawn().unwrap();
@@ -272,7 +275,7 @@ fn watchdog_kills_a_silent_ui_and_relaunches_it() {
     let stream = UnixStream::connect(&d.socket).unwrap();
     let mut w = BufWriter::new(stream.try_clone().unwrap());
     let mut r = BufReader::new(stream);
-    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: Some(script.clone()) } }).unwrap();
+    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: Some(script.clone()), ui_cwd: ui_cwd.path().to_path_buf() } }).unwrap();
     let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
     // No heartbeats. Within 2 s plus one scan the daemon must act.
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -288,6 +291,8 @@ fn watchdog_kills_a_silent_ui_and_relaunches_it() {
         assert!(Instant::now() < deadline, "watchdog never relaunched the UI");
         std::thread::sleep(Duration::from_millis(50));
     }
+    let relaunched_in = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(relaunched_in.trim_end(), ui_cwd.path().canonicalize().unwrap().to_str().unwrap(), "relaunched outside the UI's cwd");
 }
 
 #[test]
@@ -297,7 +302,7 @@ fn watchdog_leaves_a_heartbeating_ui_alone() {
     let stream = UnixStream::connect(&d.socket).unwrap();
     let mut w = BufWriter::new(stream.try_clone().unwrap());
     let mut r = BufReader::new(stream);
-    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: None } }).unwrap();
+    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: None, ui_cwd: std::env::temp_dir() } }).unwrap();
     let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
     for seq in 0..5u64 {
         std::thread::sleep(Duration::from_millis(800));
@@ -366,7 +371,7 @@ fn non_reading_client_is_dropped_past_the_byte_cap() {
     stalled.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
     {
         let mut w = BufWriter::new(stalled.try_clone().unwrap());
-        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: std::process::id(), ui_exe: None } }).unwrap();
+        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() } }).unwrap();
         write_frame(&mut w, &ClientMessage { id: 2, request: Request::Attach { session: id } }).unwrap();
     }
     std::thread::sleep(Duration::from_millis(200));

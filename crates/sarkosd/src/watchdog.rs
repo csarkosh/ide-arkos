@@ -41,19 +41,23 @@ fn scan(state: &Shared, timeout: Duration) {
                 continue;
             }
             eprintln!("sarkosd: UI pid {pid} silent for {:?}, relaunching", timeout);
-            to_restart.push((pid, rec.ui_exe.clone()));
+            to_restart.push((pid, rec.ui_exe.clone(), rec.ui_cwd.clone()));
             // Reset so one stuck UI is not killed again on the next scan while it restarts.
             rec.last_heartbeat = now;
         }
     }
     // The lock is released: killing and spawning never block other threads.
-    for (pid, exe) in to_restart {
+    for (pid, exe, cwd) in to_restart {
         unsafe {
             libc::kill(pid as libc::pid_t, libc::SIGKILL);
         }
         if let Some(exe) = exe {
             let mut cmd = Command::new(&exe);
             cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            // The UI picks its workspace from its cwd; without this it would inherit the daemon's.
+            if let Some(cwd) = cwd {
+                cmd.current_dir(cwd);
+            }
             unsafe {
                 cmd.pre_exec(|| {
                     libc::setsid();

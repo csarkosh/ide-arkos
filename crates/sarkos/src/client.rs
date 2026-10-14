@@ -115,7 +115,11 @@ impl Client {
             })
             .context("spawn reader")?;
         let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream };
-        client.send(Request::Hello { ui_pid: std::process::id(), ui_exe: std::env::current_exe().ok() });
+        client.send(Request::Hello {
+            ui_pid: std::process::id(),
+            ui_exe: std::env::current_exe().ok(),
+            ui_cwd: std::env::current_dir().unwrap_or_default(),
+        });
         Ok((client, ev_rx))
     }
 

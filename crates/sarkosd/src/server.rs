@@ -29,6 +29,8 @@ pub struct ClientRecord {
     pub last_heartbeat: Instant,
     pub ui_pid: Option<u32>,
     pub ui_exe: Option<PathBuf>,
+    /// Where the watchdog relaunches the UI, so it reopens the same project.
+    pub ui_cwd: Option<PathBuf>,
     pub connected: bool,
 }
 
@@ -83,7 +85,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
         let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
-            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, connected: true },
+            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true },
         );
         (id, sink)
     };
@@ -153,12 +155,13 @@ fn disconnect(state: &Shared, client_id: ClientId) {
 fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
     let response = match request {
-        Request::Hello { ui_pid, ui_exe } => {
+        Request::Hello { ui_pid, ui_exe, ui_cwd } => {
             let mut st = state.lock().unwrap();
             if let Some(rec) = st.clients.get_mut(&client_id) {
                 // Pid 0 would make the watchdog signal the daemon's own process group.
                 rec.ui_pid = (ui_pid != 0).then_some(ui_pid);
                 rec.ui_exe = ui_exe;
+                rec.ui_cwd = (!ui_cwd.as_os_str().is_empty()).then_some(ui_cwd);
                 rec.last_heartbeat = Instant::now();
             }
             Response::Ok
