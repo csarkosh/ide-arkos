@@ -1,7 +1,7 @@
 //! The command palette (spec 4: Cmd+Shift+P). Every action by name with its keys, the text
 //! presets, the themes, and the config commands, filtered by a subsequence match. The scoring
 //! and filtering are pure; `render` is the overlay.
-use crate::config::Config;
+use crate::config::{Config, StartAtLogin};
 use crate::keymap::{self, Command, ACTIONS};
 use crate::line_edit::{self, LineEdit};
 use crate::Root;
@@ -22,7 +22,7 @@ pub struct Item {
 
 /// Everything the palette offers, in display order. `themes_dir` is where "Extract built-in
 /// themes" writes; `update_ready` is the status bar's "update ready" text, when there is one.
-pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>) -> Vec<Item> {
+pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path) -> Vec<Item> {
     let mut out = Vec::new();
     for a in ACTIONS {
         if a.name == "command palette" || a.name == "quit" {
@@ -32,12 +32,20 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
             Some(c) => c,
             None => continue,
         };
-        let detail = if command == Command::UpdateNow {
-            update_ready.unwrap_or("relaunch on the installed binaries").to_string()
-        } else {
-            keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default()
+        let detail = match command {
+            Command::UpdateNow => update_ready.unwrap_or("relaunch on the installed binaries").to_string(),
+            Command::StartAtLogin => match (start_at_login, login_item_installed) {
+                (StartAtLogin::Ask, false) => "off: turn on so sessions come back after a restart".to_string(),
+                (StartAtLogin::Ask, true) => "on: run to turn off".to_string(),
+                (StartAtLogin::On, _) => "on, set in config.toml ([recovery] start_at_login)".to_string(),
+                (StartAtLogin::Off, _) => "off, set in config.toml ([recovery] start_at_login)".to_string(),
+            },
+            Command::InstallHooks => format!("into {}", claude_settings.display()),
+            _ => keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default(),
         };
-        out.push(Item { label: keymap::label(a.name), detail, command });
+        // The display name keeps its capitals; the config name is lower case.
+        let label = if command == Command::InstallHooks { "Install Claude Code hooks".to_string() } else { keymap::label(a.name) };
+        out.push(Item { label, detail, command });
     }
     for (name, p) in &cfg.font.presets {
         let mut detail = format!("{} px, line height {}", p.size, p.line_height);
@@ -204,14 +212,15 @@ mod tests {
     fn items_cover_actions_presets_themes_and_config() {
         let cfg = Config::default();
         let dir = std::path::Path::new("/u/.config/sarkos/themes");
-        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir, None);
+        let settings = Path::new("/Users/me/.claude/settings.json");
+        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir, None, StartAtLogin::Ask, false, settings);
         let n_actions = crate::keymap::ACTIONS.len() - 2;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
         assert!(!items.iter().any(|i| i.label == "Command palette" || i.label == "Quit"));
         let update = items.iter().find(|i| i.label == "Update now").unwrap();
         assert_eq!(update.command, Command::UpdateNow);
         assert_eq!(update.detail, "relaunch on the installed binaries");
-        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"));
+        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"), StartAtLogin::Ask, false, settings);
         assert_eq!(ready.iter().find(|i| i.label == "Update now").unwrap().detail, "update ready: 0.2.0 (def5678)");
         let split = items.iter().find(|i| i.label == "Split right").unwrap();
         assert_eq!(split.detail, "Cmd+\\");
@@ -228,12 +237,29 @@ mod tests {
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/sarkos/themes");
-        let items = self::items(&cfg, &[], "compact", "navy", dir, None);
+        let items = self::items(&cfg, &[], "compact", "navy", dir, None, StartAtLogin::Ask, false, settings);
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor, current", "the floor note stays");
         let unbound = cfg_with("split right", "");
-        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None);
+        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None, StartAtLogin::Ask, false, settings);
         assert_eq!(items.iter().find(|i| i.label == "Split right").unwrap().detail, "");
+    }
+
+    #[test]
+    fn the_recovery_items_say_what_running_them_does() {
+        let cfg = Config::default();
+        let settings = Path::new("/Users/me/.claude/settings.json");
+        let find = |items: &[Item], label: &str| items.iter().find(|i| i.label == label).cloned().unwrap_or_else(|| panic!("no {label}"));
+        let ask_off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, StartAtLogin::Ask, false, settings);
+        assert_eq!(find(&ask_off, "Start at login").detail, "off: turn on so sessions come back after a restart");
+        assert_eq!(find(&ask_off, "Start at login").command, Command::StartAtLogin);
+        let ask_on = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, StartAtLogin::Ask, true, settings);
+        assert_eq!(find(&ask_on, "Start at login").detail, "on: run to turn off");
+        let pinned = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, StartAtLogin::On, true, settings);
+        assert_eq!(find(&pinned, "Start at login").detail, "on, set in config.toml ([recovery] start_at_login)");
+        let hooks = find(&ask_off, "Install Claude Code hooks");
+        assert_eq!(hooks.detail, "into /Users/me/.claude/settings.json");
+        assert_eq!(hooks.command, Command::InstallHooks);
     }
 
     fn cfg_with(name: &str, keys: &str) -> Config {

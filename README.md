@@ -10,13 +10,20 @@ Written in Rust with GPUI. The design is in
 
 ## Status
 
-Updating in place: the daemon replaces itself by exec with every shell still its child, the
-window reconnects by itself, and the palette's "Update now" runs the whole update after
-`brew upgrade` or a build into place. Milestone 3 (Claude Code session awareness, with recovery
-after a reboot) is next.
+Session awareness and recovery after a restart: each tab shows what its Claude Code session is doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart brings every session back on its own: the same folders, the history on screen under a divider, and each Claude Code conversation resumed. Milestone 4 (the sidebar) is next.
 
 Things only a person at the screen can check, in order of value:
 
+- "Install Claude Code hooks", then `claude` in a tab: the glyph breathes while it works, a dot
+  appears when it stops, the title bar's right side says "1 waiting", clicking the tab clears
+  both; with Reduce Motion on, the glyph holds still
+- "Start at login", then `pkill -TERM sarkosd` with four tabs open: the log shows "SIGTERM:
+  writing every session's history"; `launchctl kickstart gui/$(id -u)/sh.csarko.sarkosd` (what
+  login does) brings a window back with every tab's history under the divider and
+  `claude --resume` typed into the ones that ran Claude; the tabs say "(resumed after restart)"
+- a real restart with the same four tabs: the window is back after login with the same result
+- Cmd+Q a window, then the restart: that project does not reopen
+- `start_at_login = "off"` in the config: the plist is gone within a second; `"on"`: it is back
 - with four `claude` sessions running, `cargo build --release` a change into place, wait for
   "update ready" in the status bar (or relaunch), run "Update now" from the palette: the window
   reappears with every tab, every history and every agent still running; `sarkosd`'s pid in
@@ -52,6 +59,44 @@ Things only a person at the screen can check, in order of value:
 - the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
   after, and look for no "relaunching" line in `~/Library/Application Support/sarkos/sarkosd.log`
 - `ps` after thirty seconds idle with four terminals
+
+## Session awareness
+
+Claude Code tells the IDE what it is doing through its hooks. Run "Install Claude Code hooks"
+from the command palette (or `sarkos hooks install`), which merges six entries into
+`~/.claude/settings.json` after writing a `.bak`, then start or restart `claude` in a tab:
+
+| Claude Code event | The tab |
+|---|---|
+| a prompt is sent, a tool runs | a slow breathing glyph: working |
+| Claude stops, or asks for permission or input | a warm dot: waiting on you |
+| you click the tab or type into it | the dot clears |
+| the shell exits | a muted title, with the exit code |
+
+A terminal bell marks a tab waiting too, so a `claude` set to ring the bell works without hooks.
+`sarkos notify` is the hook side: it reads `SARKOS_SESSION_ID`, which every shell the daemon
+starts carries, and exits 0 whatever happens, so a `claude` run outside Sarkos IDE is unaffected.
+`sarkos hooks print` prints the entries for a hand paste. The entries name this binary by its
+launch path; after moving it, install again.
+
+## After a restart
+
+A shutdown or restart ends every process; what becomes automatic is the recovery. The daemon
+writes each session's history to `~/Library/Application Support/sarkos/sessions/<id>.replay`
+a couple of seconds after output stops (in full on SIGTERM, which a clean shutdown sends) and a
+manifest of the sessions (folder, shell, the Claude Code session id from its SessionStart hook)
+and of the project folders with a window open. "Start at login" from the palette installs
+`~/Library/LaunchAgents/sh.csarko.sarkosd.plist`, which runs `sarkosd --recover` once at login:
+it recreates each shell in its folder (the home folder when that is gone) with the old output
+under a dim "resumed after restart" line, types `claude --resume <id>` into the shells that had
+a Claude Code session, and opens a window for each project that had one; each tab says
+"(resumed after restart)" until you type into it. A window you quit yourself stays closed.
+
+What does not come back: whatever was executing at that moment (a half-finished tool call, a
+running build, shell variables, background jobs). Claude Code's transcript records the
+unfinished tool, and the agent continues from there once asked; recovery only resumes, it never
+sends a message. Everything stays on this Mac. `[recovery] start_at_login` in the config pins
+it on or off; "ask", the default, shows a one-line notice at launch until you decide.
 
 ## Keyboard
 
@@ -119,7 +164,7 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
-the daemon), and `sidebar` and `browser` for later milestones.
+the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), and `sidebar` and `browser` for later milestones.
 
 Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
@@ -135,9 +180,7 @@ five minutes (or at the next launch), and the palette's "Update now" does the re
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
 process (same pid, the shells stay its children) and the window reconnects; then the window
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
-history. The daemon and window speak protocol 2; the daemon still serves a protocol 1 window
-from milestone 2b. Upgrading *to* this version from milestone 2b is the one update that needs
-`pkill -x sarkosd` (the old daemon knows nothing of handovers), which ends every session.
+history. The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows, and reads the previous handover format, so updating from the update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x sarkosd` (the old daemon knows nothing of handovers), which ends every session.
 
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
 shows the error. If the window loses the daemon for ten seconds, it starts a new one and every

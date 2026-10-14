@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Find, UpdateNow, Quit
+        OpenConfig, CommandPalette, Find, UpdateNow, StartAtLogin, InstallHooks, Quit
     ]
 );
 
@@ -57,6 +57,11 @@ pub enum Command {
     Find,
     /// Run the installed update: the daemon first when its binary changed, then this window.
     UpdateNow,
+    /// Install or remove the login item that brings sessions back after a restart; with the
+    /// config pinning it, open the config instead.
+    StartAtLogin,
+    /// Merge the Claude Code hook entries into its settings file.
+    InstallHooks,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -98,6 +103,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("command palette", "cmd-shift-p"),
     row("find", "cmd-f"),
     row("update now", ""),
+    row("start at login", ""),
+    row("install claude code hooks", ""),
     row("quit", "cmd-q"),
 ];
 
@@ -141,6 +148,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "find" => KeyBinding::new(keys, Find, context),
         "update now" => KeyBinding::new(keys, UpdateNow, context),
+        "start at login" => KeyBinding::new(keys, StartAtLogin, context),
+        "install claude code hooks" => KeyBinding::new(keys, InstallHooks, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -294,6 +303,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "open config" => Command::OpenConfig,
         "find" => Command::Find,
         "update now" => Command::UpdateNow,
+        "start at login" => Command::StartAtLogin,
+        "install claude code hooks" => Command::InstallHooks,
         _ => return None,
     })
 }
@@ -333,7 +344,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         NewTerminal => Command::NewTerminal, ClearToStart => Command::ClearToStart,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
-        UpdateNow => Command::UpdateNow,
+        UpdateNow => Command::UpdateNow, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
     )
 }
 
@@ -369,6 +380,8 @@ mod tests {
         ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-f", "find", "Find"),
         ("", "update now", "UpdateNow"),
+        ("", "start at login", "StartAtLogin"),
+        ("", "install claude code hooks", "InstallHooks"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -412,7 +425,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 2, "an empty string unbinds, and update now has no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 4, "an empty string unbinds, and update now, start at login and install hooks have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "sarkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "sarkos::FontBigger"));
@@ -421,7 +434,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 1, "only update now is unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 3, "only update now, start at login and install hooks are unbound by default");
     }
 
     #[test]

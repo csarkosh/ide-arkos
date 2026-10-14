@@ -12,6 +12,7 @@ mod find;
 mod hook_cli;
 mod keys;
 mod keymap;
+mod launch_agent;
 mod layout;
 mod line_edit;
 mod motion;
@@ -337,6 +338,7 @@ impl Root {
         self.sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
         self.shell_name = shell_name(t.shell.as_deref(), std::env::var("SHELL").ok().as_deref());
         cx.background_executor().spawn(async { motion::refresh() }).detach();
+        self.apply_recovery(false, cx);
         cx.notify();
     }
 
@@ -639,7 +641,7 @@ impl Root {
             return;
         }
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref());
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path());
         self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
         cx.notify();
     }
@@ -897,8 +899,78 @@ impl Root {
             }
             SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
             UpdateNow => self.update_now(cx),
+            StartAtLogin => self.toggle_start_at_login(cx),
+            InstallHooks => {
+                let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("sarkos"));
+                let root = cx.entity();
+                cx.spawn(async move |_, cx| {
+                    let result = cx.background_executor().spawn(async move { hook_cli::install_hooks(&exe) }).await;
+                    let text = match result {
+                        Ok((path, added, replaced)) => format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", path.display()),
+                        Err(e) => format!("cannot install hooks: {e}"),
+                    };
+                    let _ = root.update(cx, |root, cx| root.show_notice(text, cx));
+                })
+                .detach();
+            }
         }
         let _ = window;
+    }
+
+    /// The plist for this install: the sibling daemon, the config's daemon arguments, the log.
+    fn agent_plist(&self) -> String {
+        let args = vec![
+            "--watchdog-secs".to_string(),
+            self.config.daemon.watchdog_secs.to_string(),
+            "--replay-bytes".to_string(),
+            self.config.daemon.replay_bytes.to_string(),
+        ];
+        launch_agent::plist(&paths::daemon_exe(), &args, &client::daemon_log(&paths::socket_path()))
+    }
+
+    /// Installs or removes the login item off the UI thread and says what happened.
+    fn set_start_at_login(&mut self, on: bool, cx: &mut Context<Self>) {
+        let path = launch_agent::agent_path();
+        let contents = self.agent_plist();
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { if on { launch_agent::install(&path, &contents) } else { launch_agent::remove(&path) } })
+                .await;
+            let text = match (on, result) {
+                (true, Ok(())) => "start at login is on: after a restart, sessions come back on their own".to_string(),
+                (false, Ok(())) => "start at login is off".to_string(),
+                (_, Err(e)) => format!("start at login: {e}"),
+            };
+            let _ = root.update(cx, |root, cx| root.show_notice(text, cx));
+        })
+        .detach();
+    }
+
+    /// The palette's "Start at login": flips the login item while the config says "ask"; when
+    /// the config pins it, opens the config instead.
+    pub fn toggle_start_at_login(&mut self, cx: &mut Context<Self>) {
+        match self.config.recovery.start_at_login {
+            config::StartAtLogin::Ask => {
+                let on = !launch_agent::installed(&launch_agent::agent_path());
+                self.set_start_at_login(on, cx);
+            }
+            _ => self.open_config(cx),
+        }
+    }
+
+    /// Keeps the login item as the config says; with "ask" and nothing installed, says once per
+    /// launch how to turn it on.
+    pub fn apply_recovery(&mut self, at_launch: bool, cx: &mut Context<Self>) {
+        let installed = launch_agent::installed(&launch_agent::agent_path());
+        match launch_agent::desired(self.config.recovery.start_at_login, installed) {
+            Some(on) => self.set_start_at_login(on, cx),
+            None if at_launch && !installed => {
+                self.show_notice("sessions can come back after a restart: run \"Start at login\" from the command palette (Cmd+Shift+P)".into(), cx)
+            }
+            None => {}
+        }
     }
 
     /// The palette's "Update now": the daemon first when its binary changed, then this window.
@@ -1442,6 +1514,7 @@ fn main() {
         root.update(cx, |root, cx| {
             root.config_error = config_error;
             root.theme_error = theme_error;
+            root.apply_recovery(true, cx);
             cx.notify();
         });
         let quit_root = root.clone();

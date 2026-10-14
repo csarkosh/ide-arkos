@@ -17,6 +17,7 @@ pub struct Config {
     pub daemon: DaemonConfig,
     pub theme: ThemeConfig,
     pub appearance: AppearanceConfig,
+    pub recovery: RecoveryConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -143,6 +144,23 @@ pub struct AppearanceConfig {
     pub mode: AppearanceMode,
 }
 
+/// Whether sarkosd starts at login to bring sessions back after a restart (update-in-place
+/// spec, section 11): "ask" until the user runs "Start at login" from the palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartAtLogin {
+    #[default]
+    Ask,
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecoveryConfig {
+    pub start_at_login: StartAtLogin,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -154,6 +172,7 @@ impl Default for Config {
             daemon: DaemonConfig::default(),
             theme: ThemeConfig::default(),
             appearance: AppearanceConfig::default(),
+            recovery: RecoveryConfig::default(),
         }
     }
 }
@@ -364,6 +383,8 @@ nice = 0
 # "command palette" = "cmd-shift-p"
 # "find" = "cmd-f"
 # "update now" = ""
+# "start at login" = ""
+# "install claude code hooks" = ""
 # "quit" = "cmd-q"
 
 [sidebar]
@@ -394,6 +415,14 @@ light = "navy-light"
 # system setting already tracks. "dark" or "light" fixes one. No warm tint or blue-light mode is
 # offered: both fail their controlled trials.
 mode = "system"
+
+[recovery]
+# After a restart, sarkosd started at login brings every session back: the same folders, the
+# history on screen under a divider, and each Claude Code conversation resumed (never continued:
+# you send the next message). Everything stays on this Mac. "ask" shows a notice at launch until
+# "Start at login" runs from the command palette; "on" installs the login item
+# (~/Library/LaunchAgents/sh.csarko.sarkosd.plist) and keeps it; "off" removes it.
+start_at_login = "ask"
 "##;
 
 /// The preset a workspace uses: what it saved, else the config's default, else comfortable.
@@ -423,6 +452,19 @@ pub fn preset_after_reload(current: &str, old: &FontConfig, new: &FontConfig) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_recovery_section_defaults_to_ask_and_parses_on_and_off() {
+        let c = Config::default();
+        assert_eq!(c.recovery.start_at_login, StartAtLogin::Ask);
+        let on: Config = toml::from_str("[recovery]\nstart_at_login = \"on\"\n").unwrap();
+        assert_eq!(on.recovery.start_at_login, StartAtLogin::On);
+        let off: Config = toml::from_str("[recovery]\nstart_at_login = \"off\"\n").unwrap();
+        assert_eq!(off.recovery.start_at_login, StartAtLogin::Off);
+        assert!(toml::from_str::<Config>("[recovery]\nstart_at_login = true\n").is_err(), "a string, like appearance.mode");
+        let parsed: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(parsed.recovery.start_at_login, StartAtLogin::Ask, "the written defaults say ask");
+    }
 
     #[test]
     fn a_workspace_preset_wins_then_the_config_default_then_comfortable() {
