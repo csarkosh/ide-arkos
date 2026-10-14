@@ -1,6 +1,5 @@
 //! Remembers a project's layout: the split tree with every tab's session (spec 4). Saved on
 //! every change, debounced, atomically, and off the UI thread.
-#![allow(dead_code)] // Used from Task 5 onward
 use crate::paths::workspace_file;
 use crate::tree::{Tab, Tree};
 use gpui::App;
@@ -133,6 +132,18 @@ pub fn request_save(queue: &SharedSaveQueue, ws: Workspace, cx: &mut App) {
     })
     .detach();
 }
+
+/// Writes the pending save now, on the calling thread: one small write, for quitting, when the
+/// debounce timer would never fire.
+pub fn flush_now(queue: &SharedSaveQueue) {
+    let ws = queue.lock().unwrap().take();
+    if let Some(ws) = ws {
+        if let Err(e) = save(&ws.project, &ws) {
+            eprintln!("sarkos: cannot save workspace: {e}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

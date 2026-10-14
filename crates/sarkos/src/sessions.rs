@@ -1,4 +1,3 @@
-#![allow(dead_code)] // Used from Task 5 onward
 //! Owns every terminal entity and the conversation with the daemon: which request asked for
 //! what, which session sits in which tab, and the launch-time reconciliation of the saved layout
 //! against the sessions the daemon still runs (spec 4: a missing session reopens as a fresh
@@ -35,6 +34,7 @@ pub enum Pending {
     Create { pane: PaneId, idx: usize, note: bool },
     Attach { session: SessionId, pane: PaneId, idx: usize, note: bool },
     Kill { session: SessionId },
+    #[allow(dead_code)] // In Task 4's interface; nothing in milestone 2a sends an untracked request yet
     Other,
 }
 
@@ -256,6 +256,8 @@ impl SessionManager {
     /// Installs a restored terminal and applies everything that arrived while it was parsing.
     pub fn finish_restore(&mut self, session: SessionId, terminal: Entity<Terminal>, cx: &mut App) {
         if self.terminals.contains_key(&session) {
+            // Already shown: still end the restore, or later events would wait forever.
+            self.take_backlog(session);
             return;
         }
         let backlog = self.take_backlog(session);

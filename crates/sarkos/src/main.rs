@@ -2,8 +2,10 @@ mod client;
 mod keys;
 mod layout;
 mod palette;
+mod pane_view;
 mod paths;
 mod scroll;
+mod split_view;
 mod sessions;
 mod terminal;
 mod terminal_element;
@@ -14,23 +16,25 @@ use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    actions, canvas, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, KeyBinding,
-    KeyDownEvent, Menu, MenuItem, ScrollDelta, ScrollWheelEvent, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, FocusHandle, KeyBinding,
+    Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
-use std::collections::VecDeque;
+use sessions::{reconcile, Outcome, Reconcile, SessionManager, SCROLLBACK};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use terminal::{Terminal, TerminalCore};
-use terminal_element::TerminalElement;
+use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, Tree};
+use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
 
 const BG: u32 = 0x11161f;
 const FG: u32 = 0xd6dae0;
-/// A slightly lighter navy for the one-line status banner above the terminal.
+/// A slightly lighter navy for the one-line status banner above the panes.
 const BANNER_BG: u32 = 0x1a2130;
-const SCROLLBACK: usize = 20_000;
+const BANNER_H: f32 = 28.0;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
 
@@ -38,144 +42,290 @@ actions!(sarkos, [Quit]);
 
 /// Starts every status that reports a `Response::Error`.
 const ERROR_PREFIX: &str = "sarkosd error: ";
+/// The status until the daemon answers the session list.
+const CONNECTING: &str = "connecting to sarkosd";
 
-struct Root {
-    client: Arc<client::Client>,
-    terminal: Option<Entity<Terminal>>,
-    status: String,
-    /// The (cols, rows) grid the window last measured while it had no terminal.
-    grid: Option<(usize, usize)>,
-    /// A restore waiting for the first measurement.
-    grid_waiter: Option<oneshot::Sender<(usize, usize)>>,
+pub struct Root {
+    pub tree: Tree,
+    pub sessions: SessionManager,
+    pub save_queue: SharedSaveQueue,
+    pub project: PathBuf,
+    /// Connection-level banner (errors, disconnects). Empty when all is well.
+    pub status: String,
+    /// The grid each pane last measured while it had no terminal to measure itself.
+    pub grids: HashMap<PaneId, (usize, usize)>,
+    pub grid_waiters: HashMap<PaneId, Vec<oneshot::Sender<(usize, usize)>>>,
+    /// Focus handles for panes that show no terminal (busy or empty).
+    pub pane_focus: HashMap<PaneId, FocusHandle>,
+    /// A split handle being dragged: the split, its orientation, and the split's bounds.
+    pub resizing: Option<(SplitId, Orientation, Rect)>,
+    pub font_size: f32,
+    /// The area the tree is laid out in, in window pixels, from the last render.
+    pub content: Rect,
+    /// Pane ids in reading order (the tab bar numbers), computed once per render.
+    pub pane_order: Vec<PaneId>,
 }
 
 impl Root {
-    fn new(client: Arc<client::Client>) -> Self {
-        Self { client, terminal: None, status: "connecting to sarkosd".into(), grid: None, grid_waiter: None }
+    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>) -> Self {
+        // A fresh workspace starts with one pane holding a placeholder session that the launch
+        // replaces with a real shell (reconcile sees it is not in the daemon's list).
+        let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
+        Self {
+            tree,
+            sessions: SessionManager::new(client.clone(), Some(client), project.clone()),
+            save_queue: SharedSaveQueue::default(),
+            project,
+            status: CONNECTING.into(),
+            grids: HashMap::new(),
+            grid_waiters: HashMap::new(),
+            pane_focus: HashMap::new(),
+            resizing: None,
+            font_size: terminal_element::DEFAULT_FONT_SIZE,
+            content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
+            pane_order: Vec::new(),
+        }
     }
 
-    fn report_grid(&mut self, grid: (usize, usize)) {
-        self.grid = Some(grid);
-        if let Some(tx) = self.grid_waiter.take() {
+    pub fn layout(&self) -> tree::Layout {
+        self.tree.layout(self.content)
+    }
+
+    pub fn save(&mut self, cx: &mut App) {
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone() };
+        request_save(&self.save_queue, ws, cx);
+    }
+
+    pub fn report_grid(&mut self, pane: PaneId, grid: (usize, usize)) {
+        self.grids.insert(pane, grid);
+        for tx in self.grid_waiters.remove(&pane).unwrap_or_default() {
             let _ = tx.send(grid);
         }
     }
 
-    /// The grid a new terminal will be shown at: the current terminal's if one is being
-    /// replaced, else the last measurement.
-    fn current_grid(&self, cx: &App) -> Option<(usize, usize)> {
-        match &self.terminal {
-            Some(t) => {
+    /// The grid a terminal in `pane` would get: the pane's current terminal's, else the last
+    /// measurement of the pane's placeholder.
+    fn pane_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
+        let p = self.tree.pane(pane)?;
+        if let Some(Tab::Terminal { session }) = p.tabs.get(p.active) {
+            if let Some(t) = self.sessions.terminals.get(session) {
                 let core = &t.read(cx).core;
-                Some((core.columns(), core.screen_lines()))
+                return Some((core.columns(), core.screen_lines()));
             }
-            None => self.grid,
+        }
+        self.grids.get(&pane).copied()
+    }
+
+    pub fn active_terminal(&self, _cx: &App) -> Option<Entity<Terminal>> {
+        let p = self.tree.pane(self.tree.focused)?;
+        match p.tabs.get(p.active)? {
+            Tab::Terminal { session } => self.sessions.terminals.get(session).cloned(),
+            Tab::Viewer { .. } => None,
         }
     }
 
-    /// Applies queued daemon events to the terminal: one grid update and at most one notify.
-    fn apply_events(&mut self, pending: &mut Vec<Event>, cx: &mut Context<Self>) {
-        if pending.is_empty() {
+    pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        if self.tree.pane(pane).is_none() {
             return;
         }
-        if let Some(t) = self.terminal.clone() {
-            t.update(cx, |t, cx| t.handle_events(pending, cx));
-        }
-        pending.clear();
+        self.tree.focused = pane;
+        cx.notify();
     }
+
+    pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
+        self.tree.activate(pane, idx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Closes a tab. A terminal's session is killed and detached; the pane stays (spec 4).
+    pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
+        let Some(tab) = self.tree.close_tab(pane, idx) else { return };
+        if let Tab::Terminal { session } = tab {
+            if session != SessionId(0) {
+                self.sessions.kill(session);
+                self.sessions.detach(session);
+            }
+            self.sessions.ready(pane, idx);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0) });
+        self.tree.focused = pane;
+        self.sessions.create(pane, idx, false);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Splits the focused pane and starts a fresh shell in the new one.
+    pub fn split_focused(&mut self, side: Side, cx: &mut Context<Self>) {
+        let pane = self.tree.focused;
+        if let Some(new_pane) = self.tree.split(pane, side, Tab::Terminal { session: SessionId(0) }) {
+            self.sessions.create(new_pane, 0, false);
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
+    /// Applies what the daemon answered.
+    pub fn handle_outcome(&mut self, outcome: Outcome, saved_layout: bool, cx: &mut Context<Self>) {
+        match outcome {
+            Outcome::None => {}
+            Outcome::Sessions(list) => {
+                if self.status == CONNECTING {
+                    // The banner goes away, so every pane grows: forget measurements taken under
+                    // it so restores wait for the next frame's grid.
+                    self.status.clear();
+                    self.grids.clear();
+                }
+                for step in reconcile(&self.tree, &list, &self.project) {
+                    match step {
+                        Reconcile::Attach { pane, idx, session } => self.sessions.attach(session, pane, idx, false),
+                        Reconcile::Create { pane, idx } => self.sessions.create(pane, idx, saved_layout),
+                    }
+                }
+                cx.notify();
+            }
+            Outcome::Created { pane, idx, session, note } => {
+                self.tree.replace_tab(pane, idx, Tab::Terminal { session });
+                if note {
+                    self.sessions.notes.insert(session);
+                }
+                self.save(cx);
+                self.sessions.attach(session, pane, idx, note);
+                cx.notify();
+            }
+            Outcome::Attached { session, pane, idx, replay, alive, note: _ } => {
+                eprintln!("sarkos: attached to session {} ({} replay bytes)", session.0, replay.len());
+                self.sessions.begin_restore(session);
+                let root = cx.entity();
+                cx.spawn(async move |_, cx| {
+                    if let Err(e) = restore(&root, session, pane, idx, replay, alive, cx).await {
+                        eprintln!("sarkos: restoring session {} failed: {e:#}", session.0);
+                        let _ = root.update(cx, |root, cx| {
+                            root.sessions.abort_restore(session, pane, idx);
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            }
+            Outcome::Killed { .. } => {}
+            Outcome::Error(e) => {
+                self.status = format!("{ERROR_PREFIX}{e}");
+                eprintln!("sarkos: {}", self.status);
+                cx.notify();
+            }
+        }
+    }
+}
+
+/// Parses a replay off the main thread at the pane's grid, then installs the terminal.
+async fn restore(root: &Entity<Root>, session: SessionId, pane: PaneId, idx: usize, replay: Vec<u8>, alive: bool, cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let known = root.update(cx, |root, cx| match root.pane_grid(pane, cx) {
+        Some(grid) => Ok(grid),
+        None => {
+            let (tx, rx) = oneshot::channel();
+            root.grid_waiters.entry(pane).or_default().push(tx);
+            cx.notify();
+            Err(rx)
+        }
+    })?;
+    let (cols, rows) = match known {
+        Ok(grid) => grid,
+        Err(rx) => rx.await?,
+    };
+    let started = std::time::Instant::now();
+    let (core, title) = cx
+        .background_spawn(async move {
+            let mut core = TerminalCore::new(cols, rows, SCROLLBACK);
+            // The previous UI already answered any queries in the replay; keep only the title.
+            let title = core.apply_output(&replay).title;
+            (core, title)
+        })
+        .await;
+    eprintln!("sarkos: session {} replay parsed at {cols}x{rows} in {:?}", session.0, started.elapsed());
+    root.update(cx, |root, cx| {
+        // The PTY still has the previous window's size. Setting this grid's size is a no-op when
+        // they match and makes the program redraw when they differ.
+        let client = root.sessions.transport.clone();
+        client.send(Request::Resize { session, rows: rows as u16, cols: cols as u16 });
+        let terminal = cx.new(|cx| {
+            let mut t = Terminal::new(core, session, root.sessions.client.clone().expect("client"), cx);
+            t.alive = alive;
+            t.title = title.unwrap_or_default();
+            t
+        });
+        root.sessions.finish_restore(session, terminal, cx);
+        root.sessions.ready(pane, idx);
+        cx.notify();
+    })
 }
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(terminal) = self.terminal.clone() else {
-            // No terminal yet: measure the grid the terminal will get (the whole window, since the
-            // banner clears once it is shown) so a replay can be parsed at that size.
-            let root = cx.weak_entity();
-            let measure = canvas(
-                move |bounds, window, cx| {
-                    let grid = terminal_element::grid_for(bounds, window);
-                    let _ = root.update(cx, |root, _| root.report_grid(grid));
-                },
-                |_, _, _, _| {},
-            )
-            .size_full();
-            return div()
-                .size_full()
-                .relative()
-                .bg(rgb(BG))
-                .child(measure)
-                .child(banner_bar(self.status.clone()).absolute().top_0().left_0());
+        let size = window.viewport_size();
+        let banner_h = if self.status.is_empty() { 0.0 } else { BANNER_H };
+        let content = Rect { x: 0.0, y: banner_h, w: f32::from(size.width), h: f32::from(size.height) - banner_h };
+        if content != self.content {
+            // Measurements taken at the old size would parse a replay at the wrong grid.
+            self.grids.clear();
+            self.content = content;
+        }
+        // Built first: it creates the focus handles of panes that show no terminal.
+        let body = split_view::render_tree(self, window, cx);
+        // Focus follows the tree: the focused pane's terminal, or the pane's own handle.
+        let wanted = match self.active_terminal(cx) {
+            Some(t) => Some(t.read(cx).focus.clone()),
+            None => self.pane_focus.get(&self.tree.focused).cloned(),
         };
-        let (focus, alive, exit_code) = {
-            let t = terminal.read(cx);
-            (t.focus.clone(), t.alive, t.exit_code)
-        };
-        // Connection problems and errors outrank the session's own state.
-        let banner = if !self.status.is_empty() {
-            Some(self.status.clone())
-        } else if !alive {
-            Some(match exit_code {
-                Some(code) => format!("session ended (exit code {code})"),
-                None => "session ended".to_string(),
-            })
-        } else {
-            None
-        };
-        if !focus.is_focused(window) {
-            window.focus(&focus);
+        if let Some(f) = wanted {
+            if !f.is_focused(window) {
+                window.focus(&f);
+            }
         }
         div()
             .size_full()
+            .bg(rgb(BG))
             .flex()
             .flex_col()
-            .bg(rgb(BG))
-            .track_focus(&focus)
-            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _window, cx| {
-                let Some(t) = this.terminal.clone() else { return };
-                let ks = &ev.keystroke;
-                if ks.modifiers.platform && ks.key == "v" {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        t.update(cx, |t, _| t.paste(&text));
-                    }
-                    return;
+            .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+                if let Some((split, orientation, area)) = root.resizing {
+                    // `area` and the pointer are both in window pixels.
+                    let ratio = split_view::ratio_from_pointer(area, orientation, f32::from(ev.position.x), f32::from(ev.position.y));
+                    root.tree.set_ratio(split, ratio);
+                    root.grids.clear();
+                    cx.notify();
                 }
-                t.update(cx, |t, cx| t.handle_key(ks, cx));
             }))
-            .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _window, cx| {
-                let Some(t) = this.terminal.clone() else { return };
-                t.update(cx, |t, cx| {
-                    let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
-                    // Positive wheel y means the content moves down, which is scrolling up into history.
-                    let lines = match ev.delta {
-                        ScrollDelta::Lines(p) => p.y,
-                        ScrollDelta::Pixels(p) => f32::from(p.y) / cell_h,
-                    };
-                    // If the manual check in Task 10 step 6 shows inverted scrolling, negate `lines` here.
-                    t.scroll_lines(lines, cx);
-                });
-            }))
-            .children(banner.map(banner_bar))
-            // The terminal stays painted beneath the banner so scrollback remains readable.
-            .child(div().flex_1().min_h_0().child(TerminalElement::new(terminal)))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|root, _ev: &MouseUpEvent, _window, cx| {
+                    if root.resizing.take().is_some() {
+                        root.save(cx);
+                    }
+                }),
+            )
+            .children((!self.status.is_empty()).then(|| banner_bar(self.status.clone())))
+            .child(div().flex_1().min_h_0().child(body))
     }
-}
-
-/// Whether a successful response should clear `status`. Only an error is cleared, and only once
-/// a terminal is shown: before that the banner is all the window has, so a failed launch stays
-/// visible. Connection and "session ended" banners are never cleared here.
-fn success_clears(status: &str, has_terminal: bool) -> bool {
-    has_terminal && status.starts_with(ERROR_PREFIX)
 }
 
 fn banner_bar(text: String) -> Div {
     div()
         .w_full()
+        .h(px(BANNER_H))
         .flex_none()
-        .p(px(4.))
+        .px(px(8.0))
+        .flex()
+        .items_center()
         .bg(rgb(BANNER_BG))
         .text_color(rgb(FG))
         .font_family(terminal_element::FONT_FAMILY)
-        .text_size(px(terminal_element::FONT_SIZE))
+        .text_size(px(13.0))
         .child(text)
 }
 
@@ -184,144 +334,6 @@ fn output_len(msg: &ServerMessage) -> usize {
         ServerMessage::Event(Event::Output { bytes, .. }) => bytes.len(),
         _ => 0,
     }
-}
-
-/// What the launch has asked the daemon for, so its responses can be matched.
-struct Launch {
-    client: Arc<client::Client>,
-    project: PathBuf,
-    list_id: u32,
-    saved: Option<SessionId>,
-    pending_create: Option<u32>,
-    pending_attach: Option<(u32, SessionId)>,
-    /// Whether the daemon has answered anything, Hello included.
-    answered: bool,
-}
-
-/// An attach response whose replay still has to be parsed before the session can be shown.
-struct Restore {
-    session: SessionId,
-    replay: Vec<u8>,
-    alive: bool,
-}
-
-impl Launch {
-    /// Handles queued messages in order. Stops at an attach response and returns it, leaving the
-    /// messages after it in `queue`: they belong after the replay, so they wait until it is applied.
-    fn process(&mut self, root: &mut Root, queue: &mut VecDeque<ServerMessage>, cx: &mut Context<Root>) -> Option<Restore> {
-        let mut pending: Vec<Event> = Vec::new();
-        while let Some(msg) = queue.pop_front() {
-            let (id, response) = match msg {
-                ServerMessage::Event(ev) => {
-                    pending.push(ev);
-                    continue;
-                }
-                ServerMessage::Response { id, response } => (id, response),
-            };
-            self.answered = true;
-            // Events that came before this response are applied first, keeping order.
-            root.apply_events(&mut pending, cx);
-            let is_error = matches!(response, Response::Error(_));
-            match response {
-                Response::Sessions(list) if id == self.list_id => {
-                    match self.saved.filter(|s| sessions::reattachable(*s, &list, &self.project)) {
-                        Some(sid) => {
-                            let aid = self.client.send(Request::Attach { session: sid });
-                            self.pending_attach = Some((aid, sid));
-                        }
-                        None => {
-                            let cid = self.client.send(Request::CreateSession {
-                                cwd: self.project.clone(),
-                                shell: None,
-                                env: vec![],
-                                nice: 0,
-                                rows: 24,
-                                cols: 80,
-                            });
-                            self.pending_create = Some(cid);
-                        }
-                    }
-                }
-                Response::SessionCreated { id: sid } if Some(id) == self.pending_create => {
-                    self.pending_create = None;
-                    let project = self.project.clone();
-                    cx.background_spawn(async move {
-                        if let Err(e) = workspace::save(&project, &workspace::Workspace { version: workspace::FORMAT_VERSION, project: project.clone(), tree: tree::Tree::new(tree::Tab::Terminal { session: sid }) }) {
-                            eprintln!("sarkos: cannot save workspace: {e}");
-                        }
-                    })
-                    .detach();
-                    let aid = self.client.send(Request::Attach { session: sid });
-                    self.pending_attach = Some((aid, sid));
-                }
-                Response::Attached { replay, alive } if self.pending_attach.map(|p| p.0) == Some(id) => {
-                    let (_, sid) = self.pending_attach.take().unwrap();
-                    eprintln!("sarkos: attached to session {} ({} replay bytes)", sid.0, replay.len());
-                    root.status = "restoring session".into();
-                    cx.notify();
-                    return Some(Restore { session: sid, replay, alive });
-                }
-                Response::Error(e) => {
-                    root.status = format!("{ERROR_PREFIX}{e}");
-                    eprintln!("sarkos: {}", root.status);
-                    cx.notify();
-                }
-                _ => {}
-            }
-            // Any later success means the error was transient; show the terminal's state again.
-            if !is_error && success_clears(&root.status, root.terminal.is_some()) {
-                root.status.clear();
-                cx.notify();
-            }
-        }
-        root.apply_events(&mut pending, cx);
-        None
-    }
-}
-
-/// Shows an attached session: waits for the window's grid, parses the replay at that size on the
-/// background executor, then builds the terminal on the main thread.
-async fn restore(root: &Entity<Root>, r: Restore, cx: &mut AsyncApp) -> anyhow::Result<()> {
-    let known = root.update(cx, |root, cx| match root.current_grid(cx) {
-        Some(grid) => Ok(grid),
-        None => {
-            let (tx, rx) = oneshot::channel();
-            root.grid_waiter = Some(tx);
-            Err(rx)
-        }
-    })?;
-    let (cols, rows) = match known {
-        Ok(grid) => grid,
-        Err(rx) => rx.await?,
-    };
-    let Restore { session, replay, alive } = r;
-    let started = std::time::Instant::now();
-    let (core, title) = cx
-        .background_spawn(async move {
-            let mut core = TerminalCore::new(cols, rows, SCROLLBACK);
-            // The previous UI already answered any queries in the replay and rang its bells, so
-            // only the title is kept from this wakeup.
-            let title = core.apply_output(&replay).title;
-            (core, title)
-        })
-        .await;
-    eprintln!("sarkos: replay parsed at {cols}x{rows} in {:?}", started.elapsed());
-    root.update(cx, |root, cx| {
-        let client = root.client.clone();
-        // The PTY still has the previous window's size. Setting this grid's size is a no-op when
-        // they match (the kernel signals SIGWINCH only on a change) and makes the program redraw
-        // when they differ; the element will not resend it, since the core is already this size.
-        client.send(Request::Resize { session, rows: rows as u16, cols: cols as u16 });
-        let terminal = cx.new(|cx| {
-            let mut t = Terminal::new(core, session, client, cx);
-            t.alive = alive;
-            t.title = title.unwrap_or_default();
-            t
-        });
-        root.terminal = Some(terminal);
-        root.status = String::new();
-        cx.notify();
-    })
 }
 
 /// Returns Pending once. A channel with queued messages resolves `next()` immediately, so without
@@ -363,20 +375,25 @@ fn main() {
     let project = std::env::current_dir().expect("cwd");
     // Synchronous on purpose: one small file read, done before the window opens, so it cannot
     // stall painting or input. Saves happen on the background executor.
-    let saved = workspace::load(&project)
-        .and_then(|ws| ws.tree.pane(ws.tree.focused).and_then(|p| p.tabs.first().cloned()))
-        .and_then(|t| match t {
-            tree::Tab::Terminal { session } => Some(session),
-            _ => None,
-        });
+    let saved = workspace::load(&project);
+    let save_queue = SharedSaveQueue::default();
 
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own.
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // A pending debounced save is written before quitting, so the last layout change survives.
+        let quit_queue = save_queue.clone();
+        cx.on_action(move |_: &Quit, cx| {
+            workspace::flush_now(&quit_queue);
+            cx.quit();
+        });
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let client_for_view = client.clone();
+        let view_queue = save_queue.clone();
+        let saved_layout = saved.is_some();
+        let view_project = project.clone();
+        let view_saved = saved.clone();
         let window = cx
             .open_window(
                 WindowOptions {
@@ -384,14 +401,22 @@ fn main() {
                     titlebar: Some(gpui::TitlebarOptions { title: Some("Sarkos IDE".into()), ..Default::default() }),
                     ..Default::default()
                 },
-                move |_, cx| cx.new(|_| Root::new(client_for_view)),
+                move |_, cx| {
+                    cx.new(|_| {
+                        let mut root = Root::new(client_for_view, view_project, view_saved);
+                        root.save_queue = view_queue;
+                        root
+                    })
+                },
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
         // no windowless process lingers.
-        cx.on_window_closed(|cx| {
+        let close_queue = save_queue.clone();
+        cx.on_window_closed(move |cx| {
             if cx.windows().is_empty() {
+                workspace::flush_now(&close_queue);
                 cx.quit();
             }
         })
@@ -409,24 +434,17 @@ fn main() {
         })
         .detach();
 
-        // Decide which session to show: the workspace's saved one if the daemon still runs it here.
-        let list_id = client.send(Request::ListSessions);
-        let mut launch = Launch {
-            client: client.clone(),
-            project: project.clone(),
-            list_id,
-            saved,
-            pending_create: None,
-            pending_attach: None,
-            answered: false,
-        };
+        // Ask for the daemon's sessions; the answer reconciles the saved layout against them.
+        root.update(cx, |root, _| root.sessions.list());
         let client_for_task = client.clone();
         cx.spawn(async move |cx| {
             let mut closed = false;
+            // Whether the daemon has answered anything, for the hint below.
+            let mut answered = false;
             while !closed {
                 let Some(first) = events.next().await else { break };
                 // Take everything already queued, up to the byte budget, so a flood becomes one
-                // grid update and one notify per batch instead of one per message.
+                // grid update and one notify per terminal per batch instead of one per message.
                 let mut bytes = output_len(&first);
                 let mut queue = VecDeque::from([first]);
                 while bytes <= BATCH_BUDGET {
@@ -442,22 +460,41 @@ fn main() {
                         Err(TryRecvError::Empty) => break,
                     }
                 }
-                loop {
-                    let Ok(step) = root.update(cx, |root, cx| launch.process(root, &mut queue, cx)) else { return };
-                    let Some(attached) = step else { break };
-                    // The channel is not read while the replay is restored, so live output waits
-                    // behind it in order, and past the unread cap the daemon pauses the PTY.
-                    if let Err(e) = restore(&root, attached, cx).await {
-                        eprintln!("sarkos: restoring the session failed: {e:#}");
-                        return;
+                let Ok(()) = root.update(cx, |root, cx| {
+                    let mut pending: Vec<Event> = Vec::new();
+                    for msg in queue.drain(..) {
+                        match msg {
+                            ServerMessage::Event(ev) => pending.push(ev),
+                            ServerMessage::Response { id, response } => {
+                                answered = true;
+                                // Events that came before this response are applied first, keeping order.
+                                if !pending.is_empty() {
+                                    root.sessions.route_events(&pending, cx);
+                                    pending.clear();
+                                }
+                                let is_error = matches!(response, Response::Error(_));
+                                let outcome = root.sessions.handle_response(id, response);
+                                root.handle_outcome(outcome, saved_layout, cx);
+                                // A later success means the error was transient.
+                                if !is_error && root.status.starts_with(ERROR_PREFIX) {
+                                    root.status.clear();
+                                    cx.notify();
+                                }
+                            }
+                        }
                     }
-                }
+                    if !pending.is_empty() {
+                        root.sessions.route_events(&pending, cx);
+                    }
+                }) else {
+                    return;
+                };
                 // The batch's output is applied: let the reader thread pull more from the socket.
                 client_for_task.consumed_output(bytes);
                 yield_now().await;
             }
             let mut reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
-            if !launch.answered {
+            if !answered {
                 // A daemon built before the protocol version existed cannot decode this UI's
                 // Hello and hangs up without a word.
                 reason.push_str("; if sarkosd is from an older build, restart it (pkill -x sarkosd), which ends every session");
@@ -465,29 +502,10 @@ fn main() {
             eprintln!("sarkos: {reason}");
             let _ = root.update(cx, |root, cx| {
                 // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
-                if root.status.starts_with(ERROR_PREFIX) {
-                    root.status = format!("{}; {reason}", root.status);
-                } else {
-                    root.status = reason;
-                }
+                root.status = if root.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", root.status) } else { reason };
                 cx.notify();
             });
         })
         .detach();
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn success_clears_only_an_error_shown_over_a_terminal() {
-        assert!(success_clears("sarkosd error: write failed", true));
-        // Before a terminal exists the error is all the window shows.
-        assert!(!success_clears("sarkosd error: spawn failed", false));
-        assert!(!success_clears("daemon closed the connection", true));
-        assert!(!success_clears("restoring session", true));
-        assert!(!success_clears("", true));
-    }
 }

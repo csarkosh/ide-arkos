@@ -1,7 +1,6 @@
 //! The layout model (spec 4): a binary split tree of panes, each pane an ordered list of tabs.
 //! Pure data with no gpui types, so every operation is unit and property tested.
 
-#![allow(dead_code)] // Used from Task 5 onward
 
 use protocol::SessionId;
 use serde::{Deserialize, Serialize};
@@ -808,7 +807,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     enum Op {
-        Split(usize, Side, u64),
+        Split(usize, Side),
         CloseTab(usize, usize),
         ClosePane(usize),
         MoveTab(usize, usize, usize, Option<usize>),
@@ -820,7 +819,7 @@ mod tests {
     fn op() -> impl Strategy<Value = Op> {
         let side = prop_oneof![Just(Side::Left), Just(Side::Right), Just(Side::Top), Just(Side::Bottom)];
         prop_oneof![
-            (0..8usize, side, 1..1000u64).prop_map(|(p, s, n)| Op::Split(p, s, n)),
+            (0..8usize, side).prop_map(|(p, s)| Op::Split(p, s)),
             (0..8usize, 0..6usize).prop_map(|(p, i)| Op::CloseTab(p, i)),
             (0..8usize).prop_map(Op::ClosePane),
             (0..8usize, 0..6usize, 0..8usize, proptest::option::of(0..6usize)).prop_map(|(f, i, t, a)| Op::MoveTab(f, i, t, a)),
@@ -835,7 +834,7 @@ mod tests {
         let panes = t.panes();
         let pick = |i: usize| panes[i % panes.len()];
         match *op {
-            Op::Split(p, side, _) => {
+            Op::Split(p, side) => {
                 *next += 1;
                 t.split(pick(p), side, term(*next));
             }
