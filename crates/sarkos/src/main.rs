@@ -272,11 +272,12 @@ impl Root {
     /// A tab whose session could not be shown becomes a fresh shell with the "(restarted)" note,
     /// so no tab is left dead. `why` is logged.
     fn restart_tab(&mut self, tab: TabId, session: SessionId, why: &str, cx: &mut Context<Self>) {
-        self.sessions.abort_restore(session, tab);
         let Some((pane, idx)) = self.tree.locate(tab) else {
+            // Decides itself whether to abort: a reopened tab's restore may own the session now.
             self.restore_tab_gone(session, tab);
             return;
         };
+        self.sessions.abort_restore(session, tab);
         eprintln!("sarkos: cannot show session {} in tab {tab} ({why}); starting a new shell there", session.0);
         self.sessions.detach(session);
         self.tree.replace_tab(pane, idx, Tab::Terminal { session: SessionId(0) });
