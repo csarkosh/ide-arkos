@@ -57,9 +57,12 @@ const KILL_RETRY: Duration = Duration::from_secs(1);
 
 /// The status bar's word on the daemon, from the connection banner alone: empty once the daemon
 /// answered, `CONNECTING` until then, an `ERROR_PREFIX` error or a disconnect reason otherwise.
+/// What the bar leaves unsaid: all is well.
+const CONNECTED_LABEL: &str = "sarkosd connected";
+
 fn daemon_label(status: &str) -> &'static str {
     if status.is_empty() {
-        "sarkosd connected"
+        CONNECTED_LABEL
     } else if status == CONNECTING {
         "sarkosd connecting"
     } else {
@@ -1176,13 +1179,13 @@ impl Render for Root {
             .filter(|b| !b.is_empty())
             .collect();
         let banner_h = BANNER_H * banners.len() as f32;
-        let (top, bottom) = (chrome::TOP_BAR_H, chrome::STATUS_BAR_H);
+        let top = chrome::TITLE_BAR_H;
         // A window shorter than its chrome would give a negative height; lay out at zero instead.
         let content = Rect {
             x: 0.0,
             y: top + banner_h,
             w: f32::from(size.width).max(0.0),
-            h: (f32::from(size.height) - top - bottom - banner_h).max(0.0),
+            h: (f32::from(size.height) - top - banner_h).max(0.0),
         };
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.
@@ -1209,11 +1212,10 @@ impl Render for Root {
                 window.focus(&f);
             }
         }
-        let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
         let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
+        let items = chrome::status_items(self.update_ready.as_deref(), (daemon != CONNECTED_LABEL).then_some(daemon), 0);
+        let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme);
         let family = self.family();
-        let status_bar = chrome::status_bar(&self.project, self.update_ready.as_deref(), daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
             .relative()
             .size_full()
@@ -1261,10 +1263,9 @@ impl Render for Root {
                     }
                 }),
             )
-            .child(chrome::top_bar(&project_name, family.clone(), &theme))
+            .child(title_bar)
             .children(banners.into_iter().map(|text| banner_bar(text, family.clone(), &theme)))
             .child(div().flex_1().min_h_0().child(body))
-            .child(status_bar)
             .children(command_palette::render(self, cx));
         keymap::attach(root_div, cx)
     }
@@ -1365,12 +1366,11 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(gpui::TitlebarOptions { title: Some("Sarkos IDE".into()), ..Default::default() }),
-                    // One minimum pane with its border, tab bar and the window's chrome.
-                    window_min_size: Some(size(
-                        px(tree::MIN_PANE_W + 8.0),
-                        px(tree::MIN_PANE_H + pane_view::TAB_BAR_H + chrome::TOP_BAR_H + chrome::STATUS_BAR_H),
-                    )),
+                    // The window draws its own bar in the title bar's space (chrome.rs); the
+                    // traffic lights stay where macOS puts them.
+                    titlebar: Some(gpui::TitlebarOptions { title: Some("Sarkos IDE".into()), appears_transparent: true, traffic_light_position: None }),
+                    // One minimum pane with its border, tab bar and the window's bar.
+                    window_min_size: Some(size(px(tree::MIN_PANE_W + 8.0), px(tree::MIN_PANE_H + pane_view::TAB_BAR_H + chrome::TITLE_BAR_H))),
                     ..Default::default()
                 },
                 move |window, cx| {
