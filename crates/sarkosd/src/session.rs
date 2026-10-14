@@ -677,17 +677,21 @@ impl Session {
                 claude: record.claude,
             }),
             backpressure,
-            // A pending kill drains to EOF without pausing, as it did in the old image.
+            // A pending kill drains to EOF without pausing, as it did in the old image; so does a
+            // dead record's reader, which never pauses on a slow subscriber.
             ending: AtomicBool::new(!record.alive || record.kill_requested),
             paused: AtomicBool::new(false),
-            // A dead record gets no reader, so there is nothing to wait for at the next upgrade.
-            parked: AtomicBool::new(!record.alive),
+            // Set by the reader when it parks for an upgrade or stops at EOF.
+            parked: AtomicBool::new(false),
         });
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
             session.poll_exit();
-            Self::start_reader(session.clone());
         }
+        // A dead record gets a reader too: a background job still holding the slave would block
+        // on a full buffer until the TTL otherwise. At EOF `try_reap` returns the recorded code at
+        // once and `mark_exited` does nothing.
+        Self::start_reader(session.clone());
         session
     }
 
@@ -861,6 +865,42 @@ mod tests {
         rec.exited_ago_ms = Some(u64::MAX);
         let (master, _slave) = Pty::open(24, 80).unwrap();
         assert!(Session::adopt(&rec, master, 4, Backpressure::default()).exited_at().is_some());
+    }
+
+    #[test]
+    fn a_dead_record_drains_a_background_job_and_parks_at_eof() {
+        use std::io::Write;
+        let (master, slave) = Pty::open(24, 80).unwrap();
+        let rec = crate::handover::SessionRecord {
+            id: 14,
+            cwd: std::env::temp_dir(),
+            pid: i32::MAX, // never signalled or waited on: the record says it was reaped
+            alive: false,
+            exit_code: Some(0),
+            exited_ago_ms: Some(0),
+            claude: ClaudeState::Idle,
+            last_activity_unix_ms: 0,
+            master_fd: master.raw_fd(),
+            rows: 24,
+            cols: 80,
+            kill_requested: false,
+            replay: vec![],
+        };
+        let s = Session::adopt(&rec, master, 1 << 20, Backpressure::default());
+        // A background job that outlived the shell still holds the slave and writes far more
+        // than the kernel buffers: with nothing reading, it would block until the TTL.
+        let (done_tx, done_rx) = channel();
+        std::thread::spawn(move || {
+            let mut job = std::fs::File::from(slave);
+            job.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+            drop(job);
+            done_tx.send(()).unwrap();
+        });
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("the job blocked: nothing reads the dead record");
+        assert!(s.wait_parked(Duration::from_secs(5)), "the reader parks at EOF");
+        assert!(!s.info().alive);
+        assert_eq!(s.state.lock().unwrap().exit_code, Some(0));
+        assert_eq!(s.state.lock().unwrap().replay.snapshot().len(), 256 * 1024);
     }
 
     #[test]
