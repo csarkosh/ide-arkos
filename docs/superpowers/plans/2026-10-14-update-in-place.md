@@ -510,7 +510,7 @@ git commit -m "Hold shells by pid on a libc PTY layer that can adopt a descripto
   - `handover::read(path: &Path) -> Result<Handover, String>`: refuses a bad magic, a `format` other than `FORMAT`, or undecodable bytes, each with a message naming the problem.
   - `RingBuffer::from_bytes(cap: usize, bytes: &[u8]) -> RingBuffer` (keeps the tail if `bytes` exceeds `cap`).
   - `Session::snapshot(&self) -> SessionRecord` (the master fd number as it is now; the caller makes it inheritable).
-  - `Session::adopt(record: &SessionRecord, master: Pty, backpressure: Backpressure) -> Arc<Session>`: rebuilds state from the record (ring from `replay` at `replay_capacity` the caller passes through `record`-independent options; `exited_at = now - exited_ago_ms`), reaps once with `try_reap` if alive, and starts the reader and writer threads.
+  - `Session::adopt(record: &SessionRecord, master: Pty, replay_capacity: usize, backpressure: Backpressure) -> Arc<Session>`: rebuilds state from the record (ring from `replay` at `replay_capacity`; `exited_at = now - exited_ago_ms`), reaps once with `try_reap` if alive, and starts the reader and writer threads.
   - `Session::size(&self) -> (u16, u16)` (last `rows, cols` set).
 
 A ruling the spec needs: section 6 says the file "records both" versions "so a resume from a mismatched build is refused". The file is written by the old binary and read by the new one, so their versions differ by design; what gates a resume is `FORMAT`. `written_by` is kept for the log line only.
@@ -1116,7 +1116,7 @@ git commit -m "Protocol 2: append Upgrade, RelaunchClient and Hello, serve versi
   - `server::Options` becomes `Clone` (not `Copy`) and gains `socket: PathBuf`; `State` gains `listener_fd: RawFd` and `upgrading: bool`.
   - `server::run_resumed(h: Handover, socket: PathBuf) -> Result<()>`: adopts the listener and every session from `h`, then runs the same accept loop as `run`.
   - `sarkosd --resume <path>`: reads the file (a failure is fatal, exit 1, logged), deletes it, calls `run_resumed`.
-  - The `Upgrade` request: `validate`, `begin`, then `execute` on the requesting client's reader thread; the client sees `Response::Error(..)` on failure, and on success no response at all, only the connection ending when the exec closes every socket. (The error cannot be delivered after an exec, and an `Ok` before it would race the exec, so the window treats the disconnect as success and an `Error` as failure.)
+  - The `Upgrade` request: `begin` (claim the slot), `validate` (`abort` on failure), then `execute` on the requesting client's reader thread; the client sees `Response::Error(..)` on failure, and on success no response at all, only the connection ending when the exec closes every socket. (The error cannot be delivered after an exec, and an `Ok` before it would race the exec, so the window treats the disconnect as success and an `Error` as failure.)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1569,10 +1569,13 @@ In `server.rs`:
 
 ```rust
         Request::Upgrade { exe } => {
-            if let Err(e) = crate::upgrade::validate(&exe) {
+            // Claim the slot first: the check takes seconds, and a second client must be
+            // refused for its whole length, not only after it passes.
+            if let Err(e) = crate::upgrade::begin(state) {
                 return Some(Response::Error(e));
             }
-            if let Err(e) = crate::upgrade::begin(state) {
+            if let Err(e) = crate::upgrade::validate(&exe) {
+                crate::upgrade::abort(state);
                 return Some(Response::Error(e));
             }
             // Returns only on failure; on success this process is now the new binary.
