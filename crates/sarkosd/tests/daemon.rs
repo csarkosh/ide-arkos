@@ -1477,6 +1477,19 @@ fn recover_without_a_manifest_is_a_plain_start() {
 }
 
 #[test]
+fn recover_keeps_an_unreadable_manifest_aside_as_bad_and_starts_plain() {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    std::fs::write(sessions.join("manifest.bin"), b"not a manifest").unwrap();
+    std::fs::write(sessions.join("manifest.bin.bad"), b"an older bad one").unwrap();
+    let d = Daemon::start_in(dir, &["--recover"]);
+    let mut c = d.connect();
+    assert!(detailed(&mut c).is_empty());
+    assert_eq!(std::fs::read(d.sessions_dir().join("manifest.bin.bad")).unwrap(), b"not a manifest", "kept for a look, over the older one");
+}
+
+#[test]
 fn recover_while_a_daemon_is_listening_exits_zero_and_leaves_it() {
     let a = Daemon::start(&[]);
     let mut second = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--socket").arg(&a.socket).arg("--recover").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();

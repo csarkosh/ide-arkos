@@ -176,8 +176,13 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             return Recovered::default();
         }
         Err(e) => {
-            eprintln!("sarkosd: cannot read the manifest: {e}; starting without it");
-            let _ = std::fs::remove_file(manifest_path(dir));
+            // Kept aside for a look rather than deleted; an older `.bad` is replaced.
+            let path = manifest_path(dir);
+            let bad = path.with_extension("bin.bad");
+            match std::fs::rename(&path, &bad) {
+                Ok(()) => eprintln!("sarkosd: cannot read the manifest: {e}; moved it to {} and starting without it", bad.display()),
+                Err(re) => eprintln!("sarkosd: cannot read the manifest: {e}; starting without it (cannot move it to {}: {re})", bad.display()),
+            }
             return Recovered::default();
         }
     };
