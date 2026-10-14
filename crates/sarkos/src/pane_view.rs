@@ -38,13 +38,46 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
     ElementId::NamedInteger(format!("{kind}-{pane}").into(), idx as u64)
 }
 
+/// The overflow menu is worth a button once there is something to choose between.
+pub fn show_overflow(tabs: usize) -> bool {
+    tabs >= 2
+}
+
+/// (index, label, active) for the menu, in bar order.
+pub fn menu_rows(p: &Pane, labels: &[String]) -> Vec<(usize, String, bool)> {
+    labels.iter().enumerate().map(|(i, l)| (i, l.clone(), i == p.active)).collect()
+}
+
+/// Every tab's label, in bar order; the bar and the overflow menu both show these.
+fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<String> {
+    p.tabs
+        .iter()
+        .enumerate()
+        .map(|(idx, tab)| match tab {
+            Tab::Terminal { session } => {
+                let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
+                let note = root.sessions.notes.contains(session);
+                match root.sessions.terminals.get(session) {
+                    Some(t) => {
+                        let t = t.read(cx);
+                        tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy)
+                    }
+                    None => tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))),
+                }
+            }
+            Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        })
+        .collect()
+}
+
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focused = root.tree.focused == pane;
     let theme = root.theme.clone();
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
-    let bar = render_tab_bar(root, pane, &p, number, cx);
+    let labels = tab_labels(root, &p, cx);
+    let bar = render_tab_bar(root, pane, &p, number, &labels, cx);
     if !p.tabs.is_empty() {
         // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
         root.empty_anim.remove(&pane);
@@ -104,8 +137,43 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
+    let menu = (root.tab_menu == Some(pane)).then(|| {
+        let mut m = div()
+            .id(("menu", pane))
+            .absolute()
+            .top(px(TAB_BAR_H))
+            .right_0()
+            .min_w(px(180.0))
+            .flex()
+            .flex_col()
+            .py(px(4.0))
+            .bg(theme.chrome.banner.hsla())
+            .border_1()
+            .border_color(theme.chrome.border.hsla())
+            .font_family(root.family())
+            .text_size(px(12.0))
+            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+        for (idx, label, active) in menu_rows(&p, &labels) {
+            m = m.child(
+                div()
+                    .id(tab_id("menu-row", pane, idx))
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .bg(if active { theme.chrome.tab_active.hsla() } else { theme.chrome.banner.hsla() })
+                    .text_color(if active { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
+                    .cursor_pointer()
+                    .child(label)
+                    .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                        root.close_tab_menu(cx);
+                        root.activate_tab(pane, idx, cx);
+                    })),
+            );
+        }
+        m
+    });
     div()
         .size_full()
+        .relative()
         .flex()
         .flex_col()
         .bg(theme.chrome.window_bg.hsla())
@@ -119,9 +187,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         )
         .child(bar)
         .child(content)
+        .children(menu)
 }
 
-fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &mut Context<Root>) -> Stateful<Div> {
+fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels: &[String], cx: &mut Context<Root>) -> Stateful<Div> {
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let (fg, dim) = (c.text, c.text_dim);
@@ -154,21 +223,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             };
             root.drop_tab(d, target, cx);
         }));
-    for (idx, tab) in p.tabs.iter().enumerate() {
-        let label = match tab {
-            Tab::Terminal { session } => {
-                let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
-                let note = root.sessions.notes.contains(session);
-                match root.sessions.terminals.get(session) {
-                    Some(t) => {
-                        let t = t.read(cx);
-                        tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy)
-                    }
-                    None => tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))),
-                }
-            }
-            Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        };
+    let handle = root.bar_scroll.entry(pane).or_default().clone();
+    let mut strip = div().id(("tabs", pane)).flex_1().min_w_0().h_full().flex().flex_row().overflow_x_scroll().track_scroll(&handle);
+    for (idx, label) in labels.iter().enumerate() {
+        let label = label.clone();
         let is_active = idx == p.active;
         let drag_value = p.ids.get(idx).map(|id| drag::TabDrag {
             pane,
@@ -180,7 +238,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             fg,
             family: root.family(),
         });
-        bar = bar.child(
+        strip = strip.child(
             div()
                 .id(tab_id("tab", pane, idx))
                 .h_full()
@@ -217,7 +275,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 ),
         );
     }
-    bar.child(
+    bar = bar.child(strip).child(
         div()
             .id(("plus", pane))
             .px(px(10.0))
@@ -226,7 +284,21 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             .cursor_pointer()
             .child("+")
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
-    )
+    );
+    if show_overflow(p.tabs.len()) {
+        bar = bar.child(
+            div()
+                .id(("more", pane))
+                .px(px(8.0))
+                .text_color(dim.hsla())
+                .hover(move |s| s.text_color(fg.hsla()))
+                .cursor_pointer()
+                .child("\u{22ef}")
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_tab_menu(pane, cx))),
+        );
+    }
+    bar
 }
 
 fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &Theme, cx: &mut Context<Root>) -> Div {
@@ -346,5 +418,15 @@ mod tests {
         assert_eq!(tab_label("vim", "zsh", false, None, false, None), "vim (ended)");
         assert_eq!(tab_label("", "zsh", true, None, true, None), "zsh (restarted)");
         assert_eq!(tab_label("", "zsh", true, None, false, Some("starting shell")), "starting shell");
+    }
+
+    #[test]
+    fn overflow_menu_lists_every_tab_from_two() {
+        use crate::tree::{Pane, Tab};
+        use protocol::SessionId;
+        assert!(!show_overflow(0) && !show_overflow(1) && show_overflow(2));
+        let p = Pane { id: 1, tabs: vec![Tab::Terminal { session: SessionId(1) }, Tab::Terminal { session: SessionId(2) }], active: 1, mru: vec![1, 0], ids: vec![2, 3] };
+        let rows = menu_rows(&p, &["zsh".into(), "vim".into()]);
+        assert_eq!(rows, vec![(0, "zsh".to_string(), false), (1, "vim".to_string(), true)]);
     }
 }

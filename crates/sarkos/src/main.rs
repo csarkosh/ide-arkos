@@ -30,7 +30,7 @@ use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
     div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
-    Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
+    Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
@@ -101,6 +101,10 @@ pub struct Root {
     pub theme_error: Option<String>,
     /// The command palette while it is open (Cmd+Shift+P).
     pub palette: Option<command_palette::Palette>,
+    /// Each pane's tab strip scroll state, so the active tab can be kept in view.
+    pub bar_scroll: HashMap<PaneId, gpui::ScrollHandle>,
+    /// The pane whose tab overflow menu is open.
+    pub tab_menu: Option<PaneId>,
 }
 
 /// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
@@ -146,6 +150,8 @@ impl Root {
             config_error: None,
             theme_error: None,
             palette: None,
+            bar_scroll: HashMap::new(),
+            tab_menu: None,
         }
     }
 
@@ -272,6 +278,10 @@ impl Root {
         self.grid_waiters.remove(&pane);
         self.pane_focus.remove(&pane);
         self.empty_anim.remove(&pane);
+        self.bar_scroll.remove(&pane);
+        if self.tab_menu == Some(pane) {
+            self.tab_menu = None;
+        }
     }
 
     /// Forgets per-pane state for panes no longer in the tree, whatever removed them.
@@ -282,6 +292,7 @@ impl Root {
             .chain(self.grid_waiters.keys())
             .chain(self.pane_focus.keys())
             .chain(self.empty_anim.keys())
+            .chain(self.bar_scroll.keys())
             .copied()
             .filter(|p| !self.pane_order.contains(p))
             .collect();
@@ -349,8 +360,22 @@ impl Root {
 
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         self.tree.activate(pane, idx);
+        if let Some(h) = self.bar_scroll.get(&pane) {
+            h.scroll_to_item(idx);
+        }
         self.save(cx);
         cx.notify();
+    }
+
+    pub fn toggle_tab_menu(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        self.tab_menu = if self.tab_menu == Some(pane) { None } else { Some(pane) };
+        cx.notify();
+    }
+
+    pub fn close_tab_menu(&mut self, cx: &mut Context<Self>) {
+        if self.tab_menu.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and killed
@@ -932,6 +957,7 @@ impl Render for Root {
                     cx.notify();
                 }
             }))
+            .on_mouse_down(MouseButton::Left, cx.listener(|root, _ev: &MouseDownEvent, _window, cx| root.close_tab_menu(cx)))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|root, _ev: &MouseUpEvent, _window, cx| {
