@@ -12,6 +12,7 @@ use std::time::Duration;
 
 const DEFAULT_REPLAY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_WATCHDOG_SECS: u64 = 30;
+const DEFAULT_FLUSH_QUIET_MILLIS: u64 = 2000;
 
 /// `<name> <crate version> (<short git hash>)`, the same shape for both binaries.
 pub fn version_string() -> String {
@@ -30,6 +31,7 @@ fn main() {
     let mut watchdog = DEFAULT_WATCHDOG_SECS;
     let mut reaper_millis: u64 = 1000;
     let mut dead_session_secs: u64 = 600;
+    let mut flush_quiet_millis = DEFAULT_FLUSH_QUIET_MILLIS;
     let mut pending_cap = session::CLIENT_PENDING_CAP;
     let mut backpressure = session::Backpressure::default();
     let mut resume = None;
@@ -40,7 +42,7 @@ fn main() {
                 return;
             }
             "--check-handover" => {
-                println!("handover {}", handover::FORMAT);
+                println!("handover {}", handover::OLDEST_READ);
                 return;
             }
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),
@@ -61,6 +63,9 @@ fn main() {
             "--watchdog-secs" => watchdog = args.next().and_then(|v| v.parse().ok()).expect("--watchdog-secs needs a number"),
             "--reaper-millis" => reaper_millis = args.next().and_then(|v| v.parse().ok()).expect("--reaper-millis needs a number"),
             "--dead-session-secs" => dead_session_secs = args.next().and_then(|v| v.parse().ok()).expect("--dead-session-secs needs a number"),
+            "--flush-quiet-millis" => {
+                flush_quiet_millis = args.next().and_then(|v| v.parse().ok()).expect("--flush-quiet-millis needs a number")
+            }
             other => {
                 eprintln!("sarkosd: unknown argument {other}");
                 std::process::exit(2);
@@ -96,6 +101,7 @@ fn main() {
         reaper_every: Duration::from_millis(reaper_millis.max(10)),
         dead_session_ttl: Duration::from_secs(dead_session_secs),
         socket,
+        flush_quiet: Duration::from_millis(flush_quiet_millis),
     };
     if let Err(e) = server::run(opts) {
         eprintln!("sarkosd: {e:#}");

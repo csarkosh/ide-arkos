@@ -28,6 +28,8 @@ pub struct Options {
     pub dead_session_ttl: Duration,
     /// The listening socket's path; the handover file is written next to it.
     pub socket: PathBuf,
+    /// How long output must have stopped before a session's ring is written to disk.
+    pub flush_quiet: Duration,
 }
 
 pub struct ClientRecord {
@@ -135,6 +137,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
         reaper_every: Duration::from_millis(h.reaper_millis.max(10)),
         dead_session_ttl: Duration::from_secs(h.dead_session_secs),
         socket,
+        flush_quiet: Duration::from_millis(h.flush_quiet_millis),
     };
     let mut st = State::new();
     st.next_session = h.next_session;
@@ -152,6 +155,8 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
         let s = Session::adopt(rec, master, opts.replay_capacity, opts.backpressure);
         st.sessions.insert(SessionId(rec.id), s);
     }
+    st.windows = h.windows.into_iter().collect();
+    st.manifest_dirty = true;
     eprintln!("sarkosd: resumed {} sessions from a handover written by {}", st.sessions.len(), h.written_by);
     serve(listener, Arc::new(Mutex::new(st)), opts)
 }

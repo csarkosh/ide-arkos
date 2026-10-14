@@ -299,13 +299,10 @@ pub struct Session {
     /// Set by the reader once it has stopped for `pause`, and when there is no reader left.
     parked: AtomicBool,
     /// What a restart needs to recreate the shell (update-in-place spec, section 11). Read by
-    /// the handover and the manifest, which later tasks of this milestone add.
-    #[allow(dead_code)]
+    /// the handover and the manifest.
     shell: String,
-    #[allow(dead_code)]
     nice: i32,
     /// The caller's extra variables only, not `TERM` and the session id.
-    #[allow(dead_code)]
     env: Vec<(String, String)>,
     /// The agent inside, from its SessionStart hook; its SessionEnd hook clears it. A leaf lock:
     /// never taken while `state` or `child` is held, and neither of those is taken under it.
@@ -645,6 +642,8 @@ impl Session {
     /// The record the handover file carries for this session. The master fd number is the one
     /// in this process; the caller makes the descriptor inheritable before the exec.
     pub fn snapshot(&self) -> crate::handover::SessionRecord {
+        // A leaf lock, taken and released before `state`.
+        let agent = self.agent();
         let st = self.state.lock().unwrap();
         let slot = self.child.lock().unwrap();
         let (rows, cols) = self.size();
@@ -664,6 +663,11 @@ impl Session {
             cols,
             kill_requested: slot.kill_requested_at.is_some(),
             replay: st.replay.snapshot(),
+            shell: self.shell.clone(),
+            nice: self.nice,
+            env: self.env.clone(),
+            agent,
+            recovered: self.recovered,
         }
     }
 
@@ -707,12 +711,11 @@ impl Session {
             paused: AtomicBool::new(false),
             // Set by the reader when it parks for an upgrade or stops at EOF.
             parked: AtomicBool::new(false),
-            // Placeholders until the handover record carries these (Task 2).
-            shell: String::new(),
-            nice: 0,
-            env: Vec::new(),
-            agent: Mutex::new(None),
-            recovered: false,
+            shell: record.shell.clone(),
+            nice: record.nice,
+            env: record.env.clone(),
+            agent: Mutex::new(record.agent.clone()),
+            recovered: record.recovered,
         });
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
@@ -738,22 +741,22 @@ impl Session {
         }
     }
 
-    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn shell(&self) -> &str {
         &self.shell
     }
 
-    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn nice(&self) -> i32 {
         self.nice
     }
 
-    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn env(&self) -> &[(String, String)] {
         &self.env
     }
 
-    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    #[cfg_attr(not(test), expect(dead_code))] // read by the manifest in a later task
     pub fn cwd(&self) -> &Path {
         &self.cwd
     }
@@ -849,14 +852,14 @@ mod tests {
             id: SessionId(11),
             cwd: std::env::temp_dir(),
             shell: Some("/bin/sh".into()),
-            env: vec![],
+            env: vec![("SARKOS_TEST".into(), "1".into())],
             nice: 0,
             rows: 24,
             cols: 80,
             replay_capacity: 4096,
             backpressure: Backpressure::default(),
             seed: Vec::new(),
-            recovered: false,
+            recovered: true,
             agent: None,
         };
         let s = Session::spawn(spec).unwrap();
@@ -868,8 +871,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         s.resize(30, 100).unwrap();
+        let agent = AgentRecord { kind: "claude".into(), id: "a1".into(), resume: vec!["claude".into(), "--resume".into(), "a1".into()] };
+        s.set_agent(agent.clone());
         let rec = s.snapshot();
         assert_eq!(rec.id, 11);
+        assert_eq!(rec.agent, Some(agent.clone()));
+        assert!(rec.recovered);
+        assert_eq!((rec.shell.as_str(), rec.nice), ("/bin/sh", 0));
+        assert_eq!(rec.env, vec![("SARKOS_TEST".to_string(), "1".to_string())]);
         assert!(rec.alive);
         assert_eq!((rec.rows, rec.cols), (30, 100));
         assert_eq!(rec.pid, s.info().pid.unwrap() as i32);
@@ -901,6 +910,9 @@ mod tests {
         assert!(adopted.info().alive);
         assert_eq!(adopted.info().pid, s.info().pid);
         assert_eq!(adopted.size(), (30, 100));
+        assert_eq!(adopted.agent(), Some(agent));
+        assert!(adopted.detail().recovered);
+        assert_eq!((adopted.shell(), adopted.nice(), adopted.env()), (rec.shell.as_str(), rec.nice, rec.env.as_slice()));
         assert!(String::from_utf8_lossy(&adopted.state.lock().unwrap().replay.snapshot()).contains("snap-2"));
         std::thread::sleep(Duration::from_millis(300));
         adopted.write(b"echo after-adopt-$((2+2))\n").unwrap();
@@ -935,6 +947,11 @@ mod tests {
             cols: 80,
             kill_requested: false,
             replay: b"0123456789".to_vec(),
+            shell: String::new(),
+            nice: 0,
+            env: vec![],
+            agent: None,
+            recovered: false,
         };
         let s = Session::adopt(&rec, master, 4, Backpressure::default());
         assert!(!s.info().alive);
@@ -967,6 +984,11 @@ mod tests {
             cols: 80,
             kill_requested: false,
             replay: vec![],
+            shell: String::new(),
+            nice: 0,
+            env: vec![],
+            agent: None,
+            recovered: false,
         };
         let s = Session::adopt(&rec, master, 1 << 20, Backpressure::default());
         // A background job that outlived the shell still holds the slave and writes far more

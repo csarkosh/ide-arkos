@@ -71,11 +71,21 @@ pub fn validate(exe: &Path) -> Result<(), String> {
     if !status.success() {
         return Err(format!("{} --check-handover failed ({status})", exe.display()));
     }
-    let expected = format!("handover {}", handover::FORMAT);
-    if out.trim() != expected {
-        return Err(format!("{} --check-handover answered {:?}, this daemon writes {expected:?}", exe.display(), out.trim()));
+    if !accepts_check(&out) {
+        return Err(format!(
+            "{} --check-handover answered {:?}; this daemon writes handover format {} and needs a binary that reads it",
+            exe.display(),
+            out.trim(),
+            handover::FORMAT
+        ));
     }
     Ok(())
+}
+
+/// What `--check-handover` must answer: `handover N`, the oldest format the candidate reads,
+/// with N at most the format this daemon writes.
+pub fn accepts_check(answer: &str) -> bool {
+    answer.trim().strip_prefix("handover ").and_then(|n| n.trim().parse::<u32>().ok()).is_some_and(|oldest| oldest <= handover::FORMAT)
 }
 
 /// Claims the one upgrade slot.
@@ -121,10 +131,11 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
     // it, its master would close at the exec and its shell get SIGHUP. No new create starts now,
     // and the table is gathered under the same lock that sees none in flight.
     let started = Instant::now();
-    let (sessions, listener_fd, next_session, settled) = loop {
+    let (sessions, listener_fd, next_session, windows, settled) = loop {
         let st = state.lock().unwrap();
         if let Some(settled) = creates_settled(st.creating, started.elapsed()) {
-            break (st.sessions.values().cloned().collect::<Vec<_>>(), st.listener_fd, st.next_session(), settled);
+            let windows: Vec<(PathBuf, Option<PathBuf>)> = st.windows.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            break (st.sessions.values().cloned().collect::<Vec<_>>(), st.listener_fd, st.next_session(), windows, settled);
         }
         drop(st);
         std::thread::sleep(Duration::from_millis(5));
@@ -165,7 +176,9 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         high_water: opts.backpressure.high_water,
         low_water: opts.backpressure.low_water,
         stall_secs: opts.backpressure.stall.as_secs(),
+        flush_quiet_millis: opts.flush_quiet.as_millis() as u64,
         next_session,
+        windows,
         sessions: records,
     };
     if let Err(e) = handover::write(&path, &h) {
@@ -217,6 +230,16 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_candidate_is_accepted_when_its_oldest_readable_format_is_not_newer_than_ours() {
+        assert!(accepts_check("handover 1\n"), "the current main's binary, which reads only 1, is accepted by nobody newer; this binary prints 1 too");
+        assert!(accepts_check(&format!("handover {}", handover::FORMAT)));
+        assert!(!accepts_check(&format!("handover {}", handover::FORMAT + 1)), "a future binary that dropped our format cannot resume our file");
+        assert!(!accepts_check("handover"));
+        assert!(!accepts_check("something else"));
+        assert!(!accepts_check(""));
+    }
 
     #[test]
     fn the_upgrade_waits_for_creates_in_flight_then_gives_up() {
