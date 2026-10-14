@@ -56,7 +56,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
-            Some(terminal) => render_terminal(root, terminal, cx),
+            Some(terminal) => render_terminal(terminal, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
@@ -220,9 +220,9 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
     )
 }
 
-fn render_terminal(root: &mut Root, terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
-    let font_size = root.font_size;
+    let font_size = terminal.read(cx).font_size;
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();

@@ -67,6 +67,8 @@ pub struct Root {
     pub pane_focus: HashMap<PaneId, FocusHandle>,
     /// A split handle being dragged: the split, its orientation, and the split's bounds.
     pub resizing: Option<(SplitId, Orientation, Rect)>,
+    /// The text size new terminals start at, and that panes without a terminal measure with.
+    /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
     /// The area the tree is laid out in, in window pixels, from the last render.
     pub content: Rect,
@@ -428,8 +430,15 @@ impl Root {
                 }
             }
             FontDelta(d) => {
-                self.font_size = (self.font_size + d).clamp(10.0, 32.0);
-                cx.notify();
+                // Only the focused terminal changes (spec 7); its element resizes the grid and
+                // the PTY on the next paint. Not saved: milestone 2b's presets will be.
+                if let Some(t) = self.active_terminal(cx) {
+                    t.update(cx, |t, cx| {
+                        t.font_size = (t.font_size + d).clamp(10.0, 32.0);
+                        cx.notify();
+                    });
+                    cx.notify();
+                }
             }
         }
         let _ = window;
@@ -551,6 +560,7 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
             let mut t = Terminal::new(core, session, root.sessions.client.clone().expect("client"), cx);
             t.alive = alive;
             t.title = title.unwrap_or_default();
+            t.font_size = root.font_size;
             t
         });
         root.sessions.finish_restore(session, terminal, cx);

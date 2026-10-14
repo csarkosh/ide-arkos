@@ -256,11 +256,25 @@ pub struct Terminal {
     pub bell_pending: bool,
     /// When the element last painted, for time-based scroll animation.
     pub last_frame: Option<Instant>,
+    /// This terminal's text size; Cmd+= and Cmd+- change only the focused terminal's (spec 7).
+    pub font_size: f32,
 }
 
 impl Terminal {
     pub fn new(core: TerminalCore, session: SessionId, client: Arc<Client>, cx: &mut Context<Self>) -> Self {
-        Self { core, session, client, focus: cx.focus_handle(), title: String::new(), alive: true, exit_code: None, cell: None, bell_pending: false, last_frame: None }
+        Self {
+            core,
+            session,
+            client,
+            focus: cx.focus_handle(),
+            title: String::new(),
+            alive: true,
+            exit_code: None,
+            cell: None,
+            bell_pending: false,
+            last_frame: None,
+            font_size: crate::terminal_element::DEFAULT_FONT_SIZE,
+        }
     }
 
     /// Applies one daemon event. Returns true when a repaint is needed.
