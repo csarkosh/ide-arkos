@@ -81,7 +81,8 @@ A terminal bell marks a tab waiting too, so a `claude` set to ring the bell work
 `sarkos notify` is the hook side: it reads `SARKOS_SESSION_ID`, which every shell the daemon
 starts carries, and exits 0 whatever happens, so a `claude` run outside Sarkos IDE is unaffected.
 `sarkos hooks print` prints the entries for a hand paste. The entries name this binary by its
-launch path; after moving it, install again.
+launch path; after moving it, install again. A Claude Code killed by a shutdown (its SessionEnd
+hook says `other`) keeps its record, so the recovery after the restart resumes it.
 
 ## After a restart
 

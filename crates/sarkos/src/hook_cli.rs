@@ -30,6 +30,8 @@ pub enum Notify {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookInput {
     pub session_id: String,
+    /// SessionEnd's `reason`: `clear`, `resume`, `logout`, `prompt_input_exit` or `other`.
+    pub reason: Option<String>,
 }
 
 /// `notify --state <working|waiting|idle>` or `notify --event <session-start|session-end>`.
@@ -46,11 +48,13 @@ pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
 }
 
 /// The fields of a hook's stdin this needs: Claude Code sends `session_id`, `transcript_path`,
-/// `cwd` and `hook_event_name` on every event (its hooks reference); only the id is kept.
+/// `cwd` and `hook_event_name` on every event (its hooks reference), and SessionEnd a `reason`;
+/// only the id and the reason are kept.
 pub fn parse_hook_input(stdin: &str) -> Option<HookInput> {
     let v: serde_json::Value = serde_json::from_str(stdin).ok()?;
     let id = v.get("session_id")?.as_str()?.trim();
-    (!id.is_empty()).then(|| HookInput { session_id: id.to_string() })
+    let reason = v.get("reason").and_then(|r| r.as_str()).map(str::to_string);
+    (!id.is_empty()).then(|| HookInput { session_id: id.to_string(), reason })
 }
 
 /// The command that resumes an agent's session, as argv. Claude Code: `claude --resume <id>`
@@ -69,7 +73,12 @@ pub fn request_for(notify: &Notify, session: SessionId, input: Option<&HookInput
             let id = input?.session_id.clone();
             Some(Request::SetAgent { session, agent: AgentRecord { kind: "claude".into(), resume: resume_command("claude", &id), id } })
         }
-        Notify::Event(HookEvent::SessionEnd) => Some(Request::ClearAgent { session, id: input?.session_id.clone() }),
+        // "other" is a Claude Code that was killed, as a shutdown kills it: the record stays, so
+        // the recovery that follows resumes it. Any other end (or none given) clears it.
+        Notify::Event(HookEvent::SessionEnd) => {
+            let input = input?;
+            (input.reason.as_deref() != Some("other")).then(|| Request::ClearAgent { session, id: input.session_id.clone() })
+        }
     }
 }
 
@@ -116,7 +125,9 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
         Notify::State(_) => None,
     };
     let Some(request) = request_for(&notify, session, input.as_ref()) else {
-        eprintln!("sarkos notify: the hook's stdin had no session_id; nothing recorded");
+        if input.is_none() {
+            eprintln!("sarkos notify: the hook's stdin had no session_id; nothing recorded");
+        }
         return 0;
     };
     match send_one(socket, request) {
@@ -282,7 +293,9 @@ mod tests {
     #[test]
     fn hook_stdin_gives_the_agents_session_id() {
         let json = r#"{"session_id":"abc123","transcript_path":"/t.jsonl","cwd":"/p","hook_event_name":"SessionStart","source":"resume"}"#;
-        assert_eq!(parse_hook_input(json), Some(HookInput { session_id: "abc123".into() }));
+        assert_eq!(parse_hook_input(json), Some(HookInput { session_id: "abc123".into(), reason: None }));
+        let end = r#"{"session_id":"abc123","hook_event_name":"SessionEnd","reason":"other"}"#;
+        assert_eq!(parse_hook_input(end), Some(HookInput { session_id: "abc123".into(), reason: Some("other".into()) }));
         assert_eq!(parse_hook_input("not json"), None);
         assert_eq!(parse_hook_input(r#"{"cwd":"/p"}"#), None);
         assert_eq!(parse_hook_input(r#"{"session_id":""}"#), None);
@@ -291,9 +304,14 @@ mod tests {
     #[test]
     fn the_resume_command_is_claude_resume_with_the_id() {
         assert_eq!(resume_command("claude", "abc"), vec!["claude", "--resume", "abc"]);
-        let r = request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), Some(&HookInput { session_id: "abc".into() }));
+        let input = |reason: Option<&str>| HookInput { session_id: "abc".into(), reason: reason.map(str::to_string) };
+        let r = request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), Some(&input(None)));
         assert_eq!(r, Some(Request::SetAgent { session: SessionId(7), agent: AgentRecord { kind: "claude".into(), id: "abc".into(), resume: resume_command("claude", "abc") } }));
-        assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&HookInput { session_id: "abc".into() })), Some(Request::ClearAgent { session: SessionId(7), id: "abc".into() }));
+        let clear = Some(Request::ClearAgent { session: SessionId(7), id: "abc".into() });
+        for reason in [None, Some("clear"), Some("resume"), Some("logout"), Some("prompt_input_exit")] {
+            assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input(reason))), clear, "{reason:?}");
+        }
+        assert_eq!(request_for(&Notify::Event(HookEvent::SessionEnd), SessionId(7), Some(&input(Some("other")))), None, "killed, as at a shutdown: kept so it is resumed");
         assert_eq!(request_for(&Notify::Event(HookEvent::SessionStart), SessionId(7), None), None, "no stdin, nothing to record");
         assert_eq!(request_for(&Notify::State(ClaudeState::Waiting), SessionId(7), None), Some(Request::SetState { session: SessionId(7), state: ClaudeState::Waiting }));
     }
@@ -333,6 +351,20 @@ mod tests {
         assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut stdin), 0);
         let agent = AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["claude".into(), "--resume".into(), "abc".into()] };
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { session: SessionId(7), agent });
+    }
+
+    #[test]
+    fn a_session_end_hook_clears_the_agent_unless_the_process_was_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(dir.path());
+        let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"other"}"#.as_bytes();
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin), 0);
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(dir.path());
+        let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"clear"}"#.as_bytes();
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin), 0);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::ClearAgent { session: SessionId(7), id: "abc".into() });
     }
 
     #[test]
