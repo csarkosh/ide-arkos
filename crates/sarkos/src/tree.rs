@@ -396,6 +396,18 @@ impl Tree {
                 p.mru.insert(0, idx);
             }
         }
+        self.focus(pane);
+    }
+
+    /// Focuses a pane. Focusing a pane hidden by another's maximize exits the maximize, so the
+    /// focused pane is always on screen and typing always lands somewhere visible.
+    pub fn focus(&mut self, pane: PaneId) {
+        if self.pane(pane).is_none() {
+            return;
+        }
+        if self.maximized.is_some_and(|m| m != pane) {
+            self.maximized = None;
+        }
         self.focused = pane;
     }
 
@@ -536,7 +548,7 @@ impl Tree {
         p.active = landing;
         p.mru.retain(|i| *i != landing);
         p.mru.insert(0, landing);
-        self.focused = to;
+        self.focus(to);
         true
     }
 
@@ -890,6 +902,33 @@ mod tests {
         assert_eq!(t.panes().len(), 2, "numbering still counts every pane");
         t.toggle_maximize(b);
         assert_eq!(t.layout(bounds()).panes.len(), 2);
+    }
+
+    #[test]
+    fn focusing_another_pane_exits_maximize() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        let b = t.split(a, Side::Right, term(2)).unwrap();
+        t.add_tab(b, term(3));
+        t.toggle_maximize(b);
+        // Focusing or activating within the maximized pane keeps it maximized.
+        t.focus(b);
+        t.activate(b, 0);
+        assert_eq!(t.maximized, Some(b));
+        // Focusing a hidden pane shows it.
+        t.focus(a);
+        assert_eq!((t.focused, t.maximized), (a, None));
+        t.toggle_maximize(a);
+        t.activate(b, 1);
+        assert_eq!((t.focused, t.maximized), (b, None));
+        // A tab moved to a hidden pane takes focus there, which shows it.
+        t.toggle_maximize(b);
+        assert!(t.move_tab(b, 0, a, None));
+        assert_eq!((t.focused, t.maximized), (a, None));
+        // A pane that does not exist changes nothing.
+        t.toggle_maximize(a);
+        t.focus(999);
+        assert_eq!((t.focused, t.maximized), (a, Some(a)));
     }
 
     #[test]

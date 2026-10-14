@@ -181,11 +181,16 @@ impl Root {
         }
     }
 
+    /// Focuses a pane, exiting another pane's maximize so the focused pane is on screen.
     pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         if self.tree.pane(pane).is_none() {
             return;
         }
-        self.tree.focused = pane;
+        let maximized = self.tree.maximized;
+        self.tree.focus(pane);
+        if self.tree.maximized != maximized {
+            self.save(cx);
+        }
         cx.notify();
     }
 
@@ -262,7 +267,7 @@ impl Root {
 
     pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0) });
-        self.tree.focused = pane;
+        self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
             self.sessions.create(id, false);
         }
