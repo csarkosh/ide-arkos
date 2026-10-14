@@ -8,7 +8,7 @@ use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Direction, Line, Point, Side as GridSide};
+use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 pub use alacritty_terminal::term::search::Match;
 use alacritty_terminal::term::search::RegexSearch;
@@ -211,28 +211,31 @@ impl TerminalCore {
     }
 
     /// Every literal, case-insensitive match of `needle`, oldest first, from the top of history
-    /// to the bottom of the screen. alacritty's search wraps around the buffer, so the loop stops
-    /// when a match comes back at or before the previous one.
+    /// to the bottom of the screen; at most `MAX_MATCHES`, the newest kept.
     pub fn search(&self, needle: &str) -> Vec<Match> {
-        if needle.is_empty() {
+        self.search_capped(needle, MAX_MATCHES)
+    }
+
+    /// `search` with a given cap. One pass from the bottom right of the grid towards the top
+    /// left, so a common query stops after the newest `cap` matches instead of scanning the
+    /// whole scrollback, and each step resumes just before the previous match (no overlaps).
+    pub fn search_capped(&self, needle: &str, cap: usize) -> Vec<Match> {
+        if needle.is_empty() || cap == 0 {
             return Vec::new();
         }
         let Ok(mut regex) = RegexSearch::new(&format!("(?i){}", escape_regex(needle))) else { return Vec::new() };
-        let last_col = self.term.last_column();
-        let end_of_grid = Point::new(self.term.bottommost_line(), last_col);
-        let mut origin = Point::new(self.term.topmost_line(), Column(0));
+        let top_left = Point::new(self.term.topmost_line(), Column(0));
+        let mut origin = Point::new(self.term.bottommost_line(), self.term.last_column());
         let mut out: Vec<Match> = Vec::new();
-        while let Some(m) = self.term.search_next(&mut regex, origin, Direction::Right, GridSide::Left, None) {
-            if out.last().map_or(false, |prev| *m.start() <= *prev.start()) {
-                break;
-            }
-            let end = *m.end();
+        while let Some(m) = self.term.regex_search_left(&mut regex, origin, top_left) {
+            let start = self.term.expand_wide(*m.start(), Direction::Left);
             out.push(m);
-            if end >= end_of_grid || out.len() >= MAX_MATCHES {
+            if start == top_left || out.len() >= cap {
                 break;
             }
-            origin = if end.column < last_col { Point::new(end.line, Column(end.column.0 + 1)) } else { Point::new(Line(end.line.0 + 1), Column(0)) };
+            origin = start.sub(&self.term, Boundary::Grid, 1);
         }
+        out.reverse();
         out
     }
 
@@ -428,7 +431,7 @@ impl Terminal {
         if !w.pty_write.is_empty() {
             self.client.send(Request::Input { session: self.session, bytes: w.pty_write });
         }
-        self.refresh_find();
+        self.mark_find_stale();
         true
     }
 
@@ -796,5 +799,30 @@ mod tests {
         core.reveal_line(Line(-1));
         assert_eq!(core.display_offset(), 1, "the smallest scroll that shows it");
         assert_eq!(core.scroll.current, 1.0, "the animator lands with it, no glide");
+    }
+
+    #[test]
+    fn the_cap_keeps_the_newest_matches() {
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"ab\r\nab\r\nab\r\nab\r\nab\r\nab");
+        assert_eq!(core.history_size(), 4);
+        let m = core.search_capped("ab", 3);
+        let lines: Vec<i32> = m.iter().map(|m| m.start().line.0).collect();
+        assert_eq!(lines, vec![-1, 0, 1], "the oldest matches are the ones dropped, oldest first");
+        assert_eq!(core.search_capped("ab", 100).len(), 6);
+        assert_eq!(core.search("ab").len(), 6);
+    }
+
+    #[test]
+    fn matches_never_overlap_and_the_grid_corners_are_found() {
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"aaaa");
+        let cols: Vec<(usize, usize)> = core.search("aa").iter().map(|m| (m.start().column.0, m.end().column.0)).collect();
+        assert_eq!(cols, vec![(0, 1), (2, 3)]);
+        let mut corners = TerminalCore::new(4, 2, 100);
+        corners.apply_output(b"ab  \r\n  ab");
+        let m = corners.search("ab");
+        let ends: Vec<(i32, usize, i32, usize)> = m.iter().map(|m| (m.start().line.0, m.start().column.0, m.end().line.0, m.end().column.0)).collect();
+        assert_eq!(ends, vec![(0, 0, 0, 1), (1, 2, 1, 3)], "the first and the last cell of the grid");
     }
 }

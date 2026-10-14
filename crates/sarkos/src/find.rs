@@ -2,7 +2,7 @@
 //! `TerminalCore`, and the bar is drawn at the top right of the pane.
 use crate::keymap::tab_cycle;
 use crate::line_edit::{self, Edit, LineEdit};
-use crate::terminal::{Match, Terminal};
+use crate::terminal::{Match, Terminal, MAX_MATCHES};
 use crate::theme::Theme;
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
@@ -13,6 +13,8 @@ pub struct FindState {
     /// Index into `matches`; meaningless when empty.
     pub current: usize,
     pub focus: FocusHandle,
+    /// Output changed the grid since the last search; `refresh_find` re-runs it at most once per frame.
+    pub stale: bool,
 }
 
 /// A new query points at the newest match: what was just printed is what one looks for.
@@ -24,14 +26,16 @@ pub fn count_text(current: usize, len: usize) -> String {
     if len == 0 {
         "no matches".to_string()
     } else {
-        format!("{} of {len}", current + 1)
+        // The search keeps the newest MAX_MATCHES; at the cap there may be older ones.
+        let more = if len >= MAX_MATCHES { "+" } else { "" };
+        format!("{} of {len}{more}", current + 1)
     }
 }
 
 impl Terminal {
     pub fn open_find(&mut self, cx: &mut Context<Self>) {
         if self.find.is_none() {
-            self.find = Some(FindState { query: LineEdit::new(), matches: Vec::new(), current: 0, focus: cx.focus_handle() });
+            self.find = Some(FindState { query: LineEdit::new(), matches: Vec::new(), current: 0, focus: cx.focus_handle(), stale: false });
         }
         cx.notify();
     }
@@ -45,6 +49,7 @@ impl Terminal {
     fn find_changed(&mut self, cx: &mut Context<Self>) {
         let Some(f) = self.find.as_mut() else { return };
         f.matches = self.core.search(&f.query.text);
+        f.stale = false;
         f.current = initial_match(f.matches.len());
         if let Some(m) = f.matches.get(f.current) {
             let line = m.start().line;
@@ -53,11 +58,21 @@ impl Terminal {
         cx.notify();
     }
 
-    /// Output changed the grid: search again, keep the position, do not scroll.
-    pub fn refresh_find(&mut self) {
+    /// Output changed the grid: mark the matches stale. A burst of output batches costs one
+    /// search, in the next frame's `refresh_find`, not one per batch.
+    pub fn mark_find_stale(&mut self) {
         if let Some(f) = self.find.as_mut() {
+            f.stale = true;
+        }
+    }
+
+    /// Re-runs a stale search, keeping the position and not scrolling. Called by the bar's
+    /// render (so the count is current) and by the element's paint, whichever comes first.
+    pub fn refresh_find(&mut self) {
+        if let Some(f) = self.find.as_mut().filter(|f| f.stale) {
             f.matches = self.core.search(&f.query.text);
             f.current = f.current.min(initial_match(f.matches.len()));
+            f.stale = false;
         }
     }
 
@@ -100,11 +115,11 @@ impl Terminal {
 
 /// The bar: query, count, close. Keys go to the terminal's `find_key`; Cmd+V pastes.
 pub fn render(terminal: &Entity<Terminal>, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
-    let (query, count, focus) = {
-        let t = terminal.read(cx);
+    let (query, count, focus) = terminal.update(cx, |t, _| {
+        t.refresh_find();
         let f = t.find.as_ref()?;
-        (f.query.clone(), count_text(f.current, f.matches.len()), f.focus.clone())
-    };
+        Some((f.query.clone(), count_text(f.current, f.matches.len()), f.focus.clone()))
+    })?;
     let t_keys = terminal.clone();
     let t_close = terminal.clone();
     Some(
@@ -171,5 +186,6 @@ mod tests {
         assert_eq!(count_text(0, 0), "no matches");
         assert_eq!(count_text(0, 1), "1 of 1");
         assert_eq!(count_text(4, 5), "5 of 5");
+        assert_eq!(count_text(9_999, MAX_MATCHES), "10000 of 10000+", "a capped search says so");
     }
 }

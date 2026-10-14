@@ -144,6 +144,7 @@ impl Element for TerminalElement {
             t.last_frame = if animating || sync_open { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
+            t.refresh_find();
             let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
             (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, palette.clone())
