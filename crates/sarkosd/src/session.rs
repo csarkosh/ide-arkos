@@ -589,9 +589,11 @@ impl Session {
             id: self.id.0,
             cwd: self.cwd.clone(),
             pid: slot.pid,
-            alive: st.alive,
-            exit_code: st.exit_code,
-            exited_ago_ms: st.exited_at.map(|at| at.elapsed().as_millis() as u64),
+            // The slot may have reaped the shell (in `kill`, `is_ending` or `poll_exit`) before
+            // the state records it; the record must not call a reaped pid alive.
+            alive: st.alive && slot.exited.is_none(),
+            exit_code: st.exit_code.or(slot.exited),
+            exited_ago_ms: st.exited_at.map(|at| at.elapsed().as_millis() as u64).or(slot.exited.map(|_| 0)),
             claude: st.claude,
             last_activity_unix_ms: st.last_activity_unix_ms,
             master_fd: self.master.raw_fd(),
@@ -637,7 +639,8 @@ impl Session {
                 claude: record.claude,
             }),
             backpressure,
-            ending: AtomicBool::new(!record.alive),
+            // A pending kill drains to EOF without pausing, as it did in the old image.
+            ending: AtomicBool::new(!record.alive || record.kill_requested),
         });
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
@@ -764,6 +767,9 @@ mod tests {
         assert!(unsafe { libc::dup2(devnull.as_raw_fd(), raw) } >= 0);
         s.master.set_inheritable(false).unwrap();
         drop(no_fork);
+        // After a real exec the old image cannot reap the shell; holding its slot keeps the old
+        // reader, now at EOF, from reaping it here, so the adopted session must.
+        let _old_image_gone = s.child.lock().unwrap();
         let adopted = Session::adopt(&rec, master, 4096, Backpressure::default());
         assert!(adopted.info().alive);
         assert_eq!(adopted.info().pid, s.info().pid);
@@ -779,10 +785,10 @@ mod tests {
         adopted.kill().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while adopted.info().alive {
-            adopted.poll_exit();
             assert!(Instant::now() < deadline, "the adopted session never saw the exit");
             std::thread::sleep(Duration::from_millis(20));
         }
+        assert_eq!(adopted.state.lock().unwrap().exit_code, Some(129), "128 + SIGHUP, reaped by the adopted session");
     }
 
     #[test]
@@ -814,5 +820,34 @@ mod tests {
         rec.exited_ago_ms = Some(u64::MAX);
         let (master, _slave) = Pty::open(24, 80).unwrap();
         assert!(Session::adopt(&rec, master, 4, Backpressure::default()).exited_at().is_some());
+    }
+
+    #[test]
+    fn snapshot_records_an_exit_the_slot_reaped_before_the_state_knew() {
+        let spec = SpawnSpec {
+            id: SessionId(13),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 1024,
+            backpressure: Backpressure::default(),
+        };
+        // No reader, so nothing but this test reaps or records the exit.
+        let s = Session::spawn_for_test(spec, false).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        s.write(b"exit 3\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while s.child.lock().unwrap().try_reap() != Some(3) {
+            assert!(Instant::now() < deadline, "shell never exited");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(s.info().alive, "the state has not recorded the exit yet");
+        let rec = s.snapshot();
+        assert!(!rec.alive);
+        assert_eq!(rec.exit_code, Some(3));
+        assert_eq!(rec.exited_ago_ms, Some(0));
     }
 }
