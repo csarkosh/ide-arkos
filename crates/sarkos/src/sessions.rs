@@ -167,6 +167,16 @@ impl SessionManager {
         self.transport.send(Request::Detach { session });
         self.terminals.remove(&session);
         self.notes.remove(&session);
+        self.restoring.remove(&session);
+        self.backlog.remove(&session);
+    }
+
+    /// Gives up on a restore that failed: frees the tab and forgets the held-back events.
+    pub fn abort_restore(&mut self, session: SessionId, pane: PaneId, idx: usize) {
+        self.busy.remove(&(pane, idx));
+        self.restoring.remove(&session);
+        self.backlog.remove(&session);
+        self.notes.remove(&session);
     }
 
     pub fn pending_count(&self) -> usize {
@@ -189,7 +199,7 @@ impl SessionManager {
             }
             return Outcome::Error(e.clone());
         }
-        match (pending, response) {
+        match (pending.clone(), response.clone()) {
             (Some(Pending::List), Response::Sessions(list)) => Outcome::Sessions(list),
             (Some(Pending::Create { pane, idx, note }), Response::SessionCreated { id: session }) => {
                 self.busy.remove(&(pane, idx));
@@ -200,6 +210,10 @@ impl SessionManager {
                 Outcome::Attached { session, pane, idx, replay, alive, note }
             }
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
+            (Some(Pending::Create { pane, idx, .. }), _) | (Some(Pending::Attach { pane, idx, .. }), _) => {
+                self.busy.remove(&(pane, idx));
+                Outcome::Error(format!("unexpected response {response:?} to {pending:?}"))
+            }
             _ => Outcome::None,
         }
     }
@@ -241,6 +255,9 @@ impl SessionManager {
 
     /// Installs a restored terminal and applies everything that arrived while it was parsing.
     pub fn finish_restore(&mut self, session: SessionId, terminal: Entity<Terminal>, cx: &mut App) {
+        if self.terminals.contains_key(&session) {
+            return;
+        }
         let backlog = self.take_backlog(session);
         if !backlog.is_empty() {
             terminal.update(cx, |t, cx| {
@@ -395,6 +412,30 @@ mod tests {
         assert!(m.has_pending_for(1, 0));
         assert_eq!(m.handle_response(1, Response::Error("spawn failed".into())), Outcome::Error("spawn failed".into()));
         assert!(!m.has_pending_for(1, 0));
+    }
+
+    #[test]
+    fn a_mismatched_response_clears_the_busy_mark_and_reports() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
+        m.create(1, 0, false);
+        assert!(matches!(m.handle_response(1, Response::Attached { replay: vec![], alive: true }), Outcome::Error(_)));
+        assert!(!m.has_pending_for(1, 0));
+    }
+
+    #[test]
+    fn abort_restore_clears_busy_and_backlog() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
+        m.attach(SessionId(4), 2, 0, true);
+        m.notes.insert(SessionId(4));
+        m.begin_restore(SessionId(4));
+        assert!(m.stash_if_restoring(&Event::Output { session: SessionId(4), bytes: vec![1] }));
+        m.abort_restore(SessionId(4), 2, 0);
+        assert!(!m.has_pending_for(2, 0));
+        assert!(!m.is_restoring(SessionId(4)));
+        assert_eq!(m.backlog_len(SessionId(4)), 0);
+        assert!(!m.notes.contains(&SessionId(4)));
     }
 
     #[test]
