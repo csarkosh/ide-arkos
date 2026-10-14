@@ -9,23 +9,24 @@ use gpui::{
 };
 use std::time::Instant;
 
-pub const FONT_FAMILY: &str = "Menlo";
 pub const DEFAULT_FONT_SIZE: f32 = 16.0;
-pub const LINE_HEIGHT: f32 = 1.5;
+pub const DEFAULT_LINE_HEIGHT: f32 = 1.5;
 
-/// The height of one terminal row at `font_size`.
-pub fn cell_height(font_size: f32) -> f32 {
-    font_size * LINE_HEIGHT
+/// The height of one terminal row.
+pub fn cell_height(font_size: f32, line_height: f32) -> f32 {
+    font_size * line_height
 }
 
 pub struct TerminalElement {
     terminal: Entity<Terminal>,
     font_size: f32,
+    line_height: f32,
+    family: SharedString,
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32) -> Self {
-        Self { terminal, font_size }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString) -> Self {
+        Self { terminal, font_size, line_height, family }
     }
 }
 
@@ -33,8 +34,8 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
-fn text_run(text: &str, style: &CellStyle) -> TextRun {
-    let mut f = font(FONT_FAMILY);
+fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
+    let mut f = font(family);
     if style.bold {
         f.weight = FontWeight::BOLD;
     }
@@ -49,10 +50,10 @@ fn text_run(text: &str, style: &CellStyle) -> TextRun {
 }
 
 /// Measures the cell grid once per window scale. `W` is the widest ASCII glyph in a monospace font.
-fn measure_cell(window: &mut Window, font_size: f32) -> CellMetrics {
-    let run = TextRun { len: 1, font: font(FONT_FAMILY), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
+fn measure_cell(window: &mut Window, font_size: f32, line_height: f32, family: SharedString) -> CellMetrics {
+    let run = TextRun { len: 1, font: font(family), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
     let layout = window.text_system().layout_line("W", px(font_size), &[run], None);
-    CellMetrics { width: f32::from(layout.width), height: cell_height(font_size) }
+    CellMetrics { width: f32::from(layout.width), height: cell_height(font_size, line_height) }
 }
 
 /// The cell grid that fits `bounds` at `cell`, as (cols, rows).
@@ -64,8 +65,8 @@ fn grid_in(bounds: Bounds<Pixels>, cell: CellMetrics) -> (usize, usize) {
 
 /// The grid a terminal element in `bounds` would size itself to. The window measures with this
 /// before a terminal exists, so a replay can be parsed at the size it will be shown at.
-pub fn grid_for(bounds: Bounds<Pixels>, window: &mut Window, font_size: f32) -> (usize, usize) {
-    grid_in(bounds, measure_cell(window, font_size))
+pub fn grid_for(bounds: Bounds<Pixels>, window: &mut Window, font_size: f32, line_height: f32, family: &str) -> (usize, usize) {
+    grid_in(bounds, measure_cell(window, font_size, line_height, family.to_string().into()))
 }
 
 /// Splits a scroll position into alacritty's integer display offset and the fraction of a line
@@ -114,7 +115,7 @@ impl Element for TerminalElement {
     }
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> Prepaint {
-        let cell = measure_cell(window, self.font_size);
+        let cell = measure_cell(window, self.font_size, self.line_height, self.family.clone());
         let (cols, rows) = grid_in(bounds, cell);
         self.terminal.update(cx, |t, _| {
             t.cell = Some(cell);
@@ -162,7 +163,7 @@ impl Element for TerminalElement {
                         continue;
                     }
                     let text: SharedString = run.text.clone().into();
-                    let line = window.text_system().shape_line(text, px(self.font_size), &[text_run(&run.text, &run.style)], None);
+                    let line = window.text_system().shape_line(text, px(self.font_size), &[text_run(&run.text, &run.style, self.family.clone())], None);
                     let _ = line.paint(point(x, y), lh, window, cx);
                     if run.style.underline {
                         let uy = y + lh - px(2.0);
@@ -198,6 +199,16 @@ impl Element for TerminalElement {
 #[cfg(test)]
 mod tests {
     use super::{frame_dt, split_offset};
+
+    #[test]
+    fn cell_height_follows_the_preset() {
+        use super::cell_height;
+        // f32 products of the decimal line heights are not exact.
+        for (size, lh, want) in [(16.0, 1.5, 24.0), (14.0, 1.3, 18.2), (18.0, 1.6, 28.8)] {
+            assert!((cell_height(size, lh) - want).abs() < 1e-4, "{size} x {lh}");
+        }
+    }
+
     use crate::scroll::ScrollAnimator;
     use std::time::{Duration, Instant};
 

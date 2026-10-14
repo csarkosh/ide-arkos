@@ -2,7 +2,7 @@
 //! project path, daemon status, session count and the count of sessions waiting on the user.
 
 use crate::theme::Theme;
-use gpui::{div, prelude::*, px, Div};
+use gpui::{div, prelude::*, px, Div, SharedString};
 use std::path::Path;
 
 pub const TOP_BAR_H: f32 = 30.0;
@@ -21,7 +21,7 @@ pub fn status_text(sessions: usize, waiting: usize) -> String {
     }
 }
 
-pub fn top_bar(project_name: &str, theme: &Theme) -> Div {
+pub fn top_bar(project_name: &str, family: SharedString, theme: &Theme) -> Div {
     div()
         .h(px(TOP_BAR_H))
         .w_full()
@@ -31,12 +31,12 @@ pub fn top_bar(project_name: &str, theme: &Theme) -> Div {
         .justify_center()
         .bg(theme.chrome.title_bar.hsla())
         .text_color(theme.chrome.text.hsla())
-        .font_family("Menlo")
+        .font_family(family)
         .text_size(px(13.0))
         .child(project_name.to_string())
 }
 
-pub fn status_bar(project: &Path, daemon: &str, sessions: usize, waiting: usize, theme: &Theme) -> Div {
+pub fn status_bar(project: &Path, daemon: &str, sessions: usize, waiting: usize, family: SharedString, theme: &Theme) -> Div {
     div()
         .h(px(STATUS_BAR_H))
         .w_full()
@@ -47,7 +47,7 @@ pub fn status_bar(project: &Path, daemon: &str, sessions: usize, waiting: usize,
         .px(px(10.0))
         .bg(theme.chrome.status_bar.hsla())
         .text_color(theme.chrome.text_dim.hsla())
-        .font_family("Menlo")
+        .font_family(family)
         .text_size(px(12.0))
         .child(project.display().to_string())
         .child(div().flex().gap(px(16.0)).child(daemon.to_string()).child(status_text(sessions, waiting)))

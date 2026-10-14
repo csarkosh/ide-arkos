@@ -9,7 +9,7 @@ use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
     canvas, div, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollDelta, ScrollWheelEvent, Stateful, Window,
+    MouseDownEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
@@ -51,7 +51,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
-            Some(terminal) => render_terminal(terminal, &theme, cx),
+            Some(terminal) => render_terminal(terminal, root.family(), &theme, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
@@ -59,10 +59,11 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // Every pane measures the grid a terminal would get, whatever it shows, so a restore into
     // any of its tabs always gets a size (it paints nothing).
     let weak = cx.weak_entity();
-    let font_size = root.font_size;
+    let (font_size, line_height) = (root.font_size, root.line_height);
+    let family = root.config.font.family.clone();
     let measure = canvas(
         move |bounds, window, cx| {
-            let grid = grid_for(bounds, window, font_size);
+            let grid = grid_for(bounds, window, font_size, line_height, &family);
             let _ = weak.update(cx, |root, _| root.report_grid(pane, grid));
         },
         |_, _, _, _| {},
@@ -133,7 +134,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
         .items_center()
         .bg(c.tab_bar.hsla())
         .text_color(fg.hsla())
-        .font_family("Menlo")
+        .font_family(root.family())
         .text_size(px(12.0))
         .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -176,6 +177,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             position: Default::default(),
             bg: c.banner,
             fg,
+            family: root.family(),
         });
         bar = bar.child(
             div()
@@ -226,9 +228,12 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
     )
 }
 
-fn render_terminal(terminal: Entity<Terminal>, theme: &Theme, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &Theme, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
-    let font_size = terminal.read(cx).font_size;
+    let (font_size, line_height) = {
+        let t = terminal.read(cx);
+        (t.font_size, t.line_height)
+    };
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
@@ -267,7 +272,7 @@ fn render_terminal(terminal: Entity<Terminal>, theme: &Theme, cx: &mut Context<R
                 t.scroll_lines(lines, cx);
             });
         }))
-        .child(TerminalElement::new(terminal.clone(), font_size))
+        .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone()))
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
             div()
@@ -280,7 +285,7 @@ fn render_terminal(terminal: Entity<Terminal>, theme: &Theme, cx: &mut Context<R
                 .rounded(px(10.0))
                 .bg(theme.chrome.banner.hsla())
                 .text_color(theme.chrome.text.hsla())
-                .font_family("Menlo")
+                .font_family(family)
                 .text_size(px(12.0))
                 .cursor_pointer()
                 .child("jump to bottom")
@@ -299,7 +304,7 @@ fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Conte
         .size_full()
         .relative()
         .track_focus(&focus)
-        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(dim.hsla()).font_family("Menlo").text_size(px(font_size)).child(text))
+        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(dim.hsla()).font_family(root.family()).text_size(px(font_size)).child(text))
 }
 
 /// The friendly empty state (spec 4).

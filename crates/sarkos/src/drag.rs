@@ -3,7 +3,7 @@
 
 use crate::palette::Rgb;
 use crate::tree::{PaneId, TabId};
-use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, Window};
+use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, SharedString, Window};
 
 /// What a tab drag carries. `tab` is the tab's stable id: the drop re-locates the tab by it, so
 /// `pane` and `idx` (where the drag started) only describe the start.
@@ -17,6 +17,7 @@ pub struct TabDrag {
     /// The chip's colours, from the theme where the drag started.
     pub bg: Rgb,
     pub fg: Rgb,
+    pub family: SharedString,
 }
 
 impl TabDrag {
@@ -35,7 +36,7 @@ impl Render for TabDrag {
                 .py(px(4.0))
                 .bg(self.bg.hsla())
                 .text_color(self.fg.hsla())
-                .font_family("Menlo")
+                .font_family(self.family.clone())
                 .text_size(px(12.0))
                 .opacity(0.9)
                 .child(self.label.clone()),

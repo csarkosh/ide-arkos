@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 /// Layout changes within this window collapse into one write.
 pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -19,6 +19,10 @@ pub struct Workspace {
     pub version: u32,
     pub project: PathBuf,
     pub tree: Tree,
+    /// The text preset this workspace last used (spec 7: a 2x2 grid and a single pane want
+    /// different sizes). Absent in milestone 2a files.
+    #[serde(default)]
+    pub text_preset: Option<String>,
 }
 
 /// Milestone 1 wrote `{ "sessions": [id] }`: one session, no layout.
@@ -78,7 +82,7 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
         Ok(v1) => {
             let session = v1.sessions.first().map(|id| SessionId(*id))?;
             eprintln!("sarkos: migrating milestone 1 workspace {}", file.display());
-            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session }) })
+            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session }), text_preset: None })
         }
         Err(e) => {
             eprintln!("sarkos: ignoring corrupt workspace {}: {e}", file.display());
@@ -219,6 +223,26 @@ pub fn flush_now(queue: &SharedSaveQueue) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_preset_is_saved_and_a_v2_file_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ws.json");
+        let project = Path::new("/p");
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: Some("relaxed".into()) };
+        save_to(&file, &ws).unwrap();
+        assert_eq!(load_from(&file, project), Some(ws.clone()));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"text_preset\": \"relaxed\""), "{text}");
+        // A milestone 2a file has no preset: the config default applies.
+        let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        json.as_object_mut().unwrap().remove("text_preset");
+        json["version"] = 2.into();
+        std::fs::write(&file, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        ws.text_preset = None;
+        ws.version = 2;
+        assert_eq!(load_from(&file, project), Some(ws));
+    }
     use crate::tree::Side;
 
     fn tree_with_two() -> Tree {
@@ -234,7 +258,7 @@ mod tests {
         let file = dir.path().join("ws.json");
         let project = Path::new("/projects/x");
         assert_eq!(load_from(&file, project), None);
-        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two() };
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
     }
@@ -300,7 +324,7 @@ mod tests {
     fn save_leaves_no_temp_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("workspaces").join("ws.json");
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two() };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None };
         save_to(&file, &ws).unwrap();
         save_to(&file, &ws).unwrap();
         let names: Vec<String> = std::fs::read_dir(file.parent().unwrap())
@@ -315,15 +339,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, "").unwrap();
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two() };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None };
         assert!(save_to(&blocker.join("ws.json"), &ws).is_err());
     }
 
     #[test]
     fn save_queue_coalesces_until_taken() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two() };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two() };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None };
         assert!(q.offer(a.clone()), "first offer schedules a flush");
         assert!(!q.offer(b.clone()), "a flush is already pending");
         assert_eq!(q.take().map(|j| j.ws), Some(b.clone()), "the latest offer wins");
@@ -337,8 +361,8 @@ mod tests {
     #[test]
     fn writes_never_go_back_a_generation() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two() };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two() };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None };
         q.offer(a);
         let old = q.take().unwrap();
         q.offer(b);

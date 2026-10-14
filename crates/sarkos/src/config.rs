@@ -363,9 +363,30 @@ light = "navy-light"
 mode = "system"
 "##;
 
+/// The preset a workspace uses: what it saved, else the config's default, else comfortable.
+pub fn resolve_preset(saved: Option<&str>, default: &str, presets: &BTreeMap<String, TextPreset>) -> (String, TextPreset) {
+    for name in saved.into_iter().chain([default, "comfortable"]) {
+        if let Some(p) = presets.get(name) {
+            return (name.to_string(), *p);
+        }
+    }
+    (default.to_string(), BUILTIN_PRESETS[1].1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workspace_preset_wins_then_the_config_default_then_comfortable() {
+        let presets = Config::default().font.presets;
+        assert_eq!(resolve_preset(Some("relaxed"), "comfortable", &presets).0, "relaxed");
+        assert_eq!(resolve_preset(Some("gone"), "compact", &presets).0, "compact");
+        assert_eq!(resolve_preset(None, "compact", &presets), ("compact".to_string(), TextPreset { size: 14.0, line_height: 1.3 }));
+        assert_eq!(resolve_preset(None, "gone", &presets).0, "comfortable");
+        let none = BTreeMap::new();
+        assert_eq!(resolve_preset(None, "gone", &none), ("gone".to_string(), TextPreset { size: 16.0, line_height: 1.5 }));
+    }
 
     #[test]
     fn the_default_file_parses_to_the_defaults() {

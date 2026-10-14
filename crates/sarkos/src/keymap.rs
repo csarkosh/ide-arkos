@@ -42,6 +42,8 @@ pub enum Command {
     ClearScrollback,
     FontDelta(f32),
     OpenConfig,
+    /// Switch every terminal to the named text preset (the palette runs it).
+    TextPreset(String),
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space

@@ -68,6 +68,9 @@ pub struct Root {
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
+    pub line_height: f32,
+    /// The name of the text preset in use; saved with the workspace.
+    pub text_preset: String,
     /// The area the tree is laid out in, in window pixels, from the last render.
     pub content: Rect,
     /// Pane ids in reading order (the tab bar numbers), computed once per render.
@@ -104,6 +107,7 @@ impl Root {
     fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool) -> Self {
         // A fresh workspace starts with one pane holding a placeholder session that the launch
         // replaces with a real shell (reconcile sees it is not in the daemon's list).
+        let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
         Self {
             tree,
@@ -115,7 +119,9 @@ impl Root {
             grid_waiters: HashMap::new(),
             pane_focus: HashMap::new(),
             resizing: None,
-            font_size: terminal_element::DEFAULT_FONT_SIZE,
+            font_size: preset.size,
+            line_height: preset.line_height,
+            text_preset,
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
             pane_order: Vec::new(),
             closed: ClosedStack::default(),
@@ -165,12 +171,36 @@ impl Root {
         }
     }
 
+    pub fn family(&self) -> gpui::SharedString {
+        self.config.font.family.clone().into()
+    }
+
+    /// Switches every terminal to a preset (spec 7). Per-terminal nudges from Cmd+= are reset.
+    pub fn apply_text_preset(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(p) = self.config.font.presets.get(name).copied() else { return false };
+        self.text_preset = name.to_string();
+        self.font_size = p.size;
+        self.line_height = p.line_height;
+        for t in self.sessions.terminals.values() {
+            t.update(cx, |t, cx| {
+                t.font_size = p.size;
+                t.line_height = p.line_height;
+                cx.notify();
+            });
+        }
+        // Panes re-measure at the new cell size before any restore trusts a grid.
+        self.grids.clear();
+        self.save(cx);
+        cx.notify();
+        true
+    }
+
     pub fn layout(&self) -> tree::Layout {
         self.tree.layout(self.content)
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()) };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -544,6 +574,9 @@ impl Root {
                 }
             }
             OpenConfig => self.open_config(cx),
+            TextPreset(name) => {
+                self.apply_text_preset(&name, cx);
+            }
         }
         let _ = window;
     }
@@ -664,6 +697,7 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
             t.alive = alive;
             t.title = title.unwrap_or_default();
             t.font_size = root.font_size;
+            t.line_height = root.line_height;
             t
         });
         root.sessions.finish_restore(session, terminal, cx);
@@ -717,7 +751,8 @@ impl Render for Root {
         let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
         let daemon = if self.status.is_empty() { "sarkosd connected" } else { "sarkosd: see banner" };
-        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, &theme);
+        let family = self.family();
+        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
             .size_full()
             .key_context("Root")
@@ -763,8 +798,8 @@ impl Render for Root {
                     }
                 }),
             )
-            .child(chrome::top_bar(&project_name, &theme))
-            .children(banners.into_iter().map(|text| banner_bar(text, &theme)))
+            .child(chrome::top_bar(&project_name, family.clone(), &theme))
+            .children(banners.into_iter().map(|text| banner_bar(text, family.clone(), &theme)))
             .child(div().flex_1().min_h_0().child(body))
             .child(status_bar);
         keymap::attach(root_div, cx)
@@ -782,7 +817,7 @@ fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, client: &client::
     workspace::flush_now(queue);
 }
 
-fn banner_bar(text: String, theme: &theme::Theme) -> Div {
+fn banner_bar(text: String, family: gpui::SharedString, theme: &theme::Theme) -> Div {
     div()
         .w_full()
         .h(px(BANNER_H))
@@ -792,7 +827,7 @@ fn banner_bar(text: String, theme: &theme::Theme) -> Div {
         .items_center()
         .bg(theme.chrome.banner.hsla())
         .text_color(theme.chrome.text.hsla())
-        .font_family(terminal_element::FONT_FAMILY)
+        .font_family(family)
         .text_size(px(13.0))
         .child(text)
 }
