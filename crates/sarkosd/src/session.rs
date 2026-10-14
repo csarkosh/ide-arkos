@@ -1,10 +1,9 @@
 //! One pseudo-terminal, its shell, its replay buffer and its subscribers.
+use crate::pty::{self, Pty};
 use crate::ring::RingBuffer;
 use anyhow::{Context, Result};
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use protocol::{ClaudeState, Event, Response, ServerMessage, SessionId, SessionInfo};
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -249,11 +248,11 @@ pub struct SpawnSpec {
     pub backpressure: Backpressure,
 }
 
-/// The shell process and, once reaped, its exit code. A reaped pid may be reused by any other
+/// The shell's pid and, once reaped, its exit code. A reaped pid may be reused by any other
 /// process, so every signal and every wait goes through here and nothing touches the pid after
-/// `exited` is set.
+/// `exited` is set. Held by pid, not `std::process::Child`, so it survives the handover's exec.
 struct ChildSlot {
-    child: Box<dyn Child + Send + Sync>,
+    pid: libc::pid_t,
     exited: Option<i32>,
     /// When `kill` sent SIGHUP; the reaper escalates to SIGKILL if the shell ignores it.
     kill_requested_at: Option<Instant>,
@@ -263,8 +262,10 @@ impl ChildSlot {
     /// Non-blocking. Reaps the child if it has exited and remembers the code.
     fn try_reap(&mut self) -> Option<i32> {
         if self.exited.is_none() {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                self.exited = Some(status.exit_code() as i32);
+            match pty::wait_nohang(self.pid) {
+                Some(-1) => self.exited = Some(-1), // not our child any more: treat as gone
+                Some(code) => self.exited = Some(code),
+                None => {}
             }
         }
         self.exited
@@ -274,7 +275,12 @@ impl ChildSlot {
 pub struct Session {
     pub id: SessionId,
     cwd: PathBuf,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    /// Shared with the reader and writer threads. No lock: each call goes straight to the
+    /// kernel, only the reader reads and only the writer writes.
+    master: Arc<Pty>,
+    /// The last size set, which the handover records.
+    #[allow(dead_code)] // read by the handover snapshot (Task 2 of updating in place)
+    size: Mutex<(u16, u16)>,
     input: Mutex<Sender<Vec<u8>>>,
     child: Mutex<ChildSlot>,
     pid: Option<u32>,
@@ -309,48 +315,32 @@ impl Session {
     }
 
     fn spawn_inner(spec: SpawnSpec, start_reader: bool) -> Result<Arc<Session>> {
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize { rows: spec.rows, cols: spec.cols, pixel_width: 0, pixel_height: 0 })
-            .context("openpty")?;
-        let shell = spec
-            .shell
-            .clone()
-            .or_else(|| std::env::var("SHELL").ok())
-            .unwrap_or_else(|| "/bin/zsh".to_string());
-        let mut cmd = CommandBuilder::new(&shell);
-        if shell.ends_with("zsh") || shell.ends_with("bash") {
-            cmd.arg("-l");
-        }
-        cmd.cwd(&spec.cwd);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        cmd.env("SARKOS_SESSION_ID", spec.id.0.to_string());
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
-        let child = pair.slave.spawn_command(cmd).context("spawn shell")?;
-        drop(pair.slave);
-        let pid = child.process_id();
+        let (master, slave) = Pty::open(spec.rows, spec.cols).context("openpty")?;
+        let shell = spec.shell.clone().or_else(|| std::env::var("SHELL").ok()).unwrap_or_else(|| "/bin/zsh".to_string());
+        let args: Vec<&str> = if shell.ends_with("zsh") || shell.ends_with("bash") { vec!["-l"] } else { vec![] };
+        let mut env = vec![
+            ("TERM".to_string(), "xterm-256color".to_string()),
+            ("COLORTERM".to_string(), "truecolor".to_string()),
+            ("SARKOS_SESSION_ID".to_string(), spec.id.0.to_string()),
+        ];
+        env.extend(spec.env.iter().cloned());
+        let pid = pty::spawn(slave, &shell, &args, &spec.cwd, &env).context("spawn shell")?;
         if spec.nice != 0 {
-            if let Some(pid) = pid {
-                // Children of the shell inherit the priority (spec 2.5).
-                unsafe {
-                    libc::setpriority(libc::PRIO_PROCESS, pid, spec.nice);
-                }
-            }
+            // Children of the shell inherit the priority (spec 2.5).
+            // SAFETY: setpriority takes plain integers; the pid is our unreaped child.
+            unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, spec.nice) };
         }
-        let reader = pair.master.try_clone_reader().context("clone reader")?;
-        let writer = pair.master.take_writer().context("take writer")?;
+        let master = Arc::new(master);
         let (input_tx, input_rx) = channel::<Vec<u8>>();
-        Self::start_writer(spec.id, writer, input_rx);
+        Self::start_writer(spec.id, master.clone(), input_rx);
         let session = Arc::new(Session {
             id: spec.id,
             cwd: spec.cwd,
-            master: Mutex::new(pair.master),
+            master,
+            size: Mutex::new((spec.rows, spec.cols)),
             input: Mutex::new(input_tx),
-            child: Mutex::new(ChildSlot { child, exited: None, kill_requested_at: None }),
-            pid,
+            child: Mutex::new(ChildSlot { pid, exited: None, kill_requested_at: None }),
+            pid: Some(pid as u32),
             state: Mutex::new(SessionState {
                 replay: RingBuffer::new(spec.replay_capacity),
                 subscribers: HashMap::new(),
@@ -364,27 +354,43 @@ impl Session {
             ending: AtomicBool::new(false),
         });
         if start_reader {
-            Self::start_reader(session.clone(), reader);
+            Self::start_reader(session.clone());
         } else {
             // Tests only: drain and discard output like the real reader, but never record the
             // exit, so the test can drive `poll_exit` itself.
-            let mut reader = reader;
+            let master = session.master.clone();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
-                while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+                loop {
+                    match master.read_ready(Duration::from_millis(50)) {
+                        Ok(false) => continue,
+                        Ok(true) => {}
+                        Err(_) => break,
+                    }
+                    if !matches!(master.read(&mut buf), Ok(n) if n > 0) {
+                        break;
+                    }
+                }
             });
         }
         Ok(session)
     }
 
-    /// Reads PTY output forever. On EOF the shell has exited: record the exit and tell subscribers.
-    fn start_reader(session: Arc<Session>, mut reader: Box<dyn Read + Send>) {
+    /// Reads PTY output until EOF, when the shell has exited: record the exit and tell
+    /// subscribers. It waits for output in 50 ms polls rather than one blocking read, so a later
+    /// change can park it between reads.
+    fn start_reader(session: Arc<Session>) {
         std::thread::Builder::new()
             .name(format!("pty-reader-{}", session.id.0))
             .spawn(move || {
                 let mut buf = vec![0u8; 64 * 1024];
                 loop {
-                    match reader.read(&mut buf) {
+                    match session.master.read_ready(Duration::from_millis(50)) {
+                        Ok(false) => continue,
+                        Ok(true) => {}
+                        Err(_) => break,
+                    }
+                    match session.master.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             session.on_output(&buf[..n]);
@@ -404,12 +410,12 @@ impl Session {
     }
 
     /// Owns the PTY's write side so a blocked write never stalls the dispatch path.
-    fn start_writer(id: SessionId, mut writer: Box<dyn Write + Send>, rx: std::sync::mpsc::Receiver<Vec<u8>>) {
+    fn start_writer(id: SessionId, master: Arc<Pty>, rx: std::sync::mpsc::Receiver<Vec<u8>>) {
         std::thread::Builder::new()
             .name(format!("pty-writer-{}", id.0))
             .spawn(move || {
                 while let Ok(bytes) = rx.recv() {
-                    if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
+                    if master.write_all(&bytes).is_err() {
                         break;
                     }
                 }
@@ -498,11 +504,10 @@ impl Session {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master
-            .lock()
-            .unwrap()
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .context("resize pty")
+        let mut size = self.size.lock().unwrap();
+        self.master.resize(rows, cols).context("resize pty")?;
+        *size = (rows, cols);
+        Ok(())
     }
 
     /// Ends the shell. The exit check and the signal happen under the same lock, so a child that
@@ -512,19 +517,14 @@ impl Session {
         if slot.try_reap().is_some() {
             return Ok(());
         }
-        // Not `child.kill()`: portable-pty blocks up to 200 ms in it, which would stall the reaper
-        // and the reader behind this lock. SIGKILL follows from `escalate_kill` if SIGHUP is ignored.
-        let killed = match slot.child.process_id() {
-            // SAFETY: the pid is unreaped (the slot has not reaped it and nothing else waits on
-            // it), so it still names our child.
-            Some(pid) => {
-                if unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) } == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error()).context("kill child")
-                }
-            }
-            None => Err(anyhow::anyhow!("kill child: no pid")),
+        // SIGHUP, as a closing terminal would send; SIGKILL follows from `escalate_kill` if the
+        // shell ignores it.
+        // SAFETY: the pid is unreaped (the slot has not reaped it and nothing else waits on it),
+        // so it still names our child.
+        let killed = if unsafe { libc::kill(slot.pid, libc::SIGHUP) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error()).context("kill child")
         };
         slot.kill_requested_at = Some(Instant::now());
         drop(slot);
@@ -544,13 +544,11 @@ impl Session {
         if at.elapsed() < Duration::from_secs(1) || slot.try_reap().is_some() {
             return;
         }
-        if let Some(pid) = slot.child.process_id() {
-            // SAFETY: as in `kill`, the slot has not reaped the pid, so it is still our child.
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-            // Once per request: the reaper sees the exit next pass.
-            slot.kill_requested_at = None;
-            eprintln!("sarkosd: session {} did not exit after SIGHUP, sent SIGKILL", self.id.0);
-        }
+        // SAFETY: as in `kill`, the slot has not reaped the pid, so it is still our child.
+        unsafe { libc::kill(slot.pid, libc::SIGKILL) };
+        // Once per request: the reaper sees the exit next pass.
+        slot.kill_requested_at = None;
+        eprintln!("sarkosd: session {} did not exit after SIGHUP, sent SIGKILL", self.id.0);
     }
 
     pub fn set_state(&self, state: ClaudeState) {

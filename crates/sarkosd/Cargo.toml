@@ -10,7 +10,6 @@ serde.workspace = true
 postcard.workspace = true
 anyhow.workspace = true
 libc.workspace = true
-portable-pty = "0.9"
 
 [dev-dependencies]
 tempfile.workspace = true

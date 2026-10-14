@@ -1,3 +1,4 @@
+mod pty;
 mod reaper;
 mod ring;
 mod server;
