@@ -385,10 +385,13 @@ nice = 0
 # "update now" = ""
 # "start at login" = ""
 # "install claude code hooks" = ""
+# "toggle sidebar" = "cmd-b"
+# "focus file tree" = "cmd-shift-e"
+# "show ignored files" = ""
 # "quit" = "cmd-q"
 
 [sidebar]
-# Milestone 4. Width in px and whether it starts collapsed.
+# Width in px and whether it starts collapsed, for a folder opened for the first time; each folder then remembers its own.
 width = 260.0
 collapsed = false
 

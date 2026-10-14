@@ -23,6 +23,19 @@ pub struct Workspace {
     /// different sizes). Absent in milestone 2a files.
     #[serde(default)]
     pub text_preset: Option<String>,
+    #[serde(default)]
+    pub sidebar: Option<SidebarSaved>,
+}
+
+/// The sidebar as the user left it for this folder (spec 4: "sidebar width and collapsed
+/// states" are saved). Absent in files from before milestone 4.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SidebarSaved {
+    pub width: f32,
+    pub collapsed: bool,
+    pub show_ignored: bool,
+    /// Expanded directories, absolute, so the tree reopens as it was.
+    pub expanded: Vec<PathBuf>,
 }
 
 /// Milestone 1 wrote `{ "sessions": [id] }`: one session, no layout.
@@ -82,7 +95,7 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
         Ok(v1) => {
             let session = v1.sessions.first().map(|id| SessionId(*id))?;
             eprintln!("sarkos: migrating milestone 1 workspace {}", file.display());
-            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session }), text_preset: None })
+            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session }), text_preset: None, sidebar: None })
         }
         Err(e) => {
             eprintln!("sarkos: ignoring corrupt workspace {}: {e}", file.display());
@@ -229,7 +242,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: Some("relaxed".into()) };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: Some("relaxed".into()), sidebar: None };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws.clone()));
         let text = std::fs::read_to_string(&file).unwrap();
@@ -253,12 +266,28 @@ mod tests {
     }
 
     #[test]
+    fn the_sidebar_state_round_trips_and_is_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ws.json");
+        let project = Path::new("/p");
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None };
+        save_to(&file, &ws).unwrap();
+        assert_eq!(load_from(&file, project), Some(ws.clone()));
+        ws.sidebar = Some(SidebarSaved { width: 300.0, collapsed: true, show_ignored: true, expanded: vec![PathBuf::from("/p/src")] });
+        save_to(&file, &ws).unwrap();
+        assert_eq!(load_from(&file, project), Some(ws));
+        // A milestone 3 file has no sidebar object.
+        std::fs::write(&file, r#"{ "version": 2, "project": "/p", "tree": { "root": { "Leaf": { "id": 1, "tabs": [], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
+        assert_eq!(load_from(&file, project).unwrap().sidebar, None);
+    }
+
+    #[test]
     fn round_trips_a_layout() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/projects/x");
         assert_eq!(load_from(&file, project), None);
-        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None };
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
     }
@@ -324,7 +353,7 @@ mod tests {
     fn save_leaves_no_temp_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("workspaces").join("ws.json");
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None, sidebar: None };
         save_to(&file, &ws).unwrap();
         save_to(&file, &ws).unwrap();
         let names: Vec<String> = std::fs::read_dir(file.parent().unwrap())
@@ -339,15 +368,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, "").unwrap();
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None, sidebar: None };
         assert!(save_to(&blocker.join("ws.json"), &ws).is_err());
     }
 
     #[test]
     fn save_queue_coalesces_until_taken() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None, sidebar: None };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None, sidebar: None };
         assert!(q.offer(a.clone()), "first offer schedules a flush");
         assert!(!q.offer(b.clone()), "a flush is already pending");
         assert_eq!(q.take().map(|j| j.ws), Some(b.clone()), "the latest offer wins");
@@ -361,8 +390,8 @@ mod tests {
     #[test]
     fn writes_never_go_back_a_generation() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None, sidebar: None };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None, sidebar: None };
         q.offer(a);
         let old = q.take().unwrap();
         q.offer(b);

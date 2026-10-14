@@ -148,6 +148,8 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
 | Cmd+F | find in the terminal |
+| Cmd+B | toggle the sidebar |
+| Shift+Cmd+E | focus the file tree |
 | Cmd+, | open config file |
 | Shift+Cmd+P | command palette |
 
@@ -166,8 +168,8 @@ Notes:
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
-- Cmd+B, Shift+Cmd+E and Ctrl+Shift+G arrive with the sidebar in milestone 4. Every binding can
-  be changed in the config file; see Config.
+- Ctrl+Shift+G arrives with the worktree explorer in milestone 4b. Every binding can be
+  changed in the config file; see Config.
 
 ## Config
 

@@ -19,7 +19,8 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Find, UpdateNow, StartAtLogin, InstallHooks, Quit
+        OpenConfig, CommandPalette, Find, UpdateNow, StartAtLogin, InstallHooks,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, Quit
     ]
 );
 
@@ -62,6 +63,12 @@ pub enum Command {
     StartAtLogin,
     /// Merge the Claude Code hook entries into its settings file.
     InstallHooks,
+    /// Collapse or show the sidebar.
+    ToggleSidebar,
+    /// Put keyboard focus in the file tree.
+    FocusFileTree,
+    /// Flip whether ignored entries are listed, dimmed.
+    ShowIgnoredFiles,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -105,6 +112,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("update now", ""),
     row("start at login", ""),
     row("install claude code hooks", ""),
+    row("toggle sidebar", "cmd-b"),
+    row("focus file tree", "cmd-shift-e"),
+    row("show ignored files", ""),
     row("quit", "cmd-q"),
 ];
 
@@ -150,6 +160,9 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "update now" => KeyBinding::new(keys, UpdateNow, context),
         "start at login" => KeyBinding::new(keys, StartAtLogin, context),
         "install claude code hooks" => KeyBinding::new(keys, InstallHooks, context),
+        "toggle sidebar" => KeyBinding::new(keys, ToggleSidebar, context),
+        "focus file tree" => KeyBinding::new(keys, FocusFileTree, context),
+        "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -305,6 +318,9 @@ pub fn command_for(name: &str) -> Option<Command> {
         "update now" => Command::UpdateNow,
         "start at login" => Command::StartAtLogin,
         "install claude code hooks" => Command::InstallHooks,
+        "toggle sidebar" => Command::ToggleSidebar,
+        "focus file tree" => Command::FocusFileTree,
+        "show ignored files" => Command::ShowIgnoredFiles,
         _ => return None,
     })
 }
@@ -345,6 +361,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
         UpdateNow => Command::UpdateNow, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
+        ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
     )
 }
 
@@ -382,6 +399,9 @@ mod tests {
         ("", "update now", "UpdateNow"),
         ("", "start at login", "StartAtLogin"),
         ("", "install claude code hooks", "InstallHooks"),
+        ("cmd-b", "toggle sidebar", "ToggleSidebar"),
+        ("cmd-shift-e", "focus file tree", "FocusFileTree"),
+        ("", "show ignored files", "ShowIgnoredFiles"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -425,7 +445,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 4, "an empty string unbinds, and update now, start at login and install hooks have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 5, "an empty string unbinds, and update now, start at login, install hooks and show ignored files have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "sarkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "sarkos::FontBigger"));
@@ -434,7 +454,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 3, "only update now, start at login and install hooks are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 4, "only update now, start at login, install hooks and show ignored files are unbound by default");
     }
 
     #[test]

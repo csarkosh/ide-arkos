@@ -8,6 +8,7 @@ mod config_watch;
 mod connection;
 mod drag;
 mod empty_pane;
+mod explorer;
 mod find;
 mod hook_cli;
 mod keys;
@@ -23,6 +24,7 @@ mod pulse;
 mod scroll;
 mod split_view;
 mod sessions;
+mod sidebar;
 mod terminal;
 mod terminal_element;
 mod theme;
@@ -44,7 +46,7 @@ use std::time::{Duration, Instant};
 use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
-use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
+use workspace::{request_save, SharedSaveQueue, SidebarSaved, Workspace, FORMAT_VERSION};
 use keymap::Quit;
 
 const BANNER_H: f32 = 28.0;
@@ -132,6 +134,13 @@ pub struct Root {
     pub pane_focus: HashMap<PaneId, FocusHandle>,
     /// A split handle being dragged: the split, its orientation, and the split's bounds.
     pub resizing: Option<(SplitId, Orientation, Rect)>,
+    /// The left column (Cmd+B); its width and collapsed state are saved with the workspace.
+    pub sidebar: sidebar::Sidebar,
+    /// The sidebar's right edge is being dragged.
+    pub sidebar_resizing: bool,
+    /// Keyboard focus is in the file tree (Shift+Cmd+E) rather than the focused pane. Focusing
+    /// a pane or a tab hands it back.
+    pub sidebar_focused: bool,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -216,9 +225,14 @@ fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
 }
 
 impl Root {
-    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool) -> Self {
+    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool, cx: &mut Context<Self>) -> Self {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
+        // The folder's own sidebar when it saved one, else the config's defaults.
+        let sidebar = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
+            Some(s) => sidebar::Sidebar::new(s.width, s.collapsed, s.show_ignored, cx),
+            None => sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, false, cx),
+        };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
@@ -238,6 +252,9 @@ impl Root {
             grid_waiters: HashMap::new(),
             pane_focus: HashMap::new(),
             resizing: None,
+            sidebar,
+            sidebar_resizing: false,
+            sidebar_focused: false,
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -384,7 +401,8 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()) };
+        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.sidebar.show_ignored, expanded: Vec::new() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar) };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -465,6 +483,7 @@ impl Root {
 
     /// Focuses a pane, exiting another pane's maximize so the focused pane is on screen.
     pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        self.sidebar_focused = false;
         if self.tree.pane(pane).is_none() {
             return;
         }
@@ -492,6 +511,7 @@ impl Root {
     }
 
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
+        self.sidebar_focused = false;
         self.tree.activate(pane, idx);
         self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
@@ -664,7 +684,7 @@ impl Root {
             return;
         }
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path());
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.sidebar.show_ignored);
         self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
         cx.notify();
     }
@@ -935,6 +955,31 @@ impl Root {
                     let _ = root.update(cx, |root, cx| root.show_notice(text, cx));
                 })
                 .detach();
+            }
+            ToggleSidebar => {
+                self.sidebar.collapsed = !self.sidebar.collapsed;
+                // A hidden tree cannot hold the keys: they go back to the focused pane.
+                if self.sidebar.collapsed {
+                    self.sidebar_focused = false;
+                }
+                // The panes change width: measurements taken before are stale, as on a resize.
+                self.grids.clear();
+                self.save(cx);
+                cx.notify();
+            }
+            FocusFileTree => {
+                if self.sidebar.collapsed {
+                    self.sidebar.collapsed = false;
+                    self.grids.clear();
+                    self.save(cx);
+                }
+                self.sidebar_focused = true;
+                cx.notify();
+            }
+            ShowIgnoredFiles => {
+                self.sidebar.show_ignored = !self.sidebar.show_ignored;
+                self.save(cx);
+                cx.notify();
             }
         }
         let _ = window;
@@ -1326,11 +1371,13 @@ impl Render for Root {
             .collect();
         let banner_h = BANNER_H * banners.len() as f32;
         let top = chrome::TITLE_BAR_H;
-        // A window shorter than its chrome would give a negative height; lay out at zero instead.
+        // The panes start right of the sidebar. A window shorter than its chrome would give a
+        // negative height; lay out at zero instead.
+        let side = self.sidebar.visible_width();
         let content = Rect {
-            x: 0.0,
+            x: side,
             y: top + banner_h,
-            w: f32::from(size.width).max(0.0),
+            w: (f32::from(size.width) - side).max(0.0),
             h: (f32::from(size.height) - top - banner_h).max(0.0),
         };
         if content != self.content {
@@ -1340,10 +1387,14 @@ impl Render for Root {
         }
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
+        let side_col = sidebar::render(self, cx);
         // Focus follows the tree: the focused pane's terminal (its find bar while that is open),
-        // or the pane's own handle. The palette holds it while it is open.
+        // or the pane's own handle. The palette holds it while it is open, the file tree after
+        // Shift+Cmd+E.
         let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
             Some(f)
+        } else if self.sidebar_focused {
+            Some(self.sidebar.focus.clone())
         } else {
             match self.active_terminal(cx) {
                 Some(t) => {
@@ -1376,6 +1427,18 @@ impl Render for Root {
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+                if root.sidebar_resizing {
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        // Released outside the window, where no mouse-up reaches us: end the drag.
+                        root.sidebar_resizing = false;
+                        root.save(cx);
+                    } else {
+                        // The column starts at the window's left edge, so the pointer is its width.
+                        root.sidebar.width = sidebar::clamp_width(f32::from(ev.position.x));
+                    }
+                    cx.notify();
+                    return;
+                }
                 if root.drop_target.is_some() && ev.pressed_button != Some(MouseButton::Left) {
                     // A tab drag released outside the window, where no mouse-up reaches us.
                     root.drop_target = None;
@@ -1403,6 +1466,10 @@ impl Render for Root {
                     if root.resizing.take().is_some() {
                         root.save(cx);
                     }
+                    if root.sidebar_resizing {
+                        root.sidebar_resizing = false;
+                        root.save(cx);
+                    }
                     // A drop stops the event before it gets here; this is a release elsewhere.
                     if root.drop_target.take().is_some() {
                         cx.notify();
@@ -1411,7 +1478,15 @@ impl Render for Root {
             )
             .child(title_bar)
             .children(banners.into_iter().map(|text| banner_bar(text, family.clone(), &theme)))
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .children(side_col)
+                    .child(div().flex_1().min_w_0().min_h_0().child(body)),
+            )
             .children(command_palette::render(self, cx));
         keymap::attach(root_div, cx)
     }
@@ -1524,8 +1599,8 @@ fn main() {
                     ..Default::default()
                 },
                 move |window, cx| {
-                    let view = cx.new(|_| {
-                        let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark);
+                    let view = cx.new(|cx| {
+                        let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
                         root.save_queue = view_queue;
                         root
                     });
