@@ -4,8 +4,9 @@
 
 use crate::theme::Theme;
 use crate::Root;
-use gpui::{div, prelude::*, px, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, ScrollHandle, Stateful};
+use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, UniformList, UniformListScrollHandle};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub const MIN_W: f32 = 160.0;
 pub const MAX_W: f32 = 600.0;
@@ -20,7 +21,7 @@ pub struct Sidebar {
     pub width: f32,
     pub collapsed: bool,
     pub focus: FocusHandle,
-    pub scroll: ScrollHandle,
+    pub scroll: UniformListScrollHandle,
 }
 
 pub fn clamp_width(w: f32) -> f32 {
@@ -40,7 +41,7 @@ pub fn visible_width(width: f32, collapsed: bool) -> f32 {
 
 impl Sidebar {
     pub fn new(width: f32, collapsed: bool, cx: &mut Context<Root>) -> Self {
-        Sidebar { width: clamp_width(width), collapsed, focus: cx.focus_handle(), scroll: ScrollHandle::new() }
+        Sidebar { width: clamp_width(width), collapsed, focus: cx.focus_handle(), scroll: UniformListScrollHandle::new() }
     }
 
     pub fn visible_width(&self) -> f32 {
@@ -143,72 +144,82 @@ fn hash_of(path: &Path) -> u64 {
     crate::paths::fnv1a(path.as_os_str().as_encoded_bytes())
 }
 
-/// The Explorer's rows: a scrolling column of the visible entries. A click on a directory
-/// toggles it; on a file it previews (a double click pins); a right click opens the menu; a
-/// file drags out to a terminal.
-pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
+/// The Explorer's rows: a virtualized list of the visible entries, only the rows on screen
+/// built each frame. A click on a directory toggles it; on a file it previews (a double click
+/// pins); a right click opens the menu; a file drags out to a terminal.
+pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> UniformList {
+    let rows = Rc::new(root.explorer.rows());
+    let selected = root.explorer.selected.clone();
+    let weak = cx.weak_entity();
     let family = root.family();
-    let mut column = div().id("explorer-rows").flex_1().min_h_0().flex().flex_col().overflow_y_scroll().track_scroll(&root.sidebar.scroll);
-    for row in root.explorer.rows() {
-        let path = row.path.clone();
-        let selected = root.explorer.selected.as_deref() == Some(path.as_path());
-        let color = if row.ignored { theme.tree.ignored.hsla() } else { theme.chrome.text.hsla() };
-        let chevron = if !row.is_dir {
-            " "
-        } else if row.loading {
-            "\u{2026}"
-        } else if row.expanded {
-            "\u{25be}"
-        } else {
-            "\u{25b8}"
-        };
-        let p_click = path.clone();
-        let p_menu = path.clone();
-        let p_drag = path.clone();
-        let is_dir = row.is_dir;
-        column = column.child(
-            div()
-                .id(("row", hash_of(&path)))
-                .flex_none()
-                .h(px(ROW_H))
-                .pl(px(10.0 + row.depth as f32 * INDENT))
-                .pr(px(8.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .when(selected, |d| d.bg(theme.chrome.tab_active.hsla()))
-                .hover(|s| s.bg(theme.chrome.tab_inactive.hsla()))
-                .text_color(color)
-                .cursor_pointer()
-                .on_click(cx.listener(move |root, ev: &ClickEvent, _window, cx| {
-                    if is_dir {
-                        root.explorer.toggle(&p_click);
-                        root.explorer.selected = Some(p_click.clone());
-                        root.load_pending_dirs(cx);
-                        root.save(cx);
-                        cx.notify();
-                    } else {
-                        root.open_viewer(&p_click, ev.click_count() >= 2, cx);
-                    }
-                }))
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
-                        root.context_menu = Some(ContextMenu { path: p_menu.clone(), at: ev.position });
+    let (selected_bg, hover_bg, ignored, text, dim) = (theme.chrome.tab_active.hsla(), theme.chrome.tab_inactive.hsla(), theme.tree.ignored.hsla(), theme.chrome.text.hsla(), theme.chrome.text_dim.hsla());
+    let (drag_bg, drag_fg) = (theme.chrome.banner, theme.chrome.text);
+    let count = rows.len();
+    uniform_list("explorer-rows", count, move |range, _window, _cx| {
+        rows[range]
+            .iter()
+            .map(|row| {
+                let path = row.path.clone();
+                let is_selected = selected.as_deref() == Some(path.as_path());
+                let chevron = if !row.is_dir {
+                    " "
+                } else if row.loading {
+                    "\u{2026}"
+                } else if row.expanded {
+                    "\u{25be}"
+                } else {
+                    "\u{25b8}"
+                };
+                let (w_click, w_menu) = (weak.clone(), weak.clone());
+                let p_click = path.clone();
+                let p_menu = path.clone();
+                let is_dir = row.is_dir;
+                div()
+                    .id(("row", hash_of(&path)))
+                    .w_full()
+                    .h(px(ROW_H))
+                    .pl(px(10.0 + row.depth as f32 * INDENT))
+                    .pr(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .when(is_selected, |d| d.bg(selected_bg))
+                    .hover(|s| s.bg(hover_bg))
+                    .text_color(if row.ignored { ignored } else { text })
+                    .cursor_pointer()
+                    .on_click(move |ev: &ClickEvent, _window, cx| {
+                        let _ = w_click.update(cx, |root, cx| {
+                            if is_dir {
+                                root.explorer.toggle(&p_click);
+                                root.explorer.selected = Some(p_click.clone());
+                                root.load_pending_dirs(cx);
+                                root.save(cx);
+                                cx.notify();
+                            } else {
+                                root.open_viewer(&p_click, ev.click_count() >= 2, cx);
+                            }
+                        });
+                    })
+                    .on_mouse_down(MouseButton::Right, move |ev: &MouseDownEvent, _window, cx| {
                         // The root's mouse-down closes an open menu; this one just opened.
                         cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
-                .when(!is_dir, |d| {
-                    let value = crate::drag::FileDrag { path: p_drag.clone(), position: Default::default(), bg: theme.chrome.banner, fg: theme.chrome.text, family: family.clone() };
-                    d.on_drag(value, |d: &crate::drag::FileDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
-                })
-                .child(div().flex_none().w(px(12.0)).text_color(theme.chrome.text_dim.hsla()).child(chevron))
-                .child(div().min_w_0().truncate().child(row.name.clone())),
-        );
-    }
-    column
+                        let _ = w_menu.update(cx, |root, cx| {
+                            root.context_menu = Some(ContextMenu { path: p_menu.clone(), at: ev.position });
+                            cx.notify();
+                        });
+                    })
+                    .when(!is_dir, |d| {
+                        let value = crate::drag::FileDrag { path: path.clone(), position: Default::default(), bg: drag_bg, fg: drag_fg, family: family.clone() };
+                        d.on_drag(value, |d: &crate::drag::FileDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
+                    })
+                    .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
+                    .child(div().min_w_0().truncate().child(row.name.clone()))
+            })
+            .collect::<Vec<_>>()
+    })
+    .flex_1()
+    .min_h_0()
+    .track_scroll(root.sidebar.scroll.clone())
 }
 
 /// The right-click menu, drawn over everything at the click. A mouse-down anywhere else closes

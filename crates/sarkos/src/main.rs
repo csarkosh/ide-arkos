@@ -620,7 +620,11 @@ impl Root {
         // Keep the selection on screen when the keys move it past the column's edge.
         let rows = self.explorer.rows();
         if let Some(i) = self.explorer.selected.as_ref().and_then(|s| rows.iter().position(|r| &r.path == s)) {
-            self.sidebar.scroll.scroll_to_item(i);
+            // Top for a row above the first one fully shown, Bottom otherwise: either scrolls
+            // only as far as the row (a row already in view does not move the list).
+            let top = -f32::from(self.sidebar.scroll.0.borrow().base_handle.offset().y);
+            let strategy = if (i as f32) * sidebar::ROW_H < top + sidebar::ROW_H { gpui::ScrollStrategy::Top } else { gpui::ScrollStrategy::Bottom };
+            self.sidebar.scroll.scroll_to_item(i, strategy);
         }
         self.save(cx);
         cx.notify();
