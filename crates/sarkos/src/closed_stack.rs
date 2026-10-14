@@ -1,9 +1,11 @@
-//! Tabs closed in the last minute, for Cmd+Shift+T (spec 4). Closing a terminal tab detaches its
-//! session at once but kills it only after `CLOSE_GRACE`, so reopening within the grace brings
-//! back the same shell with its history. Pure bookkeeping; the window sends the requests.
+//! Closed tabs, for Cmd+Shift+T (spec 4). Closing a terminal tab detaches its session at once
+//! but kills it only after `CLOSE_GRACE`, so reopening within the grace brings back the same
+//! shell with its history. A closed viewer has nothing to end and reopens its file whenever it
+//! is popped. Pure bookkeeping; the window sends the requests.
 
 use crate::tree::PaneId;
 use protocol::SessionId;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long a closed tab's session survives, waiting to be reopened.
@@ -13,9 +15,16 @@ pub const CLOSE_TICK: Duration = Duration::from_secs(5);
 /// Closed tabs kept for reopening; closing more ends the oldest at once.
 pub const MAX_CLOSED: usize = 20;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a closed tab showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Closed {
+    Session(SessionId),
+    Viewer(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedTab {
-    pub session: SessionId,
+    pub closed: Closed,
     /// The pane it was closed from, where it reopens if that pane still exists.
     pub pane: PaneId,
     pub closed_at: Instant,
@@ -24,6 +33,13 @@ pub struct ClosedTab {
 impl ClosedTab {
     pub fn in_grace(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.closed_at) < CLOSE_GRACE
+    }
+
+    pub fn session(&self) -> Option<SessionId> {
+        match self.closed {
+            Closed::Session(s) => Some(s),
+            Closed::Viewer(_) => None,
+        }
     }
 }
 
@@ -34,11 +50,12 @@ pub struct ClosedStack {
 }
 
 impl ClosedStack {
-    /// Records a closed tab. Returns the sessions pushed out past `MAX_CLOSED`, to kill now.
+    /// Records a closed tab. Returns the sessions pushed out past `MAX_CLOSED`, to kill now; a
+    /// viewer pushed out just goes.
     pub fn push(&mut self, tab: ClosedTab) -> Vec<SessionId> {
         self.entries.push(tab);
         let over = self.entries.len().saturating_sub(MAX_CLOSED);
-        self.entries.drain(..over).map(|e| e.session).collect()
+        self.entries.drain(..over).filter_map(|e| e.session()).collect()
     }
 
     /// Takes the most recently closed tab, in grace or not; the caller checks `in_grace`.
@@ -46,20 +63,21 @@ impl ClosedStack {
         self.entries.pop()
     }
 
-    /// Removes and returns every session whose grace has run out, to kill.
+    /// Removes and returns every session whose grace has run out, to kill. Viewers stay.
     pub fn expired(&mut self, now: Instant) -> Vec<SessionId> {
-        let (gone, kept): (Vec<ClosedTab>, Vec<ClosedTab>) = self.entries.iter().partition(|e| !e.in_grace(now));
+        let (gone, kept): (Vec<ClosedTab>, Vec<ClosedTab>) = std::mem::take(&mut self.entries).into_iter().partition(|e| e.session().is_some() && !e.in_grace(now));
         self.entries = kept;
-        gone.into_iter().map(|e| e.session).collect()
+        gone.into_iter().filter_map(|e| e.session()).collect()
     }
 
-    /// Removes and returns every session, for quitting: nothing could reopen them afterwards.
+    /// Empties the stack and returns every session, for quitting: nothing could reopen them
+    /// afterwards.
     pub fn drain_all(&mut self) -> Vec<SessionId> {
-        self.entries.drain(..).map(|e| e.session).collect()
+        self.entries.drain(..).filter_map(|e| e.session()).collect()
     }
 
     pub fn contains(&self, session: SessionId) -> bool {
-        self.entries.iter().any(|e| e.session == session)
+        self.entries.iter().any(|e| e.session() == Some(session))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -73,7 +91,42 @@ mod tests {
     use super::*;
 
     fn closed(session: u64, pane: PaneId, at: Instant) -> ClosedTab {
-        ClosedTab { session: SessionId(session), pane, closed_at: at }
+        ClosedTab { closed: Closed::Session(SessionId(session)), pane, closed_at: at }
+    }
+
+    fn viewer(path: &str, pane: PaneId, at: Instant) -> ClosedTab {
+        ClosedTab { closed: Closed::Viewer(PathBuf::from(path)), pane, closed_at: at }
+    }
+
+    #[test]
+    fn a_closed_viewer_pops_as_a_viewer_and_is_never_killed() {
+        let t0 = Instant::now();
+        let mut s = ClosedStack::default();
+        assert!(s.push(closed(1, 4, t0)).is_empty());
+        assert!(s.push(viewer("/p/a.rs", 5, t0)).is_empty());
+        assert!(s.expired(t0 + CLOSE_GRACE).contains(&SessionId(1)));
+        assert_eq!(s.expired(t0 + CLOSE_GRACE * 10), Vec::<SessionId>::new(), "a viewer has no session to end");
+        assert_eq!(s.len(), 1, "the viewer outlives the grace");
+        assert_eq!(s.pop(), Some(viewer("/p/a.rs", 5, t0)));
+        assert_eq!(s.pop(), None);
+        s.push(viewer("/p/b.rs", 5, t0));
+        s.push(closed(2, 4, t0));
+        assert_eq!(s.drain_all(), vec![SessionId(2)], "quitting ends only sessions");
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn eviction_past_the_limit_returns_only_sessions_to_kill() {
+        let t0 = Instant::now();
+        let mut s = ClosedStack::default();
+        assert!(s.push(viewer("/p/a.rs", 1, t0)).is_empty());
+        assert!(s.push(closed(1, 1, t0)).is_empty());
+        for i in 0..MAX_CLOSED - 2 {
+            assert!(s.push(viewer(&format!("/p/{i}"), 1, t0)).is_empty());
+        }
+        assert!(s.push(viewer("/p/x", 1, t0)).is_empty(), "the evicted viewer ends nothing");
+        assert_eq!(s.push(viewer("/p/y", 1, t0)), vec![SessionId(1)]);
+        assert_eq!(s.len(), MAX_CLOSED);
     }
 
     #[test]

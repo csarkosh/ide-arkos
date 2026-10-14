@@ -48,7 +48,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
+use closed_stack::{Closed, ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
 use viewer::Viewer;
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
@@ -197,7 +197,8 @@ pub struct Root {
     pub content: Rect,
     /// Pane ids in reading order (the tab bar numbers), computed once per render.
     pub pane_order: Vec<PaneId>,
-    /// Terminal tabs closed in the last minute, whose detached sessions Cmd+Shift+T brings back.
+    /// Closed tabs Cmd+Shift+T brings back: terminals whose detached sessions wait out the
+    /// grace, and viewers.
     pub closed: ClosedStack,
     /// Where a dragged tab would land if released now. Cleared on drop, on a release anywhere
     /// else, and on the first move after a release outside the window.
@@ -866,13 +867,18 @@ impl Root {
                     self.sessions.abort_restore(session, id);
                 }
                 self.sessions.detach(session);
-                for old in self.closed.push(ClosedTab { session, pane, closed_at: Instant::now() }) {
+                for old in self.closed.push(ClosedTab { closed: Closed::Session(session), pane, closed_at: Instant::now() }) {
                     eprintln!("sarkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                     self.sessions.kill(old);
                 }
             }
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
+        } else if let Tab::Viewer { path } = tab {
+            for old in self.closed.push(ClosedTab { closed: Closed::Viewer(path), pane, closed_at: Instant::now() }) {
+                eprintln!("sarkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
+                self.sessions.kill(old);
+            }
         }
         self.close_emptied_pane(pane);
         self.save(cx);
@@ -1186,18 +1192,25 @@ impl Root {
             }
             ReopenClosedTab => {
                 // Within the grace the same session comes back where it was closed; after it, or
-                // with nothing closed, a fresh shell opens there instead.
+                // with nothing closed, a fresh shell opens there instead. A viewer comes back
+                // pinned, its file read again.
                 let Some(closed) = self.closed.pop() else {
                     self.new_terminal_tab(focused, cx);
                     return;
                 };
                 let pane = if self.tree.pane(closed.pane).is_some() { closed.pane } else { focused };
-                if closed.in_grace(Instant::now()) {
-                    self.reopen_session(pane, closed.session, cx);
-                } else {
-                    eprintln!("sarkos: session {} closed more than {}s ago, ending it and opening a new shell", closed.session.0, CLOSE_GRACE.as_secs());
-                    self.sessions.kill(closed.session);
-                    self.new_terminal_tab(pane, cx);
+                let in_grace = closed.in_grace(Instant::now());
+                match closed.closed {
+                    Closed::Viewer(path) => {
+                        self.tree.focus(pane);
+                        self.open_viewer(&path, true, cx);
+                    }
+                    Closed::Session(session) if in_grace => self.reopen_session(pane, session, cx),
+                    Closed::Session(session) => {
+                        eprintln!("sarkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
+                        self.sessions.kill(session);
+                        self.new_terminal_tab(pane, cx);
+                    }
                 }
             }
             CloseAllInPane => {

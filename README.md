@@ -189,7 +189,8 @@ Notes:
   minute: Shift+Cmd+T within that minute brings the same shell back, history and all, in the
   pane it was closed from. After the minute the shell ends, and Shift+Cmd+T opens a new one.
   Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
-  kept for Shift+Cmd+T, since nothing is left to end or bring back.
+  kept for Shift+Cmd+T, since nothing is left to end or bring back. A closed viewer tab comes
+  back too, pinned, in the pane it was closed from.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
