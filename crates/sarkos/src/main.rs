@@ -316,8 +316,8 @@ impl Root {
         }
     }
 
-    /// The grid a terminal in `pane` would get: the pane's current terminal's, else the last
-    /// measurement of the pane's placeholder.
+    /// The grid a terminal in `pane` would get: the pane's own last measurement, else the grid of
+    /// its current terminal.
     fn pane_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
         self.tree.pane(pane)?;
         let visible = self.layout().panes.iter().any(|(p, _)| *p == pane);
@@ -328,13 +328,14 @@ impl Root {
 
     fn own_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
         let p = self.tree.pane(pane)?;
-        if let Some(Tab::Terminal { session }) = p.tabs.get(p.active) {
-            if let Some(t) = self.sessions.terminals.get(session) {
+        let terminal = match p.tabs.get(p.active) {
+            Some(Tab::Terminal { session }) => self.sessions.terminals.get(session).map(|t| {
                 let core = &t.read(cx).core;
-                return Some((core.columns(), core.screen_lines()));
-            }
-        }
-        self.grids.get(&pane).copied()
+                (core.columns(), core.screen_lines())
+            }),
+            _ => None,
+        };
+        grid_choice(self.grids.get(&pane).copied(), terminal)
     }
 
     pub fn active_terminal(&self, _cx: &App) -> Option<Entity<Terminal>> {
@@ -379,12 +380,24 @@ impl Root {
     }
 
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and killed
-    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back.
+    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back. A session whose
+    /// shell has ended is killed at once and never enters the closed stack.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         if let Tab::Terminal { session } = tab {
             if session != SessionId(0) {
+                let ended = self.sessions.terminals.get(&session).map(|t| !t.read(cx).alive).unwrap_or(false);
+                if ended {
+                    // Nothing to bring back: end the session now instead of a minute from now.
+                    eprintln!("sarkos: closing ended session {}", session.0);
+                    self.sessions.kill(session);
+                    self.sessions.detach(session);
+                    self.sessions.tab_closed(id);
+                    self.save(cx);
+                    cx.notify();
+                    return;
+                }
                 if self.sessions.is_restoring(session) {
                     self.sessions.abort_restore(session, id);
                 }
@@ -865,6 +878,12 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
     })
 }
 
+/// A pane's own measurement first (it is taken at the workspace font size), else the grid of
+/// the terminal it shows (which Cmd+= may have nudged).
+fn grid_choice(measured: Option<(usize, usize)>, terminal: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    measured.or(terminal)
+}
+
 /// The grid a restore into a pane uses. A hidden pane (another is maximized) never renders, so
 /// it would wait forever for its own measurement: it borrows the maximized pane's grid, else any
 /// measured grid. A visible pane uses its own and waits (None) until it has one.
@@ -1271,5 +1290,14 @@ mod tests {
         assert_eq!(pick_grid(false, None, Some((100, 30)), Some((90, 20))), Some((100, 30)));
         assert_eq!(pick_grid(false, None, None, Some((90, 20))), Some((90, 20)));
         assert_eq!(pick_grid(false, None, None, None), None);
+    }
+
+    #[test]
+    fn a_pane_measurement_outranks_its_terminals_grid() {
+        use super::grid_choice;
+        // The canvas measures at the workspace font; the terminal may have been nudged.
+        assert_eq!(grid_choice(Some((100, 30)), Some((80, 24))), Some((100, 30)));
+        assert_eq!(grid_choice(None, Some((80, 24))), Some((80, 24)));
+        assert_eq!(grid_choice(None, None), None);
     }
 }

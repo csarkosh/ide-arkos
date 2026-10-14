@@ -224,6 +224,11 @@ impl SessionManager {
                 Some(Pending::Create { tab, .. }) => {
                     self.busy.remove(&tab);
                 }
+                Some(Pending::Kill { session }) if e.starts_with("no session") => {
+                    // Reaped before the kill arrived: the session is gone, which is what we asked.
+                    eprintln!("sarkos: session {} was already gone when killed", session.0);
+                    return Outcome::Killed { session };
+                }
                 _ => {}
             }
             return Outcome::Error(e.clone());
@@ -562,5 +567,15 @@ mod tests {
         assert_eq!(grouped[0].0, SessionId(2));
         assert_eq!(t, before);
         assert_eq!(t.focused, a);
+    }
+
+    #[test]
+    fn a_kill_of_a_reaped_session_is_a_quiet_success() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.kill(SessionId(9));
+        assert_eq!(m.handle_response(1, Response::Error("no session 9".into())), Outcome::Killed { session: SessionId(9) });
+        m.kill(SessionId(10));
+        assert_eq!(m.handle_response(2, Response::Error("permission denied".into())), Outcome::Error("permission denied".into()), "other errors still surface");
     }
 }

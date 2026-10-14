@@ -10,44 +10,41 @@ Written in Rust with GPUI. The design is in
 
 ## Status
 
-Milestone 2a of 6: panes, tabs, drag and drop, the VS Code keyboard map, and a layout that
-survives relaunch. Milestone 2b (config file, themes, text presets, command palette, find)
-is next. The daemon now notices a shell exit even when a background job keeps the terminal
-open, never signals a reaped process, and forgets dead sessions ten minutes after they end
-once no window shows them.
+Milestone 2b of 6: a config file with live reload, the Navy and Navy Light themes following the
+macOS appearance, three text presets, a command palette (Cmd+Shift+P), find (Cmd+F), and the
+tab-bar overflow menu. Next is updating in place (the daemon replacing itself by exec so no
+session ends; `docs/superpowers/specs/2026-10-14-update-in-place-design.md`), then milestone 3
+(Claude Code session awareness).
 
 Things only a person at the screen can check, in order of value:
 
+- editing `~/.config/sarkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
+  terminal within a second; a typo shows a banner with the line number and nothing else changes;
+  fixing it clears the banner
+- System Settings > Appearance: Light switches to Navy Light and back, history included
+- `mode = "dark"` pins Navy whatever the system says
+- Cmd+Shift+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
+- "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
+  a preset again resets it; the preset survives a relaunch of that folder
+- "Theme: navy-light" in the palette, then a config reload: the config's theme wins
+- "Extract built-in themes", then editing `~/.config/sarkos/themes/navy.toml`'s `window_bg` and
+  reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
+- `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
+- Cmd+F in a pane with history: typing highlights every match and jumps to the newest; Enter
+  and Shift+Enter step with the count; Escape or a click in the terminal closes it; `.` and `*`
+  match literally; output arriving keeps the bar open
+- a pane with eight tabs: the bar scrolls, Cmd+Option+Right keeps the active tab in view, and
+  the ⋯ menu lists them all
+- closing a tab whose shell has ended: `ps` shows it gone at once, not a minute later
+- Cmd+, opens the config file in the default text editor
 - typing in each pane, and that Cmd combinations never reach the shell
-- Cmd+1 to Cmd+9 numbering after splits and closes, left to right then top to bottom
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
-- dropping a tab onto its own position changing nothing
-- dragging a split handle, the 160 by 80 px minimum, and double-click resetting it
-- dragging a handle and releasing outside the window ending the drag
 - Cmd+K alone clearing the scrollback while the Cmd+K chords still work
-- the empty pane's animation settling, replaying on hover and after a pane re-empties, and holding still with Reduce Motion
-- scroll direction and glide, and the jump-to-bottom pill
-- Cmd+V bracketed paste into `claude`
-- after `kill -9`: the layout, every session, replayed history, and typing
-- a session that is gone from the daemon showing "(restarted)" on relaunch
-- a session ended in a background tab marks its tab without stealing focus
+- the empty pane's animation holding still after turning on Reduce Motion and saving the config
+- after `kill -9`: the layout, every session, replayed history, the text preset, and typing
 - the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
   after, and look for no "relaunching" line in `~/Library/Application Support/sarkos/sarkosd.log`
 - `ps` after thirty seconds idle with four terminals
-- with a pane maximized, Cmd+1 to Cmd+9, the Cmd+K arrows and Ctrl+Cmd+Left/Right exit the
-  maximize and typing keeps reaching the focused pane
-- Ctrl+Tab switching to the most recently used tab, and back
-- Cmd+W then Cmd+Shift+T within a minute bringing back the same shell with its history; after
-  a minute, `ps` showing that shell gone
-- Cmd+K then W closing every tab in a pane
-- closing a tab while it still says "restoring session"
-- shrinking the window to its minimum size: one pane still fits and nothing panics
-- Cmd+= and Cmd+- changing only the focused terminal's text
-- Cmd+W on an empty pane that is not the last one closing it; the last pane's empty state does
-  not offer Cmd+W
-- Option+Left and Option+Right jumping words inside `claude`
-- upgrading from milestone 1: the session it showed comes back in the only pane; then
-  `pkill -x sarkosd` (see "Build and run") ends it, and the next launch starts fresh shells
 
 ## Keyboard
 
@@ -75,18 +72,21 @@ The VS Code map, in a terminal-friendly form.
 | Ctrl+Cmd+Right | move tab to next pane |
 | Option+Cmd+Right | next tab |
 | Option+Cmd+Left | previous tab |
-| Cmd+Shift+] | next tab |
-| Cmd+Shift+[ | previous tab |
+| Shift+Cmd+] | next tab |
+| Shift+Cmd+[ | previous tab |
 | Ctrl+Tab | most recently used tab |
 | Cmd+W | close tab |
-| Cmd+Shift+T | reopen closed tab |
+| Shift+Cmd+T | reopen closed tab |
 | Cmd+K then W | close all in pane |
-| Cmd+K then Cmd+Shift+Left | move tab left |
-| Cmd+K then Cmd+Shift+Right | move tab right |
+| Cmd+K then Shift+Cmd+Left | move tab left |
+| Cmd+K then Shift+Cmd+Right | move tab right |
 | Ctrl+Shift+` | new terminal tab |
 | Cmd+K | clear scrollback |
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
+| Cmd+F | find in the terminal |
+| Cmd+, | open config file |
+| Shift+Cmd+P | command palette |
 
 Notes:
 
@@ -95,13 +95,29 @@ Notes:
 - Pane numbers are structural reading order: rows top to bottom, left to right within a row,
   computed as if every split were at half, so dragging a handle never renumbers a pane.
 - Cmd+W (and the tab's ×, and Cmd+K then W) keeps a closed terminal's shell alive for a
-  minute: Cmd+Shift+T within that minute brings the same shell back, history and all, in the
-  pane it was closed from. After the minute the shell ends, and Cmd+Shift+T opens a new one.
+  minute: Shift+Cmd+T within that minute brings the same shell back, history and all, in the
+  pane it was closed from. After the minute the shell ends, and Shift+Cmd+T opens a new one.
   Quitting ends every closed tab's shell at once.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
-- Cmd+F, Cmd+,, Cmd+Shift+P, Cmd+B, Cmd+Shift+E and Ctrl+Shift+G are not bound until
-  milestones 2b and 4.
+- Cmd+B, Shift+Cmd+E and Ctrl+Shift+G arrive with the sidebar in milestone 4. Every binding can
+  be changed in the config file; see Config.
+
+## Config
+
+`~/.config/sarkos/config.toml` (or `$XDG_CONFIG_HOME/sarkos/config.toml`) is written with
+commented defaults on first run and opened by Cmd+, in your text editor. It is watched: a saved
+edit applies within a second. A bad edit shows a banner with the line number and keeps the last
+good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
+(scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
+and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
+the daemon), and `sidebar` and `browser` for later milestones.
+
+Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
+in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
+from the palette lasts until the config reloads or the app relaunches; the config file decides
+otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
+(18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
 ## Build and run
 
@@ -132,6 +148,11 @@ The defaults (16 px Menlo, line height 1.5, a bright grey on navy, no warm tint)
 [Check your eyes before your theme](https://csarko.sh/research/check-your-eyes-before-your-theme).
 The same research puts a comprehensive eye examination that tests convergence and small
 astigmatism ahead of any setting. Not medical advice.
+
+## Further reading
+
+[Update the IDE, keep the shells](https://csarko.sh/research/update-the-ide-keep-the-shells):
+the write-up of why updates kill sessions elsewhere and how this IDE will avoid it.
 
 ## License
 
