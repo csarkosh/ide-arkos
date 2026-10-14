@@ -1,5 +1,6 @@
 mod client;
 mod keys;
+mod keymap;
 mod layout;
 mod palette;
 mod pane_view;
@@ -64,6 +65,8 @@ pub struct Root {
     pub content: Rect,
     /// Pane ids in reading order (the tab bar numbers), computed once per render.
     pub pane_order: Vec<PaneId>,
+    /// Panes tabs were closed from, most recent last, for Cmd+Shift+T.
+    pub closed: Vec<PaneId>,
 }
 
 impl Root {
@@ -84,6 +87,7 @@ impl Root {
             font_size: terminal_element::DEFAULT_FONT_SIZE,
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
             pane_order: Vec::new(),
+            closed: Vec::new(),
         }
     }
 
@@ -124,11 +128,27 @@ impl Root {
         for tx in self.grid_waiters.remove(&pane).unwrap_or_default() {
             let _ = tx.send(grid);
         }
+        // A hidden pane (another is maximized) never measures; its restores take this grid.
+        let visible: Vec<PaneId> = self.layout().panes.iter().map(|(p, _)| *p).collect();
+        let hidden: Vec<PaneId> = self.grid_waiters.keys().copied().filter(|p| !visible.contains(p)).collect();
+        for p in hidden {
+            for tx in self.grid_waiters.remove(&p).unwrap_or_default() {
+                let _ = tx.send(grid);
+            }
+        }
     }
 
     /// The grid a terminal in `pane` would get: the pane's current terminal's, else the last
     /// measurement of the pane's placeholder.
     fn pane_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
+        self.tree.pane(pane)?;
+        let visible = self.layout().panes.iter().any(|(p, _)| *p == pane);
+        let own = self.own_grid(pane, cx);
+        let maximized = self.tree.maximized.filter(|m| *m != pane).and_then(|m| self.own_grid(m, cx));
+        pick_grid(visible, own, maximized, self.grids.values().next().copied())
+    }
+
+    fn own_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
         let p = self.tree.pane(pane)?;
         if let Some(Tab::Terminal { session }) = p.tabs.get(p.active) {
             if let Some(t) = self.sessions.terminals.get(session) {
@@ -200,6 +220,105 @@ impl Root {
             self.save(cx);
             cx.notify();
         }
+    }
+
+    /// Executes one keyboard command.
+    pub fn run(&mut self, cmd: keymap::Command, window: &mut Window, cx: &mut Context<Self>) {
+        use keymap::Command::*;
+        let focused = self.tree.focused;
+        match cmd {
+            FocusPane(i) => {
+                if let Some(p) = self.tree.pane_at(i) {
+                    self.focus_pane(p, cx);
+                }
+            }
+            FocusDir(side) => {
+                if let Some(p) = self.tree.neighbor(focused, side, self.content) {
+                    self.focus_pane(p, cx);
+                }
+            }
+            Split(side) => self.split_focused(side, cx),
+            ToggleMaximize => {
+                self.tree.toggle_maximize(focused);
+                self.save(cx);
+                cx.notify();
+            }
+            MoveTabToPane(delta) => {
+                let panes = self.tree.panes();
+                let Some(i) = self.tree.pane_index(focused) else { return };
+                let target = i as isize + delta;
+                if target < 0 || target as usize >= panes.len() {
+                    return;
+                }
+                let to = panes[target as usize];
+                let Some(p) = self.tree.pane(focused) else { return };
+                if p.tabs.is_empty() {
+                    return;
+                }
+                let idx = p.active;
+                if self.tree.move_tab(focused, idx, to, None) {
+                    self.save(cx);
+                    cx.notify();
+                }
+            }
+            CycleTab(delta) => {
+                if let Some(p) = self.tree.pane(focused) {
+                    let next = keymap::tab_cycle(p.active, p.tabs.len(), delta);
+                    self.activate_tab(focused, next, cx);
+                }
+            }
+            MruTab => {
+                if let Some(next) = self.tree.mru_next(focused) {
+                    self.activate_tab(focused, next, cx);
+                }
+            }
+            CloseTab => {
+                let Some(p) = self.tree.pane(focused) else { return };
+                if p.tabs.is_empty() {
+                    // Cmd+W on an empty pane closes the pane; the last pane never closes.
+                    if self.tree.close_pane(focused) {
+                        self.save(cx);
+                        cx.notify();
+                    }
+                    return;
+                }
+                let idx = p.active;
+                self.closed.push(focused);
+                self.close_tab(focused, idx, cx);
+            }
+            ReopenClosedTab => {
+                // The closed tab's shell was killed, so "reopen" is a fresh shell where it was.
+                let pane = self.closed.pop().filter(|p| self.tree.pane(*p).is_some()).unwrap_or(focused);
+                self.new_terminal_tab(pane, cx);
+            }
+            CloseAllInPane => {
+                let n = self.tree.pane(focused).map(|p| p.tabs.len()).unwrap_or(0);
+                for _ in 0..n {
+                    self.close_tab(focused, 0, cx);
+                }
+            }
+            MoveTabWithin(delta) => {
+                let Some(p) = self.tree.pane(focused) else { return };
+                if self.tree.move_tab_within(focused, p.active, delta) {
+                    self.save(cx);
+                    cx.notify();
+                }
+            }
+            NewTerminal => self.new_terminal_tab(focused, cx),
+            ClearScrollback => {
+                if let Some(t) = self.active_terminal(cx) {
+                    t.update(cx, |t, cx| {
+                        t.core.clear_scrollback();
+                        cx.notify();
+                    });
+                }
+            }
+            FontDelta(d) => {
+                self.font_size = (self.font_size + d).clamp(10.0, 32.0);
+                cx.notify();
+            }
+        }
+        let _ = window;
     }
 
     /// Applies what the daemon answered.
@@ -318,6 +437,17 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
     })
 }
 
+/// The grid a restore into a pane uses. A hidden pane (another is maximized) never renders, so
+/// it would wait forever for its own measurement: it borrows the maximized pane's grid, else any
+/// measured grid. A visible pane uses its own and waits (None) until it has one.
+fn pick_grid(visible: bool, own: Option<(usize, usize)>, maximized: Option<(usize, usize)>, any: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    if visible {
+        own
+    } else {
+        own.or(maximized).or(any)
+    }
+}
+
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
@@ -340,8 +470,9 @@ impl Render for Root {
                 window.focus(&f);
             }
         }
-        div()
+        let root_div = div()
             .size_full()
+            .key_context("Root")
             .bg(rgb(BG))
             .flex()
             .flex_col()
@@ -370,7 +501,8 @@ impl Render for Root {
                 }),
             )
             .children((!self.status.is_empty()).then(|| banner_bar(self.status.clone())))
-            .child(div().flex_1().min_h_0().child(body))
+            .child(div().flex_1().min_h_0().child(body));
+        keymap::attach(root_div, cx)
     }
 }
 
@@ -447,6 +579,7 @@ fn main() {
             cx.quit();
         });
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys(keymap::bindings());
         cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let client_for_view = client.clone();
@@ -568,4 +701,20 @@ fn main() {
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_grid;
+
+    #[test]
+    fn hidden_panes_borrow_a_measured_grid() {
+        // A visible pane uses its own grid or waits for one.
+        assert_eq!(pick_grid(true, Some((80, 24)), Some((100, 30)), None), Some((80, 24)));
+        assert_eq!(pick_grid(true, None, Some((100, 30)), Some((90, 20))), None);
+        // A hidden pane takes the maximized pane's grid, else any measured grid.
+        assert_eq!(pick_grid(false, None, Some((100, 30)), Some((90, 20))), Some((100, 30)));
+        assert_eq!(pick_grid(false, None, None, Some((90, 20))), Some((90, 20)));
+        assert_eq!(pick_grid(false, None, None, None), None);
+    }
 }

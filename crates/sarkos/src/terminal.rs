@@ -129,6 +129,14 @@ impl TerminalCore {
         self.scroll.clamp_max(self.history_size() as f32);
     }
 
+    /// Drops the history and lands at the live bottom. The screen itself is kept.
+    pub fn clear_scrollback(&mut self) {
+        self.term.grid_mut().clear_history();
+        self.set_display_offset(0);
+        self.scroll.jump_to(0.0);
+        self.scroll.clamp_max(0.0);
+    }
+
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()
     }
@@ -528,5 +536,22 @@ mod tests {
     fn terminal_core_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<TerminalCore>();
+    }
+
+    #[test]
+    fn clear_scrollback_drops_history_and_keeps_the_screen() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        for i in 0..10 {
+            t.apply_output(format!("line{i}\r\n").as_bytes());
+        }
+        assert!(t.history_size() > 0);
+        t.scroll.jump_to(3.0);
+        t.set_display_offset(3);
+        t.clear_scrollback();
+        assert_eq!(t.history_size(), 0);
+        assert_eq!(t.display_offset(), 0);
+        assert!(t.scroll.is_at_bottom());
+        let rows = t.rows_for_paint();
+        assert_eq!(text_of(&rows.visible[0]), "line8");
     }
 }

@@ -163,6 +163,7 @@ fn render_terminal(root: &mut Root, terminal: Entity<Terminal>, cx: &mut Context
     let t_wheel = terminal.clone();
     div()
         .size_full()
+        .key_context("Terminal")
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
