@@ -6,7 +6,7 @@
 
 use crate::client::Client;
 use crate::terminal::Terminal;
-use crate::tree::{PaneId, Tab, Tree};
+use crate::tree::{Tab, TabId, Tree};
 use gpui::{App, Entity};
 use protocol::{Event, Request, Response, SessionId, SessionInfo};
 use std::collections::{HashMap, HashSet};
@@ -30,9 +30,9 @@ impl Transport for Client {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
     List,
-    /// A fresh shell for the tab at (pane, idx). `note` marks the tab "restarted" (spec 4).
-    Create { pane: PaneId, idx: usize, note: bool },
-    Attach { session: SessionId, pane: PaneId, idx: usize, note: bool },
+    /// A fresh shell for the tab `tab`. `note` marks the tab "restarted" (spec 4).
+    Create { tab: TabId, note: bool },
+    Attach { session: SessionId, tab: TabId, note: bool },
     Kill { session: SessionId },
     #[allow(dead_code)] // In Task 4's interface; nothing in milestone 2a sends an untracked request yet
     Other,
@@ -42,8 +42,8 @@ pub enum Pending {
 pub enum Outcome {
     None,
     Sessions(Vec<SessionInfo>),
-    Created { pane: PaneId, idx: usize, session: SessionId, note: bool },
-    Attached { session: SessionId, pane: PaneId, idx: usize, replay: Vec<u8>, alive: bool, note: bool },
+    Created { tab: TabId, session: SessionId, note: bool },
+    Attached { session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, note: bool },
     Killed { session: SessionId },
     Error(String),
 }
@@ -51,8 +51,8 @@ pub enum Outcome {
 /// One launch step for one saved terminal tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconcile {
-    Attach { pane: PaneId, idx: usize, session: SessionId },
-    Create { pane: PaneId, idx: usize },
+    Attach { tab: TabId, session: SessionId },
+    Create { tab: TabId },
 }
 
 /// Whether a saved session can be reattached: the daemon still runs it, it is alive, and it was
@@ -88,10 +88,13 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 pub fn reconcile(tree: &Tree, list: &[SessionInfo], project: &Path) -> Vec<Reconcile> {
     tree.tabs()
         .into_iter()
-        .filter_map(|(pane, idx, tab)| match tab {
-            Tab::Terminal { session } if reattachable(*session, list, project) => Some(Reconcile::Attach { pane, idx, session: *session }),
-            Tab::Terminal { .. } => Some(Reconcile::Create { pane, idx }),
-            Tab::Viewer { .. } => None,
+        .filter_map(|(pane, idx, tab)| {
+            let id = tree.tab_id(pane, idx)?;
+            match tab {
+                Tab::Terminal { session } if reattachable(*session, list, project) => Some(Reconcile::Attach { tab: id, session: *session }),
+                Tab::Terminal { .. } => Some(Reconcile::Create { tab: id }),
+                Tab::Viewer { .. } => None,
+            }
         })
         .collect()
 }
@@ -120,7 +123,7 @@ pub struct SessionManager {
     pub terminals: HashMap<SessionId, Entity<Terminal>>,
     pending: HashMap<u32, Pending>,
     /// Tabs with a shell being started or a replay being restored, and the word to show.
-    pub busy: HashMap<(PaneId, usize), &'static str>,
+    pub busy: HashMap<TabId, &'static str>,
     /// Sessions whose tab carries the "restarted" note until the user types into them.
     pub notes: HashSet<SessionId>,
     /// Sessions whose replay is being parsed; their live events wait in `backlog`.
@@ -138,7 +141,7 @@ impl SessionManager {
         self.pending.insert(id, Pending::List);
     }
 
-    pub fn create(&mut self, pane: PaneId, idx: usize, note: bool) {
+    pub fn create(&mut self, tab: TabId, note: bool) {
         let id = self.transport.send(Request::CreateSession {
             cwd: self.project.clone(),
             shell: None,
@@ -147,14 +150,22 @@ impl SessionManager {
             rows: 24,
             cols: 80,
         });
-        self.pending.insert(id, Pending::Create { pane, idx, note });
-        self.busy.insert((pane, idx), "starting shell");
+        self.pending.insert(id, Pending::Create { tab, note });
+        self.busy.insert(tab, "starting shell");
     }
 
-    pub fn attach(&mut self, session: SessionId, pane: PaneId, idx: usize, note: bool) {
+    pub fn attach(&mut self, session: SessionId, tab: TabId, note: bool) {
         let id = self.transport.send(Request::Attach { session });
-        self.pending.insert(id, Pending::Attach { session, pane, idx, note });
-        self.busy.insert((pane, idx), "restoring session");
+        self.pending.insert(id, Pending::Attach { session, tab, note });
+        self.busy.insert(tab, "restoring session");
+    }
+
+    /// Forgets a closed tab's busy mark and any attach still in flight for it. A pending create
+    /// stays: its session must still be killed when it arrives, which the window does when it
+    /// cannot locate the tab.
+    pub fn tab_closed(&mut self, tab: TabId) {
+        self.busy.remove(&tab);
+        self.pending.retain(|_, p| !matches!(p, Pending::Attach { tab: t, .. } if *t == tab));
     }
 
     pub fn kill(&mut self, session: SessionId) {
@@ -172,8 +183,8 @@ impl SessionManager {
     }
 
     /// Gives up on a restore that failed: frees the tab and forgets the held-back events.
-    pub fn abort_restore(&mut self, session: SessionId, pane: PaneId, idx: usize) {
-        self.busy.remove(&(pane, idx));
+    pub fn abort_restore(&mut self, session: SessionId, tab: TabId) {
+        self.busy.remove(&tab);
         self.restoring.remove(&session);
         self.backlog.remove(&session);
         self.notes.remove(&session);
@@ -183,8 +194,8 @@ impl SessionManager {
         self.pending.len()
     }
 
-    pub fn has_pending_for(&self, pane: PaneId, idx: usize) -> bool {
-        self.busy.contains_key(&(pane, idx))
+    pub fn has_pending_for(&self, tab: TabId) -> bool {
+        self.busy.contains_key(&tab)
     }
 
     /// Matches a response to its request. Errors always surface, even for ids nobody waits on.
@@ -192,8 +203,8 @@ impl SessionManager {
         let pending = self.pending.remove(&id);
         if let Response::Error(e) = &response {
             match pending {
-                Some(Pending::Create { pane, idx, .. }) | Some(Pending::Attach { pane, idx, .. }) => {
-                    self.busy.remove(&(pane, idx));
+                Some(Pending::Create { tab, .. }) | Some(Pending::Attach { tab, .. }) => {
+                    self.busy.remove(&tab);
                 }
                 _ => {}
             }
@@ -201,17 +212,17 @@ impl SessionManager {
         }
         match (pending.clone(), response.clone()) {
             (Some(Pending::List), Response::Sessions(list)) => Outcome::Sessions(list),
-            (Some(Pending::Create { pane, idx, note }), Response::SessionCreated { id: session }) => {
-                self.busy.remove(&(pane, idx));
-                Outcome::Created { pane, idx, session, note }
+            (Some(Pending::Create { tab, note }), Response::SessionCreated { id: session }) => {
+                self.busy.remove(&tab);
+                Outcome::Created { tab, session, note }
             }
-            (Some(Pending::Attach { session, pane, idx, note }), Response::Attached { replay, alive }) => {
+            (Some(Pending::Attach { session, tab, note }), Response::Attached { replay, alive }) => {
                 // Stays busy until the window finishes restoring; it clears the mark itself.
-                Outcome::Attached { session, pane, idx, replay, alive, note }
+                Outcome::Attached { session, tab, replay, alive, note }
             }
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
-            (Some(Pending::Create { pane, idx, .. }), _) | (Some(Pending::Attach { pane, idx, .. }), _) => {
-                self.busy.remove(&(pane, idx));
+            (Some(Pending::Create { tab, .. }), _) | (Some(Pending::Attach { tab, .. }), _) => {
+                self.busy.remove(&tab);
                 Outcome::Error(format!("unexpected response {response:?} to {pending:?}"))
             }
             _ => Outcome::None,
@@ -219,8 +230,8 @@ impl SessionManager {
     }
 
     /// Clears a tab's busy mark once its terminal is on screen.
-    pub fn ready(&mut self, pane: PaneId, idx: usize) {
-        self.busy.remove(&(pane, idx));
+    pub fn ready(&mut self, tab: TabId) {
+        self.busy.remove(&tab);
     }
 
     pub fn begin_restore(&mut self, session: SessionId) {
@@ -334,13 +345,14 @@ mod tests {
         let d = t.split(b, Side::Bottom, term(4)).unwrap();
         let list = vec![info(1, here.path(), true), info(2, here.path(), false), info(4, elsewhere.path(), true)];
         let plan = reconcile(&t, &list, here.path());
+        let id = |p| t.tab_id(p, 0).unwrap();
         assert_eq!(
             plan,
             vec![
-                Reconcile::Attach { pane: a, idx: 0, session: SessionId(1) },
-                Reconcile::Create { pane: b, idx: 0 },
-                Reconcile::Create { pane: c, idx: 0 },
-                Reconcile::Create { pane: d, idx: 0 },
+                Reconcile::Attach { tab: id(a), session: SessionId(1) },
+                Reconcile::Create { tab: id(b) },
+                Reconcile::Create { tab: id(c) },
+                Reconcile::Create { tab: id(d) },
             ]
         );
         assert_eq!(t.panes(), vec![a, b, c, d], "the layout itself is untouched");
@@ -353,7 +365,7 @@ mod tests {
         let a = t.focused;
         t.add_tab(a, Tab::Viewer { path: PathBuf::from("/x") });
         let plan = reconcile(&t, &[info(1, here.path(), true)], here.path());
-        assert_eq!(plan, vec![Reconcile::Attach { pane: a, idx: 0, session: SessionId(1) }]);
+        assert_eq!(plan, vec![Reconcile::Attach { tab: t.tab_id(a, 0).unwrap(), session: SessionId(1) }]);
     }
 
     #[test]
@@ -376,8 +388,8 @@ mod tests {
         let r = Recorder::new();
         let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
         m.list();
-        m.create(5, 0, true);
-        m.attach(SessionId(3), 6, 1, false);
+        m.create(50, true);
+        m.attach(SessionId(3), 61, false);
         m.kill(SessionId(9));
         let reqs = r.requests();
         assert!(matches!(reqs[0], Request::ListSessions));
@@ -385,22 +397,22 @@ mod tests {
         assert!(matches!(reqs[2], Request::Attach { session: SessionId(3) }));
         assert!(matches!(reqs[3], Request::Kill { session: SessionId(9) }));
         assert_eq!(m.pending_count(), 4);
-        assert!(m.has_pending_for(5, 0));
-        assert!(m.has_pending_for(6, 1));
-        assert!(!m.has_pending_for(5, 1));
+        assert!(m.has_pending_for(50));
+        assert!(m.has_pending_for(61));
+        assert!(!m.has_pending_for(51));
 
         assert!(matches!(m.handle_response(1, Response::Sessions(vec![])), Outcome::Sessions(l) if l.is_empty()));
         assert_eq!(
             m.handle_response(2, Response::SessionCreated { id: SessionId(11) }),
-            Outcome::Created { pane: 5, idx: 0, session: SessionId(11), note: true }
+            Outcome::Created { tab: 50, session: SessionId(11), note: true }
         );
         assert_eq!(
             m.handle_response(3, Response::Attached { replay: vec![1, 2], alive: true }),
-            Outcome::Attached { session: SessionId(3), pane: 6, idx: 1, replay: vec![1, 2], alive: true, note: false }
+            Outcome::Attached { session: SessionId(3), tab: 61, replay: vec![1, 2], alive: true, note: false }
         );
         assert_eq!(m.handle_response(4, Response::Ok), Outcome::Killed { session: SessionId(9) });
         assert_eq!(m.pending_count(), 0);
-        assert!(!m.has_pending_for(5, 0));
+        assert!(!m.has_pending_for(50));
         // An error for an unknown id still surfaces; a stray Ok does not.
         assert_eq!(m.handle_response(77, Response::Error("x".into())), Outcome::Error("x".into()));
         assert_eq!(m.handle_response(78, Response::Ok), Outcome::None);
@@ -410,34 +422,50 @@ mod tests {
     fn a_failed_create_or_attach_clears_the_busy_mark() {
         let r = Recorder::new();
         let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
-        m.create(1, 0, false);
-        assert!(m.has_pending_for(1, 0));
+        m.create(10, false);
+        assert!(m.has_pending_for(10));
         assert_eq!(m.handle_response(1, Response::Error("spawn failed".into())), Outcome::Error("spawn failed".into()));
-        assert!(!m.has_pending_for(1, 0));
+        assert!(!m.has_pending_for(10));
     }
 
     #[test]
     fn a_mismatched_response_clears_the_busy_mark_and_reports() {
         let r = Recorder::new();
         let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
-        m.create(1, 0, false);
+        m.create(10, false);
         assert!(matches!(m.handle_response(1, Response::Attached { replay: vec![], alive: true }), Outcome::Error(_)));
-        assert!(!m.has_pending_for(1, 0));
+        assert!(!m.has_pending_for(10));
     }
 
     #[test]
     fn abort_restore_clears_busy_and_backlog() {
         let r = Recorder::new();
         let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
-        m.attach(SessionId(4), 2, 0, true);
+        m.attach(SessionId(4), 20, true);
         m.notes.insert(SessionId(4));
         m.begin_restore(SessionId(4));
         assert!(m.stash_if_restoring(&Event::Output { session: SessionId(4), bytes: vec![1] }));
-        m.abort_restore(SessionId(4), 2, 0);
-        assert!(!m.has_pending_for(2, 0));
+        m.abort_restore(SessionId(4), 20);
+        assert!(!m.has_pending_for(20));
         assert!(!m.is_restoring(SessionId(4)));
         assert_eq!(m.backlog_len(SessionId(4)), 0);
         assert!(!m.notes.contains(&SessionId(4)));
+    }
+
+    #[test]
+    fn a_closed_tab_drops_its_attach_but_its_create_still_reports() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
+        m.create(10, false);
+        m.attach(SessionId(4), 11, false);
+        m.tab_closed(10);
+        m.tab_closed(11);
+        assert!(!m.has_pending_for(10));
+        assert!(!m.has_pending_for(11));
+        // The shell created for the closed tab still surfaces, so the window can kill it.
+        assert_eq!(m.handle_response(1, Response::SessionCreated { id: SessionId(9) }), Outcome::Created { tab: 10, session: SessionId(9), note: false });
+        assert_eq!(m.handle_response(2, Response::Attached { replay: vec![], alive: true }), Outcome::None);
+        assert_eq!(m.pending_count(), 0);
     }
 
     #[test]

@@ -48,7 +48,8 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
             return None;
         }
     };
-    if let Ok(ws) = serde_json::from_str::<Workspace>(&text) {
+    if let Ok(mut ws) = serde_json::from_str::<Workspace>(&text) {
+        ws.tree.repair_ids();
         return Some(ws);
     }
     match serde_json::from_str::<V1>(&text) {
@@ -89,11 +90,44 @@ pub fn save_to(file: &Path, ws: &Workspace) -> std::io::Result<()> {
 pub struct SaveQueue {
     latest: Option<Workspace>,
     scheduled: bool,
+    /// Counts offers, so writes can be ordered.
+    generation: u64,
+    /// The last workspace handed to a writer, with its generation. A flush at quit rewrites it in
+    /// case that write is still running (or failed) when the process exits.
+    last_taken: Option<(u64, Workspace)>,
+    /// The generation last written. Writers hold it while writing, so a flush never interleaves
+    /// with a background write and an older workspace never overwrites a newer one.
+    written: Arc<Mutex<u64>>,
+}
+
+/// One workspace to write, with what is needed to keep writes in order.
+pub struct SaveJob {
+    pub ws: Workspace,
+    generation: u64,
+    written: Arc<Mutex<u64>>,
+}
+
+impl SaveJob {
+    /// Writes to disk unless a newer (or this same) generation is already there.
+    pub fn write(self) -> std::io::Result<()> {
+        self.write_with(|ws| save(&ws.project, ws))
+    }
+
+    fn write_with(self, write: impl FnOnce(&Workspace) -> std::io::Result<()>) -> std::io::Result<()> {
+        let mut last = self.written.lock().unwrap();
+        if self.generation <= *last {
+            return Ok(());
+        }
+        write(&self.ws)?;
+        *last = self.generation;
+        Ok(())
+    }
 }
 
 impl SaveQueue {
     /// Returns true when the caller must schedule a flush; false when one is already pending.
     pub fn offer(&mut self, ws: Workspace) -> bool {
+        self.generation += 1;
         self.latest = Some(ws);
         if self.scheduled {
             return false;
@@ -102,10 +136,26 @@ impl SaveQueue {
         true
     }
 
+    fn job(&self, generation: u64, ws: Workspace) -> SaveJob {
+        SaveJob { ws, generation, written: self.written.clone() }
+    }
+
     /// The workspace to write now. Clears the schedule so the next offer schedules again.
-    pub fn take(&mut self) -> Option<Workspace> {
+    pub fn take(&mut self) -> Option<SaveJob> {
         self.scheduled = false;
-        self.latest.take()
+        let ws = self.latest.take()?;
+        self.last_taken = Some((self.generation, ws.clone()));
+        Some(self.job(self.generation, ws))
+    }
+
+    /// For quitting: the pending workspace, else the last one taken (its write may not have
+    /// finished). `SaveJob::write` skips it when it is already on disk.
+    pub fn take_for_flush(&mut self) -> Option<SaveJob> {
+        if self.latest.is_some() {
+            return self.take();
+        }
+        let (generation, ws) = self.last_taken.clone()?;
+        Some(self.job(generation, ws))
     }
 }
 
@@ -120,10 +170,10 @@ pub fn request_save(queue: &SharedSaveQueue, ws: Workspace, cx: &mut App) {
     let queue = queue.clone();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(SAVE_DEBOUNCE).await;
-        let ws = queue.lock().unwrap().take();
-        if let Some(ws) = ws {
+        let job = queue.lock().unwrap().take();
+        if let Some(job) = job {
             cx.background_executor().spawn(async move {
-                if let Err(e) = save(&ws.project, &ws) {
+                if let Err(e) = job.write() {
                     eprintln!("sarkos: cannot save workspace: {e}");
                 }
             })
@@ -136,9 +186,9 @@ pub fn request_save(queue: &SharedSaveQueue, ws: Workspace, cx: &mut App) {
 /// Writes the pending save now, on the calling thread: one small write, for quitting, when the
 /// debounce timer would never fire.
 pub fn flush_now(queue: &SharedSaveQueue) {
-    let ws = queue.lock().unwrap().take();
-    if let Some(ws) = ws {
-        if let Err(e) = save(&ws.project, &ws) {
+    let job = queue.lock().unwrap().take_for_flush();
+    if let Some(job) = job {
+        if let Err(e) = job.write() {
             eprintln!("sarkos: cannot save workspace: {e}");
         }
     }
@@ -181,6 +231,24 @@ mod tests {
     }
 
     #[test]
+    fn a_file_without_tab_ids_loads_with_fresh_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ws.json");
+        std::fs::write(
+            &file,
+            r#"{ "version": 2, "project": "/p", "tree": { "root": { "Leaf": { "id": 1, "tabs": [
+                { "Terminal": { "session": 7 } }, { "Terminal": { "session": 8 } } ], "active": 0, "mru": [0, 1] } },
+                "next_id": 2, "focused": 1, "maximized": null } }"#,
+        )
+        .unwrap();
+        let ws = load_from(&file, Path::new("/p")).expect("loads");
+        let ids = &ws.tree.pane(1).unwrap().ids;
+        assert_eq!(ids.len(), 2);
+        assert!(ids[0] != ids[1] && ids.iter().all(|id| *id > 1), "unique and past the pane id");
+        assert_eq!(ws.tree.locate(ids[1]), Some((1, 1)));
+    }
+
+    #[test]
     fn corrupt_file_reads_as_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
@@ -218,8 +286,32 @@ mod tests {
         let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two() };
         assert!(q.offer(a.clone()), "first offer schedules a flush");
         assert!(!q.offer(b.clone()), "a flush is already pending");
-        assert_eq!(q.take(), Some(b), "the latest offer wins");
-        assert_eq!(q.take(), None);
-        assert!(q.offer(a), "after a flush the next offer schedules again");
+        assert_eq!(q.take().map(|j| j.ws), Some(b.clone()), "the latest offer wins");
+        assert!(q.take().is_none());
+        // The background write may still be running at quit: the flush still sees the workspace.
+        assert_eq!(q.take_for_flush().map(|j| j.ws), Some(b), "a flush rewrites the last taken workspace");
+        assert!(q.offer(a.clone()), "after a flush the next offer schedules again");
+        assert_eq!(q.take_for_flush().map(|j| j.ws), Some(a), "a pending offer outranks the last taken one");
+    }
+
+    #[test]
+    fn writes_never_go_back_a_generation() {
+        let mut q = SaveQueue::default();
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two() };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two() };
+        q.offer(a);
+        let old = q.take().unwrap();
+        q.offer(b);
+        let new = q.take_for_flush().unwrap();
+        let wrote = std::cell::RefCell::new(Vec::new());
+        let record = |ws: &Workspace| {
+            wrote.borrow_mut().push(ws.project.clone());
+            Ok(())
+        };
+        new.write_with(record).unwrap();
+        old.write_with(record).unwrap();
+        // Flushing what is already on disk writes nothing.
+        q.take_for_flush().unwrap().write_with(record).unwrap();
+        assert_eq!(*wrote.borrow(), vec![PathBuf::from("/b")]);
     }
 }

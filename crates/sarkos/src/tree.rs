@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 pub type PaneId = u64;
 pub type SplitId = u64;
+/// A tab's identity for its whole life, across moves between panes and index shifts. Drawn from
+/// the same counter as pane and split ids.
+pub type TabId = u64;
 
 pub const MIN_PANE_W: f32 = 160.0;
 pub const MIN_PANE_H: f32 = 80.0;
@@ -59,6 +62,9 @@ pub struct Pane {
     /// Tab indices, most recently activated first. Drives Ctrl+Tab.
     #[serde(default)]
     pub mru: Vec<usize>,
+    /// Each tab's id, parallel to `tabs`. A file without them is repaired on load.
+    #[serde(default)]
+    pub ids: Vec<TabId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,6 +114,14 @@ impl Node {
         }
     }
 
+    /// The largest pane, split or tab id in the subtree.
+    fn max_id(&self) -> u64 {
+        match self {
+            Node::Leaf(p) => p.ids.iter().copied().chain([p.id]).max().unwrap_or(0),
+            Node::Split { id, first, second, .. } => (*id).max(first.max_id()).max(second.max_id()),
+        }
+    }
+
     fn find(&self, id: PaneId) -> Option<&Pane> {
         match self {
             Node::Leaf(p) => (p.id == id).then_some(p),
@@ -154,7 +168,7 @@ impl Node {
     fn split_leaf(&mut self, id: PaneId, side: Side, new_pane: Pane, split_id: SplitId) -> bool {
         match self {
             Node::Leaf(p) if p.id == id => {
-                let existing = std::mem::replace(self, Node::Leaf(Pane { id: 0, tabs: vec![], active: 0, mru: vec![] }));
+                let existing = std::mem::replace(self, Node::Leaf(Pane { id: 0, tabs: vec![], active: 0, mru: vec![], ids: vec![] }));
                 let new_leaf = Node::Leaf(new_pane);
                 let (first, second) = if side.new_pane_first() { (new_leaf, existing) } else { (existing, new_leaf) };
                 *self = Node::Split { id: split_id, orientation: side.orientation(), ratio: 0.5, first: Box::new(first), second: Box::new(second) };
@@ -226,7 +240,7 @@ fn reading_order(panes: &mut [(PaneId, Rect)]) {
 }
 
 fn placeholder() -> Node {
-    Node::Leaf(Pane { id: 0, tabs: vec![], active: 0, mru: vec![] })
+    Node::Leaf(Pane { id: 0, tabs: vec![], active: 0, mru: vec![], ids: vec![] })
 }
 
 /// Splits `bounds` along `orientation` at `ratio`, leaving a handle between the halves. Each half
@@ -261,8 +275,8 @@ fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32, first: &Node,
 
 impl Tree {
     pub fn new(first: Tab) -> Tree {
-        let pane = Pane { id: 1, tabs: vec![first], active: 0, mru: vec![0] };
-        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None }
+        let pane = Pane { id: 1, tabs: vec![first], active: 0, mru: vec![0], ids: vec![2] };
+        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None }
     }
 
     fn fresh_id(&mut self) -> u64 {
@@ -327,7 +341,8 @@ impl Tree {
         self.pane(pane)?;
         let new_id = self.fresh_id();
         let split_id = self.fresh_id();
-        let new_pane = Pane { id: new_id, tabs: vec![tab], active: 0, mru: vec![0] };
+        let tab_id = self.fresh_id();
+        let new_pane = Pane { id: new_id, tabs: vec![tab], active: 0, mru: vec![0], ids: vec![tab_id] };
         if !self.root.split_leaf(pane, side, new_pane, split_id) {
             return None;
         }
@@ -337,8 +352,10 @@ impl Tree {
     }
 
     pub fn add_tab(&mut self, pane: PaneId, tab: Tab) -> usize {
+        let id = self.fresh_id();
         let p = self.pane_mut(pane).expect("pane exists");
         p.tabs.push(tab);
+        p.ids.push(id);
         let idx = p.tabs.len() - 1;
         p.active = idx;
         p.mru.retain(|i| *i != idx);
@@ -346,6 +363,7 @@ impl Tree {
         idx
     }
 
+    /// Swaps a tab's content in place; the tab keeps its id.
     pub fn replace_tab(&mut self, pane: PaneId, idx: usize, tab: Tab) {
         if let Some(p) = self.pane_mut(pane) {
             if idx < p.tabs.len() {
@@ -373,11 +391,17 @@ impl Tree {
 
     /// Removes a tab; the pane stays even when it empties (the empty state).
     pub fn close_tab(&mut self, pane: PaneId, idx: usize) -> Option<Tab> {
+        self.remove_tab(pane, idx).map(|(tab, _)| tab)
+    }
+
+    /// Removes a tab and returns it with its id, for moves that keep the id.
+    fn remove_tab(&mut self, pane: PaneId, idx: usize) -> Option<(Tab, TabId)> {
         let p = self.pane_mut(pane)?;
         if idx >= p.tabs.len() {
             return None;
         }
         let tab = p.tabs.remove(idx);
+        let id = p.ids.remove(idx);
         p.mru.retain(|i| *i != idx);
         for i in p.mru.iter_mut() {
             if *i > idx {
@@ -389,7 +413,46 @@ impl Tree {
         } else if p.active > idx || p.active == p.tabs.len() {
             p.active -= 1;
         }
-        Some(tab)
+        Some((tab, id))
+    }
+
+    /// The id of the tab at `idx` in `pane`.
+    pub fn tab_id(&self, pane: PaneId, idx: usize) -> Option<TabId> {
+        self.pane(pane)?.ids.get(idx).copied()
+    }
+
+    /// Where a tab is now: its pane and index. `None` once it has closed.
+    pub fn locate(&self, tab: TabId) -> Option<(PaneId, usize)> {
+        let mut panes = Vec::new();
+        self.root.leaves(&mut panes);
+        panes.into_iter().find_map(|id| self.pane(id)?.ids.iter().position(|t| *t == tab).map(|i| (id, i)))
+    }
+
+    /// Gives every tab an id when a file was written without them (or with a damaged list), and
+    /// moves the id counter past every id in use.
+    pub fn repair_ids(&mut self) {
+        self.next_id = self.next_id.max(self.root.max_id() + 1);
+        let mut panes = Vec::new();
+        self.root.leaves(&mut panes);
+        let mut seen = std::collections::HashSet::new();
+        for pane in panes {
+            let (n, ids) = {
+                let p = self.pane(pane).expect("listed pane exists");
+                (p.tabs.len(), p.ids.clone())
+            };
+            let mut fixed = Vec::with_capacity(n);
+            for i in 0..n {
+                match ids.get(i) {
+                    Some(id) if ids.len() == n && seen.insert(*id) => fixed.push(*id),
+                    _ => {
+                        let id = self.fresh_id();
+                        seen.insert(id);
+                        fixed.push(id);
+                    }
+                }
+            }
+            self.pane_mut(pane).expect("listed pane exists").ids = fixed;
+        }
     }
 
     /// Removes a pane and its tabs. The last pane never closes.
@@ -423,10 +486,11 @@ impl Tree {
             if landing == idx {
                 return true;
             }
-            let tab = self.close_tab(from, idx).expect("tab exists");
+            let (tab, id) = self.remove_tab(from, idx).expect("tab exists");
             let p = self.pane_mut(to).expect("pane exists");
             let landing = landing.min(p.tabs.len());
             p.tabs.insert(landing, tab);
+            p.ids.insert(landing, id);
             for i in p.mru.iter_mut() {
                 if *i >= landing {
                     *i += 1;
@@ -437,10 +501,11 @@ impl Tree {
             p.mru.insert(0, landing);
             return true;
         }
-        let tab = self.close_tab(from, idx).expect("tab exists");
+        let (tab, id) = self.remove_tab(from, idx).expect("tab exists");
         let p = self.pane_mut(to).expect("pane exists");
         let landing = at.unwrap_or(p.tabs.len()).min(p.tabs.len());
         p.tabs.insert(landing, tab);
+        p.ids.insert(landing, id);
         for i in p.mru.iter_mut() {
             if *i >= landing {
                 *i += 1;
@@ -466,6 +531,8 @@ impl Tree {
         let p = self.pane_mut(pane).expect("pane exists");
         let tab = p.tabs.remove(idx);
         p.tabs.insert(target as usize, tab);
+        let id = p.ids.remove(idx);
+        p.ids.insert(target as usize, id);
         let remap = |i: usize| -> usize {
             if i == idx {
                 target as usize
@@ -805,6 +872,56 @@ mod tests {
         assert_eq!(back, t);
     }
 
+    #[test]
+    fn tab_ids_survive_moves_and_closes() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        let b = t.split(a, Side::Right, term(2)).unwrap();
+        t.add_tab(a, term(3));
+        t.add_tab(a, term(4));
+        t.add_tab(a, term(5));
+        let ids: Vec<TabId> = (0..4).map(|i| t.tab_id(a, i).unwrap()).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 4);
+        // Move tab 3 (index 2) to the other pane, then close the first tab: indices shift.
+        assert!(t.move_tab(a, 2, b, Some(0)));
+        let closed = ids[0];
+        t.close_tab(a, 0);
+        assert_eq!(t.locate(ids[2]), Some((b, 0)));
+        assert_eq!(t.pane(b).unwrap().tabs[0], term(4));
+        assert_eq!(t.locate(closed), None);
+        assert_eq!(t.locate(ids[1]), Some((a, 0)));
+        assert_eq!(t.locate(ids[3]), Some((a, 1)));
+        // Replacing a tab's content keeps its id; reordering carries it.
+        t.replace_tab(a, 0, term(9));
+        assert_eq!(t.tab_id(a, 0), Some(ids[1]));
+        assert!(t.move_tab_within(a, 0, 1));
+        assert_eq!(t.locate(ids[1]), Some((a, 1)));
+        check_invariants(&t);
+    }
+
+    #[test]
+    fn repair_ids_fills_missing_ids_and_moves_the_counter_past_them() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        t.split(a, Side::Bottom, term(2));
+        t.add_tab(a, term(3));
+        // A file written before tab ids existed: strip them, as `#[serde(default)]` would.
+        let json = serde_json::to_string(&t).unwrap().replace(r#""ids":"#, r#""old_ids":"#);
+        let mut old: Tree = serde_json::from_str(&json).unwrap();
+        assert!(old.pane(a).unwrap().ids.is_empty());
+        old.repair_ids();
+        check_invariants(&old);
+        let max = old.tabs().iter().map(|(p, i, _)| old.tab_id(*p, *i).unwrap()).max().unwrap();
+        let next = old.add_tab(a, term(4));
+        assert!(old.tab_id(a, next).unwrap() > max, "fresh ids never collide with repaired ones");
+        check_invariants(&old);
+        // A sound tree is left as it is.
+        let before = t.clone();
+        t.repair_ids();
+        assert_eq!(t, before);
+    }
+
     #[derive(Debug, Clone)]
     enum Op {
         Split(usize, Side),
@@ -876,9 +993,14 @@ mod tests {
         let panes = t.panes();
         assert!(!panes.is_empty());
         let mut seen = std::collections::HashSet::new();
+        let mut tab_ids = std::collections::HashSet::new();
         for p in &panes {
             assert!(seen.insert(*p), "duplicate pane id");
             let pane = t.pane(*p).expect("every listed pane resolves");
+            assert_eq!(pane.ids.len(), pane.tabs.len(), "one id per tab");
+            for id in &pane.ids {
+                assert!(tab_ids.insert(*id), "duplicate tab id");
+            }
             assert!(pane.tabs.is_empty() || pane.active < pane.tabs.len(), "active in range");
             for i in &pane.mru {
                 assert!(*i < pane.tabs.len(), "mru in range");

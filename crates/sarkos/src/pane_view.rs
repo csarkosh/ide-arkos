@@ -3,7 +3,7 @@
 
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
-use crate::tree::{PaneId, Rect, Tab};
+use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
     canvas, div, prelude::*, px, rgb, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
@@ -47,15 +47,30 @@ pub fn render_pane(root: &mut Root, pane: PaneId, _rect: Rect, _window: &mut Win
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
-    let bar = render_tab_bar(root, pane, &p.tabs, p.active, number, cx);
+    let bar = render_tab_bar(root, pane, &p, number, cx);
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
             Some(terminal) => render_terminal(root, terminal, cx),
-            None => render_busy(root, pane, p.active, cx),
+            None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
     };
+    // Every pane measures the grid a terminal would get, whatever it shows, so a restore into
+    // any of its tabs always gets a size (it paints nothing).
+    let weak = cx.weak_entity();
+    let font_size = root.font_size;
+    let measure = canvas(
+        move |bounds, window, cx| {
+            let grid = grid_for(bounds, window, font_size);
+            let _ = weak.update(cx, |root, _| root.report_grid(pane, grid));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
     div()
         .size_full()
         .flex()
@@ -70,10 +85,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, _rect: Rect, _window: &mut Win
             }),
         )
         .child(bar)
-        .child(div().flex_1().min_h_0().child(body))
+        .child(div().flex_1().min_h_0().relative().child(measure).child(body))
 }
 
-fn render_tab_bar(root: &mut Root, pane: PaneId, tabs: &[Tab], active: usize, number: usize, cx: &mut Context<Root>) -> Div {
+fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &mut Context<Root>) -> Div {
     let mut bar = div()
         .h(px(TAB_BAR_H))
         .w_full()
@@ -86,10 +101,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, tabs: &[Tab], active: usize, nu
         .font_family("Menlo")
         .text_size(px(12.0))
         .child(div().px(px(8.0)).text_color(rgb(DIM)).child(format!("{number}")));
-    for (idx, tab) in tabs.iter().enumerate() {
+    for (idx, tab) in p.tabs.iter().enumerate() {
         let label = match tab {
             Tab::Terminal { session } => {
-                let busy = root.sessions.busy.get(&(pane, idx)).copied();
+                let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
                 let note = root.sessions.notes.contains(session);
                 match root.sessions.terminals.get(session) {
                     Some(t) => {
@@ -101,7 +116,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, tabs: &[Tab], active: usize, nu
             }
             Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         };
-        let is_active = idx == active;
+        let is_active = idx == p.active;
         bar = bar.child(
             div()
                 .id(tab_id("tab", pane, idx))
@@ -181,26 +196,16 @@ fn render_terminal(root: &mut Root, terminal: Entity<Terminal>, cx: &mut Context
         .child(TerminalElement::new(terminal, font_size))
 }
 
-/// A tab whose shell is starting or whose replay is being parsed: measure the grid the terminal
-/// will get, so the replay can be parsed at that size (milestone 1's rule, now per pane).
-fn render_busy(root: &mut Root, pane: PaneId, idx: usize, cx: &mut Context<Root>) -> Div {
-    let text = root.sessions.busy.get(&(pane, idx)).copied().unwrap_or("starting shell");
-    let weak = cx.weak_entity();
+/// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by
+/// `render_pane`, so the replay is parsed at the size it will be shown at.
+fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Context<Root>) -> Div {
+    let text = tab.and_then(|id| root.sessions.busy.get(&id)).copied().unwrap_or("starting shell");
     let font_size = root.font_size;
-    let measure = canvas(
-        move |bounds, window, cx| {
-            let grid = grid_for(bounds, window, font_size);
-            let _ = weak.update(cx, |root, _| root.report_grid(pane, grid));
-        },
-        |_, _, _, _| {},
-    )
-    .size_full();
     let focus = pane_focus(root, pane, cx);
     div()
         .size_full()
         .relative()
         .track_focus(&focus)
-        .child(measure)
         .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(rgb(DIM)).font_family("Menlo").text_size(px(font_size)).child(text))
 }
 

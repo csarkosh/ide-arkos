@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use terminal::{Terminal, TerminalCore};
-use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, Tree};
+use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
 
 const BG: u32 = 0x11161f;
@@ -96,6 +96,29 @@ impl Root {
         request_save(&self.save_queue, ws, cx);
     }
 
+    /// Drops everything kept per pane. Dropping its grid waiters makes a restore waiting on the
+    /// pane fail, and its error path aborts the restore.
+    pub fn forget_pane(&mut self, pane: PaneId) {
+        self.grids.remove(&pane);
+        self.grid_waiters.remove(&pane);
+        self.pane_focus.remove(&pane);
+    }
+
+    /// Forgets per-pane state for panes no longer in the tree, whatever removed them.
+    fn forget_closed_panes(&mut self) {
+        let gone: Vec<PaneId> = self
+            .grids
+            .keys()
+            .chain(self.grid_waiters.keys())
+            .chain(self.pane_focus.keys())
+            .copied()
+            .filter(|p| !self.pane_order.contains(p))
+            .collect();
+        for pane in gone {
+            self.forget_pane(pane);
+        }
+    }
+
     pub fn report_grid(&mut self, pane: PaneId, grid: (usize, usize)) {
         self.grids.insert(pane, grid);
         for tx in self.grid_waiters.remove(&pane).unwrap_or_default() {
@@ -140,13 +163,18 @@ impl Root {
 
     /// Closes a tab. A terminal's session is killed and detached; the pane stays (spec 4).
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
+        let Some(id) = self.tree.tab_id(pane, idx) else { return };
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         if let Tab::Terminal { session } = tab {
             if session != SessionId(0) {
+                if self.sessions.is_restoring(session) {
+                    self.sessions.abort_restore(session, id);
+                }
                 self.sessions.kill(session);
                 self.sessions.detach(session);
             }
-            self.sessions.ready(pane, idx);
+            // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
+            self.sessions.tab_closed(id);
         }
         self.save(cx);
         cx.notify();
@@ -155,7 +183,9 @@ impl Root {
     pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0) });
         self.tree.focused = pane;
-        self.sessions.create(pane, idx, false);
+        if let Some(id) = self.tree.tab_id(pane, idx) {
+            self.sessions.create(id, false);
+        }
         self.save(cx);
         cx.notify();
     }
@@ -164,7 +194,9 @@ impl Root {
     pub fn split_focused(&mut self, side: Side, cx: &mut Context<Self>) {
         let pane = self.tree.focused;
         if let Some(new_pane) = self.tree.split(pane, side, Tab::Terminal { session: SessionId(0) }) {
-            self.sessions.create(new_pane, 0, false);
+            if let Some(id) = self.tree.tab_id(new_pane, 0) {
+                self.sessions.create(id, false);
+            }
             self.save(cx);
             cx.notify();
         }
@@ -183,30 +215,37 @@ impl Root {
                 }
                 for step in reconcile(&self.tree, &list, &self.project) {
                     match step {
-                        Reconcile::Attach { pane, idx, session } => self.sessions.attach(session, pane, idx, false),
-                        Reconcile::Create { pane, idx } => self.sessions.create(pane, idx, saved_layout),
+                        Reconcile::Attach { tab, session } => self.sessions.attach(session, tab, false),
+                        Reconcile::Create { tab } => self.sessions.create(tab, saved_layout),
                     }
                 }
                 cx.notify();
             }
-            Outcome::Created { pane, idx, session, note } => {
+            Outcome::Created { tab, session, note } => {
+                let Some((pane, idx)) = self.tree.locate(tab) else {
+                    // The tab closed while its shell was starting: nobody will show this session.
+                    eprintln!("sarkos: tab closed before session {} started, ending it", session.0);
+                    self.sessions.kill(session);
+                    self.sessions.detach(session);
+                    return;
+                };
                 self.tree.replace_tab(pane, idx, Tab::Terminal { session });
                 if note {
                     self.sessions.notes.insert(session);
                 }
                 self.save(cx);
-                self.sessions.attach(session, pane, idx, note);
+                self.sessions.attach(session, tab, note);
                 cx.notify();
             }
-            Outcome::Attached { session, pane, idx, replay, alive, note: _ } => {
+            Outcome::Attached { session, tab, replay, alive, note: _ } => {
                 eprintln!("sarkos: attached to session {} ({} replay bytes)", session.0, replay.len());
                 self.sessions.begin_restore(session);
                 let root = cx.entity();
                 cx.spawn(async move |_, cx| {
-                    if let Err(e) = restore(&root, session, pane, idx, replay, alive, cx).await {
+                    if let Err(e) = restore(&root, session, tab, replay, alive, cx).await {
                         eprintln!("sarkos: restoring session {} failed: {e:#}", session.0);
                         let _ = root.update(cx, |root, cx| {
-                            root.sessions.abort_restore(session, pane, idx);
+                            root.sessions.abort_restore(session, tab);
                             cx.notify();
                         });
                     }
@@ -224,16 +263,20 @@ impl Root {
 }
 
 /// Parses a replay off the main thread at the pane's grid, then installs the terminal.
-async fn restore(root: &Entity<Root>, session: SessionId, pane: PaneId, idx: usize, replay: Vec<u8>, alive: bool, cx: &mut AsyncApp) -> anyhow::Result<()> {
-    let known = root.update(cx, |root, cx| match root.pane_grid(pane, cx) {
-        Some(grid) => Ok(grid),
-        None => {
-            let (tx, rx) = oneshot::channel();
-            root.grid_waiters.entry(pane).or_default().push(tx);
-            cx.notify();
-            Err(rx)
-        }
-    })?;
+/// The tab is followed by id, so it may move or close while the replay is parsed.
+async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, cx: &mut AsyncApp) -> anyhow::Result<()> {
+    let known = root.update(cx, |root, cx| {
+        let (pane, _) = root.tree.locate(tab).ok_or_else(|| anyhow::anyhow!("tab {tab} closed before its restore began"))?;
+        anyhow::Ok(match root.pane_grid(pane, cx) {
+            Some(grid) => Ok(grid),
+            None => {
+                let (tx, rx) = oneshot::channel();
+                root.grid_waiters.entry(pane).or_default().push(tx);
+                cx.notify();
+                Err(rx)
+            }
+        })
+    })??;
     let (cols, rows) = match known {
         Ok(grid) => grid,
         Err(rx) => rx.await?,
@@ -249,6 +292,16 @@ async fn restore(root: &Entity<Root>, session: SessionId, pane: PaneId, idx: usi
         .await;
     eprintln!("sarkos: session {} replay parsed at {cols}x{rows} in {:?}", session.0, started.elapsed());
     root.update(cx, |root, cx| {
+        if root.tree.locate(tab).is_none() {
+            // Closed while parsing; `close_tab` normally ends the session, but a pane removal
+            // might not have, so end it here too.
+            eprintln!("sarkos: tab {tab} closed during its restore, ending session {}", session.0);
+            root.sessions.kill(session);
+            root.sessions.detach(session);
+            root.sessions.abort_restore(session, tab);
+            cx.notify();
+            return;
+        }
         // The PTY still has the previous window's size. Setting this grid's size is a no-op when
         // they match and makes the program redraw when they differ.
         let client = root.sessions.transport.clone();
@@ -260,7 +313,7 @@ async fn restore(root: &Entity<Root>, session: SessionId, pane: PaneId, idx: usi
             t
         });
         root.sessions.finish_restore(session, terminal, cx);
-        root.sessions.ready(pane, idx);
+        root.sessions.ready(tab);
         cx.notify();
     })
 }
@@ -293,6 +346,13 @@ impl Render for Root {
             .flex()
             .flex_col()
             .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+                if root.resizing.is_some() && ev.pressed_button != Some(MouseButton::Left) {
+                    // Released outside the window, where no mouse-up reaches us: end the drag.
+                    root.resizing = None;
+                    root.save(cx);
+                    cx.notify();
+                    return;
+                }
                 if let Some((split, orientation, area)) = root.resizing {
                     // `area` and the pointer are both in window pixels.
                     let ratio = split_view::ratio_from_pointer(area, orientation, f32::from(ev.position.x), f32::from(ev.position.y));

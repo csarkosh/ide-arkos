@@ -29,6 +29,7 @@ pub fn ratio_from_pointer(area: Rect, orientation: Orientation, x: f32, y: f32) 
 pub fn render_tree(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let layout = root.layout();
     root.pane_order = root.tree.panes();
+    root.forget_closed_panes();
     let (ox, oy) = (root.content.x, root.content.y);
     let mut container = div().relative().size_full();
     for (pane, rect) in &layout.panes {
