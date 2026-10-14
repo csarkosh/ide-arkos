@@ -13,6 +13,20 @@ use std::time::{Duration, Instant};
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long each reader gets to park; one that has not by then fails the upgrade.
 const PARK_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long the upgrade waits for creates that passed their check before `begin` to finish.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Whether the session table is complete: `Some(true)` once no create is in flight,
+/// `Some(false)` when one is still spawning after `CREATE_TIMEOUT`, `None` to keep waiting.
+fn creates_settled(creating: usize, waited: Duration) -> Option<bool> {
+    if creating == 0 {
+        Some(true)
+    } else if waited >= CREATE_TIMEOUT {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 /// The binary must be ours, the user's, runnable, and able to read this format.
 pub fn validate(exe: &Path) -> Result<(), String> {
@@ -86,9 +100,17 @@ pub fn handover_path(socket: &Path) -> PathBuf {
 /// Parks every reader, writes the handover, hands the descriptors over and execs. Returns only
 /// on failure, with everything restored and the error to report.
 pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
-    let (sessions, listener_fd, next_session) = {
+    // A create that passed its check before `begin` inserts its session later; gathered without
+    // it, its master would close at the exec and its shell get SIGHUP. No new create starts now,
+    // and the table is gathered under the same lock that sees none in flight.
+    let started = Instant::now();
+    let (sessions, listener_fd, next_session, settled) = loop {
         let st = state.lock().unwrap();
-        (st.sessions.values().cloned().collect::<Vec<_>>(), st.listener_fd, st.next_session())
+        if let Some(settled) = creates_settled(st.creating, started.elapsed()) {
+            break (st.sessions.values().cloned().collect::<Vec<_>>(), st.listener_fd, st.next_session(), settled);
+        }
+        drop(st);
+        std::thread::sleep(Duration::from_millis(5));
     };
     let path = handover_path(&opts.socket);
     // Everything but the descriptor flags, which are put back under the spawn lock.
@@ -101,6 +123,9 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         eprintln!("sarkosd: upgrade to {} failed: {why}; the old daemon keeps running", exe.display());
         why
     };
+    if !settled {
+        return restore(format!("a session being created did not finish within {CREATE_TIMEOUT:?}"));
+    }
     for s in &sessions {
         s.pause();
     }
@@ -170,4 +195,18 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
     let _ = pty::set_inheritable_fd(listener_fd, false);
     drop(no_fork);
     restore(why)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_upgrade_waits_for_creates_in_flight_then_gives_up() {
+        assert_eq!(creates_settled(0, Duration::ZERO), Some(true));
+        assert_eq!(creates_settled(0, CREATE_TIMEOUT * 2), Some(true), "settled wins over late");
+        assert_eq!(creates_settled(1, Duration::from_millis(100)), None, "keep waiting");
+        assert_eq!(creates_settled(2, CREATE_TIMEOUT), Some(false));
+        assert_eq!(CREATE_TIMEOUT, Duration::from_secs(2));
+    }
 }

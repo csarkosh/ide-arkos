@@ -56,6 +56,9 @@ pub struct State {
     pub listener_fd: RawFd,
     /// Set while an upgrade is being checked or carried out; a second one is refused.
     pub upgrading: bool,
+    /// Creates past their `upgrading` check whose session is not in `sessions` yet; an upgrade
+    /// waits for none before it gathers the table.
+    pub creating: usize,
 }
 
 impl State {
@@ -275,6 +278,17 @@ fn disconnect(state: &Shared, client_id: ClientId) {
     }
 }
 
+/// Counts one create in `State::creating` from its `upgrading` check until it is dropped, after
+/// the session is inserted or the spawn failed, so no return path can leak the count.
+struct Creating<'a>(&'a Shared);
+
+impl Drop for Creating<'_> {
+    fn drop(&mut self) {
+        // Also runs while unwinding, so a poisoned lock must not panic again.
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).creating -= 1;
+    }
+}
+
 /// What `CreateSession` and `Kill` answer while an upgrade holds the slot: a new session would
 /// miss the handover, and a kill could reap a shell after its snapshot called it alive.
 const UPGRADE_IN_PROGRESS: &str = "an upgrade is in progress; retry in a moment";
@@ -349,9 +363,13 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 if st.upgrading {
                     return Some(Response::Error(UPGRADE_IN_PROGRESS.into()));
                 }
+                // Under the same lock as the check: an upgrade that begins after it waits for
+                // this session to be in the table.
+                st.creating += 1;
                 st.next_session += 1;
                 SessionId(st.next_session)
             };
+            let _creating = Creating(state);
             match Session::spawn(SpawnSpec { id, cwd, shell, env, nice, rows, cols, replay_capacity: opts.replay_capacity, backpressure: opts.backpressure }) {
                 Ok(s) => {
                     state.lock().unwrap().sessions.insert(id, s);
