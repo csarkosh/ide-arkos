@@ -411,12 +411,16 @@ impl Root {
         for dir in self.explorer.dirs_to_load() {
             self.explorer.mark_loading(&dir);
             let root = self.project.clone();
-            let this = cx.entity();
             let d = dir.clone();
-            cx.spawn(async move |_, cx| {
+            cx.spawn(async move |this, cx| {
                 let entries = cx.background_executor().spawn(async move { explorer::read_dir_entries(&root, &d) }).await;
                 let _ = this.update(cx, |root, cx| {
-                    root.explorer.set_loaded(&dir, entries);
+                    match entries {
+                        Some(entries) => root.explorer.set_loaded(&dir, entries),
+                        None => root.explorer.set_unreadable(&dir),
+                    }
+                    // A change the poll saw while this read was in flight is read again now.
+                    root.load_pending_dirs(cx);
                     cx.notify();
                 });
             })

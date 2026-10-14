@@ -48,7 +48,8 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<EntryInfo>> {
 
 /// Marks the entries `.gitignore` ignores, by asking git from the repository root. Outside a
 /// repository, or without git, nothing is marked. One process per call: the caller runs it
-/// once per expanded directory, off the UI thread.
+/// once per expanded directory, off the UI thread. Git refuses a path beyond a symlinked
+/// directory (exit 128), so nothing inside one is marked.
 pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -58,14 +59,19 @@ pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     let Ok(mut child) = Command::new("git").arg("-C").arg(root).args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
         return;
     };
-    {
-        let Some(mut stdin) = child.stdin.take() else { return };
-        for e in entries.iter() {
-            let _ = stdin.write_all(e.path.as_os_str().as_encoded_bytes());
+    let Some(mut stdin) = child.stdin.take() else { return };
+    // Written from a thread while this one reads: git answers each path as it goes, and with
+    // both pipes full a single thread writing everything first and git would wait on each other.
+    let paths: Vec<Vec<u8>> = entries.iter().map(|e| e.path.as_os_str().as_encoded_bytes().to_vec()).collect();
+    let writer = std::thread::spawn(move || {
+        for p in paths {
+            let _ = stdin.write_all(&p);
             let _ = stdin.write_all(b"\0");
         }
-    }
-    let Ok(out) = child.wait_with_output() else { return };
+    });
+    let out = child.wait_with_output();
+    let _ = writer.join();
+    let Ok(out) = out else { return };
     // Exit 1 means nothing matched; 128 means not a repository. Either way the output says.
     let ignored: HashSet<&[u8]> = out.stdout.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
     for e in entries.iter_mut() {
@@ -73,16 +79,17 @@ pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     }
 }
 
-/// What the window loads for one directory, on the background executor.
-pub fn read_dir_entries(root: &Path, dir: &Path) -> Vec<EntryInfo> {
+/// What the window loads for one directory, on the background executor. `None` (logged) when
+/// the directory cannot be read, as when it was deleted.
+pub fn read_dir_entries(root: &Path, dir: &Path) -> Option<Vec<EntryInfo>> {
     match list_dir(dir) {
         Ok(mut entries) => {
             mark_ignored(root, &mut entries);
-            entries
+            Some(entries)
         }
         Err(e) => {
             eprintln!("sarkos: cannot read {}: {e}", dir.display());
-            Vec::new()
+            None
         }
     }
 }
@@ -92,6 +99,8 @@ pub struct Explorer {
     pub expanded: BTreeSet<PathBuf>,
     pub loaded: HashMap<PathBuf, Vec<EntryInfo>>,
     loading: HashSet<PathBuf>,
+    /// Loaded directories the poll saw change: shown as they were until the re-read lands.
+    stale: HashSet<PathBuf>,
     pub show_ignored: bool,
     pub selected: Option<PathBuf>,
 }
@@ -101,30 +110,51 @@ impl Explorer {
     /// itself, which is implicit) is dropped rather than read and polled for nothing.
     pub fn new(root: PathBuf, expanded: Vec<PathBuf>, show_ignored: bool) -> Self {
         let expanded = expanded.into_iter().filter(|d| d != &root && d.starts_with(&root)).collect();
-        Explorer { root, expanded, loaded: HashMap::new(), loading: HashSet::new(), show_ignored, selected: None }
+        Explorer { root, expanded, loaded: HashMap::new(), loading: HashSet::new(), stale: HashSet::new(), show_ignored, selected: None }
     }
 
-    /// Expanded directories whose children are not loaded and not being loaded; the root first.
+    /// Expanded directories whose children are not loaded, or stale, and not being loaded; the
+    /// root first.
     pub fn dirs_to_load(&self) -> Vec<PathBuf> {
         let mut want: Vec<PathBuf> = std::iter::once(self.root.clone()).chain(self.expanded.iter().cloned()).collect();
         want.dedup();
-        want.retain(|d| !self.loaded.contains_key(d) && !self.loading.contains(d));
+        want.retain(|d| (!self.loaded.contains_key(d) || self.stale.contains(d)) && !self.loading.contains(d));
         want
     }
 
+    /// The read starting now sees every change made before it.
     pub fn mark_loading(&mut self, dir: &Path) {
+        self.stale.remove(dir);
         self.loading.insert(dir.to_path_buf());
     }
 
+    /// A read landed. A directory invalidated while its read was in flight stays stale: the read
+    /// may predate the change.
     pub fn set_loaded(&mut self, dir: &Path, entries: Vec<EntryInfo>) {
-        self.loading.remove(dir);
+        if !self.loading.remove(dir) {
+            self.stale.remove(dir);
+        }
         self.loaded.insert(dir.to_path_buf(), entries);
     }
 
-    /// Forgets a directory's children so the next `dirs_to_load` reads them again (the poll saw
-    /// it change). What is shown stays until the new read lands.
+    /// A directory that could not be read: collapsed so it is neither saved nor retried, and
+    /// read afresh if expanded again. The root cannot collapse; it shows empty until the poll
+    /// sees it change.
+    pub fn set_unreadable(&mut self, dir: &Path) {
+        self.loading.remove(dir);
+        self.stale.remove(dir);
+        self.expanded.remove(dir);
+        if dir == self.root {
+            self.loaded.insert(dir.to_path_buf(), Vec::new());
+        } else {
+            self.loaded.remove(dir);
+        }
+    }
+
+    /// Marks a directory's children stale so the next `dirs_to_load` reads them again (the poll
+    /// saw it change). What is shown stays until the new read lands.
     pub fn invalidate(&mut self, dir: &Path) {
-        self.loaded.remove(dir);
+        self.stale.insert(dir.to_path_buf());
     }
 
     /// Expands a collapsed directory or collapses an expanded one; returns whether it is
@@ -296,6 +326,80 @@ mod tests {
         }
         assert_eq!(ex.selected.as_deref(), Some(root.join("README.md").as_path()), "stays at the bottom");
         assert_eq!(ex.expanded_dirs(), Vec::<PathBuf>::new(), "the root is implicit");
+    }
+
+    #[test]
+    fn mark_ignored_does_not_deadlock_on_many_ignored_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(["init", "-q"]).status().unwrap();
+        assert!(st.success());
+        fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
+        let logs = dir.path().join("logs");
+        fs::create_dir(&logs).unwrap();
+        for i in 0..3000 {
+            fs::write(logs.join(format!("{i}.log")), "").unwrap();
+        }
+        let root = dir.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut entries = list_dir(&logs).unwrap();
+            mark_ignored(&root, &mut entries);
+            let _ = tx.send(entries.iter().filter(|e| e.ignored).count());
+        });
+        let marked = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("mark_ignored returns, git and the writer do not block each other");
+        assert_eq!(marked, 3000);
+    }
+
+    #[test]
+    fn an_invalidated_directory_keeps_its_rows_until_the_new_read_lands() {
+        let dir = project();
+        let root = dir.path().to_path_buf();
+        let src = root.join("src");
+        let mut ex = Explorer::new(root.clone(), vec![src.clone()], false);
+        ex.set_loaded(&root, list_dir(&root).unwrap());
+        ex.set_loaded(&src, list_dir(&src).unwrap());
+        let before = ex.rows();
+        ex.invalidate(&root);
+        ex.invalidate(&src);
+        assert_eq!(ex.rows(), before, "nothing vanishes while the re-read is pending");
+        assert_eq!(ex.dirs_to_load(), vec![root.clone(), src.clone()]);
+        ex.set_loaded(&root, list_dir(&root).unwrap());
+        ex.set_loaded(&src, list_dir(&src).unwrap());
+        assert!(ex.dirs_to_load().is_empty());
+        // A change seen while the read is in flight is read again once it lands.
+        ex.invalidate(&src);
+        ex.mark_loading(&src);
+        assert!(ex.dirs_to_load().is_empty(), "already being read");
+        ex.invalidate(&src);
+        ex.set_loaded(&src, list_dir(&src).unwrap());
+        assert_eq!(ex.dirs_to_load(), vec![src.clone()], "the read may predate the change");
+        ex.mark_loading(&src);
+        ex.set_loaded(&src, list_dir(&src).unwrap());
+        assert!(ex.dirs_to_load().is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_directory_is_collapsed_and_not_retried() {
+        let dir = project();
+        let root = dir.path().to_path_buf();
+        let src = root.join("src");
+        let mut ex = Explorer::new(root.clone(), vec![src.clone()], false);
+        ex.set_loaded(&root, list_dir(&root).unwrap());
+        ex.mark_loading(&src);
+        assert_eq!(read_dir_entries(&root, &root.join("gone")), None);
+        ex.set_unreadable(&src);
+        assert!(ex.expanded_dirs().is_empty(), "not saved, not polled");
+        assert!(ex.dirs_to_load().is_empty());
+        assert!(ex.toggle(&src));
+        assert_eq!(ex.dirs_to_load(), vec![src.clone()], "expanding it again reads it again");
+        // The root cannot collapse: it shows empty until the poll sees it change.
+        let mut ex = Explorer::new(root.clone(), vec![], false);
+        ex.mark_loading(&root);
+        ex.set_unreadable(&root);
+        assert!(ex.rows().is_empty());
+        assert!(ex.dirs_to_load().is_empty());
+        ex.invalidate(&root);
+        assert_eq!(ex.dirs_to_load(), vec![root]);
     }
 
     #[test]
