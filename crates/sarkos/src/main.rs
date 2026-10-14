@@ -9,6 +9,7 @@ mod connection;
 mod drag;
 mod empty_pane;
 mod find;
+mod hook_cli;
 mod keys;
 mod keymap;
 mod layout;
@@ -1298,6 +1299,10 @@ pub fn version_string() -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The hook CLI: no window, no daemon start, no QoS. `claude` runs these on every event.
+    if matches!(args.get(1).map(String::as_str), Some("notify") | Some("hooks")) {
+        std::process::exit(hook_cli::run(&args[1..]));
+    }
     if args.iter().any(|a| a == "--version") {
         println!("{}", version_string());
         return;
