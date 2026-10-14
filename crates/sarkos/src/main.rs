@@ -323,6 +323,12 @@ fn main() {
         println!("sarkos {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    // Spec 2.5: the UI thread is user-interactive so macOS schedules it ahead of the heavy work
+    // Claude Code's children do.
+    let qos = unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0) };
+    if qos != 0 {
+        eprintln!("sarkos: could not set user-interactive QoS (error {qos})");
+    }
     let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe()) {
         Ok(c) => c,
         Err(e) => {
@@ -343,7 +349,7 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(gpui::TitlebarOptions { title: Some("sarkos".into()), ..Default::default() }),
+                    titlebar: Some(gpui::TitlebarOptions { title: Some("Sarkos IDE".into()), ..Default::default() }),
                     ..Default::default()
                 },
                 move |_, cx| cx.new(|_| Root::new(client_for_view)),

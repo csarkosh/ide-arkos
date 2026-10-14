@@ -1,7 +1,7 @@
 # sarkos: a terminal layout manager for Claude Code sessions
 
 **Status:** design approved in conversation on 2026-10-13; this document is the written spec.
-**Name:** sarkos (UI binary `sarkos`, daemon binary `sarkosd`). Repository: `csarkosh/ide-sarkos`. License: GPL-3.0.
+**Name:** Sarkos IDE (display name; UI binary `sarkos`, daemon binary `sarkosd`). Repository: `csarkosh/ide-sarkos`. License: GPL-3.0.
 
 ## 1. Why this exists
 
