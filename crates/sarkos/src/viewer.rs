@@ -356,9 +356,13 @@ enum Capped {
 }
 
 /// The file's bytes, unless it is over `MAX_PLAIN_BYTES` (not opened) or has a NUL in its first
-/// `SNIFF` bytes (nothing more read).
+/// `SNIFF` bytes (nothing more read). A directory is refused before anything is opened.
 fn read_capped(path: &Path) -> std::io::Result<Capped> {
-    let len = std::fs::metadata(path)?.len();
+    let metadata = std::fs::metadata(path)?;
+    if metadata.is_dir() {
+        return Err(std::io::Error::other("is a directory"));
+    }
+    let len = metadata.len();
     if len > MAX_PLAIN_BYTES {
         return Ok(Capped::TooLarge(len));
     }
@@ -534,6 +538,7 @@ mod tests {
         // Sparse: no disk or memory goes to the length.
         std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
         assert_eq!(read_file(&huge, None, None, 100).unwrap().content, Content::TooLarge(MAX_PLAIN_BYTES + 1), "not read at all");
+        assert_eq!(read_file(dir.path(), None, None, 100).unwrap().content, Content::Unreadable("is a directory".into()), "a directory is never read");
         let gone = read_file(&dir.path().join("gone"), l.fingerprint, None, 100).expect("a deleted file is a change");
         assert!(matches!(gone.content, Content::Unreadable(_)));
         assert_eq!(gone.fingerprint, None);

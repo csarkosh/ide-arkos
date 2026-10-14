@@ -38,8 +38,10 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<EntryInfo>> {
         if name == ".git" {
             continue;
         }
-        // A symlink to a directory lists as a directory; a broken one as a file.
-        let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+        // Followed (`DirEntry::metadata` would not): a symlink to a directory lists as a
+        // directory, a broken one as a file. Lazy loading bounds a symlink cycle to what the
+        // user expands.
+        let is_dir = std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false);
         out.push(EntryInfo { path: entry.path(), name, is_dir, ignored: false });
     }
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.name.cmp(&b.name)));
@@ -292,6 +294,27 @@ mod tests {
         let mut sub = list_dir(&dir.path().join("src")).unwrap();
         mark_ignored(dir.path(), &mut sub);
         assert!(sub.iter().all(|e| !e.ignored));
+    }
+
+    #[test]
+    fn a_symlinked_directory_lists_as_a_directory_and_its_children_list() {
+        let dir = project();
+        let root = dir.path().to_path_buf();
+        std::os::unix::fs::symlink(root.join("src"), root.join("link")).unwrap();
+        std::os::unix::fs::symlink(root.join("gone"), root.join("broken")).unwrap();
+        let entries = list_dir(&root).unwrap();
+        let link = entries.iter().find(|e| e.name == "link").unwrap();
+        assert!(link.is_dir, "a symlink to a directory is a directory");
+        assert!(!entries.iter().find(|e| e.name == "broken").unwrap().is_dir, "a broken symlink is a file");
+        let mut ex = Explorer::new(root.clone(), vec![], false);
+        ex.set_loaded(&root, entries);
+        assert!(ex.toggle(&root.join("link")));
+        assert_eq!(ex.dirs_to_load(), vec![root.join("link")]);
+        let children = read_dir_entries(&root, &root.join("link")).expect("read through the link");
+        let names: Vec<&str> = children.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["deep", "main.rs"]);
+        ex.set_loaded(&root.join("link"), children);
+        assert!(ex.rows().iter().any(|r| r.path == root.join("link/main.rs") && r.depth == 1));
     }
 
     #[test]
