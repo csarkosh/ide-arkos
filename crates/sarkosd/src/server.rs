@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::net::Shutdown;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
@@ -59,6 +59,12 @@ pub struct State {
     /// Creates past their `upgrading` check whose session is not in `sessions` yet; an upgrade
     /// waits for none before it gathers the table.
     pub creating: usize,
+    /// Project folders with a window open, and the window binary each said it runs: what a
+    /// restart reopens (update-in-place spec, section 11 step 4). Fed by Hello, emptied by
+    /// Goodbye; a window that vanishes without one (killed by a shutdown, or crashed) stays.
+    pub windows: HashMap<PathBuf, Option<PathBuf>>,
+    /// Set by every change the manifest records; the flusher writes it and clears this.
+    pub manifest_dirty: bool,
 }
 
 impl State {
@@ -300,6 +306,14 @@ impl Drop for Creating<'_> {
 /// miss the handover, and a kill could reap a shell after its snapshot called it alive.
 const UPGRADE_IN_PROGRESS: &str = "an upgrade is in progress; retry in a moment";
 
+/// A regular file named `sarkos` owned by this user: the only binary the daemon launches as a
+/// window, whoever named it.
+pub fn is_sarkos_binary(p: &Path) -> bool {
+    let named = p.file_name().map(|n| n == "sarkos").unwrap_or(false);
+    // SAFETY: getuid takes no arguments and cannot fail.
+    named && std::fs::metadata(p).map(|m| m.is_file() && m.uid() == unsafe { libc::getuid() }).unwrap_or(false)
+}
+
 /// Handles one request. Returns the response to queue, or None when it was already queued.
 fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: &Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
@@ -326,6 +340,11 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 rec.last_heartbeat = Instant::now();
                 rec.protocol = protocol_version;
             }
+            let window = st.clients.get(&client_id).and_then(|r| r.ui_cwd.clone().map(|cwd| (cwd, r.ui_exe.clone())));
+            if let Some((cwd, exe)) = window {
+                st.windows.insert(cwd, exe);
+                st.manifest_dirty = true;
+            }
             if protocol_version >= 2 {
                 Response::Hello { daemon_version: crate::version_string(), protocol_min: PROTOCOL_MIN, protocol_max: PROTOCOL_VERSION }
             } else {
@@ -347,10 +366,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             Response::Error(crate::upgrade::execute(state, &exe, opts))
         }
         Request::RelaunchClient { exe, cwd } => {
-            let named_sarkos = exe.file_name().map(|n| n == "sarkos").unwrap_or(false);
-            // SAFETY: getuid has no preconditions.
-            let owned = std::fs::metadata(&exe).map(|m| m.is_file() && m.uid() == unsafe { libc::getuid() }).unwrap_or(false);
-            if !named_sarkos || !owned {
+            if !is_sarkos_binary(&exe) {
                 Response::Error(format!("{} is not a sarkos binary owned by this user", exe.display()))
             } else {
                 if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
@@ -358,6 +374,37 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 }
                 Response::Ok
             }
+        }
+        Request::Goodbye => {
+            let mut st = state.lock().unwrap();
+            if let Some(cwd) = st.clients.get(&client_id).and_then(|r| r.ui_cwd.clone()) {
+                st.windows.remove(&cwd);
+                st.manifest_dirty = true;
+            }
+            Response::Ok
+        }
+        Request::SetAgent { session: sid, agent } => match session(sid) {
+            Some(s) => {
+                s.set_agent(agent);
+                state.lock().unwrap().manifest_dirty = true;
+                Response::Ok
+            }
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::ClearAgent { session: sid, id: agent_id } => match session(sid) {
+            Some(s) => {
+                if s.clear_agent(&agent_id) {
+                    state.lock().unwrap().manifest_dirty = true;
+                }
+                Response::Ok
+            }
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
+        Request::ListSessionsDetailed => {
+            let st = state.lock().unwrap();
+            let mut list: Vec<_> = st.sessions.values().map(|s| s.detail()).collect();
+            list.sort_by_key(|d| d.info.id.0);
+            Response::SessionsDetailed(list)
         }
         Request::Heartbeat { .. } => {
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
@@ -378,9 +425,25 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 SessionId(st.next_session)
             };
             let _creating = Creating(state);
-            match Session::spawn(SpawnSpec { id, cwd, shell, env, nice, rows, cols, replay_capacity: opts.replay_capacity, backpressure: opts.backpressure }) {
+            let spec = SpawnSpec {
+                id,
+                cwd,
+                shell,
+                env,
+                nice,
+                rows,
+                cols,
+                replay_capacity: opts.replay_capacity,
+                backpressure: opts.backpressure,
+                seed: Vec::new(),
+                recovered: false,
+                agent: None,
+            };
+            match Session::spawn(spec) {
                 Ok(s) => {
-                    state.lock().unwrap().sessions.insert(id, s);
+                    let mut st = state.lock().unwrap();
+                    st.sessions.insert(id, s);
+                    st.manifest_dirty = true;
                     Response::SessionCreated { id }
                 }
                 Err(e) => Response::Error(format!("spawn failed: {e:#}")),

@@ -2,9 +2,9 @@
 use crate::pty::{self, Pty};
 use crate::ring::RingBuffer;
 use anyhow::{Context, Result};
-use protocol::{ClaudeState, Event, Response, ServerMessage, SessionId, SessionInfo};
+use protocol::{AgentRecord, ClaudeState, Event, Response, ServerMessage, SessionDetail, SessionId, SessionInfo};
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{channel, Sender};
@@ -246,6 +246,12 @@ pub struct SpawnSpec {
     pub cols: u16,
     pub replay_capacity: usize,
     pub backpressure: Backpressure,
+    /// Bytes the ring starts with: the history a recovered session shows under its divider.
+    pub seed: Vec<u8>,
+    /// Recreated by `--recover` after a restart.
+    pub recovered: bool,
+    /// The agent the session starts with, if any.
+    pub agent: Option<AgentRecord>,
 }
 
 /// The shell's pid and, once reaped, its exit code. A reaped pid may be reused by any other
@@ -292,6 +298,19 @@ pub struct Session {
     paused: AtomicBool,
     /// Set by the reader once it has stopped for `pause`, and when there is no reader left.
     parked: AtomicBool,
+    /// What a restart needs to recreate the shell (update-in-place spec, section 11). Read by
+    /// the handover and the manifest, which later tasks of this milestone add.
+    #[allow(dead_code)]
+    shell: String,
+    #[allow(dead_code)]
+    nice: i32,
+    /// The caller's extra variables only, not `TERM` and the session id.
+    #[allow(dead_code)]
+    env: Vec<(String, String)>,
+    /// The agent inside, from its SessionStart hook; its SessionEnd hook clears it. A leaf lock:
+    /// never taken while `state` or `child` is held, and neither of those is taken under it.
+    agent: Mutex<Option<AgentRecord>>,
+    recovered: bool,
 }
 
 struct SessionState {
@@ -346,7 +365,7 @@ impl Session {
             child: Mutex::new(ChildSlot { pid, exited: None, kill_requested_at: None }),
             pid: Some(pid as u32),
             state: Mutex::new(SessionState {
-                replay: RingBuffer::new(spec.replay_capacity),
+                replay: RingBuffer::from_bytes(spec.replay_capacity, &spec.seed),
                 subscribers: HashMap::new(),
                 alive: true,
                 exit_code: None,
@@ -358,6 +377,11 @@ impl Session {
             ending: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             parked: AtomicBool::new(false),
+            shell,
+            nice: spec.nice,
+            env: spec.env,
+            agent: Mutex::new(spec.agent),
+            recovered: spec.recovered,
         });
         if start_reader {
             Self::start_reader(session.clone());
@@ -683,6 +707,12 @@ impl Session {
             paused: AtomicBool::new(false),
             // Set by the reader when it parks for an upgrade or stops at EOF.
             parked: AtomicBool::new(false),
+            // Placeholders until the handover record carries these (Task 2).
+            shell: String::new(),
+            nice: 0,
+            env: Vec::new(),
+            agent: Mutex::new(None),
+            recovered: false,
         });
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
@@ -707,6 +737,52 @@ impl Session {
             state: st.claude,
         }
     }
+
+    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    pub fn shell(&self) -> &str {
+        &self.shell
+    }
+
+    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    pub fn nice(&self) -> i32 {
+        self.nice
+    }
+
+    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    pub fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+
+    #[allow(dead_code)] // used by the handover and the manifest in later tasks
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    pub fn set_agent(&self, agent: AgentRecord) {
+        *self.agent.lock().unwrap() = Some(agent);
+    }
+
+    /// Clears the record when it is `id`'s. A SessionEnd hook that arrives after the next
+    /// SessionStart (a `/clear` ends one session and starts another) must not erase the new one.
+    pub fn clear_agent(&self, id: &str) -> bool {
+        let mut a = self.agent.lock().unwrap();
+        match &*a {
+            Some(rec) if rec.id == id => {
+                *a = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn agent(&self) -> Option<AgentRecord> {
+        self.agent.lock().unwrap().clone()
+    }
+
+    /// `info` releases the state lock before `agent` takes its own, so the two never nest.
+    pub fn detail(&self) -> SessionDetail {
+        SessionDetail { info: self.info(), recovered: self.recovered, agent: self.agent() }
+    }
 }
 
 #[cfg(test)]
@@ -728,6 +804,9 @@ mod tests {
             cols: 80,
             replay_capacity: 1024,
             backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
         };
         let s = Session::spawn_for_test(spec, false).unwrap();
         // Input typed before the shell sets up its terminal can be flushed away; give it a moment.
@@ -776,6 +855,9 @@ mod tests {
             cols: 80,
             replay_capacity: 4096,
             backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
         };
         let s = Session::spawn(spec).unwrap();
         std::thread::sleep(Duration::from_millis(500));
@@ -915,6 +997,9 @@ mod tests {
             cols: 80,
             replay_capacity: 1024,
             backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
         };
         // No reader, so nothing but this test reaps or records the exit.
         let s = Session::spawn_for_test(spec, false).unwrap();
@@ -930,5 +1015,46 @@ mod tests {
         assert!(!rec.alive);
         assert_eq!(rec.exit_code, Some(3));
         assert_eq!(rec.exited_ago_ms, Some(0));
+    }
+
+    #[test]
+    fn the_agent_record_is_set_cleared_by_its_own_id_and_reported_in_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Session::spawn_for_test(
+            SpawnSpec {
+                id: SessionId(7),
+                cwd: dir.path().to_path_buf(),
+                shell: Some("/bin/sh".into()),
+                env: vec![("SARKOS_TEST".into(), "1".into())],
+                nice: 0,
+                rows: 24,
+                cols: 80,
+                replay_capacity: 1024,
+                backpressure: Backpressure::default(),
+                seed: b"old output".to_vec(),
+                recovered: true,
+                agent: None,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(s.shell(), "/bin/sh");
+        assert_eq!(s.nice(), 0);
+        assert_eq!(s.env(), &[("SARKOS_TEST".to_string(), "1".to_string())]);
+        assert_eq!(s.cwd(), dir.path());
+        let d = s.detail();
+        assert!(d.recovered);
+        assert_eq!(d.agent, None);
+        assert_eq!(d.info.id, SessionId(7));
+        let agent = protocol::AgentRecord { kind: "claude".into(), id: "a1".into(), resume: vec!["claude".into(), "--resume".into(), "a1".into()] };
+        s.set_agent(agent.clone());
+        assert_eq!(s.agent(), Some(agent.clone()));
+        assert!(!s.clear_agent("someone-else"), "another id's SessionEnd leaves the record");
+        assert_eq!(s.agent(), Some(agent));
+        assert!(s.clear_agent("a1"));
+        assert_eq!(s.detail().agent, None);
+        // The seed is the ring's first content.
+        assert_eq!(s.snapshot().replay, b"old output");
+        let _ = s.kill();
     }
 }

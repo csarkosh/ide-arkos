@@ -46,6 +46,7 @@ fn scan(state: &Shared, ttl: Duration) {
         let still_dead = st.sessions.get(&id).map(|s| !s.has_subscribers()).unwrap_or(false);
         if still_dead {
             st.sessions.remove(&id);
+            st.manifest_dirty = true;
             eprintln!("sarkosd: session {} reaped {}s after it ended", id.0, ttl.as_secs());
         }
     }

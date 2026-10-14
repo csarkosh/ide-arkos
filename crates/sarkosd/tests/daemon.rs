@@ -1,6 +1,6 @@
 //! Drives the real sarkosd binary over a temp socket.
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Event, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
+use protocol::{AgentRecord, ClientMessage, Event, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -818,7 +818,7 @@ fn hello_version_1_gets_ok_and_version_2_gets_the_daemon_version() {
     match c2.request(Request::Hello { protocol_version: 2, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
         Response::Hello { daemon_version, protocol_min, protocol_max } => {
             assert!(daemon_version.starts_with("sarkosd "), "{daemon_version}");
-            assert_eq!((protocol_min, protocol_max), (1, 2));
+            assert_eq!((protocol_min, protocol_max), (1, 3));
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -828,7 +828,7 @@ fn hello_version_1_gets_ok_and_version_2_gets_the_daemon_version() {
 fn hello_with_a_newer_protocol_is_refused_with_the_pkill_hint() {
     let d = Daemon::start(&[]);
     let mut c = d.connect_raw();
-    match c.request(Request::Hello { protocol_version: 3, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
+    match c.request(Request::Hello { protocol_version: PROTOCOL_VERSION + 1, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
         Response::Error(e) => {
             assert!(e.starts_with("protocol version mismatch"), "the window's is_final matches this: {e}");
             assert!(e.contains("this sarkosd is older than the window") && e.contains("pkill -x sarkosd (ends every session)"), "{e}");
@@ -1159,4 +1159,40 @@ fn relaunch_client_falls_back_to_the_previous_window_when_the_new_one_cannot_sta
     }
     let cwd = std::fs::read_to_string(&marker).unwrap();
     assert_eq!(cwd.trim(), old.path().canonicalize().unwrap().to_string_lossy(), "in the previous window's directory");
+}
+
+fn agent(id: &str) -> AgentRecord {
+    AgentRecord { kind: "claude".into(), id: id.into(), resume: vec!["claude".into(), "--resume".into(), id.into()] }
+}
+
+#[test]
+fn set_agent_is_reported_in_the_detailed_list_and_cleared_only_by_its_own_id() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert_eq!(c.request(Request::SetAgent { session: sid, agent: agent("a1") }), Response::Ok);
+    let Response::SessionsDetailed(list) = c.request(Request::ListSessionsDetailed) else { panic!("not a detailed list") };
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].info.id, sid);
+    assert!(!list[0].recovered);
+    assert_eq!(list[0].agent, Some(agent("a1")));
+    assert_eq!(c.request(Request::ClearAgent { session: sid, id: "other".into() }), Response::Ok);
+    let Response::SessionsDetailed(list) = c.request(Request::ListSessionsDetailed) else { panic!() };
+    assert_eq!(list[0].agent, Some(agent("a1")), "another id's SessionEnd leaves the record");
+    assert_eq!(c.request(Request::ClearAgent { session: sid, id: "a1".into() }), Response::Ok);
+    let Response::SessionsDetailed(list) = c.request(Request::ListSessionsDetailed) else { panic!() };
+    assert_eq!(list[0].agent, None);
+    // The old list still answers, for older windows.
+    assert!(matches!(c.request(Request::ListSessions), Response::Sessions(l) if l.len() == 1));
+    assert!(matches!(c.request(Request::SetAgent { session: SessionId(999), agent: agent("x") }), Response::Error(e) if e.contains("no session 999")));
+}
+
+#[test]
+fn hello_version_3_gets_the_range_and_goodbye_is_ok() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect_raw();
+    let r = c.request(Request::Hello { protocol_version: 3, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() });
+    assert!(matches!(r, Response::Hello { protocol_min: 1, protocol_max: 3, .. }), "{r:?}");
+    assert_eq!(c.request(Request::Goodbye), Response::Ok);
+    assert_eq!(c.request(Request::Goodbye), Response::Ok, "a second Goodbye is harmless");
 }
