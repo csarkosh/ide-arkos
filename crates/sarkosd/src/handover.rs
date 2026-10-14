@@ -112,6 +112,21 @@ pub fn adoptable(h: &Handover) -> Result<Vec<&SessionRecord>, String> {
     Ok(ok)
 }
 
+/// The master numbers of records `adoptable` skipped, which this image must close: they came
+/// through the exec without close-on-exec, so every shell spawned later would inherit them.
+/// Stdio and the listener stay open whatever a record claims (the skip already logged them).
+pub fn strays(h: &Handover, adopted: &[&SessionRecord]) -> Vec<i32> {
+    let mut fds: Vec<i32> = h
+        .sessions
+        .iter()
+        .map(|r| r.master_fd)
+        .filter(|&fd| fd >= 3 && fd != h.listener_fd && !adopted.iter().any(|a| a.master_fd == fd))
+        .collect();
+    fds.sort_unstable();
+    fds.dedup();
+    fds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +189,17 @@ mod tests {
         let ids: Vec<u64> = adoptable(&h).unwrap().iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![5]);
         assert_eq!(adoptable(&sample()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn skipped_masters_are_closed_but_never_stdio_or_the_listener() {
+        let base = sample().sessions[0].clone();
+        let with = |id: u64, fd: i32| SessionRecord { id, master_fd: fd, ..base.clone() };
+        let mut h = sample();
+        // 5 is the listener; 9 is named twice; 10 is adopted.
+        h.sessions = vec![with(1, 9), with(2, 9), with(3, 1), with(4, 5), with(5, 10), with(6, -1)];
+        assert_eq!(strays(&h, &adoptable(&h).unwrap()), vec![9], "closed once");
+        assert!(strays(&sample(), &adoptable(&sample()).unwrap()).is_empty());
     }
 
     #[test]

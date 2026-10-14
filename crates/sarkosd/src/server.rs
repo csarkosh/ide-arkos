@@ -111,6 +111,13 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
     // Before anything is adopted: the numbers come from a file.
     let records = crate::handover::adoptable(&h).map_err(anyhow::Error::msg)?;
     crate::pty::set_inheritable_fd(h.listener_fd, false).context("listener close-on-exec")?;
+    // A master `Pty::adopt` fails on is closed by it; one never adopted is closed here.
+    for fd in crate::handover::strays(&h, &records) {
+        eprintln!("sarkosd: closing fd {fd}, the master of a session lost in the handover");
+        // SAFETY: the number came through the exec for a session nothing here adopts, so
+        // nothing in this process owns it.
+        unsafe { libc::close(fd) };
+    }
     // SAFETY: the descriptor was passed through execve by the old image for this purpose, and
     // nothing else in this process owns the number.
     let listener = unsafe { UnixListener::from_raw_fd(h.listener_fd) };
