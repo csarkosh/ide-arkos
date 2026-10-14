@@ -282,7 +282,8 @@ impl Viewer {
         cx.spawn(async move |this, cx| {
             let hits = cx.background_executor().spawn(async move { find_hits(&lines, &query) }).await;
             let _ = this.update(cx, |v, cx| {
-                if v.find_seq != seq {
+                // Every search before the latest one started is superseded.
+                if !crate::should_apply(seq, v.find_seq.saturating_sub(1)) {
                     return;
                 }
                 let Some(f) = &mut v.find else { return };

@@ -134,6 +134,23 @@ pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<Tab
     OpenPlan::Add
 }
 
+/// The preview tab after a tab closed: none if the preview was the one closed.
+pub fn after_close(preview_tab: Option<TabId>, closed: TabId) -> Option<TabId> {
+    preview_tab.filter(|p| *p != closed)
+}
+
+/// The preview tab after a tab was dragged: a dragged tab is a deliberate placement, so a
+/// dragged preview stops being one.
+pub fn after_drop(preview_tab: Option<TabId>, dragged: TabId) -> Option<TabId> {
+    preview_tab.filter(|p| *p != dragged)
+}
+
+/// Whether a background result numbered `seq` lands over the one numbered `applied`: only a
+/// newer one does, so a slow, older result never replaces a newer one.
+pub fn should_apply(seq: u64, applied: u64) -> bool {
+    seq > applied
+}
+
 /// Whether a command leaves the keys in the file tree (Shift+Cmd+E). Every other command acts
 /// on the focused pane, so the keys go back to it.
 pub fn keeps_tree_focus(cmd: &keymap::Command) -> bool {
@@ -684,7 +701,7 @@ impl Root {
             let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit) }).await;
             let Some(loaded) = loaded else { return };
             let _ = weak.update(cx, |v, cx| {
-                if seq > v.applied {
+                if should_apply(seq, v.applied) {
                     v.applied = seq;
                     v.apply(loaded, cx);
                 }
@@ -845,9 +862,7 @@ impl Root {
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
-        if self.preview_tab == Some(id) {
-            self.preview_tab = None;
-        }
+        self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
         if let Tab::Terminal { session } = tab {
             if session != SessionId(0) {
@@ -1054,10 +1069,7 @@ impl Root {
             cx.notify();
             return;
         };
-        // A dragged tab is a deliberate placement: a preview stops being one.
-        if self.preview_tab == Some(d.tab) {
-            self.preview_tab = None;
-        }
+        self.preview_tab = after_drop(self.preview_tab, d.tab);
         match target {
             drag::DropTarget::TabBar { pane, at } => {
                 // Back onto its own place, `move_tab` changes nothing.
@@ -2034,9 +2046,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_label, keeps_tree_focus, open_plan, pick_grid, says_goodbye, shell_name, OpenPlan, Side, Tree, CONNECTING, ERROR_PREFIX};
+    use super::{after_close, after_drop, daemon_label, keeps_tree_focus, open_plan, pick_grid, says_goodbye, shell_name, should_apply, OpenPlan, Side, Tree, CONNECTING, ERROR_PREFIX};
     use protocol::SessionId;
     use std::path::Path;
+
+    #[test]
+    fn closing_or_dragging_the_preview_tab_ends_the_preview_and_no_other_tab_does() {
+        assert_eq!(after_close(Some(3), 3), None, "the preview closed");
+        assert_eq!(after_close(Some(3), 4), Some(3), "another tab closed");
+        assert_eq!(after_close(None, 4), None);
+        assert_eq!(after_drop(Some(3), 3), None, "a dragged preview is placed on purpose: pinned");
+        assert_eq!(after_drop(Some(3), 4), Some(3));
+        assert_eq!(after_drop(None, 3), None);
+    }
+
+    #[test]
+    fn only_a_result_newer_than_the_applied_one_lands() {
+        assert!(should_apply(1, 0), "the first load");
+        assert!(should_apply(5, 3), "newer than what is shown");
+        assert!(!should_apply(3, 3), "already shown");
+        assert!(!should_apply(2, 3), "an older load finishing late");
+    }
 
     #[test]
     fn only_the_sidebar_commands_and_the_palette_keep_the_keys_in_the_tree() {

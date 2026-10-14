@@ -161,6 +161,14 @@ mod tests {
     }
 
     #[test]
+    fn with_theme_recolours_with_the_new_colours() {
+        let h = Highlighter::new(&colors(), rgb(0xd6dae0));
+        let other = ViewerColors { keyword: rgb(0x123456), ..colors() };
+        let spans = h.with_theme(&other, rgb(0xd6dae0)).highlight(Path::new("/p/main.rs"), &["fn main() {}".to_string()]);
+        assert_eq!(spans[0][0].color, rgb(0x123456), "fn takes the new theme's keyword colour");
+    }
+
+    #[test]
     fn an_unknown_extension_is_one_plain_span_per_line() {
         let h = Highlighter::new(&colors(), rgb(0x010203));
         let lines: Vec<String> = ["some text", ""].iter().map(|s| s.to_string()).collect();
