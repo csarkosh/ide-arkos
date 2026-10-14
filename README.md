@@ -46,7 +46,7 @@ Things only a person at the screen can check, in order of value:
 - Cmd+, opens the config file in the default text editor
 - typing in each pane, and that Cmd combinations never reach the shell
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
-- Cmd+K alone clearing the scrollback while the Cmd+K chords still work
+- Cmd+K alone clearing history and screen with the prompt line left at the top, while the Cmd+K chords still work
 - the empty pane's animation holding still after turning on Reduce Motion and saving the config
 - after `kill -9`: the layout, every session, replayed history, the text preset, and typing
 - the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
@@ -88,7 +88,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+K then Shift+Cmd+Left | move tab left |
 | Cmd+K then Shift+Cmd+Right | move tab right |
 | Ctrl+Shift+` | new terminal tab |
-| Cmd+K | clear scrollback |
+| Cmd+K | clear to start: history and screen go, the prompt line moves to the top, as in Terminal.app |
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
 | Cmd+F | find in the terminal |

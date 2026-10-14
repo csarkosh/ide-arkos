@@ -15,7 +15,7 @@ use gpui::{
 
 pub const TAB_BAR_H: f32 = 28.0;
 /// How far the focused pane's glow reaches in from each edge.
-pub const GLOW_W: f32 = 12.0;
+pub const GLOW_W: f32 = 6.0;
 /// The glow's opacity at the edge; it fades to nothing by `GLOW_W`.
 pub const GLOW_ALPHA: f32 = 0.3;
 
