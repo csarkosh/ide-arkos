@@ -31,8 +31,15 @@ struct Unread {
 /// Unread output bytes in the channel, shared by the reader thread and the UI.
 type UnreadGate = Arc<(Mutex<Unread>, Condvar)>;
 
+/// What the writer thread takes: a frame to write, or a barrier to answer once every frame
+/// queued before it is written.
+enum Outgoing {
+    Frame(ClientMessage),
+    Barrier(Sender<()>),
+}
+
 pub struct Client {
-    tx: Sender<ClientMessage>,
+    tx: Sender<Outgoing>,
     next_id: AtomicU32,
     disconnect_reason: Arc<Mutex<Option<String>>>,
     unread: UnreadGate,
@@ -61,15 +68,22 @@ impl Client {
         let shutdown_stream = stream.try_clone().context("clone socket")?;
         let unread: UnreadGate = Arc::new((Mutex::new(Unread::default()), Condvar::new()));
         let unread_for_reader = unread.clone();
-        let (tx, rx) = channel::<ClientMessage>();
+        let (tx, rx) = channel::<Outgoing>();
         let (ev_tx, ev_rx): (UnboundedSender<ServerMessage>, UnboundedReceiver<ServerMessage>) = unbounded();
         std::thread::Builder::new()
             .name("sarkosd-writer".into())
             .spawn(move || {
                 let mut w = BufWriter::new(stream);
-                while let Ok(msg) = rx.recv() {
-                    if write_frame(&mut w, &msg).is_err() {
-                        break;
+                while let Ok(out) = rx.recv() {
+                    match out {
+                        Outgoing::Frame(msg) => {
+                            if write_frame(&mut w, &msg).is_err() {
+                                break;
+                            }
+                        }
+                        Outgoing::Barrier(done) => {
+                            let _ = done.send(());
+                        }
                     }
                 }
             })
@@ -127,8 +141,19 @@ impl Client {
     /// Queues a request. Returns its id so the response can be matched.
     pub fn send(&self, request: Request) -> u32 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(ClientMessage { id, request });
+        let _ = self.tx.send(Outgoing::Frame(ClientMessage { id, request }));
         id
+    }
+
+    /// Waits up to `timeout` until every request queued so far is written to the socket. For
+    /// quitting, when the process may exit before the writer thread gets to them. Returns
+    /// whether they were written.
+    pub fn wait_sent(&self, timeout: Duration) -> bool {
+        let (done, rx) = channel();
+        if self.tx.send(Outgoing::Barrier(done)).is_err() {
+            return false;
+        }
+        rx.recv_timeout(timeout).is_ok()
     }
 
     /// Reports that the UI has applied `bytes` of output taken from the channel, letting a reader
@@ -246,6 +271,30 @@ mod tests {
         let seen = server.join().unwrap();
         assert!(matches!(seen[0].request, Request::Hello { protocol_version: PROTOCOL_VERSION, .. }));
         assert_eq!(seen[1].request, Request::ListSessions);
+    }
+
+    #[test]
+    fn wait_sent_returns_once_earlier_requests_are_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("barrier.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        // Reads every frame until the client hangs up.
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut r = BufReader::new(stream);
+            let mut seen = Vec::new();
+            while let Ok(Some(msg)) = read_frame::<_, ClientMessage>(&mut r) {
+                seen.push(msg.request);
+            }
+            seen
+        });
+        let (client, _rx) = Client::connect(&socket).unwrap();
+        client.send(Request::Kill { session: protocol::SessionId(7) });
+        assert!(client.wait_sent(Duration::from_secs(5)));
+        // Dropping the client shuts the socket at once; the Kill was already on the wire.
+        drop(client);
+        let seen = server.join().unwrap();
+        assert_eq!(seen.last(), Some(&Request::Kill { session: protocol::SessionId(7) }));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 mod app_nap;
 mod chrome;
 mod client;
+mod closed_stack;
 mod drag;
 mod empty_pane;
 mod keys;
@@ -31,7 +32,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
@@ -70,8 +72,8 @@ pub struct Root {
     pub content: Rect,
     /// Pane ids in reading order (the tab bar numbers), computed once per render.
     pub pane_order: Vec<PaneId>,
-    /// Panes tabs were closed from, most recent last, for Cmd+Shift+T.
-    pub closed: Vec<PaneId>,
+    /// Terminal tabs closed in the last minute, whose detached sessions Cmd+Shift+T brings back.
+    pub closed: ClosedStack,
     /// Where a dragged tab would land if released now. Cleared on drop, on a release anywhere
     /// else, and on the first move after a release outside the window.
     pub drop_target: Option<drag::DropTarget>,
@@ -97,7 +99,7 @@ impl Root {
             font_size: terminal_element::DEFAULT_FONT_SIZE,
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
             pane_order: Vec::new(),
-            closed: Vec::new(),
+            closed: ClosedStack::default(),
             drop_target: None,
             empty_anim: HashMap::new(),
         }
@@ -200,7 +202,8 @@ impl Root {
         cx.notify();
     }
 
-    /// Closes a tab. A terminal's session is killed and detached; the pane stays (spec 4).
+    /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and killed
+    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
@@ -209,14 +212,49 @@ impl Root {
                 if self.sessions.is_restoring(session) {
                     self.sessions.abort_restore(session, id);
                 }
-                self.sessions.kill(session);
                 self.sessions.detach(session);
+                for old in self.closed.push(ClosedTab { session, pane, closed_at: Instant::now() }) {
+                    eprintln!("sarkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
+                    self.sessions.kill(old);
+                }
             }
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
         }
         self.save(cx);
         cx.notify();
+    }
+
+    /// Puts a closed tab's session back in `pane` and reattaches it. The daemon kept it; one that
+    /// ended meanwhile shows as ended.
+    fn reopen_session(&mut self, pane: PaneId, session: SessionId, cx: &mut Context<Self>) {
+        let idx = self.tree.add_tab(pane, Tab::Terminal { session });
+        self.tree.focus(pane);
+        if let Some(id) = self.tree.tab_id(pane, idx) {
+            eprintln!("sarkos: reopening session {} in pane {pane}", session.0);
+            self.sessions.attach(session, id, false);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Kills the sessions of closed tabs whose grace has run out.
+    pub fn expire_closed(&mut self, now: Instant) {
+        for session in self.closed.expired(now) {
+            eprintln!("sarkos: session {} was not reopened within {}s, ending it", session.0, CLOSE_GRACE.as_secs());
+            self.sessions.kill(session);
+        }
+    }
+
+    /// Kills every closed tab's session, for quitting: nothing could reopen them afterwards.
+    /// Returns how many were killed.
+    pub fn end_closed_tabs(&mut self) -> usize {
+        let sessions = self.closed.drain_all();
+        for session in &sessions {
+            eprintln!("sarkos: quitting, ending closed tab's session {}", session.0);
+            self.sessions.kill(*session);
+        }
+        sessions.len()
     }
 
     /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
@@ -349,13 +387,23 @@ impl Root {
                     return;
                 }
                 let idx = p.active;
-                self.closed.push(focused);
                 self.close_tab(focused, idx, cx);
             }
             ReopenClosedTab => {
-                // The closed tab's shell was killed, so "reopen" is a fresh shell where it was.
-                let pane = self.closed.pop().filter(|p| self.tree.pane(*p).is_some()).unwrap_or(focused);
-                self.new_terminal_tab(pane, cx);
+                // Within the grace the same session comes back where it was closed; after it, or
+                // with nothing closed, a fresh shell opens there instead.
+                let Some(closed) = self.closed.pop() else {
+                    self.new_terminal_tab(focused, cx);
+                    return;
+                };
+                let pane = if self.tree.pane(closed.pane).is_some() { closed.pane } else { focused };
+                if closed.in_grace(Instant::now()) {
+                    self.reopen_session(pane, closed.session, cx);
+                } else {
+                    eprintln!("sarkos: session {} closed more than {}s ago, ending it and opening a new shell", closed.session.0, CLOSE_GRACE.as_secs());
+                    self.sessions.kill(closed.session);
+                    self.new_terminal_tab(pane, cx);
+                }
             }
             CloseAllInPane => {
                 let n = self.tree.pane(focused).map(|p| p.tabs.len()).unwrap_or(0);
@@ -478,12 +526,20 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
     eprintln!("sarkos: session {} replay parsed at {cols}x{rows} in {:?}", session.0, started.elapsed());
     root.update(cx, |root, cx| {
         if root.tree.locate(tab).is_none() {
-            // Closed while parsing; `close_tab` normally ends the session, but a pane removal
-            // might not have, so end it here too.
-            eprintln!("sarkos: tab {tab} closed during its restore, ending session {}", session.0);
-            root.sessions.kill(session);
-            root.sessions.detach(session);
-            root.sessions.abort_restore(session, tab);
+            if root.tree.find_session(session).is_some() {
+                // Closed and reopened while parsing: the new tab's own restore owns the session.
+                eprintln!("sarkos: tab {tab} closed during its restore; session {} was reopened elsewhere", session.0);
+            } else if root.closed.contains(session) {
+                // Closed by the user: already detached, and killed when its grace runs out.
+                eprintln!("sarkos: tab {tab} closed during its restore; session {} waits for Cmd+Shift+T", session.0);
+                root.sessions.abort_restore(session, tab);
+            } else {
+                // Nothing will show this session again.
+                eprintln!("sarkos: tab {tab} closed during its restore, ending session {}", session.0);
+                root.sessions.kill(session);
+                root.sessions.detach(session);
+                root.sessions.abort_restore(session, tab);
+            }
             cx.notify();
             return;
         }
@@ -600,6 +656,17 @@ impl Render for Root {
     }
 }
 
+/// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen them
+/// later) and the pending layout save is written.
+fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, client: &client::Client, cx: &mut App) {
+    let killed = root.update(cx, |root, _| root.end_closed_tabs());
+    // The process may exit before the writer thread sends the Kills; wait for them, briefly.
+    if killed > 0 && !client.wait_sent(Duration::from_millis(500)) {
+        eprintln!("sarkos: could not send {killed} kill requests before quitting");
+    }
+    workspace::flush_now(queue);
+}
+
 fn banner_bar(text: String) -> Div {
     div()
         .w_full()
@@ -666,13 +733,8 @@ fn main() {
     let save_queue = SharedSaveQueue::default();
 
     Application::new().run(move |cx: &mut App| {
-        // gpui installs no menu and no quit binding of its own.
-        // A pending debounced save is written before quitting, so the last layout change survives.
-        let quit_queue = save_queue.clone();
-        cx.on_action(move |_: &Quit, cx| {
-            workspace::flush_now(&quit_queue);
-            cx.quit();
-        });
+        // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
+        // once the window exists.
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.bind_keys(keymap::bindings());
         cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
@@ -704,13 +766,28 @@ fn main() {
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
+        let (quit_root, quit_queue, quit_client) = (root.clone(), save_queue.clone(), client.clone());
+        cx.on_action(move |_: &Quit, cx| {
+            flush_on_quit(&quit_root, &quit_queue, &quit_client, cx);
+            cx.quit();
+        });
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
         // no windowless process lingers.
-        let close_queue = save_queue.clone();
+        let (close_root, close_queue, close_client) = (root.clone(), save_queue.clone(), client.clone());
         cx.on_window_closed(move |cx| {
             if cx.windows().is_empty() {
-                workspace::flush_now(&close_queue);
+                flush_on_quit(&close_root, &close_queue, &close_client, cx);
                 cx.quit();
+            }
+        })
+        .detach();
+
+        // Closed tabs' sessions end once their grace runs out.
+        let tick_root = root.clone();
+        cx.spawn(async move |cx| loop {
+            cx.background_executor().timer(CLOSE_TICK).await;
+            if tick_root.update(cx, |root, _| root.expire_closed(Instant::now())).is_err() {
+                break;
             }
         })
         .detach();
