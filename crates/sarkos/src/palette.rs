@@ -34,7 +34,7 @@ pub const NAVY: Palette = Palette {
         rgb(0xc9a4e8), // magenta
         rgb(0x7fd4d4), // cyan
         rgb(0xc8ccd4), // white
-        rgb(0x6b7585), // bright black
+        rgb(0x7c8798), // bright black: used for dimmed text, so it must stay readable
         rgb(0xf7a8a8), // bright red
         rgb(0xa8e6bd), // bright green
         rgb(0xf0d898), // bright yellow
@@ -117,8 +117,8 @@ mod tests {
     #[test]
     fn every_ansi_colour_except_black_clears_4_5_to_1() {
         for (i, c) in NAVY.ansi.iter().enumerate() {
-            if i == 0 || i == 8 {
-                continue; // black and bright black are backgrounds by convention
+            if i == 0 {
+                continue; // black is a background by convention
             }
             let r = contrast(*c, NAVY.bg);
             assert!(r >= 4.5, "ansi {i} has contrast {r:.2}");
