@@ -251,6 +251,18 @@ fn unblock_signals() {
     }
 }
 
+/// Held by every test that starts a process and by every test that asserts on a closed socket:
+/// between fork and exec a child holds a copy of every descriptor in the test binary, a listener
+/// another test thread just dropped included, so that socket would still accept.
+#[cfg(test)]
+pub(crate) static FORK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `FORK_LOCK`, still usable after a test that held it failed.
+#[cfg(test)]
+pub(crate) fn fork_lock() -> std::sync::MutexGuard<'static, ()> {
+    FORK_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +295,7 @@ mod tests {
 
     #[test]
     fn a_child_started_from_a_thread_that_blocks_sigterm_still_dies_of_it() {
+        let _fork = fork_lock();
         // Like a GCD worker, the spawning thread blocks SIGTERM; the mask is per thread, so the
         // rest of the test process is untouched.
         let mut child = std::thread::spawn(|| {
@@ -341,6 +354,7 @@ mod tests {
 
     #[test]
     fn wait_sent_returns_once_earlier_requests_are_written() {
+        let _fork = fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("barrier.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -365,6 +379,7 @@ mod tests {
 
     #[test]
     fn connect_replaces_stale_socket() {
+        let _fork = fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("stale.sock");
         // A socket file nobody listens on.
@@ -428,6 +443,7 @@ mod tests {
 
     #[test]
     fn server_hangup_ends_receiver_and_sets_reason() {
+        let _fork = fork_lock();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("hangup.sock");
         let listener = UnixListener::bind(&socket).unwrap();

@@ -96,6 +96,7 @@ mod tests {
 
     #[test]
     fn installed_version_runs_the_binary_and_tolerates_a_missing_one() {
+        let _fork = crate::client::fork_lock();
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(installed_version(&dir.path().join("nope")), None);
         use std::os::unix::fs::PermissionsExt;
