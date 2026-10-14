@@ -41,6 +41,7 @@ pub enum Command {
 }
 
 /// The spec's table (section 4), gpui keystroke syntax. Chords are space-separated.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const SPEC_ROWS: &[(&str, &str)] = &[
     ("cmd-1", "focus pane 1"), ("cmd-2", "focus pane 2"), ("cmd-3", "focus pane 3"), ("cmd-4", "focus pane 4"),
     ("cmd-5", "focus pane 5"), ("cmd-6", "focus pane 6"), ("cmd-7", "focus pane 7"), ("cmd-8", "focus pane 8"),
