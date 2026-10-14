@@ -6,6 +6,7 @@ mod paths;
 mod scroll;
 mod terminal;
 mod terminal_element;
+mod tree;
 mod workspace;
 
 use futures::channel::mpsc::TryRecvError;
