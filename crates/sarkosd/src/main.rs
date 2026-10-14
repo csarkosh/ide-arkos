@@ -12,7 +12,6 @@ use std::time::Duration;
 
 const DEFAULT_REPLAY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_WATCHDOG_SECS: u64 = 30;
-const DEFAULT_FLUSH_QUIET_MILLIS: u64 = 2000;
 
 /// `<name> <crate version> (<short git hash>)`, the same shape for both binaries.
 pub fn version_string() -> String {
@@ -31,7 +30,7 @@ fn main() {
     let mut watchdog = DEFAULT_WATCHDOG_SECS;
     let mut reaper_millis: u64 = 1000;
     let mut dead_session_secs: u64 = 600;
-    let mut flush_quiet_millis = DEFAULT_FLUSH_QUIET_MILLIS;
+    let mut flush_quiet_millis = handover::DEFAULT_FLUSH_QUIET_MILLIS;
     let mut pending_cap = session::CLIENT_PENDING_CAP;
     let mut backpressure = session::Backpressure::default();
     let mut resume = None;
@@ -42,7 +41,12 @@ fn main() {
                 return;
             }
             "--check-handover" => {
+                // Exactly this line: the current main's daemon compares the whole answer.
                 println!("handover {}", handover::OLDEST_READ);
+                return;
+            }
+            "--handover-formats" => {
+                println!("{} {}", handover::OLDEST_READ, handover::FORMAT);
                 return;
             }
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),

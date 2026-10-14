@@ -12,6 +12,9 @@ pub const FORMAT: u32 = 2;
 /// The oldest format `read` still decodes. `--check-handover` prints this, and a daemon accepts
 /// a candidate whose oldest readable format is at most the format it writes.
 pub const OLDEST_READ: u32 = 1;
+/// How long output must have stopped before a session's ring is written to disk, unless
+/// `--flush-quiet-millis` says otherwise; also what a format 1 file, which lacks it, resumes with.
+pub const DEFAULT_FLUSH_QUIET_MILLIS: u64 = 2000;
 pub const MAGIC: [u8; 4] = *b"SKHO";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,7 +121,7 @@ impl From<HandoverV1> for Handover {
             high_water: v.high_water,
             low_water: v.low_water,
             stall_secs: v.stall_secs,
-            flush_quiet_millis: 2000,
+            flush_quiet_millis: DEFAULT_FLUSH_QUIET_MILLIS,
             next_session: v.next_session,
             windows: Vec::new(),
             sessions: v
@@ -183,7 +186,11 @@ pub fn read(path: &Path) -> Result<Handover, String> {
     let (format, _) = postcard::take_from_bytes::<u32>(body).map_err(decode_err)?;
     match format {
         FORMAT => postcard::from_bytes(body).map_err(decode_err),
-        1 => postcard::from_bytes::<HandoverV1>(body).map(Handover::from).map_err(decode_err),
+        1 => {
+            // Raising OLDEST_READ past 1 must remove this arm and the V1 structs with it.
+            const _: () = assert!(OLDEST_READ == 1);
+            postcard::from_bytes::<HandoverV1>(body).map(Handover::from).map_err(decode_err)
+        }
         other => Err(format!("handover format {other} is not one this sarkosd reads ({OLDEST_READ} to {FORMAT})")),
     }
 }

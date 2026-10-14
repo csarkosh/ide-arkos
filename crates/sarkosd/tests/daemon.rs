@@ -845,7 +845,10 @@ fn version_and_check_handover_flags() {
     assert!(text.starts_with("sarkosd ") && text.contains('(') && text.trim_end().ends_with(')'), "{text:?}");
     let out = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--check-handover").output().unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "handover 1");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "handover 1", "exactly what the current main's daemon expects");
+    let out = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--handover-formats").output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1 2");
 }
 
 /// A fake `sarkosd` at `dir/sarkosd` whose body is `script`, for the validation paths.
@@ -982,14 +985,42 @@ fn upgrade_with_a_binary_that_fails_the_check_keeps_the_old_daemon() {
     c.wait_for_output(sid, "still-4");
 }
 
+/// The current main's binary answers `handover 1` and exits 2 on any flag it does not know: it
+/// cannot read the format 2 file this daemon writes, so the upgrade is refused.
+#[test]
+fn upgrade_onto_a_binary_that_reads_only_format_1_is_refused() {
+    let d = Daemon::start(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let exe = fake_sarkosd(dir.path(), "case \"$1\" in\n--check-handover) echo 'handover 1' ;;\n*) exit 2 ;;\nesac");
+    let mut c = d.connect();
+    match c.request(Request::Upgrade { exe }) {
+        Response::Error(e) => assert!(e.contains("handover format 2"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"echo served-$((3+3))\n".to_vec() });
+    c.wait_for_output(sid, "served-6");
+}
+
 #[test]
 fn upgrade_whose_exec_fails_keeps_the_old_daemon_serving() {
     let d = Daemon::start(&[]);
-    let check = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--check-handover").output().unwrap();
-    let answer = String::from_utf8_lossy(&check.stdout).trim().to_string();
+    let answer = |flag: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg(flag).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let (check, formats) = (answer("--check-handover"), answer("--handover-formats"));
+    // Validate asks for the formats only when the check does not name the newest one.
+    let newest = formats.split_whitespace().last().unwrap().to_string();
+    let (rm_on_check, rm_on_formats) = if check == format!("handover {newest}") { ("; rm \"$0\"", "") } else { ("", "; rm \"$0\"") };
     let dir = tempfile::tempdir().unwrap();
-    // Passes the check, then removes itself, so the exec that follows fails.
-    let exe = fake_sarkosd(dir.path(), &format!("echo '{answer}'; rm \"$0\""));
+    // Passes the checks as this binary would, removing itself on the last one, so the exec that
+    // follows fails.
+    let exe = fake_sarkosd(
+        dir.path(),
+        &format!("case \"$1\" in\n--check-handover) echo '{check}'{rm_on_check} ;;\n--handover-formats) echo '{formats}'{rm_on_formats} ;;\nesac"),
+    );
     let mut c = d.connect();
     let sid = c.create("/bin/sh");
     assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));

@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long `--check-handover` may take before the candidate is rejected.
+/// How long `--check-handover` (and `--handover-formats`) may take before the candidate is
+/// rejected.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long each reader gets to park; one that has not by then fails the upgrade.
 const PARK_TIMEOUT: Duration = Duration::from_millis(500);
@@ -44,12 +45,36 @@ pub fn validate(exe: &Path) -> Result<(), String> {
     if meta.permissions().mode() & 0o100 == 0 {
         return Err(format!("{} is not executable", exe.display()));
     }
+    let check = run_flag(exe, "--check-handover")?;
+    if check_answer_is_ours(&check) {
+        return Ok(());
+    }
+    // `--check-handover` names only the oldest format the candidate reads, so `handover 1` may
+    // be the current main, which reads 1 alone, or a binary that reads 1 and 2: ask it.
+    let cannot_read = |why: String| {
+        format!(
+            "{} cannot read handover format {}, which this daemon writes: it answered {:?} to --check-handover and {why}",
+            exe.display(),
+            handover::FORMAT,
+            check.trim()
+        )
+    };
+    let formats = run_flag(exe, "--handover-formats").map_err(cannot_read)?;
+    if !formats_cover(&formats) {
+        return Err(cannot_read(format!("{:?} to --handover-formats", formats.trim())));
+    }
+    Ok(())
+}
+
+/// Runs `exe flag` with no stdin and no stderr, and returns its stdout if it exits 0 within
+/// `CHECK_TIMEOUT`.
+fn run_flag(exe: &Path, flag: &str) -> Result<String, String> {
     let spawned = {
         // A fork must not inherit a PTY descriptor that is briefly without close-on-exec.
         let _no_open_pty_inheritable = pty::spawn_lock();
-        Command::new(exe).arg("--check-handover").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+        Command::new(exe).arg(flag).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
     };
-    let mut child = spawned.map_err(|e| format!("cannot run {} --check-handover: {e}", exe.display()))?;
+    let mut child = spawned.map_err(|e| format!("cannot run {} {flag}: {e}", exe.display()))?;
     let deadline = Instant::now() + CHECK_TIMEOUT;
     let status = loop {
         match child.try_wait() {
@@ -58,9 +83,9 @@ pub fn validate(exe: &Path) -> Result<(), String> {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{} --check-handover did not finish within {CHECK_TIMEOUT:?}", exe.display()));
+                return Err(format!("{} {flag} did not finish within {CHECK_TIMEOUT:?}", exe.display()));
             }
-            Err(e) => return Err(format!("waiting for {} --check-handover: {e}", exe.display())),
+            Err(e) => return Err(format!("waiting for {} {flag}: {e}", exe.display())),
         }
     };
     let mut out = String::new();
@@ -69,23 +94,25 @@ pub fn validate(exe: &Path) -> Result<(), String> {
         let _ = stdout.read_to_string(&mut out);
     }
     if !status.success() {
-        return Err(format!("{} --check-handover failed ({status})", exe.display()));
+        return Err(format!("{} {flag} failed ({status})", exe.display()));
     }
-    if !accepts_check(&out) {
-        return Err(format!(
-            "{} --check-handover answered {:?}; this daemon writes handover format {} and needs a binary that reads it",
-            exe.display(),
-            out.trim(),
-            handover::FORMAT
-        ));
-    }
-    Ok(())
+    Ok(out)
 }
 
-/// What `--check-handover` must answer: `handover N`, the oldest format the candidate reads,
-/// with N at most the format this daemon writes.
-pub fn accepts_check(answer: &str) -> bool {
-    answer.trim().strip_prefix("handover ").and_then(|n| n.trim().parse::<u32>().ok()).is_some_and(|oldest| oldest <= handover::FORMAT)
+/// Whether `--check-handover` answered `handover <FORMAT>`: a binary whose oldest readable
+/// format is the one this daemon writes reads it.
+pub fn check_answer_is_ours(answer: &str) -> bool {
+    answer.trim() == format!("handover {}", handover::FORMAT)
+}
+
+/// Whether `--handover-formats` answered `<oldest> <newest>` with this daemon's format between
+/// them, inclusive.
+pub fn formats_cover(answer: &str) -> bool {
+    let mut nums = answer.split_whitespace().map(str::parse::<u32>);
+    match (nums.next(), nums.next(), nums.next()) {
+        (Some(Ok(oldest)), Some(Ok(newest)), None) => oldest <= handover::FORMAT && handover::FORMAT <= newest,
+        _ => false,
+    }
 }
 
 /// Claims the one upgrade slot.
@@ -232,13 +259,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_candidate_is_accepted_when_its_oldest_readable_format_is_not_newer_than_ours() {
-        assert!(accepts_check("handover 1\n"), "the current main's binary, which reads only 1, is accepted by nobody newer; this binary prints 1 too");
-        assert!(accepts_check(&format!("handover {}", handover::FORMAT)));
-        assert!(!accepts_check(&format!("handover {}", handover::FORMAT + 1)), "a future binary that dropped our format cannot resume our file");
-        assert!(!accepts_check("handover"));
-        assert!(!accepts_check("something else"));
-        assert!(!accepts_check(""));
+    fn a_check_answer_naming_our_format_is_accepted_on_its_own() {
+        assert_eq!(handover::FORMAT, 2);
+        assert!(check_answer_is_ours("handover 2\n"));
+        assert!(!check_answer_is_ours("handover 1"), "may read only 1 (the current main): ask for its formats");
+        assert!(!check_answer_is_ours("handover 3"), "a binary that dropped our format cannot resume our file");
+        assert!(!check_answer_is_ours("handover"));
+        assert!(!check_answer_is_ours(""));
+    }
+
+    #[test]
+    fn a_candidate_is_accepted_when_its_formats_cover_ours() {
+        assert_eq!(handover::FORMAT, 2);
+        assert!(formats_cover("1 2"));
+        assert!(formats_cover("1 3\n"));
+        assert!(formats_cover("2 2"));
+        assert!(!formats_cover("1 1"), "reads only format 1: the current main");
+        assert!(!formats_cover("3 4"), "dropped our format");
+        assert!(!formats_cover("1 2 3"));
+        assert!(!formats_cover("garbage"));
+        assert!(!formats_cover(""));
     }
 
     #[test]
