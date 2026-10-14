@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearScrollback, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Quit
+        OpenConfig, CommandPalette, Find, Quit
     ]
 );
 
@@ -52,6 +52,8 @@ pub enum Command {
     CommandPalette,
     /// Switch to the named theme for this run; the config file is the only place a theme is kept.
     SetTheme(String),
+    /// Open the active terminal's find bar, or focus it when it is open.
+    Find,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -66,7 +68,7 @@ const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: None }
 }
 
-/// The spec's table (section 4) plus open config, the command palette and quit. The order is the registration order.
+/// The spec's table (section 4) plus open config, the command palette, find and quit. The order is the registration order.
 pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
@@ -89,6 +91,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("font bigger", "cmd-="), row("font smaller", "cmd--"),
     row("open config", "cmd-,"),
     row("command palette", "cmd-shift-p"),
+    row("find", "cmd-f"),
     row("quit", "cmd-q"),
 ];
 
@@ -130,6 +133,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "font smaller" => KeyBinding::new(keys, FontSmaller, context),
         "open config" => KeyBinding::new(keys, OpenConfig, context),
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
+        "find" => KeyBinding::new(keys, Find, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -281,6 +285,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "font bigger" => Command::FontDelta(1.0),
         "font smaller" => Command::FontDelta(-1.0),
         "open config" => Command::OpenConfig,
+        "find" => Command::Find,
         _ => return None,
     })
 }
@@ -319,7 +324,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         MoveTabLeft => Command::MoveTabWithin(-1), MoveTabRight => Command::MoveTabWithin(1),
         NewTerminal => Command::NewTerminal, ClearScrollback => Command::ClearScrollback,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
-        OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette,
+        OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
     )
 }
 
@@ -352,6 +357,7 @@ mod tests {
         ("cmd-=", "font bigger", "FontBigger"), ("cmd--", "font smaller", "FontSmaller"),
         ("cmd-,", "open config", "OpenConfig"),
         ("cmd-shift-p", "command palette", "CommandPalette"),
+        ("cmd-f", "find", "Find"),
         ("cmd-q", "quit", "Quit"),
     ];
 

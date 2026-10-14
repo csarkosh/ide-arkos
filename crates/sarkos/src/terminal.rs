@@ -8,8 +8,10 @@ use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::Line;
+use alacritty_terminal::index::{Column, Direction, Line, Point, Side as GridSide};
 use alacritty_terminal::term::cell::Flags;
+pub use alacritty_terminal::term::search::Match;
+use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
@@ -48,6 +50,29 @@ pub struct RowsForPaint {
     /// The line just above the viewport, present when scrolled into history.
     pub above: Option<Vec<(char, CellStyle, CellKind)>>,
     pub visible: Vec<Vec<(char, CellStyle, CellKind)>>,
+}
+
+pub const MAX_MATCHES: usize = 10_000;
+
+/// Backslash-escapes every regex metacharacter so the query matches literally.
+pub fn escape_regex(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A match's part on one viewport row, columns inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Highlight {
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
+    pub current: bool,
 }
 
 pub struct TerminalCore {
@@ -185,6 +210,72 @@ impl TerminalCore {
         self.term.grid().display_offset()
     }
 
+    /// Every literal, case-insensitive match of `needle`, oldest first, from the top of history
+    /// to the bottom of the screen. alacritty's search wraps around the buffer, so the loop stops
+    /// when a match comes back at or before the previous one.
+    pub fn search(&self, needle: &str) -> Vec<Match> {
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let Ok(mut regex) = RegexSearch::new(&format!("(?i){}", escape_regex(needle))) else { return Vec::new() };
+        let last_col = self.term.last_column();
+        let end_of_grid = Point::new(self.term.bottommost_line(), last_col);
+        let mut origin = Point::new(self.term.topmost_line(), Column(0));
+        let mut out: Vec<Match> = Vec::new();
+        while let Some(m) = self.term.search_next(&mut regex, origin, Direction::Right, GridSide::Left, None) {
+            if out.last().map_or(false, |prev| *m.start() <= *prev.start()) {
+                break;
+            }
+            let end = *m.end();
+            out.push(m);
+            if end >= end_of_grid || out.len() >= MAX_MATCHES {
+                break;
+            }
+            origin = if end.column < last_col { Point::new(end.line, Column(end.column.0 + 1)) } else { Point::new(Line(end.line.0 + 1), Column(0)) };
+        }
+        out
+    }
+
+    /// The on-screen parts of `matches` at the current display offset. `current` is the index
+    /// of the match the find bar points at.
+    pub fn highlights(&self, matches: &[Match], current: usize) -> Vec<Highlight> {
+        let off = self.display_offset() as i32;
+        let screen = self.screen_lines() as i32;
+        let cols = self.columns();
+        let mut out = Vec::new();
+        for (i, m) in matches.iter().enumerate() {
+            let (s, e) = (m.start(), m.end());
+            for line in s.line.0..=e.line.0 {
+                let row = line + off;
+                if row < 0 || row >= screen {
+                    continue;
+                }
+                let start = if line == s.line.0 { s.column.0 } else { 0 };
+                let end = if line == e.line.0 { e.column.0 } else { cols.saturating_sub(1) };
+                out.push(Highlight { row: row as usize, start, end, current: i == current });
+            }
+        }
+        out
+    }
+
+    /// Scrolls just enough to show `line` (history lines are negative). The animator lands with
+    /// the grid, so there is no glide: a find jump should not animate across 10,000 lines.
+    pub fn reveal_line(&mut self, line: Line) {
+        let screen = self.screen_lines() as i32;
+        let off = self.display_offset() as i32;
+        let (top, bottom) = (-off, screen - 1 - off);
+        let want = if line.0 < top {
+            -line.0
+        } else if line.0 > bottom {
+            screen - 1 - line.0
+        } else {
+            off
+        };
+        let want = want.clamp(0, self.history_size() as i32) as usize;
+        self.set_display_offset(want);
+        self.scroll.jump_to(want as f32);
+    }
+
     /// Cursor as (col, viewport line), or None when scrolled so it is off screen.
     pub fn cursor(&self) -> Option<(usize, usize)> {
         let content = self.term.renderable_content();
@@ -268,6 +359,8 @@ pub struct Terminal {
     /// This terminal's text size; Cmd+= and Cmd+- change only the focused terminal's (spec 7).
     pub font_size: f32,
     pub line_height: f32,
+    /// The find bar's state while it is open (Cmd+F).
+    pub find: Option<crate::find::FindState>,
 }
 
 impl Terminal {
@@ -285,6 +378,7 @@ impl Terminal {
             last_frame: None,
             font_size: crate::terminal_element::DEFAULT_FONT_SIZE,
             line_height: crate::terminal_element::DEFAULT_LINE_HEIGHT,
+            find: None,
         }
     }
 
@@ -334,6 +428,7 @@ impl Terminal {
         if !w.pty_write.is_empty() {
             self.client.send(Request::Input { session: self.session, bytes: w.pty_write });
         }
+        self.refresh_find();
         true
     }
 
@@ -633,5 +728,73 @@ mod tests {
         assert_eq!(after.visible[0][4].1.fg, rgb(0x1e2633));
         assert_eq!(after.visible[0][4].1.bg, rgb(0xf4f6fa));
         assert_eq!(core.palette().bg, rgb(0xf4f6fa));
+    }
+
+    #[test]
+    fn escape_makes_metacharacters_literal() {
+        assert_eq!(escape_regex("a.b*c"), "a\\.b\\*c");
+        assert_eq!(escape_regex("(x)|[y]{2}^$\\"), "\\(x\\)\\|\\[y\\]\\{2\\}\\^\\$\\\\");
+        assert_eq!(escape_regex("plain words"), "plain words");
+        let mut core = TerminalCore::new(20, 3, 100);
+        core.apply_output(b"a.b ab a*b");
+        let dots = core.search(".");
+        assert_eq!(dots.len(), 1);
+        assert_eq!((dots[0].start().line.0, dots[0].start().column.0), (0, 1));
+        assert_eq!(core.search("*").len(), 1);
+        assert_eq!(core.search("(").len(), 0, "no panic, no match");
+        assert_eq!(core.search("\\").len(), 0);
+        assert_eq!(core.search("").len(), 0);
+    }
+
+    #[test]
+    fn search_is_literal_and_case_insensitive() {
+        let mut core = TerminalCore::new(30, 3, 100);
+        core.apply_output(b"Hello hello HELLO");
+        let m = core.search("hello");
+        let cols: Vec<usize> = m.iter().map(|m| m.start().column.0).collect();
+        assert_eq!(cols, vec![0, 6, 12]);
+        assert_eq!(m[0].end().column.0, 4, "the match covers the whole word");
+        assert_eq!(core.search("HeLLo").len(), 3);
+        assert_eq!(core.search(" hello").len(), 2, "a space is part of the query (blank cells are spaces too)");
+        assert_eq!(core.search("xyz").len(), 0);
+    }
+
+    #[test]
+    fn search_covers_history_in_order_and_stops_after_one_pass() {
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"ab\r\nab\r\nab\r\nab");
+        assert_eq!(core.history_size(), 2);
+        let m = core.search("ab");
+        let lines: Vec<i32> = m.iter().map(|m| m.start().line.0).collect();
+        assert_eq!(lines, vec![-2, -1, 0, 1], "oldest first, no wrap-around duplicates");
+        let one = TerminalCore::new(10, 2, 100);
+        assert!(one.search("ab").is_empty());
+        let mut single = TerminalCore::new(10, 2, 100);
+        single.apply_output(b"xx ab xx");
+        assert_eq!(single.search("ab").len(), 1, "a lone match is found once, not forever");
+    }
+
+    #[test]
+    fn highlights_follow_the_viewport_and_reveal_scrolls_the_least() {
+        use alacritty_terminal::index::Line;
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"ab\r\nab\r\nab\r\nab");
+        let m = core.search("ab");
+        let h = core.highlights(&m, 3);
+        assert_eq!(h.len(), 2, "only the two screen lines are visible at offset 0");
+        assert_eq!(h[0], Highlight { row: 0, start: 0, end: 1, current: false });
+        assert_eq!(h[1], Highlight { row: 1, start: 0, end: 1, current: true });
+        core.reveal_line(Line(1));
+        assert_eq!(core.display_offset(), 0, "a visible line scrolls nothing");
+        core.reveal_line(Line(-2));
+        assert_eq!(core.display_offset(), 2, "the oldest line comes to the top");
+        let h = core.highlights(&m, 0);
+        assert_eq!(h[0], Highlight { row: 0, start: 0, end: 1, current: true });
+        assert_eq!(h[1], Highlight { row: 1, start: 0, end: 1, current: false });
+        core.reveal_line(Line(1));
+        assert_eq!(core.display_offset(), 0, "the newest line comes to the bottom");
+        core.reveal_line(Line(-1));
+        assert_eq!(core.display_offset(), 1, "the smallest scroll that shows it");
+        assert_eq!(core.scroll.current, 1.0, "the animator lands with it, no glide");
     }
 }

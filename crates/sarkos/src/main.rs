@@ -7,6 +7,7 @@ mod config;
 mod config_watch;
 mod drag;
 mod empty_pane;
+mod find;
 mod keys;
 mod keymap;
 mod layout;
@@ -703,6 +704,11 @@ impl Root {
                 cx.notify();
             }
             CommandPalette => self.toggle_palette(cx),
+            Find => {
+                if let Some(t) = self.active_terminal(cx) {
+                    t.update(cx, |t, cx| t.open_find(cx));
+                }
+            }
             SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
         }
         let _ = window;
@@ -869,13 +875,16 @@ impl Render for Root {
         }
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
-        // Focus follows the tree: the focused pane's terminal, or the pane's own handle. The
-        // palette holds it while it is open.
+        // Focus follows the tree: the focused pane's terminal (its find bar while that is open),
+        // or the pane's own handle. The palette holds it while it is open.
         let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
             Some(f)
         } else {
             match self.active_terminal(cx) {
-                Some(t) => Some(t.read(cx).focus.clone()),
+                Some(t) => {
+                    let t = t.read(cx);
+                    Some(t.find.as_ref().map_or_else(|| t.focus.clone(), |f| f.focus.clone()))
+                }
                 None => self.pane_focus.get(&self.tree.focused).cloned(),
             }
         };

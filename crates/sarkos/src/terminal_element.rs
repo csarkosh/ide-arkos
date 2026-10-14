@@ -130,7 +130,7 @@ impl Element for TerminalElement {
         let cw = cell.width;
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
         // The colours come from the terminal's palette, which follows the theme.
-        let (rows, frac, cursor, animating, bg, cursor_color) = self.terminal.update(cx, |t, _| {
+        let (rows, frac, cursor, animating, highlights, palette) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -144,9 +144,11 @@ impl Element for TerminalElement {
             t.last_frame = if animating || sync_open { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
+            let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, palette.bg, palette.cursor)
+            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, palette.clone())
         });
+        let (bg, cursor_color) = (palette.bg, palette.cursor);
         window.paint_quad(fill(bounds, hsla(bg)));
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -187,6 +189,14 @@ impl Element for TerminalElement {
                     c.a = 0.85;
                     window.paint_quad(fill(Bounds { origin: point(x, y), size: size(px(cw), lh) }, c));
                 }
+            }
+            // Find matches: translucent quads over the text, so no run is re-shaped.
+            for h in &highlights {
+                let x = origin.x + px(h.start as f32 * cw);
+                let w = px((h.end + 1 - h.start) as f32 * cw);
+                let y = origin.y + px((h.row as f32 + frac) * cell.height);
+                let c = if h.current { palette.find_current } else { palette.find_match };
+                window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, c.alpha(0.45)));
             }
         });
 

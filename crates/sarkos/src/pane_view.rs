@@ -2,6 +2,7 @@
 //! starts or a replay is parsed, or the empty state).
 
 use crate::drag;
+use crate::find;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
 use crate::theme::Theme;
@@ -236,6 +237,7 @@ fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &The
     };
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
+    let t_click = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
     let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
     div()
@@ -261,6 +263,17 @@ fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &The
             }
             t_keys.update(cx, |t, cx| t.handle_key(ks, cx));
         }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |_root, _ev: &MouseDownEvent, _window, cx| {
+                // A click back into the terminal closes the find bar.
+                t_click.update(cx, |t, cx| {
+                    if t.find.is_some() {
+                        t.close_find(cx);
+                    }
+                });
+            }),
+        )
         .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
@@ -285,12 +298,13 @@ fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &The
                 .rounded(px(10.0))
                 .bg(theme.chrome.banner.hsla())
                 .text_color(theme.chrome.text.hsla())
-                .font_family(family)
+                .font_family(family.clone())
                 .text_size(px(12.0))
                 .cursor_pointer()
                 .child("jump to bottom")
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
+        .children(find::render(&terminal, theme, family, cx))
 }
 
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by

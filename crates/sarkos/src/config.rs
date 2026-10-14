@@ -340,6 +340,7 @@ nice = 0
 # "font smaller" = "cmd--"
 # "open config" = "cmd-,"
 # "command palette" = "cmd-shift-p"
+# "find" = "cmd-f"
 # "quit" = "cmd-q"
 
 [sidebar]
