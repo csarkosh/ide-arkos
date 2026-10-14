@@ -1,6 +1,7 @@
 //! Relaunches a UI whose main thread has stopped heartbeating (spec 2.4). Sessions are untouched.
 use crate::server::Shared;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -54,33 +55,37 @@ fn scan(state: &Shared, timeout: Duration) {
             libc::kill(pid as libc::pid_t, libc::SIGKILL);
         }
         if let Some(exe) = exe {
-            let mut cmd = Command::new(&exe);
-            cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-            // The UI picks its workspace from its cwd; without this it would inherit the daemon's.
-            if let Some(cwd) = cwd {
-                cmd.current_dir(cwd);
-            }
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
-            // No fork while a session's PTY descriptors are still inheritable, or the relaunched
-            // UI would hold that terminal open for its whole life.
-            let spawned = {
-                let _no_open_pty_inheritable = crate::pty::spawn_lock();
-                cmd.spawn()
-            };
-            match spawned {
-                // Reap the child when it exits so it does not linger as a zombie.
-                Ok(mut child) => {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
-                Err(e) => eprintln!("sarkosd: relaunch {} failed: {e}", exe.display()),
+            if let Err(e) = launch_ui(&exe, cwd.as_deref()) {
+                eprintln!("sarkosd: relaunch {} failed: {e}", exe.display());
             }
         }
     }
+}
+
+/// Starts a window in its own session with no stdio, in `cwd` (the window picks its project
+/// from its working directory; without one it would inherit the daemon's), and reaps it when it
+/// exits. Used for the watchdog's relaunch and for `RelaunchClient`.
+pub fn launch_ui(exe: &Path, cwd: Option<&Path>) -> std::io::Result<()> {
+    let mut cmd = Command::new(exe);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    // No fork while a session's PTY descriptors are still inheritable, or the relaunched UI
+    // would hold that terminal open for its whole life.
+    let mut child = {
+        let _no_open_pty_inheritable = crate::pty::spawn_lock();
+        cmd.spawn()?
+    };
+    // Reap the child when it exits so it does not linger as a zombie.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }

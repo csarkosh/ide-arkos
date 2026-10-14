@@ -1104,3 +1104,51 @@ fn resume_with_a_corrupt_handover_file_exits_without_touching_anything() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("handover"));
 }
+
+#[test]
+fn relaunch_client_starts_the_named_binary_when_the_client_disconnects() {
+    let d = Daemon::start(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let (exe, marker) = relaunch_script(dir.path());
+    let mut c = d.connect();
+    assert_eq!(c.request(Request::RelaunchClient { exe: exe.clone(), cwd: dir.path().to_path_buf() }), Response::Ok);
+    drop(c);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the daemon did not launch {}", exe.display());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn relaunch_client_refuses_a_foreign_binary() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect();
+    match c.request(Request::RelaunchClient { exe: PathBuf::from("/bin/sh"), cwd: std::env::temp_dir() }) {
+        Response::Error(e) => assert!(e.contains("sarkos"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn relaunch_client_falls_back_to_the_previous_window_when_the_new_one_cannot_start() {
+    let d = Daemon::start(&[]);
+    let old = tempfile::tempdir().unwrap();
+    let (old_exe, marker) = relaunch_script(old.path());
+    // Named sarkos and owned by this user, so it is accepted, but not executable.
+    let new = tempfile::tempdir().unwrap();
+    let new_exe = new.path().join("sarkos");
+    std::fs::write(&new_exe, "#!/bin/sh\n").unwrap();
+    let mut c = d.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: Some(old_exe), ui_cwd: old.path().to_path_buf() };
+    assert!(matches!(c.request(hello), Response::Hello { .. }));
+    assert_eq!(c.request(Request::RelaunchClient { exe: new_exe, cwd: new.path().to_path_buf() }), Response::Ok);
+    drop(c);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the daemon did not fall back to the previous window");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let cwd = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(cwd.trim(), old.path().canonicalize().unwrap().to_string_lossy(), "in the previous window's directory");
+}

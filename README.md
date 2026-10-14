@@ -10,14 +10,21 @@ Written in Rust with GPUI. The design is in
 
 ## Status
 
-Milestone 2b of 6: a config file with live reload, the Navy and Navy Light themes following the
-macOS appearance, three text presets, a command palette (Shift+Cmd+P), find (Cmd+F), and the
-tab-bar overflow menu. Next is updating in place (the daemon replacing itself by exec so no
-session ends; `docs/superpowers/specs/2026-10-14-update-in-place-design.md`), then milestone 3
-(Claude Code session awareness).
+Updating in place: the daemon replaces itself by exec with every shell still its child, the
+window reconnects by itself, and the palette's "Update now" runs the whole update after
+`brew upgrade` or a build into place. Milestone 3 (Claude Code session awareness, with recovery
+after a reboot) is next.
 
 Things only a person at the screen can check, in order of value:
 
+- with four `claude` sessions running, `cargo build --release` a change into place, wait for
+  "update ready" in the status bar (or relaunch), run "Update now" from the palette: the window
+  reappears with every tab, every history and every agent still running; `sarkosd`'s pid in
+  `ps` is unchanged and its log shows "upgrading to" and "resumed N sessions" under a second apart
+- `pkill -x sarkosd` with the window open: tabs say "reconnecting", the status bar too; after ten
+  seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
+  "(restarted)"
+- "Update now" when nothing changed relaunches the window and every tab comes back attached
 - editing `~/.config/sarkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
@@ -120,6 +127,26 @@ from the palette lasts until the config reloads or the app relaunches; the confi
 otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
+## Updating
+
+Sessions live in `sarkosd`, so updating never ends one. After `brew upgrade sarkos`, or
+`cargo build --release` into the binaries you run, the status bar shows "update ready" within
+five minutes (or at the next launch), and the palette's "Update now" does the rest: if the
+daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
+process (same pid, the shells stay its children) and the window reconnects; then the window
+asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
+history. The daemon and window speak protocol 2; the daemon still serves a protocol 1 window
+from milestone 2b. Upgrading *to* this version from milestone 2b is the one update that needs
+`pkill -x sarkosd` (the old daemon knows nothing of handovers), which ends every session.
+
+If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
+shows the error. If the window loses the daemon for ten seconds, it starts a new one and every
+tab becomes a fresh shell with the "(restarted)" note.
+
+A window newer than its daemon (one started from a new build while an older daemon still runs)
+is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
+one-time path above: `pkill -x sarkosd`, which ends every session, and open the window again.
+
 ## Build and run
 
 ```bash
@@ -128,9 +155,10 @@ cargo build --release
 ```
 
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
-`~/Library/Application Support/sarkos/sarkosd.log`. A protocol change between the window and the
-daemon requires restarting the daemon; the window reports the mismatch in its status banner.
-`pkill -x sarkosd` stops the daemon and ends every session.
+`~/Library/Application Support/sarkos/sarkosd.log`. A window newer than the daemon is refused
+with a banner and stops reconnecting; `pkill -x sarkosd` and a relaunch fix it (see Updating). A
+window older than the daemon keeps working. `pkill -x sarkosd` stops the daemon and ends every
+session.
 
 Upgrading from milestone 1: the window finds milestone 1's saved session and moves it to the
 new workspace format on first launch. A daemon started by milestone 1 keeps running without
@@ -153,7 +181,10 @@ astigmatism ahead of any setting. Not medical advice.
 ## Further reading
 
 [Update the IDE, keep the shells](https://csarko.sh/research/update-the-ide-keep-the-shells):
-the write-up of why updates kill sessions elsewhere and how this IDE will avoid it.
+the write-up of why updates kill sessions elsewhere and how this IDE avoids it.
+
+[Bring the agents back after a reboot](https://csarko.sh/research/bring-the-agents-back-after-a-reboot):
+the research behind milestone 3's recovery of Claude Code sessions after a reboot.
 
 ## License
 

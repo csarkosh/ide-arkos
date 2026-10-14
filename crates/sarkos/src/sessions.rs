@@ -34,6 +34,8 @@ pub enum Pending {
     Create { tab: TabId, note: bool },
     Attach { session: SessionId, tab: TabId, note: bool },
     Kill { session: SessionId },
+    /// The daemon replacing itself; answered only on failure (success ends the connection).
+    Upgrade,
     #[allow(dead_code)] // In Task 4's interface; nothing in milestone 2a sends an untracked request yet
     Other,
 }
@@ -48,6 +50,8 @@ pub enum Outcome {
     /// The daemon could not attach `session` for `tab`; the window gives the tab a fresh shell.
     AttachFailed { session: SessionId, tab: TabId, error: String },
     Error(String),
+    /// The daemon refused or failed the upgrade and keeps running as it was.
+    UpgradeFailed(String),
     /// A version 2 daemon's answer to Hello: what it runs and which protocol versions it speaks.
     DaemonHello { version: String, protocol_min: u32, protocol_max: u32 },
 }
@@ -193,6 +197,17 @@ impl SessionManager {
         self.nice = nice;
     }
 
+    /// Whether the connection is down and the window is waiting for the next one.
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
+    /// Asks the daemon to replace itself with `exe`.
+    pub fn upgrade(&mut self, exe: PathBuf) {
+        let id = self.transport.send(Request::Upgrade { exe });
+        self.pending.insert(id, Pending::Upgrade);
+    }
+
     pub fn list(&mut self) {
         let id = self.transport.send(Request::ListSessions);
         self.pending.insert(id, Pending::List);
@@ -274,6 +289,7 @@ impl SessionManager {
                 Some(Pending::Create { tab, .. }) => {
                     self.busy.remove(&tab);
                 }
+                Some(Pending::Upgrade) => return Outcome::UpgradeFailed(e.clone()),
                 Some(Pending::Kill { session }) if e.starts_with("no session") => {
                     // Reaped before the kill arrived: the session is gone, which is what we asked.
                     eprintln!("sarkos: session {} was already gone when killed", session.0);
@@ -627,6 +643,22 @@ mod tests {
         assert_eq!(m.handle_response(1, Response::Error("no session 9".into())), Outcome::Killed { session: SessionId(9) });
         m.kill(SessionId(10));
         assert_eq!(m.handle_response(2, Response::Error("permission denied".into())), Outcome::Error("permission denied".into()), "other errors still surface");
+    }
+
+    #[test]
+    fn only_the_upgrade_request_s_own_error_fails_the_upgrade() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.upgrade(PathBuf::from("/bin/sarkosd"));
+        assert!(matches!(&r.requests()[..], [Request::Upgrade { exe }] if exe == &PathBuf::from("/bin/sarkosd")));
+        m.kill(SessionId(9));
+        // A kill refused while the daemon holds the upgrade slot is not the upgrade failing.
+        let busy = "an upgrade is in progress; retry in a moment";
+        assert_eq!(m.handle_response(2, Response::Error(busy.into())), Outcome::Error(busy.into()));
+        assert_eq!(m.handle_response(1, Response::Error("execv failed".into())), Outcome::UpgradeFailed("execv failed".into()));
+        assert!(!m.is_offline());
+        m.disconnect();
+        assert!(m.is_offline());
     }
 
     #[test]

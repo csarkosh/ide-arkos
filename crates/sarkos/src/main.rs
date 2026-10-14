@@ -24,6 +24,7 @@ mod terminal;
 mod terminal_element;
 mod theme;
 mod tree;
+mod update;
 mod workspace;
 
 use futures::channel::oneshot;
@@ -91,6 +92,14 @@ fn banner_visible(reconnecting_since: Option<Instant>, now: Instant) -> bool {
     }
 }
 
+/// Where a palette-driven update is: the daemon replacing itself (the window relaunches once it
+/// reconnects), or the window asking to be relaunched and quitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStage {
+    DaemonUpgrading,
+    Relaunching,
+}
+
 pub struct Root {
     pub tree: Tree,
     pub sessions: SessionManager,
@@ -156,6 +165,10 @@ pub struct Root {
     pub bar_scroll: HashMap<PaneId, gpui::ScrollHandle>,
     /// The pane whose tab overflow menu is open.
     pub tab_menu: Option<PaneId>,
+    /// "update ready: <version>" while the binary at the launch path differs from this one.
+    pub update_ready: Option<String>,
+    /// The update "Update now" started, while it runs.
+    pub updating: Option<UpdateStage>,
 }
 
 /// The name a tab shows before its program sets a title: the basename of the shell new tabs
@@ -212,6 +225,8 @@ impl Root {
             palette: None,
             bar_scroll: HashMap::new(),
             tab_menu: None,
+            update_ready: None,
+            updating: None,
         }
     }
 
@@ -586,7 +601,7 @@ impl Root {
             return;
         }
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir);
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref());
         self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
         cx.notify();
     }
@@ -843,8 +858,78 @@ impl Root {
                 }
             }
             SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
+            UpdateNow => self.update_now(cx),
         }
         let _ = window;
+    }
+
+    /// The palette's "Update now": the daemon first when its binary changed, then this window.
+    pub fn update_now(&mut self, cx: &mut Context<Self>) {
+        if self.updating.is_some() {
+            self.show_notice("an update is already running".into(), cx);
+            return;
+        }
+        if self.sessions.is_offline() {
+            // A refused window never reconnects, so the daemon cannot be asked to update itself.
+            let text = if connection::is_final(&self.status) {
+                "sarkosd is older than this window: run pkill -x sarkosd and open Sarkos IDE again"
+            } else {
+                "sarkosd is not connected; try again once it is"
+            };
+            self.show_notice(text.into(), cx);
+            return;
+        }
+        let Some(exe) = update::launch_path() else {
+            self.show_notice("cannot find this window's own binary".into(), cx);
+            return;
+        };
+        let daemon_exe = update::sibling_daemon(&exe);
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let d = daemon_exe.clone();
+            let installed = cx.background_executor().spawn(async move { update::installed_version(&d) }).await;
+            let _ = root.update(cx, |root, cx| {
+                // A second "Update now" got here first, or the connection went meanwhile.
+                if root.updating.is_some() || root.sessions.is_offline() {
+                    return;
+                }
+                match installed {
+                    None => root.show_notice(format!("cannot run {} --version", daemon_exe.display()), cx),
+                    Some(installed) if root.daemon_version.as_deref().map_or(true, |r| update::differs(r, &installed)) => {
+                        root.updating = Some(UpdateStage::DaemonUpgrading);
+                        root.show_notice("updating the daemon; sessions stay".into(), cx);
+                        root.sessions.upgrade(daemon_exe.clone());
+                    }
+                    Some(_) => root.relaunch_now(cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Asks the daemon to start the installed window in this project once we are gone, then quits.
+    pub fn relaunch_now(&mut self, cx: &mut Context<Self>) {
+        // Quitting with nothing to relaunch would leave no window: a binary launched from a
+        // Homebrew Cellar path is gone once `brew cleanup` removes that version.
+        let exe = match update::launch_path() {
+            Some(exe) if exe.is_file() => exe,
+            other => {
+                self.updating = None;
+                let what = other.map_or_else(|| "this window's binary".to_string(), |p| p.display().to_string());
+                self.show_notice(format!("cannot relaunch: {what} is gone; quit and open Sarkos IDE again"), cx);
+                return;
+            }
+        };
+        self.updating = Some(UpdateStage::Relaunching);
+        self.sessions.transport.send(Request::RelaunchClient { exe, cwd: self.project.clone() });
+        let killed = self.end_closed_tabs();
+        if let Some(client) = self.sessions.client.clone() {
+            if !client.wait_sent(Duration::from_millis(500)) {
+                eprintln!("sarkos: could not send the relaunch request ({killed} kills pending)");
+            }
+        }
+        workspace::flush_now(&self.save_queue);
+        cx.quit();
     }
 
     /// A connection is up (the first one, or a reconnect): its session list reconciles the tree.
@@ -860,6 +945,10 @@ impl Root {
         self.status = CONNECTING.into();
         self.grids.clear();
         self.sessions.list();
+        // The daemon's exec ended the last connection: it runs the new binary, now this window.
+        if self.updating == Some(UpdateStage::DaemonUpgrading) {
+            self.relaunch_now(cx);
+        }
         cx.notify();
     }
 
@@ -949,6 +1038,12 @@ impl Root {
             Outcome::Killed { .. } => {}
             Outcome::AttachFailed { session, tab, error } => {
                 self.restart_tab(tab, session, &format!("sarkosd could not attach it: {error}"), cx);
+            }
+            Outcome::UpgradeFailed(e) => {
+                // The old daemon keeps running and serving; nothing else changes.
+                eprintln!("sarkos: update failed: {e}");
+                self.updating = None;
+                self.show_notice(format!("update failed: {e}"), cx);
             }
             Outcome::Error(e) => {
                 self.status = format!("{ERROR_PREFIX}{e}");
@@ -1097,7 +1192,7 @@ impl Render for Root {
         let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
         let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
         let family = self.family();
-        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, family.clone(), &theme);
+        let status_bar = chrome::status_bar(&self.project, self.update_ready.as_deref(), daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
             .relative()
             .size_full()
@@ -1311,6 +1406,7 @@ fn main() {
         config_watch::start(root.clone(), config_path.clone(), cx);
         // The same client the root was built with; reconnects replace it from here on.
         connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events), cx);
+        update::start(root.clone(), cx);
 
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();

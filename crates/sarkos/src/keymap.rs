@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearScrollback, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Find, Quit
+        OpenConfig, CommandPalette, Find, UpdateNow, Quit
     ]
 );
 
@@ -54,6 +54,8 @@ pub enum Command {
     SetTheme(String),
     /// Open the active terminal's find bar, or focus it when it is open.
     Find,
+    /// Run the installed update: the daemon first when its binary changed, then this window.
+    UpdateNow,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -68,7 +70,9 @@ const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: None }
 }
 
-/// The spec's table (section 4) plus open config, the command palette, find and quit. The order is the registration order.
+/// The spec's table (section 4) plus open config, the command palette, find, update now and
+/// quit. The order is the registration order. "update now" has no default keys: it is a palette
+/// command unless the config binds it.
 pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
@@ -92,6 +96,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("open config", "cmd-,"),
     row("command palette", "cmd-shift-p"),
     row("find", "cmd-f"),
+    row("update now", ""),
     row("quit", "cmd-q"),
 ];
 
@@ -134,6 +139,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "open config" => KeyBinding::new(keys, OpenConfig, context),
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "find" => KeyBinding::new(keys, Find, context),
+        "update now" => KeyBinding::new(keys, UpdateNow, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -286,6 +292,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "font smaller" => Command::FontDelta(-1.0),
         "open config" => Command::OpenConfig,
         "find" => Command::Find,
+        "update now" => Command::UpdateNow,
         _ => return None,
     })
 }
@@ -325,6 +332,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         NewTerminal => Command::NewTerminal, ClearScrollback => Command::ClearScrollback,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
+        UpdateNow => Command::UpdateNow,
     )
 }
 
@@ -337,7 +345,8 @@ mod tests {
         kb.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" ")
     }
 
-    /// The spec's table (section 4) plus the four this milestone adds. Names are the config keys.
+    /// The spec's table (section 4) plus the rows later milestones add. Names are the config
+    /// keys; empty keys mean unbound by default.
     const SPEC_ROWS: &[(&str, &str, &str)] = &[
         ("cmd-k", "clear scrollback", "ClearScrollback"),
         ("cmd-1", "focus pane 1", "FocusPane1"), ("cmd-2", "focus pane 2", "FocusPane2"), ("cmd-3", "focus pane 3", "FocusPane3"),
@@ -358,6 +367,7 @@ mod tests {
         ("cmd-,", "open config", "OpenConfig"),
         ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-f", "find", "Find"),
+        ("", "update now", "UpdateNow"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -375,8 +385,9 @@ mod tests {
     #[test]
     fn every_row_runs_the_action_it_describes() {
         let b = bindings();
-        assert_eq!(b.len(), SPEC_ROWS.len());
-        for (keys, name, want) in SPEC_ROWS {
+        assert_eq!(b.len(), SPEC_ROWS.iter().filter(|(keys, _, _)| !keys.is_empty()).count());
+        // A row with empty keys is unbound by default: nothing to press.
+        for (keys, name, want) in SPEC_ROWS.iter().filter(|(keys, _, _)| !keys.is_empty()) {
             let kb = b.iter().find(|kb| keys_of(kb) == *keys).unwrap_or_else(|| panic!("{keys} ({name}) unbound"));
             assert_eq!(kb.action().name(), format!("sarkos::{want}"), "{keys}");
         }
@@ -400,7 +411,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 1, "an empty string unbinds");
+        assert_eq!(b.len(), ACTIONS.len() - 2, "an empty string unbinds, and update now has no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "sarkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "sarkos::FontBigger"));
@@ -408,6 +419,8 @@ mod tests {
         assert_eq!(keys_for("font bigger", &o), None);
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
+        assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 1, "only update now is unbound by default");
     }
 
     #[test]

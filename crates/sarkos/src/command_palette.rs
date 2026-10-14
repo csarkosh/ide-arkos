@@ -21,8 +21,8 @@ pub struct Item {
 }
 
 /// Everything the palette offers, in display order. `themes_dir` is where "Extract built-in
-/// themes" writes.
-pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path) -> Vec<Item> {
+/// themes" writes; `update_ready` is the status bar's "update ready" text, when there is one.
+pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>) -> Vec<Item> {
     let mut out = Vec::new();
     for a in ACTIONS {
         if a.name == "command palette" || a.name == "quit" {
@@ -32,7 +32,11 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
             Some(c) => c,
             None => continue,
         };
-        let detail = keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default();
+        let detail = if command == Command::UpdateNow {
+            update_ready.unwrap_or("relaunch on the installed binaries").to_string()
+        } else {
+            keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default()
+        };
         out.push(Item { label: keymap::label(a.name), detail, command });
     }
     for (name, p) in &cfg.font.presets {
@@ -200,10 +204,15 @@ mod tests {
     fn items_cover_actions_presets_themes_and_config() {
         let cfg = Config::default();
         let dir = std::path::Path::new("/u/.config/sarkos/themes");
-        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir);
+        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir, None);
         let n_actions = crate::keymap::ACTIONS.len() - 2;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
         assert!(!items.iter().any(|i| i.label == "Command palette" || i.label == "Quit"));
+        let update = items.iter().find(|i| i.label == "Update now").unwrap();
+        assert_eq!(update.command, Command::UpdateNow);
+        assert_eq!(update.detail, "relaunch on the installed binaries");
+        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"));
+        assert_eq!(ready.iter().find(|i| i.label == "Update now").unwrap().detail, "update ready: 0.2.0 (def5678)");
         let split = items.iter().find(|i| i.label == "Split right").unwrap();
         assert_eq!(split.detail, "Cmd+\\");
         assert_eq!(split.command, Command::Split(crate::tree::Side::Right));
@@ -219,11 +228,11 @@ mod tests {
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/sarkos/themes");
-        let items = self::items(&cfg, &[], "compact", "navy", dir);
+        let items = self::items(&cfg, &[], "compact", "navy", dir, None);
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor, current", "the floor note stays");
         let unbound = cfg_with("split right", "");
-        let items = self::items(&unbound, &[], "comfortable", "navy", dir);
+        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None);
         assert_eq!(items.iter().find(|i| i.label == "Split right").unwrap().detail, "");
     }
 

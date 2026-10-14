@@ -11,7 +11,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::net::Shutdown;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,8 @@ pub struct ClientRecord {
     pub connected: bool,
     /// The protocol version its Hello announced; 0 until then.
     pub protocol: u32,
+    /// The window and directory `RelaunchClient` asked for, launched when this client goes.
+    pub relaunch: Option<(PathBuf, PathBuf)>,
 }
 
 #[derive(Default)]
@@ -165,7 +167,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
         let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
-            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0 },
+            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None },
         );
         (id, sink)
     };
@@ -235,17 +237,33 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
 }
 
 fn disconnect(state: &Shared, client_id: ClientId) {
-    let mut st = state.lock().unwrap();
-    if let Some(rec) = st.clients.get_mut(&client_id) {
-        rec.connected = false;
-        let attached = std::mem::take(&mut rec.attached);
-        for sid in attached {
-            if let Some(s) = st.sessions.get(&sid) {
-                s.unsubscribe(client_id);
+    let (relaunch, ui_exe, ui_cwd) = {
+        let mut st = state.lock().unwrap();
+        if let Some(rec) = st.clients.get_mut(&client_id) {
+            rec.connected = false;
+            let attached = std::mem::take(&mut rec.attached);
+            for sid in attached {
+                if let Some(s) = st.sessions.get(&sid) {
+                    s.unsubscribe(client_id);
+                }
+            }
+        }
+        match st.clients.remove(&client_id) {
+            Some(rec) => (rec.relaunch, rec.ui_exe, rec.ui_cwd),
+            None => return,
+        }
+    };
+    // The lock is released: launching never blocks other threads.
+    if let Some((exe, cwd)) = relaunch {
+        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd)) {
+            eprintln!("sarkosd: relaunch of {} failed: {e}; launching the previous window instead", exe.display());
+            if let Some(old) = ui_exe {
+                if let Err(e) = crate::watchdog::launch_ui(&old, ui_cwd.as_deref()) {
+                    eprintln!("sarkosd: relaunch of {} failed too: {e}", old.display());
+                }
             }
         }
     }
-    st.clients.remove(&client_id);
 }
 
 /// What `CreateSession` and `Kill` answer while an upgrade holds the slot: a new session would
@@ -297,8 +315,19 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             // Returns only on failure; on success this process is now the new binary.
             Response::Error(crate::upgrade::execute(state, &exe, opts))
         }
-        // Task 6 replaces this placeholder.
-        Request::RelaunchClient { .. } => Response::Error("not yet".into()),
+        Request::RelaunchClient { exe, cwd } => {
+            let named_sarkos = exe.file_name().map(|n| n == "sarkos").unwrap_or(false);
+            // SAFETY: getuid has no preconditions.
+            let owned = std::fs::metadata(&exe).map(|m| m.is_file() && m.uid() == unsafe { libc::getuid() }).unwrap_or(false);
+            if !named_sarkos || !owned {
+                Response::Error(format!("{} is not a sarkos binary owned by this user", exe.display()))
+            } else {
+                if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                    rec.relaunch = Some((exe, cwd));
+                }
+                Response::Ok
+            }
+        }
         Request::Heartbeat { .. } => {
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                 rec.last_heartbeat = Instant::now();

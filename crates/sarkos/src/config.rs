@@ -363,6 +363,7 @@ nice = 0
 # "open config" = "cmd-,"
 # "command palette" = "cmd-shift-p"
 # "find" = "cmd-f"
+# "update now" = ""
 # "quit" = "cmd-q"
 
 [sidebar]
