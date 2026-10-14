@@ -164,6 +164,9 @@ Notes:
   kept for Shift+Cmd+T, since nothing is left to end or bring back.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
+- A link in terminal output (anything starting `http://` or `https://`, up to the next space
+  or quote) is underlined under the pointer, and Cmd+click opens it in your browser, as in
+  Terminal.app. A plain click does nothing to it.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
 - Cmd+B, Shift+Cmd+E and Ctrl+Shift+G arrive with the sidebar in milestone 4. Every binding can

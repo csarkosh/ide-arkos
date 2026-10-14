@@ -12,7 +12,7 @@ use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
-    KeyDownEvent, MouseButton, MouseDownEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
@@ -410,7 +410,15 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         }))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |_root, _ev: &MouseDownEvent, _window, cx| {
+            cx.listener(move |_root, ev: &MouseDownEvent, _window, cx| {
+                // Cmd+click on a link opens it (Terminal.app's gesture); the plain click stays
+                // free for selection later.
+                if ev.modifiers.platform {
+                    if let Some(link) = t_click.read(cx).hovered_link.clone() {
+                        cx.open_url(&link.url);
+                        return;
+                    }
+                }
                 // A click back into the terminal closes the find bar.
                 t_click.update(cx, |t, cx| {
                     if t.find.is_some() {
@@ -419,6 +427,9 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 });
             }),
         )
+        // The element finds the link under the pointer when it paints; a move over the
+        // terminal asks for that paint (the inner div below asks on enter and exit).
+        .on_mouse_move(cx.listener(|_root, _ev: &MouseMoveEvent, _window, cx| cx.notify()))
         .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
@@ -430,7 +441,13 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 t.scroll_lines(lines, cx);
             });
         }))
-        .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone()))
+        .child(
+            div()
+                .id(("term-hover", pane))
+                .size_full()
+                .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone())),
+        )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
             div()

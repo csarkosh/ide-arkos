@@ -3,9 +3,11 @@
 use crate::layout::{build_runs, CellKind, CellStyle};
 use crate::palette::Rgb;
 use crate::terminal::{CellMetrics, Terminal};
+use crate::links::{link_at, links_in_row};
+use crate::terminal::HoveredLink;
 use gpui::{
-    fill, font, point, px, size, App, Bounds, ContentMask, Element, ElementId, Entity, FontWeight, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Rgba, SharedString, Style, TextRun, Window,
+    fill, font, point, px, size, App, Bounds, ContentMask, CursorStyle, Element, ElementId, Entity, FontWeight, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Rgba, SharedString, Style, TextRun, Window,
 };
 use std::time::Instant;
 
@@ -93,6 +95,8 @@ impl IntoElement for TerminalElement {
 
 pub struct Prepaint {
     cell: CellMetrics,
+    /// The element's area, for the pointer cursor over a link.
+    hitbox: Hitbox,
 }
 
 impl Element for TerminalElement {
@@ -121,7 +125,8 @@ impl Element for TerminalElement {
             t.cell = Some(cell);
             t.ensure_size(cols, rows);
         });
-        Prepaint { cell }
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        Prepaint { cell, hitbox }
     }
 
     fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), prepaint: &mut Prepaint, window: &mut Window, cx: &mut App) {
@@ -151,6 +156,13 @@ impl Element for TerminalElement {
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         window.paint_quad(fill(bounds, hsla(bg)));
+        // The link under the pointer, found on the hovered row only: underlined below, opened by
+        // Cmd+click in the pane's mouse handler, which reads it back from the terminal.
+        let hovered = hovered_link(&rows.visible, bounds, window.mouse_position(), cell, frac);
+        if hovered.is_some() {
+            window.set_cursor_style(CursorStyle::PointingHand, &prepaint.hitbox);
+        }
+        self.terminal.update(cx, |t, _| t.hovered_link = hovered.clone());
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let origin = bounds.origin;
@@ -199,6 +211,13 @@ impl Element for TerminalElement {
                 let c = if h.current { palette.find_current } else { palette.find_match };
                 window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, c.alpha(0.45)));
             }
+            if let Some(l) = &hovered {
+                let x = origin.x + px(l.start as f32 * cw);
+                let w = px((l.end - l.start) as f32 * cw);
+                let y = origin.y + px((l.row as f32 + frac) * cell.height) + lh - px(2.0);
+                let fg = rows.visible.get(l.row).and_then(|r| r.get(l.start)).map(|c| c.1.fg).unwrap_or(palette.fg);
+                window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, px(1.0)) }, hsla(fg)));
+            }
         });
 
         // A throttled find search runs in a later frame, even once the output has stopped.
@@ -208,9 +227,51 @@ impl Element for TerminalElement {
     }
 }
 
+/// The link under `mouse` in the visible rows painted at `frac`, if any. Only the hovered row's
+/// cells are scanned, so this costs nothing on a row without a scheme.
+pub fn hovered_link(visible: &[Vec<(char, CellStyle, CellKind)>], bounds: Bounds<Pixels>, mouse: gpui::Point<Pixels>, cell: CellMetrics, frac: f32) -> Option<HoveredLink> {
+    if !bounds.contains(&mouse) || cell.width <= 0.0 || cell.height <= 0.0 {
+        return None;
+    }
+    let col = (f32::from(mouse.x - bounds.origin.x) / cell.width).floor();
+    let row = (f32::from(mouse.y - bounds.origin.y) / cell.height - frac).floor();
+    if col < 0.0 || row < 0.0 {
+        return None;
+    }
+    let (col, row) = (col as usize, row as usize);
+    let cells = visible.get(row)?;
+    let chars: Vec<char> = cells.iter().map(|c| c.0).collect();
+    let links = links_in_row(&chars);
+    let l = link_at(&links, col)?;
+    Some(HoveredLink { row, start: l.start, end: l.end, url: l.url.clone() })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{frame_dt, split_offset};
+    use super::{frame_dt, hovered_link, split_offset};
+    use crate::layout::{CellKind, CellStyle};
+    use crate::terminal::CellMetrics;
+    use gpui::{point, px, size, Bounds};
+
+    fn row(s: &str) -> Vec<(char, CellStyle, CellKind)> {
+        let grey = crate::palette::Rgb { r: 200, g: 200, b: 200 };
+        let style = CellStyle { fg: grey, bg: grey, bold: false, italic: false, dim: false, underline: false, inverse: false };
+        s.chars().map(|c| (c, style, CellKind::Normal)).collect()
+    }
+
+    #[test]
+    fn the_hovered_link_follows_the_pointer_cell_and_the_fraction() {
+        let visible = vec![row("plain"), row("see https://csarko.sh now")];
+        let bounds = Bounds { origin: point(px(100.0), px(50.0)), size: size(px(800.0), px(600.0)) };
+        let cell = CellMetrics { width: 10.0, height: 20.0 };
+        // Row 1, column 4: the first link cell.
+        let at = |x: f32, y: f32, frac: f32| hovered_link(&visible, bounds, point(px(100.0 + x), px(50.0 + y)), cell, frac).map(|l| (l.row, l.start, l.end));
+        assert_eq!(at(45.0, 25.0, 0.0), Some((1, 4, 21)));
+        assert_eq!(at(35.0, 25.0, 0.0), None, "the space before it");
+        assert_eq!(at(45.0, 5.0, 0.0), None, "row 0 has no link");
+        assert_eq!(at(45.0, 45.0, 0.5), Some((1, 4, 21)), "a half-line scroll shifts the rows down");
+        assert_eq!(hovered_link(&visible, bounds, point(px(10.0), px(10.0)), cell, 0.0), None, "outside the element");
+    }
 
     #[test]
     fn cell_height_follows_the_preset() {
