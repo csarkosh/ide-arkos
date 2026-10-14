@@ -333,16 +333,22 @@ fn socket_is_private() {
     assert_eq!(mode, 0o600);
 }
 
-/// Writes the "UI executable" the watchdog relaunches: a script that records its working
-/// directory in the returned marker file, written whole by a rename so it is never read half
-/// written. Returns (script, marker).
+/// Writes the "UI executable" the watchdog relaunches: a script that appends its working
+/// directory to the returned marker file, one line per launch in a single write, so a test can
+/// count launches. Wait for it with `marker_written`. Returns (script, marker).
 fn relaunch_script(dir: &std::path::Path) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let marker = dir.join("relaunched");
     let script = dir.join("sarkos");
-    std::fs::write(&script, format!("#!/bin/sh\npwd -P > '{m}.tmp' && mv '{m}.tmp' '{m}'\n", m = marker.display())).unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\npwd -P >> '{m}'\n", m = marker.display())).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     (script, marker)
+}
+
+/// Whether a launch has finished writing its line: the appending open creates the file a moment
+/// before the write, so existing is not enough.
+fn marker_written(marker: &std::path::Path) -> bool {
+    std::fs::read_to_string(marker).is_ok_and(|s| s.ends_with('\n'))
 }
 
 #[test]
@@ -370,7 +376,7 @@ fn watchdog_kills_a_silent_ui_and_relaunches_it() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !marker.exists() {
+    while !marker_written(&marker) {
         assert!(Instant::now() < deadline, "watchdog never relaunched the UI");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -655,7 +661,7 @@ fn frozen_ui_with_busy_session_is_relaunched() {
         assert!(Instant::now() < deadline, "watchdog never killed the frozen UI");
         std::thread::sleep(Duration::from_millis(100));
     }
-    while !marker.exists() {
+    while !marker_written(&marker) {
         assert!(Instant::now() < deadline, "watchdog never relaunched the frozen UI");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1186,7 +1192,7 @@ fn relaunch_client_starts_the_named_binary_when_the_client_disconnects() {
     assert_eq!(c.request(Request::RelaunchClient { exe: exe.clone(), cwd: dir.path().to_path_buf() }), Response::Ok);
     drop(c);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !marker.exists() {
+    while !marker_written(&marker) {
         assert!(Instant::now() < deadline, "the daemon did not launch {}", exe.display());
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1217,7 +1223,7 @@ fn relaunch_client_falls_back_to_the_previous_window_when_the_new_one_cannot_sta
     assert_eq!(c.request(Request::RelaunchClient { exe: new_exe, cwd: new.path().to_path_buf() }), Response::Ok);
     drop(c);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !marker.exists() {
+    while !marker_written(&marker) {
         assert!(Instant::now() < deadline, "the daemon did not fall back to the previous window");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1384,7 +1390,7 @@ fn recover_brings_back_sessions_with_their_history_and_runs_the_resume_command()
     c.attach(sid);
     c.request(Request::Input { session: sid, bytes: b"echo before restart\n".to_vec() });
     c.wait_for_output(sid, "before restart");
-    let agent = AgentRecord { kind: "test".into(), id: "t1".into(), resume: vec!["echo".into(), "RESUMED t1".into()] };
+    let agent = AgentRecord { kind: "test".into(), id: "t1".into(), resume: vec!["echo".into(), "RESUMED".into(), "t1".into()] };
     assert_eq!(c.request(Request::SetAgent { session: sid, agent: agent.clone() }), Response::Ok);
     wait_for_file_containing(&replay_file(&a, sid), "before restart");
     let dir = a.sigterm();
@@ -1400,6 +1406,8 @@ fn recover_brings_back_sessions_with_their_history_and_runs_the_resume_command()
     let before = text.find("before restart").expect("the old history comes first");
     let divider = text.find("resumed after restart").expect("then the divider");
     assert!(before < divider);
+    // The typed line is `'echo' 'RESUMED' 't1'`, which the terminal echoes; only the command's
+    // output has "RESUMED t1" with a single space.
     if !text.contains("RESUMED t1") {
         text.push_str(&String::from_utf8_lossy(&c.wait_for_output(sid, "RESUMED t1")));
     }
@@ -1424,14 +1432,14 @@ fn recover_reopens_windows_that_were_open_and_not_those_that_said_goodbye() {
     let dir = a.sigterm();
     let _b = Daemon::start_in(dir, &["--recover"]);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !marker.exists() {
+    while !marker_written(&marker) {
         assert!(Instant::now() < deadline, "the window for the kept project was not reopened");
         std::thread::sleep(Duration::from_millis(20));
     }
     let want = keep.path().canonicalize().unwrap();
-    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), want.to_string_lossy());
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), want.to_string_lossy(), "the project that said goodbye stays closed");
+    let launches = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(launches.lines().collect::<Vec<_>>(), vec![want.to_string_lossy()], "one window, for the kept project; the one that said goodbye stays closed");
 }
 
 #[test]

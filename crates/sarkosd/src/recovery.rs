@@ -152,6 +152,12 @@ pub fn shell_line(argv: &[String]) -> Vec<u8> {
     line.into_bytes()
 }
 
+/// Whether a resume command can be typed at all: quoting protects it from the shell, but the
+/// terminal acts on control bytes (^C, ^U, ^W, DEL) before the shell sees the line.
+pub fn typeable(argv: &[String]) -> bool {
+    !argv.is_empty() && argv.iter().all(|a| a.bytes().all(|b| b >= 0x20 && b != 0x7f))
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Recovered {
     pub sessions: usize,
@@ -208,7 +214,9 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
         match Session::spawn(spec) {
             Ok(s) => {
                 if let Some(agent) = &m.agent {
-                    if let Err(e) = s.write(&shell_line(&agent.resume)) {
+                    if !typeable(&agent.resume) {
+                        eprintln!("sarkosd: session {}: the resume command has a control character, not typed", m.id);
+                    } else if let Err(e) = s.write(&shell_line(&agent.resume)) {
                         eprintln!("sarkosd: session {}: cannot type the resume command: {e:#}", m.id);
                     }
                 }
@@ -432,6 +440,16 @@ pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_resume_command_without_control_characters_is_typed() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert!(typeable(&v(&["claude", "--resume", "ab-12"])));
+        assert!(!typeable(&[]), "nothing to type");
+        assert!(!typeable(&v(&["claude", "--resume", "ab\u{15}12"])), "^U would erase the typed line");
+        assert!(!typeable(&v(&["claude", "--resume", "ab\u{7f}12"])), "DEL would erase a character");
+        assert!(typeable(&v(&["echo", "it's a test"])), "spaces and quotes are the quoting's job");
+    }
 
     #[test]
     fn tail_keeps_the_newest_bytes() {
