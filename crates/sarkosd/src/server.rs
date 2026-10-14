@@ -248,6 +248,10 @@ fn disconnect(state: &Shared, client_id: ClientId) {
     st.clients.remove(&client_id);
 }
 
+/// What `CreateSession` and `Kill` answer while an upgrade holds the slot: a new session would
+/// miss the handover, and a kill could reap a shell after its snapshot called it alive.
+const UPGRADE_IN_PROGRESS: &str = "an upgrade is in progress; retry in a moment";
+
 /// Handles one request. Returns the response to queue, or None when it was already queued.
 fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: &Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
@@ -304,6 +308,9 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         Request::CreateSession { cwd, shell, env, nice, rows, cols } => {
             let id = {
                 let mut st = state.lock().unwrap();
+                if st.upgrading {
+                    return Some(Response::Error(UPGRADE_IN_PROGRESS.into()));
+                }
                 st.next_session += 1;
                 SessionId(st.next_session)
             };
@@ -350,6 +357,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             },
             None => Response::Error(format!("no session {}", sid.0)),
         },
+        Request::Kill { .. } if state.lock().unwrap().upgrading => Response::Error(UPGRADE_IN_PROGRESS.into()),
         Request::Kill { session: sid } => match session(sid) {
             Some(s) => match s.kill() {
                 Ok(()) => Response::Ok,

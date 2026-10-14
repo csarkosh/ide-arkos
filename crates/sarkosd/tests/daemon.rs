@@ -1034,6 +1034,61 @@ fn a_second_upgrade_during_the_check_is_refused() {
     }
 }
 
+/// Starts an upgrade on `a` whose check holds the slot for a second, runs `during` on `b` while
+/// it is held, waits for the upgrade to fail its check, then runs `after` on `b`.
+fn while_an_upgrade_is_checked(d: &Daemon, during: impl FnOnce(&mut Conn), after: impl FnOnce(&mut Conn)) {
+    let dir = tempfile::tempdir().unwrap();
+    let slow = fake_sarkosd(dir.path(), "sleep 1; exit 1");
+    let mut a = d.connect();
+    let mut b = d.connect();
+    let first = a.send(Request::Upgrade { exe: slow });
+    std::thread::sleep(Duration::from_millis(200));
+    during(&mut b);
+    loop {
+        if let ServerMessage::Response { id, response } = a.next_message() {
+            if id == first {
+                assert!(matches!(response, Response::Error(ref e) if e.contains("check-handover")), "{response:?}");
+                break;
+            }
+        }
+    }
+    after(&mut b);
+}
+
+#[test]
+fn create_during_an_upgrade_is_refused() {
+    let d = Daemon::start(&[]);
+    let create = |c: &mut Conn| {
+        c.request(Request::CreateSession { cwd: std::env::temp_dir(), shell: Some("/bin/sh".into()), env: vec![], nice: 0, rows: 24, cols: 80 })
+    };
+    while_an_upgrade_is_checked(
+        &d,
+        |b| match create(b) {
+            Response::Error(e) => assert!(e.contains("upgrade is in progress"), "{e}"),
+            other => panic!("unexpected {other:?}"),
+        },
+        |b| assert!(matches!(create(b), Response::SessionCreated { .. })),
+    );
+}
+
+#[test]
+fn kill_during_an_upgrade_is_refused() {
+    let d = Daemon::start(&[]);
+    let sid = d.connect().create("/bin/sh");
+    while_an_upgrade_is_checked(
+        &d,
+        |b| match b.request(Request::Kill { session: sid }) {
+            Response::Error(e) => assert!(e.contains("upgrade is in progress"), "{e}"),
+            other => panic!("unexpected {other:?}"),
+        },
+        |b| {
+            assert!(matches!(b.request(Request::Attach { session: sid }), Response::Attached { alive: true, .. }), "the refused kill left the shell running");
+            assert_eq!(b.request(Request::Kill { session: sid }), Response::Ok);
+            assert!(wait_for_exit(b, sid, Duration::from_secs(5)).is_some(), "the kill after the failed upgrade ends the shell");
+        },
+    );
+}
+
 #[test]
 fn resume_with_a_corrupt_handover_file_exits_without_touching_anything() {
     let dir = tempfile::tempdir().unwrap();

@@ -16,7 +16,15 @@ pub fn start(state: Shared, every: Duration, ttl: Duration) {
 
 fn scan(state: &Shared, ttl: Duration) {
     // Clone the handles out so no session lock is taken under the global lock.
-    let sessions: Vec<_> = state.lock().unwrap().sessions.values().cloned().collect();
+    let sessions: Vec<_> = {
+        let st = state.lock().unwrap();
+        // During an upgrade a reap after the snapshot would lose the exit code to the new image,
+        // which finds the pid already gone; it reaps on the next pass after the resume instead.
+        if st.upgrading {
+            return;
+        }
+        st.sessions.values().cloned().collect()
+    };
     for s in &sessions {
         s.poll_exit();
         s.escalate_kill();
