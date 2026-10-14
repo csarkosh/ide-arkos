@@ -3,6 +3,8 @@
 
 use crate::drag;
 use crate::find;
+use crate::pulse;
+use crate::sessions::Note;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
 use crate::theme::Theme;
@@ -26,8 +28,30 @@ pub fn glow_strips(w: f32, h: f32) -> [(f32, f32, f32, f32, f32); 4] {
     [(0.0, 0.0, w, g, 180.0), (0.0, h - g, w, g, 0.0), (0.0, 0.0, g, h, 90.0), (w - g, 0.0, g, h, 270.0)]
 }
 
+/// What a tab shows before its title (spec 5): a breathing glyph, a warm dot, nothing, or a
+/// muted title for a shell that ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabMark {
+    None,
+    Working,
+    Waiting,
+    Dead,
+}
+
+impl TabMark {
+    pub fn of(state: Option<protocol::ClaudeState>, alive: bool) -> TabMark {
+        use protocol::ClaudeState::*;
+        match (alive, state) {
+            (false, _) => TabMark::Dead,
+            (true, Some(Working)) => TabMark::Working,
+            (true, Some(Waiting)) => TabMark::Waiting,
+            _ => TabMark::None,
+        }
+    }
+}
+
 /// The text on a tab: the terminal's title (or `fallback`, the shell's name), then its state.
-pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32>, note: bool, busy: Option<&str>) -> String {
+pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32>, note: Option<Note>, busy: Option<&str>) -> String {
     if let Some(b) = busy {
         return b.to_string();
     }
@@ -38,10 +62,11 @@ pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32
             None => format!("{name} (ended)"),
         };
     }
-    if note {
-        return format!("{name} (restarted)");
+    match note {
+        Some(Note::Restarted) => format!("{name} (restarted)"),
+        Some(Note::Resumed) => format!("{name} (resumed after restart)"),
+        None => name.to_string(),
     }
-    name.to_string()
 }
 
 /// gpui has no three-part element id; the pane goes in the name, the tab index in the number.
@@ -59,24 +84,25 @@ pub fn menu_rows(p: &Pane, labels: &[String]) -> Vec<(usize, String, bool)> {
     labels.iter().enumerate().map(|(i, l)| (i, l.clone(), i == p.active)).collect()
 }
 
-/// Every tab's label, in bar order; the bar and the overflow menu both show these.
-fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<String> {
+/// Every tab's label and mark, in bar order; the bar and the overflow menu both show the labels.
+fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark)> {
     p.tabs
         .iter()
         .enumerate()
         .map(|(idx, tab)| match tab {
             Tab::Terminal { session } => {
                 let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
-                let note = root.sessions.notes.contains(session);
+                let note = root.sessions.notes.get(session).copied();
                 match root.sessions.terminals.get(session) {
                     Some(t) => {
                         let t = t.read(cx);
-                        tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy)
+                        let mark = TabMark::of(root.sessions.states.get(session).copied(), t.alive);
+                        (tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy), mark)
                     }
-                    None => tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))),
+                    None => (tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))), TabMark::None),
                 }
             }
-            Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            Tab::Viewer { path } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
         })
         .collect()
 }
@@ -87,8 +113,9 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
-    let labels = tab_labels(root, &p, cx);
-    let bar = render_tab_bar(root, pane, &p, number, &labels, cx);
+    let tabs = tab_labels(root, &p, cx);
+    let bar = render_tab_bar(root, pane, &p, number, &tabs, cx);
+    let labels: Vec<String> = tabs.into_iter().map(|(label, _)| label).collect();
     if !p.tabs.is_empty() {
         // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
         root.empty_anim.remove(&pane);
@@ -217,10 +244,14 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .children(glow.into_iter().flatten())
 }
 
-fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels: &[String], cx: &mut Context<Root>) -> Stateful<Div> {
+fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], cx: &mut Context<Root>) -> Stateful<Div> {
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let (fg, dim) = (c.text, c.text_dim);
+    // One phase for the whole bar, so every working tab breathes together.
+    let alpha = pulse::alpha(root.pulse_epoch.elapsed(), crate::motion::reduce_motion());
+    let mut muted = dim.hsla();
+    muted.a *= 0.6;
     let mut bar = div()
         .id(("bar", pane))
         .h(px(TAB_BAR_H))
@@ -252,9 +283,23 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels
         }));
     let handle = root.bar_scroll.entry(pane).or_default().clone();
     let mut strip = div().id(("tabs", pane)).flex_1().min_w_0().h_full().flex().flex_row().overflow_x_scroll().track_scroll(&handle);
-    for (idx, label) in labels.iter().enumerate() {
-        let label = label.clone();
+    for (idx, (label, mark)) in tabs.iter().enumerate() {
+        let (label, mark) = (label.clone(), *mark);
         let is_active = idx == p.active;
+        let glyph = match mark {
+            TabMark::Working => {
+                let mut c = theme.semantic.working.hsla();
+                c.a = alpha;
+                Some(div().size(px(7.0)).rounded_full().bg(c))
+            }
+            TabMark::Waiting => Some(div().size(px(7.0)).rounded_full().bg(theme.semantic.waiting.hsla())),
+            TabMark::None | TabMark::Dead => None,
+        };
+        let text = match mark {
+            TabMark::Dead => muted,
+            _ if is_active => fg.hsla(),
+            _ => dim.hsla(),
+        };
         let drag_value = p.ids.get(idx).map(|id| drag::TabDrag {
             pane,
             idx,
@@ -274,7 +319,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels
                 .items_center()
                 .gap(px(6.0))
                 .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
-                .text_color(if is_active { fg } else { dim }.hsla())
+                .text_color(text)
                 .cursor_pointer()
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
                 .when_some(drag_value, |el, value| {
@@ -287,6 +332,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels
                         cx.notify();
                     }
                 }))
+                .when_some(glyph, |el, g| el.child(g))
                 .child(label)
                 .child(
                     div()
@@ -357,7 +403,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 return;
             }
             let session = t_keys.read(cx).session;
-            if root.sessions.notes.remove(&session) {
+            if root.sessions.notes.remove(&session).is_some() | root.sessions.acknowledge(session) {
                 cx.notify();
             }
             t_keys.update(cx, |t, cx| t.handle_key(ks, cx));
@@ -447,13 +493,23 @@ mod tests {
 
     #[test]
     fn tab_labels_show_state_after_the_title() {
-        assert_eq!(tab_label("vim", "zsh", true, None, false, None), "vim");
-        assert_eq!(tab_label("", "shell", true, None, false, None), "shell");
-        assert_eq!(tab_label("", "fish", true, None, false, None), "fish");
-        assert_eq!(tab_label("", "zsh", false, Some(1), false, None), "zsh (ended, exit 1)");
-        assert_eq!(tab_label("vim", "zsh", false, None, false, None), "vim (ended)");
-        assert_eq!(tab_label("", "zsh", true, None, true, None), "zsh (restarted)");
-        assert_eq!(tab_label("", "zsh", true, None, false, Some("starting shell")), "starting shell");
+        assert_eq!(tab_label("vim", "zsh", true, None, None, None), "vim");
+        assert_eq!(tab_label("", "shell", true, None, None, None), "shell");
+        assert_eq!(tab_label("", "zsh", false, Some(1), None, None), "zsh (ended, exit 1)");
+        assert_eq!(tab_label("vim", "zsh", false, None, None, None), "vim (ended)");
+        assert_eq!(tab_label("", "zsh", true, None, Some(Note::Restarted), None), "zsh (restarted)");
+        assert_eq!(tab_label("", "zsh", true, None, Some(Note::Resumed), None), "zsh (resumed after restart)");
+        assert_eq!(tab_label("", "zsh", true, None, None, Some("starting shell")), "starting shell");
+    }
+
+    #[test]
+    fn a_tab_mark_is_the_state_unless_the_shell_ended() {
+        use protocol::ClaudeState;
+        assert_eq!(TabMark::of(Some(ClaudeState::Working), true), TabMark::Working);
+        assert_eq!(TabMark::of(Some(ClaudeState::Waiting), true), TabMark::Waiting);
+        assert_eq!(TabMark::of(Some(ClaudeState::Idle), true), TabMark::None);
+        assert_eq!(TabMark::of(None, true), TabMark::None);
+        assert_eq!(TabMark::of(Some(ClaudeState::Working), false), TabMark::Dead, "ended outranks a stale state");
     }
 
     #[test]

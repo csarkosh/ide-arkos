@@ -8,7 +8,8 @@ use crate::client::Client;
 use crate::terminal::Terminal;
 use crate::tree::{Tab, TabId, Tree};
 use gpui::{App, Entity};
-use protocol::{Event, Request, Response, SessionId, SessionInfo};
+use protocol::ClaudeState;
+use protocol::{Event, Request, Response, SessionDetail, SessionId, SessionInfo};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +18,14 @@ pub const SCROLLBACK: usize = 20_000;
 
 /// How the daemon's refusal of a create or kill starts while an upgrade holds its slot.
 const UPGRADE_BUSY: &str = "an upgrade is in progress";
+
+/// The word after a tab's title: the session is new in place of one the daemon lost, or was
+/// recreated by `sarkosd --recover` after a restart. Both clear when the user types into the tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Note {
+    Restarted,
+    Resumed,
+}
 
 /// Sends requests to the daemon. `Client` is the real one; tests record.
 pub trait Transport: Send + Sync {
@@ -48,7 +57,7 @@ pub enum Pending {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     None,
-    Sessions(Vec<SessionInfo>),
+    Sessions(Vec<SessionDetail>),
     Created { tab: TabId, session: SessionId, note: bool },
     Attached { session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, note: bool },
     Killed { session: SessionId },
@@ -141,8 +150,11 @@ pub struct SessionManager {
     pending: HashMap<u32, Pending>,
     /// Tabs with a shell being started or a replay being restored, and the word to show.
     pub busy: HashMap<TabId, &'static str>,
-    /// Sessions whose tab carries the "restarted" note until the user types into them.
-    pub notes: HashSet<SessionId>,
+    /// Sessions whose tab carries a note until the user types into them.
+    pub notes: HashMap<SessionId, Note>,
+    /// What each session's agent is doing (spec 5), from the list at connect and `Event::State`
+    /// after; a BEL marks waiting too. A session not here is idle.
+    pub states: HashMap<SessionId, ClaudeState>,
     /// Sessions whose replay is being parsed; their live events wait in `backlog`.
     restoring: HashSet<SessionId>,
     backlog: HashMap<SessionId, Vec<Event>>,
@@ -160,7 +172,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashSet::new(), restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -212,6 +224,7 @@ impl SessionManager {
         self.pending.clear();
         self.busy.clear();
         self.notes.clear();
+        self.states.clear();
         self.restoring.clear();
         self.backlog.clear();
     }
@@ -241,8 +254,47 @@ impl SessionManager {
     }
 
     pub fn list(&mut self) {
-        let id = self.transport.send(Request::ListSessions);
+        let id = self.transport.send(Request::ListSessionsDetailed);
         self.pending.insert(id, Pending::List);
+    }
+
+    /// Records what the daemon's list says about each session.
+    pub fn note_list(&mut self, list: &[SessionDetail]) {
+        for d in list {
+            self.states.insert(d.info.id, d.info.state);
+            if d.recovered {
+                self.notes.insert(d.info.id, Note::Resumed);
+            }
+        }
+    }
+
+    pub fn note_state(&mut self, session: SessionId, state: ClaudeState) {
+        self.states.insert(session, state);
+    }
+
+    /// The user looked at or typed into a waiting tab: idle now, and the daemon is told so a
+    /// reconnect or another window agrees. True when there was something to acknowledge.
+    pub fn acknowledge(&mut self, session: SessionId) -> bool {
+        if self.states.get(&session) != Some(&ClaudeState::Waiting) {
+            return false;
+        }
+        self.states.insert(session, ClaudeState::Idle);
+        self.transport.send(Request::SetState { session, state: ClaudeState::Idle });
+        true
+    }
+
+    /// Terminal tabs in the tree whose session waits on the user (the status bar's count).
+    pub fn waiting_count(&self, tree: &Tree) -> usize {
+        tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { session } if self.states.get(session) == Some(&ClaudeState::Waiting))).count()
+    }
+
+    pub fn any_working(&self) -> bool {
+        self.states.values().any(|s| *s == ClaudeState::Working)
+    }
+
+    /// The user is quitting this window: a restart must not reopen it (section 11 step 4).
+    pub fn goodbye(&mut self) {
+        self.transport.send(Request::Goodbye);
     }
 
     pub fn create(&mut self, tab: TabId, note: bool) {
@@ -286,6 +338,8 @@ impl SessionManager {
         self.transport.send(Request::Detach { session });
         self.terminals.remove(&session);
         self.notes.remove(&session);
+        // No tab shows it now: its state would keep the pulse ticking for nothing.
+        self.states.remove(&session);
         self.restoring.remove(&session);
         self.backlog.remove(&session);
     }
@@ -339,7 +393,7 @@ impl SessionManager {
             return Outcome::Error(e.clone());
         }
         match (pending.clone(), response.clone()) {
-            (Some(Pending::List), Response::Sessions(list)) => Outcome::Sessions(list),
+            (Some(Pending::List), Response::SessionsDetailed(list)) => Outcome::Sessions(list),
             (Some(Pending::Create { tab, note }), Response::SessionCreated { id: session }) => {
                 self.busy.remove(&tab);
                 Outcome::Created { tab, session, note }
@@ -407,22 +461,48 @@ impl SessionManager {
         }
         let backlog = self.take_backlog(session);
         if !backlog.is_empty() {
-            terminal.update(cx, |t, cx| {
+            let rang = terminal.update(cx, |t, cx| {
                 t.handle_events(&backlog, cx);
+                std::mem::take(&mut t.bell_pending)
             });
+            if rang {
+                self.states.insert(session, ClaudeState::Waiting);
+            }
         }
         self.terminals.insert(session, terminal);
+    }
+
+    /// The window's half of a batch: what each session's agent is doing. Recorded at once, even
+    /// for a session mid-restore or with no terminal yet; a shell that ended runs no agent.
+    pub fn note_events(&mut self, events: &[Event]) {
+        for ev in events {
+            match ev {
+                Event::State { session, state } => {
+                    self.states.insert(*session, *state);
+                }
+                Event::Exited { session, .. } => {
+                    self.states.remove(session);
+                }
+                Event::Output { .. } => {}
+            }
+        }
     }
 
     /// Applies a batch of daemon events: one grid update and at most one notify per terminal.
     /// Events for a session that is still restoring wait in its backlog.
     pub fn route_events(&mut self, events: &[Event], cx: &mut App) {
+        self.note_events(events);
         let live: Vec<Event> = events.iter().filter(|ev| !self.stash_if_restoring(ev)).cloned().collect();
         for (session, batch) in group_by_session(&live) {
             if let Some(t) = self.terminals.get(&session) {
-                t.update(cx, |t, cx| {
+                let rang = t.update(cx, |t, cx| {
                     t.handle_events(&batch, cx);
+                    std::mem::take(&mut t.bell_pending)
                 });
+                if rang {
+                    // Spec 5: a BEL means "needs you" even without hooks.
+                    self.states.insert(session, ClaudeState::Waiting);
+                }
             }
         }
     }
@@ -432,7 +512,6 @@ impl SessionManager {
 mod tests {
     use super::*;
     use crate::tree::Side;
-    use protocol::ClaudeState;
     use std::sync::Mutex;
 
     struct Recorder {
@@ -461,6 +540,88 @@ mod tests {
 
     fn info(id: u64, cwd: &Path, alive: bool) -> SessionInfo {
         SessionInfo { id: SessionId(id), title: String::new(), cwd: cwd.to_path_buf(), pid: None, alive, last_activity_unix_ms: 0, state: ClaudeState::Idle }
+    }
+
+    fn detail(id: u64, cwd: &Path, alive: bool, state: ClaudeState, recovered: bool) -> protocol::SessionDetail {
+        let mut i = info(id, cwd, alive);
+        i.state = state;
+        protocol::SessionDetail { info: i, recovered, agent: None }
+    }
+
+    #[test]
+    fn the_list_is_detailed_and_records_each_sessions_state_and_resumed_note() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.list();
+        assert_eq!(rec.requests(), vec![Request::ListSessionsDetailed]);
+        let list = vec![detail(1, Path::new("/p"), true, ClaudeState::Working, false), detail(2, Path::new("/p"), true, ClaudeState::Waiting, true)];
+        let outcome = m.handle_response(1, Response::SessionsDetailed(list.clone()));
+        assert_eq!(outcome, Outcome::Sessions(list));
+        // The window records them (handle_outcome does, through `note_list`):
+        let Outcome::Sessions(back) = outcome else { unreachable!() };
+        m.note_list(&back);
+        assert_eq!(m.states.get(&SessionId(1)), Some(&ClaudeState::Working));
+        assert_eq!(m.states.get(&SessionId(2)), Some(&ClaudeState::Waiting));
+        assert_eq!(m.notes.get(&SessionId(2)), Some(&Note::Resumed));
+        assert_eq!(m.notes.get(&SessionId(1)), None);
+    }
+
+    #[test]
+    fn a_state_event_updates_the_state_and_acknowledge_tells_the_daemon_idle() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.note_state(SessionId(3), ClaudeState::Waiting);
+        assert_eq!(m.states.get(&SessionId(3)), Some(&ClaudeState::Waiting));
+        assert!(m.acknowledge(SessionId(3)), "a waiting session is acknowledged");
+        assert_eq!(m.states.get(&SessionId(3)), Some(&ClaudeState::Idle));
+        assert_eq!(rec.requests(), vec![Request::SetState { session: SessionId(3), state: ClaudeState::Idle }]);
+        assert!(!m.acknowledge(SessionId(3)), "nothing to acknowledge twice");
+        m.note_state(SessionId(3), ClaudeState::Working);
+        assert!(!m.acknowledge(SessionId(3)), "working is not waiting");
+        assert_eq!(rec.requests().len(), 1);
+    }
+
+    #[test]
+    fn waiting_count_covers_terminal_tabs_in_the_tree_and_any_working_is_true_with_one() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let root = tree.panes()[0];
+        tree.add_tab(root, Tab::Terminal { session: SessionId(2) });
+        tree.add_tab(root, Tab::Viewer { path: "/f".into() });
+        m.note_state(SessionId(1), ClaudeState::Waiting);
+        m.note_state(SessionId(2), ClaudeState::Waiting);
+        m.note_state(SessionId(9), ClaudeState::Waiting);
+        assert_eq!(m.waiting_count(&tree), 2, "a session no tab shows is not counted");
+        assert!(!m.any_working());
+        m.note_state(SessionId(2), ClaudeState::Working);
+        assert!(m.any_working());
+        assert_eq!(m.waiting_count(&tree), 1);
+    }
+
+    #[test]
+    fn goodbye_is_sent_once_and_disconnect_forgets_states() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.note_state(SessionId(1), ClaudeState::Working);
+        m.goodbye();
+        assert_eq!(rec.requests(), vec![Request::Goodbye]);
+        m.disconnect();
+        assert!(m.states.is_empty(), "the next list says what each session does");
+    }
+
+    #[test]
+    fn states_follow_events_and_end_with_the_shell_or_the_tab() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
+        m.begin_restore(SessionId(1));
+        m.note_events(&[Event::State { session: SessionId(1), state: ClaudeState::Working }, Event::State { session: SessionId(2), state: ClaudeState::Working }]);
+        assert_eq!(m.states.get(&SessionId(1)), Some(&ClaudeState::Working), "recorded mid-restore");
+        assert_eq!(m.states.get(&SessionId(2)), Some(&ClaudeState::Working), "recorded with no terminal");
+        m.note_events(&[Event::Exited { session: SessionId(1), code: Some(0) }]);
+        assert_eq!(m.states.get(&SessionId(1)), None);
+        m.detach(SessionId(2));
+        assert!(!m.any_working(), "a closed tab's session no longer pulses");
     }
 
     fn term(n: u64) -> Tab {
@@ -542,7 +703,7 @@ mod tests {
         m.attach(SessionId(3), 61, false);
         m.kill(SessionId(9));
         let reqs = r.requests();
-        assert!(matches!(reqs[0], Request::ListSessions));
+        assert!(matches!(reqs[0], Request::ListSessionsDetailed));
         assert!(matches!(&reqs[1], Request::CreateSession { cwd, rows: 24, cols: 80, .. } if cwd == Path::new("/p")));
         assert!(matches!(reqs[2], Request::Attach { session: SessionId(3) }));
         assert!(matches!(reqs[3], Request::Kill { session: SessionId(9) }));
@@ -551,7 +712,7 @@ mod tests {
         assert!(m.has_pending_for(61));
         assert!(!m.has_pending_for(51));
 
-        assert!(matches!(m.handle_response(1, Response::Sessions(vec![])), Outcome::Sessions(l) if l.is_empty()));
+        assert!(matches!(m.handle_response(1, Response::SessionsDetailed(vec![])), Outcome::Sessions(l) if l.is_empty()));
         assert_eq!(
             m.handle_response(2, Response::SessionCreated { id: SessionId(11) }),
             Outcome::Created { tab: 50, session: SessionId(11), note: true }
@@ -607,14 +768,14 @@ mod tests {
         let r = Recorder::new();
         let mut m = SessionManager::new(r, None, PathBuf::from("/p"));
         m.attach(SessionId(4), 20, true);
-        m.notes.insert(SessionId(4));
+        m.notes.insert(SessionId(4), Note::Restarted);
         m.begin_restore(SessionId(4));
         assert!(m.stash_if_restoring(&Event::Output { session: SessionId(4), bytes: vec![1] }));
         m.abort_restore(SessionId(4), 20);
         assert!(!m.has_pending_for(20));
         assert!(!m.is_restoring(SessionId(4)));
         assert_eq!(m.backlog_len(SessionId(4)), 0);
-        assert!(!m.notes.contains(&SessionId(4)));
+        assert!(!m.notes.contains_key(&SessionId(4)));
     }
 
     #[test]
@@ -781,7 +942,7 @@ mod tests {
         m.create(50, true);
         m.attach(SessionId(3), 61, false);
         m.begin_restore(SessionId(3));
-        m.notes.insert(SessionId(3));
+        m.notes.insert(SessionId(3), Note::Restarted);
         assert_eq!(m.pending_count(), 2);
         assert!(m.has_pending_for(50));
         m.disconnect();

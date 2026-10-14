@@ -18,6 +18,7 @@ mod motion;
 mod palette;
 mod pane_view;
 mod paths;
+mod pulse;
 mod scroll;
 mod split_view;
 mod sessions;
@@ -175,6 +176,19 @@ pub struct Root {
     pub update_ready: Option<String>,
     /// The update "Update now" started, while it runs.
     pub updating: Option<UpdateStage>,
+    /// Whether this is the key window, read each frame; the pulse ticks only while it is.
+    pub window_active: bool,
+    /// Where the working glyph's pulse starts; every working tab shares its phase.
+    pub pulse_epoch: Instant,
+}
+
+/// The session of the focused pane's active terminal tab.
+fn focused_session_of(tree: &Tree) -> Option<SessionId> {
+    let p = tree.pane(tree.focused)?;
+    match p.tabs.get(p.active)? {
+        Tab::Terminal { session } => Some(*session),
+        Tab::Viewer { .. } => None,
+    }
 }
 
 /// The name a tab shows before its program sets a title: the basename of the shell new tabs
@@ -233,6 +247,8 @@ impl Root {
             tab_menu: None,
             update_ready: None,
             updating: None,
+            window_active: true,
+            pulse_epoch: Instant::now(),
         }
     }
 
@@ -439,14 +455,30 @@ impl Root {
         }
         let maximized = self.tree.maximized;
         self.tree.focus(pane);
+        self.acknowledge_focused(cx);
         if self.tree.maximized != maximized {
             self.save(cx);
         }
         cx.notify();
     }
 
+    /// The session of the focused pane's active terminal tab.
+    pub fn focused_session(&self) -> Option<SessionId> {
+        focused_session_of(&self.tree)
+    }
+
+    /// Clears the waiting dot of the focused tab (the user is looking at it).
+    pub fn acknowledge_focused(&mut self, cx: &mut Context<Self>) {
+        if let Some(s) = self.focused_session() {
+            if self.sessions.acknowledge(s) {
+                cx.notify();
+            }
+        }
+    }
+
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         self.tree.activate(pane, idx);
+        self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
             h.scroll_to_item(idx);
         }
@@ -943,6 +975,17 @@ impl Root {
         workspace::flush_now(&self.save_queue);
     }
 
+    /// The user is quitting: tell the daemon not to reopen this window after a restart, then
+    /// the flush every quit does. Not for the relaunch an update makes (`RelaunchAccepted`).
+    pub fn leaving(&mut self) {
+        self.sessions.goodbye();
+        self.flush_for_quit();
+        // The process exits next; unwritten, the Goodbye would be lost with it.
+        if !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
+            eprintln!("sarkos: could not send goodbye before quitting");
+        }
+    }
+
     /// A connection is up (the first one, or a reconnect): its session list reconciles the tree.
     pub fn connected(&mut self, client: Arc<client::Client>, cx: &mut Context<Self>) {
         self.sessions.set_client(client);
@@ -1008,7 +1051,9 @@ impl Root {
                     self.status.clear();
                     self.grids.clear();
                 }
-                for step in reconcile(&self.tree, &list, &self.project) {
+                self.sessions.note_list(&list);
+                let infos: Vec<_> = list.iter().map(|d| d.info.clone()).collect();
+                for step in reconcile(&self.tree, &infos, &self.project) {
                     match step {
                         Reconcile::Attach { tab, session } => self.sessions.attach(session, tab, false),
                         Reconcile::Create { tab } => self.sessions.create(tab, self.reconcile_with_note),
@@ -1026,7 +1071,7 @@ impl Root {
                 };
                 self.tree.replace_tab(pane, idx, Tab::Terminal { session });
                 if note {
-                    self.sessions.notes.insert(session);
+                    self.sessions.notes.insert(session, sessions::Note::Restarted);
                 }
                 self.save(cx);
                 self.sessions.attach(session, tab, note);
@@ -1168,6 +1213,7 @@ fn pick_grid(visible: bool, own: Option<(usize, usize)>, maximized: Option<(usiz
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
+        self.window_active = window.is_window_active();
         let theme = self.theme.clone();
         let status = if banner_visible(self.reconnecting_since, Instant::now()) { self.status.clone() } else { String::new() };
         let banners: Vec<String> = [
@@ -1214,7 +1260,7 @@ impl Render for Root {
             }
         }
         let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
-        let items = chrome::status_items(self.update_ready.as_deref(), (daemon != CONNECTED_LABEL).then_some(daemon), 0);
+        let items = chrome::status_items(self.update_ready.as_deref(), (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
         let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme);
         let family = self.family();
         let root_div = div()
@@ -1403,7 +1449,7 @@ fn main() {
         });
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
-            quit_root.update(cx, |root, _| root.flush_for_quit());
+            quit_root.update(cx, |root, _| root.leaving());
             cx.quit();
         });
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
@@ -1411,7 +1457,7 @@ fn main() {
         let close_root = root.clone();
         cx.on_window_closed(move |cx| {
             if cx.windows().is_empty() {
-                close_root.update(cx, |root, _| root.flush_for_quit());
+                close_root.update(cx, |root, _| root.leaving());
                 cx.quit();
             }
         })
@@ -1420,6 +1466,7 @@ fn main() {
         // The same client the root was built with; reconnects replace it from here on.
         connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events), cx);
         update::start(root.clone(), cx);
+        pulse::start(root.clone(), cx);
 
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();
@@ -1499,6 +1546,18 @@ mod tests {
         assert!(banner_visible(None, t0), "a status that is not a reconnect shows at once");
         assert_eq!(daemon_label_with("daemon closed the connection", true), "sarkosd reconnecting");
         assert_eq!(daemon_label_with("", false), "sarkosd connected");
+    }
+
+    #[test]
+    fn the_focused_session_is_the_focused_panes_active_terminal_tab() {
+        use super::{focused_session_of, Tab, Tree};
+        use protocol::SessionId;
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(5) });
+        let root = tree.panes()[0];
+        assert_eq!(focused_session_of(&tree), Some(SessionId(5)));
+        tree.add_tab(root, Tab::Viewer { path: "/f".into() });
+        tree.activate(root, 1);
+        assert_eq!(focused_session_of(&tree), None);
     }
 
     #[test]
