@@ -107,9 +107,11 @@ pub struct Root {
     pub tab_menu: Option<PaneId>,
 }
 
-/// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
-fn shell_name(shell: Option<&str>) -> String {
-    shell
+/// The name a tab shows before its program sets a title: the basename of the shell new tabs
+/// run, which is `[terminal] shell` when set, else `$SHELL` (as the daemon picks it), else "shell".
+fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
+    configured
+        .or(env)
         .and_then(|s| std::path::Path::new(s).file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| !n.is_empty())
@@ -143,7 +145,7 @@ impl Root {
             closed: ClosedStack::default(),
             drop_target: None,
             empty_anim: HashMap::new(),
-            shell_name: shell_name(std::env::var("SHELL").ok().as_deref()),
+            shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
             config,
             theme: Arc::new(theme),
             system_is_dark,
@@ -234,6 +236,7 @@ impl Root {
         }
         let t = &self.config.terminal;
         self.sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
+        self.shell_name = shell_name(t.shell.as_deref(), std::env::var("SHELL").ok().as_deref());
         cx.background_executor().spawn(async { motion::refresh() }).detach();
         cx.notify();
     }
@@ -1275,10 +1278,16 @@ mod tests {
 
     #[test]
     fn shell_name_is_the_basename_of_shell() {
-        assert_eq!(shell_name(Some("/bin/zsh")), "zsh");
-        assert_eq!(shell_name(Some("/opt/homebrew/bin/fish")), "fish");
-        assert_eq!(shell_name(Some("")), "shell");
-        assert_eq!(shell_name(None), "shell");
+        assert_eq!(shell_name(None, Some("/bin/zsh")), "zsh");
+        assert_eq!(shell_name(None, Some("/opt/homebrew/bin/fish")), "fish");
+        assert_eq!(shell_name(None, Some("")), "shell");
+        assert_eq!(shell_name(None, None), "shell");
+    }
+
+    #[test]
+    fn the_configured_shell_names_tabs_before_shell() {
+        assert_eq!(shell_name(Some("/bin/bash"), Some("/bin/zsh")), "bash");
+        assert_eq!(shell_name(Some("/bin/bash"), None), "bash");
     }
 
     #[test]
