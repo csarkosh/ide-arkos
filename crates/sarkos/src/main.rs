@@ -1,3 +1,4 @@
+mod app_nap;
 mod chrome;
 mod client;
 mod drag;
@@ -638,6 +639,7 @@ fn main() {
     if qos != 0 {
         eprintln!("sarkos: could not set user-interactive QoS (error {qos})");
     }
+    app_nap::hold();
     let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe()) {
         Ok(c) => c,
         Err(e) => {
