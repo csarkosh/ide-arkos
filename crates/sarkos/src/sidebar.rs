@@ -19,7 +19,6 @@ pub const INDENT: f32 = 14.0;
 pub struct Sidebar {
     pub width: f32,
     pub collapsed: bool,
-    pub show_ignored: bool,
     pub focus: FocusHandle,
     pub scroll: ScrollHandle,
 }
@@ -40,8 +39,8 @@ pub fn visible_width(width: f32, collapsed: bool) -> f32 {
 }
 
 impl Sidebar {
-    pub fn new(width: f32, collapsed: bool, show_ignored: bool, cx: &mut Context<Root>) -> Self {
-        Sidebar { width: clamp_width(width), collapsed, show_ignored, focus: cx.focus_handle(), scroll: ScrollHandle::new() }
+    pub fn new(width: f32, collapsed: bool, cx: &mut Context<Root>) -> Self {
+        Sidebar { width: clamp_width(width), collapsed, focus: cx.focus_handle(), scroll: ScrollHandle::new() }
     }
 
     pub fn visible_width(&self) -> f32 {

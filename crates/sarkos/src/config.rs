@@ -79,8 +79,8 @@ impl Default for TerminalConfig {
     }
 }
 
-/// Milestone 4 reads this; parsed now so the file format does not change then.
-#[allow(dead_code)]
+/// The sidebar's defaults for a folder opened the first time; after that the folder's
+/// workspace file keeps its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SidebarConfig {

@@ -9,6 +9,7 @@ mod connection;
 mod drag;
 mod empty_pane;
 mod explorer;
+mod explorer_watch;
 mod find;
 mod hook_cli;
 mod keys;
@@ -142,6 +143,8 @@ pub struct Root {
     /// Keyboard focus is in the file tree (Shift+Cmd+E) rather than the focused pane. Focusing
     /// a pane or a tab hands it back.
     pub sidebar_focused: bool,
+    /// The file tree's model: the expanded directories, what is loaded, the selection.
+    pub explorer: explorer::Explorer,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -230,9 +233,9 @@ impl Root {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
         // The folder's own sidebar when it saved one, else the config's defaults.
-        let sidebar = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
-            Some(s) => sidebar::Sidebar::new(s.width, s.collapsed, s.show_ignored, cx),
-            None => sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, false, cx),
+        let (sidebar, explorer) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
+            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored)),
+            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, cx), explorer::Explorer::new(project.clone(), Vec::new(), false)),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
@@ -256,6 +259,7 @@ impl Root {
             sidebar,
             sidebar_resizing: false,
             sidebar_focused: false,
+            explorer,
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -401,8 +405,42 @@ impl Root {
         self.tree.layout(self.content)
     }
 
+    /// Reads every expanded directory that is not loaded yet, off the UI thread, and applies
+    /// each result as it lands.
+    pub fn load_pending_dirs(&mut self, cx: &mut Context<Self>) {
+        for dir in self.explorer.dirs_to_load() {
+            self.explorer.mark_loading(&dir);
+            let root = self.project.clone();
+            let this = cx.entity();
+            let d = dir.clone();
+            cx.spawn(async move |_, cx| {
+                let entries = cx.background_executor().spawn(async move { explorer::read_dir_entries(&root, &d) }).await;
+                let _ = this.update(cx, |root, cx| {
+                    root.explorer.set_loaded(&dir, entries);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// What the poll fingerprints: the expanded directories (and the root), and the open
+    /// viewers' files (Task 5 adds them).
+    pub fn watched_paths(&self) -> Vec<PathBuf> {
+        let mut v = vec![self.project.clone()];
+        v.extend(self.explorer.expanded_dirs());
+        v
+    }
+
+    pub fn paths_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for p in paths {
+            self.explorer.invalidate(p);
+        }
+        self.load_pending_dirs(cx);
+    }
+
     pub fn save(&mut self, cx: &mut App) {
-        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.sidebar.show_ignored, expanded: Vec::new() };
+        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs() };
         let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar) };
         request_save(&self.save_queue, ws, cx);
     }
@@ -685,7 +723,7 @@ impl Root {
             return;
         }
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.sidebar.show_ignored);
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored);
         self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
         cx.notify();
     }
@@ -978,7 +1016,7 @@ impl Root {
                 cx.notify();
             }
             ShowIgnoredFiles => {
-                self.sidebar.show_ignored = !self.sidebar.show_ignored;
+                self.explorer.show_ignored = !self.explorer.show_ignored;
                 self.save(cx);
                 cx.notify();
             }
@@ -1627,6 +1665,7 @@ fn main() {
             root.config_error = config_error;
             root.theme_error = theme_error;
             root.apply_recovery(true, cx);
+            root.load_pending_dirs(cx);
             cx.notify();
         });
         let quit_root = root.clone();
@@ -1651,6 +1690,7 @@ fn main() {
         })
         .detach();
         config_watch::start(root.clone(), config_path.clone(), cx);
+        explorer_watch::start(root.clone(), cx);
         // The same client the root was built with; reconnects replace it from here on.
         connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events), cx);
         update::start(root.clone(), cx);
