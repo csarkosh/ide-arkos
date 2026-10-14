@@ -11,7 +11,7 @@ Written in Rust with GPUI. The design is in
 ## Status
 
 Milestone 2b of 6: a config file with live reload, the Navy and Navy Light themes following the
-macOS appearance, three text presets, a command palette (Cmd+Shift+P), find (Cmd+F), and the
+macOS appearance, three text presets, a command palette (Shift+Cmd+P), find (Cmd+F), and the
 tab-bar overflow menu. Next is updating in place (the daemon replacing itself by exec so no
 session ends; `docs/superpowers/specs/2026-10-14-update-in-place-design.md`), then milestone 3
 (Claude Code session awareness).
@@ -23,7 +23,7 @@ Things only a person at the screen can check, in order of value:
   fixing it clears the banner
 - System Settings > Appearance: Light switches to Navy Light and back, history included
 - `mode = "dark"` pins Navy whatever the system says
-- Cmd+Shift+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
+- Shift+Cmd+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
 - "Theme: navy-light" in the palette, then a config reload: the config's theme wins
@@ -33,9 +33,9 @@ Things only a person at the screen can check, in order of value:
 - Cmd+F in a pane with history: typing highlights every match and jumps to the newest; Enter
   and Shift+Enter step with the count; Escape or a click in the terminal closes it; `.` and `*`
   match literally; output arriving keeps the bar open
-- a pane with eight tabs: the bar scrolls, Cmd+Option+Right keeps the active tab in view, and
+- a pane with eight tabs: the bar scrolls, Option+Cmd+Right keeps the active tab in view, and
   the ⋯ menu lists them all
-- closing a tab whose shell has ended: `ps` shows it gone at once, not a minute later
+- closing a tab whose shell has ended, then Shift+Cmd+T: a new shell opens
 - Cmd+, opens the config file in the default text editor
 - typing in each pane, and that Cmd combinations never reach the shell
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
@@ -98,7 +98,7 @@ Notes:
   minute: Shift+Cmd+T within that minute brings the same shell back, history and all, in the
   pane it was closed from. After the minute the shell ends, and Shift+Cmd+T opens a new one.
   Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
-  kept: closing it ends the session at once.
+  kept for Shift+Cmd+T, since nothing is left to end or bring back.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
   modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
 - Cmd+B, Shift+Cmd+E and Ctrl+Shift+G arrive with the sidebar in milestone 4. Every binding can

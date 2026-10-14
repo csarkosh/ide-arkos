@@ -777,7 +777,7 @@ impl Root {
             }
             FontDelta(d) => {
                 // Only the focused terminal changes (spec 7); its element resizes the grid and
-                // the PTY on the next paint. Not saved: milestone 2b's presets will be.
+                // the PTY on the next paint. Nudges are not saved, and a preset change resets them.
                 if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| {
                         t.font_size = (t.font_size + d).clamp(10.0, 32.0);
