@@ -60,7 +60,8 @@ pub enum Request {
     Heartbeat { seq: u64 },
     SetState { session: SessionId, state: ClaudeState },
     /// Replace the daemon with the binary at `exe` by exec-in-place (update-in-place spec,
-    /// section 2). Answered `Ok` just before the exec, or `Error` with the old daemon intact.
+    /// section 2). Answered `Error` on failure, with the old daemon intact; on success there is
+    /// no answer: the connection ends when the exec closes it.
     Upgrade { exe: PathBuf },
     /// When this client disconnects, start `exe` in `cwd` (section 4). Answered `Ok` at once.
     RelaunchClient { exe: PathBuf, cwd: PathBuf },
