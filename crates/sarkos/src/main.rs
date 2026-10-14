@@ -31,6 +31,7 @@ const BANNER_BG: u32 = 0x1a2130;
 const SCROLLBACK: usize = 20_000;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
+
 actions!(sarkos, [Quit]);
 
 /// Starts every status that reports a `Response::Error`.
@@ -431,16 +432,15 @@ fn main() {
 
         // Decide which session to show: the workspace's saved one if the daemon still runs it here.
         let list_id = client.send(Request::ListSessions);
-        let mut launch =
-            Launch {
-                client: client.clone(),
-                project: project.clone(),
-                list_id,
-                saved,
-                pending_create: None,
-                pending_attach: None,
-                answered: false,
-            };
+        let mut launch = Launch {
+            client: client.clone(),
+            project: project.clone(),
+            list_id,
+            saved,
+            pending_create: None,
+            pending_attach: None,
+            answered: false,
+        };
         let client_for_task = client.clone();
         cx.spawn(async move |cx| {
             let mut closed = false;
