@@ -14,6 +14,14 @@ impl RingBuffer {
         Self { buf: vec![0; cap], cap, start: 0, len: 0 }
     }
 
+    /// A ring holding `bytes` (the tail of them when longer than `cap`): the replay carried
+    /// across a handover.
+    pub fn from_bytes(cap: usize, bytes: &[u8]) -> Self {
+        let mut r = Self::new(cap);
+        r.push(bytes);
+        r
+    }
+
     #[allow(dead_code)] // part of the ring API; only tests read it so far
     pub fn len(&self) -> usize {
         self.len
@@ -78,5 +86,17 @@ mod tests {
             r.push(&[i]);
         }
         assert_eq!(r.snapshot(), vec![96, 97, 98, 99]);
+    }
+
+    #[test]
+    fn from_bytes_restores_a_snapshot_and_keeps_the_tail_when_too_long() {
+        let r = RingBuffer::from_bytes(8, b"abcde");
+        assert_eq!(r.snapshot(), b"abcde");
+        assert_eq!(r.len(), 5);
+        let r = RingBuffer::from_bytes(3, b"0123456789");
+        assert_eq!(r.snapshot(), b"789");
+        let mut r = RingBuffer::from_bytes(4, b"ab");
+        r.push(b"cde");
+        assert_eq!(r.snapshot(), b"bcde");
     }
 }

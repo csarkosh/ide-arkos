@@ -279,7 +279,6 @@ pub struct Session {
     /// kernel, only the reader reads and only the writer writes.
     master: Arc<Pty>,
     /// The last size set, which the handover records.
-    #[allow(dead_code)] // read by the handover snapshot (Task 2 of updating in place)
     size: Mutex<(u16, u16)>,
     input: Mutex<Sender<Vec<u8>>>,
     child: Mutex<ChildSlot>,
@@ -510,6 +509,12 @@ impl Session {
         Ok(())
     }
 
+    /// The last `rows, cols` set.
+    #[cfg_attr(not(test), allow(dead_code))] // the handover (Task 4) reads it
+    pub fn size(&self) -> (u16, u16) {
+        *self.size.lock().unwrap()
+    }
+
     /// Ends the shell. The exit check and the signal happen under the same lock, so a child that
     /// exits in between is reaped here and never signalled by its possibly reused pid.
     pub fn kill(&self) -> Result<()> {
@@ -573,6 +578,75 @@ impl Session {
         self.state.lock().unwrap().subscribers.remove(&client);
     }
 
+    /// The record the handover file carries for this session. The master fd number is the one
+    /// in this process; the caller makes the descriptor inheritable before the exec.
+    #[cfg_attr(not(test), allow(dead_code))] // the handover's exec (Task 4) calls it
+    pub fn snapshot(&self) -> crate::handover::SessionRecord {
+        let st = self.state.lock().unwrap();
+        let slot = self.child.lock().unwrap();
+        let (rows, cols) = *self.size.lock().unwrap();
+        crate::handover::SessionRecord {
+            id: self.id.0,
+            cwd: self.cwd.clone(),
+            pid: slot.pid,
+            alive: st.alive,
+            exit_code: st.exit_code,
+            exited_ago_ms: st.exited_at.map(|at| at.elapsed().as_millis() as u64),
+            claude: st.claude,
+            last_activity_unix_ms: st.last_activity_unix_ms,
+            master_fd: self.master.raw_fd(),
+            rows,
+            cols,
+            kill_requested: slot.kill_requested_at.is_some(),
+            replay: st.replay.snapshot(),
+        }
+    }
+
+    /// Rebuilds a session around an inherited master after `--resume`. The shell is still this
+    /// process's child (the pid never changed), so `try_reap` works; a shell that exited during
+    /// the swap is caught here.
+    #[cfg_attr(not(test), allow(dead_code))] // the handover's resume (Task 4) calls it
+    pub fn adopt(record: &crate::handover::SessionRecord, master: Pty, replay_capacity: usize, backpressure: Backpressure) -> Arc<Session> {
+        let master = Arc::new(master);
+        let (input_tx, input_rx) = channel::<Vec<u8>>();
+        Self::start_writer(SessionId(record.id), master.clone(), input_rx);
+        // An exit older than this process's clock can express is clamped to now: the reaper's
+        // grace restarts rather than the subtraction panicking.
+        let exited_at = record
+            .exited_ago_ms
+            .map(|ms| Instant::now().checked_sub(Duration::from_millis(ms)).unwrap_or_else(Instant::now));
+        let session = Arc::new(Session {
+            id: SessionId(record.id),
+            cwd: record.cwd.clone(),
+            master,
+            size: Mutex::new((record.rows, record.cols)),
+            input: Mutex::new(input_tx),
+            child: Mutex::new(ChildSlot {
+                pid: record.pid,
+                exited: if record.alive { None } else { Some(record.exit_code.unwrap_or(-1)) },
+                kill_requested_at: record.kill_requested.then(Instant::now),
+            }),
+            pid: Some(record.pid as u32),
+            state: Mutex::new(SessionState {
+                replay: RingBuffer::from_bytes(replay_capacity, &record.replay),
+                subscribers: HashMap::new(),
+                alive: record.alive,
+                exit_code: record.exit_code,
+                exited_at,
+                last_activity_unix_ms: record.last_activity_unix_ms,
+                claude: record.claude,
+            }),
+            backpressure,
+            ending: AtomicBool::new(!record.alive),
+        });
+        if record.alive {
+            // The reader reports EOF later; a shell gone during the swap is recorded now.
+            session.poll_exit();
+            Self::start_reader(session.clone());
+        }
+        session
+    }
+
     pub fn info(&self) -> SessionInfo {
         let st = self.state.lock().unwrap();
         SessionInfo {
@@ -591,6 +665,7 @@ impl Session {
 mod tests {
     use super::*;
     use protocol::codec::read_frame;
+    use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
 
     #[test]
@@ -639,5 +714,105 @@ mod tests {
             }
         }
         assert_eq!(exits, 1);
+    }
+
+    #[test]
+    fn snapshot_records_the_session_and_adopt_rebuilds_it() {
+        let spec = SpawnSpec {
+            id: SessionId(11),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 4096,
+            backpressure: Backpressure::default(),
+        };
+        let s = Session::spawn(spec).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        s.write(b"echo snap-$((1+1))\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !String::from_utf8_lossy(&s.state.lock().unwrap().replay.snapshot()).contains("snap-2") {
+            assert!(Instant::now() < deadline, "no output");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        s.resize(30, 100).unwrap();
+        let rec = s.snapshot();
+        assert_eq!(rec.id, 11);
+        assert!(rec.alive);
+        assert_eq!((rec.rows, rec.cols), (30, 100));
+        assert_eq!(rec.pid, s.info().pid.unwrap() as i32);
+        assert!(String::from_utf8_lossy(&rec.replay).contains("snap-2"));
+        assert_eq!(rec.master_fd, s.master.raw_fd());
+        // Hand the master over as the exec would: make it inheritable and adopt a copy of the
+        // number. The old image is gone after a real exec; here its reader would keep taking
+        // output from the shared terminal, so its descriptor is replaced with /dev/null, where
+        // that reader sees EOF and stops. The spawn lock is held while any of these descriptors
+        // lacks close-on-exec, so a shell spawned by a concurrent test cannot inherit one.
+        let devnull = std::fs::File::open("/dev/null").unwrap();
+        let no_fork = pty::spawn_lock();
+        s.master.set_inheritable(true).unwrap();
+        let raw = rec.master_fd;
+        // SAFETY: dup on an open descriptor this test's session owns.
+        let dup = unsafe { libc::dup(raw) };
+        assert!(dup >= 0);
+        // SAFETY: `dup` is a fresh descriptor nothing else holds; the adopted `Pty` owns it.
+        let master = unsafe { Pty::adopt(dup) }.unwrap();
+        // SAFETY: dup2 onto `raw`, which the old session's `Pty` still owns and closes on drop;
+        // only the file behind the number changes.
+        assert!(unsafe { libc::dup2(devnull.as_raw_fd(), raw) } >= 0);
+        s.master.set_inheritable(false).unwrap();
+        drop(no_fork);
+        let adopted = Session::adopt(&rec, master, 4096, Backpressure::default());
+        assert!(adopted.info().alive);
+        assert_eq!(adopted.info().pid, s.info().pid);
+        assert_eq!(adopted.size(), (30, 100));
+        assert!(String::from_utf8_lossy(&adopted.state.lock().unwrap().replay.snapshot()).contains("snap-2"));
+        std::thread::sleep(Duration::from_millis(300));
+        adopted.write(b"echo after-adopt-$((2+2))\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !String::from_utf8_lossy(&adopted.state.lock().unwrap().replay.snapshot()).contains("after-adopt-4") {
+            assert!(Instant::now() < deadline, "the adopted session does not read");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        adopted.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while adopted.info().alive {
+            adopted.poll_exit();
+            assert!(Instant::now() < deadline, "the adopted session never saw the exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn adopt_keeps_a_dead_record_dead_and_carries_its_exit_age() {
+        let (master, _slave) = Pty::open(24, 80).unwrap();
+        let mut rec = crate::handover::SessionRecord {
+            id: 12,
+            cwd: std::env::temp_dir(),
+            pid: i32::MAX, // never signalled or waited on: the record says it was reaped
+            alive: false,
+            exit_code: Some(3),
+            exited_ago_ms: Some(60_000),
+            claude: ClaudeState::Idle,
+            last_activity_unix_ms: 5,
+            master_fd: master.raw_fd(),
+            rows: 24,
+            cols: 80,
+            kill_requested: false,
+            replay: b"0123456789".to_vec(),
+        };
+        let s = Session::adopt(&rec, master, 4, Backpressure::default());
+        assert!(!s.info().alive);
+        assert_eq!(s.state.lock().unwrap().exit_code, Some(3));
+        assert!(s.exited_at().unwrap().elapsed() >= Duration::from_secs(60), "the reaper's grace carries over");
+        assert_eq!(s.state.lock().unwrap().replay.snapshot(), b"6789");
+        s.kill().unwrap();
+        assert_eq!(s.child.lock().unwrap().try_reap(), Some(3));
+        // An age no clock can subtract still adopts.
+        rec.exited_ago_ms = Some(u64::MAX);
+        let (master, _slave) = Pty::open(24, 80).unwrap();
+        assert!(Session::adopt(&rec, master, 4, Backpressure::default()).exited_at().is_some());
     }
 }
