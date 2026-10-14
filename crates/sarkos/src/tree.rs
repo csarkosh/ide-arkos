@@ -4,7 +4,7 @@
 
 use protocol::SessionId;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub type PaneId = u64;
 pub type SplitId = u64;
@@ -468,6 +468,11 @@ impl Tree {
         self.pane(pane)?.ids.get(idx).copied()
     }
 
+    /// The index of the viewer tab showing `path` in `pane`, if any.
+    pub fn find_viewer(&self, pane: PaneId, path: &Path) -> Option<usize> {
+        self.pane(pane)?.tabs.iter().position(|t| matches!(t, Tab::Viewer { path: p } if p == path))
+    }
+
     /// Where a tab is now: its pane and index. `None` once it has closed.
     pub fn locate(&self, tab: TabId) -> Option<(PaneId, usize)> {
         let mut panes = Vec::new();
@@ -678,6 +683,17 @@ fn overlap(a: f32, aw: f32, b: f32, bw: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_viewer_locates_a_tab_by_path_in_one_pane() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let root = t.panes()[0];
+        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into() });
+        let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into() }).unwrap();
+        assert_eq!(t.find_viewer(root, Path::new("/p/a.rs")), Some(1));
+        assert_eq!(t.find_viewer(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
+        assert_eq!(t.find_viewer(right, Path::new("/p/b.rs")), Some(0));
+    }
 
     #[test]
     fn an_empty_tree_is_one_pane_with_no_tabs_that_takes_tabs() {

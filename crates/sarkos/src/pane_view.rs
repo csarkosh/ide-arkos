@@ -286,6 +286,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     for (idx, (label, mark)) in tabs.iter().enumerate() {
         let (label, mark) = (label.clone(), *mark);
         let is_active = idx == p.active;
+        // A preview tab stays dim even when active, so it reads as temporary (ruling 4).
+        let is_preview = root.preview_tab.is_some() && p.ids.get(idx).copied() == root.preview_tab;
         let glyph = match mark {
             TabMark::Working => {
                 let mut c = theme.semantic.working.hsla();
@@ -297,7 +299,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         };
         let text = match mark {
             TabMark::Dead => muted,
-            _ if is_active => fg.hsla(),
+            _ if is_active && !is_preview => fg.hsla(),
             _ => dim.hsla(),
         };
         let drag_value = p.ids.get(idx).map(|id| drag::TabDrag {
@@ -383,6 +385,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
     let t_click = terminal.clone();
+    let t_drop = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
     let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
     div()
@@ -427,6 +430,10 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 });
             }),
         )
+        // A file dragged from the tree types its path at the prompt.
+        .on_drop(cx.listener(move |_root, d: &crate::drag::FileDrag, _window, cx| {
+            t_drop.update(cx, |t, _| t.paste(&crate::drag::paste_text(&d.path)));
+        }))
         // The element finds the link under the pointer when it paints; a move over the
         // terminal asks for that paint (the inner div below asks on enter and exit).
         .on_mouse_move(cx.listener(|_root, _ev: &MouseMoveEvent, _window, cx| cx.notify()))

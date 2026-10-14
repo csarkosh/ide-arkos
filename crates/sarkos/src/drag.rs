@@ -1,9 +1,11 @@
 //! Dragging a tab (spec 4): a ghost chip follows the pointer; the hovered tab bar shows where
 //! it would land; the hovered pane shows five drop zones (center, left, right, top, bottom).
+//! Dragging a file out of the tree (spec 6): dropped on a terminal, its path is typed there.
 
 use crate::palette::Rgb;
 use crate::tree::{PaneId, TabId};
 use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, SharedString, Window};
+use std::path::{Path, PathBuf};
 
 /// What a tab drag carries. `tab` is the tab's stable id: the drop re-locates the tab by it, so
 /// `pane` and `idx` (where the drag started) only describe the start.
@@ -41,6 +43,52 @@ impl Render for TabDrag {
                 .opacity(0.9)
                 .child(self.label.clone()),
         )
+    }
+}
+
+/// A file dragged out of the tree: dropped on a terminal, its path is pasted (spec 6).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileDrag {
+    pub path: PathBuf,
+    pub position: Point<Pixels>,
+    pub bg: Rgb,
+    pub fg: Rgb,
+    pub family: SharedString,
+}
+
+impl FileDrag {
+    pub fn at(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for FileDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        div().pl(self.position.x + px(8.0)).pt(self.position.y + px(8.0)).child(
+            div()
+                .px(px(10.0))
+                .py(px(4.0))
+                .bg(self.bg.hsla())
+                .text_color(self.fg.hsla())
+                .font_family(self.family.clone())
+                .text_size(px(12.0))
+                .opacity(0.9)
+                .child(name),
+        )
+    }
+}
+
+/// What a dropped file types into a terminal: the path, single-quoted when it has anything a
+/// shell would read, then a space so the next word starts clean.
+pub fn paste_text(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let plain = s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    if plain {
+        format!("{s} ")
+    } else {
+        format!("'{}' ", s.replace('\'', "'\\''"))
     }
 }
 
@@ -110,6 +158,13 @@ mod tests {
         assert_eq!(zone_for(pane, point(px(300.0), px(295.0))), Zone::Bottom);
         // Corners go to the nearer edge by distance.
         assert_eq!(zone_for(pane, point(px(104.0), px(110.0))), Zone::Left);
+    }
+
+    #[test]
+    fn a_dropped_path_is_quoted_only_when_it_needs_it() {
+        assert_eq!(paste_text(Path::new("/Users/me/src/main.rs")), "/Users/me/src/main.rs ");
+        assert_eq!(paste_text(Path::new("/Users/me/My Docs/a b.txt")), "'/Users/me/My Docs/a b.txt' ");
+        assert_eq!(paste_text(Path::new("/x/it's.txt")), "'/x/it'\\''s.txt' ");
     }
 
     #[test]

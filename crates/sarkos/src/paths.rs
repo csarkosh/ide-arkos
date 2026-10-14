@@ -35,7 +35,7 @@ pub fn socket_path() -> PathBuf {
 
 /// FNV-1a over the path bytes. Rust's `DefaultHasher` is not stable across releases, which would
 /// orphan every workspace file on a toolchain upgrade.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         h ^= *b as u64;
