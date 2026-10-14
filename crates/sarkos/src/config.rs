@@ -237,16 +237,38 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse(&text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let written = path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|()| std::fs::write(path, DEFAULT_CONFIG));
-            match written {
-                Ok(()) => eprintln!("sarkos: wrote default config to {}", path.display()),
-                Err(e) => eprintln!("sarkos: cannot write default config to {}: {e}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match write_default(path) {
+            Ok(()) => {
+                eprintln!("sarkos: wrote default config to {}", path.display());
+                Ok(Config::default())
             }
-            Ok(Config::default())
-        }
-        Err(e) => Err(ConfigError { line: None, message: format!("cannot read {}: {e}", path.display()) }),
+            // Created between the read and the write, as an editor's unlink-then-create save
+            // does: read what it wrote.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read(path),
+            Err(e) => {
+                eprintln!("sarkos: cannot write default config to {}: {e}", path.display());
+                Ok(Config::default())
+            }
+        },
+        Err(e) => Err(read_error(path, e)),
     }
+}
+
+fn read(path: &Path) -> Result<Config, ConfigError> {
+    std::fs::read_to_string(path).map_err(|e| read_error(path, e)).and_then(|text| parse(&text))
+}
+
+fn read_error(path: &Path, e: std::io::Error) -> ConfigError {
+    ConfigError { line: None, message: format!("cannot read {}: {e}", path.display()) }
+}
+
+/// Writes `DEFAULT_CONFIG` only if no file is there, so it can never replace one.
+fn write_default(path: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?.write_all(DEFAULT_CONFIG.as_bytes())
 }
 
 /// A reload keeps the last good config when the new one does not parse (spec 7).
@@ -494,6 +516,16 @@ mod tests {
         std::fs::write(&file, "[font]\nfamily = \n").unwrap();
         let e = load(&file).unwrap_err();
         assert_eq!(e.line, Some(2), "{e}");
+    }
+
+    #[test]
+    fn the_default_never_replaces_a_file_that_appeared() {
+        // An editor's save can unlink then create the file; the watcher's load must not win.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[font]\nfamily = \"Monaco\"\n").unwrap();
+        assert_eq!(write_default(&file).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[font]\nfamily = \"Monaco\"\n");
     }
 
     #[test]
