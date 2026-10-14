@@ -3,15 +3,13 @@
 //! empty pane costs no frames.
 
 use crate::motion::reduce_motion;
+use crate::theme::Theme;
 use crate::tree::PaneId;
 use crate::Root;
-use gpui::{div, prelude::*, px, rgb, rgba, Context, Div, FocusHandle, Window};
+use gpui::{div, prelude::*, px, Context, Div, FocusHandle, Window};
 use std::time::Instant;
 
 pub const ANIM_SECS: f32 = 6.0;
-const FG: u32 = 0xd6dae0;
-const DIM: u32 = 0x8a93a3;
-const DOT: u32 = 0x3a7bd5;
 
 /// The four things a person wants next from an empty pane.
 pub const BINDINGS: &[(&str, &str)] = &[
@@ -44,7 +42,7 @@ pub fn dot_positions(elapsed: f32, w: f32, h: f32) -> [(f32, f32); 3] {
     out
 }
 
-pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle, window: &mut Window, cx: &mut Context<Root>) -> Div {
+pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle, theme: &Theme, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let started = *root.empty_anim.entry(pane).or_insert_with(Instant::now);
     let elapsed = if reduce_motion() { ANIM_SECS } else { started.elapsed().as_secs_f32() };
     let animating = elapsed < ANIM_SECS;
@@ -66,11 +64,11 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
         }));
     for (i, (x, y)) in dots.iter().enumerate() {
         let size = 18.0 + 4.0 * i as f32;
-        view = view.child(div().absolute().left(px(x - size / 2.0)).top(px(y - size / 2.0)).size(px(size)).rounded_full().bg(rgba((DOT << 8) | 0x33)));
+        view = view.child(div().absolute().left(px(x - size / 2.0)).top(px(y - size / 2.0)).size(px(size)).rounded_full().bg(theme.semantic.working.alpha(0.2)));
     }
-    let mut hints = div().flex().flex_col().gap(px(6.0)).text_color(rgb(DIM)).font_family("Menlo").text_size(px(13.0));
+    let mut hints = div().flex().flex_col().gap(px(6.0)).text_color(theme.chrome.text_dim.hsla()).font_family(root.family()).text_size(px(13.0));
     for (keys, what) in self::hints(last_pane) {
-        hints = hints.child(div().flex().flex_row().gap(px(12.0)).child(div().w(px(150.0)).text_color(rgb(FG)).child(keys)).child(what));
+        hints = hints.child(div().flex().flex_row().gap(px(12.0)).child(div().w(px(150.0)).text_color(theme.chrome.text.hsla()).child(keys)).child(what));
     }
     div().size_full().child(view.child(
         div()
@@ -82,7 +80,7 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
             .flex_col()
             .items_center()
             .gap(px(14.0))
-            .child(div().text_color(rgb(FG)).font_family("Menlo").text_size(px(15.0)).child("This pane is empty. Nothing is lost."))
+            .child(div().text_color(theme.chrome.text.hsla()).font_family(root.family()).text_size(px(15.0)).child("This pane is empty. Nothing is lost."))
             .child(hints),
     ))
 }

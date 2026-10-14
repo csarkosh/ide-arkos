@@ -1,10 +1,12 @@
 //! The keyboard map (spec 4): VS Code's macOS defaults for the editor area, applied to panes
-//! and terminal tabs. Every binding is global except ClearScrollback, which needs a terminal.
+//! and terminal tabs. Every binding has a name, which is its key in the config file's
+//! `[keybindings]` table; `bindings_for` applies the overrides from there.
 
 use crate::tree::Side;
 use crate::Root;
-use gpui::{actions, Context, Div, KeyBinding, Window};
 use gpui::prelude::*;
+use gpui::{actions, Context, Div, KeyBinding, Keystroke, Window};
+use std::collections::BTreeMap;
 
 actions!(
     sarkos,
@@ -16,12 +18,13 @@ actions!(
         NextTab, PrevTab, NextTabAlt, PrevTabAlt, MruTab,
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
-        NewTerminal, ClearScrollback, FontBigger, FontSmaller
+        NewTerminal, ClearScrollback, FontBigger, FontSmaller,
+        OpenConfig, CommandPalette, Find, Quit
     ]
 );
 
 /// What a key does, in the window's terms.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     FocusPane(usize),
     FocusDir(Side),
@@ -38,65 +41,253 @@ pub enum Command {
     NewTerminal,
     ClearScrollback,
     FontDelta(f32),
+    OpenConfig,
+    /// Switch every terminal to the named text preset (the palette runs it).
+    TextPreset(String),
+    /// Re-read config.toml now (the palette runs it; the watcher does the same on every save).
+    ReloadConfig,
+    /// Write the built-in themes into the themes folder (the palette runs it).
+    ExtractThemes,
+    /// Open the command palette, or close it when it is open.
+    CommandPalette,
+    /// Switch to the named theme for this run; the config file is the only place a theme is kept.
+    SetTheme(String),
+    /// Open the active terminal's find bar, or focus it when it is open.
+    Find,
 }
 
-/// The spec's table (section 4), gpui keystroke syntax. Chords are space-separated.
-#[cfg_attr(not(test), allow(dead_code))]
-pub const SPEC_ROWS: &[(&str, &str)] = &[
-    ("cmd-1", "focus pane 1"), ("cmd-2", "focus pane 2"), ("cmd-3", "focus pane 3"), ("cmd-4", "focus pane 4"),
-    ("cmd-5", "focus pane 5"), ("cmd-6", "focus pane 6"), ("cmd-7", "focus pane 7"), ("cmd-8", "focus pane 8"),
-    ("cmd-9", "focus pane 9"),
-    ("cmd-k cmd-left", "focus left"), ("cmd-k cmd-right", "focus right"), ("cmd-k cmd-up", "focus up"), ("cmd-k cmd-down", "focus down"),
-    ("cmd-\\", "split right"), ("cmd-k cmd-\\", "split down"),
-    ("cmd-k cmd-m", "maximize pane"),
-    ("ctrl-cmd-left", "move tab to previous pane"), ("ctrl-cmd-right", "move tab to next pane"),
-    ("alt-cmd-right", "next tab"), ("alt-cmd-left", "previous tab"), ("cmd-shift-]", "next tab"), ("cmd-shift-[", "previous tab"),
-    ("ctrl-tab", "most recently used tab"),
-    ("cmd-w", "close tab"), ("cmd-shift-t", "reopen closed tab"), ("cmd-k w", "close all in pane"),
-    ("cmd-k cmd-shift-left", "move tab left"), ("cmd-k cmd-shift-right", "move tab right"),
-    ("ctrl-shift-`", "new terminal tab"),
-    ("cmd-k", "clear scrollback"),
-    ("cmd-=", "font bigger"), ("cmd--", "font smaller"),
+/// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
+/// separated) and the key context the binding needs.
+pub struct ActionSpec {
+    pub name: &'static str,
+    pub keys: &'static str,
+    pub context: Option<&'static str>,
+}
+
+const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
+    ActionSpec { name, keys, context: None }
+}
+
+/// The spec's table (section 4) plus open config, the command palette, find and quit. The order is the registration order.
+pub const ACTIONS: &[ActionSpec] = &[
+    // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
+    // whose index is after the best exact match, so a later lone cmd-k would fire at once and
+    // the Cmd+K chords would never complete. Terminal-only, so chords work elsewhere too.
+    ActionSpec { name: "clear scrollback", keys: "cmd-k", context: Some("Terminal") },
+    row("focus pane 1", "cmd-1"), row("focus pane 2", "cmd-2"), row("focus pane 3", "cmd-3"),
+    row("focus pane 4", "cmd-4"), row("focus pane 5", "cmd-5"), row("focus pane 6", "cmd-6"),
+    row("focus pane 7", "cmd-7"), row("focus pane 8", "cmd-8"), row("focus pane 9", "cmd-9"),
+    row("focus left", "cmd-k cmd-left"), row("focus right", "cmd-k cmd-right"),
+    row("focus up", "cmd-k cmd-up"), row("focus down", "cmd-k cmd-down"),
+    row("split right", "cmd-\\"), row("split down", "cmd-k cmd-\\"),
+    row("maximize pane", "cmd-k cmd-m"),
+    row("move tab to previous pane", "ctrl-cmd-left"), row("move tab to next pane", "ctrl-cmd-right"),
+    row("next tab", "alt-cmd-right"), row("previous tab", "alt-cmd-left"),
+    row("next tab alt", "cmd-shift-]"), row("previous tab alt", "cmd-shift-["),
+    row("most recently used tab", "ctrl-tab"),
+    row("close tab", "cmd-w"), row("reopen closed tab", "cmd-shift-t"), row("close all in pane", "cmd-k w"),
+    row("move tab left", "cmd-k cmd-shift-left"), row("move tab right", "cmd-k cmd-shift-right"),
+    row("new terminal tab", "ctrl-shift-`"),
+    row("font bigger", "cmd-="), row("font smaller", "cmd--"),
+    row("open config", "cmd-,"),
+    row("command palette", "cmd-shift-p"),
+    row("find", "cmd-f"),
+    row("quit", "cmd-q"),
 ];
 
+/// The binding for a named action. `keys` must already be validated: `KeyBinding::new` panics
+/// on a keystroke it cannot parse.
+fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> {
+    Some(match name {
+        "clear scrollback" => KeyBinding::new(keys, ClearScrollback, context),
+        "focus pane 1" => KeyBinding::new(keys, FocusPane1, context),
+        "focus pane 2" => KeyBinding::new(keys, FocusPane2, context),
+        "focus pane 3" => KeyBinding::new(keys, FocusPane3, context),
+        "focus pane 4" => KeyBinding::new(keys, FocusPane4, context),
+        "focus pane 5" => KeyBinding::new(keys, FocusPane5, context),
+        "focus pane 6" => KeyBinding::new(keys, FocusPane6, context),
+        "focus pane 7" => KeyBinding::new(keys, FocusPane7, context),
+        "focus pane 8" => KeyBinding::new(keys, FocusPane8, context),
+        "focus pane 9" => KeyBinding::new(keys, FocusPane9, context),
+        "focus left" => KeyBinding::new(keys, FocusLeft, context),
+        "focus right" => KeyBinding::new(keys, FocusRight, context),
+        "focus up" => KeyBinding::new(keys, FocusUp, context),
+        "focus down" => KeyBinding::new(keys, FocusDown, context),
+        "split right" => KeyBinding::new(keys, SplitRight, context),
+        "split down" => KeyBinding::new(keys, SplitDown, context),
+        "maximize pane" => KeyBinding::new(keys, ToggleMaximize, context),
+        "move tab to previous pane" => KeyBinding::new(keys, MoveTabToPrevPane, context),
+        "move tab to next pane" => KeyBinding::new(keys, MoveTabToNextPane, context),
+        "next tab" => KeyBinding::new(keys, NextTab, context),
+        "previous tab" => KeyBinding::new(keys, PrevTab, context),
+        "next tab alt" => KeyBinding::new(keys, NextTabAlt, context),
+        "previous tab alt" => KeyBinding::new(keys, PrevTabAlt, context),
+        "most recently used tab" => KeyBinding::new(keys, MruTab, context),
+        "close tab" => KeyBinding::new(keys, CloseTab, context),
+        "reopen closed tab" => KeyBinding::new(keys, ReopenClosedTab, context),
+        "close all in pane" => KeyBinding::new(keys, CloseAllInPane, context),
+        "move tab left" => KeyBinding::new(keys, MoveTabLeft, context),
+        "move tab right" => KeyBinding::new(keys, MoveTabRight, context),
+        "new terminal tab" => KeyBinding::new(keys, NewTerminal, context),
+        "font bigger" => KeyBinding::new(keys, FontBigger, context),
+        "font smaller" => KeyBinding::new(keys, FontSmaller, context),
+        "open config" => KeyBinding::new(keys, OpenConfig, context),
+        "command palette" => KeyBinding::new(keys, CommandPalette, context),
+        "find" => KeyBinding::new(keys, Find, context),
+        "quit" => KeyBinding::new(keys, Quit, context),
+        _ => return None,
+    })
+}
+
+/// Whether `keys` is a keystroke or chord gpui can parse. Empty means "unbound" and is fine.
+fn keystroke_error(keys: &str) -> Option<String> {
+    for token in keys.split_whitespace() {
+        match Keystroke::parse(token) {
+            Err(e) => return Some(format!("cannot parse keystroke \"{token}\": {e}")),
+            // gpui 0.2.2 splits only on '-', so "cmd+\\" parses as a single odd key instead of
+            // failing. No named key contains '+', so a longer key that does is a wrong separator.
+            Ok(k) if k.key.len() > 1 && k.key.contains('+') => {
+                return Some(format!("cannot parse keystroke \"{token}\": join modifiers with '-', not '+'"));
+            }
+            Ok(_) => {}
+        }
+    }
+    None
+}
+
+/// Every problem with an override table, in table order: an action name that is not in
+/// `ACTIONS`, or keystrokes gpui cannot parse. Empty when the table is fine.
+pub fn validate(overrides: &BTreeMap<String, String>) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (name, keys) in overrides {
+        if !ACTIONS.iter().any(|a| a.name == name) {
+            errors.push(format!("unknown action \"{name}\" in [keybindings]"));
+            continue;
+        }
+        if let Some(e) = keystroke_error(keys) {
+            errors.push(format!("\"{name}\": {e}"));
+        }
+    }
+    errors
+}
+
+/// The effective keystrokes for an action: the override if there is one, else the default.
+/// `None` for an unknown action or one overridden to the empty string.
+pub fn keys_for(name: &str, overrides: &BTreeMap<String, String>) -> Option<String> {
+    let spec = ACTIONS.iter().find(|a| a.name == name)?;
+    let keys = overrides.get(name).map(String::as_str).unwrap_or(spec.keys);
+    if keys.trim().is_empty() {
+        None
+    } else {
+        Some(keys.to_string())
+    }
+}
+
+/// The defaults with `overrides` applied, in `ACTIONS` order. Entries `validate` would reject
+/// keep their default keys; callers show `validate`'s messages and keep the last good bindings.
+pub fn bindings_for(overrides: &BTreeMap<String, String>) -> Vec<KeyBinding> {
+    ACTIONS
+        .iter()
+        .filter_map(|spec| {
+            let keys = keys_for(spec.name, overrides)?;
+            // A bad override keeps the default bound, so a typo never leaves an action keyless.
+            let keys = if keystroke_error(&keys).is_some() { spec.keys.to_string() } else { keys };
+            binding(spec.name, &keys, spec.context)
+        })
+        .collect()
+}
+
+#[cfg(test)]
 pub fn bindings() -> Vec<KeyBinding> {
-    vec![
-        // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
-        // whose index is after the best exact match, so a later lone cmd-k would fire at once and
-        // the Cmd+K chords would never complete. Terminal-only, so chords work elsewhere too.
-        KeyBinding::new("cmd-k", ClearScrollback, Some("Terminal")),
-        KeyBinding::new("cmd-1", FocusPane1, None),
-        KeyBinding::new("cmd-2", FocusPane2, None),
-        KeyBinding::new("cmd-3", FocusPane3, None),
-        KeyBinding::new("cmd-4", FocusPane4, None),
-        KeyBinding::new("cmd-5", FocusPane5, None),
-        KeyBinding::new("cmd-6", FocusPane6, None),
-        KeyBinding::new("cmd-7", FocusPane7, None),
-        KeyBinding::new("cmd-8", FocusPane8, None),
-        KeyBinding::new("cmd-9", FocusPane9, None),
-        KeyBinding::new("cmd-k cmd-left", FocusLeft, None),
-        KeyBinding::new("cmd-k cmd-right", FocusRight, None),
-        KeyBinding::new("cmd-k cmd-up", FocusUp, None),
-        KeyBinding::new("cmd-k cmd-down", FocusDown, None),
-        KeyBinding::new("cmd-\\", SplitRight, None),
-        KeyBinding::new("cmd-k cmd-\\", SplitDown, None),
-        KeyBinding::new("cmd-k cmd-m", ToggleMaximize, None),
-        KeyBinding::new("ctrl-cmd-left", MoveTabToPrevPane, None),
-        KeyBinding::new("ctrl-cmd-right", MoveTabToNextPane, None),
-        KeyBinding::new("alt-cmd-right", NextTab, None),
-        KeyBinding::new("alt-cmd-left", PrevTab, None),
-        KeyBinding::new("cmd-shift-]", NextTabAlt, None),
-        KeyBinding::new("cmd-shift-[", PrevTabAlt, None),
-        KeyBinding::new("ctrl-tab", MruTab, None),
-        KeyBinding::new("cmd-w", CloseTab, None),
-        KeyBinding::new("cmd-shift-t", ReopenClosedTab, None),
-        KeyBinding::new("cmd-k w", CloseAllInPane, None),
-        KeyBinding::new("cmd-k cmd-shift-left", MoveTabLeft, None),
-        KeyBinding::new("cmd-k cmd-shift-right", MoveTabRight, None),
-        KeyBinding::new("ctrl-shift-`", NewTerminal, None),
-        KeyBinding::new("cmd-=", FontBigger, None),
-        KeyBinding::new("cmd--", FontSmaller, None),
-    ]
+    bindings_for(&BTreeMap::new())
+}
+
+/// A keystroke the way the Mac writes it: `cmd-shift-p` is `Shift+Cmd+P` (Apple's menu order:
+/// Control, Option, Shift, Command), chords join with " then ".
+pub fn pretty_keys(keys: &str) -> String {
+    keys.split_whitespace()
+        .map(|stroke| {
+            let Ok(k) = Keystroke::parse(stroke) else { return stroke.to_string() };
+            let mut parts = Vec::new();
+            if k.modifiers.control {
+                parts.push("Ctrl".to_string());
+            }
+            if k.modifiers.alt {
+                parts.push("Option".to_string());
+            }
+            if k.modifiers.shift {
+                parts.push("Shift".to_string());
+            }
+            if k.modifiers.platform {
+                parts.push("Cmd".to_string());
+            }
+            let key = match k.key.as_str() {
+                "left" => "Left".to_string(),
+                "right" => "Right".to_string(),
+                "up" => "Up".to_string(),
+                "down" => "Down".to_string(),
+                "enter" => "Enter".to_string(),
+                "tab" => "Tab".to_string(),
+                "escape" => "Escape".to_string(),
+                "backspace" => "Backspace".to_string(),
+                "space" => "Space".to_string(),
+                other => other.to_uppercase(),
+            };
+            parts.push(key);
+            parts.join("+")
+        })
+        .collect::<Vec<_>>()
+        .join(" then ")
+}
+
+/// An action name as a palette label: first letter upper-cased.
+pub fn label(name: &str) -> String {
+    let mut c = name.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The command an action name runs, for the palette. gpui's `on_action` needs a concrete action
+/// type per listener, so `attach` keeps its macro; this is the same mapping as a lookup. The
+/// palette itself and quit are not listed.
+pub fn command_for(name: &str) -> Option<Command> {
+    Some(match name {
+        "clear scrollback" => Command::ClearScrollback,
+        "focus pane 1" => Command::FocusPane(0),
+        "focus pane 2" => Command::FocusPane(1),
+        "focus pane 3" => Command::FocusPane(2),
+        "focus pane 4" => Command::FocusPane(3),
+        "focus pane 5" => Command::FocusPane(4),
+        "focus pane 6" => Command::FocusPane(5),
+        "focus pane 7" => Command::FocusPane(6),
+        "focus pane 8" => Command::FocusPane(7),
+        "focus pane 9" => Command::FocusPane(8),
+        "focus left" => Command::FocusDir(Side::Left),
+        "focus right" => Command::FocusDir(Side::Right),
+        "focus up" => Command::FocusDir(Side::Top),
+        "focus down" => Command::FocusDir(Side::Bottom),
+        "split right" => Command::Split(Side::Right),
+        "split down" => Command::Split(Side::Bottom),
+        "maximize pane" => Command::ToggleMaximize,
+        "move tab to previous pane" => Command::MoveTabToPane(-1),
+        "move tab to next pane" => Command::MoveTabToPane(1),
+        "next tab" | "next tab alt" => Command::CycleTab(1),
+        "previous tab" | "previous tab alt" => Command::CycleTab(-1),
+        "most recently used tab" => Command::MruTab,
+        "close tab" => Command::CloseTab,
+        "reopen closed tab" => Command::ReopenClosedTab,
+        "close all in pane" => Command::CloseAllInPane,
+        "move tab left" => Command::MoveTabWithin(-1),
+        "move tab right" => Command::MoveTabWithin(1),
+        "new terminal tab" => Command::NewTerminal,
+        "font bigger" => Command::FontDelta(1.0),
+        "font smaller" => Command::FontDelta(-1.0),
+        "open config" => Command::OpenConfig,
+        "find" => Command::Find,
+        _ => return None,
+    })
 }
 
 pub fn tab_cycle(active: usize, len: usize, delta: isize) -> usize {
@@ -115,7 +306,7 @@ macro_rules! route {
     }};
 }
 
-/// Registers every action on the window's root element.
+/// Registers every action on the window's root element. Quit is handled by the app, not here.
 pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
     route!(div, cx,
         FocusPane1 => Command::FocusPane(0), FocusPane2 => Command::FocusPane(1), FocusPane3 => Command::FocusPane(2),
@@ -133,68 +324,127 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         MoveTabLeft => Command::MoveTabWithin(-1), MoveTabRight => Command::MoveTabWithin(1),
         NewTerminal => Command::NewTerminal, ClearScrollback => Command::ClearScrollback,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
+        OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
-    #[test]
-    fn every_spec_row_is_bound_once() {
-        let b = bindings();
-        for (keys, name) in SPEC_ROWS {
-            let hits: Vec<_> = b.iter().filter(|kb| kb.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" ") == *keys).collect();
-            assert_eq!(hits.len(), 1, "{keys} ({name}) bound {} times", hits.len());
-        }
-        assert_eq!(b.len(), SPEC_ROWS.len(), "a binding exists that the spec table does not list");
+    fn keys_of(kb: &KeyBinding) -> String {
+        kb.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" ")
     }
 
-    fn action_names() -> &'static [(&'static str, &'static str)] {
-        &[
-            ("cmd-1", "FocusPane1"), ("cmd-2", "FocusPane2"), ("cmd-3", "FocusPane3"), ("cmd-4", "FocusPane4"),
-            ("cmd-5", "FocusPane5"), ("cmd-6", "FocusPane6"), ("cmd-7", "FocusPane7"), ("cmd-8", "FocusPane8"),
-            ("cmd-9", "FocusPane9"),
-            ("cmd-k cmd-left", "FocusLeft"), ("cmd-k cmd-right", "FocusRight"), ("cmd-k cmd-up", "FocusUp"),
-            ("cmd-k cmd-down", "FocusDown"),
-            ("cmd-\\", "SplitRight"), ("cmd-k cmd-\\", "SplitDown"), ("cmd-k cmd-m", "ToggleMaximize"),
-            ("ctrl-cmd-left", "MoveTabToPrevPane"), ("ctrl-cmd-right", "MoveTabToNextPane"),
-            ("alt-cmd-right", "NextTab"), ("alt-cmd-left", "PrevTab"), ("cmd-shift-]", "NextTabAlt"),
-            ("cmd-shift-[", "PrevTabAlt"), ("ctrl-tab", "MruTab"),
-            ("cmd-w", "CloseTab"), ("cmd-shift-t", "ReopenClosedTab"), ("cmd-k w", "CloseAllInPane"),
-            ("cmd-k cmd-shift-left", "MoveTabLeft"), ("cmd-k cmd-shift-right", "MoveTabRight"),
-            ("ctrl-shift-`", "NewTerminal"), ("cmd-k", "ClearScrollback"),
-            ("cmd-=", "FontBigger"), ("cmd--", "FontSmaller"),
-        ]
+    /// The spec's table (section 4) plus the four this milestone adds. Names are the config keys.
+    const SPEC_ROWS: &[(&str, &str, &str)] = &[
+        ("cmd-k", "clear scrollback", "ClearScrollback"),
+        ("cmd-1", "focus pane 1", "FocusPane1"), ("cmd-2", "focus pane 2", "FocusPane2"), ("cmd-3", "focus pane 3", "FocusPane3"),
+        ("cmd-4", "focus pane 4", "FocusPane4"), ("cmd-5", "focus pane 5", "FocusPane5"), ("cmd-6", "focus pane 6", "FocusPane6"),
+        ("cmd-7", "focus pane 7", "FocusPane7"), ("cmd-8", "focus pane 8", "FocusPane8"), ("cmd-9", "focus pane 9", "FocusPane9"),
+        ("cmd-k cmd-left", "focus left", "FocusLeft"), ("cmd-k cmd-right", "focus right", "FocusRight"),
+        ("cmd-k cmd-up", "focus up", "FocusUp"), ("cmd-k cmd-down", "focus down", "FocusDown"),
+        ("cmd-\\", "split right", "SplitRight"), ("cmd-k cmd-\\", "split down", "SplitDown"),
+        ("cmd-k cmd-m", "maximize pane", "ToggleMaximize"),
+        ("ctrl-cmd-left", "move tab to previous pane", "MoveTabToPrevPane"), ("ctrl-cmd-right", "move tab to next pane", "MoveTabToNextPane"),
+        ("alt-cmd-right", "next tab", "NextTab"), ("alt-cmd-left", "previous tab", "PrevTab"),
+        ("cmd-shift-]", "next tab alt", "NextTabAlt"), ("cmd-shift-[", "previous tab alt", "PrevTabAlt"),
+        ("ctrl-tab", "most recently used tab", "MruTab"),
+        ("cmd-w", "close tab", "CloseTab"), ("cmd-shift-t", "reopen closed tab", "ReopenClosedTab"), ("cmd-k w", "close all in pane", "CloseAllInPane"),
+        ("cmd-k cmd-shift-left", "move tab left", "MoveTabLeft"), ("cmd-k cmd-shift-right", "move tab right", "MoveTabRight"),
+        ("ctrl-shift-`", "new terminal tab", "NewTerminal"),
+        ("cmd-=", "font bigger", "FontBigger"), ("cmd--", "font smaller", "FontSmaller"),
+        ("cmd-,", "open config", "OpenConfig"),
+        ("cmd-shift-p", "command palette", "CommandPalette"),
+        ("cmd-f", "find", "Find"),
+        ("cmd-q", "quit", "Quit"),
+    ];
+
+    #[test]
+    fn the_table_is_the_spec_table() {
+        assert_eq!(ACTIONS.len(), SPEC_ROWS.len(), "an action exists that the spec table does not list, or one is missing");
+        for (keys, name, _) in SPEC_ROWS {
+            let spec = ACTIONS.iter().find(|a| a.name == *name).unwrap_or_else(|| panic!("{name} missing from ACTIONS"));
+            assert_eq!(spec.keys, *keys, "{name}");
+        }
+        assert_eq!(ACTIONS[0].name, "clear scrollback", "the lone cmd-k must be registered first (milestone 2a ruling 16)");
+        assert_eq!(ACTIONS[0].context, Some("Terminal"));
     }
 
     #[test]
     fn every_row_runs_the_action_it_describes() {
-        let names = action_names();
-        assert_eq!(names.len(), SPEC_ROWS.len());
         let b = bindings();
-        for (keys, want) in names {
-            assert!(SPEC_ROWS.iter().any(|(k, _)| k == keys), "{keys} missing from SPEC_ROWS");
-            let kb = b
-                .iter()
-                .find(|kb| kb.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" ") == *keys)
-                .unwrap_or_else(|| panic!("{keys} unbound"));
+        assert_eq!(b.len(), SPEC_ROWS.len());
+        for (keys, name, want) in SPEC_ROWS {
+            let kb = b.iter().find(|kb| keys_of(kb) == *keys).unwrap_or_else(|| panic!("{keys} ({name}) unbound"));
             assert_eq!(kb.action().name(), format!("sarkos::{want}"), "{keys}");
         }
     }
 
     #[test]
-    fn cmd_k_stays_pending_in_a_terminal_so_chords_work() {
+    fn overrides_name_actions_and_keys_exactly() {
+        let mut o = BTreeMap::new();
+        o.insert("splitt right".to_string(), "cmd-\\".to_string());
+        o.insert("split right".to_string(), "cmd+\\".to_string());
+        let errors = validate(&o);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].contains("\"split right\"") && errors[0].contains("cmd+\\"), "{}", errors[0]);
+        assert!(errors[1].contains("\"splitt right\""), "{}", errors[1]);
+        // The defaults stay bound when validation fails: callers keep the last good set.
+        let b = bindings_for(&o);
+        assert!(b.iter().any(|kb| keys_of(kb) == "cmd-\\" && kb.action().name() == "sarkos::SplitRight"));
+
+        let mut o = BTreeMap::new();
+        o.insert("split right".to_string(), "cmd-d".to_string());
+        o.insert("font bigger".to_string(), "".to_string());
+        assert!(validate(&o).is_empty());
+        let b = bindings_for(&o);
+        assert_eq!(b.len(), ACTIONS.len() - 1, "an empty string unbinds");
+        let split = b.iter().find(|kb| kb.action().name() == "sarkos::SplitRight").unwrap();
+        assert_eq!(keys_of(split), "cmd-d");
+        assert!(!b.iter().any(|kb| kb.action().name() == "sarkos::FontBigger"));
+        assert_eq!(keys_for("split right", &o).as_deref(), Some("cmd-d"));
+        assert_eq!(keys_for("font bigger", &o), None);
+        assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
+        assert_eq!(keys_for("no such action", &o), None);
+    }
+
+    #[test]
+    fn a_chord_override_keeps_cmd_k_pending() {
         use gpui::{KeyContext, Keymap, Keystroke};
-        let keymap = Keymap::new(bindings());
+        let mut o = BTreeMap::new();
+        o.insert("maximize pane".to_string(), "cmd-k cmd-z".to_string());
+        let keymap = Keymap::new(bindings_for(&o));
         let ctx = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Terminal").unwrap()];
         let k = Keystroke::parse("cmd-k").unwrap();
         let (_, pending) = keymap.bindings_for_input(&[k.clone()], &ctx);
         assert!(pending, "a lone cmd-k must wait for a chord's second key");
-        let (matched, pending) = keymap.bindings_for_input(&[k, Keystroke::parse("cmd-\\").unwrap()], &ctx);
+        let (matched, pending) = keymap.bindings_for_input(&[k, Keystroke::parse("cmd-z").unwrap()], &ctx);
         assert!(!pending);
         assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].action().name(), "sarkos::SplitDown");
+        assert_eq!(matched[0].action().name(), "sarkos::ToggleMaximize");
+    }
+
+    #[test]
+    fn keys_print_the_mac_way() {
+        assert_eq!(pretty_keys("cmd-shift-p"), "Shift+Cmd+P");
+        assert_eq!(pretty_keys("cmd-k cmd-\\"), "Cmd+K then Cmd+\\");
+        assert_eq!(pretty_keys("ctrl-shift-`"), "Ctrl+Shift+`");
+        assert_eq!(pretty_keys("alt-cmd-right"), "Option+Cmd+Right");
+        assert_eq!(pretty_keys("cmd-k w"), "Cmd+K then W");
+        assert_eq!(pretty_keys("cmd-,"), "Cmd+,");
+        assert_eq!(pretty_keys("cmd-="), "Cmd+=");
+        assert_eq!(pretty_keys("ctrl-tab"), "Ctrl+Tab");
+        assert_eq!(label("focus pane 1"), "Focus pane 1");
+    }
+
+    #[test]
+    fn every_action_has_a_palette_command_except_palette_and_quit() {
+        for a in ACTIONS {
+            let has = command_for(a.name).is_some();
+            assert_eq!(has, a.name != "command palette" && a.name != "quit", "{}", a.name);
+        }
     }
 
     #[test]

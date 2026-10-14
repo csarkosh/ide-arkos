@@ -1,0 +1,68 @@
+# Navy: the default dark theme (spec 7, 7.1). A lifted navy, not black; a bright grey text, not
+# a dim one; every colour at least 4.5:1 against its background. The chrome and the terminal
+# background are sampled from docs/reference/ and lifted 12 per channel to the #11161f floor.
+name = "navy"
+
+[chrome]
+window_bg = "#0e1723"
+title_bar = "#1e2537"
+status_bar = "#1e2537"
+sidebar = "#12122b"
+tab_bar = "#282835"
+tab_active = "#0e1723"
+tab_inactive = "#282835"
+border = "#373754"
+split_handle = "#373754"
+split_handle_hover = "#4d4d72"
+focus_ring = "#3a7bd5"
+text = "#d6dae0"
+text_dim = "#8a93a3"
+banner = "#1a2130"
+
+[terminal]
+background = "#0e1723"
+foreground = "#d6dae0"
+cursor = "#d6dae0"
+selection = "#2a3a55"
+black = "#1b2230"
+red = "#f08c8c"
+green = "#8fd9a8"
+yellow = "#e8c97a"
+blue = "#8ab8f0"
+magenta = "#c9a4e8"
+cyan = "#7fd4d4"
+white = "#c8ccd4"
+bright_black = "#7c8798"
+bright_red = "#f7a8a8"
+bright_green = "#a8e6bd"
+bright_yellow = "#f0d898"
+bright_blue = "#a8ccf5"
+bright_magenta = "#d9bcf0"
+bright_cyan = "#9ee2e2"
+bright_white = "#e8ebf0"
+
+[semantic]
+working = "#8ab8f0"
+waiting = "#e8a86a"
+bell = "#e8c97a"
+error_banner = "#3a2230"
+find_match = "#3a4556"
+find_current = "#6b5420"
+
+[tree]
+added = "#8fd9a8"
+modified = "#e8c97a"
+deleted = "#e8a0a8"
+untracked = "#c9b8e8"
+ignored = "#7c8798"
+
+[viewer]
+keyword = "#c9a4e8"
+string = "#8fd9a8"
+comment = "#7c8798"
+number = "#e8c97a"
+function = "#8ab8f0"
+type_name = "#7fd4d4"
+constant = "#f0a8a8"
+operator = "#c8ccd4"
+punctuation = "#a8b0bc"

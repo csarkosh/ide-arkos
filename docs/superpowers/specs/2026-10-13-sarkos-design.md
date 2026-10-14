@@ -68,11 +68,14 @@ inside it. Listens on a Unix domain socket at
 `~/Library/Application Support/sarkos/sarkosd.sock`. The UI launches it on demand if it is
 not running; it keeps running when the UI exits. Idle cost: a few MB, zero CPU.
 
-Per session it keeps: id, title, cwd, shell, pid, alive flag, last activity time, nice level,
-Claude state (section 5), and a **replay buffer**: a ring of the raw output bytes, default
-16 MB per session, configurable. On attach the daemon sends the buffer, then streams live
-bytes, so a reattached UI rebuilds the screen and scrollback exactly. Nothing survives daemon
-death or a reboot.
+Per session it keeps: id, title, cwd, pid, alive flag, last activity time, Claude state
+(section 5), and a **replay buffer**: a ring of the raw output bytes, default 16 MB per
+session, configurable. On attach the daemon sends the buffer, then streams live bytes, so a
+reattached UI rebuilds the screen and scrollback exactly. Nothing survives daemon death or a
+reboot.
+
+The shell and nice level are fields of the CreateSession request, applied when the shell
+starts; they are not part of the session record.
 
 Robustness rules: never allocate per output byte beyond the ring buffer; a shell exiting is
 reported, not fatal; a malformed client message disconnects that client only; the socket file
@@ -102,7 +105,7 @@ Requests and replies carry a request id.
 | Heartbeat | UI to daemon | monotonic counter |
 | SetState | hook CLI to daemon | session id, Claude state (section 5) |
 | Output | daemon to UI | session id, bytes |
-| SessionEvent | daemon to UI | session id, one of: exited(code), title(string), state(ClaudeState), bell |
+| SessionEvent | daemon to UI | session id, one of: exited(code), state(ClaudeState). Title changes and the bell are escape sequences in the output, which the UI's emulator parses; the daemon never parses output (section 2.1). |
 
 The `sarkos` binary doubles as the hook CLI: `sarkos notify --state <working|waiting|idle>`
 reads the session id from `SARKOS_SESSION_ID` in its environment and sends SetState.
@@ -125,8 +128,9 @@ UI when the system is pegged.
 **Emulation.** One `alacritty_terminal` instance per terminal tab, in the UI process, fed by
 the daemon stream on a background task. Scrollback is a bounded ring, default 20,000 lines,
 configurable up to whatever memory allows (a full 100,000 line buffer at 200 columns can
-approach 1 GB in the worst case; typical sessions are far smaller because blank cells are not
-stored).
+approach 1 GB in the worst case; alacritty stores every cell of every line, so memory follows
+columns times lines: about 3 MB per 1,000 lines at 124 columns, or about 60 MB for a full
+20,000-line tab, which milestone 6 measures against the budget in section 9).
 
 **Rendering.** Only the rows in the viewport are drawn. Scroll position is a floating point
 line offset. Wheel and trackpad input update a target; each frame moves the position toward

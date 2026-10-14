@@ -2,11 +2,16 @@ mod app_nap;
 mod chrome;
 mod client;
 mod closed_stack;
+mod command_palette;
+mod config;
+mod config_watch;
 mod drag;
 mod empty_pane;
+mod find;
 mod keys;
 mod keymap;
 mod layout;
+mod line_edit;
 mod motion;
 mod palette;
 mod pane_view;
@@ -16,6 +21,7 @@ mod split_view;
 mod sessions;
 mod terminal;
 mod terminal_element;
+mod theme;
 mod tree;
 mod workspace;
 
@@ -23,11 +29,11 @@ use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle, KeyBinding,
-    Menu, MenuItem, MouseButton, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
+    Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId};
-use sessions::{reconcile, Outcome, Reconcile, SessionManager, SCROLLBACK};
+use sessions::{reconcile, Outcome, Reconcile, SessionManager};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,21 +43,31 @@ use closed_stack::{ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, Workspace, FORMAT_VERSION};
+use keymap::Quit;
 
-const BG: u32 = 0x11161f;
-const FG: u32 = 0xd6dae0;
-/// A slightly lighter navy for the one-line status banner above the panes.
-const BANNER_BG: u32 = 0x1a2130;
 const BANNER_H: f32 = 28.0;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
 
-actions!(sarkos, [Quit]);
 
 /// Starts every status that reports a `Response::Error`.
 const ERROR_PREFIX: &str = "sarkosd error: ";
 /// The status until the daemon answers the session list.
 const CONNECTING: &str = "connecting to sarkosd";
+/// How long a one-off notice stays up when no command replaces or clears it first.
+const NOTICE_FOR: Duration = Duration::from_secs(6);
+
+/// The status bar's word on the daemon, from the connection banner alone: empty once the daemon
+/// answered, `CONNECTING` until then, an `ERROR_PREFIX` error or a disconnect reason otherwise.
+fn daemon_label(status: &str) -> &'static str {
+    if status.is_empty() {
+        "sarkosd connected"
+    } else if status == CONNECTING {
+        "sarkosd connecting"
+    } else {
+        "sarkosd: see banner"
+    }
+}
 
 pub struct Root {
     pub tree: Tree,
@@ -70,6 +86,9 @@ pub struct Root {
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
+    pub line_height: f32,
+    /// The name of the text preset in use; saved with the workspace.
+    pub text_preset: String,
     /// The area the tree is laid out in, in window pixels, from the last render.
     pub content: Rect,
     /// Pane ids in reading order (the tab bar numbers), computed once per render.
@@ -83,11 +102,35 @@ pub struct Root {
     pub empty_anim: HashMap<PaneId, std::time::Instant>,
     /// The basename of `$SHELL`, shown on a tab whose program set no title.
     pub shell_name: String,
+    /// The last good config; `apply_config` replaces it.
+    pub config: config::Config,
+    pub theme: Arc<theme::Theme>,
+    /// What macOS reports; `appearance.mode = "system"` follows it.
+    pub system_is_dark: bool,
+    /// The config file's problem shown under the connection banner; `None` when all is well.
+    /// Kept apart from `status`, which belongs to the connection and clears when it answers.
+    pub config_error: Option<String>,
+    /// The theme that did not load, shown under `config_error`. Set and cleared by whatever last
+    /// tried to switch theme, so a config reload and a theme problem never clobber each other.
+    pub theme_error: Option<String>,
+    /// A one-off result (themes extracted, the editor failed to open), shown under `theme_error`
+    /// until the next command or for `NOTICE_FOR`. Never in `status`, which is the connection's.
+    pub notice: Option<String>,
+    /// Bumped by every notice, so an older notice's timer leaves a newer notice up.
+    pub notice_seq: u64,
+    /// The command palette while it is open (Cmd+Shift+P).
+    pub palette: Option<command_palette::Palette>,
+    /// Each pane's tab strip scroll state, so the active tab can be kept in view.
+    pub bar_scroll: HashMap<PaneId, gpui::ScrollHandle>,
+    /// The pane whose tab overflow menu is open.
+    pub tab_menu: Option<PaneId>,
 }
 
-/// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
-fn shell_name(shell: Option<&str>) -> String {
-    shell
+/// The name a tab shows before its program sets a title: the basename of the shell new tabs
+/// run, which is `[terminal] shell` when set, else `$SHELL` (as the daemon picks it), else "shell".
+fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
+    configured
+        .or(env)
         .and_then(|s| std::path::Path::new(s).file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| !n.is_empty())
@@ -95,13 +138,17 @@ fn shell_name(shell: Option<&str>) -> String {
 }
 
 impl Root {
-    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>) -> Self {
+    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool) -> Self {
         // A fresh workspace starts with one pane holding a placeholder session that the launch
         // replaces with a real shell (reconcile sees it is not in the daemon's list).
+        let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(|| Tree::new(Tab::Terminal { session: SessionId(0) }));
+        let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
+        let t = &config.terminal;
+        sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
         Self {
             tree,
-            sessions: SessionManager::new(client.clone(), Some(client), project.clone()),
+            sessions,
             save_queue: SharedSaveQueue::default(),
             project,
             status: CONNECTING.into(),
@@ -109,14 +156,138 @@ impl Root {
             grid_waiters: HashMap::new(),
             pane_focus: HashMap::new(),
             resizing: None,
-            font_size: terminal_element::DEFAULT_FONT_SIZE,
+            font_size: preset.size,
+            line_height: preset.line_height,
+            text_preset,
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
             pane_order: Vec::new(),
             closed: ClosedStack::default(),
             drop_target: None,
             empty_anim: HashMap::new(),
-            shell_name: shell_name(std::env::var("SHELL").ok().as_deref()),
+            shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
+            config,
+            theme: Arc::new(theme),
+            system_is_dark,
+            config_error: None,
+            theme_error: None,
+            notice: None,
+            notice_seq: 0,
+            palette: None,
+            bar_scroll: HashMap::new(),
+            tab_menu: None,
         }
+    }
+
+    /// The theme the config and the current appearance name, loaded from the themes folder.
+    pub fn resolve_theme(&self) -> Result<theme::Theme, String> {
+        let name = theme::pick_name(self.config.appearance.mode, self.system_is_dark, &self.config.theme);
+        theme::load(name, &paths::themes_dir())
+    }
+
+    pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
+        let palette = Arc::new(theme.palette());
+        self.theme = Arc::new(theme);
+        for t in self.sessions.terminals.values() {
+            t.update(cx, |t, cx| {
+                t.core.set_palette(palette.clone());
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    /// macOS switched between light and dark. In "system" mode the theme follows; a theme that
+    /// fails to load leaves the current one and says why in the banner.
+    pub fn set_system_appearance(&mut self, dark: bool, cx: &mut Context<Self>) {
+        self.system_is_dark = dark;
+        if self.config.appearance.mode != config::AppearanceMode::System {
+            return;
+        }
+        self.switch_theme(cx);
+    }
+
+    /// Loads the theme the config and appearance name and switches to it if it differs. A theme
+    /// that fails to load keeps the current one; `theme_error` says so until a load succeeds.
+    fn switch_theme(&mut self, cx: &mut Context<Self>) {
+        self.switch_theme_to(self.resolve_theme(), cx);
+    }
+
+    /// Switches to `wanted` if it loaded and differs; a load error keeps the current theme and
+    /// sets `theme_error`, a success clears it.
+    fn switch_theme_to(&mut self, wanted: Result<theme::Theme, String>, cx: &mut Context<Self>) {
+        let (switch, banner) = theme::keep_or_switch(&self.theme, wanted);
+        if let Some(t) = switch {
+            self.set_theme(t, cx);
+        }
+        if let Some(e) = &banner {
+            eprintln!("sarkos: {e}");
+        }
+        self.theme_error = banner;
+        cx.notify();
+    }
+
+    /// The file changed (or was deleted and recreated): parse it, keep the last good config on
+    /// an error, apply what changed. Called by the watcher and by the palette's "Reload config".
+    pub fn reload_config(&mut self, cx: &mut Context<Self>) {
+        let (cfg, banner) = config::reload_decision(&self.config, config::load(&paths::config_file()));
+        self.config_error = banner;
+        if let Some(e) = &self.config_error {
+            eprintln!("sarkos: {e}");
+        } else {
+            eprintln!("sarkos: config reloaded");
+            self.apply_config(cfg, cx);
+        }
+        cx.notify();
+    }
+
+    /// Applies every live setting. The `[daemon]` section only matters when the window starts
+    /// the daemon; the file says so.
+    pub fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
+        let old = std::mem::replace(&mut self.config, cfg);
+        if old.keybindings != self.config.keybindings {
+            cx.clear_key_bindings();
+            cx.bind_keys(keymap::bindings_for(&self.config.keybindings));
+            // The menu bar shows (and on macOS answers) the keys bound when it was set.
+            cx.set_menus(menus());
+        }
+        self.switch_theme(cx);
+        if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
+            self.apply_text_preset(&name, cx);
+        }
+        if old.font.family != self.config.font.family {
+            // The cell size changes with the family (`family()` reads the config; the
+            // `cx.notify()` below re-renders): panes re-measure before a restore trusts a grid.
+            self.grids.clear();
+        }
+        let t = &self.config.terminal;
+        self.sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
+        self.shell_name = shell_name(t.shell.as_deref(), std::env::var("SHELL").ok().as_deref());
+        cx.background_executor().spawn(async { motion::refresh() }).detach();
+        cx.notify();
+    }
+
+    pub fn family(&self) -> gpui::SharedString {
+        self.config.font.family.clone().into()
+    }
+
+    /// Switches every terminal to a preset (spec 7). Per-terminal nudges from Cmd+= are reset.
+    pub fn apply_text_preset(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(p) = self.config.font.presets.get(name).copied() else { return false };
+        self.text_preset = name.to_string();
+        self.font_size = p.size;
+        self.line_height = p.line_height;
+        for t in self.sessions.terminals.values() {
+            t.update(cx, |t, cx| {
+                t.font_size = p.size;
+                t.line_height = p.line_height;
+                cx.notify();
+            });
+        }
+        // Panes re-measure at the new cell size before any restore trusts a grid.
+        self.grids.clear();
+        self.save(cx);
+        cx.notify();
+        true
     }
 
     pub fn layout(&self) -> tree::Layout {
@@ -124,7 +295,7 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()) };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -135,6 +306,10 @@ impl Root {
         self.grid_waiters.remove(&pane);
         self.pane_focus.remove(&pane);
         self.empty_anim.remove(&pane);
+        self.bar_scroll.remove(&pane);
+        if self.tab_menu == Some(pane) {
+            self.tab_menu = None;
+        }
     }
 
     /// Forgets per-pane state for panes no longer in the tree, whatever removed them.
@@ -145,6 +320,7 @@ impl Root {
             .chain(self.grid_waiters.keys())
             .chain(self.pane_focus.keys())
             .chain(self.empty_anim.keys())
+            .chain(self.bar_scroll.keys())
             .copied()
             .filter(|p| !self.pane_order.contains(p))
             .collect();
@@ -168,8 +344,8 @@ impl Root {
         }
     }
 
-    /// The grid a terminal in `pane` would get: the pane's current terminal's, else the last
-    /// measurement of the pane's placeholder.
+    /// The grid a terminal in `pane` would get: the pane's own last measurement, else the grid of
+    /// its current terminal.
     fn pane_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
         self.tree.pane(pane)?;
         let visible = self.layout().panes.iter().any(|(p, _)| *p == pane);
@@ -180,13 +356,14 @@ impl Root {
 
     fn own_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
         let p = self.tree.pane(pane)?;
-        if let Some(Tab::Terminal { session }) = p.tabs.get(p.active) {
-            if let Some(t) = self.sessions.terminals.get(session) {
+        let terminal = match p.tabs.get(p.active) {
+            Some(Tab::Terminal { session }) => self.sessions.terminals.get(session).map(|t| {
                 let core = &t.read(cx).core;
-                return Some((core.columns(), core.screen_lines()));
-            }
-        }
-        self.grids.get(&pane).copied()
+                (core.columns(), core.screen_lines())
+            }),
+            _ => None,
+        };
+        grid_choice(self.grids.get(&pane).copied(), terminal)
     }
 
     pub fn active_terminal(&self, _cx: &App) -> Option<Entity<Terminal>> {
@@ -212,17 +389,48 @@ impl Root {
 
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         self.tree.activate(pane, idx);
+        if let Some(h) = self.bar_scroll.get(&pane) {
+            h.scroll_to_item(idx);
+        }
         self.save(cx);
         cx.notify();
     }
 
+    pub fn toggle_tab_menu(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        if self.tab_menu == Some(pane) {
+            self.tab_menu = None;
+        } else {
+            self.tab_menu = Some(pane);
+            self.focus_pane(pane, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn close_tab_menu(&mut self, cx: &mut Context<Self>) {
+        if self.tab_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and killed
-    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back.
+    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back. A session whose
+    /// shell has ended is killed at once and never enters the closed stack.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         if let Tab::Terminal { session } = tab {
             if session != SessionId(0) {
+                let ended = self.sessions.terminals.get(&session).map(|t| !t.read(cx).alive).unwrap_or(false);
+                if ended {
+                    // Nothing to bring back: end the session now instead of a minute from now.
+                    eprintln!("sarkos: closing ended session {}", session.0);
+                    self.sessions.kill(session);
+                    self.sessions.detach(session);
+                    self.sessions.tab_closed(id);
+                    self.save(cx);
+                    cx.notify();
+                    return;
+                }
                 if self.sessions.is_restoring(session) {
                     self.sessions.abort_restore(session, id);
                 }
@@ -305,6 +513,92 @@ impl Root {
         sessions.len()
     }
 
+    /// Cmd+, (spec 7): opens the config file in the default text editor. Task 2 creates the file
+    /// at launch, so it exists by the time this runs.
+    pub fn open_config(&mut self, cx: &mut Context<Self>) {
+        let path = paths::config_file();
+        if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
+            let text = format!("cannot open {}: {e}", path.display());
+            eprintln!("sarkos: {text}");
+            self.show_notice(text, cx);
+        }
+    }
+
+    /// Shows a one-off notice as its own banner and takes it down after `NOTICE_FOR`, unless a
+    /// newer notice or a command has replaced or cleared it by then.
+    pub fn show_notice(&mut self, text: String, cx: &mut Context<Self>) {
+        self.notice_seq += 1;
+        let seq = self.notice_seq;
+        self.notice = Some(text);
+        cx.notify();
+        cx.spawn(async move |root, cx| {
+            cx.background_executor().timer(NOTICE_FOR).await;
+            let _ = root.update(cx, |root, cx| {
+                if root.notice_seq == seq && root.notice.take().is_some() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Cmd+Shift+P: opens the palette with every action, preset and theme, or closes it.
+    pub fn toggle_palette(&mut self, cx: &mut Context<Self>) {
+        if self.palette.is_some() {
+            self.close_palette(cx);
+            return;
+        }
+        let themes_dir = paths::themes_dir();
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir);
+        self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
+        cx.notify();
+    }
+
+    pub fn close_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette = None;
+        cx.notify();
+    }
+
+    /// A key typed while the palette has focus: edits the query, moves the selection, runs the
+    /// selected command (Enter) or closes the palette (Escape). Cmd+V pastes into the query.
+    pub fn palette_key(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                if let Some(p) = self.palette.as_mut() {
+                    p.query.insert_str(&text);
+                    p.refilter();
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        let Some(p) = self.palette.as_mut() else { return };
+        match p.query.handle(ks) {
+            line_edit::Edit::Changed => p.refilter(),
+            line_edit::Edit::Up => p.step(-1),
+            line_edit::Edit::Down => p.step(1),
+            line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
+                self.run_palette_selection(window, cx);
+                return;
+            }
+            line_edit::Edit::Cancel => {
+                self.close_palette(cx);
+                return;
+            }
+            line_edit::Edit::Unchanged => {}
+        }
+        cx.notify();
+    }
+
+    /// Closes the palette and runs the selected command, if any row is visible.
+    pub fn run_palette_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cmd = self.palette.as_ref().and_then(|p| p.selected_command());
+        self.close_palette(cx);
+        if let Some(cmd) = cmd {
+            self.run(cmd, window, cx);
+        }
+    }
+
     /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
     /// still lands the right one, and one whose tab closed does nothing. The source pane closes
     /// only when the drag emptied it, and never when it is the last pane (spec 4).
@@ -377,6 +671,10 @@ impl Root {
     pub fn run(&mut self, cmd: keymap::Command, window: &mut Window, cx: &mut Context<Self>) {
         use keymap::Command::*;
         let focused = self.tree.focused;
+        // The user has moved on: the last notice goes (a command may put up a new one).
+        if self.notice.take().is_some() {
+            cx.notify();
+        }
         match cmd {
             FocusPane(i) => {
                 if let Some(p) = self.tree.pane_at(i) {
@@ -471,13 +769,15 @@ impl Root {
                 if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| {
                         t.core.clear_scrollback();
+                        // An open find bar's count and highlights follow on the next frame.
+                        t.mark_find_stale();
                         cx.notify();
                     });
                 }
             }
             FontDelta(d) => {
                 // Only the focused terminal changes (spec 7); its element resizes the grid and
-                // the PTY on the next paint. Not saved: milestone 2b's presets will be.
+                // the PTY on the next paint. Nudges are not saved, and a preset change resets them.
                 if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| {
                         t.font_size = (t.font_size + d).clamp(10.0, 32.0);
@@ -486,6 +786,26 @@ impl Root {
                     cx.notify();
                 }
             }
+            OpenConfig => self.open_config(cx),
+            TextPreset(name) => {
+                self.apply_text_preset(&name, cx);
+            }
+            ReloadConfig => self.reload_config(cx),
+            ExtractThemes => {
+                let text = match theme::extract(&paths::themes_dir()) {
+                    Ok(wrote) if wrote.is_empty() => format!("built-in themes are already in {}", paths::themes_dir().display()),
+                    Ok(wrote) => format!("wrote {} theme files to {}", wrote.len(), paths::themes_dir().display()),
+                    Err(e) => format!("cannot extract themes: {e}"),
+                };
+                self.show_notice(text, cx);
+            }
+            CommandPalette => self.toggle_palette(cx),
+            Find => {
+                if let Some(t) = self.active_terminal(cx) {
+                    t.update(cx, |t, cx| t.open_find(cx));
+                }
+            }
+            SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
         }
         let _ = window;
     }
@@ -578,10 +898,11 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
             },
         }
     };
+    let scrollback = root.read_with(cx, |root, _| root.sessions.scrollback)?;
     let started = std::time::Instant::now();
-    let (core, title) = cx
+    let (mut core, title) = cx
         .background_spawn(async move {
-            let mut core = TerminalCore::new(cols, rows, SCROLLBACK);
+            let mut core = TerminalCore::new(cols, rows, scrollback);
             // The previous UI already answered any queries in the replay; keep only the title.
             let title = core.apply_output(&replay).title;
             (core, title)
@@ -598,17 +919,27 @@ async fn restore(root: &Entity<Root>, session: SessionId, tab: TabId, replay: Ve
         // they match and makes the program redraw when they differ.
         let client = root.sessions.transport.clone();
         client.send(Request::Resize { session, rows: rows as u16, cols: cols as u16 });
+        // Cells resolve against the palette at paint, so it is set here rather than before the
+        // parse: a theme switch while the replay parsed then cannot leave this terminal stale.
+        core.set_palette(Arc::new(root.theme.palette()));
         let terminal = cx.new(|cx| {
             let mut t = Terminal::new(core, session, root.sessions.client.clone().expect("client"), cx);
             t.alive = alive;
             t.title = title.unwrap_or_default();
             t.font_size = root.font_size;
+            t.line_height = root.line_height;
             t
         });
         root.sessions.finish_restore(session, terminal, cx);
         root.sessions.ready(tab);
         cx.notify();
     })
+}
+
+/// A pane's own measurement first (it is taken at the workspace font size), else the grid of
+/// the terminal it shows (which Cmd+= may have nudged).
+fn grid_choice(measured: Option<(usize, usize)>, terminal: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    measured.or(terminal)
 }
 
 /// The grid a restore into a pane uses. A hidden pane (another is maximized) never renders, so
@@ -625,7 +956,17 @@ fn pick_grid(visible: bool, own: Option<(usize, usize)>, maximized: Option<(usiz
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
-        let banner_h = if self.status.is_empty() { 0.0 } else { BANNER_H };
+        let theme = self.theme.clone();
+        let banners: Vec<String> = [
+            self.status.clone(),
+            self.config_error.clone().unwrap_or_default(),
+            self.theme_error.clone().unwrap_or_default(),
+            self.notice.clone().unwrap_or_default(),
+        ]
+            .into_iter()
+            .filter(|b| !b.is_empty())
+            .collect();
+        let banner_h = BANNER_H * banners.len() as f32;
         let (top, bottom) = (chrome::TOP_BAR_H, chrome::STATUS_BAR_H);
         // A window shorter than its chrome would give a negative height; lay out at zero instead.
         let content = Rect {
@@ -641,10 +982,18 @@ impl Render for Root {
         }
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
-        // Focus follows the tree: the focused pane's terminal, or the pane's own handle.
-        let wanted = match self.active_terminal(cx) {
-            Some(t) => Some(t.read(cx).focus.clone()),
-            None => self.pane_focus.get(&self.tree.focused).cloned(),
+        // Focus follows the tree: the focused pane's terminal (its find bar while that is open),
+        // or the pane's own handle. The palette holds it while it is open.
+        let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
+            Some(f)
+        } else {
+            match self.active_terminal(cx) {
+                Some(t) => {
+                    let t = t.read(cx);
+                    Some(t.find.as_ref().map_or_else(|| t.focus.clone(), |f| f.focus.clone()))
+                }
+                None => self.pane_focus.get(&self.tree.focused).cloned(),
+            }
         };
         if let Some(f) = wanted {
             if !f.is_focused(window) {
@@ -653,12 +1002,14 @@ impl Render for Root {
         }
         let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
-        let daemon = if self.status.is_empty() { "sarkosd connected" } else { "sarkosd: see banner" };
-        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0);
+        let daemon = daemon_label(&self.status);
+        let family = self.family();
+        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
+            .relative()
             .size_full()
             .key_context("Root")
-            .bg(rgb(BG))
+            .bg(theme.chrome.window_bg.hsla())
             .flex()
             .flex_col()
             .on_drag_move(cx.listener(|root, _ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -688,6 +1039,7 @@ impl Render for Root {
                     cx.notify();
                 }
             }))
+            .on_mouse_down(MouseButton::Left, cx.listener(|root, _ev: &MouseDownEvent, _window, cx| root.close_tab_menu(cx)))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|root, _ev: &MouseUpEvent, _window, cx| {
@@ -700,12 +1052,18 @@ impl Render for Root {
                     }
                 }),
             )
-            .child(chrome::top_bar(&project_name))
-            .children((!self.status.is_empty()).then(|| banner_bar(self.status.clone())))
+            .child(chrome::top_bar(&project_name, family.clone(), &theme))
+            .children(banners.into_iter().map(|text| banner_bar(text, family.clone(), &theme)))
             .child(div().flex_1().min_h_0().child(body))
-            .child(status_bar);
+            .child(status_bar)
+            .children(command_palette::render(self, cx));
         keymap::attach(root_div, cx)
     }
+}
+
+/// The menu bar. Set again when the key bindings change so it shows the bound keys.
+fn menus() -> Vec<Menu> {
+    vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]
 }
 
 /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen them
@@ -719,7 +1077,7 @@ fn flush_on_quit(root: &Entity<Root>, queue: &SharedSaveQueue, client: &client::
     workspace::flush_now(queue);
 }
 
-fn banner_bar(text: String) -> Div {
+fn banner_bar(text: String, family: gpui::SharedString, theme: &theme::Theme) -> Div {
     div()
         .w_full()
         .h(px(BANNER_H))
@@ -727,9 +1085,9 @@ fn banner_bar(text: String) -> Div {
         .px(px(8.0))
         .flex()
         .items_center()
-        .bg(rgb(BANNER_BG))
-        .text_color(rgb(FG))
-        .font_family(terminal_element::FONT_FAMILY)
+        .bg(theme.chrome.banner.hsla())
+        .text_color(theme.chrome.text.hsla())
+        .font_family(family)
         .text_size(px(13.0))
         .child(text)
 }
@@ -769,8 +1127,24 @@ fn main() {
     if qos != 0 {
         eprintln!("sarkos: could not set user-interactive QoS (error {qos})");
     }
+    motion::refresh();
     app_nap::hold();
-    let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe()) {
+    let config_path = paths::config_file();
+    let (config, config_error) = match config::load(&config_path) {
+        Ok(c) => (c, None),
+        Err(e) => {
+            eprintln!("sarkos: {e}");
+            (config::Config::default(), Some(e.to_string()))
+        }
+    };
+    // Used only when this window starts the daemon; a running one keeps its own settings.
+    let daemon_args = vec![
+        "--watchdog-secs".to_string(),
+        config.daemon.watchdog_secs.to_string(),
+        "--replay-bytes".to_string(),
+        config.daemon.replay_bytes.to_string(),
+    ];
+    let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("sarkos: cannot reach sarkosd: {e:#}");
@@ -787,15 +1161,27 @@ fn main() {
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
         // once the window exists.
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.bind_keys(keymap::bindings());
-        cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
+        cx.bind_keys(keymap::bindings_for(&config.keybindings));
+        cx.set_menus(menus());
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let client_for_view = client.clone();
         let view_queue = save_queue.clone();
         let saved_layout = saved.is_some();
         let view_project = project.clone();
         let view_saved = saved.clone();
+        let system_is_dark = theme::is_dark(cx.window_appearance());
+        let name = theme::pick_name(config.appearance.mode, system_is_dark, &config.theme).to_string();
+        let (theme, theme_error) = match theme::load(&name, &paths::themes_dir()) {
+            Ok(t) => (t, None),
+            Err(e) => {
+                // A broken user navy-light.toml still gives a light window.
+                let t = theme::builtin(&name).or_else(|| theme::builtin("navy")).expect("navy is built in");
+                let banner = format!("theme: {e}; using built-in {}", t.name);
+                eprintln!("sarkos: {banner}");
+                (t, Some(banner))
+            }
+        };
+        let (view_config, view_theme) = (config, theme);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -808,16 +1194,29 @@ fn main() {
                     )),
                     ..Default::default()
                 },
-                move |_, cx| {
-                    cx.new(|_| {
-                        let mut root = Root::new(client_for_view, view_project, view_saved);
+                move |window, cx| {
+                    let view = cx.new(|_| {
+                        let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark);
                         root.save_queue = view_queue;
                         root
-                    })
+                    });
+                    let observed = view.clone();
+                    window
+                        .observe_window_appearance(move |window, cx| {
+                            let dark = theme::is_dark(window.appearance());
+                            observed.update(cx, |root, cx| root.set_system_appearance(dark, cx));
+                        })
+                        .detach();
+                    view
                 },
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
+        root.update(cx, |root, cx| {
+            root.config_error = config_error;
+            root.theme_error = theme_error;
+            cx.notify();
+        });
         let (quit_root, quit_queue, quit_client) = (root.clone(), save_queue.clone(), client.clone());
         cx.on_action(move |_: &Quit, cx| {
             flush_on_quit(&quit_root, &quit_queue, &quit_client, cx);
@@ -833,6 +1232,7 @@ fn main() {
             }
         })
         .detach();
+        config_watch::start(root.clone(), config_path.clone(), cx);
 
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();
@@ -934,14 +1334,28 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_grid, shell_name};
+    use super::{daemon_label, pick_grid, shell_name, CONNECTING, ERROR_PREFIX};
+
+    #[test]
+    fn the_daemon_label_follows_the_connection_not_notices() {
+        assert_eq!(daemon_label(""), "sarkosd connected");
+        assert_eq!(daemon_label(CONNECTING), "sarkosd connecting");
+        assert_eq!(daemon_label(&format!("{ERROR_PREFIX}no such session")), "sarkosd: see banner");
+        assert_eq!(daemon_label("daemon connection ended"), "sarkosd: see banner");
+    }
 
     #[test]
     fn shell_name_is_the_basename_of_shell() {
-        assert_eq!(shell_name(Some("/bin/zsh")), "zsh");
-        assert_eq!(shell_name(Some("/opt/homebrew/bin/fish")), "fish");
-        assert_eq!(shell_name(Some("")), "shell");
-        assert_eq!(shell_name(None), "shell");
+        assert_eq!(shell_name(None, Some("/bin/zsh")), "zsh");
+        assert_eq!(shell_name(None, Some("/opt/homebrew/bin/fish")), "fish");
+        assert_eq!(shell_name(None, Some("")), "shell");
+        assert_eq!(shell_name(None, None), "shell");
+    }
+
+    #[test]
+    fn the_configured_shell_names_tabs_before_shell() {
+        assert_eq!(shell_name(Some("/bin/bash"), Some("/bin/zsh")), "bash");
+        assert_eq!(shell_name(Some("/bin/bash"), None), "bash");
     }
 
     #[test]
@@ -953,5 +1367,14 @@ mod tests {
         assert_eq!(pick_grid(false, None, Some((100, 30)), Some((90, 20))), Some((100, 30)));
         assert_eq!(pick_grid(false, None, None, Some((90, 20))), Some((90, 20)));
         assert_eq!(pick_grid(false, None, None, None), None);
+    }
+
+    #[test]
+    fn a_pane_measurement_outranks_its_terminals_grid() {
+        use super::grid_choice;
+        // The canvas measures at the workspace font; the terminal may have been nudged.
+        assert_eq!(grid_choice(Some((100, 30)), Some((80, 24))), Some((100, 30)));
+        assert_eq!(grid_choice(None, Some((80, 24))), Some((80, 24)));
+        assert_eq!(grid_choice(None, None), None);
     }
 }

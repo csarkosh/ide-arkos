@@ -1,0 +1,67 @@
+# Navy Light: the light counterpart with the same hue relationships (spec 7). Text is dark on a
+# soft blue-white; the ANSI colours are deepened so each clears 4.5:1 on the light background.
+name = "navy-light"
+
+[chrome]
+window_bg = "#f4f6fa"
+title_bar = "#e6eaf2"
+status_bar = "#e6eaf2"
+sidebar = "#eceff5"
+tab_bar = "#e6eaf2"
+tab_active = "#f4f6fa"
+tab_inactive = "#e6eaf2"
+border = "#cfd6e0"
+split_handle = "#cfd6e0"
+split_handle_hover = "#aeb8c8"
+focus_ring = "#2b6cb0"
+text = "#1e2633"
+text_dim = "#5b6472"
+banner = "#dfe5ee"
+
+[terminal]
+background = "#f4f6fa"
+foreground = "#1e2633"
+cursor = "#1e2633"
+selection = "#c7d7f0"
+black = "#1b2230"
+red = "#b3261e"
+green = "#1f7a3a"
+yellow = "#7a5a00"
+blue = "#1d4ed8"
+magenta = "#8b2fa3"
+cyan = "#0b6e75"
+white = "#5b6472"
+bright_black = "#646b78"
+bright_red = "#c42b2b"
+bright_green = "#237f3f"
+bright_yellow = "#8a6500"
+bright_blue = "#2563eb"
+bright_magenta = "#9d3bb5"
+bright_cyan = "#0b6f77"
+bright_white = "#4b5563"
+
+[semantic]
+working = "#1d4ed8"
+waiting = "#a1480a"
+bell = "#8a6500"
+error_banner = "#f3d5d5"
+find_match = "#dbe4f3"
+find_current = "#f5e3a1"
+
+[tree]
+added = "#1f7a3a"
+modified = "#8a6500"
+deleted = "#b3261e"
+untracked = "#6d3fb5"
+ignored = "#646b78"
+
+[viewer]
+keyword = "#8b2fa3"
+string = "#1f7a3a"
+comment = "#646b78"
+number = "#7a5a00"
+function = "#1d4ed8"
+type_name = "#0b6e75"
+constant = "#b3261e"
+operator = "#3b4452"
+punctuation = "#5b6472"

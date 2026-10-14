@@ -2,14 +2,13 @@
 //! (spec 4: a 4 px handle with a wider hit area, live ratio while dragging, double-click resets).
 
 use crate::pane_view::render_pane;
+use crate::theme::Theme;
 use crate::tree::{Orientation, Rect, SplitId, HANDLE};
 use crate::Root;
-use gpui::{div, prelude::*, px, rgb, Context, Div, MouseButton, MouseDownEvent, Stateful, Window};
+use gpui::{div, prelude::*, px, Context, Div, MouseButton, MouseDownEvent, Stateful, Window};
 
 /// The hit area around a 4 px handle.
 pub const HANDLE_HIT: f32 = 8.0;
-const HANDLE_COLOR: u32 = 0x1f2630;
-const HANDLE_HOVER: u32 = 0x3a4556;
 
 /// Where the pointer sits along the split, as a ratio in [0, 1].
 pub fn ratio_from_pointer(area: Rect, orientation: Orientation, x: f32, y: f32) -> f32 {
@@ -31,6 +30,7 @@ pub fn render_tree(root: &mut Root, window: &mut Window, cx: &mut Context<Root>)
     root.pane_order = root.tree.panes();
     root.forget_closed_panes();
     let (ox, oy) = (root.content.x, root.content.y);
+    let theme = root.theme.clone();
     let mut container = div().relative().size_full();
     for (pane, rect) in &layout.panes {
         container = container.child(
@@ -46,13 +46,13 @@ pub fn render_tree(root: &mut Root, window: &mut Window, cx: &mut Context<Root>)
     }
     for (split, orientation, rect, area) in &layout.handles {
         let local = Rect { x: rect.x - ox, y: rect.y - oy, ..*rect };
-        container = container.child(render_handle(*split, *orientation, local, *area, cx));
+        container = container.child(render_handle(*split, *orientation, local, *area, &theme, cx));
     }
     container
 }
 
 /// `rect` is relative to the tree's container; `area` stays in window pixels, like the pointer.
-fn render_handle(split: SplitId, orientation: Orientation, rect: Rect, area: Rect, cx: &mut Context<Root>) -> Stateful<Div> {
+fn render_handle(split: SplitId, orientation: Orientation, rect: Rect, area: Rect, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
     let pad = (HANDLE_HIT - HANDLE) / 2.0;
     let (x, y, w, h) = match orientation {
         Orientation::Horizontal => (rect.x - pad, rect.y, HANDLE_HIT, rect.h),
@@ -62,6 +62,7 @@ fn render_handle(split: SplitId, orientation: Orientation, rect: Rect, area: Rec
         Orientation::Horizontal => div().absolute().left(px(pad)).top_0().w(px(HANDLE)).h_full(),
         Orientation::Vertical => div().absolute().top(px(pad)).left_0().h(px(HANDLE)).w_full(),
     };
+    let hover = theme.chrome.split_handle_hover;
     let handle = div()
         .id(("handle", split))
         .absolute()
@@ -70,7 +71,7 @@ fn render_handle(split: SplitId, orientation: Orientation, rect: Rect, area: Rec
         .w(px(w))
         .h(px(h))
         .group("handle")
-        .child(stripe.bg(rgb(HANDLE_COLOR)).group_hover("handle", |s| s.bg(rgb(HANDLE_HOVER))))
+        .child(stripe.bg(theme.chrome.split_handle.hsla()).group_hover("handle", move |s| s.bg(hover.hsla())))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {

@@ -8,8 +8,10 @@ use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::Line;
+use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point};
 use alacritty_terminal::term::cell::Flags;
+pub use alacritty_terminal::term::search::Match;
+use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
@@ -50,11 +52,34 @@ pub struct RowsForPaint {
     pub visible: Vec<Vec<(char, CellStyle, CellKind)>>,
 }
 
+pub const MAX_MATCHES: usize = 10_000;
+
+/// Backslash-escapes every regex metacharacter so the query matches literally.
+pub fn escape_regex(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A match's part on one viewport row, columns inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Highlight {
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
+    pub current: bool,
+}
+
 pub struct TerminalCore {
     term: Term<Listener>,
     parser: Processor,
     listener: Listener,
-    palette: &'static Palette,
+    palette: Arc<Palette>,
     pub scroll: ScrollAnimator,
 }
 
@@ -63,7 +88,7 @@ impl TerminalCore {
         let listener = Listener::default();
         let config = Config { scrolling_history: scrollback, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: &NAVY, scroll: ScrollAnimator::new() }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new() }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
@@ -91,6 +116,15 @@ impl TerminalCore {
         }
         self.scroll.clamp_max(self.history_size() as f32);
         w
+    }
+
+    /// Swaps the colours every cell resolves against at paint. Nothing is re-parsed.
+    pub fn set_palette(&mut self, palette: Arc<Palette>) {
+        self.palette = palette;
+    }
+
+    pub fn palette(&self) -> &Palette {
+        &self.palette
     }
 
     /// Applies chunks in order and merges their wakeups into one.
@@ -176,6 +210,75 @@ impl TerminalCore {
         self.term.grid().display_offset()
     }
 
+    /// Every literal, case-insensitive match of `needle`, oldest first, from the top of history
+    /// to the bottom of the screen; at most `MAX_MATCHES`, the newest kept.
+    pub fn search(&self, needle: &str) -> Vec<Match> {
+        self.search_capped(needle, MAX_MATCHES)
+    }
+
+    /// `search` with a given cap. One pass from the bottom right of the grid towards the top
+    /// left, so a common query stops after the newest `cap` matches instead of scanning the
+    /// whole scrollback, and each step resumes just before the previous match (no overlaps).
+    pub fn search_capped(&self, needle: &str, cap: usize) -> Vec<Match> {
+        if needle.is_empty() || cap == 0 {
+            return Vec::new();
+        }
+        let Ok(mut regex) = RegexSearch::new(&format!("(?i){}", escape_regex(needle))) else { return Vec::new() };
+        let top_left = Point::new(self.term.topmost_line(), Column(0));
+        let mut origin = Point::new(self.term.bottommost_line(), self.term.last_column());
+        let mut out: Vec<Match> = Vec::new();
+        while let Some(m) = self.term.regex_search_left(&mut regex, origin, top_left) {
+            let start = self.term.expand_wide(*m.start(), Direction::Left);
+            out.push(m);
+            if start == top_left || out.len() >= cap {
+                break;
+            }
+            origin = start.sub(&self.term, Boundary::Grid, 1);
+        }
+        out.reverse();
+        out
+    }
+
+    /// The on-screen parts of `matches` at the current display offset. `current` is the index
+    /// of the match the find bar points at.
+    pub fn highlights(&self, matches: &[Match], current: usize) -> Vec<Highlight> {
+        let off = self.display_offset() as i32;
+        let screen = self.screen_lines() as i32;
+        let cols = self.columns();
+        let mut out = Vec::new();
+        for (i, m) in matches.iter().enumerate() {
+            let (s, e) = (m.start(), m.end());
+            for line in s.line.0..=e.line.0 {
+                let row = line + off;
+                if row < 0 || row >= screen {
+                    continue;
+                }
+                let start = if line == s.line.0 { s.column.0 } else { 0 };
+                let end = if line == e.line.0 { e.column.0 } else { cols.saturating_sub(1) };
+                out.push(Highlight { row: row as usize, start, end, current: i == current });
+            }
+        }
+        out
+    }
+
+    /// Scrolls just enough to show `line` (history lines are negative). The animator lands with
+    /// the grid, so there is no glide: a find jump should not animate across 10,000 lines.
+    pub fn reveal_line(&mut self, line: Line) {
+        let screen = self.screen_lines() as i32;
+        let off = self.display_offset() as i32;
+        let (top, bottom) = (-off, screen - 1 - off);
+        let want = if line.0 < top {
+            -line.0
+        } else if line.0 > bottom {
+            screen - 1 - line.0
+        } else {
+            off
+        };
+        let want = want.clamp(0, self.history_size() as i32) as usize;
+        self.set_display_offset(want);
+        self.scroll.jump_to(want as f32);
+    }
+
     /// Cursor as (col, viewport line), or None when scrolled so it is off screen.
     pub fn cursor(&self) -> Option<(usize, usize)> {
         let content = self.term.renderable_content();
@@ -258,6 +361,9 @@ pub struct Terminal {
     pub last_frame: Option<Instant>,
     /// This terminal's text size; Cmd+= and Cmd+- change only the focused terminal's (spec 7).
     pub font_size: f32,
+    pub line_height: f32,
+    /// The find bar's state while it is open (Cmd+F).
+    pub find: Option<crate::find::FindState>,
 }
 
 impl Terminal {
@@ -274,6 +380,8 @@ impl Terminal {
             bell_pending: false,
             last_frame: None,
             font_size: crate::terminal_element::DEFAULT_FONT_SIZE,
+            line_height: crate::terminal_element::DEFAULT_LINE_HEIGHT,
+            find: None,
         }
     }
 
@@ -323,6 +431,7 @@ impl Terminal {
         if !w.pty_write.is_empty() {
             self.client.send(Request::Input { session: self.session, bytes: w.pty_write });
         }
+        self.mark_find_stale();
         true
     }
 
@@ -600,5 +709,120 @@ mod tests {
         assert!(t.scroll.is_at_bottom());
         let rows = t.rows_for_paint();
         assert_eq!(text_of(&rows.visible[0]), "line8");
+    }
+
+    #[test]
+    fn set_palette_recolours_parsed_cells() {
+        use crate::palette::{rgb, Palette, NAVY};
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"\x1b[31mred\x1b[0m plain");
+        let before = core.rows_for_paint();
+        assert_eq!(before.visible[0][0].1.fg, NAVY.ansi[1]);
+        assert_eq!(before.visible[0][4].1.fg, NAVY.fg);
+        assert_eq!(before.visible[0][4].1.bg, NAVY.bg);
+        let mut light = Palette { ..NAVY };
+        light.bg = rgb(0xf4f6fa);
+        light.fg = rgb(0x1e2633);
+        light.ansi[1] = rgb(0xb3261e);
+        core.set_palette(std::sync::Arc::new(light));
+        // Nothing was re-parsed: the same cells resolve against the new palette at paint time.
+        let after = core.rows_for_paint();
+        assert_eq!(after.visible[0][0].1.fg, rgb(0xb3261e));
+        assert_eq!(after.visible[0][4].1.fg, rgb(0x1e2633));
+        assert_eq!(after.visible[0][4].1.bg, rgb(0xf4f6fa));
+        assert_eq!(core.palette().bg, rgb(0xf4f6fa));
+    }
+
+    #[test]
+    fn escape_makes_metacharacters_literal() {
+        assert_eq!(escape_regex("a.b*c"), "a\\.b\\*c");
+        assert_eq!(escape_regex("(x)|[y]{2}^$\\"), "\\(x\\)\\|\\[y\\]\\{2\\}\\^\\$\\\\");
+        assert_eq!(escape_regex("plain words"), "plain words");
+        let mut core = TerminalCore::new(20, 3, 100);
+        core.apply_output(b"a.b ab a*b");
+        let dots = core.search(".");
+        assert_eq!(dots.len(), 1);
+        assert_eq!((dots[0].start().line.0, dots[0].start().column.0), (0, 1));
+        assert_eq!(core.search("*").len(), 1);
+        assert_eq!(core.search("(").len(), 0, "no panic, no match");
+        assert_eq!(core.search("\\").len(), 0);
+        assert_eq!(core.search("").len(), 0);
+    }
+
+    #[test]
+    fn search_is_literal_and_case_insensitive() {
+        let mut core = TerminalCore::new(30, 3, 100);
+        core.apply_output(b"Hello hello HELLO");
+        let m = core.search("hello");
+        let cols: Vec<usize> = m.iter().map(|m| m.start().column.0).collect();
+        assert_eq!(cols, vec![0, 6, 12]);
+        assert_eq!(m[0].end().column.0, 4, "the match covers the whole word");
+        assert_eq!(core.search("HeLLo").len(), 3);
+        assert_eq!(core.search(" hello").len(), 2, "a space is part of the query (blank cells are spaces too)");
+        assert_eq!(core.search("xyz").len(), 0);
+    }
+
+    #[test]
+    fn search_covers_history_in_order_and_stops_after_one_pass() {
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"ab\r\nab\r\nab\r\nab");
+        assert_eq!(core.history_size(), 2);
+        let m = core.search("ab");
+        let lines: Vec<i32> = m.iter().map(|m| m.start().line.0).collect();
+        assert_eq!(lines, vec![-2, -1, 0, 1], "oldest first, no wrap-around duplicates");
+        let one = TerminalCore::new(10, 2, 100);
+        assert!(one.search("ab").is_empty());
+        let mut single = TerminalCore::new(10, 2, 100);
+        single.apply_output(b"xx ab xx");
+        assert_eq!(single.search("ab").len(), 1, "a lone match is found once, not forever");
+    }
+
+    #[test]
+    fn highlights_follow_the_viewport_and_reveal_scrolls_the_least() {
+        use alacritty_terminal::index::Line;
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"ab\r\nab\r\nab\r\nab");
+        let m = core.search("ab");
+        let h = core.highlights(&m, 3);
+        assert_eq!(h.len(), 2, "only the two screen lines are visible at offset 0");
+        assert_eq!(h[0], Highlight { row: 0, start: 0, end: 1, current: false });
+        assert_eq!(h[1], Highlight { row: 1, start: 0, end: 1, current: true });
+        core.reveal_line(Line(1));
+        assert_eq!(core.display_offset(), 0, "a visible line scrolls nothing");
+        core.reveal_line(Line(-2));
+        assert_eq!(core.display_offset(), 2, "the oldest line comes to the top");
+        let h = core.highlights(&m, 0);
+        assert_eq!(h[0], Highlight { row: 0, start: 0, end: 1, current: true });
+        assert_eq!(h[1], Highlight { row: 1, start: 0, end: 1, current: false });
+        core.reveal_line(Line(1));
+        assert_eq!(core.display_offset(), 0, "the newest line comes to the bottom");
+        core.reveal_line(Line(-1));
+        assert_eq!(core.display_offset(), 1, "the smallest scroll that shows it");
+        assert_eq!(core.scroll.current, 1.0, "the animator lands with it, no glide");
+    }
+
+    #[test]
+    fn the_cap_keeps_the_newest_matches() {
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"ab\r\nab\r\nab\r\nab\r\nab\r\nab");
+        assert_eq!(core.history_size(), 4);
+        let m = core.search_capped("ab", 3);
+        let lines: Vec<i32> = m.iter().map(|m| m.start().line.0).collect();
+        assert_eq!(lines, vec![-1, 0, 1], "the oldest matches are the ones dropped, oldest first");
+        assert_eq!(core.search_capped("ab", 100).len(), 6);
+        assert_eq!(core.search("ab").len(), 6);
+    }
+
+    #[test]
+    fn matches_never_overlap_and_the_grid_corners_are_found() {
+        let mut core = TerminalCore::new(10, 2, 100);
+        core.apply_output(b"aaaa");
+        let cols: Vec<(usize, usize)> = core.search("aa").iter().map(|m| (m.start().column.0, m.end().column.0)).collect();
+        assert_eq!(cols, vec![(0, 1), (2, 3)]);
+        let mut corners = TerminalCore::new(4, 2, 100);
+        corners.apply_output(b"ab  \r\n  ab");
+        let m = corners.search("ab");
+        let ends: Vec<(i32, usize, i32, usize)> = m.iter().map(|m| (m.start().line.0, m.start().column.0, m.end().line.0, m.end().column.0)).collect();
+        assert_eq!(ends, vec![(0, 0, 0, 1), (1, 2, 1, 3)], "the first and the last cell of the grid");
     }
 }

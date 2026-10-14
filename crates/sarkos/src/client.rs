@@ -190,8 +190,9 @@ impl Client {
         }
     }
 
-    /// Connects, or starts the daemon detached from this process and retries for three seconds.
-    pub fn connect_or_start(socket: &Path, daemon_exe: &Path) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
+    /// Connects, or starts the daemon detached from this process (with `daemon_args` after its
+    /// socket) and retries for three seconds.
+    pub fn connect_or_start(socket: &Path, daemon_exe: &Path, daemon_args: &[String]) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
         if let Ok(c) = Client::connect(socket) {
             return Ok(c);
         }
@@ -202,7 +203,7 @@ impl Client {
         }
         let log_file = std::fs::OpenOptions::new().create(true).append(true).open(&log).context("open daemon log")?;
         let mut cmd = Command::new(daemon_exe);
-        cmd.arg("--socket").arg(socket).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log_file);
+        cmd.arg("--socket").arg(socket).args(daemon_args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log_file);
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();

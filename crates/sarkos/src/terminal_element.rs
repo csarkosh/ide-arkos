@@ -1,7 +1,7 @@
 //! Paints a `Terminal`'s visible rows at a fractional line offset (spec 3). Only the rows in the
 //! viewport plus one above are shaped and painted, which is the virtualization.
 use crate::layout::{build_runs, CellKind, CellStyle};
-use crate::palette::{Rgb, NAVY};
+use crate::palette::Rgb;
 use crate::terminal::{CellMetrics, Terminal};
 use gpui::{
     fill, font, point, px, size, App, Bounds, ContentMask, Element, ElementId, Entity, FontWeight, GlobalElementId, Hsla,
@@ -9,23 +9,24 @@ use gpui::{
 };
 use std::time::Instant;
 
-pub const FONT_FAMILY: &str = "Menlo";
 pub const DEFAULT_FONT_SIZE: f32 = 16.0;
-pub const LINE_HEIGHT: f32 = 1.5;
+pub const DEFAULT_LINE_HEIGHT: f32 = 1.5;
 
-/// The height of one terminal row at `font_size`.
-pub fn cell_height(font_size: f32) -> f32 {
-    font_size * LINE_HEIGHT
+/// The height of one terminal row.
+pub fn cell_height(font_size: f32, line_height: f32) -> f32 {
+    font_size * line_height
 }
 
 pub struct TerminalElement {
     terminal: Entity<Terminal>,
     font_size: f32,
+    line_height: f32,
+    family: SharedString,
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32) -> Self {
-        Self { terminal, font_size }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString) -> Self {
+        Self { terminal, font_size, line_height, family }
     }
 }
 
@@ -33,8 +34,8 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
-fn text_run(text: &str, style: &CellStyle) -> TextRun {
-    let mut f = font(FONT_FAMILY);
+fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
+    let mut f = font(family);
     if style.bold {
         f.weight = FontWeight::BOLD;
     }
@@ -49,10 +50,10 @@ fn text_run(text: &str, style: &CellStyle) -> TextRun {
 }
 
 /// Measures the cell grid once per window scale. `W` is the widest ASCII glyph in a monospace font.
-fn measure_cell(window: &mut Window, font_size: f32) -> CellMetrics {
-    let run = TextRun { len: 1, font: font(FONT_FAMILY), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
+fn measure_cell(window: &mut Window, font_size: f32, line_height: f32, family: SharedString) -> CellMetrics {
+    let run = TextRun { len: 1, font: font(family), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
     let layout = window.text_system().layout_line("W", px(font_size), &[run], None);
-    CellMetrics { width: f32::from(layout.width), height: cell_height(font_size) }
+    CellMetrics { width: f32::from(layout.width), height: cell_height(font_size, line_height) }
 }
 
 /// The cell grid that fits `bounds` at `cell`, as (cols, rows).
@@ -64,8 +65,8 @@ fn grid_in(bounds: Bounds<Pixels>, cell: CellMetrics) -> (usize, usize) {
 
 /// The grid a terminal element in `bounds` would size itself to. The window measures with this
 /// before a terminal exists, so a replay can be parsed at the size it will be shown at.
-pub fn grid_for(bounds: Bounds<Pixels>, window: &mut Window, font_size: f32) -> (usize, usize) {
-    grid_in(bounds, measure_cell(window, font_size))
+pub fn grid_for(bounds: Bounds<Pixels>, window: &mut Window, font_size: f32, line_height: f32, family: &str) -> (usize, usize) {
+    grid_in(bounds, measure_cell(window, font_size, line_height, family.to_string().into()))
 }
 
 /// Splits a scroll position into alacritty's integer display offset and the fraction of a line
@@ -114,7 +115,7 @@ impl Element for TerminalElement {
     }
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> Prepaint {
-        let cell = measure_cell(window, self.font_size);
+        let cell = measure_cell(window, self.font_size, self.line_height, self.family.clone());
         let (cols, rows) = grid_in(bounds, cell);
         self.terminal.update(cx, |t, _| {
             t.cell = Some(cell);
@@ -127,10 +128,9 @@ impl Element for TerminalElement {
         let cell = prepaint.cell;
         let lh = px(cell.height);
         let cw = cell.width;
-        window.paint_quad(fill(bounds, hsla(NAVY.bg)));
-
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
-        let (rows, frac, cursor, animating) = self.terminal.update(cx, |t, _| {
+        // The colours come from the terminal's palette, which follows the theme.
+        let (rows, frac, cursor, animating, highlights, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -144,8 +144,13 @@ impl Element for TerminalElement {
             t.last_frame = if animating || sync_open { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open)
+            let find_owed = t.refresh_find();
+            let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
+            let palette = t.core.palette();
+            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, palette.clone(), find_owed)
         });
+        let (bg, cursor_color) = (palette.bg, palette.cursor);
+        window.paint_quad(fill(bounds, hsla(bg)));
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let origin = bounds.origin;
@@ -154,14 +159,14 @@ impl Element for TerminalElement {
                 for run in &runs {
                     let x = origin.x + px(run.col as f32 * cw);
                     let w = px(if run.wide { 2.0 * cw } else { run.text.chars().count() as f32 * cw });
-                    if run.style.bg != NAVY.bg {
+                    if run.style.bg != bg {
                         window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, hsla(run.style.bg)));
                     }
                     if run.text.trim().is_empty() {
                         continue;
                     }
                     let text: SharedString = run.text.clone().into();
-                    let line = window.text_system().shape_line(text, px(self.font_size), &[text_run(&run.text, &run.style)], None);
+                    let line = window.text_system().shape_line(text, px(self.font_size), &[text_run(&run.text, &run.style, self.family.clone())], None);
                     let _ = line.paint(point(x, y), lh, window, cx);
                     if run.style.underline {
                         let uy = y + lh - px(2.0);
@@ -181,14 +186,23 @@ impl Element for TerminalElement {
                 if frac == 0.0 {
                     let x = origin.x + px(col as f32 * cw);
                     let y = origin.y + px(line as f32 * cell.height);
-                    let mut c = hsla(NAVY.cursor);
+                    let mut c = hsla(cursor_color);
                     c.a = 0.85;
                     window.paint_quad(fill(Bounds { origin: point(x, y), size: size(px(cw), lh) }, c));
                 }
             }
+            // Find matches: translucent quads over the text, so no run is re-shaped.
+            for h in &highlights {
+                let x = origin.x + px(h.start as f32 * cw);
+                let w = px((h.end + 1 - h.start) as f32 * cw);
+                let y = origin.y + px((h.row as f32 + frac) * cell.height);
+                let c = if h.current { palette.find_current } else { palette.find_match };
+                window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, c.alpha(0.45)));
+            }
         });
 
-        if animating {
+        // A throttled find search runs in a later frame, even once the output has stopped.
+        if animating || find_owed {
             window.request_animation_frame();
         }
     }
@@ -197,6 +211,16 @@ impl Element for TerminalElement {
 #[cfg(test)]
 mod tests {
     use super::{frame_dt, split_offset};
+
+    #[test]
+    fn cell_height_follows_the_preset() {
+        use super::cell_height;
+        // f32 products of the decimal line heights are not exact.
+        for (size, lh, want) in [(16.0, 1.5, 24.0), (14.0, 1.3, 18.2), (18.0, 1.6, 28.8)] {
+            assert!((cell_height(size, lh) - want).abs() < 1e-4, "{size} x {lh}");
+        }
+    }
+
     use crate::scroll::ScrollAnimator;
     use std::time::{Duration, Instant};
 

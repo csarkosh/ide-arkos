@@ -1089,7 +1089,7 @@ git commit -m "Parse config.toml with line-numbered errors and write it on first
   - `theme::BUILTIN: [(&str, &str); 2]` (name, TOML text) for `navy` and `navy-light`; `theme::builtin(name: &str) -> Option<Theme>`; `theme::parse(text: &str) -> Result<Theme, String>`; `theme::load(name: &str, dir: &Path) -> Result<Theme, String>` (a user file `dir/<name>.toml` wins over a built-in; names with `/` or `..` are refused); `theme::names(dir: &Path) -> Vec<String>` (built-ins plus user files, sorted, deduplicated); `theme::extract(dir: &Path) -> std::io::Result<Vec<PathBuf>>` (writes each built-in that is not already there, returns what it wrote).
   - `Theme::palette(&self) -> Palette`; `Theme::is_light(&self) -> bool` (window background luminance above 0.5).
 
-The spec says the Navy values are sampled from the VS Code screenshot in `docs/reference/`. That folder does not exist yet. Step 5 covers both cases: when a PNG is there, sample it with the script and replace the chrome values; when it is not, ship the spec 7.1 placeholders and say so in the commit message and README.
+The spec says the Navy values are sampled from the VS Code screenshot in `docs/reference/`. Three 2x captures are there: `vscode-full.png` (the whole window without shadow, 2940x1846), `vscode-terminals.png` (two terminal panes with tab bars, 3032x2070, with a window shadow and rounded corners) and `vscode-empty.png`. Step 5 samples `vscode-full.png` for the chrome and `vscode-terminals.png` for the tab bar and terminal background.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1591,9 +1591,9 @@ Then:
 ls docs/reference/*.png 2>/dev/null
 ```
 
-If that prints a file: run `python3 -I scripts/sample-png.py docs/reference/<file>.png` (the band pixel counts assume a 1x screenshot; on a 2x Retina capture double the band sizes in the script's `bands` list first). Map the most common colour of each band onto `navy.toml`: editor area to `window_bg`, `tab_active` and `terminal.background`; title bar to `title_bar`; status bar to `status_bar`; sidebar to `sidebar`, `tab_bar` and `tab_inactive`; the second most common colour of the editor area, if it is a near-background grey, to `border` and `split_handle`. Then apply spec 7.1: if the sampled background's luminance (`palette::luminance`) is below that of `#11161f`, lift it to `#11161f`'s luminance by adding the same amount to each channel; keep the foreground at `#d6dae0` unless the sampled text is brighter. Re-run the theme tests. Write the sampled values and the lift, if any, in the commit message. Delete the comment line in `navy.toml` that calls the values placeholders.
+Run `python3 -I scripts/sample-png.py docs/reference/vscode-full.png` and the same for `vscode-terminals.png`. The captures are 2x, so double every band size in the script's `bands` list first (title bar 80, status bar 48, activity bar 96, sidebar 96 to 600); in `vscode-terminals.png` the window shadow and rounded corners add a border of transparent or near-black pixels, so ignore any colour whose share is under 2 percent there and read the tab bar from a band 80 px tall just under the title bar, and the terminal background from the editor area. Map the most common colour of each band onto `navy.toml`: editor area to `window_bg`, `tab_active` and `terminal.background`; title bar to `title_bar`; status bar to `status_bar`; sidebar to `sidebar`, `tab_bar` and `tab_inactive`; the second most common colour of the editor area, if it is a near-background grey, to `border` and `split_handle`. Then apply spec 7.1: if the sampled background's luminance (`palette::luminance`) is below that of `#11161f`, lift it to `#11161f`'s luminance by adding the same amount to each channel; keep the foreground at `#d6dae0` unless the sampled text is brighter. Re-run the theme tests. Write the sampled values and the lift, if any, in the commit message. Delete the comment line in `navy.toml` that calls the values placeholders.
 
-If it prints nothing: keep the values from Step 4, keep the placeholder comment, and say in the commit message that `docs/reference/` had no screenshot.
+Also take the file-tree pastels from `vscode-full.png` only by eye (the icons are too small to sample): the spec's hue names stand, the sampled values are the backgrounds.
 
 - [ ] **Step 6: Write the theme module**
 
@@ -3561,7 +3561,7 @@ Append to the `tests` module in `terminal.rs`:
         assert_eq!(cols, vec![0, 6, 12]);
         assert_eq!(m[0].end().column.0, 4, "the match covers the whole word");
         assert_eq!(core.search("HeLLo").len(), 3);
-        assert_eq!(core.search("hello ").len(), 2, "a trailing space is part of the query");
+        assert_eq!(core.search(" hello").len(), 2, "a space is part of the query (blank cells are spaces too)");
         assert_eq!(core.search("xyz").len(), 0);
     }
 

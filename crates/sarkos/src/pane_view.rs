@@ -2,23 +2,18 @@
 //! starts or a replay is parsed, or the empty state).
 
 use crate::drag;
+use crate::find;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
+use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::Root;
 use gpui::{
-    canvas, div, prelude::*, px, rgb, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
-    MouseDownEvent, ScrollDelta, ScrollWheelEvent, Stateful, Window,
+    canvas, div, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle, KeyDownEvent, MouseButton,
+    MouseDownEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
-const BG: u32 = 0x11161f;
-const FG: u32 = 0xd6dae0;
-const BAR_BG: u32 = 0x0d1117;
-const TAB_ACTIVE: u32 = 0x11161f;
-const TAB_INACTIVE: u32 = 0x0d1117;
-const DIM: u32 = 0x8a93a3;
-const FOCUS_RING: u32 = 0x3a7bd5;
 
 /// The text on a tab: the terminal's title (or `fallback`, the shell's name), then its state.
 pub fn tab_label(title: &str, fallback: &str, alive: bool, exit_code: Option<i32>, note: bool, busy: Option<&str>) -> String {
@@ -43,12 +38,46 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
     ElementId::NamedInteger(format!("{kind}-{pane}").into(), idx as u64)
 }
 
+/// The overflow menu is worth a button once there is something to choose between.
+pub fn show_overflow(tabs: usize) -> bool {
+    tabs >= 2
+}
+
+/// (index, label, active) for the menu, in bar order.
+pub fn menu_rows(p: &Pane, labels: &[String]) -> Vec<(usize, String, bool)> {
+    labels.iter().enumerate().map(|(i, l)| (i, l.clone(), i == p.active)).collect()
+}
+
+/// Every tab's label, in bar order; the bar and the overflow menu both show these.
+fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<String> {
+    p.tabs
+        .iter()
+        .enumerate()
+        .map(|(idx, tab)| match tab {
+            Tab::Terminal { session } => {
+                let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
+                let note = root.sessions.notes.contains(session);
+                match root.sessions.terminals.get(session) {
+                    Some(t) => {
+                        let t = t.read(cx);
+                        tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy)
+                    }
+                    None => tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))),
+                }
+            }
+            Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        })
+        .collect()
+}
+
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focused = root.tree.focused == pane;
+    let theme = root.theme.clone();
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
-    let bar = render_tab_bar(root, pane, &p, number, cx);
+    let labels = tab_labels(root, &p, cx);
+    let bar = render_tab_bar(root, pane, &p, number, &labels, cx);
     if !p.tabs.is_empty() {
         // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
         root.empty_anim.remove(&pane);
@@ -56,7 +85,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
-            Some(terminal) => render_terminal(terminal, cx),
+            Some(terminal) => render_terminal(terminal, pane, root.family(), &theme, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
@@ -64,10 +93,11 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // Every pane measures the grid a terminal would get, whatever it shows, so a restore into
     // any of its tabs always gets a size (it paints nothing).
     let weak = cx.weak_entity();
-    let font_size = root.font_size;
+    let (font_size, line_height) = (root.font_size, root.line_height);
+    let family = root.config.font.family.clone();
     let measure = canvas(
         move |bounds, window, cx| {
-            let grid = grid_for(bounds, window, font_size);
+            let grid = grid_for(bounds, window, font_size, line_height, &family);
             let _ = weak.update(cx, |root, _| root.report_grid(pane, grid));
         },
         |_, _, _, _| {},
@@ -80,7 +110,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let overlay = match root.drop_target {
         Some(drag::DropTarget::Pane { pane: p, zone }) if p == pane => {
             let (x, y, w, h) = drag::zone_rect(zone, rect.w, rect.h - TAB_BAR_H);
-            Some(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(gpui::rgba(0x3a7bd566)))
+            Some(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(theme.chrome.focus_ring.alpha(0.4)))
         }
         _ => None,
     };
@@ -107,13 +137,53 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
+    if root.tab_menu == Some(pane) && !show_overflow(p.tabs.len()) {
+        // Down to one tab: the ⋯ button is gone, so its menu goes too and does not come back
+        // with the next tab.
+        root.tab_menu = None;
+    }
+    let menu = (root.tab_menu == Some(pane)).then(|| {
+        let mut m = div()
+            .id(("menu", pane))
+            .absolute()
+            .top(px(TAB_BAR_H))
+            .right_0()
+            .min_w(px(180.0))
+            .flex()
+            .flex_col()
+            .py(px(4.0))
+            .bg(theme.chrome.banner.hsla())
+            .border_1()
+            .border_color(theme.chrome.border.hsla())
+            .font_family(root.family())
+            .text_size(px(12.0))
+            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+        for (idx, label, active) in menu_rows(&p, &labels) {
+            m = m.child(
+                div()
+                    .id(tab_id("menu-row", pane, idx))
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .bg(if active { theme.chrome.tab_active.hsla() } else { theme.chrome.banner.hsla() })
+                    .text_color(if active { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
+                    .cursor_pointer()
+                    .child(label)
+                    .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                        root.close_tab_menu(cx);
+                        root.activate_tab(pane, idx, cx);
+                    })),
+            );
+        }
+        m
+    });
     div()
         .size_full()
+        .relative()
         .flex()
         .flex_col()
-        .bg(rgb(BG))
+        .bg(theme.chrome.window_bg.hsla())
         .border_1()
-        .border_color(rgb(if focused { FOCUS_RING } else { BAR_BG }))
+        .border_color(if focused { theme.chrome.focus_ring } else { theme.chrome.border }.hsla())
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
@@ -122,9 +192,13 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         )
         .child(bar)
         .child(content)
+        .children(menu)
 }
 
-fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &mut Context<Root>) -> Stateful<Div> {
+fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels: &[String], cx: &mut Context<Root>) -> Stateful<Div> {
+    let theme = root.theme.clone();
+    let c = &theme.chrome;
+    let (fg, dim) = (c.text, c.text_dim);
     let mut bar = div()
         .id(("bar", pane))
         .h(px(TAB_BAR_H))
@@ -133,11 +207,11 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
         .flex()
         .flex_row()
         .items_center()
-        .bg(rgb(BAR_BG))
-        .text_color(rgb(FG))
-        .font_family("Menlo")
+        .bg(c.tab_bar.hsla())
+        .text_color(fg.hsla())
+        .font_family(root.family())
         .text_size(px(12.0))
-        .child(div().px(px(8.0)).text_color(rgb(DIM)).child(format!("{number}")))
+        .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
@@ -154,24 +228,22 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
             };
             root.drop_tab(d, target, cx);
         }));
-    for (idx, tab) in p.tabs.iter().enumerate() {
-        let label = match tab {
-            Tab::Terminal { session } => {
-                let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
-                let note = root.sessions.notes.contains(session);
-                match root.sessions.terminals.get(session) {
-                    Some(t) => {
-                        let t = t.read(cx);
-                        tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy)
-                    }
-                    None => tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))),
-                }
-            }
-            Tab::Viewer { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        };
+    let handle = root.bar_scroll.entry(pane).or_default().clone();
+    let mut strip = div().id(("tabs", pane)).flex_1().min_w_0().h_full().flex().flex_row().overflow_x_scroll().track_scroll(&handle);
+    for (idx, label) in labels.iter().enumerate() {
+        let label = label.clone();
         let is_active = idx == p.active;
-        let drag_value = p.ids.get(idx).map(|id| drag::TabDrag { pane, idx, tab: *id, label: label.clone(), position: Default::default() });
-        bar = bar.child(
+        let drag_value = p.ids.get(idx).map(|id| drag::TabDrag {
+            pane,
+            idx,
+            tab: *id,
+            label: label.clone(),
+            position: Default::default(),
+            bg: c.banner,
+            fg,
+            family: root.family(),
+        });
+        strip = strip.child(
             div()
                 .id(tab_id("tab", pane, idx))
                 .h_full()
@@ -179,8 +251,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .bg(rgb(if is_active { TAB_ACTIVE } else { TAB_INACTIVE }))
-                .text_color(rgb(if is_active { FG } else { DIM }))
+                .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
+                .text_color(if is_active { fg } else { dim }.hsla())
                 .cursor_pointer()
                 .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
                 .when_some(drag_value, |el, value| {
@@ -197,8 +269,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 .child(
                     div()
                         .id(tab_id("close", pane, idx))
-                        .text_color(rgb(DIM))
-                        .hover(|s| s.text_color(rgb(FG)))
+                        .text_color(dim.hsla())
+                        .hover(move |s| s.text_color(fg.hsla()))
                         .child("×")
                         .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                             // The tab underneath would otherwise activate the index the close just freed.
@@ -208,23 +280,41 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, cx: &m
                 ),
         );
     }
-    bar.child(
+    bar = bar.child(strip).child(
         div()
             .id(("plus", pane))
             .px(px(10.0))
-            .text_color(rgb(DIM))
-            .hover(|s| s.text_color(rgb(FG)))
+            .text_color(dim.hsla())
+            .hover(move |s| s.text_color(fg.hsla()))
             .cursor_pointer()
             .child("+")
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
-    )
+    );
+    if show_overflow(p.tabs.len()) {
+        bar = bar.child(
+            div()
+                .id(("more", pane))
+                .px(px(8.0))
+                .text_color(dim.hsla())
+                .hover(move |s| s.text_color(fg.hsla()))
+                .cursor_pointer()
+                .child("\u{22ef}")
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_tab_menu(pane, cx))),
+        );
+    }
+    bar
 }
 
-fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
-    let font_size = terminal.read(cx).font_size;
+    let (font_size, line_height) = {
+        let t = terminal.read(cx);
+        (t.font_size, t.line_height)
+    };
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
+    let t_click = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
     let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
     div()
@@ -250,6 +340,17 @@ fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
             }
             t_keys.update(cx, |t, cx| t.handle_key(ks, cx));
         }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |_root, _ev: &MouseDownEvent, _window, cx| {
+                // A click back into the terminal closes the find bar.
+                t_click.update(cx, |t, cx| {
+                    if t.find.is_some() {
+                        t.close_find(cx);
+                    }
+                });
+            }),
+        )
         .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
@@ -261,7 +362,7 @@ fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
                 t.scroll_lines(lines, cx);
             });
         }))
-        .child(TerminalElement::new(terminal.clone(), font_size))
+        .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone()))
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
             div()
@@ -272,14 +373,24 @@ fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
                 .px(px(10.0))
                 .py(px(4.0))
                 .rounded(px(10.0))
-                .bg(rgb(0x1a2130))
-                .text_color(rgb(FG))
-                .font_family("Menlo")
+                .bg(theme.chrome.banner.hsla())
+                .text_color(theme.chrome.text.hsla())
+                .font_family(family.clone())
                 .text_size(px(12.0))
                 .cursor_pointer()
                 .child("jump to bottom")
+                // The terminal's own mouse-down closes an open find bar; the pill is not a click
+                // in the terminal. Stopping it also stops the pane's, so the pill focuses the pane.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                        root.focus_pane(pane, cx);
+                        cx.stop_propagation();
+                    }),
+                )
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
+        .children(find::render(&terminal, pane, theme, family, cx))
 }
 
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by
@@ -287,18 +398,20 @@ fn render_terminal(terminal: Entity<Terminal>, cx: &mut Context<Root>) -> Div {
 fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Context<Root>) -> Div {
     let text = tab.and_then(|id| root.sessions.busy.get(&id)).copied().unwrap_or("starting shell");
     let font_size = root.font_size;
+    let dim = root.theme.chrome.text_dim;
     let focus = pane_focus(root, pane, cx);
     div()
         .size_full()
         .relative()
         .track_focus(&focus)
-        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(rgb(DIM)).font_family("Menlo").text_size(px(font_size)).child(text))
+        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(dim.hsla()).font_family(root.family()).text_size(px(font_size)).child(text))
 }
 
 /// The friendly empty state (spec 4).
 fn render_no_tabs(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focus = pane_focus(root, pane, cx);
-    crate::empty_pane::render(root, pane, rect.w, rect.h - TAB_BAR_H, focus, window, cx)
+    let theme = root.theme.clone();
+    crate::empty_pane::render(root, pane, rect.w, rect.h - TAB_BAR_H, focus, &theme, window, cx)
 }
 
 /// A pane without a terminal still needs something to focus so Cmd+N and typing land somewhere.
@@ -319,5 +432,15 @@ mod tests {
         assert_eq!(tab_label("vim", "zsh", false, None, false, None), "vim (ended)");
         assert_eq!(tab_label("", "zsh", true, None, true, None), "zsh (restarted)");
         assert_eq!(tab_label("", "zsh", true, None, false, Some("starting shell")), "starting shell");
+    }
+
+    #[test]
+    fn overflow_menu_lists_every_tab_from_two() {
+        use crate::tree::{Pane, Tab};
+        use protocol::SessionId;
+        assert!(!show_overflow(0) && !show_overflow(1) && show_overflow(2));
+        let p = Pane { id: 1, tabs: vec![Tab::Terminal { session: SessionId(1) }, Tab::Terminal { session: SessionId(2) }], active: 1, mru: vec![1, 0], ids: vec![2, 3] };
+        let rows = menu_rows(&p, &["zsh".into(), "vim".into()]);
+        assert_eq!(rows, vec![(0, "zsh".to_string(), false), (1, "vim".to_string(), true)]);
     }
 }
