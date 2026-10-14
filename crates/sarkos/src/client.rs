@@ -197,7 +197,7 @@ impl Client {
             return Ok(c);
         }
         Client::ensure_stale_socket_removed(socket)?;
-        let log = socket.with_file_name("sarkosd.log");
+        let log = daemon_log(socket);
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -211,7 +211,11 @@ impl Client {
                 Ok(())
             });
         }
-        cmd.spawn().with_context(|| format!("start {}", daemon_exe.display()))?;
+        let mut child = cmd.spawn().with_context(|| format!("start {}", daemon_exe.display()))?;
+        // Reaped when it exits, so a daemon that keeps dying leaves no zombies behind.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match Client::connect(socket) {
@@ -227,6 +231,11 @@ impl Client {
             }
         }
     }
+}
+
+/// Where a daemon the window starts writes its log: next to its socket.
+pub fn daemon_log(socket: &Path) -> std::path::PathBuf {
+    socket.with_file_name("sarkosd.log")
 }
 
 /// Between fork and exec: no signal blocked. The reconnect loop starts the daemon from a

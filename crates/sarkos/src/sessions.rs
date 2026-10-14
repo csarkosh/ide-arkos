@@ -133,6 +133,11 @@ pub struct SessionManager {
     /// Sessions whose replay is being parsed; their live events wait in `backlog`.
     restoring: HashSet<SessionId>,
     backlog: HashMap<SessionId, Vec<Event>>,
+    /// Between `disconnect` and the next `set_client`: kills wait in `kills_to_resend`.
+    offline: bool,
+    /// Kills asked for while disconnected (a closed tab's grace ran out), sent on the next
+    /// connection.
+    kills_to_resend: Vec<SessionId>,
     /// The `[terminal]` section: scrollback for terminals built from now on, and the shell and
     /// nice level new sessions start with.
     pub scrollback: usize,
@@ -142,23 +147,37 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashSet::new(), restoring: HashSet::new(), backlog: HashMap::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashSet::new(), restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
     pub fn set_client(&mut self, client: Arc<Client>) {
         self.transport = client.clone();
         self.client = Some(client);
+        self.connected();
     }
 
     #[cfg(test)]
     pub fn set_client_for_test(&mut self, transport: Arc<dyn Transport>) {
         self.transport = transport;
+        self.connected();
+    }
+
+    /// Forgets what was sent on the dead connection, whose ids the new one reuses (its heartbeats
+    /// would match them); the reconcile that follows asks again for every terminal tab. Kills
+    /// asked for meanwhile go out now.
+    fn connected(&mut self) {
+        self.pending.clear();
+        self.offline = false;
+        for session in std::mem::take(&mut self.kills_to_resend) {
+            self.kill(session);
+        }
     }
 
     /// The connection ended: every terminal is gone with it (the next attach replays), nothing
     /// in flight can be answered, and no tab is busy with anything from the old connection.
     pub fn disconnect(&mut self) {
+        self.offline = true;
         self.terminals.clear();
         self.pending.clear();
         self.busy.clear();
@@ -207,6 +226,10 @@ impl SessionManager {
     }
 
     pub fn kill(&mut self, session: SessionId) {
+        if self.offline {
+            self.kills_to_resend.push(session);
+            return;
+        }
         let id = self.transport.send(Request::Kill { session });
         self.pending.insert(id, Pending::Kill { session });
     }
@@ -640,5 +663,36 @@ mod tests {
         m.set_client_for_test(r2.clone());
         m.list();
         assert_eq!(r2.requests().len(), 1, "requests go to the new transport");
+    }
+
+    #[test]
+    fn a_request_sent_while_disconnected_matches_nothing_on_the_new_connection() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.list();
+        m.disconnect();
+        // Cmd+T during the outage: sent on the dead connection as id 2.
+        m.create(50, false);
+        let r2 = Recorder::new();
+        m.set_client_for_test(r2.clone());
+        // The new connection's own id 2 is a heartbeat, which the daemon answers with Ok.
+        assert_eq!(m.handle_response(2, Response::Ok), Outcome::None);
+        assert_eq!(m.pending_count(), 0);
+    }
+
+    #[test]
+    fn a_kill_made_while_disconnected_is_sent_on_the_new_connection() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.disconnect();
+        m.kill(SessionId(9));
+        assert!(r.requests().is_empty(), "nothing goes to the dead connection");
+        let r2 = Recorder::new();
+        m.set_client_for_test(r2.clone());
+        assert!(matches!(r2.requests()[..], [Request::Kill { session: SessionId(9) }]));
+        assert_eq!(m.handle_response(1, Response::Ok), Outcome::Killed { session: SessionId(9) });
+        let r3 = Recorder::new();
+        m.set_client_for_test(r3.clone());
+        assert!(r3.requests().is_empty(), "sent once");
     }
 }

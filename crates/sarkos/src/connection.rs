@@ -2,7 +2,7 @@
 //! one client at a time, its heartbeat and event loop, and a reconnect with backoff when the
 //! daemon's connection ends, which an upgrade's exec does on purpose. After ten seconds without
 //! a daemon the window starts one, since the old one is gone for good.
-use crate::client::Client;
+use crate::client::{self, Client};
 use crate::{Root, ERROR_PREFIX};
 use futures::channel::mpsc::{TryRecvError, UnboundedReceiver};
 use futures::StreamExt;
@@ -18,6 +18,8 @@ pub const FIRST_RETRY: Duration = Duration::from_millis(250);
 pub const MAX_RETRY: Duration = Duration::from_secs(2);
 pub const START_DAEMON_AFTER: Duration = Duration::from_secs(10);
 pub const BANNER_AFTER: Duration = Duration::from_secs(10);
+/// Daemon starts that fail in a row before the window stops starting one and only connects.
+pub const MAX_START_FAILURES: u32 = 5;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
 
@@ -26,8 +28,10 @@ pub fn backoff(attempt: u32) -> Duration {
     (FIRST_RETRY * factor).min(MAX_RETRY)
 }
 
-pub fn should_start_daemon(lost_for: Duration) -> bool {
-    lost_for >= START_DAEMON_AFTER
+/// After `START_DAEMON_AFTER` without a daemon the window starts one, until `MAX_START_FAILURES`
+/// starts in a row have failed: a daemon that keeps exiting is not started again and again.
+pub fn should_start_daemon(lost_for: Duration, start_failures: u32) -> bool {
+    lost_for >= START_DAEMON_AFTER && start_failures < MAX_START_FAILURES
 }
 
 /// Whether a disconnect ends the reconnecting: the daemon refused this window's protocol, and
@@ -62,21 +66,32 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
             }
             let lost_at = Instant::now();
             let mut attempt = 0u32;
+            let mut start_failures = 0u32;
             let next = loop {
                 cx.background_executor().timer(backoff(attempt)).await;
                 attempt += 1;
                 let (s, d, a) = (socket.clone(), daemon_exe.clone(), daemon_args.clone());
-                let start = should_start_daemon(lost_at.elapsed());
+                let start = should_start_daemon(lost_at.elapsed(), start_failures);
                 let attempt_result = cx
                     .background_executor()
                     .spawn(async move { if start { Client::connect_or_start(&s, &d, &a) } else { Client::connect(&s) } })
                     .await;
                 match attempt_result {
-                    Ok(c) => break c,
+                    Ok(c) => break (c, start),
                     Err(e) => {
+                        if start {
+                            start_failures += 1;
+                        }
+                        let gave_up = start && start_failures == MAX_START_FAILURES;
+                        if gave_up {
+                            eprintln!("sarkos: sarkosd failed to start {MAX_START_FAILURES} times in a row; only connecting from now on: {e:#}");
+                        }
+                        let log = client::daemon_log(&socket);
                         if root
                             .update(cx, |root, cx| {
-                                if start {
+                                if gave_up {
+                                    root.status = format!("sarkosd keeps exiting; see the log at {}", log.display());
+                                } else if start {
                                     root.status = format!("sarkosd is not running and could not be started: {e:#}");
                                 }
                                 cx.notify();
@@ -88,10 +103,11 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
                     }
                 }
             };
-            let how = if should_start_daemon(lost_at.elapsed()) { ", starting it if it was not running" } else { "" };
+            let ((next_client, next_events), started) = next;
+            let how = if started { ", starting it if it was not running" } else { "" };
             eprintln!("sarkos: reconnected to sarkosd after {:.1}s{how}", lost_at.elapsed().as_secs_f32());
-            client = Arc::new(next.0);
-            events = next.1;
+            client = Arc::new(next_client);
+            events = next_events;
         }
     })
     .detach();
@@ -228,8 +244,15 @@ mod tests {
 
     #[test]
     fn after_ten_seconds_the_window_starts_a_daemon() {
-        assert!(!should_start_daemon(Duration::from_secs(0)));
-        assert!(!should_start_daemon(Duration::from_millis(9_999)));
-        assert!(should_start_daemon(Duration::from_secs(10)));
+        assert!(!should_start_daemon(Duration::from_secs(0), 0));
+        assert!(!should_start_daemon(Duration::from_millis(9_999), 0));
+        assert!(should_start_daemon(Duration::from_secs(10), 0));
+    }
+
+    #[test]
+    fn after_five_failed_starts_the_window_only_connects() {
+        assert!(should_start_daemon(Duration::from_secs(60), 4));
+        assert!(!should_start_daemon(Duration::from_secs(60), 5));
+        assert!(!should_start_daemon(Duration::from_secs(60), 6));
     }
 }
