@@ -9,7 +9,7 @@ use std::io::{BufReader, BufWriter};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::net::Shutdown;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +20,10 @@ pub struct Options {
     /// Output bytes a client may have pending before it is dropped as hung.
     pub client_pending_cap: usize,
     pub backpressure: Backpressure,
+    /// How often the reaper polls for exits and dead sessions.
+    pub reaper_every: Duration,
+    /// How long a dead session stays listed after it ended, while nobody is attached.
+    pub dead_session_ttl: Duration,
 }
 
 pub struct ClientRecord {
@@ -55,21 +59,29 @@ impl State {
 pub type Shared = Arc<Mutex<State>>;
 
 pub fn run(socket: &Path, opts: Options) -> Result<()> {
-    if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent).ok();
+    let parent = socket.parent().ok_or_else(|| anyhow::anyhow!("socket path has no parent"))?;
+    let created_parent = !parent.exists();
+    std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    if created_parent {
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).ok();
     }
-    if socket.exists() {
-        // A previous daemon died. Nobody can be listening if connect fails.
-        if UnixStream::connect(socket).is_ok() {
-            anyhow::bail!("another sarkosd is already listening on {}", socket.display());
+    match std::fs::symlink_metadata(socket) {
+        Ok(meta) if meta.file_type().is_socket() => {
+            // A previous daemon died. Nobody can be listening if connect fails.
+            if UnixStream::connect(socket).is_ok() {
+                anyhow::bail!("another sarkosd is already listening on {}", socket.display());
+            }
+            std::fs::remove_file(socket).with_context(|| format!("remove stale socket {}", socket.display()))?;
         }
-        std::fs::remove_file(socket).ok();
+        Ok(_) => anyhow::bail!("{} exists and is not a socket; refusing to replace it", socket.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("inspect {}", socket.display())),
     }
     let listener = UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).context("chmod socket")?;
     let state: Shared = Arc::new(Mutex::new(State::new()));
     crate::watchdog::start(state.clone(), opts.watchdog);
+    crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => spawn_client(stream, state.clone(), opts),
@@ -191,6 +203,14 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 rec.ui_pid = ui_pid;
                 // A UI is never dropped for being slow; the watchdog alone ends it.
                 tx.set_ui(ui_pid.is_some());
+                let ui_exe = ui_exe.filter(|p| {
+                    let named_sarkos = p.file_name().map(|n| n == "sarkos").unwrap_or(false);
+                    let ok = named_sarkos && p.is_file();
+                    if !ok {
+                        eprintln!("sarkosd: client {client_id} offered ui_exe {} which is not a sarkos binary; it will not be relaunched", p.display());
+                    }
+                    ok
+                });
                 rec.ui_exe = ui_exe;
                 rec.ui_cwd = (!ui_cwd.as_os_str().is_empty()).then_some(ui_cwd);
                 rec.last_heartbeat = Instant::now();

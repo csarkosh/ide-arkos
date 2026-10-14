@@ -1,3 +1,4 @@
+mod reaper;
 mod ring;
 mod server;
 mod session;
@@ -19,6 +20,8 @@ fn main() {
     let mut socket = default_socket();
     let mut replay = DEFAULT_REPLAY_BYTES;
     let mut watchdog = DEFAULT_WATCHDOG_SECS;
+    let mut reaper_millis: u64 = 1000;
+    let mut dead_session_secs: u64 = 600;
     let mut pending_cap = session::CLIENT_PENDING_CAP;
     let mut backpressure = session::Backpressure::default();
     while let Some(a) = args.next() {
@@ -42,13 +45,26 @@ fn main() {
                 backpressure.stall = Duration::from_secs(secs);
             }
             "--watchdog-secs" => watchdog = args.next().and_then(|v| v.parse().ok()).expect("--watchdog-secs needs a number"),
+            "--reaper-millis" => reaper_millis = args.next().and_then(|v| v.parse().ok()).expect("--reaper-millis needs a number"),
+            "--dead-session-secs" => dead_session_secs = args.next().and_then(|v| v.parse().ok()).expect("--dead-session-secs needs a number"),
             other => {
                 eprintln!("sarkosd: unknown argument {other}");
                 std::process::exit(2);
             }
         }
     }
-    let opts = server::Options { replay_capacity: replay, watchdog: Duration::from_secs(watchdog), client_pending_cap: pending_cap, backpressure };
+    if replay == 0 {
+        eprintln!("sarkosd: --replay-bytes must be at least 1");
+        std::process::exit(2);
+    }
+    let opts = server::Options {
+        replay_capacity: replay,
+        watchdog: Duration::from_secs(watchdog),
+        client_pending_cap: pending_cap,
+        backpressure,
+        reaper_every: Duration::from_millis(reaper_millis.max(10)),
+        dead_session_ttl: Duration::from_secs(dead_session_secs),
+    };
     if let Err(e) = server::run(&socket, opts) {
         eprintln!("sarkosd: {e:#}");
         std::process::exit(1);

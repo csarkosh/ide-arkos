@@ -249,12 +249,32 @@ pub struct SpawnSpec {
     pub backpressure: Backpressure,
 }
 
+/// The shell process and, once reaped, its exit code. A reaped pid may be reused by any other
+/// process, so every signal and every wait goes through here and nothing touches the pid after
+/// `exited` is set.
+struct ChildSlot {
+    child: Box<dyn Child + Send + Sync>,
+    exited: Option<i32>,
+}
+
+impl ChildSlot {
+    /// Non-blocking. Reaps the child if it has exited and remembers the code.
+    fn try_reap(&mut self) -> Option<i32> {
+        if self.exited.is_none() {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                self.exited = Some(status.exit_code() as i32);
+            }
+        }
+        self.exited
+    }
+}
+
 pub struct Session {
     pub id: SessionId,
     cwd: PathBuf,
     master: Mutex<Box<dyn MasterPty + Send>>,
     input: Mutex<Sender<Vec<u8>>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    child: Mutex<ChildSlot>,
     pid: Option<u32>,
     state: Mutex<SessionState>,
     backpressure: Backpressure,
@@ -267,6 +287,7 @@ struct SessionState {
     subscribers: HashMap<ClientId, ClientSink>,
     alive: bool,
     exit_code: Option<i32>,
+    exited_at: Option<Instant>,
     last_activity_unix_ms: u64,
     claude: ClaudeState,
 }
@@ -317,13 +338,14 @@ impl Session {
             cwd: spec.cwd,
             master: Mutex::new(pair.master),
             input: Mutex::new(input_tx),
-            child: Mutex::new(child),
+            child: Mutex::new(ChildSlot { child, exited: None }),
             pid,
             state: Mutex::new(SessionState {
                 replay: RingBuffer::new(spec.replay_capacity),
                 subscribers: HashMap::new(),
                 alive: true,
                 exit_code: None,
+                exited_at: None,
                 last_activity_unix_ms: now_ms(),
                 claude: ClaudeState::Idle,
             }),
@@ -349,12 +371,13 @@ impl Session {
                         }
                     }
                 }
-                let code = session.child.lock().unwrap().wait().ok().map(|s| s.exit_code() as i32);
-                let mut st = session.state.lock().unwrap();
-                st.alive = false;
-                st.exit_code = code;
-                let event = ServerMessage::Event(Event::Exited { session: session.id, code });
-                st.subscribers.retain(|_, tx| tx.send(event.clone()));
+                let code = loop {
+                    if let Some(code) = session.child.lock().unwrap().try_reap() {
+                        break code;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                session.mark_exited(Some(code));
             })
             .expect("spawn pty reader thread");
     }
@@ -411,11 +434,42 @@ impl Session {
         if self.ending.load(Ordering::Relaxed) {
             return true;
         }
-        let exited = matches!(self.child.lock().unwrap().try_wait(), Ok(Some(_)));
+        let exited = self.child.lock().unwrap().try_reap().is_some();
         if exited {
             self.ending.store(true, Ordering::Relaxed);
         }
         exited
+    }
+
+    /// Records the shell's exit once and tells every subscriber. The PTY reader calls this at
+    /// EOF; the reaper calls it when the shell is gone but a background job still holds the PTY
+    /// open, which would otherwise hide the exit until that job ends.
+    fn mark_exited(&self, code: Option<i32>) {
+        let mut st = self.state.lock().unwrap();
+        if !st.alive {
+            return;
+        }
+        st.alive = false;
+        st.exit_code = code;
+        st.exited_at = Some(Instant::now());
+        let event = ServerMessage::Event(Event::Exited { session: self.id, code });
+        st.subscribers.retain(|_, tx| tx.send(event.clone()));
+    }
+
+    /// Non-blocking exit check for the reaper thread.
+    pub fn poll_exit(&self) {
+        let code = self.child.lock().unwrap().try_reap();
+        if let Some(code) = code {
+            self.mark_exited(Some(code));
+        }
+    }
+
+    pub fn exited_at(&self) -> Option<Instant> {
+        self.state.lock().unwrap().exited_at
+    }
+
+    pub fn has_subscribers(&self) -> bool {
+        !self.state.lock().unwrap().subscribers.is_empty()
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
@@ -430,19 +484,22 @@ impl Session {
             .context("resize pty")
     }
 
+    /// Ends the shell. The exit check and the signal happen under the same lock, so a child that
+    /// exits in between is reaped here and never signalled by its possibly reused pid.
     pub fn kill(&self) -> Result<()> {
-        // Never signal a pid that may already be reaped and reused.
-        let st = self.state.lock().unwrap();
-        if !st.alive {
+        let mut slot = self.child.lock().unwrap();
+        if slot.try_reap().is_some() {
             return Ok(());
         }
-        // Wake a reader paused on a slow subscriber so it drains to EOF instead of waiting.
+        let killed = slot.child.kill().context("kill child");
+        drop(slot);
         self.ending.store(true, Ordering::Relaxed);
+        // Wake a reader paused on a slow subscriber so it drains to EOF instead of waiting.
+        let st = self.state.lock().unwrap();
         for sink in st.subscribers.values() {
             sink.wake();
         }
-        drop(st);
-        self.child.lock().unwrap().kill().context("kill child")
+        killed
     }
 
     pub fn set_state(&self, state: ClaudeState) {

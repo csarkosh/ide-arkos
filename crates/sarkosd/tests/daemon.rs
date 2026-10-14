@@ -38,6 +38,13 @@ impl Daemon {
         self.connect_as(std::process::id())
     }
 
+    /// Connects without saying Hello.
+    fn connect_raw(&self) -> Conn {
+        let stream = UnixStream::connect(&self.socket).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 }
+    }
+
     /// Connects and says Hello with `ui_pid` as the UI's pid.
     fn connect_as(&self, ui_pid: u32) -> Conn {
         let stream = UnixStream::connect(&self.socket).unwrap();
@@ -71,7 +78,11 @@ impl Conn {
     }
 
     fn next_message(&mut self) -> ServerMessage {
-        read_frame(&mut self.r).unwrap().expect("daemon closed the connection")
+        read_frame(&mut self.r).expect("daemon went silent or the frame was bad").expect("daemon closed the connection")
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        self.r.get_ref().set_read_timeout(timeout).unwrap();
     }
 
     /// Sends a request and returns its response, keeping any events that arrive first.
@@ -265,7 +276,7 @@ fn socket_is_private() {
 fn relaunch_script(dir: &std::path::Path) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let marker = dir.join("relaunched");
-    let script = dir.join("relaunch.sh");
+    let script = dir.join("sarkos");
     std::fs::write(&script, format!("#!/bin/sh\npwd -P > '{m}.tmp' && mv '{m}.tmp' '{m}'\n", m = marker.display())).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     (script, marker)
@@ -638,4 +649,117 @@ fn hello_with_another_protocol_version_is_refused() {
     // And keeps serving everyone else.
     let mut ok = d.connect_as(0);
     assert!(matches!(ok.request(Request::ListSessions), Response::Sessions(_)));
+}
+
+/// Waits up to `timeout` for an `Exited` event for `session`, returning its code.
+fn wait_for_exit(conn: &mut Conn, session: SessionId, timeout: Duration) -> Option<i32> {
+    conn.set_read_timeout(Some(Duration::from_secs(5)));
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let ServerMessage::Event(Event::Exited { session: s, code }) = conn.next_message() {
+            if s == session {
+                conn.set_read_timeout(None);
+                return code;
+            }
+        }
+    }
+    panic!("no Exited event for session {} within {timeout:?}", session.0);
+}
+
+#[test]
+fn exit_is_detected_while_a_background_job_holds_the_pty() {
+    // The reaper polls every 100 ms here; the background `sleep 2` keeps the PTY slave open, so
+    // EOF cannot be what detects the exit before the sleep ends.
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    let started = Instant::now();
+    c.send(Request::Input { session: sid, bytes: b"sleep 2 & exit 3\n".to_vec() });
+    let code = wait_for_exit(&mut c, sid, Duration::from_millis(1800));
+    assert_eq!(code, Some(3));
+    assert!(started.elapsed() < Duration::from_millis(1800), "exit was only noticed at EOF");
+    match c.request(Request::ListSessions) {
+        Response::Sessions(list) => {
+            let info = list.iter().find(|i| i.id == sid).expect("session listed");
+            assert!(!info.alive);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn kill_on_a_dead_session_is_ok_and_sends_no_signal() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"exit 0\n".to_vec() });
+    wait_for_exit(&mut c, sid, Duration::from_secs(3));
+    // The pid is reaped by now; a Kill must not touch it (it may belong to another process).
+    assert_eq!(c.request(Request::Kill { session: sid }), Response::Ok);
+    assert_eq!(c.request(Request::Kill { session: sid }), Response::Ok);
+}
+
+#[test]
+fn dead_session_is_reaped_after_the_ttl_once_nobody_is_attached() {
+    let d = Daemon::start(&["--reaper-millis", "100", "--dead-session-secs", "1"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"exit\n".to_vec() });
+    wait_for_exit(&mut c, sid, Duration::from_secs(3));
+    // Still attached: the dead session stays listed so a UI can show "session ended".
+    std::thread::sleep(Duration::from_millis(1500));
+    match c.request(Request::ListSessions) {
+        Response::Sessions(list) => assert!(list.iter().any(|i| i.id == sid), "reaped while attached"),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(c.request(Request::Detach { session: sid }), Response::Ok);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        match c.request(Request::ListSessions) {
+            Response::Sessions(list) if !list.iter().any(|i| i.id == sid) => break,
+            Response::Sessions(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Response::Sessions(_) => panic!("dead session never reaped"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn hello_with_a_foreign_ui_exe_is_not_relaunched() {
+    // A client may only ask the watchdog to relaunch a binary named `sarkos`.
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("marker");
+    let script = dir.path().join("other");
+    std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let d = Daemon::start(&["--watchdog-secs", "1"]);
+    let mut fake_ui = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
+    let mut c = d.connect_raw();
+    c.send(Request::Hello {
+        protocol_version: protocol::PROTOCOL_VERSION,
+        ui_pid: fake_ui.id(),
+        ui_exe: Some(script.clone()),
+        ui_cwd: dir.path().to_path_buf(),
+    });
+    std::thread::sleep(Duration::from_millis(3500));
+    assert!(fake_ui.try_wait().unwrap().is_some(), "silent UI was not killed");
+    assert!(!marker.exists(), "a binary not named sarkos was relaunched");
+    let _ = fake_ui.wait();
+}
+
+#[test]
+fn daemon_refuses_a_regular_file_at_the_socket_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("sarkosd.sock");
+    std::fs::write(&socket, "not a socket").unwrap();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_sarkosd"))
+        .args(["--socket", socket.to_str().unwrap(), "--watchdog-secs", "0"])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert_eq!(std::fs::read_to_string(&socket).unwrap(), "not a socket", "the file was removed");
 }
