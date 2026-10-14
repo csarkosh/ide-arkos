@@ -96,3 +96,14 @@ The daemon execs only a path given by a same-user client over the 0600 socket, a
 ## 10. Where it sits
 
 A milestone of about six tasks between 2b and 3: children by pid; the PTY layer; the handover (daemon side, with `--check-handover` and `--resume`); the window's reconnect; update detection, the status notice and the palette command with `RelaunchClient`; protocol negotiation and the version strings. The Homebrew tap comes after every milestone, as decided, and is what makes step 1 of section 4 a single command.
+
+## 11. Recovery after a reboot (added 2026-10-14, for milestone 3)
+
+A shutdown or restart (an OS update, or turning it off and on again) ends every process; no shell or Claude Code process survives it, and section 1.1 stands. What becomes automatic is the recovery: the same layout, the same folders, the history back on screen, and every Claude Code conversation resumed. What does not come back is whatever was executing at that moment (a half-finished tool call, a running build, shell variables, background jobs); Claude Code's transcript records the unfinished tool, and the agent continues from there once asked.
+
+1. **Disk-backed replay buffers.** The daemon flushes each session's ring to `~/Library/Application Support/sarkos/sessions/<id>.replay` a few seconds after output arrives and in full on SIGTERM (a clean macOS shutdown sends it). After a reboot the window shows the old output under a divider line, then the fresh shell. The file format is the handover record of section 2.1, so this reuses that code.
+2. **A session manifest.** Per session: cwd, shell, nice, and the Claude Code session id reported by the SessionStart hook (milestone 3). Written with the replay file.
+3. **Start at login.** A launchd agent (`~/Library/LaunchAgents/sh.csarko.sarkosd.plist`, installed by the window on first run with the user's consent) starts `sarkosd` at login. It reads the manifest, recreates each shell in its folder, runs `claude --resume <id>` where a Claude session was recorded, and marks the tab "resumed after restart". It only resumes; it never sends a message, so the user decides when each agent continues.
+4. **Reopen the window.** The same agent launches `sarkos` in each project folder that had a window open, after the daemon is listening.
+
+Plan: with milestone 3, which supplies the session id. Steps 1 and 2 may be pulled into this milestone if the handover file lands first. Not covered: sessions surviving a reboot for real, which needs a daemon on a machine that does not reboot (a remote daemon over SSH); a possible later milestone, not part of this one.
