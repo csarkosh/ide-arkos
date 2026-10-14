@@ -164,7 +164,19 @@ impl TerminalCore {
     }
 
     /// Drops the history and lands at the live bottom. The screen itself is kept.
-    pub fn clear_scrollback(&mut self) {
+    /// Terminal.app's Cmd+K ("Clear to Start"): the history and the screen go, and the line the
+    /// cursor is on moves to the top with whatever is typed on it. The shell is told nothing.
+    pub fn clear_to_start(&mut self) {
+        use alacritty_terminal::vte::ansi::{ClearMode, Handler};
+        let rows = self.term.screen_lines() as i32;
+        let row = self.term.grid().cursor.point.line.0.clamp(0, rows - 1) as usize;
+        if row > 0 {
+            // The rows above the cursor rotate into the history, which is dropped below.
+            self.term.grid_mut().scroll_up(&(Line(0)..Line(rows)), row);
+            self.term.grid_mut().cursor.point.line = Line(0);
+        }
+        // From the cursor to the end of the screen; what is left of the cursor stays.
+        self.term.clear_screen(ClearMode::Below);
         self.term.grid_mut().clear_history();
         self.set_display_offset(0);
         self.scroll.jump_to(0.0);
@@ -695,20 +707,27 @@ mod tests {
     }
 
     #[test]
-    fn clear_scrollback_drops_history_and_keeps_the_screen() {
-        let mut t = TerminalCore::new(20, 3, 100);
+    fn clear_to_start_keeps_only_the_cursor_line_at_the_top() {
+        let mut t = TerminalCore::new(20, 4, 100);
         for i in 0..10 {
             t.apply_output(format!("line{i}\r\n").as_bytes());
         }
+        t.apply_output(b"prompt> ls");
         assert!(t.history_size() > 0);
+        assert_eq!(t.cursor(), Some((10, 3)), "the prompt is on the last row (column, row)");
         t.scroll.jump_to(3.0);
         t.set_display_offset(3);
-        t.clear_scrollback();
+        t.clear_to_start();
         assert_eq!(t.history_size(), 0);
         assert_eq!(t.display_offset(), 0);
         assert!(t.scroll.is_at_bottom());
         let rows = t.rows_for_paint();
-        assert_eq!(text_of(&rows.visible[0]), "line8");
+        assert_eq!(text_of(&rows.visible[0]), "prompt> ls");
+        assert!(rows.visible[1..].iter().all(|r| text_of(r).trim().is_empty()), "nothing below the prompt");
+        assert_eq!(t.cursor(), Some((10, 0)), "the cursor keeps its column on the top row");
+        // Output after the clear lands where the shell expects it.
+        t.apply_output(b"\r\nnext");
+        assert_eq!(text_of(&t.rows_for_paint().visible[1]), "next");
     }
 
     #[test]

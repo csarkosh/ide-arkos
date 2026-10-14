@@ -18,7 +18,7 @@ actions!(
         NextTab, PrevTab, NextTabAlt, PrevTabAlt, MruTab,
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
-        NewTerminal, ClearScrollback, FontBigger, FontSmaller,
+        NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, Quit
     ]
 );
@@ -39,7 +39,8 @@ pub enum Command {
     CloseAllInPane,
     MoveTabWithin(isize),
     NewTerminal,
-    ClearScrollback,
+    /// Terminal.app's Cmd+K: drop the history and the screen, keep the cursor line at the top.
+    ClearToStart,
     FontDelta(f32),
     OpenConfig,
     /// Switch every terminal to the named text preset (the palette runs it).
@@ -77,7 +78,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
     // the Cmd+K chords would never complete. Terminal-only, so chords work elsewhere too.
-    ActionSpec { name: "clear scrollback", keys: "cmd-k", context: Some("Terminal") },
+    ActionSpec { name: "clear to start", keys: "cmd-k", context: Some("Terminal") },
     row("focus pane 1", "cmd-1"), row("focus pane 2", "cmd-2"), row("focus pane 3", "cmd-3"),
     row("focus pane 4", "cmd-4"), row("focus pane 5", "cmd-5"), row("focus pane 6", "cmd-6"),
     row("focus pane 7", "cmd-7"), row("focus pane 8", "cmd-8"), row("focus pane 9", "cmd-9"),
@@ -104,7 +105,7 @@ pub const ACTIONS: &[ActionSpec] = &[
 /// on a keystroke it cannot parse.
 fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> {
     Some(match name {
-        "clear scrollback" => KeyBinding::new(keys, ClearScrollback, context),
+        "clear to start" => KeyBinding::new(keys, ClearToStart, context),
         "focus pane 1" => KeyBinding::new(keys, FocusPane1, context),
         "focus pane 2" => KeyBinding::new(keys, FocusPane2, context),
         "focus pane 3" => KeyBinding::new(keys, FocusPane3, context),
@@ -260,7 +261,7 @@ pub fn label(name: &str) -> String {
 /// palette itself and quit are not listed.
 pub fn command_for(name: &str) -> Option<Command> {
     Some(match name {
-        "clear scrollback" => Command::ClearScrollback,
+        "clear to start" => Command::ClearToStart,
         "focus pane 1" => Command::FocusPane(0),
         "focus pane 2" => Command::FocusPane(1),
         "focus pane 3" => Command::FocusPane(2),
@@ -329,7 +330,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         MruTab => Command::MruTab,
         CloseTab => Command::CloseTab, ReopenClosedTab => Command::ReopenClosedTab, CloseAllInPane => Command::CloseAllInPane,
         MoveTabLeft => Command::MoveTabWithin(-1), MoveTabRight => Command::MoveTabWithin(1),
-        NewTerminal => Command::NewTerminal, ClearScrollback => Command::ClearScrollback,
+        NewTerminal => Command::NewTerminal, ClearToStart => Command::ClearToStart,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
         UpdateNow => Command::UpdateNow,
@@ -348,7 +349,7 @@ mod tests {
     /// The spec's table (section 4) plus the rows later milestones add. Names are the config
     /// keys; empty keys mean unbound by default.
     const SPEC_ROWS: &[(&str, &str, &str)] = &[
-        ("cmd-k", "clear scrollback", "ClearScrollback"),
+        ("cmd-k", "clear to start", "ClearToStart"),
         ("cmd-1", "focus pane 1", "FocusPane1"), ("cmd-2", "focus pane 2", "FocusPane2"), ("cmd-3", "focus pane 3", "FocusPane3"),
         ("cmd-4", "focus pane 4", "FocusPane4"), ("cmd-5", "focus pane 5", "FocusPane5"), ("cmd-6", "focus pane 6", "FocusPane6"),
         ("cmd-7", "focus pane 7", "FocusPane7"), ("cmd-8", "focus pane 8", "FocusPane8"), ("cmd-9", "focus pane 9", "FocusPane9"),
@@ -378,7 +379,7 @@ mod tests {
             let spec = ACTIONS.iter().find(|a| a.name == *name).unwrap_or_else(|| panic!("{name} missing from ACTIONS"));
             assert_eq!(spec.keys, *keys, "{name}");
         }
-        assert_eq!(ACTIONS[0].name, "clear scrollback", "the lone cmd-k must be registered first (milestone 2a ruling 16)");
+        assert_eq!(ACTIONS[0].name, "clear to start", "the lone cmd-k must be registered first (milestone 2a ruling 16)");
         assert_eq!(ACTIONS[0].context, Some("Terminal"));
     }
 

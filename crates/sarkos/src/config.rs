@@ -328,7 +328,7 @@ nice = 0
 # Action name = keystrokes, in gpui syntax: modifiers cmd, ctrl, alt and shift joined with "-"
 # before the key, as in "cmd-shift-p"; chords are separated by a space, as in "cmd-k cmd-m".
 # An empty string "" unbinds an action. The defaults are VS Code's for the editor area:
-# "clear scrollback" = "cmd-k"
+# "clear to start" = "cmd-k"
 # "focus pane 1" = "cmd-1"
 # "focus pane 2" = "cmd-2"
 # "focus pane 3" = "cmd-3"

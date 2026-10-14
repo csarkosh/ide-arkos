@@ -822,10 +822,10 @@ impl Root {
                 }
             }
             NewTerminal => self.new_terminal_tab(focused, cx),
-            ClearScrollback => {
+            ClearToStart => {
                 if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| {
-                        t.core.clear_scrollback();
+                        t.core.clear_to_start();
                         // An open find bar's count and highlights follow on the next frame.
                         t.mark_find_stale();
                         cx.notify();
