@@ -12,7 +12,7 @@ Written in Rust with GPUI. The design is in
 
 Milestone 1 of 6: the daemon and one terminal pane. See the spec for the rest. Still needing a
 human check, because the automated run could not drive the window: typing, scrolling feel,
-resize, a TUI, and Cmd+Q.
+resize, and a TUI.
 
 ## Build and run
 

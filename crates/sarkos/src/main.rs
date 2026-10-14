@@ -12,8 +12,8 @@ use futures::channel::mpsc::TryRecvError;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, KeyDownEvent,
-    ScrollDelta, ScrollWheelEvent, Window, WindowBounds, WindowOptions,
+    actions, canvas, div, prelude::*, px, rgb, size, App, Application, AsyncApp, Bounds, Context, Div, Entity, KeyBinding,
+    KeyDownEvent, Menu, MenuItem, ScrollDelta, ScrollWheelEvent, Window, WindowBounds, WindowOptions,
 };
 use protocol::{Event, Request, Response, ServerMessage, SessionId, SessionInfo};
 use std::collections::VecDeque;
@@ -31,6 +31,8 @@ const BANNER_BG: u32 = 0x1a2130;
 const SCROLLBACK: usize = 20_000;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
+actions!(sarkos, [Quit]);
+
 /// Starts every status that reports a `Response::Error`.
 const ERROR_PREFIX: &str = "sarkosd error: ";
 
@@ -376,6 +378,10 @@ fn main() {
     let saved = workspace::load(&project);
 
     Application::new().run(move |cx: &mut App| {
+        // gpui installs no menu and no quit binding of its own.
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.set_menus(vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]);
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
         let client_for_view = client.clone();
         let window = cx
