@@ -4,6 +4,7 @@ use crate::keymap::tab_cycle;
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::terminal::{Match, Terminal, MAX_MATCHES};
 use crate::theme::Theme;
+use crate::tree::PaneId;
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
 
@@ -107,14 +108,16 @@ impl Terminal {
             }
             Edit::Up => self.find_step(-1, cx),
             Edit::Down => self.find_step(1, cx),
-            Edit::Unchanged => {}
+            // A cursor move (Left, Right, Cmd+Left, Cmd+Right) changes only the bar.
+            Edit::Unchanged => cx.notify(),
         }
         false
     }
 }
 
-/// The bar: query, count, close. Keys go to the terminal's `find_key`; Cmd+V pastes.
-pub fn render(terminal: &Entity<Terminal>, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
+/// The bar: query, count, close. Keys go to the terminal's `find_key`; Cmd+V pastes. `pane` is
+/// the pane showing `terminal`, which a click on the bar focuses.
+pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
     let (query, count, focus) = terminal.update(cx, |t, _| {
         t.refresh_find();
         let f = t.find.as_ref()?;
@@ -141,7 +144,16 @@ pub fn render(terminal: &Entity<Terminal>, theme: &Theme, family: SharedString, 
             .font_family(family.clone())
             .text_size(px(12.0))
             .track_focus(&focus)
-            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                    // The terminal's mouse-down would close the bar, so the event stops here; the
+                    // pane's would focus it, so the bar does that itself (render then focuses the
+                    // bar, as the focused pane's open find).
+                    root.focus_pane(pane, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
                 // The bar sits inside the terminal's element, whose key handler would otherwise
                 // send the same key to the shell.
@@ -153,9 +165,8 @@ pub fn render(terminal: &Entity<Terminal>, theme: &Theme, family: SharedString, 
                     }
                     return;
                 }
-                if ks.modifiers.platform {
-                    return;
-                }
+                // Other Cmd combinations: actions were dispatched before this handler, and the
+                // line edit answers Cmd+Backspace, Cmd+Left and Cmd+Right and ignores the rest.
                 t_keys.update(cx, |t, cx| {
                     t.find_key(ks, cx);
                 });

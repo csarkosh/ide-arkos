@@ -85,7 +85,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
-            Some(terminal) => render_terminal(terminal, root.family(), &theme, cx),
+            Some(terminal) => render_terminal(terminal, pane, root.family(), &theme, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { .. }) => div().size_full().child("viewer tabs arrive in milestone 4"),
@@ -306,7 +306,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, labels
     bar
 }
 
-fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &Theme, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let (font_size, line_height) = {
         let t = terminal.read(cx);
@@ -380,11 +380,17 @@ fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &The
                 .cursor_pointer()
                 .child("jump to bottom")
                 // The terminal's own mouse-down closes an open find bar; the pill is not a click
-                // in the terminal.
-                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                // in the terminal. Stopping it also stops the pane's, so the pill focuses the pane.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                        root.focus_pane(pane, cx);
+                        cx.stop_propagation();
+                    }),
+                )
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
-        .children(find::render(&terminal, theme, family, cx))
+        .children(find::render(&terminal, pane, theme, family, cx))
 }
 
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by
