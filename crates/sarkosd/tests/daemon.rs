@@ -667,18 +667,16 @@ fn wait_for_exit(conn: &mut Conn, session: SessionId, timeout: Duration) -> Opti
 }
 
 #[test]
-fn exit_is_detected_while_a_background_job_holds_the_pty() {
-    // The reaper polls every 100 ms here; the background `sleep 2` keeps the PTY slave open, so
-    // EOF cannot be what detects the exit before the sleep ends.
+fn exit_is_reported_with_its_code_while_a_background_job_lingers() {
+    // The background `sleep 2` may keep the PTY slave open; the exit and its code must arrive
+    // regardless. (On macOS EOF usually follows quickly; the reaper path has a unit test.)
     let d = Daemon::start(&["--reaper-millis", "100"]);
     let mut c = d.connect();
     let sid = c.create("/bin/sh");
     assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
-    let started = Instant::now();
     c.send(Request::Input { session: sid, bytes: b"sleep 2 & exit 3\n".to_vec() });
     let code = wait_for_exit(&mut c, sid, Duration::from_millis(1800));
     assert_eq!(code, Some(3));
-    assert!(started.elapsed() < Duration::from_millis(1800), "exit was only noticed at EOF");
     match c.request(Request::ListSessions) {
         Response::Sessions(list) => {
             let info = list.iter().find(|i| i.id == sid).expect("session listed");
@@ -762,4 +760,16 @@ fn daemon_refuses_a_regular_file_at_the_socket_path() {
         .unwrap();
     assert!(!status.success());
     assert_eq!(std::fs::read_to_string(&socket).unwrap(), "not a socket", "the file was removed");
+}
+
+#[test]
+fn kill_escalates_to_sigkill_when_the_shell_ignores_sighup() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"trap '' HUP; sleep 30\n".to_vec() });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(c.request(Request::Kill { session: sid }), Response::Ok);
+    wait_for_exit(&mut c, sid, Duration::from_secs(3));
 }

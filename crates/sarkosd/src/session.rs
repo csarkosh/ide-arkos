@@ -255,6 +255,8 @@ pub struct SpawnSpec {
 struct ChildSlot {
     child: Box<dyn Child + Send + Sync>,
     exited: Option<i32>,
+    /// When `kill` sent SIGHUP; the reaper escalates to SIGKILL if the shell ignores it.
+    kill_requested_at: Option<Instant>,
 }
 
 impl ChildSlot {
@@ -298,6 +300,15 @@ fn now_ms() -> u64 {
 
 impl Session {
     pub fn spawn(spec: SpawnSpec) -> Result<Arc<Session>> {
+        Self::spawn_inner(spec, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_for_test(spec: SpawnSpec, start_reader: bool) -> Result<Arc<Session>> {
+        Self::spawn_inner(spec, start_reader)
+    }
+
+    fn spawn_inner(spec: SpawnSpec, start_reader: bool) -> Result<Arc<Session>> {
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize { rows: spec.rows, cols: spec.cols, pixel_width: 0, pixel_height: 0 })
@@ -338,7 +349,7 @@ impl Session {
             cwd: spec.cwd,
             master: Mutex::new(pair.master),
             input: Mutex::new(input_tx),
-            child: Mutex::new(ChildSlot { child, exited: None }),
+            child: Mutex::new(ChildSlot { child, exited: None, kill_requested_at: None }),
             pid,
             state: Mutex::new(SessionState {
                 replay: RingBuffer::new(spec.replay_capacity),
@@ -352,7 +363,17 @@ impl Session {
             backpressure: spec.backpressure,
             ending: AtomicBool::new(false),
         });
-        Self::start_reader(session.clone(), reader);
+        if start_reader {
+            Self::start_reader(session.clone(), reader);
+        } else {
+            // Tests only: drain and discard output like the real reader, but never record the
+            // exit, so the test can drive `poll_exit` itself.
+            let mut reader = reader;
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+            });
+        }
         Ok(session)
     }
 
@@ -491,7 +512,21 @@ impl Session {
         if slot.try_reap().is_some() {
             return Ok(());
         }
-        let killed = slot.child.kill().context("kill child");
+        // Not `child.kill()`: portable-pty blocks up to 200 ms in it, which would stall the reaper
+        // and the reader behind this lock. SIGKILL follows from `escalate_kill` if SIGHUP is ignored.
+        let killed = match slot.child.process_id() {
+            // SAFETY: the pid is unreaped (the slot has not reaped it and nothing else waits on
+            // it), so it still names our child.
+            Some(pid) => {
+                if unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) } == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error()).context("kill child")
+                }
+            }
+            None => Err(anyhow::anyhow!("kill child: no pid")),
+        };
+        slot.kill_requested_at = Some(Instant::now());
         drop(slot);
         self.ending.store(true, Ordering::Relaxed);
         // Wake a reader paused on a slow subscriber so it drains to EOF instead of waiting.
@@ -500,6 +535,22 @@ impl Session {
             sink.wake();
         }
         killed
+    }
+
+    /// Sends SIGKILL if `kill` asked for SIGHUP over a second ago and the shell is still running.
+    pub fn escalate_kill(&self) {
+        let mut slot = self.child.lock().unwrap();
+        let Some(at) = slot.kill_requested_at else { return };
+        if at.elapsed() < Duration::from_secs(1) || slot.try_reap().is_some() {
+            return;
+        }
+        if let Some(pid) = slot.child.process_id() {
+            // SAFETY: as in `kill`, the slot has not reaped the pid, so it is still our child.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            // Once per request: the reaper sees the exit next pass.
+            slot.kill_requested_at = None;
+            eprintln!("sarkosd: session {} did not exit after SIGHUP, sent SIGKILL", self.id.0);
+        }
     }
 
     pub fn set_state(&self, state: ClaudeState) {
@@ -535,5 +586,60 @@ impl Session {
             last_activity_unix_ms: st.last_activity_unix_ms,
             state: st.claude,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::codec::read_frame;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn poll_exit_records_the_exit_once_without_a_reader() {
+        let spec = SpawnSpec {
+            id: SessionId(7),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 1024,
+            backpressure: Backpressure::default(),
+        };
+        let s = Session::spawn_for_test(spec, false).unwrap();
+        // Input typed before the shell sets up its terminal can be flushed away; give it a moment.
+        std::thread::sleep(Duration::from_millis(500));
+        s.write(b"exit 3\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while s.child.lock().unwrap().try_reap() != Some(3) {
+            assert!(Instant::now() < deadline, "shell never exited: {:?}", s.child.lock().unwrap().try_reap());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (a, _b) = UnixStream::pair().unwrap();
+        let sink = ClientSink::new(1, a, 1 << 20);
+        s.subscribe(1, sink.clone(), 1);
+        s.poll_exit();
+        s.poll_exit();
+        assert!(!s.info().alive);
+        assert_eq!(s.state.lock().unwrap().exit_code, Some(3));
+        assert!(s.exited_at().is_some());
+        sink.close();
+        let mut exits = 0;
+        // The writer thread is absent here, so drain the sink the way it would and write frames.
+        let mut out = Vec::new();
+        while let Some(items) = sink.take() {
+            for item in items {
+                protocol::codec::write_frame(&mut out, &item.into_message()).unwrap();
+            }
+        }
+        let mut cur = std::io::Cursor::new(out);
+        while let Some(m) = read_frame::<_, ServerMessage>(&mut cur).unwrap() {
+            if let ServerMessage::Event(Event::Exited { code: Some(3), .. }) = m {
+                exits += 1;
+            }
+        }
+        assert_eq!(exits, 1);
     }
 }

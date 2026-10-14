@@ -19,6 +19,7 @@ fn scan(state: &Shared, ttl: Duration) {
     let sessions: Vec<_> = state.lock().unwrap().sessions.values().cloned().collect();
     for s in &sessions {
         s.poll_exit();
+        s.escalate_kill();
     }
     let mut dead = Vec::new();
     for s in &sessions {
