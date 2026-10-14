@@ -9,6 +9,7 @@ mod empty_pane;
 mod keys;
 mod keymap;
 mod layout;
+mod line_edit;
 mod motion;
 mod palette;
 mod pane_view;
