@@ -514,7 +514,13 @@ impl Render for Root {
         let size = window.viewport_size();
         let banner_h = if self.status.is_empty() { 0.0 } else { BANNER_H };
         let (top, bottom) = (chrome::TOP_BAR_H, chrome::STATUS_BAR_H);
-        let content = Rect { x: 0.0, y: top + banner_h, w: f32::from(size.width), h: f32::from(size.height) - top - bottom - banner_h };
+        // A window shorter than its chrome would give a negative height; lay out at zero instead.
+        let content = Rect {
+            x: 0.0,
+            y: top + banner_h,
+            w: f32::from(size.width).max(0.0),
+            h: (f32::from(size.height) - top - bottom - banner_h).max(0.0),
+        };
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.
             self.grids.clear();
@@ -676,6 +682,11 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions { title: Some("Sarkos IDE".into()), ..Default::default() }),
+                    // One minimum pane with its border, tab bar and the window's chrome.
+                    window_min_size: Some(size(
+                        px(tree::MIN_PANE_W + 8.0),
+                        px(tree::MIN_PANE_H + pane_view::TAB_BAR_H + chrome::TOP_BAR_H + chrome::STATUS_BAR_H),
+                    )),
                     ..Default::default()
                 },
                 move |_, cx| {

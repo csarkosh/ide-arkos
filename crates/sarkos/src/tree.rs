@@ -255,9 +255,13 @@ fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32, first: &Node,
         second.min_extent(orientation),
     );
     // In a sliver narrower than two handles the handle shrinks so it never outgrows its split.
+    // A negative or NaN extent (a window shorter than its chrome) lays out as zero.
+    let extent = extent.max(0.0);
     let gap = HANDLE.min(extent / 2.0);
-    let total = extent - gap;
+    let total = (extent - gap).max(0.0);
     let wanted = total * ratio;
+    // Every clamp below has min <= max: the first because the minimums fit, the second because
+    // `total` is never negative.
     let first_len = if total >= min_first + min_second { wanted.clamp(min_first, total - min_second) } else { wanted.clamp(0.0, total) };
     match orientation {
         Orientation::Horizontal => (
@@ -570,6 +574,9 @@ impl Tree {
     }
 
     pub fn set_ratio(&mut self, split: SplitId, ratio: f32) {
+        if !ratio.is_finite() {
+            return;
+        }
         if let Some(Node::Split { ratio: r, .. }) = self.root.find_split_mut(split) {
             *r = ratio.clamp(MIN_RATIO, MAX_RATIO);
         }
@@ -829,6 +836,19 @@ mod tests {
         t.reset_ratio(split);
         assert_eq!(t.split_of(split).unwrap().1, 0.5);
         assert!(r(b).w > 0.0);
+    }
+
+    #[test]
+    fn set_ratio_ignores_non_finite_ratios() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        t.split(a, Side::Right, term(2));
+        let split = t.layout(bounds()).handles[0].0;
+        t.set_ratio(split, 0.3);
+        for r in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            t.set_ratio(split, r);
+            assert_eq!(t.split_of(split).unwrap().1, 0.3);
+        }
     }
 
     #[test]
@@ -1129,6 +1149,25 @@ mod tests {
                 prop_assert_eq!(t.pane_index(*p), Some(i));
             }
             prop_assert_eq!(t.pane_at(panes.len()), None);
+        }
+
+        #[test]
+        fn layout_never_panics_at_tiny_bounds(ops in proptest::collection::vec(op(), 0..30), w in 0.0f32..=200.0, h in 0.0f32..=200.0) {
+            let mut t = Tree::new(term(1));
+            let mut next = 1;
+            for op in &ops {
+                apply(&mut t, op, &mut next);
+            }
+            for maximized in [t.maximized, None] {
+                t.maximized = maximized;
+                let l = t.layout(Rect { x: 0.0, y: 0.0, w, h });
+                let rects: Vec<Rect> = l.panes.iter().map(|(_, r)| *r).chain(l.handles.iter().map(|(_, _, r, _)| *r)).collect();
+                for r in rects {
+                    prop_assert!(r.w.is_finite() && r.h.is_finite() && r.w >= 0.0 && r.h >= 0.0, "{r:?} in {w}x{h}");
+                }
+            }
+            // The window clamps its content to zero, but a negative extent must not panic either.
+            t.layout(Rect { x: 0.0, y: 0.0, w: -w, h: -h });
         }
 
         #[test]
