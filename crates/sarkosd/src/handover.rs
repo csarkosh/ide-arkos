@@ -9,8 +9,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 pub const FORMAT: u32 = 2;
-/// The oldest format `read` still decodes. `--check-handover` prints this, and a daemon accepts
-/// a candidate whose oldest readable format is at most the format it writes.
+/// The oldest format `read` still decodes. `--check-handover` prints this, `--handover-formats`
+/// prints it with FORMAT. A daemon accepts a candidate that answers exactly `handover <FORMAT>`
+/// to `--check-handover`, or whose `--handover-formats` range covers FORMAT.
 pub const OLDEST_READ: u32 = 1;
 /// How long output must have stopped before a session's ring is written to disk, unless
 /// `--flush-quiet-millis` says otherwise; also what a format 1 file, which lacks it, resumes with.
