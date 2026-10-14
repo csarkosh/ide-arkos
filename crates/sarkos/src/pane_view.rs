@@ -43,14 +43,14 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
     ElementId::NamedInteger(format!("{kind}-{pane}").into(), idx as u64)
 }
 
-pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, _window: &mut Window, cx: &mut Context<Root>) -> Div {
+pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focused = root.tree.focused == pane;
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
     let bar = render_tab_bar(root, pane, &p, number, cx);
     let body = match p.tabs.get(p.active) {
-        None => render_no_tabs(root, pane, cx),
+        None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
             Some(terminal) => render_terminal(root, terminal, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
@@ -270,19 +270,10 @@ fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Conte
         .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(rgb(DIM)).font_family("Menlo").text_size(px(font_size)).child(text))
 }
 
-/// Placeholder until Task 8 brings the friendly empty state.
-fn render_no_tabs(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> Div {
+/// The friendly empty state (spec 4).
+fn render_no_tabs(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let focus = pane_focus(root, pane, cx);
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .track_focus(&focus)
-        .text_color(rgb(DIM))
-        .font_family("Menlo")
-        .text_size(px(14.0))
-        .child("No tabs. Press Ctrl+Shift+` for a new terminal.")
+    crate::empty_pane::render(root, pane, rect.w, rect.h - TAB_BAR_H, focus, window, cx)
 }
 
 /// A pane without a terminal still needs something to focus so Cmd+N and typing land somewhere.

@@ -1,8 +1,11 @@
+mod chrome;
 mod client;
 mod drag;
+mod empty_pane;
 mod keys;
 mod keymap;
 mod layout;
+mod motion;
 mod palette;
 mod pane_view;
 mod paths;
@@ -71,6 +74,8 @@ pub struct Root {
     /// Where a dragged tab would land if released now. Cleared on drop, on a release anywhere
     /// else, and on the first move after a release outside the window.
     pub drop_target: Option<drag::DropTarget>,
+    /// When each empty pane's animation started; settled panes keep an old instant.
+    pub empty_anim: HashMap<PaneId, std::time::Instant>,
 }
 
 impl Root {
@@ -93,6 +98,7 @@ impl Root {
             pane_order: Vec::new(),
             closed: Vec::new(),
             drop_target: None,
+            empty_anim: HashMap::new(),
         }
     }
 
@@ -111,6 +117,7 @@ impl Root {
         self.grids.remove(&pane);
         self.grid_waiters.remove(&pane);
         self.pane_focus.remove(&pane);
+        self.empty_anim.remove(&pane);
     }
 
     /// Forgets per-pane state for panes no longer in the tree, whatever removed them.
@@ -120,6 +127,7 @@ impl Root {
             .keys()
             .chain(self.grid_waiters.keys())
             .chain(self.pane_focus.keys())
+            .chain(self.empty_anim.keys())
             .copied()
             .filter(|p| !self.pane_order.contains(p))
             .collect();
@@ -504,7 +512,8 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         let banner_h = if self.status.is_empty() { 0.0 } else { BANNER_H };
-        let content = Rect { x: 0.0, y: banner_h, w: f32::from(size.width), h: f32::from(size.height) - banner_h };
+        let (top, bottom) = (chrome::TOP_BAR_H, chrome::STATUS_BAR_H);
+        let content = Rect { x: 0.0, y: top + banner_h, w: f32::from(size.width), h: f32::from(size.height) - top - bottom - banner_h };
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.
             self.grids.clear();
@@ -522,6 +531,10 @@ impl Render for Root {
                 window.focus(&f);
             }
         }
+        let project_name = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count();
+        let daemon = if self.status.is_empty() { "sarkosd connected" } else { "sarkosd: see banner" };
+        let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0);
         let root_div = div()
             .size_full()
             .key_context("Root")
@@ -567,8 +580,10 @@ impl Render for Root {
                     }
                 }),
             )
+            .child(chrome::top_bar(&project_name))
             .children((!self.status.is_empty()).then(|| banner_bar(self.status.clone())))
-            .child(div().flex_1().min_h_0().child(body));
+            .child(div().flex_1().min_h_0().child(body))
+            .child(status_bar);
         keymap::attach(root_div, cx)
     }
 }
