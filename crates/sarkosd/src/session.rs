@@ -314,7 +314,9 @@ pub struct Session {
     /// The agent inside, from its SessionStart hook; its SessionEnd hook clears it. A leaf lock:
     /// never taken while `state` or `child` is held, and neither of those is taken under it.
     agent: Mutex<Option<AgentRecord>>,
-    recovered: bool,
+    /// Recreated by `--recover`, until the user first types into it (the window's note clears
+    /// at that moment too, and must not come back with the next list).
+    recovered: AtomicBool,
 }
 
 struct SessionState {
@@ -390,7 +392,7 @@ impl Session {
             nice: spec.nice,
             env: spec.env,
             agent: Mutex::new(spec.agent),
-            recovered: spec.recovered,
+            recovered: AtomicBool::new(spec.recovered),
         });
         if start_reader {
             Self::start_reader(session.clone());
@@ -683,7 +685,7 @@ impl Session {
             nice: self.nice,
             env: self.env.clone(),
             agent,
-            recovered: self.recovered,
+            recovered: self.recovered.load(Ordering::Relaxed),
         }
     }
 
@@ -734,7 +736,7 @@ impl Session {
             nice: record.nice,
             env: record.env.clone(),
             agent: Mutex::new(record.agent.clone()),
-            recovered: record.recovered,
+            recovered: AtomicBool::new(record.recovered),
         });
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
@@ -805,7 +807,12 @@ impl Session {
 
     /// `info` releases the state lock before `agent` takes its own, so the two never nest.
     pub fn detail(&self) -> SessionDetail {
-        SessionDetail { info: self.info(), recovered: self.recovered, agent: self.agent() }
+        SessionDetail { info: self.info(), recovered: self.recovered.load(Ordering::Relaxed), agent: self.agent() }
+    }
+
+    /// The user typed into it: it no longer reads as resumed after a restart.
+    pub fn clear_recovered(&self) {
+        self.recovered.store(false, Ordering::Relaxed);
     }
 
     pub fn replay_capacity(&self) -> usize {

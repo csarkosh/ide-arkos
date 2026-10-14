@@ -964,13 +964,14 @@ impl Root {
     }
 
     /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen
-    /// them later) and the pending layout save is written.
-    pub fn flush_for_quit(&mut self) {
+    /// them later) and the pending layout save is written. `goodbye` is whether a Goodbye was
+    /// queued just before, which the same wait covers.
+    pub fn flush_for_quit(&mut self, goodbye: bool) {
         let killed = self.end_closed_tabs();
-        // The process may exit before the writer thread sends the Kills; wait for them, briefly.
-        // The client is the current connection's, whichever reconnect that is.
-        if killed > 0 && !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
-            eprintln!("sarkos: could not send {killed} kill requests before quitting");
+        // The process may exit before the writer thread sends what is queued; wait for it, once
+        // and briefly. The client is the current connection's, whichever reconnect that is.
+        if (killed > 0 || goodbye) && !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
+            eprintln!("sarkos: could not send {killed} kill requests{} before quitting", if goodbye { " and the goodbye" } else { "" });
         }
         workspace::flush_now(&self.save_queue);
     }
@@ -979,11 +980,7 @@ impl Root {
     /// the flush every quit does. Not for the relaunch an update makes (`RelaunchAccepted`).
     pub fn leaving(&mut self) {
         self.sessions.goodbye();
-        self.flush_for_quit();
-        // The process exits next; unwritten, the Goodbye would be lost with it.
-        if !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
-            eprintln!("sarkos: could not send goodbye before quitting");
-        }
+        self.flush_for_quit(true);
     }
 
     /// A connection is up (the first one, or a reconnect): its session list reconciles the tree.
@@ -1107,7 +1104,7 @@ impl Root {
                 self.show_notice(format!("update failed: {e}"), cx);
             }
             Outcome::RelaunchAccepted => {
-                self.flush_for_quit();
+                self.flush_for_quit(false);
                 cx.quit();
             }
             Outcome::RelaunchRefused(e) => {
@@ -1466,7 +1463,7 @@ fn main() {
         // The same client the root was built with; reconnects replace it from here on.
         connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events), cx);
         update::start(root.clone(), cx);
-        pulse::start(root.clone(), cx);
+        pulse::start(root.downgrade(), cx);
 
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();

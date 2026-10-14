@@ -1412,6 +1412,9 @@ fn recover_brings_back_sessions_with_their_history_and_runs_the_resume_command()
         text.push_str(&String::from_utf8_lossy(&c.wait_for_output(sid, "RESUMED t1")));
     }
     assert!(text.find("RESUMED t1").unwrap() > divider, "the typed resume command ran in the new shell");
+    assert!(detailed(&mut c)[0].recovered, "the resume line the daemon typed is not the user typing");
+    assert_eq!(c.request(Request::Input { session: sid, bytes: b"\n".to_vec() }), Response::Ok);
+    assert!(!detailed(&mut c)[0].recovered, "the user typed: the note must not come back with the next list");
     let newer = c.create("/bin/sh");
     assert!(newer.0 > sid.0, "ids stay unique after a recovery");
 }

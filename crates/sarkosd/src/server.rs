@@ -495,7 +495,11 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             Response::Ok
         }
         Request::Input { session: sid, bytes } => match session(sid) {
-            Some(s) => match s.write(&bytes) {
+            Some(s) => match {
+                // Only the window's Input: the resume line `recover` types uses `write` directly.
+                s.clear_recovered();
+                s.write(&bytes)
+            } {
                 Ok(()) => Response::Ok,
                 Err(e) => Response::Error(format!("write failed: {e:#}")),
             },

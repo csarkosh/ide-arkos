@@ -495,6 +495,7 @@ mod tests {
     fn tab_labels_show_state_after_the_title() {
         assert_eq!(tab_label("vim", "zsh", true, None, None, None), "vim");
         assert_eq!(tab_label("", "shell", true, None, None, None), "shell");
+        assert_eq!(tab_label("", "fish", true, None, None, None), "fish");
         assert_eq!(tab_label("", "zsh", false, Some(1), None, None), "zsh (ended, exit 1)");
         assert_eq!(tab_label("vim", "zsh", false, None, None, None), "vim (ended)");
         assert_eq!(tab_label("", "zsh", true, None, Some(Note::Restarted), None), "zsh (restarted)");

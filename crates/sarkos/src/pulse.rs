@@ -2,7 +2,7 @@
 //! paused while the window is not active and held still under Reduce Motion (spec 7.1).
 
 use crate::Root;
-use gpui::{App, Entity};
+use gpui::{App, WeakEntity};
 use std::time::Duration;
 
 /// One breath.
@@ -26,11 +26,11 @@ pub fn alpha(elapsed: Duration, reduce_motion: bool) -> f32 {
 
 /// Repaints the window every `TICK` while a tab is working and the window is active, and
 /// looks every `IDLE_TICK` otherwise. One task per window, for its whole life.
-pub fn start(root: Entity<Root>, cx: &mut App) {
+pub fn start(root: WeakEntity<Root>, cx: &mut App) {
     cx.spawn(async move |cx| loop {
         // The window is gone when the update fails: the task ends with it.
         let Ok(pulsing) = root.update(cx, |root, cx| {
-            let pulsing = root.window_active && !crate::motion::reduce_motion() && root.sessions.any_working();
+            let pulsing = root.window_active && !crate::motion::reduce_motion() && root.sessions.any_working(&root.tree);
             if pulsing {
                 cx.notify();
             }

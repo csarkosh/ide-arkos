@@ -258,7 +258,8 @@ impl SessionManager {
         self.pending.insert(id, Pending::List);
     }
 
-    /// Records what the daemon's list says about each session.
+    /// Records what the daemon's list says about each session. A "resumed" note comes back only
+    /// until the user types into the session: the daemon clears its `recovered` on that Input.
     pub fn note_list(&mut self, list: &[SessionDetail]) {
         for d in list {
             self.states.insert(d.info.id, d.info.state);
@@ -288,8 +289,10 @@ impl SessionManager {
         tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { session } if self.states.get(session) == Some(&ClaudeState::Waiting))).count()
     }
 
-    pub fn any_working(&self) -> bool {
-        self.states.values().any(|s| *s == ClaudeState::Working)
+    /// Whether a terminal tab in the tree shows a working agent. The list carries every
+    /// project's sessions, and one no tab shows gets no `State` events to end its `Working`.
+    pub fn any_working(&self, tree: &Tree) -> bool {
+        tree.tabs().into_iter().any(|(_, _, tab)| matches!(tab, Tab::Terminal { session } if self.states.get(session) == Some(&ClaudeState::Working)))
     }
 
     /// The user is quitting this window: a restart must not reopen it (section 11 step 4).
@@ -338,7 +341,8 @@ impl SessionManager {
         self.transport.send(Request::Detach { session });
         self.terminals.remove(&session);
         self.notes.remove(&session);
-        // No tab shows it now: its state would keep the pulse ticking for nothing.
+        // No tab shows it now and no `State` event reaches it: a reopen starts from idle rather
+        // than from a stale state.
         self.states.remove(&session);
         self.restoring.remove(&session);
         self.backlog.remove(&session);
@@ -593,9 +597,11 @@ mod tests {
         m.note_state(SessionId(2), ClaudeState::Waiting);
         m.note_state(SessionId(9), ClaudeState::Waiting);
         assert_eq!(m.waiting_count(&tree), 2, "a session no tab shows is not counted");
-        assert!(!m.any_working());
+        assert!(!m.any_working(&tree));
+        m.note_state(SessionId(8), ClaudeState::Working);
+        assert!(!m.any_working(&tree), "another project's session, or one reconcile replaced, never pulses here");
         m.note_state(SessionId(2), ClaudeState::Working);
-        assert!(m.any_working());
+        assert!(m.any_working(&tree));
         assert_eq!(m.waiting_count(&tree), 1);
     }
 
@@ -621,7 +627,7 @@ mod tests {
         m.note_events(&[Event::Exited { session: SessionId(1), code: Some(0) }]);
         assert_eq!(m.states.get(&SessionId(1)), None);
         m.detach(SessionId(2));
-        assert!(!m.any_working(), "a closed tab's session no longer pulses");
+        assert_eq!(m.states.get(&SessionId(2)), None, "a closed tab's session forgets its state");
     }
 
     fn term(n: u64) -> Tab {
