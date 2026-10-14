@@ -374,6 +374,9 @@ fn render_terminal(terminal: Entity<Terminal>, family: SharedString, theme: &The
                 .text_size(px(12.0))
                 .cursor_pointer()
                 .child("jump to bottom")
+                // The terminal's own mouse-down closes an open find bar; the pill is not a click
+                // in the terminal.
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
         .children(find::render(&terminal, theme, family, cx))

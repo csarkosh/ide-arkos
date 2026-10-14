@@ -717,6 +717,8 @@ impl Root {
                 if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| {
                         t.core.clear_scrollback();
+                        // An open find bar's count and highlights follow on the next frame.
+                        t.mark_find_stale();
                         cx.notify();
                     });
                 }
