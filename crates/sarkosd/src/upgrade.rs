@@ -92,6 +92,23 @@ pub fn abort(state: &Shared) {
     state.lock().unwrap().upgrading = false;
 }
 
+/// Held by the request that claimed the slot, from `begin` until `validate` and `execute` are
+/// done: if either unwinds, the slot is released, or creates and kills would be refused for the
+/// daemon's life. It does nothing on a normal return, where `abort` or `restore` has released
+/// the slot once already (releasing it again could clear a slot another client has claimed
+/// since), and a successful exec never returns at all.
+pub struct SlotGuard<'a>(pub &'a Shared);
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            // A second panic here would abort the process: take the lock even if poisoned.
+            self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).upgrading = false;
+            eprintln!("sarkosd: the upgrade panicked; the old daemon keeps running");
+        }
+    }
+}
+
 /// The handover file's path: next to the socket, named by this pid.
 pub fn handover_path(socket: &Path) -> PathBuf {
     socket.with_file_name(format!("handover-{}.bin", std::process::id()))
@@ -208,5 +225,24 @@ mod tests {
         assert_eq!(creates_settled(1, Duration::from_millis(100)), None, "keep waiting");
         assert_eq!(creates_settled(2, CREATE_TIMEOUT), Some(false));
         assert_eq!(CREATE_TIMEOUT, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_panic_while_the_slot_is_held_releases_it_and_a_return_does_not() {
+        use crate::server::State;
+        use std::sync::{Arc, Mutex};
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        begin(&state).unwrap();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _slot = SlotGuard(&state);
+            panic!("validate or execute unwinds");
+        }));
+        assert!(unwound.is_err());
+        assert!(!state.lock().unwrap().upgrading, "creates and kills are served again");
+        // A normal return leaves the slot to abort or restore, which release it exactly once:
+        // after that it may already belong to another client's upgrade.
+        begin(&state).unwrap();
+        drop(SlotGuard(&state));
+        assert!(state.lock().unwrap().upgrading);
     }
 }

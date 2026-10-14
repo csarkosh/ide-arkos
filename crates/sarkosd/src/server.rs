@@ -338,6 +338,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             if let Err(e) = crate::upgrade::begin(state) {
                 return Some(Response::Error(e));
             }
+            let _released_if_this_unwinds = crate::upgrade::SlotGuard(state);
             if let Err(e) = crate::upgrade::validate(&exe) {
                 crate::upgrade::abort(state);
                 return Some(Response::Error(e));
