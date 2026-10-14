@@ -48,12 +48,13 @@ pub fn installed(path: &Path) -> bool {
 }
 
 /// What to do so the file matches the config: `Some(true)` install (or rewrite), `Some(false)`
-/// remove, `None` leave it. "ask" never touches it: the palette does, with the user's say-so.
+/// remove, `None` leave it. "ask" never adds or removes it (the palette does, with the user's
+/// say-so) but keeps an installed one current: the binary or the `[daemon]` values may have moved.
 pub fn desired(mode: StartAtLogin, installed: bool) -> Option<bool> {
     match (mode, installed) {
-        (StartAtLogin::On, _) => Some(true),
+        (StartAtLogin::On, _) | (StartAtLogin::Ask, true) => Some(true),
         (StartAtLogin::Off, true) => Some(false),
-        (StartAtLogin::Off, false) | (StartAtLogin::Ask, _) => None,
+        (StartAtLogin::Off, false) | (StartAtLogin::Ask, false) => None,
     }
 }
 
@@ -73,26 +74,28 @@ fn launchctl(args: &[&str]) -> Result<(), String> {
 
 /// Writes the plist and loads it into this login session, so a bad file fails now rather than
 /// at the next login. Loading runs `sarkosd --recover` once, which exits at once while a daemon
-/// is listening. Blocks on launchctl: call it off the UI thread.
-pub fn install(path: &Path, contents: &str) -> Result<(), String> {
+/// is listening. `Ok(true)` when it wrote and loaded, `Ok(false)` when the file already matched
+/// (nothing done). Blocks on launchctl: call it off the UI thread.
+pub fn install(path: &Path, contents: &str) -> Result<bool, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     if std::fs::read_to_string(path).ok().as_deref() == Some(contents) {
-        return Ok(());
+        return Ok(false);
     }
     std::fs::write(path, contents).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     // A definition already loaded (an earlier install) must go before the new one loads.
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", gui_domain())]);
-    launchctl(&["bootstrap", &gui_domain(), &path.to_string_lossy()])
+    launchctl(&["bootstrap", &gui_domain(), &path.to_string_lossy()])?;
+    Ok(true)
 }
 
-/// Unloads and deletes the agent. A missing file is fine.
-pub fn remove(path: &Path) -> Result<(), String> {
+/// Unloads and deletes the agent. A missing file is fine (`Ok(false)`); `Ok(true)` when it removed one.
+pub fn remove(path: &Path) -> Result<bool, String> {
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", gui_domain())]);
     match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(format!("cannot remove {}: {e}", path.display())),
     }
 }
@@ -122,7 +125,16 @@ mod tests {
         assert_eq!(desired(StartAtLogin::Off, true), Some(false));
         assert_eq!(desired(StartAtLogin::Off, false), None);
         assert_eq!(desired(StartAtLogin::Ask, false), None);
-        assert_eq!(desired(StartAtLogin::Ask, true), None);
+        assert_eq!(desired(StartAtLogin::Ask, true), Some(true), "an installed item follows the binary and the daemon settings");
+    }
+
+    #[test]
+    fn an_unchanged_file_is_neither_rewritten_nor_reloaded_and_a_missing_one_is_not_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.plist");
+        std::fs::write(&p, "same").unwrap();
+        assert_eq!(install(&p, "same"), Ok(false), "returns before launchctl");
+        assert_eq!(remove(&dir.path().join("none.plist")), Ok(false));
     }
 
     #[test]

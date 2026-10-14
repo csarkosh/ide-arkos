@@ -257,6 +257,8 @@ mod tests {
         assert_eq!(find(&ask_on, "Start at login").detail, "on: run to turn off");
         let pinned = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, StartAtLogin::On, true, settings);
         assert_eq!(find(&pinned, "Start at login").detail, "on, set in config.toml ([recovery] start_at_login)");
+        let off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, StartAtLogin::Off, false, settings);
+        assert_eq!(find(&off, "Start at login").detail, "off, set in config.toml ([recovery] start_at_login)");
         let hooks = find(&ask_off, "Install Claude Code hooks");
         assert_eq!(hooks.detail, "into /Users/me/.claude/settings.json");
         assert_eq!(hooks.command, Command::InstallHooks);

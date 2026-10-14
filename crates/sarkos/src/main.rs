@@ -938,9 +938,11 @@ impl Root {
                 .background_executor()
                 .spawn(async move { if on { launch_agent::install(&path, &contents) } else { launch_agent::remove(&path) } })
                 .await;
+            // A reload that changed nothing stays quiet: no notice replaces what is showing.
             let text = match (on, result) {
-                (true, Ok(())) => "start at login is on: after a restart, sessions come back on their own".to_string(),
-                (false, Ok(())) => "start at login is off".to_string(),
+                (_, Ok(false)) => return,
+                (true, Ok(true)) => "start at login is on: after a restart, sessions come back on their own".to_string(),
+                (false, Ok(true)) => "start at login is off".to_string(),
                 (_, Err(e)) => format!("start at login: {e}"),
             };
             let _ = root.update(cx, |root, cx| root.show_notice(text, cx));

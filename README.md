@@ -10,7 +10,11 @@ Written in Rust with GPUI. The design is in
 
 ## Status
 
-Session awareness and recovery after a restart: each tab shows what its Claude Code session is doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart brings every session back on its own: the same folders, the history on screen under a divider, and each Claude Code conversation resumed. Milestone 4 (the sidebar) is next.
+Session awareness and recovery after a restart: each tab shows what its Claude Code session is
+doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the
+shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
+brings every session back on its own: the same folders, the history on screen under a divider, and
+each Claude Code conversation resumed. Milestone 4 (the sidebar) is next.
 
 Things only a person at the screen can check, in order of value:
 
@@ -25,10 +29,10 @@ Things only a person at the screen can check, in order of value:
 - Cmd+Q a window, then the restart: that project does not reopen
 - `start_at_login = "off"` in the config: the plist is gone within a second; `"on"`: it is back
 - with four `claude` sessions running, `cargo build --release` a change into place, wait for
-  "update ready" in the status bar (or relaunch), run "Update now" from the palette: the window
+  "update ready" in the title bar (or relaunch), run "Update now" from the palette: the window
   reappears with every tab, every history and every agent still running; `sarkosd`'s pid in
   `ps` is unchanged and its log shows "upgrading to" and "resumed N sessions" under a second apart
-- `pkill -x sarkosd` with the window open: tabs say "reconnecting", the status bar too; after ten
+- `pkill -x sarkosd` with the window open: tabs say "reconnecting", the title bar too; after ten
   seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
   "(restarted)"
 - "Update now" when nothing changed relaunches the window and every tab comes back attached
@@ -96,7 +100,9 @@ What does not come back: whatever was executing at that moment (a half-finished 
 running build, shell variables, background jobs). Claude Code's transcript records the
 unfinished tool, and the agent continues from there once asked; recovery only resumes, it never
 sends a message. Everything stays on this Mac. `[recovery] start_at_login` in the config pins
-it on or off; "ask", the default, shows a one-line notice at launch until you decide.
+it on or off; "ask", the default, shows a one-line notice at launch until you decide. While the
+login item is installed it follows the binary and the `[daemon]` settings: a moved binary or an
+edited value rewrites it.
 
 ## Keyboard
 
@@ -164,7 +170,8 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
-the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), and `sidebar` and `browser` for later milestones.
+the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), and `sidebar` and `browser` for
+later milestones.
 
 Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
@@ -175,12 +182,15 @@ otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) a
 ## Updating
 
 Sessions live in `sarkosd`, so updating never ends one. After `brew upgrade sarkos`, or
-`cargo build --release` into the binaries you run, the status bar shows "update ready" within
+`cargo build --release` into the binaries you run, the title bar shows "update ready" within
 five minutes (or at the next launch), and the palette's "Update now" does the rest: if the
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
 process (same pid, the shells stay its children) and the window reconnects; then the window
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
-history. The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows, and reads the previous handover format, so updating from the update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x sarkosd` (the old daemon knows nothing of handovers), which ends every session.
+history. The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows,
+and reads the previous handover format, so updating from the update-in-place build is an ordinary
+"Update now". Upgrading from milestone 2b is the one update that needs `pkill -x sarkosd` (the old
+daemon knows nothing of handovers), which ends every session.
 
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
 shows the error. If the window loses the daemon for ten seconds, it starts a new one and every
