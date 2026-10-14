@@ -2,6 +2,7 @@ mod app_nap;
 mod chrome;
 mod client;
 mod closed_stack;
+mod command_palette;
 mod config;
 mod config_watch;
 mod drag;
@@ -97,6 +98,8 @@ pub struct Root {
     /// The theme that did not load, shown under `config_error`. Set and cleared by whatever last
     /// tried to switch theme, so a config reload and a theme problem never clobber each other.
     pub theme_error: Option<String>,
+    /// The command palette while it is open (Cmd+Shift+P).
+    pub palette: Option<command_palette::Palette>,
 }
 
 /// The name a tab shows before its program sets a title: the basename of `$SHELL`, else "shell".
@@ -141,6 +144,7 @@ impl Root {
             system_is_dark,
             config_error: None,
             theme_error: None,
+            palette: None,
         }
     }
 
@@ -175,7 +179,13 @@ impl Root {
     /// Loads the theme the config and appearance name and switches to it if it differs. A theme
     /// that fails to load keeps the current one; `theme_error` says so until a load succeeds.
     fn switch_theme(&mut self, cx: &mut Context<Self>) {
-        let (switch, banner) = theme::keep_or_switch(&self.theme, self.resolve_theme());
+        self.switch_theme_to(self.resolve_theme(), cx);
+    }
+
+    /// Switches to `wanted` if it loaded and differs; a load error keeps the current theme and
+    /// sets `theme_error`, a success clears it.
+    fn switch_theme_to(&mut self, wanted: Result<theme::Theme, String>, cx: &mut Context<Self>) {
+        let (switch, banner) = theme::keep_or_switch(&self.theme, wanted);
         if let Some(t) = switch {
             self.set_theme(t, cx);
         }
@@ -442,6 +452,62 @@ impl Root {
         }
     }
 
+    /// Cmd+Shift+P: opens the palette with every action, preset and theme, or closes it.
+    pub fn toggle_palette(&mut self, cx: &mut Context<Self>) {
+        if self.palette.is_some() {
+            self.close_palette(cx);
+            return;
+        }
+        let items = command_palette::items(&self.config, &theme::names(&paths::themes_dir()), &self.text_preset, &self.theme.name);
+        self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
+        cx.notify();
+    }
+
+    pub fn close_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette = None;
+        cx.notify();
+    }
+
+    /// A key typed while the palette has focus: edits the query, moves the selection, runs the
+    /// selected command (Enter) or closes the palette (Escape). Cmd+V pastes into the query.
+    pub fn palette_key(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                if let Some(p) = self.palette.as_mut() {
+                    p.query.insert_str(&text);
+                    p.refilter();
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        let Some(p) = self.palette.as_mut() else { return };
+        match p.query.handle(ks) {
+            line_edit::Edit::Changed => p.refilter(),
+            line_edit::Edit::Up => p.step(-1),
+            line_edit::Edit::Down => p.step(1),
+            line_edit::Edit::Submit | line_edit::Edit::SubmitBack => {
+                self.run_palette_selection(window, cx);
+                return;
+            }
+            line_edit::Edit::Cancel => {
+                self.close_palette(cx);
+                return;
+            }
+            line_edit::Edit::Unchanged => {}
+        }
+        cx.notify();
+    }
+
+    /// Closes the palette and runs the selected command, if any row is visible.
+    pub fn run_palette_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cmd = self.palette.as_ref().and_then(|p| p.selected_command());
+        self.close_palette(cx);
+        if let Some(cmd) = cmd {
+            self.run(cmd, window, cx);
+        }
+    }
+
     /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
     /// still lands the right one, and one whose tab closed does nothing. The source pane closes
     /// only when the drag emptied it, and never when it is the last pane (spec 4).
@@ -636,6 +702,8 @@ impl Root {
                 }
                 cx.notify();
             }
+            CommandPalette => self.toggle_palette(cx),
+            SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
         }
         let _ = window;
     }
@@ -801,10 +869,15 @@ impl Render for Root {
         }
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
-        // Focus follows the tree: the focused pane's terminal, or the pane's own handle.
-        let wanted = match self.active_terminal(cx) {
-            Some(t) => Some(t.read(cx).focus.clone()),
-            None => self.pane_focus.get(&self.tree.focused).cloned(),
+        // Focus follows the tree: the focused pane's terminal, or the pane's own handle. The
+        // palette holds it while it is open.
+        let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
+            Some(f)
+        } else {
+            match self.active_terminal(cx) {
+                Some(t) => Some(t.read(cx).focus.clone()),
+                None => self.pane_focus.get(&self.tree.focused).cloned(),
+            }
         };
         if let Some(f) = wanted {
             if !f.is_focused(window) {
@@ -817,6 +890,7 @@ impl Render for Root {
         let family = self.family();
         let status_bar = chrome::status_bar(&self.project, daemon, sessions, 0, family.clone(), &theme);
         let root_div = div()
+            .relative()
             .size_full()
             .key_context("Root")
             .bg(theme.chrome.window_bg.hsla())
@@ -864,7 +938,8 @@ impl Render for Root {
             .child(chrome::top_bar(&project_name, family.clone(), &theme))
             .children(banners.into_iter().map(|text| banner_bar(text, family.clone(), &theme)))
             .child(div().flex_1().min_h_0().child(body))
-            .child(status_bar);
+            .child(status_bar)
+            .children(command_palette::render(self, cx));
         keymap::attach(root_div, cx)
     }
 }

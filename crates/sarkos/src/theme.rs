@@ -134,7 +134,6 @@ pub fn load(name: &str, dir: &Path) -> Result<Theme, String> {
 }
 
 /// Built-in names plus every `*.toml` stem in `dir`, sorted and deduplicated.
-#[cfg_attr(not(test), allow(dead_code))] // The command palette's theme list reads it from Task 8 on.
 pub fn names(dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = BUILTIN.iter().map(|(n, _)| n.to_string()).collect();
     if let Ok(entries) = std::fs::read_dir(dir) {

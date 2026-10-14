@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearScrollback, FontBigger, FontSmaller,
-        OpenConfig, Quit
+        OpenConfig, CommandPalette, Quit
     ]
 );
 
@@ -48,6 +48,10 @@ pub enum Command {
     ReloadConfig,
     /// Write the built-in themes into the themes folder (the palette runs it).
     ExtractThemes,
+    /// Open the command palette, or close it when it is open.
+    CommandPalette,
+    /// Switch to the named theme for this run; the config file is the only place a theme is kept.
+    SetTheme(String),
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -62,7 +66,7 @@ const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: None }
 }
 
-/// The spec's table (section 4) plus open config and quit. The order is the registration order.
+/// The spec's table (section 4) plus open config, the command palette and quit. The order is the registration order.
 pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
@@ -84,6 +88,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("new terminal tab", "ctrl-shift-`"),
     row("font bigger", "cmd-="), row("font smaller", "cmd--"),
     row("open config", "cmd-,"),
+    row("command palette", "cmd-shift-p"),
     row("quit", "cmd-q"),
 ];
 
@@ -124,6 +129,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "font bigger" => KeyBinding::new(keys, FontBigger, context),
         "font smaller" => KeyBinding::new(keys, FontSmaller, context),
         "open config" => KeyBinding::new(keys, OpenConfig, context),
+        "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -192,6 +198,93 @@ pub fn bindings() -> Vec<KeyBinding> {
     bindings_for(&BTreeMap::new())
 }
 
+/// A keystroke the way the Mac writes it: `cmd-shift-p` is `Shift+Cmd+P` (Apple's menu order:
+/// Control, Option, Shift, Command), chords join with " then ".
+pub fn pretty_keys(keys: &str) -> String {
+    keys.split_whitespace()
+        .map(|stroke| {
+            let Ok(k) = Keystroke::parse(stroke) else { return stroke.to_string() };
+            let mut parts = Vec::new();
+            if k.modifiers.control {
+                parts.push("Ctrl".to_string());
+            }
+            if k.modifiers.alt {
+                parts.push("Option".to_string());
+            }
+            if k.modifiers.shift {
+                parts.push("Shift".to_string());
+            }
+            if k.modifiers.platform {
+                parts.push("Cmd".to_string());
+            }
+            let key = match k.key.as_str() {
+                "left" => "Left".to_string(),
+                "right" => "Right".to_string(),
+                "up" => "Up".to_string(),
+                "down" => "Down".to_string(),
+                "enter" => "Enter".to_string(),
+                "tab" => "Tab".to_string(),
+                "escape" => "Escape".to_string(),
+                "backspace" => "Backspace".to_string(),
+                "space" => "Space".to_string(),
+                other => other.to_uppercase(),
+            };
+            parts.push(key);
+            parts.join("+")
+        })
+        .collect::<Vec<_>>()
+        .join(" then ")
+}
+
+/// An action name as a palette label: first letter upper-cased.
+pub fn label(name: &str) -> String {
+    let mut c = name.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The command an action name runs, for the palette. gpui's `on_action` needs a concrete action
+/// type per listener, so `attach` keeps its macro; this is the same mapping as a lookup. The
+/// palette itself and quit are not listed.
+pub fn command_for(name: &str) -> Option<Command> {
+    Some(match name {
+        "clear scrollback" => Command::ClearScrollback,
+        "focus pane 1" => Command::FocusPane(0),
+        "focus pane 2" => Command::FocusPane(1),
+        "focus pane 3" => Command::FocusPane(2),
+        "focus pane 4" => Command::FocusPane(3),
+        "focus pane 5" => Command::FocusPane(4),
+        "focus pane 6" => Command::FocusPane(5),
+        "focus pane 7" => Command::FocusPane(6),
+        "focus pane 8" => Command::FocusPane(7),
+        "focus pane 9" => Command::FocusPane(8),
+        "focus left" => Command::FocusDir(Side::Left),
+        "focus right" => Command::FocusDir(Side::Right),
+        "focus up" => Command::FocusDir(Side::Top),
+        "focus down" => Command::FocusDir(Side::Bottom),
+        "split right" => Command::Split(Side::Right),
+        "split down" => Command::Split(Side::Bottom),
+        "maximize pane" => Command::ToggleMaximize,
+        "move tab to previous pane" => Command::MoveTabToPane(-1),
+        "move tab to next pane" => Command::MoveTabToPane(1),
+        "next tab" | "next tab alt" => Command::CycleTab(1),
+        "previous tab" | "previous tab alt" => Command::CycleTab(-1),
+        "most recently used tab" => Command::MruTab,
+        "close tab" => Command::CloseTab,
+        "reopen closed tab" => Command::ReopenClosedTab,
+        "close all in pane" => Command::CloseAllInPane,
+        "move tab left" => Command::MoveTabWithin(-1),
+        "move tab right" => Command::MoveTabWithin(1),
+        "new terminal tab" => Command::NewTerminal,
+        "font bigger" => Command::FontDelta(1.0),
+        "font smaller" => Command::FontDelta(-1.0),
+        "open config" => Command::OpenConfig,
+        _ => return None,
+    })
+}
+
 pub fn tab_cycle(active: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
@@ -226,7 +319,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         MoveTabLeft => Command::MoveTabWithin(-1), MoveTabRight => Command::MoveTabWithin(1),
         NewTerminal => Command::NewTerminal, ClearScrollback => Command::ClearScrollback,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
-        OpenConfig => Command::OpenConfig,
+        OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette,
     )
 }
 
@@ -258,6 +351,7 @@ mod tests {
         ("ctrl-shift-`", "new terminal tab", "NewTerminal"),
         ("cmd-=", "font bigger", "FontBigger"), ("cmd--", "font smaller", "FontSmaller"),
         ("cmd-,", "open config", "OpenConfig"),
+        ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -324,6 +418,27 @@ mod tests {
         assert!(!pending);
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].action().name(), "sarkos::ToggleMaximize");
+    }
+
+    #[test]
+    fn keys_print_the_mac_way() {
+        assert_eq!(pretty_keys("cmd-shift-p"), "Shift+Cmd+P");
+        assert_eq!(pretty_keys("cmd-k cmd-\\"), "Cmd+K then Cmd+\\");
+        assert_eq!(pretty_keys("ctrl-shift-`"), "Ctrl+Shift+`");
+        assert_eq!(pretty_keys("alt-cmd-right"), "Option+Cmd+Right");
+        assert_eq!(pretty_keys("cmd-k w"), "Cmd+K then W");
+        assert_eq!(pretty_keys("cmd-,"), "Cmd+,");
+        assert_eq!(pretty_keys("cmd-="), "Cmd+=");
+        assert_eq!(pretty_keys("ctrl-tab"), "Ctrl+Tab");
+        assert_eq!(label("focus pane 1"), "Focus pane 1");
+    }
+
+    #[test]
+    fn every_action_has_a_palette_command_except_palette_and_quit() {
+        for a in ACTIONS {
+            let has = command_for(a.name).is_some();
+            assert_eq!(has, a.name != "command palette" && a.name != "quit", "{}", a.name);
+        }
     }
 
     #[test]

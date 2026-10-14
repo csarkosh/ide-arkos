@@ -5,7 +5,6 @@ use crate::theme::Theme;
 use gpui::{div, prelude::*, px, Div, Keystroke, SharedString};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 8.
 pub struct LineEdit {
     pub text: String,
     /// In chars, 0 to `text.chars().count()`.
@@ -13,7 +12,6 @@ pub struct LineEdit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 8.
 pub enum Edit {
     Changed,
     Unchanged,
@@ -24,7 +22,6 @@ pub enum Edit {
     Down,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 8.
 impl LineEdit {
     pub fn new() -> Self {
         Self::default()
@@ -136,7 +133,6 @@ impl LineEdit {
 }
 
 /// The text with a 1 px cursor bar at the cursor, or `placeholder` dimmed when empty.
-#[allow(dead_code)] // Used from Task 8; tests do not call it.
 pub fn render(edit: &LineEdit, placeholder: &str, theme: &Theme, family: SharedString, size: f32) -> Div {
     let at = edit.byte_at(edit.cursor);
     let (before, after) = edit.text.split_at(at);
