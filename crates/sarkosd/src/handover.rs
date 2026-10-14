@@ -50,7 +50,6 @@ pub struct Handover {
 
 /// Magic, then postcard. A sibling temp file is written with mode 0600, synced and renamed over
 /// `path`, so a crash mid-write leaves nothing a resume could misread.
-#[cfg_attr(not(test), allow(dead_code))] // the handover's exec (Task 4) calls it
 pub fn write(path: &Path, h: &Handover) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| io::Error::other("handover path has no parent"))?;
     let name = path.file_name().ok_or_else(|| io::Error::other("handover path has no file name"))?;
@@ -69,7 +68,6 @@ pub fn write(path: &Path, h: &Handover) -> io::Result<()> {
     written
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // the handover's resume (Task 4) calls it
 pub fn read(path: &Path) -> Result<Handover, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read handover {}: {e}", path.display()))?;
     if bytes.len() < MAGIC.len() || bytes[..MAGIC.len()] != MAGIC {

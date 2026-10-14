@@ -1,19 +1,21 @@
 //! Accepts clients on the Unix socket, one reader and one writer thread each, and dispatches
 //! requests to sessions. Shared state is one mutex; every operation under it is short.
+use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId, PROTOCOL_MIN, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::net::Shutdown;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Options {
     pub replay_capacity: usize,
     pub watchdog: Duration,
@@ -24,6 +26,8 @@ pub struct Options {
     pub reaper_every: Duration,
     /// How long a dead session stays listed after it ended, while nobody is attached.
     pub dead_session_ttl: Duration,
+    /// The listening socket's path; the handover file is written next to it.
+    pub socket: PathBuf,
 }
 
 pub struct ClientRecord {
@@ -46,6 +50,10 @@ pub struct State {
     pub clients: HashMap<ClientId, ClientRecord>,
     next_session: u64,
     next_client: u64,
+    /// The listening socket, which an upgrade passes through the exec.
+    pub listener_fd: RawFd,
+    /// Set while an upgrade is being checked or carried out; a second one is refused.
+    pub upgrading: bool,
 }
 
 impl State {
@@ -56,11 +64,17 @@ impl State {
         let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         Self { next_session: ms << 16, ..Default::default() }
     }
+
+    /// The last session id handed out, which the handover carries over.
+    pub fn next_session(&self) -> u64 {
+        self.next_session
+    }
 }
 
 pub type Shared = Arc<Mutex<State>>;
 
-pub fn run(socket: &Path, opts: Options) -> Result<()> {
+pub fn run(opts: Options) -> Result<()> {
+    let socket = opts.socket.as_path();
     let parent = socket.parent().ok_or_else(|| anyhow::anyhow!("socket path has no parent"))?;
     let created_parent = !parent.exists();
     std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -81,12 +95,54 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
     }
     let listener = UnixListener::bind(socket).with_context(|| format!("bind {}", socket.display()))?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).context("chmod socket")?;
-    let state: Shared = Arc::new(Mutex::new(State::new()));
+    let mut st = State::new();
+    st.listener_fd = listener.as_raw_fd();
+    serve(listener, Arc::new(Mutex::new(st)), opts)
+}
+
+/// The new image after an upgrade: adopt the listener and every session, then serve.
+pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
+    use std::os::fd::FromRawFd;
+    crate::pty::set_inheritable_fd(h.listener_fd, false).context("listener close-on-exec")?;
+    // SAFETY: the descriptor was passed through execve by the old image for this purpose, and
+    // nothing else in this process owns the number.
+    let listener = unsafe { UnixListener::from_raw_fd(h.listener_fd) };
+    let opts = Options {
+        replay_capacity: h.replay_capacity,
+        watchdog: Duration::from_secs(h.watchdog_secs),
+        client_pending_cap: h.client_pending_cap,
+        backpressure: Backpressure { high_water: h.high_water, low_water: h.low_water, stall: Duration::from_secs(h.stall_secs) },
+        reaper_every: Duration::from_millis(h.reaper_millis.max(10)),
+        dead_session_ttl: Duration::from_secs(h.dead_session_secs),
+        socket,
+    };
+    let mut st = State::new();
+    st.next_session = h.next_session;
+    st.listener_fd = h.listener_fd;
+    for rec in &h.sessions {
+        // SAFETY: the old image cleared close-on-exec on this master for the exec and recorded
+        // its number; it passed through execve for this purpose and nothing else owns it.
+        let master = match unsafe { crate::pty::Pty::adopt(rec.master_fd) } {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("sarkosd: session {} lost in the handover: cannot adopt fd {}: {e}", rec.id, rec.master_fd);
+                continue;
+            }
+        };
+        let s = Session::adopt(rec, master, opts.replay_capacity, opts.backpressure);
+        st.sessions.insert(SessionId(rec.id), s);
+    }
+    eprintln!("sarkosd: resumed {} sessions from a handover written by {}", st.sessions.len(), h.written_by);
+    serve(listener, Arc::new(Mutex::new(st)), opts)
+}
+
+/// The watchdog, the reaper and the accept loop, shared by a fresh start and a resume.
+fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     crate::watchdog::start(state.clone(), opts.watchdog);
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => spawn_client(stream, state.clone(), opts),
+            Ok(stream) => spawn_client(stream, state.clone(), opts.clone()),
             Err(e) => eprintln!("sarkosd: accept failed: {e}"),
         }
     }
@@ -159,7 +215,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                             }
                         }
                         // Attach queues its own response so it lands before any live output.
-                        if let Some(response) = dispatch(&state, client_id, &sink, msg.id, msg.request, opts) {
+                        if let Some(response) = dispatch(&state, client_id, &sink, msg.id, msg.request, &opts) {
                             if !sink.send(ServerMessage::Response { id: msg.id, response }) {
                                 break;
                             }
@@ -193,7 +249,7 @@ fn disconnect(state: &Shared, client_id: ClientId) {
 }
 
 /// Handles one request. Returns the response to queue, or None when it was already queued.
-fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: Options) -> Option<Response> {
+fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: &Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
     let response = match request {
         Request::Hello { protocol_version, ui_pid, ui_exe, ui_cwd } => {
@@ -224,8 +280,21 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 Response::Ok
             }
         }
-        // Tasks 4 and 6 replace these placeholders.
-        Request::Upgrade { .. } | Request::RelaunchClient { .. } => Response::Error("not yet".into()),
+        Request::Upgrade { exe } => {
+            // Claim the slot first: the check takes seconds, and a second client must be
+            // refused for its whole length, not only after it passes.
+            if let Err(e) = crate::upgrade::begin(state) {
+                return Some(Response::Error(e));
+            }
+            if let Err(e) = crate::upgrade::validate(&exe) {
+                crate::upgrade::abort(state);
+                return Some(Response::Error(e));
+            }
+            // Returns only on failure; on success this process is now the new binary.
+            Response::Error(crate::upgrade::execute(state, &exe, opts))
+        }
+        // Task 6 replaces this placeholder.
+        Request::RelaunchClient { .. } => Response::Error("not yet".into()),
         Request::Heartbeat { .. } => {
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                 rec.last_heartbeat = Instant::now();

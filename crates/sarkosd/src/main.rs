@@ -4,6 +4,7 @@ mod reaper;
 mod ring;
 mod server;
 mod session;
+mod upgrade;
 mod watchdog;
 
 use std::path::PathBuf;
@@ -31,6 +32,7 @@ fn main() {
     let mut dead_session_secs: u64 = 600;
     let mut pending_cap = session::CLIENT_PENDING_CAP;
     let mut backpressure = session::Backpressure::default();
+    let mut resume = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -42,6 +44,7 @@ fn main() {
                 return;
             }
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),
+            "--resume" => resume = Some(PathBuf::from(args.next().expect("--resume needs a path"))),
             "--replay-bytes" => replay = args.next().and_then(|v| v.parse().ok()).expect("--replay-bytes needs a number"),
             "--client-pending-bytes" => {
                 pending_cap = args.next().and_then(|v| v.parse().ok()).expect("--client-pending-bytes needs a number")
@@ -64,6 +67,21 @@ fn main() {
             }
         }
     }
+    if let Some(path) = resume {
+        let h = match handover::read(&path) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("sarkosd: cannot resume: {e}");
+                std::process::exit(1);
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        if let Err(e) = server::run_resumed(h, socket) {
+            eprintln!("sarkosd: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if replay == 0 {
         eprintln!("sarkosd: --replay-bytes must be at least 1");
         std::process::exit(2);
@@ -75,8 +93,9 @@ fn main() {
         backpressure,
         reaper_every: Duration::from_millis(reaper_millis.max(10)),
         dead_session_ttl: Duration::from_secs(dead_session_secs),
+        socket,
     };
-    if let Err(e) = server::run(&socket, opts) {
+    if let Err(e) = server::run(opts) {
         eprintln!("sarkosd: {e:#}");
         std::process::exit(1);
     }

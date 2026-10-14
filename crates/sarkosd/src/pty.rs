@@ -38,13 +38,15 @@ fn winsize(rows: u16, cols: u16) -> libc::winsize {
     libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 }
 }
 
-fn set_cloexec(fd: RawFd, on: bool) -> io::Result<()> {
+/// Clears close-on-exec (`on`) so `execve` passes `fd` to the new image, or sets it again. The
+/// upgrade uses it for the listening socket; `Pty::set_inheritable` for a master.
+pub fn set_inheritable_fd(fd: RawFd, on: bool) -> io::Result<()> {
     // SAFETY: fcntl on a descriptor we own.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
     }
-    let flags = if on { flags | libc::FD_CLOEXEC } else { flags & !libc::FD_CLOEXEC };
+    let flags = if on { flags & !libc::FD_CLOEXEC } else { flags | libc::FD_CLOEXEC };
     // SAFETY: as above.
     if unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } < 0 {
         return Err(io::Error::last_os_error());
@@ -67,8 +69,8 @@ impl Pty {
         // SAFETY: both descriptors are fresh and owned by this process. Owned before the fcntl
         // calls, so a failing one closes them instead of leaking them.
         let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        set_cloexec(master.as_raw_fd(), true)?;
-        set_cloexec(slave.as_raw_fd(), true)?;
+        set_inheritable_fd(master.as_raw_fd(), false)?;
+        set_inheritable_fd(slave.as_raw_fd(), false)?;
         Ok((Pty { master }, slave))
     }
 
@@ -80,12 +82,11 @@ impl Pty {
     /// `fd` must be an open descriptor that the caller owns and that nothing else will use or
     /// close: the returned `Pty` closes it on drop, and the caller must not use the number after
     /// this call.
-    #[cfg_attr(not(test), allow(dead_code))] // the handover's resume (Task 4) calls it
     pub unsafe fn adopt(fd: RawFd) -> io::Result<Pty> {
         // SAFETY: the caller hands over ownership of an open descriptor (see `# Safety`). Owned
         // first, so a failing fcntl closes it rather than leaving it to nobody.
         let master = unsafe { OwnedFd::from_raw_fd(fd) };
-        set_cloexec(master.as_raw_fd(), true)?;
+        set_inheritable_fd(master.as_raw_fd(), false)?;
         Ok(Pty { master })
     }
 
@@ -94,9 +95,8 @@ impl Pty {
     }
 
     /// Cleared right before an `execve` so the new image inherits the master; set again after.
-    #[cfg_attr(not(test), allow(dead_code))] // the handover's exec (Task 4) calls it
     pub fn set_inheritable(&self, on: bool) -> io::Result<()> {
-        set_cloexec(self.raw_fd(), !on)
+        set_inheritable_fd(self.raw_fd(), on)
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
@@ -213,7 +213,6 @@ pub fn wait_nohang(pid: libc::pid_t) -> Option<i32> {
 }
 
 /// The C string for `execv`.
-#[allow(dead_code)] // the handover's exec (Task 4) calls it
 pub fn cstring(path: &Path) -> io::Result<CString> {
     use std::os::unix::ffi::OsStrExt;
     CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL"))

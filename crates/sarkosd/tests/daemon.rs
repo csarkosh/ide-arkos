@@ -54,6 +54,24 @@ impl Daemon {
         assert!(matches!(r, Response::Ok | Response::Hello { .. }), "{r:?}");
         c
     }
+
+    /// The daemon's pid, which an exec-in-place must keep.
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Connects again after an upgrade: the socket file stays, the listener passes through the
+    /// exec, so this succeeds once the new image accepts.
+    fn reconnect(&self) -> Conn {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if UnixStream::connect(&self.socket).is_ok() {
+                return self.connect();
+            }
+            assert!(Instant::now() < deadline, "the resumed daemon never accepted");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Daemon {
@@ -83,6 +101,18 @@ impl Conn {
 
     fn set_read_timeout(&mut self, timeout: Option<Duration>) {
         self.r.get_ref().set_read_timeout(timeout).unwrap();
+    }
+
+    /// Reads until the daemon closes the connection (an upgrade's exec), within `timeout`.
+    fn expect_disconnect(&mut self, timeout: Duration) {
+        self.set_read_timeout(Some(timeout));
+        loop {
+            match read_frame::<_, ServerMessage>(&mut self.r) {
+                Ok(Some(ServerMessage::Response { response: Response::Error(e), .. })) => panic!("upgrade refused: {e}"),
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return,
+            }
+        }
     }
 
     /// Sends a request and returns its response, keeping any events that arrive first.
@@ -809,4 +839,213 @@ fn version_and_check_handover_flags() {
     let out = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--check-handover").output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "handover 1");
+}
+
+/// A fake `sarkosd` at `dir/sarkosd` whose body is `script`, for the validation paths.
+fn fake_sarkosd(dir: &std::path::Path, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let exe = dir.join("sarkosd");
+    std::fs::write(&exe, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+fn parent_pid(pid: u32) -> u32 {
+    let out = Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+#[test]
+fn upgrade_onto_the_same_binary_keeps_sessions_the_pid_and_parenthood() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"echo marker-$((20+1))\n".to_vec() });
+    c.wait_for_output(sid, "marker-21");
+    let shell_pid = match c.request(Request::ListSessions) {
+        Response::Sessions(list) => list.iter().find(|s| s.id == sid).unwrap().pid.unwrap(),
+        other => panic!("unexpected {other:?}"),
+    };
+    assert_eq!(parent_pid(shell_pid), d.pid(), "the shell is the daemon's child before");
+    c.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_sarkosd")) });
+    c.expect_disconnect(Duration::from_secs(10));
+    let mut c = d.reconnect();
+    let listed = match c.request(Request::ListSessions) {
+        Response::Sessions(list) => list.into_iter().find(|s| s.id == sid).expect("the session survived"),
+        other => panic!("unexpected {other:?}"),
+    };
+    assert!(listed.alive);
+    assert_eq!(listed.pid, Some(shell_pid));
+    assert_eq!(parent_pid(shell_pid), d.pid(), "same daemon pid, still the parent after the exec");
+    match c.request(Request::Attach { session: sid }) {
+        Response::Attached { replay, alive } => {
+            assert!(alive);
+            assert!(String::from_utf8_lossy(&replay).contains("marker-21"), "the replay crossed the swap");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    c.send(Request::Input { session: sid, bytes: b"echo marker-$((40+2))\n".to_vec() });
+    c.wait_for_output(sid, "marker-42");
+    c.send(Request::Input { session: sid, bytes: b"exit 5\n".to_vec() });
+    assert_eq!(wait_for_exit(&mut c, sid, Duration::from_secs(5)), Some(5), "the new image reaps the shell");
+}
+
+#[test]
+fn output_printed_during_the_swap_is_not_lost() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"sleep 0.3; echo late-$((1+1))\n".to_vec() });
+    c.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_sarkosd")) });
+    c.expect_disconnect(Duration::from_secs(10));
+    let mut c = d.reconnect();
+    let replay = match c.request(Request::Attach { session: sid }) {
+        Response::Attached { replay, .. } => replay,
+        other => panic!("unexpected {other:?}"),
+    };
+    if !String::from_utf8_lossy(&replay).contains("late-2") {
+        c.wait_for_output(sid, "late-2");
+    }
+}
+
+#[test]
+fn exit_during_the_swap_is_reported_after_resume() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    c.send(Request::Input { session: sid, bytes: b"sleep 0.2; exit 9\n".to_vec() });
+    c.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_sarkosd")) });
+    c.expect_disconnect(Duration::from_secs(10));
+    let mut c = d.reconnect();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match c.request(Request::ListSessions) {
+            Response::Sessions(list) => {
+                let s = list.iter().find(|s| s.id == sid).expect("listed");
+                if !s.alive {
+                    break;
+                }
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "the exit during the swap was never noticed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn upgrade_with_a_missing_binary_is_refused() {
+    let d = Daemon::start(&[]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    match c.request(Request::Upgrade { exe: std::env::temp_dir().join("no-such-dir").join("sarkosd") }) {
+        Response::Error(e) => assert!(e.contains("sarkosd"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    match c.request(Request::Upgrade { exe: PathBuf::from("/bin/sh") }) {
+        Response::Error(e) => assert!(e.contains("named sarkosd"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    c.send(Request::Input { session: sid, bytes: b"echo still-$((1+1))\n".to_vec() });
+    c.wait_for_output(sid, "still-2");
+}
+
+#[test]
+fn upgrade_with_a_binary_that_fails_the_check_keeps_the_old_daemon() {
+    let d = Daemon::start(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let exe = fake_sarkosd(dir.path(), "exit 1");
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    match c.request(Request::Upgrade { exe }) {
+        Response::Error(e) => assert!(e.contains("check-handover"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    let exe = fake_sarkosd(dir.path(), "echo handover 999");
+    match c.request(Request::Upgrade { exe }) {
+        Response::Error(e) => assert!(e.contains("handover 999") || e.contains("format"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    c.send(Request::Input { session: sid, bytes: b"echo still-$((2+2))\n".to_vec() });
+    c.wait_for_output(sid, "still-4");
+}
+
+#[test]
+fn upgrade_whose_exec_fails_keeps_the_old_daemon_serving() {
+    let d = Daemon::start(&[]);
+    let check = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--check-handover").output().unwrap();
+    let answer = String::from_utf8_lossy(&check.stdout).trim().to_string();
+    let dir = tempfile::tempdir().unwrap();
+    // Passes the check, then removes itself, so the exec that follows fails.
+    let exe = fake_sarkosd(dir.path(), &format!("echo '{answer}'; rm \"$0\""));
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    assert!(matches!(c.request(Request::Attach { session: sid }), Response::Attached { .. }));
+    match c.request(Request::Upgrade { exe: exe.clone() }) {
+        Response::Error(e) => assert!(e.contains("execv failed"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    // The reader was unparked, the handover file deleted and the slot freed.
+    c.send(Request::Input { session: sid, bytes: b"echo still-$((3+3))\n".to_vec() });
+    c.wait_for_output(sid, "still-6");
+    let leftovers: Vec<_> = std::fs::read_dir(d.socket.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("handover"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    match c.request(Request::Upgrade { exe }) {
+        Response::Error(e) => assert!(!e.contains("already in progress"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    d.connect();
+}
+
+#[test]
+fn a_second_upgrade_during_the_check_is_refused() {
+    let d = Daemon::start(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let slow = fake_sarkosd(dir.path(), "sleep 1; exit 1");
+    let mut a = d.connect();
+    let mut b = d.connect();
+    let first = a.send(Request::Upgrade { exe: slow.clone() });
+    std::thread::sleep(Duration::from_millis(200));
+    match b.request(Request::Upgrade { exe: slow.clone() }) {
+        Response::Error(e) => assert!(e.contains("already in progress"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    // The first attempt fails its check and clears the flag; a new attempt is judged afresh.
+    loop {
+        if let ServerMessage::Response { id, response } = a.next_message() {
+            if id == first {
+                assert!(matches!(response, Response::Error(ref e) if e.contains("check-handover")), "{response:?}");
+                break;
+            }
+        }
+    }
+    match b.request(Request::Upgrade { exe: slow }) {
+        Response::Error(e) => assert!(e.contains("check-handover"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn resume_with_a_corrupt_handover_file_exits_without_touching_anything() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("handover-1.bin");
+    std::fs::write(&file, b"SKHOgarbage").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_sarkosd"))
+        .arg("--socket")
+        .arg(dir.path().join("d.sock"))
+        .arg("--resume")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("handover"));
 }

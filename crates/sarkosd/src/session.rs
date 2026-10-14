@@ -276,8 +276,9 @@ pub struct Session {
     pub id: SessionId,
     cwd: PathBuf,
     /// Shared with the reader and writer threads. No lock: each call goes straight to the
-    /// kernel, only the reader reads and only the writer writes.
-    master: Arc<Pty>,
+    /// kernel, only the reader reads and only the writer writes. The upgrade makes it
+    /// inheritable for the exec.
+    pub master: Arc<Pty>,
     /// The last size set, which the handover records.
     size: Mutex<(u16, u16)>,
     input: Mutex<Sender<Vec<u8>>>,
@@ -287,6 +288,10 @@ pub struct Session {
     backpressure: Backpressure,
     /// Set by `kill`: the PTY reader stops pausing so it can drain to EOF.
     ending: AtomicBool,
+    /// Set by `pause`: the reader stops between reads until `unpause`.
+    paused: AtomicBool,
+    /// Set by the reader once it has stopped for `pause`, and when there is no reader left.
+    parked: AtomicBool,
 }
 
 struct SessionState {
@@ -351,6 +356,8 @@ impl Session {
             }),
             backpressure: spec.backpressure,
             ending: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            parked: AtomicBool::new(false),
         });
         if start_reader {
             Self::start_reader(session.clone());
@@ -376,14 +383,22 @@ impl Session {
     }
 
     /// Reads PTY output until EOF, when the shell has exited: record the exit and tell
-    /// subscribers. It waits for output in 50 ms polls rather than one blocking read, so a later
-    /// change can park it between reads.
+    /// subscribers. It waits for output in 50 ms polls rather than one blocking read, so `pause`
+    /// can park it between reads.
     fn start_reader(session: Arc<Session>) {
         std::thread::Builder::new()
             .name(format!("pty-reader-{}", session.id.0))
             .spawn(move || {
                 let mut buf = vec![0u8; 64 * 1024];
                 loop {
+                    if session.paused.load(Ordering::SeqCst) {
+                        session.parked.store(true, Ordering::SeqCst);
+                        while session.paused.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        session.parked.store(false, Ordering::SeqCst);
+                        continue;
+                    }
                     match session.master.read_ready(Duration::from_millis(50)) {
                         Ok(false) => continue,
                         Ok(true) => {}
@@ -404,6 +419,10 @@ impl Session {
                     std::thread::sleep(Duration::from_millis(10));
                 };
                 session.mark_exited(Some(code));
+                // No reader is left, so an upgrade has nothing to wait for. Set here rather than in
+                // `mark_exited`: the reaper also calls that while a background job keeps the PTY
+                // open and this thread reading.
+                session.parked.store(true, Ordering::SeqCst);
             })
             .expect("spawn pty reader thread");
     }
@@ -444,7 +463,7 @@ impl Session {
         for sink in slow {
             let started = Instant::now();
             loop {
-                if sink.wait_drained(bp.low_water, Duration::from_millis(50)) || self.is_ending() {
+                if sink.wait_drained(bp.low_water, Duration::from_millis(50)) || self.is_ending() || self.paused.load(Ordering::SeqCst) {
                     break;
                 }
                 if started.elapsed() >= bp.stall && !sink.is_ui() {
@@ -482,6 +501,28 @@ impl Session {
         st.subscribers.retain(|_, tx| tx.send(event.clone()));
     }
 
+    /// Stops the reader between reads (the handover's snapshot must be the last word). Bytes the
+    /// shell prints meanwhile wait in the kernel.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    /// True once the reader has stopped and will not read until `unpause`.
+    pub fn wait_parked(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while !self.parked.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
+    pub fn unpause(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
     /// Non-blocking exit check for the reaper thread.
     pub fn poll_exit(&self) {
         let code = self.child.lock().unwrap().try_reap();
@@ -510,7 +551,6 @@ impl Session {
     }
 
     /// The last `rows, cols` set.
-    #[cfg_attr(not(test), allow(dead_code))] // the handover (Task 4) reads it
     pub fn size(&self) -> (u16, u16) {
         *self.size.lock().unwrap()
     }
@@ -580,11 +620,10 @@ impl Session {
 
     /// The record the handover file carries for this session. The master fd number is the one
     /// in this process; the caller makes the descriptor inheritable before the exec.
-    #[cfg_attr(not(test), allow(dead_code))] // the handover's exec (Task 4) calls it
     pub fn snapshot(&self) -> crate::handover::SessionRecord {
         let st = self.state.lock().unwrap();
         let slot = self.child.lock().unwrap();
-        let (rows, cols) = *self.size.lock().unwrap();
+        let (rows, cols) = self.size();
         crate::handover::SessionRecord {
             id: self.id.0,
             cwd: self.cwd.clone(),
@@ -607,7 +646,6 @@ impl Session {
     /// Rebuilds a session around an inherited master after `--resume`. The shell is still this
     /// process's child (the pid never changed), so `try_reap` works; a shell that exited during
     /// the swap is caught here.
-    #[cfg_attr(not(test), allow(dead_code))] // the handover's resume (Task 4) calls it
     pub fn adopt(record: &crate::handover::SessionRecord, master: Pty, replay_capacity: usize, backpressure: Backpressure) -> Arc<Session> {
         let master = Arc::new(master);
         let (input_tx, input_rx) = channel::<Vec<u8>>();
@@ -641,6 +679,9 @@ impl Session {
             backpressure,
             // A pending kill drains to EOF without pausing, as it did in the old image.
             ending: AtomicBool::new(!record.alive || record.kill_requested),
+            paused: AtomicBool::new(false),
+            // A dead record gets no reader, so there is nothing to wait for at the next upgrade.
+            parked: AtomicBool::new(!record.alive),
         });
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
