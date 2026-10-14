@@ -16,14 +16,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub type ClientId = u64;
 
 /// Output bytes a client may have queued before the daemon treats it as hung and drops it. With
-/// backpressure a live client stays far below this; it is the backstop.
+/// backpressure a live client stays far below this; it is the backstop. A UI is never dropped.
 pub const CLIENT_PENDING_CAP: usize = 16 * 1024 * 1024;
 /// A subscriber with more output than this queued or being written pauses its session's PTY.
 pub const SUBSCRIBER_HIGH_WATER: usize = 4 * 1024 * 1024;
 /// A paused PTY resumes once that subscriber's backlog falls to this.
 pub const SUBSCRIBER_LOW_WATER: usize = 1024 * 1024;
-/// A subscriber that keeps the PTY paused this long is dropped as stalled.
+/// A subscriber that keeps the PTY paused this long is dropped as stalled, unless it is a UI.
 pub const SUBSCRIBER_STALL: Duration = Duration::from_secs(10);
+/// A socket write to a client that is not a UI fails after this long, which drops the client.
+pub const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How a session's PTY reader yields to slow subscribers.
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +69,10 @@ struct Pending {
 struct SinkInner {
     client: ClientId,
     cap: usize,
+    /// Set once the client names its UI process in Hello. A UI is never dropped for being slow:
+    /// a frozen one is the watchdog's to kill and relaunch (spec 2.4), and backpressure keeps its
+    /// backlog near high water, so the memory it holds stays bounded.
+    ui: AtomicBool,
     pending: Mutex<Pending>,
     /// Wakes the writer when something is queued.
     ready: Condvar,
@@ -76,8 +82,9 @@ struct SinkInner {
 }
 
 /// The handoff to one client's writer thread. Sending never blocks: items are queued in order
-/// and the writer drains them all at once. A client whose pending output passes the byte cap is
-/// not draining; its stream is shut down so its reader thread ends and it is disconnected.
+/// and the writer drains them all at once. A client that is not a UI and whose pending output
+/// passes the byte cap is not draining; its stream is shut down so its reader thread ends and it
+/// is disconnected.
 #[derive(Clone)]
 pub struct ClientSink {
     inner: Arc<SinkInner>,
@@ -86,8 +93,31 @@ pub struct ClientSink {
 impl ClientSink {
     pub fn new(client: ClientId, stream: UnixStream, cap: usize) -> Self {
         let pending = Pending { items: VecDeque::new(), bytes: 0, in_flight: 0, closed: false };
-        let inner = SinkInner { client, cap, pending: Mutex::new(pending), ready: Condvar::new(), drained: Condvar::new(), stream };
-        Self { inner: Arc::new(inner) }
+        let inner = SinkInner {
+            client,
+            cap,
+            ui: AtomicBool::new(false),
+            pending: Mutex::new(pending),
+            ready: Condvar::new(),
+            drained: Condvar::new(),
+            stream,
+        };
+        let sink = Self { inner: Arc::new(inner) };
+        sink.set_ui(false);
+        sink
+    }
+
+    /// Marks the client as a UI or not. A UI's socket writes wait as long as they must; anyone
+    /// else's time out and drop the client.
+    pub fn set_ui(&self, ui: bool) {
+        self.inner.ui.store(ui, Ordering::Relaxed);
+        let timeout = if ui { None } else { Some(CLIENT_WRITE_TIMEOUT) };
+        // macOS refuses socket options once the peer has hung up, and then no write matters.
+        let _ = self.inner.stream.set_write_timeout(timeout);
+    }
+
+    pub fn is_ui(&self) -> bool {
+        self.inner.ui.load(Ordering::Relaxed)
     }
 
     /// Queues a response or a control event. Returns false when the client is gone.
@@ -108,14 +138,14 @@ impl ClientSink {
         if p.closed {
             return false;
         }
-        if p.bytes + bytes.len() > self.inner.cap {
-            let pending = p.bytes;
+        if p.bytes + bytes.len() > self.inner.cap && !self.is_ui() {
+            let pending = p.bytes + p.in_flight;
             p.closed = true;
             p.items.clear();
             p.bytes = 0;
             drop(p);
             eprintln!(
-                "sarkosd: client {} dropped: {} output bytes pending for session {} (cap {})",
+                "sarkosd: client {} dropped: pending cap exceeded, {} output bytes pending for session {} (cap {})",
                 self.inner.client, pending + bytes.len(), session.0, self.inner.cap
             );
             let _ = self.inner.stream.shutdown(Shutdown::Both);
@@ -178,16 +208,22 @@ impl ClientSink {
 
     /// Drops a client that kept its session's PTY paused too long.
     pub fn drop_stalled(&self, stall: Duration) {
-        {
+        let pending = {
             let mut p = self.inner.pending.lock().unwrap();
             if p.closed {
                 return;
             }
+            let pending = p.bytes + p.in_flight;
             p.closed = true;
             p.items.clear();
             p.bytes = 0;
-        }
-        eprintln!("sarkosd: client {} dropped: stalled above high water for {} s", self.inner.client, stall.as_secs_f32());
+            pending
+        };
+        eprintln!(
+            "sarkosd: client {} dropped: stalled above high water for {} s, {pending} output bytes pending",
+            self.inner.client,
+            stall.as_secs_f32()
+        );
         let _ = self.inner.stream.shutdown(Shutdown::Both);
         self.inner.ready.notify_one();
         self.inner.drained.notify_all();
@@ -347,8 +383,9 @@ impl Session {
 
     /// Backpressure: while a subscriber's backlog is above high water, stop reading the PTY (so
     /// the kernel buffer fills and the program blocks, as in any terminal) until it falls to low
-    /// water. A subscriber that keeps it paused past the stall timeout is dropped. Waits happen
-    /// outside the state lock, so attach, resize and kill proceed while the reader is paused.
+    /// water. A subscriber that keeps it paused past the stall timeout is dropped, unless it is a
+    /// UI: that one is waited on until it drains, disconnects, or the watchdog kills it. Waits
+    /// happen outside the state lock, so attach, resize and kill proceed while the reader is paused.
     fn yield_to_slow_subscribers(&self) {
         let bp = self.backpressure;
         let slow: Vec<ClientSink> = {
@@ -361,7 +398,7 @@ impl Session {
                 if sink.wait_drained(bp.low_water, Duration::from_millis(50)) || self.is_ending() {
                     break;
                 }
-                if started.elapsed() >= bp.stall {
+                if started.elapsed() >= bp.stall && !sink.is_ui() {
                     sink.drop_stalled(bp.stall);
                     break;
                 }

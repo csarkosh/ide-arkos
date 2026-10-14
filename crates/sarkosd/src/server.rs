@@ -77,11 +77,11 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
             return;
         }
     };
-    writer_stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
     let (client_id, sink) = {
         let mut st = state.lock().unwrap();
         st.next_client += 1;
         let id = st.next_client;
+        // Not a UI until its Hello says so: writes time out (see `ClientSink::set_ui`).
         let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
@@ -98,8 +98,13 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
             // flood costs a few large frames rather than one per PTY read.
             'outer: while let Some(items) = writer_sink.take() {
                 for item in items {
-                    if write_frame(&mut w, &item.into_message()).is_err() {
-                        // Timed out or broken: end the connection so the reader thread cleans up.
+                    if let Err(e) = write_frame(&mut w, &item.into_message()) {
+                        // Timed out (never for a UI) or broken: end the connection so the reader
+                        // thread cleans up.
+                        eprintln!(
+                            "sarkosd: client {client_id} dropped: write failed ({e}), {} output bytes pending",
+                            writer_sink.backlog()
+                        );
                         let _ = w.get_ref().shutdown(Shutdown::Both);
                         writer_sink.close();
                         break 'outer;
@@ -158,8 +163,12 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         Request::Hello { ui_pid, ui_exe, ui_cwd } => {
             let mut st = state.lock().unwrap();
             if let Some(rec) = st.clients.get_mut(&client_id) {
-                // Pid 0 would make the watchdog signal the daemon's own process group.
-                rec.ui_pid = (ui_pid != 0).then_some(ui_pid);
+                // As a pid_t, 0 is the daemon's process group, 1 is launchd, and anything above
+                // i32::MAX is negative, which kill() reads as a group or, for -1, every process.
+                let ui_pid = (2..=i32::MAX as u32).contains(&ui_pid).then_some(ui_pid);
+                rec.ui_pid = ui_pid;
+                // A UI is never dropped for being slow; the watchdog alone ends it.
+                tx.set_ui(ui_pid.is_some());
                 rec.ui_exe = ui_exe;
                 rec.ui_cwd = (!ui_cwd.as_os_str().is_empty()).then_some(ui_cwd);
                 rec.last_heartbeat = Instant::now();

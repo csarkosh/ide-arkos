@@ -257,19 +257,26 @@ fn socket_is_private() {
     assert_eq!(mode, 0o600);
 }
 
+/// Writes the "UI executable" the watchdog relaunches: a script that records its working
+/// directory in the returned marker file, written whole by a rename so it is never read half
+/// written. Returns (script, marker).
+fn relaunch_script(dir: &std::path::Path) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let marker = dir.join("relaunched");
+    let script = dir.join("relaunch.sh");
+    std::fs::write(&script, format!("#!/bin/sh\npwd -P > '{m}.tmp' && mv '{m}.tmp' '{m}'\n", m = marker.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (script, marker)
+}
+
 #[test]
 fn watchdog_kills_a_silent_ui_and_relaunches_it() {
     let d = Daemon::start(&["--watchdog-secs", "2"]);
     let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("relaunched");
     // The UI's working directory, distinct from the daemon's, which is the test's own.
     let ui_cwd = tempfile::tempdir().unwrap();
-    // The "UI" is a sleep; the "relaunch" is a script that records its working directory in a
-    // marker file, written whole by a rename so the test never reads it half written.
-    let script = dir.path().join("relaunch.sh");
-    std::fs::write(&script, format!("#!/bin/sh\npwd -P > '{m}.tmp' && mv '{m}.tmp' '{m}'\n", m = marker.display())).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The "UI" is a sleep; the "relaunch" is the marker script.
+    let (script, marker) = relaunch_script(dir.path());
     let mut fake_ui = Command::new("/bin/sleep").arg("60").spawn().unwrap();
 
     let stream = UnixStream::connect(&d.socket).unwrap();
@@ -365,14 +372,14 @@ fn non_reading_client_is_dropped_past_the_byte_cap() {
     let id = reader.create("/bin/sh");
     reader.request(Request::Attach { session: id });
 
-    // A client that attaches and then never reads.
+    // A client that attaches and then never reads. It sends no Hello, so it is a tool, not a UI:
+    // only those are dropped for being slow.
     let mut stalled = UnixStream::connect(&d.socket).unwrap();
     // Set now: macOS refuses socket options once the daemon has shut the connection down.
     stalled.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
     {
         let mut w = BufWriter::new(stalled.try_clone().unwrap());
-        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() } }).unwrap();
-        write_frame(&mut w, &ClientMessage { id: 2, request: Request::Attach { session: id } }).unwrap();
+        write_frame(&mut w, &ClientMessage { id: 1, request: Request::Attach { session: id } }).unwrap();
     }
     std::thread::sleep(Duration::from_millis(200));
 
@@ -522,12 +529,67 @@ fn stalled_client_is_dropped_after_the_stall_timeout() {
 }
 
 #[test]
-fn hello_with_pid_zero_is_never_signalled() {
+fn hello_with_pid_zero_or_out_of_range_is_never_signalled() {
     let d = Daemon::start(&["--watchdog-secs", "1"]);
-    let mut c = d.connect_as(0);
-    // Two watchdog periods with no heartbeat: a pid of 0 must not be treated as a UI.
+    let mut zero = d.connect_as(0);
+    // u32::MAX is -1 as a pid_t: kill(-1, SIGKILL) would end every process this user owns.
+    let mut negative = d.connect_as(u32::MAX);
+    // Two watchdog periods with no heartbeat: neither pid may be treated as a UI.
     std::thread::sleep(Duration::from_secs(3));
-    assert!(matches!(c.request(Request::ListSessions), Response::Sessions(_)), "daemon stopped answering");
+    assert!(matches!(zero.request(Request::ListSessions), Response::Sessions(_)), "daemon stopped answering");
+    assert!(matches!(negative.request(Request::ListSessions), Response::Sessions(_)), "daemon stopped answering");
+}
+
+#[test]
+fn frozen_ui_with_busy_session_is_relaunched() {
+    // A stall timeout and pending cap this small would drop any other client within about a
+    // second, well before the 3 s watchdog acts; a UI must instead be left to the watchdog.
+    let d = Daemon::start(&[
+        "--watchdog-secs",
+        "3",
+        "--subscriber-high-water",
+        "262144",
+        "--subscriber-stall-secs",
+        "1",
+        "--client-pending-bytes",
+        "1048576",
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let (script, marker) = relaunch_script(dir.path());
+    let mut fake_ui = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+
+    let stream = UnixStream::connect(&d.socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut ui = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
+    let hello = Request::Hello { ui_pid: fake_ui.id(), ui_exe: Some(script), ui_cwd: dir.path().to_path_buf() };
+    assert_eq!(ui.request(hello), Response::Ok);
+    let id = ui.create("/bin/sh");
+    assert!(matches!(ui.request(Request::Attach { session: id }), Response::Attached { alive: true, .. }));
+    // Busy for good: the PTY fills the UI's backlog and stays paused on it.
+    ui.send(Request::Input { session: id, bytes: b"yes\n".to_vec() });
+    // From here the UI neither reads nor heartbeats.
+    let frozen = Instant::now();
+
+    let deadline = frozen + Duration::from_secs(10);
+    loop {
+        if let Ok(Some(_)) = fake_ui.try_wait() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "watchdog never killed the frozen UI");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "watchdog never relaunched the frozen UI");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The session survives its UI (spec 10). Pid 0 makes this client a tool, not a UI, so the
+    // watchdog leaves the test process alone.
+    let mut tool = d.connect_as(0);
+    match tool.request(Request::ListSessions) {
+        Response::Sessions(list) => assert!(list.iter().find(|s| s.id == id).expect("session listed").alive, "session died with its UI"),
+        other => panic!("unexpected {other:?}"),
+    }
+    drop(ui);
 }
 
 #[test]

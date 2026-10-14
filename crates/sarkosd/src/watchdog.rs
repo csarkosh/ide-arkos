@@ -29,8 +29,10 @@ fn scan(state: &Shared, timeout: Duration) {
         let mut st = state.lock().unwrap();
         for rec in st.clients.values_mut() {
             let Some(pid) = rec.ui_pid else { continue };
-            // Signalling pid 0 would hit the daemon's whole process group, and its own pid itself.
-            if pid == 0 || pid == std::process::id() {
+            // Signalling pid 0 would hit the daemon's whole process group, and its own pid itself;
+            // a pid above i32::MAX is negative as a pid_t and would signal a group or everything.
+            // Hello already refuses these; this keeps the watchdog safe on its own.
+            if pid < 2 || pid > i32::MAX as u32 || pid == std::process::id() {
                 continue;
             }
             // A disconnected client's pid may have been reused by an unrelated process.
