@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Event, Request, ServerMessage};
+use protocol::{ClientMessage, Event, Request, ServerMessage, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -116,6 +116,7 @@ impl Client {
             .context("spawn reader")?;
         let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream };
         client.send(Request::Hello {
+            protocol_version: PROTOCOL_VERSION,
             ui_pid: std::process::id(),
             ui_exe: std::env::current_exe().ok(),
             ui_cwd: std::env::current_dir().unwrap_or_default(),
@@ -243,7 +244,7 @@ mod tests {
         assert!(matches!(first, ServerMessage::Response { id: 1, response: Response::Ok }));
         assert!(matches!(second, ServerMessage::Response { id: i, .. } if i == id));
         let seen = server.join().unwrap();
-        assert!(matches!(seen[0].request, Request::Hello { .. }));
+        assert!(matches!(seen[0].request, Request::Hello { protocol_version: PROTOCOL_VERSION, .. }));
         assert_eq!(seen[1].request, Request::ListSessions);
     }
 

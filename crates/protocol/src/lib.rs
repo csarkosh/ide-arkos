@@ -7,6 +7,10 @@ pub mod codec;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Bumped on any change to the wire format. A daemon answers a `Hello` with a different version
+/// with an error and disconnects, since it cannot decode the rest reliably.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub u64);
 
@@ -30,10 +34,12 @@ pub struct SessionInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
-    /// First message on a connection. `ui_pid`, `ui_exe` and `ui_cwd` feed the watchdog (spec 2.4):
-    /// a relaunched UI starts in `ui_cwd`, so it opens the same project's workspace. An empty
-    /// `ui_cwd` means the UI could not read its own and the relaunch keeps the daemon's.
-    Hello { ui_pid: u32, ui_exe: Option<PathBuf>, ui_cwd: PathBuf },
+    /// First message on a connection. `protocol_version` comes first so it decodes even when the
+    /// rest has changed; it must equal the daemon's `PROTOCOL_VERSION`. `ui_pid`, `ui_exe` and
+    /// `ui_cwd` feed the watchdog (spec 2.4): a relaunched UI starts in `ui_cwd`, so it opens the
+    /// same project's workspace. An empty `ui_cwd` means the UI could not read its own and the
+    /// relaunch keeps the daemon's.
+    Hello { protocol_version: u32, ui_pid: u32, ui_exe: Option<PathBuf>, ui_cwd: PathBuf },
     CreateSession {
         cwd: PathBuf,
         shell: Option<String>,

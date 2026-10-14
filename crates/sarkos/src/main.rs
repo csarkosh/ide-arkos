@@ -31,6 +31,8 @@ const BANNER_BG: u32 = 0x1a2130;
 const SCROLLBACK: usize = 20_000;
 /// Output bytes applied in one batch before the event loop yields to the frame loop.
 const BATCH_BUDGET: usize = 1 << 20;
+/// Starts every status that reports a `Response::Error`.
+const ERROR_PREFIX: &str = "sarkosd error: ";
 
 struct Root {
     client: Arc<client::Client>,
@@ -180,6 +182,8 @@ struct Launch {
     saved: Option<SessionId>,
     pending_create: Option<u32>,
     pending_attach: Option<(u32, SessionId)>,
+    /// Whether the daemon has answered anything, Hello included.
+    answered: bool,
 }
 
 /// An attach response whose replay still has to be parsed before the session can be shown.
@@ -202,6 +206,7 @@ impl Launch {
                 }
                 ServerMessage::Response { id, response } => (id, response),
             };
+            self.answered = true;
             // Events that came before this response are applied first, keeping order.
             root.apply_events(&mut pending, cx);
             match response {
@@ -244,7 +249,7 @@ impl Launch {
                     return Some(Restore { session: sid, replay, alive });
                 }
                 Response::Error(e) => {
-                    root.status = format!("sarkosd error: {e}");
+                    root.status = format!("{ERROR_PREFIX}{e}");
                     eprintln!("sarkos: {}", root.status);
                     cx.notify();
                 }
@@ -380,7 +385,15 @@ fn main() {
         // Decide which session to show: the workspace's saved one if the daemon still has it.
         let list_id = client.send(Request::ListSessions);
         let mut launch =
-            Launch { client: client.clone(), project: project.clone(), list_id, saved, pending_create: None, pending_attach: None };
+            Launch {
+                client: client.clone(),
+                project: project.clone(),
+                list_id,
+                saved,
+                pending_create: None,
+                pending_attach: None,
+                answered: false,
+            };
         let client_for_task = client.clone();
         cx.spawn(async move |cx| {
             let mut closed = false;
@@ -417,10 +430,20 @@ fn main() {
                 client_for_task.consumed_output(bytes);
                 yield_now().await;
             }
-            let reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
+            let mut reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
+            if !launch.answered {
+                // A daemon built before the protocol version existed cannot decode this UI's
+                // Hello and hangs up without a word.
+                reason.push_str("; if sarkosd is from an older build, restart it (pkill -x sarkosd), which ends every session");
+            }
             eprintln!("sarkos: {reason}");
             let _ = root.update(cx, |root, cx| {
-                root.status = reason;
+                // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
+                if root.status.starts_with(ERROR_PREFIX) {
+                    root.status = format!("{}; {reason}", root.status);
+                } else {
+                    root.status = reason;
+                }
                 cx.notify();
             });
         })

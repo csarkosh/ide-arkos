@@ -22,7 +22,9 @@ cargo build --release
 ```
 
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
-`~/Library/Application Support/sarkos/sarkosd.log`. To stop everything: `pkill -x sarkosd`.
+`~/Library/Application Support/sarkos/sarkosd.log`. A protocol change between the window and the
+daemon requires restarting the daemon; the window reports the mismatch in its status banner.
+`pkill -x sarkosd` stops the daemon and ends every session.
 
 ## Tests
 

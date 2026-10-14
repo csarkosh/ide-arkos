@@ -1,6 +1,6 @@
 //! Drives the real sarkosd binary over a temp socket.
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Event, Request, Response, ServerMessage, SessionId};
+use protocol::{ClientMessage, Event, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -43,7 +43,7 @@ impl Daemon {
         let stream = UnixStream::connect(&self.socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
-        let r = c.request(Request::Hello { ui_pid, ui_exe: None, ui_cwd: std::env::temp_dir() });
+        let r = c.request(Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid, ui_exe: None, ui_cwd: std::env::temp_dir() });
         assert_eq!(r, Response::Ok);
         c
     }
@@ -282,7 +282,7 @@ fn watchdog_kills_a_silent_ui_and_relaunches_it() {
     let stream = UnixStream::connect(&d.socket).unwrap();
     let mut w = BufWriter::new(stream.try_clone().unwrap());
     let mut r = BufReader::new(stream);
-    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: Some(script.clone()), ui_cwd: ui_cwd.path().to_path_buf() } }).unwrap();
+    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: fake_ui.id(), ui_exe: Some(script.clone()), ui_cwd: ui_cwd.path().to_path_buf() } }).unwrap();
     let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
     // No heartbeats. Within 2 s plus one scan the daemon must act.
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -309,7 +309,7 @@ fn watchdog_leaves_a_heartbeating_ui_alone() {
     let stream = UnixStream::connect(&d.socket).unwrap();
     let mut w = BufWriter::new(stream.try_clone().unwrap());
     let mut r = BufReader::new(stream);
-    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { ui_pid: fake_ui.id(), ui_exe: None, ui_cwd: std::env::temp_dir() } }).unwrap();
+    write_frame(&mut w, &ClientMessage { id: 1, request: Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: fake_ui.id(), ui_exe: None, ui_cwd: std::env::temp_dir() } }).unwrap();
     let _: ServerMessage = read_frame(&mut r).unwrap().unwrap();
     for seq in 0..5u64 {
         std::thread::sleep(Duration::from_millis(800));
@@ -561,7 +561,7 @@ fn frozen_ui_with_busy_session_is_relaunched() {
     let stream = UnixStream::connect(&d.socket).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let mut ui = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
-    let hello = Request::Hello { ui_pid: fake_ui.id(), ui_exe: Some(script), ui_cwd: dir.path().to_path_buf() };
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: fake_ui.id(), ui_exe: Some(script), ui_cwd: dir.path().to_path_buf() };
     assert_eq!(ui.request(hello), Response::Ok);
     let id = ui.create("/bin/sh");
     assert!(matches!(ui.request(Request::Attach { session: id }), Response::Attached { alive: true, .. }));
@@ -618,4 +618,22 @@ fn kill_wakes_a_pty_paused_by_a_stalled_client() {
         }
     }
     drop(stalled);
+}
+
+#[test]
+fn hello_with_another_protocol_version_is_refused() {
+    let d = Daemon::start(&[]);
+    let stream = UnixStream::connect(&d.socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut c = Conn { r: BufReader::new(stream.try_clone().unwrap()), w: BufWriter::new(stream), next: 1 };
+    let hello = Request::Hello { protocol_version: 999, ui_pid: 0, ui_exe: None, ui_cwd: std::env::temp_dir() };
+    let expected = format!(
+        "protocol version mismatch: daemon {PROTOCOL_VERSION}, client 999; restart sarkosd (pkill -x sarkosd), which ends every session"
+    );
+    assert_eq!(c.request(hello), Response::Error(expected));
+    // Then the daemon hangs up.
+    assert!(matches!(read_frame::<_, ServerMessage>(&mut c.r), Ok(None) | Err(_)), "daemon kept the connection open");
+    // And keeps serving everyone else.
+    let mut ok = d.connect_as(0);
+    assert!(matches!(ok.request(Request::ListSessions), Response::Sessions(_)));
 }

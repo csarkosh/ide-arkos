@@ -3,7 +3,7 @@
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId};
+use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -122,6 +122,18 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
             loop {
                 match read_frame::<_, ClientMessage>(&mut r) {
                     Ok(Some(msg)) => {
+                        if let Request::Hello { protocol_version, .. } = msg.request {
+                            if protocol_version != PROTOCOL_VERSION {
+                                let error = format!(
+                                    "protocol version mismatch: daemon {PROTOCOL_VERSION}, client {protocol_version}; \
+                                     restart sarkosd (pkill -x sarkosd), which ends every session"
+                                );
+                                eprintln!("sarkosd: client {client_id} dropped: {error}");
+                                // Closing below lets the writer send this before the socket closes.
+                                sink.send(ServerMessage::Response { id: msg.id, response: Response::Error(error) });
+                                break;
+                            }
+                        }
                         // Attach queues its own response so it lands before any live output.
                         if let Some(response) = dispatch(&state, client_id, &sink, msg.id, msg.request, opts) {
                             if !sink.send(ServerMessage::Response { id: msg.id, response }) {
@@ -160,7 +172,7 @@ fn disconnect(state: &Shared, client_id: ClientId) {
 fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
     let response = match request {
-        Request::Hello { ui_pid, ui_exe, ui_cwd } => {
+        Request::Hello { protocol_version: _, ui_pid, ui_exe, ui_cwd } => {
             let mut st = state.lock().unwrap();
             if let Some(rec) = st.clients.get_mut(&client_id) {
                 // As a pid_t, 0 is the daemon's process group, 1 is launchd, and anything above
