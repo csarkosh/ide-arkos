@@ -250,6 +250,8 @@ pub struct Root {
     pub update_error: Option<String>,
     /// The idle timer that applies a staged update is running (`start_idle_timer`).
     pub auto_apply_timer: bool,
+    /// The daemon's `last_error` last shown as a notice, so each one is shown once.
+    pub update_error_noticed: Option<String>,
     /// The last key, pointer move or click in this window: a staged update applies only once the
     /// window has been quiet for `[update] idle_after_secs`.
     pub last_input: Instant,
@@ -278,6 +280,11 @@ fn shell_folder(cwd: Option<PathBuf>) -> Option<PathBuf> {
 
 /// How often the idle timer asks whether a staged update may apply itself.
 const IDLE_TICK: Duration = Duration::from_secs(1);
+/// How long after the daemon accepted "Check for updates" the window asks what it found.
+const CHECK_RESULT_AFTER: Duration = Duration::from_secs(3);
+/// What the daemon's refusal of a second `ApplyUpdate` says (`server.rs`): another window's
+/// apply is in flight or waits for its new window.
+const ANOTHER_APPLY: &str = "waiting for a window";
 
 /// What arkosd starts with when this window (or the login item) starts it; a running daemon
 /// keeps its own settings.
@@ -404,6 +411,7 @@ impl Root {
             staged: None,
             update_error: None,
             auto_apply_timer: false,
+            update_error_noticed: None,
             last_input: Instant::now(),
             updating: None,
             window_active: true,
@@ -1382,8 +1390,16 @@ impl Root {
         }
     }
 
-    /// Checks every second whether a staged update may apply itself (`idle::may_apply`), and
-    /// applies it once. Stops when nothing is staged or `[update] auto` is off; one at a time.
+    /// Another window applied an update: the bundle at the launch path is not this build and the
+    /// daemon runs another build than this window too (equal in a dev build, which never
+    /// relaunches by itself).
+    fn on_disk_newer_daemon(&self) -> bool {
+        self.update_ready_on_disk.is_some() && self.daemon_version.as_deref().is_some_and(|d| update::other_build(d, &crate::version_string()))
+    }
+
+    /// Checks every second whether the window may act on an update (`idle::may_apply`): applies
+    /// a staged release, or relaunches when another window applied one (`idle::idle_action`),
+    /// once. Stops when there is nothing to do or `[update] auto` is off; one at a time.
     pub fn start_idle_timer(&mut self, cx: &mut Context<Self>) {
         if self.auto_apply_timer {
             return;
@@ -1393,7 +1409,8 @@ impl Root {
             cx.background_executor().timer(IDLE_TICK).await;
             let more = root.update(cx, |root, cx| {
                 // A failed update waits for "Retry update" or a newly staged release.
-                if root.staged.is_none() || !root.config.update.auto || root.update_error.is_some() {
+                let action = idle::idle_action(root.staged.is_some() && root.update_error.is_none(), root.on_disk_newer_daemon());
+                if action == idle::IdleAction::Nothing || !root.config.update.auto {
                     root.auto_apply_timer = false;
                     return false;
                 }
@@ -1404,7 +1421,11 @@ impl Root {
                 let idle_after = Duration::from_secs(root.config.update.idle_after_secs);
                 if idle::may_apply(now, root.last_input, idle_after, chrome, root.updating.is_some(), !root.sessions.is_offline()) {
                     root.auto_apply_timer = false;
-                    root.apply_staged(cx);
+                    match action {
+                        idle::IdleAction::Apply => root.apply_staged(cx),
+                        idle::IdleAction::Relaunch => root.relaunch_now(cx),
+                        idle::IdleAction::Nothing => {}
+                    }
                     return false;
                 }
                 true
@@ -1414,6 +1435,25 @@ impl Root {
             }
         })
         .detach();
+    }
+
+    /// What the daemon's `UpdateStatus` says, into the badge; its `last_error` is shown once as a
+    /// notice (again whenever the user asked for the check: `requested`).
+    fn note_update_status(&mut self, staged: Option<StagedUpdate>, last_error: Option<String>, requested: bool, cx: &mut Context<Self>) {
+        // A failed attempt is not retried by itself: "Retry update" does that.
+        let apply = staged.is_some() && last_error.is_none();
+        if let Some(e) = &last_error {
+            if requested || self.update_error_noticed.as_ref() != Some(e) {
+                self.update_error_noticed = Some(e.clone());
+                self.show_notice(if e.starts_with("update") { e.clone() } else { format!("update check failed: {e}") }, cx);
+            }
+        }
+        self.staged = staged;
+        self.update_error = last_error;
+        self.refresh_update_badge(cx);
+        if apply {
+            self.start_idle_timer(cx);
+        }
     }
 
     /// Asks the daemon to swap in the staged bundle; `Outcome::Applied` then runs "Update now".
@@ -1551,15 +1591,24 @@ impl Root {
                 if protocol_max >= 4 {
                     self.sessions.update_status();
                 }
+                // Another window's update may have upgraded the daemon: relaunch once idle.
+                self.start_idle_timer(cx);
             }
-            Outcome::UpdateStatus { staged, last_error } => {
-                // A failed attempt is not retried by itself: "Retry update" does that.
-                let apply = staged.is_some() && last_error.is_none();
-                self.staged = staged;
-                self.update_error = last_error;
-                self.refresh_update_badge(cx);
-                if apply {
-                    self.start_idle_timer(cx);
+            Outcome::UpdateStatus { staged, last_error } => self.note_update_status(staged, last_error, false, cx),
+            Outcome::CheckStarted => {
+                // The check runs on the daemon's poll thread; its result is there a moment later.
+                let root = cx.entity();
+                cx.spawn(async move |_, cx| {
+                    cx.background_executor().timer(CHECK_RESULT_AFTER).await;
+                    let _ = root.update(cx, |root, _| root.sessions.status_after_check());
+                })
+                .detach();
+            }
+            Outcome::Checked { staged, last_error } => {
+                let nothing = staged.is_none() && last_error.is_none();
+                self.note_update_status(staged, last_error, true, cx);
+                if nothing {
+                    self.show_notice("no update".into(), cx);
                 }
             }
             Outcome::Applied => {
@@ -1570,9 +1619,18 @@ impl Root {
                 self.refresh_update_badge(cx);
                 self.update_now(cx);
             }
+            // Another window's apply holds the daemon: no error, no badge; this window relaunches
+            // once that one has upgraded the daemon (`idle::IdleAction::Relaunch`).
+            Outcome::ApplyFailed(e) if e.contains(ANOTHER_APPLY) => {
+                eprintln!("arkos: apply refused: {e}");
+                self.updating = None;
+                self.show_notice("another window is applying the update".into(), cx);
+            }
             Outcome::ApplyFailed(e) => {
                 eprintln!("arkos: update failed: {e}");
                 self.updating = None;
+                // The daemon reports this failure as its `last_error` in these words: shown once.
+                self.update_error_noticed = Some(format!("update failed: {e}"));
                 self.update_error = Some(e.clone());
                 self.refresh_update_badge(cx);
                 self.show_notice(format!("update failed: {e}"), cx);

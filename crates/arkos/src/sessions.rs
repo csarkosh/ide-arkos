@@ -52,6 +52,9 @@ pub enum Pending {
     Relaunch,
     /// What the daemon has staged and the last update error (protocol 4).
     Status,
+    /// `Status`, asked a moment after a check the user requested: its answer says whether the
+    /// check found anything.
+    StatusAfterCheck,
     /// A check for a new release now; answered `Ok`, or refused when checks are off.
     Check,
     /// The daemon swapping in the staged bundle.
@@ -86,6 +89,10 @@ pub enum Outcome {
     ApplyFailed(String),
     /// The daemon would not check now ("update checks are off"): a notice, not a connection error.
     CheckFailed(String),
+    /// The daemon accepted a requested check: the window asks `status_after_check` shortly.
+    CheckStarted,
+    /// The answer to `status_after_check`: what the requested check left.
+    Checked { staged: Option<StagedUpdate>, last_error: Option<String> },
 }
 
 /// One launch step for one saved terminal tab.
@@ -278,6 +285,12 @@ impl SessionManager {
         self.pending.insert(id, Pending::Status);
     }
 
+    /// Asks what the daemon has staged after a check the user requested (`Outcome::Checked`).
+    pub fn status_after_check(&mut self) {
+        let id = self.transport.send(Request::UpdateStatus);
+        self.pending.insert(id, Pending::StatusAfterCheck);
+    }
+
     /// Asks the daemon to check for a new release now.
     pub fn check_for_updates(&mut self) {
         let id = self.transport.send(Request::CheckForUpdates);
@@ -413,6 +426,9 @@ impl SessionManager {
             return Outcome::DaemonHello { version: daemon_version.clone(), protocol_min: *protocol_min, protocol_max: *protocol_max };
         }
         if let Response::UpdateStatus { staged, last_error } = &response {
+            if pending == Some(Pending::StatusAfterCheck) {
+                return Outcome::Checked { staged: staged.clone(), last_error: last_error.clone() };
+            }
             return Outcome::UpdateStatus { staged: staged.clone(), last_error: last_error.clone() };
         }
         if let Response::Error(e) = &response {
@@ -456,6 +472,7 @@ impl SessionManager {
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
             (Some(Pending::Relaunch), Response::Ok) => Outcome::RelaunchAccepted,
             (Some(Pending::Apply), Response::Ok) => Outcome::Applied,
+            (Some(Pending::Check), Response::Ok) => Outcome::CheckStarted,
             (Some(Pending::Apply), _) => Outcome::ApplyFailed(format!("unexpected response {response:?} to {pending:?}")),
             (Some(Pending::Relaunch), _) => Outcome::RelaunchRefused(format!("unexpected response {response:?} to {pending:?}")),
             (Some(Pending::Attach { session, tab, .. }), _) => {
@@ -1077,7 +1094,7 @@ mod tests {
         assert_eq!(m.handle_response(1, Response::UpdateStatus { staged: Some(staged.clone()), last_error: None }), Outcome::UpdateStatus { staged: Some(staged.clone()), last_error: None });
         m.check_for_updates();
         assert!(matches!(rec.requests()[1], Request::CheckForUpdates));
-        assert_eq!(m.handle_response(2, Response::Ok), Outcome::None);
+        assert_eq!(m.handle_response(2, Response::Ok), Outcome::CheckStarted);
         m.apply_update("0.2.1".into());
         assert!(matches!(&rec.requests()[2], Request::ApplyUpdate { version } if version == "0.2.1"));
         assert_eq!(m.handle_response(3, Response::Ok), Outcome::Applied);
@@ -1093,5 +1110,20 @@ mod tests {
         let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
         m.check_for_updates();
         assert_eq!(m.handle_response(1, Response::Error("update checks are off".into())), Outcome::CheckFailed("update checks are off".into()));
+    }
+
+    #[test]
+    fn an_accepted_check_is_followed_by_a_status_request_whose_answer_says_what_it_found() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.check_for_updates();
+        assert_eq!(m.handle_response(1, Response::Ok), Outcome::CheckStarted);
+        // The window's timer fires a moment later and re-asks.
+        m.status_after_check();
+        assert!(matches!(rec.requests()[1], Request::UpdateStatus));
+        assert_eq!(m.handle_response(2, Response::UpdateStatus { staged: None, last_error: None }), Outcome::Checked { staged: None, last_error: None });
+        // A plain status request still answers as before.
+        m.update_status();
+        assert_eq!(m.handle_response(3, Response::UpdateStatus { staged: None, last_error: None }), Outcome::UpdateStatus { staged: None, last_error: None });
     }
 }

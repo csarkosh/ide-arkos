@@ -49,6 +49,13 @@ pub fn differs(running: &str, installed: &str) -> bool {
     running.trim() != installed.trim()
 }
 
+/// Whether two version strings name different builds, whichever binary printed them
+/// ("arkosd 0.2.0 (abc)" and "arkos 0.2.0 (abc)" are the same build).
+pub fn other_build(a: &str, b: &str) -> bool {
+    let build = |s: &str| s.trim().split_once(' ').map(|(_, v)| v.to_string()).unwrap_or_else(|| s.trim().to_string());
+    build(a) != build(b)
+}
+
 /// "update ready: 0.2.0 (def5678)": the installed string without the binary's name.
 pub fn status_text(installed: &str) -> String {
     let version = installed.trim().split_once(' ').map(|(_, v)| v).unwrap_or(installed.trim());
@@ -78,6 +85,8 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
             if root.update_ready_on_disk != ready {
                 root.update_ready_on_disk = ready;
                 root.refresh_update_badge(cx);
+                // Another window may have applied an update: this one relaunches once idle.
+                root.start_idle_timer(cx);
             }
         }).is_err() {
             return;
@@ -98,6 +107,8 @@ mod tests {
         assert!(differs("arkos 0.1.0 (abc1234)", "arkos 0.2.0 (abc1234)"));
         assert_eq!(status_text("arkos 0.2.0 (def5678)"), "update ready: 0.2.0 (def5678)");
         assert_eq!(status_text("garbage"), "update ready: garbage");
+        assert!(!other_build("arkosd 0.1.0 (abc1234)", "arkos 0.1.0 (abc1234)"), "the daemon and the window of one build");
+        assert!(other_build("arkosd 0.2.0 (def5678)", "arkos 0.1.0 (abc1234)"));
         assert_eq!(sibling_daemon(std::path::Path::new("/opt/homebrew/bin/arkos")), std::path::PathBuf::from("/opt/homebrew/bin/arkosd"));
         assert_eq!(status_text_for(&StagedUpdate { version: "0.2.1".into(), git: "abc".into() }), "update ready: 0.2.1");
     }

@@ -14,6 +14,10 @@ pub enum Outcome {
     /// The check worked and found nothing newer than what runs and what is staged.
     Nothing,
     Staged(Staged),
+    /// The manifest or the zip could not be fetched (offline, a captive portal, a timeout): logged
+    /// and tried again at the next check, never reported to the windows.
+    Transient(String),
+    /// The release itself is wrong (signature, size, sha256) or staging failed: reported.
     Failed(String),
     /// The manifest names a release that already failed; the text is that failure's.
     Skipped(String),
@@ -50,7 +54,7 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
     }
     let (bytes, sig) = match f.fetch_manifest(dir) {
         Ok(x) => x,
-        Err(e) => return Outcome::Failed(e),
+        Err(e) => return Outcome::Transient(e),
     };
     if let Err(e) = verify::verify_manifest(&bytes, &sig, keys) {
         return Outcome::Failed(e);
@@ -91,7 +95,7 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
             super::stage::clean_except(dir, Some(&s.bundle));
             Outcome::Staged(s)
         }
-        Err(Failure::Transport(e)) => Outcome::Failed(e),
+        Err(Failure::Transport(e)) => Outcome::Transient(e),
         Err(Failure::Release(e)) => {
             bad.insert(key, e.clone());
             Outcome::Failed(e)
@@ -101,7 +105,8 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
 
 /// A check's outcome into the shared state. Returns the event to tell the windows, if any.
 /// `last_error` is cleared only by a check that positively found nothing newer or staged one; a
-/// skipped bad release keeps its original failure reported.
+/// skipped bad release keeps its original failure reported, and a transport failure leaves it as
+/// it was (a wifi drop is not news).
 pub fn record(u: &mut UpdateState, outcome: Outcome) -> Option<protocol::StagedUpdate> {
     match outcome {
         Outcome::Nothing => {
@@ -113,6 +118,10 @@ pub fn record(u: &mut UpdateState, outcome: Outcome) -> Option<protocol::StagedU
             let update = protocol::StagedUpdate { version: s.version.clone(), git: s.git.clone() };
             u.staged = Some(s);
             Some(update)
+        }
+        Outcome::Transient(e) => {
+            eprintln!("arkosd: update check: {e} (tried again at the next check)");
+            None
         }
         Outcome::Failed(e) => {
             eprintln!("arkosd: update check: {e}");
@@ -336,13 +345,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut bad = Bad::new();
         let outcome = check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None);
-        assert!(matches!(&outcome, Outcome::Failed(e) if e.contains("curl")), "{outcome:?}");
+        assert!(matches!(&outcome, Outcome::Transient(e) if e.contains("curl")), "{outcome:?}");
         assert!(bad.is_empty(), "a wifi drop is tried again at the next check");
         assert!(!dir.path().join("0.2.1.zip").exists() && !dir.path().join("0.2.1").exists());
         let mut u = UpdateState::default();
         record(&mut u, outcome);
-        assert!(u.last_error.as_deref().is_some_and(|e| e.contains("curl")));
-        assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None), Outcome::Failed(_)), "tried again, not skipped");
+        assert_eq!(u.last_error, None, "a transport failure is not reported to the windows");
+        let mut u = UpdateState { last_error: Some("signature".into()), ..Default::default() };
+        record(&mut u, Outcome::Transient("curl: offline".into()));
+        assert_eq!(u.last_error.as_deref(), Some("signature"), "and leaves an earlier error as it was");
+        assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None), Outcome::Transient(_)), "tried again, not skipped");
+    }
+
+    #[test]
+    fn a_missing_manifest_is_transient() {
+        let s = site();
+        let dir = tempfile::tempdir().unwrap();
+        let mut bad = Bad::new();
+        let outcome = check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None);
+        assert!(matches!(&outcome, Outcome::Transient(_)), "{outcome:?}");
+        let mut u = UpdateState::default();
+        record(&mut u, outcome);
+        assert_eq!(u.last_error, None);
     }
 
     #[test]

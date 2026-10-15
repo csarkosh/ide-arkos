@@ -24,6 +24,30 @@ pub fn may_apply(now: Instant, last_input: Instant, idle_after: Duration, chrome
     now.saturating_duration_since(last_input) >= idle_after
 }
 
+/// What an idle window does about updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleAction {
+    /// Ask the daemon to swap in the staged release (`apply_staged`).
+    Apply,
+    /// Another window applied it: the daemon runs the new build and the bundle on disk is new, so
+    /// this window relaunches from it (`relaunch_now`).
+    Relaunch,
+    Nothing,
+}
+
+/// `staged`: the daemon has a release staged. `on_disk_newer_daemon`: the binary at the launch
+/// path differs from this window and the daemon already runs another build than this window
+/// (a dev build whose daemon is its own build never relaunches).
+pub fn idle_action(staged: bool, on_disk_newer_daemon: bool) -> IdleAction {
+    if staged {
+        IdleAction::Apply
+    } else if on_disk_newer_daemon {
+        IdleAction::Relaunch
+    } else {
+        IdleAction::Nothing
+    }
+}
+
 /// When the quiet spell starts: now while anything is open, so closing the palette, a menu or a
 /// find bar (whose keys may never reach the window) is not followed by an update a second later.
 pub fn quiet_since(last_input: Instant, now: Instant, chrome: Chrome) -> Instant {
@@ -62,5 +86,13 @@ mod tests {
         // Closed on the next tick: the 30 seconds count from the last tick it was open.
         assert!(!may_apply(now + Duration::from_secs(1), since, after, Chrome::default(), false, true));
         assert!(may_apply(now + Duration::from_secs(30), since, after, Chrome::default(), false, true));
+    }
+
+    #[test]
+    fn a_staged_release_applies_and_one_another_window_applied_relaunches() {
+        assert_eq!(idle_action(true, false), IdleAction::Apply);
+        assert_eq!(idle_action(true, true), IdleAction::Apply, "a staged release goes first");
+        assert_eq!(idle_action(false, true), IdleAction::Relaunch);
+        assert_eq!(idle_action(false, false), IdleAction::Nothing);
     }
 }
