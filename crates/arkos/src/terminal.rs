@@ -2,7 +2,7 @@
 //! `TerminalCore` has no GPUI dependency so its behaviour is unit tested; `Terminal` wraps it as
 //! a GPUI entity and owns the socket side.
 use crate::client::Client;
-use crate::keys::keystroke_to_bytes;
+use crate::keys::{keystroke_to_bytes, KeyMode};
 use crate::layout::{CellKind, CellStyle};
 use crate::mouse::{self, Clicks, Gesture, MouseMode, WheelCarry};
 use crate::palette::{Palette, NAVY};
@@ -96,7 +96,9 @@ pub struct TerminalCore {
 impl TerminalCore {
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let listener = Listener::default();
-        let config = Config { scrolling_history: scrollback, ..Config::default() };
+        // Kitty keyboard flags are tracked so a program that sets them (Claude Code does) gets
+        // the key encoding it asked for; see `key_mode`.
+        let config = Config { scrolling_history: scrollback, kitty_keyboard: true, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
         Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new() }
     }
@@ -213,6 +215,13 @@ impl TerminalCore {
 
     pub fn bracketed_paste(&self) -> bool {
         self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// How keys are encoded for the program right now: its cursor-key mode, whether it set the
+    /// kitty protocol's disambiguate flag, and the config's Option-as-Meta choice.
+    pub fn key_mode(&self, option_as_meta: bool) -> KeyMode {
+        let m = self.term.mode();
+        KeyMode { app_cursor: m.contains(TermMode::APP_CURSOR), kitty: m.contains(TermMode::DISAMBIGUATE_ESC_CODES), option_as_meta }
     }
 
     /// What the program wants from the mouse right now (see `mouse::MouseMode`).
@@ -506,14 +515,19 @@ impl Terminal {
         Some(mouse::cell_under(f32::from(position.x), f32::from(position.y), origin, (cell.width, cell.height), self.frac, self.core.columns(), self.core.screen_lines()))
     }
 
-    /// A wheel step of `lines` (positive is up). The local history scrolls unless the program
-    /// reports the mouse or runs on the alternate screen, where the step goes to it as a report
-    /// or an arrow key; Shift forces the local scroll, as in xterm, and so does an ended session.
-    pub fn wheel(&mut self, lines: f32, shift: bool, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    /// A wheel step of `lines` (positive is up); `precise` is a trackpad's pixel step rather than
+    /// a wheel notch. The local history scrolls unless the program reports the mouse or runs on
+    /// the alternate screen, where the step goes to it as a report or an arrow key; Shift forces
+    /// the local scroll, as in xterm, and so does an ended session.
+    pub fn wheel(&mut self, lines: f32, precise: bool, shift: bool, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let mode = if shift || !self.alive { MouseMode::Local } else { self.core.mouse_mode() };
         if mode == MouseMode::Local {
             self.wheel_carry.reset();
-            self.scroll_lines(lines, cx);
+            if precise {
+                self.scroll_direct(lines, cx);
+            } else {
+                self.scroll_lines(lines, cx);
+            }
             return;
         }
         // The program's rows are the live ones: a view left in the history comes back first.
@@ -631,7 +645,7 @@ impl Terminal {
         cx.notify();
     }
 
-    pub fn handle_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
+    pub fn handle_key(&mut self, ks: &Keystroke, option_as_meta: bool, cx: &mut Context<Self>) {
         // Shift+PageUp/PageDown scroll locally; everything else goes to the shell.
         if ks.modifiers.shift && (ks.key == "pageup" || ks.key == "pagedown") {
             let page = self.core.screen_lines() as f32;
@@ -642,7 +656,7 @@ impl Terminal {
         if !self.alive {
             return;
         }
-        if let Some(bytes) = keystroke_to_bytes(ks, self.core.app_cursor()) {
+        if let Some(bytes) = keystroke_to_bytes(ks, self.core.key_mode(option_as_meta)) {
             self.client.send(Request::Input { session: self.session, bytes });
             // Typing jumps back to the live bottom, as every terminal does.
             self.core.scroll.jump_to(0.0);
@@ -666,9 +680,16 @@ impl Terminal {
         self.client.send(Request::Input { session: self.session, bytes });
     }
 
-    /// Positive lines scroll up into history.
+    /// Positive lines scroll up into history, with the ease a wheel notch deserves.
     pub fn scroll_lines(&mut self, lines: f32, cx: &mut Context<Self>) {
         self.core.scroll.scroll_by(lines, self.core.history_size() as f32);
+        cx.notify();
+    }
+
+    /// A trackpad's pixel step: the view follows the finger at once, since the trackpad already
+    /// delivers its own glide and momentum.
+    pub fn scroll_direct(&mut self, lines: f32, cx: &mut Context<Self>) {
+        self.core.scroll.scroll_direct(lines, self.core.history_size() as f32);
         cx.notify();
     }
 
@@ -818,6 +839,30 @@ mod tests {
         assert_eq!(text_of(&above), format!("l{}", top_n - 1));
         t.set_display_offset(0);
         assert!(t.rows_for_paint().above.is_none() || t.history_size() > 0);
+    }
+
+    #[test]
+    fn key_mode_follows_the_kitty_flags_per_screen() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        assert!(!t.key_mode(true).kitty);
+        assert!(t.key_mode(true).option_as_meta && !t.key_mode(false).option_as_meta);
+        // The set form Claude Code uses, then the push and pop forms.
+        t.apply_output(b"\x1b[=1;1u");
+        assert!(t.key_mode(true).kitty);
+        t.apply_output(b"\x1b[=u");
+        assert!(!t.key_mode(true).kitty, "an empty set clears the flags");
+        t.apply_output(b"\x1b[>1u");
+        assert!(t.key_mode(true).kitty);
+        t.apply_output(b"\x1b[<u");
+        assert!(!t.key_mode(true).kitty);
+        // Flags set on the alternate screen leave with it, so a crashed program cannot leave
+        // the shell's Esc encoded.
+        t.apply_output(b"\x1b[?1049h\x1b[=1;1u");
+        assert!(t.key_mode(true).kitty);
+        t.apply_output(b"\x1b[?1049l");
+        assert!(!t.key_mode(true).kitty);
+        t.apply_output(b"\x1b[?1h");
+        assert!(t.key_mode(true).app_cursor);
     }
 
     #[test]

@@ -73,11 +73,14 @@ pub struct TerminalConfig {
     /// The program each new tab runs; `None` means `$SHELL`.
     pub shell: Option<String>,
     pub nice: i32,
+    /// Option sends ESC plus the key (Terminal.app's "Use Option as Meta Key"), which Claude
+    /// Code's Option shortcuts need; off, Option composes characters such as ß.
+    pub option_as_meta: bool,
 }
 
 impl Default for TerminalConfig {
     fn default() -> Self {
-        Self { scrollback: 20_000, shell: None, nice: 0 }
+        Self { scrollback: 20_000, shell: None, nice: 0, option_as_meta: true }
     }
 }
 
@@ -382,6 +385,9 @@ scrollback = 20000
 # shell = "/bin/zsh"
 # Priority for new shells, -20 (highest) to 20 (lowest). 0 is normal.
 nice = 0
+# Option sends ESC plus the key (Terminal.app's "Use Option as Meta Key"), which Claude Code's
+# Option shortcuts need. false: Option composes characters, so Option+S types ß.
+option_as_meta = true
 
 [keybindings]
 # Action name = keystrokes, in gpui syntax: modifiers cmd, ctrl, alt and shift joined with "-"
@@ -586,6 +592,7 @@ mod tests {
         assert_eq!(cfg.terminal.scrollback, 20_000);
         assert_eq!(cfg.terminal.shell, None);
         assert_eq!(cfg.terminal.nice, 0);
+        assert!(cfg.terminal.option_as_meta);
         assert!(cfg.keybindings.is_empty());
         assert_eq!(cfg.daemon.watchdog_secs, 30);
         assert_eq!(cfg.daemon.replay_bytes, 16 * 1024 * 1024);

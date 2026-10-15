@@ -20,6 +20,13 @@ impl ScrollAnimator {
         self.target = (self.target + delta_lines).clamp(0.0, max.max(0.0));
     }
 
+    /// Moves by `delta_lines` with no glide: for a trackpad, whose pixel steps and momentum are
+    /// the glide already, so easing them would only lag behind the finger.
+    pub fn scroll_direct(&mut self, delta_lines: f32, max: f32) {
+        self.scroll_by(delta_lines, max);
+        self.current = self.target;
+    }
+
     pub fn jump_to(&mut self, lines: f32) {
         self.target = lines.max(0.0);
         self.current = self.target;
@@ -77,6 +84,20 @@ mod tests {
         for _ in 0..10 { b.tick(0.16); }
         assert!((a.current - 25.0).abs() < 0.001);
         assert!((b.current - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_direct_step_lands_at_once_and_needs_no_frame() {
+        let mut s = ScrollAnimator::new();
+        s.scroll_by(10.0, 100.0);
+        s.tick(0.016);
+        // A trackpad step mid-glide lands the whole way, glide included.
+        s.scroll_direct(0.4, 100.0);
+        assert_eq!(s.current, 10.4);
+        assert_eq!(s.target, 10.4);
+        assert!(!s.tick(0.016));
+        s.scroll_direct(-20.0, 100.0);
+        assert_eq!(s.current, 0.0, "clamped at the live bottom");
     }
 
     #[test]

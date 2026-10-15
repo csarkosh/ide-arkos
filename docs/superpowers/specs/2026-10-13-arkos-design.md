@@ -146,7 +146,11 @@ frames draw the latest state; animations are time-based, not frame-based.
 **Text.** CoreText via GPUI. Default Menlo at 16 px with line height 1.5 (section 7.1).
 
 **Input.** Keystrokes go to the daemon as bytes; bracketed paste is supported (Claude Code
-relies on it for multi-line input). Mouse selection and copy are local (a drag, a double click for
+relies on it for multi-line input). Option is Meta by default (`[terminal] option_as_meta`,
+Terminal.app's "Use Option as Meta Key"): Option+key sends ESC plus the key, Option+Enter ESC CR.
+A program that sets the kitty keyboard protocol's disambiguate flag gets Esc and the modified
+Enter, Tab, Backspace, Space, Option+key and Ctrl+Shift+key as `CSI code ; mods u`; everything
+else keeps its legacy bytes, and the flags leave with the alternate screen (added 2026-10-15). Mouse selection and copy are local (a drag, a double click for
 a word, a triple click for a line; Cmd+C); copy uses the system clipboard. A program that turns
 on mouse reporting gets the wheel and single clicks at the cell under the pointer, in the SGR or
 X10 form it asked for; a drag is a local selection and never a report. On the alternate screen

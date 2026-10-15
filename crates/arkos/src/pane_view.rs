@@ -601,7 +601,8 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             if root.sessions.notes.remove(&session).is_some() | root.sessions.acknowledge(session) {
                 cx.notify();
             }
-            t_keys.update(cx, |t, cx| t.handle_key(ks, cx));
+            let option_as_meta = root.config.terminal.option_as_meta;
+            t_keys.update(cx, |t, cx| t.handle_key(ks, option_as_meta, cx));
         }))
         .on_mouse_down(
             MouseButton::Left,
@@ -649,12 +650,12 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 // Positive wheel y means the content moves down, which is scrolling up into history.
                 // macOS turns a Shift+wheel on a mouse into a horizontal step, so Shift reads x
                 // when y is still.
-                let (x, y) = match ev.delta {
-                    ScrollDelta::Lines(p) => (p.x, p.y),
-                    ScrollDelta::Pixels(p) => (f32::from(p.x) / cell_h, f32::from(p.y) / cell_h),
+                let (x, y, precise) = match ev.delta {
+                    ScrollDelta::Lines(p) => (p.x, p.y, false),
+                    ScrollDelta::Pixels(p) => (f32::from(p.x) / cell_h, f32::from(p.y) / cell_h, true),
                 };
                 let lines = if ev.modifiers.shift && y == 0.0 { x } else { y };
-                t.wheel(lines, ev.modifiers.shift, ev.position, cx);
+                t.wheel(lines, precise, ev.modifiers.shift, ev.position, cx);
             });
         }))
         .child(

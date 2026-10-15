@@ -27,6 +27,10 @@ Things only a person at the screen can check, in order of value:
   selects a word, triple click a line, a click clears it; a drag inside Claude Code's fullscreen
   selects without the program reacting; `less` on a long file: the wheel moves the file;
   Shift+wheel on a mouse, in a shell with history: wheel up shows older lines, not newer
+- in Claude Code: Option+Enter and Shift+Enter each add a line to the prompt instead of sending
+  it; Option+P opens the model picker; Esc still cancels; in zsh, Shift+Enter runs the line
+- `claude` with `/tui default`, a long answer, then a two-finger scroll: the text follows the
+  finger with no lag and keeps gliding when the fingers lift; a mouse wheel's notches still ease
 - in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
   clears them within ten seconds
 - Worktrees: expand one: a shimmer, then its changed files fade in; collapse and expand again:
@@ -289,9 +293,16 @@ Notes:
   Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
   kept for Shift+Cmd+T, since nothing is left to end or bring back. A closed viewer tab comes
   back too, pinned, in the pane it was closed from.
-- Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
-  modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`. Option+Delete sends ESC DEL, the
-  word delete, and a modified forward delete sends `ESC [ 3 ; m ~`.
+- Option is Meta, as with Terminal.app's "Use Option as Meta Key": Option+a key sends ESC plus
+  the key, so Claude Code's Option+Enter (newline), Option+P, Option+T, Option+O and Alt+B/F/D/Y
+  all work. Option+Left and Option+Right send the word-jump sequences ESC b and ESC f; every
+  other modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`; Option+Delete sends ESC DEL,
+  the word delete, and a modified forward delete sends `ESC [ 3 ; m ~`. Set
+  `option_as_meta = false` under `[terminal]` to have Option compose characters (ß, π) instead.
+- A program that turns on the kitty keyboard protocol (Claude Code does) gets its
+  "disambiguate" encoding: Esc as `ESC [ 27 u`, and a modified Enter, Tab, Backspace or Space, a
+  key with Option, or Ctrl+Shift with a key as `ESC [ code ; mods u`, so Shift+Enter is a newline
+  there. Everywhere else those keys keep their usual bytes: Shift+Enter in a shell is Enter.
 - Drag across terminal text to select it (double click a word, triple click a line); Cmd+C
   copies it and a click clears it. A program that asks for mouse reports, such as Claude Code's
   fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and its
@@ -312,7 +323,7 @@ Notes:
 commented defaults on first run and opened by Cmd+, in your text editor. It is watched: a saved
 edit applies within a second. A bad edit shows a banner with the line number and keeps the last
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
-(scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
+(scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
 whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` (`url`, the page a new
