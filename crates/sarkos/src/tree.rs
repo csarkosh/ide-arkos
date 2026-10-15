@@ -49,7 +49,14 @@ impl Side {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tab {
-    Terminal { session: SessionId },
+    /// `cwd` is the folder its shell was started in when that is not the project (a worktree):
+    /// a restart reattaches the session only if the daemon says it lives there. Absent in files
+    /// from before milestone 4b, which means the project.
+    Terminal {
+        session: SessionId,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+    },
     /// Milestone 4's read-only viewer. Persisted now so the format does not change later.
     Viewer { path: PathBuf },
 }
@@ -335,7 +342,7 @@ impl Tree {
     pub fn find_session(&self, session: SessionId) -> Option<(PaneId, usize)> {
         for id in self.panes() {
             let pane = self.pane(id)?;
-            if let Some(i) = pane.tabs.iter().position(|t| matches!(t, Tab::Terminal { session: s } if *s == session)) {
+            if let Some(i) = pane.tabs.iter().position(|t| matches!(t, Tab::Terminal { session: s, .. } if *s == session)) {
                 return Some((id, i));
             }
         }
@@ -686,7 +693,7 @@ mod tests {
 
     #[test]
     fn find_viewer_locates_a_tab_by_path_in_one_pane() {
-        let mut t = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = t.panes()[0];
         t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into() });
         let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into() }).unwrap();
@@ -703,7 +710,7 @@ mod tests {
         assert_eq!(t.focused, root);
         assert!(t.pane(root).unwrap().tabs.is_empty());
         assert!(t.pane(root).unwrap().ids.is_empty());
-        let idx = t.add_tab(root, Tab::Terminal { session: SessionId(7) });
+        let idx = t.add_tab(root, Tab::Terminal { session: SessionId(7), cwd: None });
         assert_eq!(idx, 0);
         assert_eq!(t.pane(root).unwrap().active, 0);
         assert!(t.tab_id(root, 0).is_some(), "the new tab gets a fresh id");
@@ -711,9 +718,9 @@ mod tests {
 
     #[test]
     fn a_pane_closes_with_its_last_tab_unless_it_is_the_last_pane() {
-        let mut t = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = t.panes()[0];
-        let right = t.split(root, Side::Right, Tab::Terminal { session: SessionId(2) }).unwrap();
+        let right = t.split(root, Side::Right, Tab::Terminal { session: SessionId(2), cwd: None }).unwrap();
         assert!(!t.close_pane_if_empty(right), "a pane with a tab stays");
         t.close_tab(right, 0);
         assert!(t.close_pane_if_empty(right), "its last tab gone, the pane goes");
@@ -727,7 +734,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn term(n: u64) -> Tab {
-        Tab::Terminal { session: SessionId(n) }
+        Tab::Terminal { session: SessionId(n), cwd: None }
     }
 
     fn bounds() -> Rect {

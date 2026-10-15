@@ -98,7 +98,7 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
         Ok(v1) => {
             let session = v1.sessions.first().map(|id| SessionId(*id))?;
             eprintln!("sarkos: migrating milestone 1 workspace {}", file.display());
-            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session }), text_preset: None, sidebar: None })
+            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session, cwd: None }), text_preset: None, sidebar: None })
         }
         Err(e) => {
             eprintln!("sarkos: ignoring corrupt workspace {}: {e}", file.display());
@@ -262,9 +262,9 @@ mod tests {
     use crate::tree::Side;
 
     fn tree_with_two() -> Tree {
-        let mut t = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let a = t.focused;
-        t.split(a, Side::Right, Tab::Terminal { session: SessionId(2) });
+        t.split(a, Side::Right, Tab::Terminal { session: SessionId(2), cwd: None });
         t
     }
 
@@ -293,9 +293,16 @@ mod tests {
         let file = dir.path().join("ws.json");
         let project = Path::new("/projects/x");
         assert_eq!(load_from(&file, project), None);
-        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None };
+        let mut tree = tree_with_two();
+        let pane = tree.focused;
+        tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some(PathBuf::from("/projects/x-feat")) });
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, text_preset: None, sidebar: None };
         save_to(&file, &ws).unwrap();
-        assert_eq!(load_from(&file, project), Some(ws));
+        assert_eq!(load_from(&file, project), Some(ws), "a worktree terminal keeps its folder");
+        // A file from before 4b has no cwd on its terminal tabs: they belong to the project.
+        std::fs::write(&file, r#"{ "version": 3, "project": "/projects/x", "tree": { "root": { "Leaf": { "id": 1, "tabs": [ { "Terminal": { "session": 7 } } ], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
+        let ws = load_from(&file, project).unwrap();
+        assert_eq!(ws.tree.pane(1).unwrap().tabs, vec![Tab::Terminal { session: SessionId(7), cwd: None }]);
     }
 
     #[test]
@@ -306,7 +313,7 @@ mod tests {
         let ws = load_from(&file, Path::new("/p")).expect("migrated");
         assert_eq!(ws.version, FORMAT_VERSION);
         assert_eq!(ws.project, PathBuf::from("/p"));
-        assert_eq!(ws.tree, Tree::new(Tab::Terminal { session: SessionId(42) }));
+        assert_eq!(ws.tree, Tree::new(Tab::Terminal { session: SessionId(42), cwd: None }));
         std::fs::write(&file, r#"{ "sessions": [] }"#).unwrap();
         assert_eq!(load_from(&file, Path::new("/p")), None);
     }
@@ -320,7 +327,7 @@ mod tests {
         assert_ne!(file, legacy);
         std::fs::write(&legacy, r#"{ "sessions": [42] }"#).unwrap();
         let ws = load_or_migrate(&file, &legacy, project).expect("the milestone 1 file is found");
-        assert_eq!(ws.tree, Tree::new(Tab::Terminal { session: SessionId(42) }));
+        assert_eq!(ws.tree, Tree::new(Tab::Terminal { session: SessionId(42), cwd: None }));
         assert!(!legacy.exists(), "the old name is removed");
         assert_eq!(load_from(&file, project), Some(ws.clone()), "and saved under the new name");
         // From then on the new file wins, even if an old one reappears.

@@ -238,7 +238,7 @@ pub fn says_goodbye(user_closing: bool, windows_left: usize) -> bool {
 fn focused_session_of(tree: &Tree) -> Option<SessionId> {
     let p = tree.pane(tree.focused)?;
     match p.tabs.get(p.active)? {
-        Tab::Terminal { session } => Some(*session),
+        Tab::Terminal { session, .. } => Some(*session),
         Tab::Viewer { .. } => None,
     }
 }
@@ -515,7 +515,7 @@ impl Root {
     fn own_grid(&self, pane: PaneId, cx: &App) -> Option<(usize, usize)> {
         let p = self.tree.pane(pane)?;
         let terminal = match p.tabs.get(p.active) {
-            Some(Tab::Terminal { session }) => self.sessions.terminals.get(session).map(|t| {
+            Some(Tab::Terminal { session, .. }) => self.sessions.terminals.get(session).map(|t| {
                 let core = &t.read(cx).core;
                 (core.columns(), core.screen_lines())
             }),
@@ -527,7 +527,7 @@ impl Root {
     pub fn active_terminal(&self, _cx: &App) -> Option<Entity<Terminal>> {
         let p = self.tree.pane(self.tree.focused)?;
         match p.tabs.get(p.active)? {
-            Tab::Terminal { session } => self.sessions.terminals.get(session).cloned(),
+            Tab::Terminal { session, .. } => self.sessions.terminals.get(session).cloned(),
             Tab::Viewer { .. } => None,
         }
     }
@@ -596,7 +596,7 @@ impl Root {
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
-        if let Tab::Terminal { session } = tab {
+        if let Tab::Terminal { session, cwd } = tab {
             if session != SessionId(0) {
                 let ended = self.sessions.terminals.get(&session).map(|t| !t.read(cx).alive).unwrap_or(false);
                 if ended {
@@ -614,7 +614,7 @@ impl Root {
                     self.sessions.abort_restore(session, id);
                 }
                 self.sessions.detach(session);
-                for old in self.closed.push(ClosedTab { closed: Closed::Session(session), pane, closed_at: Instant::now() }) {
+                for old in self.closed.push(ClosedTab { closed: Closed::Session(session, cwd), pane, closed_at: Instant::now() }) {
                     eprintln!("sarkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                     self.sessions.kill(old);
                 }
@@ -641,9 +641,9 @@ impl Root {
     }
 
     /// Puts a closed tab's session back in `pane` and reattaches it. The daemon kept it; one that
-    /// ended meanwhile shows as ended.
-    fn reopen_session(&mut self, pane: PaneId, session: SessionId, cx: &mut Context<Self>) {
-        let idx = self.tree.add_tab(pane, Tab::Terminal { session });
+    /// ended meanwhile shows as ended. `cwd` is the worktree it was opened in, if any.
+    fn reopen_session(&mut self, pane: PaneId, session: SessionId, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        let idx = self.tree.add_tab(pane, Tab::Terminal { session, cwd });
         self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
             eprintln!("sarkos: reopening session {} in pane {pane}", session.0);
@@ -681,10 +681,38 @@ impl Root {
         self.sessions.abort_restore(session, tab);
         eprintln!("sarkos: cannot show session {} in tab {tab} ({why}); starting a new shell there", session.0);
         self.sessions.detach(session);
-        self.tree.replace_tab(pane, idx, Tab::Terminal { session: SessionId(0) });
-        self.sessions.create(tab, true);
+        let cwd = self.tab_cwd(tab);
+        self.tree.replace_tab(pane, idx, Tab::Terminal { session: SessionId(0), cwd: cwd.clone() });
+        self.start_shell(tab, cwd, true);
         self.save(cx);
         cx.notify();
+    }
+
+    /// The worktree a terminal tab was opened in; `None` for the project or a viewer.
+    fn tab_cwd(&self, tab: TabId) -> Option<PathBuf> {
+        let (pane, idx) = self.tree.locate(tab)?;
+        match self.tree.pane(pane)?.tabs.get(idx)? {
+            Tab::Terminal { cwd, .. } => cwd.clone(),
+            Tab::Viewer { .. } => None,
+        }
+    }
+
+    /// Starts a fresh shell for `tab` in its folder: the project, or the worktree it was opened
+    /// in. A worktree gone meanwhile gives the project, and the tab forgets it, so the next
+    /// restart checks the shell against the folder it really started in.
+    fn start_shell(&mut self, tab: TabId, cwd: Option<PathBuf>, note: bool) {
+        match cwd {
+            Some(dir) if dir.is_dir() => self.sessions.create_in(tab, note, dir),
+            Some(_) => {
+                if let Some((pane, idx)) = self.tree.locate(tab) {
+                    if let Some(Tab::Terminal { session, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() {
+                        self.tree.replace_tab(pane, idx, Tab::Terminal { session, cwd: None });
+                    }
+                }
+                self.sessions.create(tab, note);
+            }
+            None => self.sessions.create(tab, note),
+        }
     }
 
     /// Kills the sessions of closed tabs whose grace has run out.
@@ -840,7 +868,7 @@ impl Root {
     }
 
     pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {
-        let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0) });
+        let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: None });
         self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
             self.sessions.create(id, false);
@@ -852,7 +880,7 @@ impl Root {
     /// Splits the focused pane and starts a fresh shell in the new one.
     pub fn split_focused(&mut self, side: Side, cx: &mut Context<Self>) {
         let pane = self.tree.focused;
-        if let Some(new_pane) = self.tree.split(pane, side, Tab::Terminal { session: SessionId(0) }) {
+        if let Some(new_pane) = self.tree.split(pane, side, Tab::Terminal { session: SessionId(0), cwd: None }) {
             if let Some(id) = self.tree.tab_id(new_pane, 0) {
                 self.sessions.create(id, false);
             }
@@ -949,8 +977,8 @@ impl Root {
                         self.tree.focus(pane);
                         self.open_viewer(&path, true, cx);
                     }
-                    Closed::Session(session) if in_grace => self.reopen_session(pane, session, cx),
-                    Closed::Session(session) => {
+                    Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
+                    Closed::Session(session, _) => {
                         eprintln!("sarkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
                         self.sessions.kill(session);
                         self.new_terminal_tab(pane, cx);
@@ -1279,7 +1307,7 @@ impl Root {
                 for step in reconcile(&self.tree, &infos, &self.project) {
                     match step {
                         Reconcile::Attach { tab, session } => self.sessions.attach(session, tab, false),
-                        Reconcile::Create { tab } => self.sessions.create(tab, self.reconcile_with_note),
+                        Reconcile::Create { tab, cwd } => self.start_shell(tab, cwd, self.reconcile_with_note),
                     }
                 }
                 cx.notify();
@@ -1292,7 +1320,9 @@ impl Root {
                     self.sessions.detach(session);
                     return;
                 };
-                self.tree.replace_tab(pane, idx, Tab::Terminal { session });
+                // The tab keeps the folder its shell was started in.
+                let cwd = self.tab_cwd(tab);
+                self.tree.replace_tab(pane, idx, Tab::Terminal { session, cwd });
                 if note {
                     self.sessions.notes.insert(session, sessions::Note::Restarted);
                 }
@@ -1848,7 +1878,7 @@ mod tests {
     fn the_focused_session_is_the_focused_panes_active_terminal_tab() {
         use super::{focused_session_of, Tab, Tree};
         use protocol::SessionId;
-        let mut tree = Tree::new(Tab::Terminal { session: SessionId(5) });
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(5), cwd: None });
         let root = tree.panes()[0];
         assert_eq!(focused_session_of(&tree), Some(SessionId(5)));
         tree.add_tab(root, Tab::Viewer { path: "/f".into() });

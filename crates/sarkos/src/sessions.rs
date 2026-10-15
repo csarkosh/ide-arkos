@@ -78,12 +78,14 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconcile {
     Attach { tab: TabId, session: SessionId },
-    Create { tab: TabId },
+    /// A fresh shell, in the tab's own folder when it has one (a worktree).
+    Create { tab: TabId, cwd: Option<PathBuf> },
 }
 
 /// Whether a saved session can be reattached: the daemon still runs it, it is alive, and it was
-/// started in this project (an id from an earlier daemon could name another project's shell).
-pub fn reattachable(saved: SessionId, list: &[SessionInfo], project: &Path) -> bool {
+/// started in `folder`, the project or the tab's worktree (an id from an earlier daemon could
+/// name another project's shell).
+pub fn reattachable(saved: SessionId, list: &[SessionInfo], folder: &Path) -> bool {
     match list.iter().find(|i| i.id == saved) {
         None => {
             eprintln!("sarkos: saved session {} is gone, starting a new one", saved.0);
@@ -93,7 +95,7 @@ pub fn reattachable(saved: SessionId, list: &[SessionInfo], project: &Path) -> b
             eprintln!("sarkos: saved session {} has ended, starting a new one", saved.0);
             false
         }
-        Some(info) if !same_path(&info.cwd, project) => {
+        Some(info) if !same_path(&info.cwd, folder) => {
             eprintln!("sarkos: saved session {} belongs to {}, starting a new one", saved.0, info.cwd.display());
             false
         }
@@ -109,16 +111,17 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// For every terminal tab in reading order: attach when the session is reattachable, else a
-/// fresh shell in that same tab. Viewer tabs are left alone. The tree is not modified.
+/// For every terminal tab in reading order: attach when the session is reattachable (it lives in
+/// the tab's folder, the project unless the tab names a worktree), else a fresh shell in that
+/// same tab and folder. Viewer tabs are left alone. The tree is not modified.
 pub fn reconcile(tree: &Tree, list: &[SessionInfo], project: &Path) -> Vec<Reconcile> {
     tree.tabs()
         .into_iter()
         .filter_map(|(pane, idx, tab)| {
             let id = tree.tab_id(pane, idx)?;
             match tab {
-                Tab::Terminal { session } if reattachable(*session, list, project) => Some(Reconcile::Attach { tab: id, session: *session }),
-                Tab::Terminal { .. } => Some(Reconcile::Create { tab: id }),
+                Tab::Terminal { session, cwd } if reattachable(*session, list, cwd.as_deref().unwrap_or(project)) => Some(Reconcile::Attach { tab: id, session: *session }),
+                Tab::Terminal { cwd, .. } => Some(Reconcile::Create { tab: id, cwd: cwd.clone() }),
                 Tab::Viewer { .. } => None,
             }
         })
@@ -286,13 +289,13 @@ impl SessionManager {
 
     /// Terminal tabs in the tree whose session waits on the user (the status bar's count).
     pub fn waiting_count(&self, tree: &Tree) -> usize {
-        tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { session } if self.states.get(session) == Some(&ClaudeState::Waiting))).count()
+        tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Waiting))).count()
     }
 
     /// Whether a terminal tab in the tree shows a working agent. The list carries every
     /// project's sessions, and one no tab shows gets no `State` events to end its `Working`.
     pub fn any_working(&self, tree: &Tree) -> bool {
-        tree.tabs().into_iter().any(|(_, _, tab)| matches!(tab, Tab::Terminal { session } if self.states.get(session) == Some(&ClaudeState::Working)))
+        tree.tabs().into_iter().any(|(_, _, tab)| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Working)))
     }
 
     /// The user is quitting this window: a restart must not reopen it (section 11 step 4).
@@ -594,9 +597,9 @@ mod tests {
     fn waiting_count_covers_terminal_tabs_in_the_tree_and_any_working_is_true_with_one() {
         let rec = Recorder::new();
         let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
-        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = tree.panes()[0];
-        tree.add_tab(root, Tab::Terminal { session: SessionId(2) });
+        tree.add_tab(root, Tab::Terminal { session: SessionId(2), cwd: None });
         tree.add_tab(root, Tab::Viewer { path: "/f".into() });
         m.note_state(SessionId(1), ClaudeState::Waiting);
         m.note_state(SessionId(2), ClaudeState::Waiting);
@@ -636,7 +639,7 @@ mod tests {
     }
 
     fn term(n: u64) -> Tab {
-        Tab::Terminal { session: SessionId(n) }
+        Tab::Terminal { session: SessionId(n), cwd: None }
     }
 
     #[test]
@@ -656,9 +659,9 @@ mod tests {
             plan,
             vec![
                 Reconcile::Attach { tab: id(a), session: SessionId(1) },
-                Reconcile::Create { tab: id(b) },
-                Reconcile::Create { tab: id(c) },
-                Reconcile::Create { tab: id(d) },
+                Reconcile::Create { tab: id(b), cwd: None },
+                Reconcile::Create { tab: id(c), cwd: None },
+                Reconcile::Create { tab: id(d), cwd: None },
             ]
         );
         assert_eq!(t.panes(), vec![a, b, c, d], "the layout itself is untouched");
@@ -687,6 +690,18 @@ mod tests {
         let sub = here.join("sub");
         std::fs::create_dir(&sub).unwrap();
         assert!(reattachable(SessionId(7), &list, &sub.join("..")), "paths compare canonically");
+        // A terminal opened in a worktree is checked against the worktree, not the project.
+        let worktree = tempfile::tempdir().unwrap();
+        let list = vec![info(7, worktree.path(), true), info(8, other.path(), true)];
+        let in_worktree = Tree::new(Tab::Terminal { session: SessionId(7), cwd: Some(worktree.path().to_path_buf()) });
+        let id = in_worktree.tab_id(in_worktree.focused, 0).unwrap();
+        assert_eq!(reconcile(&in_worktree, &list, here), vec![Reconcile::Attach { tab: id, session: SessionId(7) }], "the session lives in the tab's worktree");
+        let in_project = Tree::new(Tab::Terminal { session: SessionId(8), cwd: None });
+        let id = in_project.tab_id(in_project.focused, 0).unwrap();
+        assert_eq!(reconcile(&in_project, &list, here), vec![Reconcile::Create { tab: id, cwd: None }], "the tab says the project, the session lives elsewhere");
+        let moved = Tree::new(Tab::Terminal { session: SessionId(8), cwd: Some(worktree.path().to_path_buf()) });
+        let id = moved.tab_id(moved.focused, 0).unwrap();
+        assert_eq!(reconcile(&moved, &list, here), vec![Reconcile::Create { tab: id, cwd: Some(worktree.path().to_path_buf()) }], "a fresh shell starts in the tab's worktree");
     }
 
     #[test]

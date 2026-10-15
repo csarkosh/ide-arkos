@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn a_preview_is_replaced_and_a_pin_is_kept() {
         use crate::tree::Tab;
-        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let pane = tree.panes()[0];
         // Nothing open yet: a new tab.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, false), OpenPlan::Add);
@@ -626,7 +626,7 @@ mod tests {
         assert_eq!(open_plan(&tree, pane, Path::new("/p/b.rs"), Some(a_id), true), OpenPlan::Add);
         // No preview in this pane (it was pinned or lives elsewhere): a new tab.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/b.rs"), None, false), OpenPlan::Add);
-        let other = tree.split(pane, Side::Right, Tab::Terminal { session: SessionId(2) }).unwrap();
+        let other = tree.split(pane, Side::Right, Tab::Terminal { session: SessionId(2), cwd: None }).unwrap();
         assert_eq!(open_plan(&tree, other, Path::new("/p/b.rs"), Some(a_id), false), OpenPlan::Add, "the preview is in another pane");
         // An already open pinned tab for the file: activate, whatever the mode.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, true), OpenPlan::Activate(a));

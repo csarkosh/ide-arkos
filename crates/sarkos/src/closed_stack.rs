@@ -18,7 +18,8 @@ pub const MAX_CLOSED: usize = 20;
 /// What a closed tab showed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Closed {
-    Session(SessionId),
+    /// The session, and the worktree its tab was opened in (`None`: the project).
+    Session(SessionId, Option<PathBuf>),
     Viewer(PathBuf),
 }
 
@@ -37,7 +38,7 @@ impl ClosedTab {
 
     pub fn session(&self) -> Option<SessionId> {
         match self.closed {
-            Closed::Session(s) => Some(s),
+            Closed::Session(s, _) => Some(s),
             Closed::Viewer(_) => None,
         }
     }
@@ -91,7 +92,7 @@ mod tests {
     use super::*;
 
     fn closed(session: u64, pane: PaneId, at: Instant) -> ClosedTab {
-        ClosedTab { closed: Closed::Session(SessionId(session)), pane, closed_at: at }
+        ClosedTab { closed: Closed::Session(SessionId(session), None), pane, closed_at: at }
     }
 
     fn viewer(path: &str, pane: PaneId, at: Instant) -> ClosedTab {

@@ -92,7 +92,7 @@ fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark
         .iter()
         .enumerate()
         .map(|(idx, tab)| match tab {
-            Tab::Terminal { session } => {
+            Tab::Terminal { session, .. } => {
                 let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
                 let note = root.sessions.notes.get(session).copied();
                 match root.sessions.terminals.get(session) {
@@ -124,7 +124,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     }
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
-        Some(Tab::Terminal { session }) => match root.sessions.terminals.get(session).cloned() {
+        Some(Tab::Terminal { session, .. }) => match root.sessions.terminals.get(session).cloned() {
             Some(terminal) => render_terminal(terminal, pane, root.family(), &theme, cx),
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
@@ -653,7 +653,7 @@ mod tests {
         use crate::tree::{Pane, Tab};
         use protocol::SessionId;
         assert!(!show_overflow(0) && !show_overflow(1) && show_overflow(2));
-        let p = Pane { id: 1, tabs: vec![Tab::Terminal { session: SessionId(1) }, Tab::Terminal { session: SessionId(2) }], active: 1, mru: vec![1, 0], ids: vec![2, 3] };
+        let p = Pane { id: 1, tabs: vec![Tab::Terminal { session: SessionId(1), cwd: None }, Tab::Terminal { session: SessionId(2), cwd: None }], active: 1, mru: vec![1, 0], ids: vec![2, 3] };
         let rows = menu_rows(&p, &["zsh".into(), "vim".into()]);
         assert_eq!(rows, vec![(0, "zsh".to_string(), false), (1, "vim".to_string(), true)]);
     }
