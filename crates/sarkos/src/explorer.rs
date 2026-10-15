@@ -58,10 +58,46 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<EntryInfo>> {
 /// query.
 pub const GIT_SAFE_ARGS: [&str; 4] = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
 
-/// `git -C <root>` with `GIT_SAFE_ARGS`, for every git call on the opened folder.
+/// `git -C <root>` with `GIT_SAFE_ARGS`, for the commands the user chose by name (the worktree
+/// actions). Every read-only query uses `git_read`.
 pub fn git(root: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.args(GIT_SAFE_ARGS).arg("-C").arg(root);
+    cmd
+}
+
+/// The filter drivers named in `git config -z --name-only --get-regexp '^filter\.'` output:
+/// `filter.<name>.<key>` records, the name possibly holding dots or spaces.
+fn filter_driver_names(out: &[u8]) -> BTreeSet<String> {
+    out.split(|b| *b == 0)
+        .filter_map(|rec| String::from_utf8_lossy(rec).strip_prefix("filter.").and_then(|k| k.rsplit_once('.')).map(|(name, _)| name.to_string()))
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// `git -C <root>` for a read-only query: `GIT_SAFE_ARGS`, `--no-optional-locks` (a status
+/// leaves `.git/index` alone, so the user's own `git add` never meets its lock), and every
+/// filter driver the config names emptied and made optional: re-hashing a touched file runs
+/// no program from the folder's config. Spawns one `git config` read first (it runs nothing),
+/// so it is called off the UI thread like the query itself.
+pub fn git_read(root: &Path) -> std::process::Command {
+    use std::process::Stdio;
+    let names = git(root)
+        .args(["config", "-z", "--name-only", "--get-regexp", r"^filter\."])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|out| filter_driver_names(&out.stdout))
+        .unwrap_or_default();
+    let mut cmd = git(root);
+    cmd.arg("--no-optional-locks");
+    for name in names {
+        for key in ["clean", "process", "smudge"] {
+            cmd.arg("-c").arg(format!("filter.{name}.{key}="));
+        }
+        // An emptied driver git-lfs marks `required` would fail the query instead.
+        cmd.arg("-c").arg(format!("filter.{name}.required=false"));
+    }
     cmd
 }
 
@@ -75,7 +111,7 @@ pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     if entries.is_empty() {
         return;
     }
-    let Ok(mut child) = git(root).args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+    let Ok(mut child) = git_read(root).args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
         return;
     };
     let Some(mut stdin) = child.stdin.take() else { return };
@@ -384,6 +420,14 @@ mod tests {
         assert_eq!(names, ["deep", "main.rs"]);
         ex.set_loaded(&root.join("link"), children);
         assert!(ex.rows().iter().any(|r| r.path == root.join("link/main.rs") && r.depth == 1));
+    }
+
+    #[test]
+    fn every_configured_filter_driver_is_named_once() {
+        let out = b"filter.lfs.clean\0filter.lfs.process\0filter.lfs.required\0filter.a.b c.smudge\0filter.\0filter.nokey\0";
+        let names: Vec<String> = filter_driver_names(out).into_iter().collect();
+        assert_eq!(names, ["a.b c", "lfs"], "a name may hold dots and spaces; a key without one is not a driver");
+        assert!(filter_driver_names(b"").is_empty());
     }
 
     #[test]

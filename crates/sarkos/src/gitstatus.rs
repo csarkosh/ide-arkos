@@ -1,7 +1,7 @@
 //! Git status for the tree and the worktree explorer (spec 6): `git status --porcelain=v2 -z`
-//! parsed into (path, status) pairs, run through `explorer::git` on the background executor.
+//! parsed into (path, status) pairs, run through `explorer::git_read` on the background executor.
 
-use crate::explorer::git;
+use crate::explorer::git_read;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -57,13 +57,13 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(PathBuf, Status)> {
 pub fn run_status(root: &Path) -> Option<Vec<(PathBuf, Status)>> {
     use std::process::Stdio;
     // Porcelain paths are relative to the repository's top, which `root` may be inside of.
-    let prefix = git(root).args(["rev-parse", "--show-prefix"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let prefix = git_read(root).args(["rev-parse", "--show-prefix"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     if !prefix.status.success() {
         return None;
     }
     let prefix = PathBuf::from(String::from_utf8_lossy(&prefix.stdout).trim_end_matches('\n'));
-    let out = git(root)
-        .args(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--no-renames", "--ignored=no", "--", "."])
+    let out = git_read(root)
+        .args(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--no-renames", "--ignored=no", "--ignore-submodules=all", "--", "."])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -95,6 +95,7 @@ pub fn dirty_dirs(root: &Path, entries: &[(PathBuf, Status)]) -> HashSet<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::explorer::git;
 
     #[test]
     fn porcelain_v2_entries_are_parsed_with_their_status() {
@@ -201,6 +202,41 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
         std::os::unix::fs::symlink(dir.path().join("sub"), links.path().join("sub")).unwrap();
         assert_eq!(run_status(&links.path().join("repo")), Some(vec![(PathBuf::from("sub"), Status::Untracked)]));
         assert_eq!(run_status(&links.path().join("sub")), Some(vec![]), "the wholly untracked sub, through a link");
+    }
+
+    #[test]
+    fn status_runs_no_filter_driver_from_the_repository_config() {
+        let _lock = crate::client::fork_lock();
+        let dir = repo();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let marker = elsewhere.path().join("ran");
+        let config = |args: &[&str]| assert!(git(dir.path()).arg("config").args(args).status().unwrap().success());
+        config(&["filter.x.clean", &format!("sh -c 'touch \"{}\"; cat'", marker.display())]);
+        config(&["filter.x.process", &format!("sh -c 'touch \"{}\"'", marker.display())]);
+        std::fs::write(dir.path().join(".gitattributes"), "* filter=x\n").unwrap();
+        // The same size, so git re-hashes the file (through the filter) to see whether it changed.
+        std::fs::write(dir.path().join("tracked.txt"), "two\n").unwrap();
+        let entries = run_status(dir.path()).expect("a repository");
+        assert!(entries.contains(&(PathBuf::from("tracked.txt"), Status::Modified)), "{entries:?}");
+        assert!(!marker.exists(), "the repository's clean filter ran");
+        // A required driver (git-lfs sets `required`) emptied would fail the status: made optional.
+        config(&["filter.x.required", "true"]);
+        std::fs::write(dir.path().join("tracked.txt"), "one\n").unwrap();
+        assert_eq!(run_status(dir.path()), Some(vec![(PathBuf::from(".gitattributes"), Status::Untracked)]));
+        assert!(!marker.exists(), "the repository's clean filter ran");
+    }
+
+    #[test]
+    fn status_does_not_rewrite_the_index() {
+        // The user's own `git add` fails while a status holds `index.lock`.
+        let _lock = crate::client::fork_lock();
+        let dir = repo();
+        let index = dir.path().join(".git/index");
+        // The same contents, a new mtime: a status that may refresh the index would write it.
+        std::fs::write(dir.path().join("tracked.txt"), "one\n").unwrap();
+        let before = crate::config_watch::fingerprint(&index);
+        assert_eq!(run_status(dir.path()), Some(vec![]));
+        assert_eq!(crate::config_watch::fingerprint(&index), before, "the index was rewritten");
     }
 
     #[test]
