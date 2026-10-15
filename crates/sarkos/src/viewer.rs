@@ -3,12 +3,13 @@
 //! scroll position in lines; reloaded when the poll sees the file change.
 
 use crate::config_watch::fingerprint;
-use crate::highlight::Highlighter;
+use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
-use crate::tree::PaneId;
+use crate::tree::{PaneId, Tab, TabId};
+use crate::viewer;
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
 use std::io::Read;
@@ -283,7 +284,7 @@ impl Viewer {
             let hits = cx.background_executor().spawn(async move { find_hits(&lines, &query) }).await;
             let _ = this.update(cx, |v, cx| {
                 // Every search before the latest one started is superseded.
-                if !crate::should_apply(seq, v.find_seq.saturating_sub(1)) {
+                if !should_apply(seq, v.find_seq.saturating_sub(1)) {
                     return;
                 }
                 let Some(f) = &mut v.find else { return };
@@ -470,6 +471,103 @@ pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: Sh
     )
 }
 
+/// Whether a background result numbered `seq` lands over the one numbered `applied`: only a
+/// newer one does, so a slow, older result never replaces a newer one.
+pub fn should_apply(seq: u64, applied: u64) -> bool {
+    seq > applied
+}
+
+impl Root {
+    /// Loads the grammars off the UI thread, once, at launch. The result takes the theme's
+    /// colours at the moment it lands, so a theme change during the load is not lost.
+    pub(crate) fn build_highlighter(&mut self, cx: &mut Context<Self>) {
+        let (colors, text) = (self.theme.viewer.clone(), self.theme.chrome.text);
+        cx.spawn(async move |this, cx| {
+            let built = cx.background_executor().spawn(async move { highlight::Highlighter::new(&colors, text) }).await;
+            let _ = this.update(cx, |root, cx| {
+                root.highlighter = Some(Arc::new(built.with_theme(&root.theme.viewer, root.theme.chrome.text)));
+                // Viewers opened before the grammars were ready are plain until now.
+                root.reload_all_viewers(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The viewer of a viewer tab, made (and its load started) the first time the tab is shown.
+    pub fn viewer_for(&mut self, tab: TabId, path: &Path, cx: &mut Context<Self>) -> Entity<Viewer> {
+        if let Some(v) = self.viewers.get(&tab) {
+            return v.clone();
+        }
+        let (font_size, line_height) = (self.font_size, self.line_height);
+        let v = cx.new(|cx| Viewer::new(path.to_path_buf(), font_size, line_height, cx));
+        self.viewers.insert(tab, v.clone());
+        self.load_viewer(tab, cx);
+        v
+    }
+
+    /// Reads, classifies and highlights a viewer's file on the background executor and applies
+    /// the result. A deleted or unreadable file shows why.
+    pub fn load_viewer(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        self.load(tab, false, cx);
+    }
+
+    /// Reloads every viewer showing `path` whose file changed since it was loaded; returns
+    /// whether any viewer shows it.
+    pub fn reload_viewers_for(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| v.read(cx).path == path).map(|(t, _)| *t).collect();
+        for &tab in &tabs {
+            self.load(tab, true, cx);
+        }
+        !tabs.is_empty()
+    }
+
+    /// Reloads the viewers whose colours depend on the highlighter: plain text, binaries and
+    /// files too large to show have nothing to recolour.
+    pub(crate) fn reload_all_viewers(&mut self, cx: &mut Context<Self>) {
+        let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| {
+            let v = v.read(cx);
+            v.plain.is_none() && matches!(v.content, viewer::Content::Text { .. })
+        }).map(|(t, _)| *t).collect();
+        for tab in tabs {
+            self.load_viewer(tab, cx);
+        }
+    }
+
+    /// One background load. With `if_changed`, a file whose fingerprint matches the loaded one
+    /// is left alone (the poll's first look at a viewer's file can report a change it already shows).
+    fn load(&mut self, tab: TabId, if_changed: bool, cx: &mut Context<Self>) {
+        let Some(viewer) = self.viewers.get(&tab).cloned() else { return };
+        let (path, known, seq) = viewer.update(cx, |v, _| {
+            v.loads += 1;
+            let known = if if_changed && v.loaded { v.fingerprint } else { None };
+            (v.path.clone(), known, v.loads)
+        });
+        let highlighter = self.highlighter.clone();
+        let limit = self.config.viewer.highlight_limit_bytes;
+        let weak = viewer.downgrade();
+        cx.spawn(async move |_, cx| {
+            let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit) }).await;
+            let Some(loaded) = loaded else { return };
+            let _ = weak.update(cx, |v, cx| {
+                if should_apply(seq, v.applied) {
+                    v.applied = seq;
+                    v.apply(loaded, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The focused pane's active viewer, once its tab has been shown.
+    pub fn active_viewer(&self) -> Option<Entity<Viewer>> {
+        let p = self.tree.pane(self.tree.focused)?;
+        match p.tabs.get(p.active)? {
+            Tab::Viewer { .. } => self.viewers.get(p.ids.get(p.active)?).cloned(),
+            Tab::Terminal { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +692,13 @@ mod tests {
         assert_eq!(step(2, 3, 1), 0);
         assert_eq!(step(0, 3, -1), 2);
         assert_eq!(step(0, 0, 1), 0);
+    }
+
+    #[test]
+    fn only_a_result_newer_than_the_applied_one_lands() {
+        assert!(should_apply(1, 0), "the first load");
+        assert!(should_apply(5, 3), "newer than what is shown");
+        assert!(!should_apply(3, 3), "already shown");
+        assert!(!should_apply(2, 3), "an older load finishing late");
     }
 }

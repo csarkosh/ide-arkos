@@ -2,7 +2,11 @@
 //! holding the Explorer section (and Worktrees in milestone 4b). Its state is saved with the
 //! workspace; the config's `[sidebar]` gives a new folder its defaults.
 
+use crate::explorer;
+use crate::keymap;
 use crate::theme::Theme;
+use crate::sidebar;
+use crate::tree::{PaneId, Tab, TabId, Tree};
 use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, UniformList, UniformListScrollHandle};
 use std::path::{Path, PathBuf};
@@ -264,9 +268,205 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
     Some(m)
 }
 
+/// How a click in the tree opens a file in `pane` (spec 6, VS Code's preview tabs): the tab
+/// already showing it is activated; else a preview tab in this pane is replaced, unless the
+/// click pins; else a new tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenPlan {
+    Activate(usize),
+    Replace(usize),
+    Add,
+}
+
+pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<TabId>, pin: bool) -> OpenPlan {
+    if let Some(idx) = tree.find_viewer(pane, path) {
+        return OpenPlan::Activate(idx);
+    }
+    if !pin {
+        if let Some(p) = preview_tab {
+            if let Some((in_pane, idx)) = tree.locate(p) {
+                if in_pane == pane {
+                    return OpenPlan::Replace(idx);
+                }
+            }
+        }
+    }
+    OpenPlan::Add
+}
+
+/// The preview tab after a tab closed: none if the preview was the one closed.
+pub fn after_close(preview_tab: Option<TabId>, closed: TabId) -> Option<TabId> {
+    preview_tab.filter(|p| *p != closed)
+}
+
+/// The preview tab after a tab was dragged: a dragged tab is a deliberate placement, so a
+/// dragged preview stops being one.
+pub fn after_drop(preview_tab: Option<TabId>, dragged: TabId) -> Option<TabId> {
+    preview_tab.filter(|p| *p != dragged)
+}
+
+/// Whether a command leaves the keys in the file tree (Shift+Cmd+E). Every other command acts
+/// on the focused pane, so the keys go back to it.
+pub fn keeps_tree_focus(cmd: &keymap::Command) -> bool {
+    use keymap::Command::*;
+    matches!(cmd, ToggleSidebar | FocusFileTree | ShowIgnoredFiles | CommandPalette)
+}
+
+impl Root {
+    /// Reads every expanded directory that is not loaded yet, off the UI thread, and applies
+    /// each result as it lands.
+    pub fn load_pending_dirs(&mut self, cx: &mut Context<Self>) {
+        for dir in self.explorer.dirs_to_load() {
+            self.explorer.mark_loading(&dir);
+            let root = self.project.clone();
+            let d = dir.clone();
+            cx.spawn(async move |this, cx| {
+                let entries = cx.background_executor().spawn(async move { explorer::read_dir_entries(&root, &d) }).await;
+                let _ = this.update(cx, |root, cx| {
+                    match entries {
+                        Some(entries) => root.explorer.set_loaded(&dir, entries),
+                        None => root.explorer.set_unreadable(&dir),
+                    }
+                    // A change the poll saw while this read was in flight is read again now.
+                    root.load_pending_dirs(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
+    /// Enter). The tab's viewer is made and loaded when the pane first shows it.
+    pub fn open_viewer(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
+        self.sidebar_focused = false;
+        let pane = self.tree.focused;
+        let plan = open_plan(&self.tree, pane, path, self.preview_tab, pin);
+        let idx = match plan {
+            OpenPlan::Activate(idx) => {
+                if pin && self.tree.tab_id(pane, idx) == self.preview_tab {
+                    self.preview_tab = None;
+                }
+                idx
+            }
+            OpenPlan::Replace(idx) => {
+                // Same tab id, another file: the old viewer goes, the render makes the new one.
+                if let Some(id) = self.tree.tab_id(pane, idx) {
+                    self.viewers.remove(&id);
+                }
+                self.tree.replace_tab(pane, idx, Tab::Viewer { path: path.to_path_buf() });
+                idx
+            }
+            OpenPlan::Add => {
+                let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf() });
+                self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
+                idx
+            }
+        };
+        self.tree.activate(pane, idx);
+        self.explorer.selected = Some(path.to_path_buf());
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Escape while the tree's right-click menu is open closes the menu and nothing else.
+    pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        if ks.key != "escape" || self.context_menu.is_none() {
+            return false;
+        }
+        self.context_menu = None;
+        cx.notify();
+        true
+    }
+
+    /// Keys in the file tree (ruling 7): Up/Down move, Right expands or enters, Left collapses or
+    /// goes to the parent, Enter opens pinned, Space previews, Escape returns to the pane.
+    pub fn tree_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
+            return;
+        }
+        let rows = self.explorer.rows();
+        let selected = self.explorer.selected.clone().and_then(|s| rows.iter().find(|r| r.path == s).cloned());
+        match ks.key.as_str() {
+            "down" => self.explorer.select_next(),
+            "up" => self.explorer.select_prev(),
+            "right" => match selected {
+                Some(r) if r.is_dir && !r.expanded => {
+                    self.explorer.toggle(&r.path);
+                    self.load_pending_dirs(cx);
+                }
+                Some(r) if r.is_dir => self.explorer.select_next(),
+                _ => {}
+            },
+            "left" => match selected {
+                Some(r) if r.is_dir && r.expanded => {
+                    self.explorer.toggle(&r.path);
+                }
+                Some(r) => {
+                    if let Some(parent) = r.path.parent() {
+                        if parent != self.project {
+                            self.explorer.selected = Some(parent.to_path_buf());
+                        }
+                    }
+                }
+                None => {}
+            },
+            "enter" | "space" => match selected {
+                Some(r) if r.is_dir => {
+                    self.explorer.toggle(&r.path);
+                    self.load_pending_dirs(cx);
+                }
+                Some(r) => {
+                    let pin = ks.key == "enter";
+                    self.open_viewer(&r.path, pin, cx);
+                    if !pin {
+                        self.sidebar_focused = true;
+                    }
+                    return;
+                }
+                None => self.explorer.select_next(),
+            },
+            "escape" => self.sidebar_focused = false,
+            _ => return,
+        }
+        // Keep the selection on screen when the keys move it past the column's edge.
+        let rows = self.explorer.rows();
+        if let Some(i) = self.explorer.selected.as_ref().and_then(|s| rows.iter().position(|r| &r.path == s)) {
+            // Top for a row above the first one fully shown, Bottom otherwise: either scrolls
+            // only as far as the row (a row already in view does not move the list).
+            let top = -f32::from(self.sidebar.scroll.0.borrow().base_handle.offset().y);
+            let strategy = if (i as f32) * sidebar::ROW_H < top + sidebar::ROW_H { gpui::ScrollStrategy::Top } else { gpui::ScrollStrategy::Bottom };
+            self.sidebar.scroll.scroll_to_item(i, strategy);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// What the poll fingerprints: the expanded directories (and the root), and the open
+    /// viewers' files.
+    pub fn watched_paths(&self, cx: &App) -> Vec<PathBuf> {
+        let mut v = vec![self.project.clone()];
+        v.extend(self.explorer.expanded_dirs());
+        v.extend(self.viewers.values().map(|viewer| viewer.read(cx).path.clone()));
+        v
+    }
+
+    /// A changed directory is read again, a changed viewer file reloaded.
+    pub fn paths_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for p in paths {
+            if !self.reload_viewers_for(p, cx) {
+                self.explorer.invalidate(p);
+            }
+        }
+        self.load_pending_dirs(cx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::{Side, Tree};
+    use protocol::SessionId;
 
     #[test]
     fn the_width_stays_between_the_limits() {
@@ -290,5 +490,49 @@ mod tests {
     fn a_collapsed_sidebar_takes_no_width() {
         assert_eq!(visible_width(300.0, false), 300.0);
         assert_eq!(visible_width(300.0, true), 0.0);
+    }
+
+    #[test]
+    fn closing_or_dragging_the_preview_tab_ends_the_preview_and_no_other_tab_does() {
+        assert_eq!(after_close(Some(3), 3), None, "the preview closed");
+        assert_eq!(after_close(Some(3), 4), Some(3), "another tab closed");
+        assert_eq!(after_close(None, 4), None);
+        assert_eq!(after_drop(Some(3), 3), None, "a dragged preview is placed on purpose: pinned");
+        assert_eq!(after_drop(Some(3), 4), Some(3));
+        assert_eq!(after_drop(None, 3), None);
+    }
+
+    #[test]
+    fn only_the_sidebar_commands_and_the_palette_keep_the_keys_in_the_tree() {
+        use crate::keymap::Command;
+        for cmd in [Command::ToggleSidebar, Command::FocusFileTree, Command::ShowIgnoredFiles, Command::CommandPalette] {
+            assert!(keeps_tree_focus(&cmd), "{cmd:?}");
+        }
+        for cmd in [Command::Find, Command::NewTerminal, Command::FontDelta(1.0)] {
+            assert!(!keeps_tree_focus(&cmd), "{cmd:?}: the keys go back to the focused pane");
+        }
+    }
+
+    #[test]
+    fn a_preview_is_replaced_and_a_pin_is_kept() {
+        use crate::tree::Tab;
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1) });
+        let pane = tree.panes()[0];
+        // Nothing open yet: a new tab.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, false), OpenPlan::Add);
+        let a = tree.add_tab(pane, Tab::Viewer { path: "/p/a.rs".into() });
+        let a_id = tree.tab_id(pane, a).unwrap();
+        // The same file again, previewed: just activate it.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), Some(a_id), false), OpenPlan::Activate(a));
+        // Another file while a preview is open in this pane: replace the preview.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/b.rs"), Some(a_id), false), OpenPlan::Replace(a));
+        // Pinned (double click): a new tab, the preview stays.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/b.rs"), Some(a_id), true), OpenPlan::Add);
+        // No preview in this pane (it was pinned or lives elsewhere): a new tab.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/b.rs"), None, false), OpenPlan::Add);
+        let other = tree.split(pane, Side::Right, Tab::Terminal { session: SessionId(2) }).unwrap();
+        assert_eq!(open_plan(&tree, other, Path::new("/p/b.rs"), Some(a_id), false), OpenPlan::Add, "the preview is in another pane");
+        // An already open pinned tab for the file: activate, whatever the mode.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, true), OpenPlan::Activate(a));
     }
 }
