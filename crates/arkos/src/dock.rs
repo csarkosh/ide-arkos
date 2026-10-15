@@ -4,7 +4,7 @@
 
 use crate::ax::{AxWindow, Rect};
 use crate::tree::TabId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 /// How long after arkos launched a window for a tab that tab docks the next new window even
@@ -40,13 +40,18 @@ pub enum Action {
     Undock { tab: TabId, win: Option<AxWindow>, leave_at: Option<Rect> },
     Title { tab: TabId, title: String },
     Permission(bool),
+    /// Open the tab's Chrome window now: it was asked for while access was missing.
+    Launch { tab: TabId },
 }
 
 /// What the window reads once per tick, on the UI thread.
 pub struct Snapshot {
     pub trusted: bool,
-    /// Chrome's windows with their frames and whether each is minimized.
-    pub windows: Vec<(AxWindow, Option<Rect>, bool)>,
+    /// The Chrome process the windows belong to; `None` when Chrome is not running.
+    pub chrome_pid: Option<i32>,
+    /// Chrome's windows with their frames and whether each is minimized; `None` when the list
+    /// could not be read this tick (Chrome busy), which changes nothing.
+    pub windows: Option<Vec<(AxWindow, Option<Rect>, bool)>>,
     pub titles: Vec<(AxWindow, String)>,
     /// Browser tabs in reading order with their placeholder's global rect, `None` when the
     /// tab is not the active one in its pane (or its pane is not shown).
@@ -89,10 +94,13 @@ pub fn chrome_open_args(url: Option<&str>, app_mode: bool) -> Vec<String> {
 #[derive(Default)]
 pub struct Docks {
     pub tabs: BTreeMap<TabId, DockState>,
-    /// Last tick's Chrome windows: a window not in it is new.
+    /// Last good tick's Chrome windows: a window not in it is new.
     known: Vec<AxWindow>,
-    /// `known` was filled once since tracking started: on the first tick every window is old.
+    /// `known` was filled since tracking (or this Chrome process) started: on the first tick
+    /// every window is old.
     primed: bool,
+    /// The Chrome process of the last good tick.
+    pid: Option<i32>,
     /// The mouse was down on the last tick: a window appearing on the tick it comes up is a
     /// drag's too.
     last_mouse_down: bool,
@@ -107,28 +115,56 @@ pub struct Docks {
     settled: BTreeMap<TabId, Rect>,
     /// Each docked tab's title as last reported.
     titles: BTreeMap<TabId, String>,
+    /// The docked windows (and where each was parked) when access was taken away: a grant docks
+    /// them again, so a parked one comes back on screen.
+    revoked: BTreeMap<TabId, (AxWindow, Option<Rect>)>,
+    /// Tabs whose window launch waits for the grant (`Action::Launch`).
+    pending_launch: BTreeSet<TabId>,
 }
 
 impl Docks {
-    /// A new browser tab, waiting; `launched`: arkos just launched a window for it.
+    /// A new browser tab, waiting; `launched`: arkos launches a window for it now, or, without
+    /// access, once access is granted (`Action::Launch`).
     pub fn add(&mut self, tab: TabId, launched: bool, now: Instant) {
         if self.tabs.is_empty() {
             // Tracking (re)starts: the windows already open are old.
             self.primed = false;
         }
-        let state = if self.trusted == Some(false) { DockState::NoPermission } else { DockState::Waiting { since: now, launched_at: launched.then_some(now) } };
+        let state = if self.trusted == Some(false) {
+            if launched {
+                self.pending_launch.insert(tab);
+            }
+            DockState::NoPermission
+        } else {
+            DockState::Waiting { since: now, launched_at: launched.then_some(now) }
+        };
         self.tabs.insert(tab, state);
     }
 
-    /// The tab is gone: forget it, returning its window to release.
-    pub fn remove(&mut self, tab: TabId) -> Option<AxWindow> {
+    /// Whether the tab's launch waits for the grant (the caller must not launch it now).
+    pub fn launch_pending(&self, tab: TabId) -> bool {
+        self.pending_launch.contains(&tab)
+    }
+
+    /// Where a released window goes back to: where it was before it was parked, else where it
+    /// was last shown.
+    fn restore_rect(&self, tab: TabId, parked: Option<Rect>) -> Option<Rect> {
+        parked.or_else(|| self.last_shown(tab))
+    }
+
+    /// The tab is gone: forget it, returning its window to release and where to put it.
+    pub fn remove(&mut self, tab: TabId) -> Option<(AxWindow, Option<Rect>)> {
+        let state = self.tabs.remove(&tab);
+        let out = match state? {
+            DockState::Docked { win, parked, .. } => Some((win, self.restore_rect(tab, parked))),
+            _ => None,
+        };
         self.last_shown.remove(&tab);
         self.settled.remove(&tab);
         self.titles.remove(&tab);
-        match self.tabs.remove(&tab)? {
-            DockState::Docked { win, .. } => Some(win),
-            _ => None,
-        }
+        self.revoked.remove(&tab);
+        self.pending_launch.remove(&tab);
+        out
     }
 
     /// Docks `win` into `tab` (the palette's choice), taking it from any other tab holding it.
@@ -145,14 +181,21 @@ impl Docks {
         self.tabs.insert(tab, DockState::Docked { win, shown: None, parked: None });
     }
 
-    /// Releases the tab's window; the tab stays, waiting. `last_shown` still answers for it.
-    pub fn undock(&mut self, tab: TabId) -> Option<AxWindow> {
+    /// Releases the tab's window; the tab stays, waiting. Returns the window and where to put it
+    /// (a parked one goes back where it was).
+    pub fn undock(&mut self, tab: TabId) -> Option<(AxWindow, Option<Rect>)> {
+        self.revoked.remove(&tab);
         let state = self.tabs.get_mut(&tab)?;
         let DockState::Docked { .. } = state else { return None };
-        let DockState::Docked { win, .. } = std::mem::replace(state, DockState::Waiting { since: Instant::now(), launched_at: None }) else { unreachable!() };
+        let DockState::Docked { win, parked, .. } = std::mem::replace(state, DockState::Waiting { since: Instant::now(), launched_at: None }) else { unreachable!() };
         self.settled.remove(&tab);
         self.titles.remove(&tab);
-        Some(win)
+        Some((win, self.restore_rect(tab, parked)))
+    }
+
+    /// Every parked window with where it was before it was parked: quitting puts them back.
+    pub fn parked_windows(&self) -> Vec<(AxWindow, Rect)> {
+        self.tabs.values().filter_map(|st| match st { DockState::Docked { win, parked: Some(r), .. } => Some((win.clone(), *r)), _ => None }).collect()
     }
 
     pub fn docked_window(&self, tab: TabId) -> Option<&AxWindow> {
@@ -192,28 +235,85 @@ impl Docks {
         }
     }
 
+    /// Access taken away: every tab shows the permission screen; docked windows and launches
+    /// still to come are kept for the grant.
+    fn revoke(&mut self) {
+        for (tab, state) in self.tabs.iter_mut() {
+            match std::mem::replace(state, DockState::NoPermission) {
+                DockState::Docked { win, parked, .. } => {
+                    self.revoked.insert(*tab, (win, parked));
+                }
+                DockState::Waiting { launched_at: Some(_), .. } => {
+                    self.pending_launch.insert(*tab);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Access granted: kept windows that are still open dock again (the next tick shows or
+    /// moves them); launches that waited go out now, with their grace from now.
+    fn grant(&mut self, current: Option<&[AxWindow]>, now: Instant, out: &mut Vec<Action>) {
+        let mut revoked = std::mem::take(&mut self.revoked);
+        let pending = std::mem::take(&mut self.pending_launch);
+        for (tab, state) in self.tabs.iter_mut() {
+            *state = DockState::Waiting { since: now, launched_at: None };
+            if let Some((win, parked)) = revoked.remove(tab) {
+                if current.is_none_or(|c| c.contains(&win)) {
+                    *state = DockState::Docked { win, shown: None, parked };
+                }
+            }
+            if pending.contains(tab) {
+                *state = DockState::Waiting { since: now, launched_at: Some(now) };
+                out.push(Action::Launch { tab: *tab });
+            }
+        }
+    }
+
     pub fn tick(&mut self, s: &Snapshot) -> Vec<Action> {
         let mut out = Vec::new();
-        let current: Vec<AxWindow> = s.windows.iter().map(|(w, _, _)| w.clone()).collect();
-        let was_active = self.was_active.replace(s.window_active);
-        let mouse_was_down = std::mem::replace(&mut self.last_mouse_down, s.mouse_down);
-        // Permission first: a change flips every tab between NoPermission and Waiting.
+        let current: Option<Vec<AxWindow>> = s.windows.as_ref().map(|ws| ws.iter().map(|(w, _, _)| w.clone()).collect());
+        // Permission first: a change flips every tab between NoPermission and Waiting (or
+        // Docked again, for the windows docked when access went).
         if self.trusted.unwrap_or(true) != s.trusted {
             self.trusted = Some(s.trusted);
-            for state in self.tabs.values_mut() {
-                *state = if s.trusted { DockState::Waiting { since: s.now, launched_at: None } } else { DockState::NoPermission };
-            }
             self.settled.clear();
             self.titles.clear();
-            self.known = current;
-            self.primed = s.trusted;
             out.push(Action::Permission(s.trusted));
+            if s.trusted {
+                self.grant(current.as_deref(), s.now, &mut out);
+                // The windows open now are old; a failed read leaves that to the next tick.
+                match current {
+                    Some(c) => {
+                        self.known = c;
+                        self.primed = true;
+                        self.pid = s.chrome_pid;
+                    }
+                    None => self.primed = false,
+                }
+            } else {
+                self.revoke();
+            }
             return out;
         }
         self.trusted = Some(s.trusted);
         if !s.trusted {
             return out;
         }
+        // A failed read: no window vanished and none is new; try again next tick.
+        let Some(current) = current else { return out };
+        let windows = s.windows.as_deref().unwrap_or_default();
+        let was_active = self.was_active.replace(s.window_active);
+        let mouse_was_down = std::mem::replace(&mut self.last_mouse_down, s.mouse_down);
+        // Another Chrome process: its windows are learned, never docked, unless Chrome was not
+        // running and a tab just launched it (its window is the one that tab waits for).
+        if self.primed && s.chrome_pid != self.pid {
+            let cold_launch = self.pid.is_none() && self.tabs.values().any(|st| matches!(st, DockState::Waiting { launched_at: Some(t), .. } if s.now.saturating_duration_since(*t) <= LAUNCH_GRACE));
+            if !cold_launch {
+                self.primed = false;
+            }
+        }
+        self.pid = s.chrome_pid;
         if !self.primed {
             self.known = current.clone();
             self.primed = true;
@@ -252,7 +352,7 @@ impl Docks {
         let placeholder_of = |tab: TabId| s.placeholders.iter().find(|(t, _)| *t == tab).and_then(|(_, r)| *r);
         for (tab, state) in self.tabs.iter_mut() {
             let DockState::Docked { win, shown, parked } = state else { continue };
-            let frame = s.windows.iter().find(|(w, _, _)| w == win).and_then(|(_, f, _)| *f);
+            let frame = windows.iter().find(|(w, _, _)| w == win).and_then(|(_, f, _)| *f);
             match placeholder_of(*tab).filter(|_| !s.window_hidden) {
                 Some(target) => {
                     if parked.is_some() {
@@ -299,19 +399,21 @@ mod tests {
     use crate::ax::{Ax, FakeAx, OFFSCREEN_GAP};
 
     fn snap(ax: &FakeAx, placeholders: Vec<(TabId, Option<Rect>)>, now: Instant) -> Snapshot {
-        let pid = ax.chrome_pid().unwrap();
-        let windows = ax.windows(pid);
+        let pid = ax.chrome_pid();
+        let windows = pid.map_or(Ok(Vec::new()), |pid| ax.windows(pid)).ok();
         Snapshot {
             trusted: ax.trusted(false),
-            titles: windows.iter().filter_map(|w| Some((w.clone(), ax.title(w)?))).collect(),
-            windows: windows
-                .into_iter()
-                .map(|w| {
-                    let f = ax.frame(&w);
-                    let m = ax.minimized(&w);
-                    (w, f, m)
-                })
-                .collect(),
+            chrome_pid: pid,
+            titles: windows.iter().flatten().filter_map(|w| Some((w.clone(), ax.title(w)?))).collect(),
+            windows: windows.map(|ws| {
+                ws.into_iter()
+                    .map(|w| {
+                        let f = ax.frame(&w);
+                        let m = ax.minimized(&w);
+                        (w, f, m)
+                    })
+                    .collect()
+            }),
             placeholders,
             any_working: false,
             mouse_down: ax.mouse_down(),
@@ -587,7 +689,146 @@ mod tests {
         let mut s = snap(&ax, vec![(1, Some(R))], t0 + Duration::from_secs(1));
         s.trusted = true;
         assert_eq!(d.tick(&s), vec![Action::Permission(true)]);
+        assert!(matches!(&d.tabs[&1], DockState::Docked { win, .. } if *win == w), "the window docked when access went docks again");
+        assert!(matches!(d.tabs[&2], DockState::Waiting { .. }));
+        assert!(d.tick(&snap(&ax, vec![(1, Some(R))], t0)).contains(&Action::Move { win: w, rect: R }), "and is put in place");
+    }
+
+    #[test]
+    fn a_window_parked_when_access_goes_comes_back_on_the_grant() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        let w = ax.add_window("W", R);
+        d.dock_by_choice(1, w.clone());
+        d.tick(&snap(&ax, vec![(1, Some(R))], t0));
+        d.tick(&snap(&ax, vec![(1, None)], t0)); // parked
+        ax.set_trusted(false);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, None)], t0)), vec![Action::Permission(false)]);
+        ax.set_trusted(true);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R))], t0)), vec![Action::Permission(true)]);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R))], t0)), vec![Action::Show { win: w.clone(), rect: R }, Action::Title { tab: 1, title: "W".into() }]);
+        // A window closed meanwhile is not docked again.
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        d.dock_by_choice(1, w.clone());
+        ax.set_trusted(false);
+        d.tick(&snap(&ax, vec![(1, Some(R))], t0));
+        ax.remove(&w);
+        ax.set_trusted(true);
+        d.tick(&snap(&ax, vec![(1, Some(R))], t0));
         assert!(matches!(d.tabs[&1], DockState::Waiting { .. }));
+    }
+
+    #[test]
+    fn a_launch_asked_for_without_access_waits_for_the_grant_and_then_docks() {
+        let ax = FakeAx::new(false);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        // Added before the first tick finds access missing, and one added after.
+        d.add(1, true, t0);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R))], t0)), vec![Action::Permission(false)]);
+        assert!(d.launch_pending(1));
+        d.add(2, true, t0);
+        assert!(d.launch_pending(2));
+        ax.set_trusted(true);
+        let _old = ax.add_window("Old", TINY);
+        let later = t0 + Duration::from_secs(60);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R)), (2, None)], later)), vec![Action::Permission(true), Action::Launch { tab: 1 }, Action::Launch { tab: 2 }]);
+        assert!(matches!(d.tabs[&1], DockState::Waiting { launched_at: Some(t), .. } if t == later), "the grace runs from the launch");
+        let w = ax.add_window("Example", TINY);
+        let actions = d.tick(&snap(&ax, vec![(1, Some(R)), (2, None)], later + Duration::from_secs(2)));
+        assert_eq!(actions[0], Action::Dock { tab: 1, win: w }, "no working session needed: it launched");
+    }
+
+    #[test]
+    fn a_failed_window_list_read_changes_nothing() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        d.add(2, false, t0);
+        let w = ax.add_window("W", R);
+        d.dock_by_choice(1, w.clone());
+        let places = || vec![(1, Some(R)), (2, Some(R2))];
+        let mut s = snap(&ax, places(), t0);
+        s.any_working = true;
+        d.tick(&s);
+        ax.set_frame(&w, R).unwrap();
+        ax.set_windows_fail(true);
+        let mut s = snap(&ax, places(), t0);
+        s.any_working = true;
+        assert!(s.windows.is_none());
+        assert_eq!(d.tick(&s), vec![], "nothing vanished");
+        assert_eq!(d.docked_window(1), Some(&w));
+        ax.set_windows_fail(false);
+        let mut s = snap(&ax, places(), t0);
+        s.any_working = true;
+        assert_eq!(d.tick(&s), vec![], "and nothing is new");
+    }
+
+    #[test]
+    fn another_chrome_process_is_learned_not_docked() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        let mut s = snap(&ax, vec![(1, Some(R))], t0);
+        s.any_working = true;
+        d.tick(&s);
+        // Chrome restarts: a new pid with windows of its own (restored).
+        ax.set_pid(Some(5151));
+        let _restored = ax.add_window("Restored", TINY);
+        let mut s = snap(&ax, vec![(1, Some(R))], t0);
+        s.any_working = true;
+        assert_eq!(d.tick(&s), vec![], "a new process's windows are learned");
+        let fresh = ax.add_window("Fresh", TINY);
+        let mut s = snap(&ax, vec![(1, Some(R))], t0);
+        s.any_working = true;
+        assert_eq!(d.tick(&s)[0], Action::Dock { tab: 1, win: fresh }, "its later windows are new");
+    }
+
+    #[test]
+    fn chrome_started_by_a_launch_docks_its_window() {
+        let ax = FakeAx::new(true);
+        ax.set_pid(None);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, true, t0);
+        d.tick(&snap(&ax, vec![(1, Some(R))], t0));
+        ax.set_pid(Some(4242));
+        let w = ax.add_window("Example", TINY);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R))], t0 + Duration::from_secs(2)))[0], Action::Dock { tab: 1, win: w });
+    }
+
+    #[test]
+    fn a_failed_write_rereads_the_permission() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        d.tick(&snap(&ax, vec![(1, Some(R))], t0));
+        d.distrust();
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R))], t0)), vec![], "still trusted: no flip");
+        d.distrust();
+        ax.set_trusted(false);
+        assert_eq!(d.tick(&snap(&ax, vec![(1, Some(R))], t0)), vec![Action::Permission(false)]);
+    }
+
+    #[test]
+    fn quitting_or_closing_puts_a_parked_window_back() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        let w = ax.add_window("W", R2);
+        // Docked into a tab that is not on screen: parked before it was ever shown.
+        d.dock_by_choice(1, w.clone());
+        d.tick(&snap(&ax, vec![(1, None)], t0));
+        assert_eq!(d.last_shown(1), None);
+        assert_eq!(d.parked_windows(), vec![(w.clone(), R2)]);
+        assert_eq!(d.remove(1), Some((w, Some(R2))), "back where it was before it was parked");
     }
 
     #[test]
@@ -618,7 +859,7 @@ mod tests {
         let mut s = snap(&ax, vec![(1, None)], t0);
         s.screens_right = 1512.0;
         d.tick(&s); // hidden now
-        assert_eq!(d.undock(1), Some(w.clone()));
+        assert_eq!(d.undock(1), Some((w.clone(), Some(R))));
         // The caller moves a hidden window back to where it was shown before the hide.
         assert_eq!(d.last_shown(1), Some(R));
         assert!(d.waiting_tabs().contains(&1), "undocked, the tab stays and waits");

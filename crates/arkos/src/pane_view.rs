@@ -814,7 +814,8 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>
     let state = root.docks.tabs.get(&tab);
     let trusted = root.docks.trusted() && !matches!(state, Some(DockState::NoPermission));
     let docked = matches!(state, Some(DockState::Docked { .. })).then_some(());
-    let launched = matches!(state, Some(DockState::Waiting { launched_at: Some(_), .. }));
+    // "The window it opened" only while that window may still dock (the launch grace).
+    let launched = matches!(state, Some(DockState::Waiting { launched_at: Some(t), .. }) if root.frame_now.saturating_duration_since(*t) <= crate::dock::LAUNCH_GRACE);
     let screen = match browser_screen(trusted, docked, url, launched) {
         BrowserScreen::NoPermission => column()
             .child(heading("Docking a Chrome window needs Accessibility access"))

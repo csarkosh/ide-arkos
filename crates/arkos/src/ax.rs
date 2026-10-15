@@ -156,7 +156,9 @@ pub trait Ax {
     /// Whether this process may use the API; `prompt` shows the system's request once.
     fn trusted(&self, prompt: bool) -> bool;
     fn chrome_pid(&self) -> Option<i32>;
-    fn windows(&self, pid: i32) -> Vec<AxWindow>;
+    /// Chrome's windows; an error when the list cannot be read now (not trusted, Chrome busy),
+    /// which is not the same as no windows.
+    fn windows(&self, pid: i32) -> Result<Vec<AxWindow>, AxError>;
     /// Global, top-left origin, points. `None` when the window is gone or access is missing.
     fn frame(&self, w: &AxWindow) -> Option<Rect>;
     fn set_frame(&self, w: &AxWindow, r: Rect) -> Result<(), AxError>;
@@ -254,22 +256,29 @@ impl Ax for RealAx {
     }
 
     fn chrome_pid(&self) -> Option<i32> {
-        // The stable channel only.
+        // The stable channel only. `open -na` briefly starts a second process that hands the
+        // window to the running one and exits: the one that finished launching first (the
+        // lowest pid among the launched ones) is Chrome.
         let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(ns_string!("com.google.Chrome"));
-        apps.firstObject().map(|app| app.processIdentifier())
+        let all: Vec<_> = apps.iter().collect();
+        let launched = all.iter().filter(|a| a.isFinishedLaunching()).map(|a| a.processIdentifier()).min();
+        launched.or_else(|| all.iter().map(|a| a.processIdentifier()).min())
     }
 
-    fn windows(&self, pid: i32) -> Vec<AxWindow> {
+    fn windows(&self, pid: i32) -> Result<Vec<AxWindow>, AxError> {
         // SAFETY: creates an owned element for `pid`; it is released when `app` drops.
-        let Some(app) = owned(unsafe { AXUIElementCreateApplication(pid) }) else { return Vec::new() };
-        // `kAXErrorAPIDisabled` and every other failure read as no windows: the engine learns
-        // about permission from `trusted`, read every tick.
-        let Ok(value) = copy_attribute(&app, "AXWindows") else { return Vec::new() };
-        let Some(array) = value.downcast_ref::<CFArray>() else { return Vec::new() };
+        let app = owned(unsafe { AXUIElementCreateApplication(pid) }).ok_or(AxError::Other(AX_NO_VALUE))?;
+        let value = match copy_attribute(&app, "AXWindows") {
+            Ok(v) => v,
+            // No value: an app with no windows.
+            Err(AxError::Other(AX_NO_VALUE)) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let array = value.downcast_ref::<CFArray>().ok_or(AxError::Other(AX_NO_VALUE))?;
         // SAFETY: `AXWindows` is an array of AX elements, all CoreFoundation objects; each one
         // is retained into its `AxWindow`.
         let array: &CFArray<CFType> = unsafe { array.cast_unchecked() };
-        array.iter().map(|e| AxWindow(Element::Real(e))).collect()
+        Ok(array.iter().map(|e| AxWindow(Element::Real(e))).collect())
     }
 
     fn frame(&self, w: &AxWindow) -> Option<Rect> {
@@ -341,7 +350,7 @@ pub mod screen {
     use super::Rect;
     use objc2::rc::Retained;
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSScreen, NSWindow};
+    use objc2_app_kit::{NSApplication, NSScreen, NSView, NSWindow};
 
     /// An AppKit rectangle (origin bottom-left of the primary display, y up) in AX terms
     /// (origin top-left of the primary display, y down).
@@ -375,11 +384,22 @@ pub mod screen {
         window.isMiniaturized() || !window.isVisible()
     }
 
+    /// The `NSWindow` behind a gpui window, from its AppKit window handle (the content view).
+    pub fn ns_window_of(window: &impl raw_window_handle::HasWindowHandle) -> Option<Retained<NSWindow>> {
+        let handle = window.window_handle().ok()?;
+        let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return None };
+        // SAFETY: an AppKit handle's `ns_view` is the window's live `NSView`, valid while the
+        // window is; `window()` retains the `NSWindow` it returns.
+        let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+        view.window()
+    }
+
     /// The project window's title; the process's other windows (the "Open recent..." chooser, a
     /// folder picker) have their own.
     pub const WINDOW_TITLE: &str = "Arkos IDE";
 
-    /// The arkos project window: the one titled `WINDOW_TITLE`, else the main or key window, else
+    /// The arkos project window when its handle was not available at setup (`ns_window_of`):
+    /// the one titled `WINDOW_TITLE`, else the main or key window, else
     /// the first one.
     pub fn arkos_window() -> Option<Retained<NSWindow>> {
         let mtm = MainThreadMarker::new()?;
@@ -412,6 +432,8 @@ pub struct FakeAx {
     pub mouse_down: Cell<bool>,
     pub mouse: Cell<(f64, f64)>,
     pub pid: Cell<Option<i32>>,
+    /// The window list cannot be read (Chrome busy).
+    pub windows_fail: Cell<bool>,
     calls: RefCell<Vec<String>>,
     next: Cell<usize>,
 }
@@ -437,6 +459,7 @@ impl FakeAx {
             mouse_down: Cell::new(false),
             mouse: Cell::new((0.0, 0.0)),
             pid: Cell::new(Some(4242)),
+            windows_fail: Cell::new(false),
             calls: RefCell::new(Vec::new()),
             next: Cell::new(1),
         }
@@ -457,6 +480,15 @@ impl FakeAx {
 
     pub fn set_trusted(&self, trusted: bool) {
         self.trusted.set(trusted);
+    }
+
+    /// Chrome quits (`None`) or another Chrome process takes over; the windows stay listed.
+    pub fn set_pid(&self, pid: Option<i32>) {
+        self.pid.set(pid);
+    }
+
+    pub fn set_windows_fail(&self, fail: bool) {
+        self.windows_fail.set(fail);
     }
 
     pub fn set_mouse_down(&self, down: bool) {
@@ -482,7 +514,6 @@ impl FakeAx {
     }
 
     /// Every mutating call so far: `"set_frame <id> <x>,<y> <w>x<h>"`, `"raise <id>"` or `"focus <id>"`.
-    #[allow(dead_code)] // the engine is pure; Task 4's tests read the calls
     pub fn calls(&self) -> Vec<String> {
         self.calls.borrow().clone()
     }
@@ -508,11 +539,17 @@ impl Ax for FakeAx {
     fn chrome_pid(&self) -> Option<i32> {
         self.pid.get()
     }
-    fn windows(&self, pid: i32) -> Vec<AxWindow> {
-        if !self.trusted.get() || self.pid.get() != Some(pid) {
-            return Vec::new();
+    fn windows(&self, pid: i32) -> Result<Vec<AxWindow>, AxError> {
+        if !self.trusted.get() {
+            return Err(AxError::NotTrusted);
         }
-        self.windows.borrow().iter().map(|f| f.window.clone()).collect()
+        if self.windows_fail.get() {
+            return Err(AxError::Other(-25204)); // kAXErrorCannotComplete
+        }
+        if self.pid.get() != Some(pid) {
+            return Ok(Vec::new());
+        }
+        Ok(self.windows.borrow().iter().map(|f| f.window.clone()).collect())
     }
     fn frame(&self, w: &AxWindow) -> Option<Rect> {
         if !self.trusted.get() {
@@ -600,7 +637,13 @@ pub mod probe {
             return 0;
         };
         println!("chrome pid: {pid}");
-        let windows = ax.windows(pid);
+        let windows = match ax.windows(pid) {
+            Ok(w) => w,
+            Err(e) => {
+                println!("cannot read Chrome's windows: {e:?}; run this again");
+                return 0;
+            }
+        };
         println!("chrome windows: {}", windows.len());
         for w in &windows {
             println!(
@@ -685,7 +728,7 @@ mod tests {
         let a = ax.add_window("Claude", Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 });
         let b = ax.add_window("Docs", Rect { x: 5.0, y: 5.0, w: 10.0, h: 10.0 });
         assert_ne!(a, b);
-        assert_eq!(ax.windows(4242), vec![a.clone(), b.clone()]);
+        assert_eq!(ax.windows(4242), Ok(vec![a.clone(), b.clone()]));
         assert_eq!(ax.title(&a).as_deref(), Some("Claude"));
         ax.set_frame(&a, Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 }).unwrap();
         assert_eq!(ax.frame(&a), Some(Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 }));
