@@ -29,6 +29,11 @@ fn app_support() -> PathBuf {
     home().join("Library/Application Support/arkos")
 }
 
+/// The folders opened recently, for the launch chooser (`recent.rs`).
+pub fn recent_file() -> PathBuf {
+    app_support().join("recent.json")
+}
+
 pub fn socket_path() -> PathBuf {
     app_support().join("arkosd.sock")
 }

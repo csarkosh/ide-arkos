@@ -52,7 +52,12 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
             _ => keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default(),
         };
         // The display name keeps its capitals; the config name is lower case.
-        let label = if command == Command::InstallHooks { "Install Claude Code hooks".to_string() } else { keymap::label(a.name) };
+        // The two that ask for a folder end in an ellipsis, as macOS writes a command that asks more.
+        let label = match command {
+            Command::InstallHooks => "Install Claude Code hooks".to_string(),
+            Command::OpenFolder | Command::OpenRecent => format!("{}\u{2026}", keymap::label(a.name)),
+            _ => keymap::label(a.name),
+        };
         out.push(Item { label, detail, command });
     }
     for (name, p) in &cfg.font.presets {
@@ -264,6 +269,10 @@ mod tests {
         assert_eq!((sidebar.detail.as_str(), &sidebar.command), ("Cmd+B", &Command::ToggleSidebar));
         let tree = items.iter().find(|i| i.label == "Focus file tree").unwrap();
         assert_eq!((tree.detail.as_str(), &tree.command), ("Shift+Cmd+E", &Command::FocusFileTree));
+        let open = items.iter().find(|i| i.label == "Open folder\u{2026}").unwrap();
+        assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
+        let recent = items.iter().find(|i| i.label == "Open recent\u{2026}").unwrap();
+        assert_eq!((recent.detail.as_str(), &recent.command), ("", &Command::OpenRecent));
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
         let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true);

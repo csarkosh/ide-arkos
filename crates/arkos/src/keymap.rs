@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, RetryUpdate, StartAtLogin, InstallHooks,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, Quit
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, OpenRecent, Quit
     ]
 );
 
@@ -77,6 +77,10 @@ pub enum Command {
     FocusWorktrees,
     /// Show or hide the focused viewer's deleted lines between its current ones.
     ToggleInlineDiff,
+    /// Pick a folder with the native picker and open it in a new window.
+    OpenFolder,
+    /// Show the project chooser; the folder chosen opens in a new window.
+    OpenRecent,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -127,6 +131,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("show ignored files", ""),
     row("focus worktrees", "ctrl-shift-g"),
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer") },
+    row("open folder", "cmd-o"),
+    row("open recent", ""),
     row("quit", "cmd-q"),
 ];
 
@@ -179,6 +185,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
         "focus worktrees" => KeyBinding::new(keys, FocusWorktrees, context),
         "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
+        "open folder" => KeyBinding::new(keys, OpenFolder, context),
+        "open recent" => KeyBinding::new(keys, OpenRecent, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -341,6 +349,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "show ignored files" => Command::ShowIgnoredFiles,
         "focus worktrees" => Command::FocusWorktrees,
         "toggle inline diff" => Command::ToggleInlineDiff,
+        "open folder" => Command::OpenFolder,
+        "open recent" => Command::OpenRecent,
         _ => return None,
     })
 }
@@ -383,6 +393,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
+        OpenFolder => Command::OpenFolder, OpenRecent => Command::OpenRecent,
     )
 }
 
@@ -427,6 +438,8 @@ mod tests {
         ("", "show ignored files", "ShowIgnoredFiles"),
         ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
+        ("cmd-o", "open folder", "OpenFolder"),
+        ("", "open recent", "OpenRecent"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -472,7 +485,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 7, "an empty string unbinds, and update now, check for updates, retry update, start at login, install hooks and show ignored files have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 8, "an empty string unbinds, and update now, check for updates, retry update, start at login, install hooks, show ignored files and open recent have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -481,7 +494,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 6, "only update now, check for updates, retry update, start at login, install hooks and show ignored files are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 7, "only update now, check for updates, retry update, start at login, install hooks, show ignored files and open recent are unbound by default");
     }
 
     #[test]

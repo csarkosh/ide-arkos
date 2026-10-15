@@ -429,6 +429,8 @@ nice = 0
 # "show ignored files" = ""
 # "focus worktrees" = "ctrl-shift-g"
 # "toggle inline diff" = "cmd-shift-d"
+# "open folder" = "cmd-o"
+# "open recent" = ""
 # "quit" = "cmd-q"
 
 [sidebar]

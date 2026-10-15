@@ -18,6 +18,7 @@ mod hook_cli;
 mod idle;
 mod keys;
 mod keymap;
+mod launch;
 mod links;
 mod launch_agent;
 mod layout;
@@ -27,6 +28,7 @@ mod palette;
 mod pane_view;
 mod paths;
 mod pulse;
+mod recent;
 mod scroll;
 mod split_view;
 mod sessions;
@@ -1276,8 +1278,46 @@ impl Root {
                     v.update(cx, |v, cx| v.toggle_inline_diff(cx));
                 }
             }
+            OpenFolder => self.pick_folder(cx),
+            OpenRecent => {
+                let root = cx.entity();
+                let open = Box::new(move |folder: PathBuf, cx: &mut App| root.update(cx, |root, cx| root.open_elsewhere(folder, cx)));
+                launch::open_chooser(cx, false, true, self.config.clone(), (*self.theme).clone(), open);
+            }
         }
         let _ = window;
+    }
+
+    /// The native folder picker; the folder chosen opens in a new window.
+    fn pick_folder(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(launch::picker_options());
+        cx.spawn(async move |root, cx| {
+            let folder = match rx.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Err(e)) => {
+                    let _ = root.update(cx, |root, cx| root.show_notice(format!("cannot show the folder picker: {e}"), cx));
+                    None
+                }
+                _ => None,
+            };
+            if let Some(folder) = folder {
+                let _ = root.update(cx, |root, cx| root.open_elsewhere(folder, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Opens `folder` in a new window process, unless it is this window's own project.
+    pub fn open_elsewhere(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if launch::same_folder(&folder, &self.project) {
+            self.show_notice("already open here".into(), cx);
+            return;
+        }
+        if let Err(e) = launch::spawn_window(&folder) {
+            let text = format!("cannot open {}: {e}", folder.display());
+            eprintln!("arkos: {text}");
+            self.show_notice(text, cx);
+        }
     }
 
     /// The plist for this install: the sibling daemon, the config's daemon arguments, the log.
@@ -1996,7 +2036,13 @@ impl Render for Root {
 
 /// The menu bar. Set again when the key bindings change so it shows the bound keys.
 fn menus() -> Vec<Menu> {
-    vec![Menu { name: "Arkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]
+    vec![
+        Menu { name: "Arkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] },
+        Menu {
+            name: "File".into(),
+            items: vec![MenuItem::action("Open Folder\u{2026}", keymap::OpenFolder), MenuItem::action("Open Recent\u{2026}", keymap::OpenRecent)],
+        },
+    ]
 }
 
 fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme) -> Div {
@@ -2048,18 +2094,11 @@ fn main() {
     };
     // Used only when this window starts the daemon; a running one keeps its own settings.
     let daemon_args = daemon_args(&config);
-    let (client, events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("arkos: cannot reach arkosd: {e:#}");
-            std::process::exit(1);
-        }
-    };
-    let client = Arc::new(client);
-    let project = std::env::current_dir().expect("cwd");
-    // Synchronous on purpose: one small file read, done before the window opens, so it cannot
-    // stall painting or input. Saves happen on the background executor.
-    let saved = workspace::load(&project);
+    let cwd = std::env::current_dir().expect("cwd");
+    // A Dock launch has no folder yet: the chooser asks first, and the daemon hears from this
+    // window only once one is chosen, so its Hello carries the project's folder and no watchdog
+    // counts heartbeats while the chooser waits.
+    let connection = if launch::needs_chooser(&cwd) { None } else { Some(connect(&daemon_args)) };
     let save_queue = SharedSaveQueue::default();
 
     Application::new().run(move |cx: &mut App| {
@@ -2067,11 +2106,6 @@ fn main() {
         // once the window exists.
         cx.bind_keys(keymap::bindings_for(&config.keybindings));
         cx.set_menus(menus());
-        let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
-        let client_for_view = client.clone();
-        let view_queue = save_queue.clone();
-        let view_project = project.clone();
-        let view_saved = saved.clone();
         let system_is_dark = theme::is_dark(cx.window_appearance());
         let name = theme::pick_name(config.appearance.mode, system_is_dark, &config.theme).to_string();
         let (theme, theme_error) = match theme::load(&name, &paths::themes_dir()) {
@@ -2084,6 +2118,102 @@ fn main() {
                 (t, Some(banner))
             }
         };
+        let start = Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark };
+        let Some(connection) = connection else {
+            // Until a folder is chosen, Quit and closing the chooser end the app; once the
+            // project window is open, its own handlers below take over.
+            let opened = std::rc::Rc::new(std::cell::Cell::new(false));
+            let quit_opened = opened.clone();
+            cx.on_action(move |_: &Quit, cx| {
+                if !quit_opened.get() {
+                    cx.quit();
+                }
+            });
+            let closed_opened = opened.clone();
+            cx.on_window_closed(move |cx| {
+                if !closed_opened.get() && cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let (config, theme) = (start.config.clone(), start.theme.clone());
+            let focus = should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref());
+            launch::open_chooser(
+                cx,
+                true,
+                focus,
+                config,
+                theme,
+                Box::new(move |folder, cx| {
+                    // The project is the working directory, as for a terminal launch: the
+                    // daemon's Hello, its relaunches and the shells all start from it.
+                    if let Err(e) = std::env::set_current_dir(&folder) {
+                        eprintln!("arkos: cannot open {}: {e}", folder.display());
+                        cx.quit();
+                        return;
+                    }
+                    let project = std::env::current_dir().unwrap_or(folder);
+                    opened.set(true);
+                    let connection = connect(&start.daemon_args);
+                    open_project_window(project, connection, start, cx);
+                }),
+            );
+            return;
+        };
+        open_project_window(cwd, connection, start, cx);
+    });
+}
+
+/// What `main` read before the app ran, for the project window.
+struct Startup {
+    config: config::Config,
+    config_error: Option<String>,
+    config_path: PathBuf,
+    daemon_args: Vec<String>,
+    save_queue: SharedSaveQueue,
+    theme: theme::Theme,
+    theme_error: Option<String>,
+    system_is_dark: bool,
+}
+
+/// Connects to the daemon, starting it when none answers. Without one there is nothing to show.
+fn connect(daemon_args: &[String]) -> (client::Client, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>) {
+    match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), daemon_args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("arkos: cannot reach arkosd: {e:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Opens the window on `project` and starts everything that serves it.
+fn open_project_window(
+    project: PathBuf,
+    (client, events): (client::Client, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>),
+    start: Startup,
+    cx: &mut App,
+) {
+    let Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark } = start;
+    let client = Arc::new(client);
+    // Synchronous on purpose: one small file read, done before the window opens, so it cannot
+    // stall painting or input. Saves happen on the background executor.
+    let saved = workspace::load(&project);
+    // The chooser lists this folder next time.
+    let recent_project = project.clone();
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(e) = recent::note(&paths::recent_file(), &recent_project, recent::now_unix()) {
+                eprintln!("arkos: cannot note recent folder: {e}");
+            }
+        })
+        .detach();
+    {
+        let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
+        let client_for_view = client.clone();
+        let view_queue = save_queue.clone();
+        let view_project = project.clone();
+        let view_saved = saved.clone();
         let (view_config, view_theme) = (config, theme);
         let window = cx
             .open_window(
@@ -2180,7 +2310,7 @@ fn main() {
             }
         })
         .detach();
-    });
+    }
 }
 
 #[cfg(test)]
