@@ -350,7 +350,9 @@ Notes:
   Terminal.app. A plain click does nothing to it.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
-- Every binding can be changed in the config file; see Config.
+- Every binding can be changed in the config file; see Config. A shifted symbol can be written
+  as Shift plus the plain key (`ctrl-shift-\``) or as the character itself (`ctrl-~`): macOS
+  reports the character, and both spellings are the same binding.
 
 ## Config
 

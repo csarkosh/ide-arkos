@@ -151,9 +151,37 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("quit", "cmd-q"),
 ];
 
+/// The US layout's shifted symbols. gpui on macOS reports a shifted symbol as the shifted
+/// character with Shift cleared (Ctrl+Shift+` arrives as `ctrl-~`), while a shifted letter
+/// keeps Shift as a modifier (`cmd-shift-p`). A binding is written the way it is read,
+/// "ctrl-shift-`", and registered the way gpui sees it.
+const SHIFTED: &[(&str, &str)] = &[
+    ("`", "~"), ("1", "!"), ("2", "@"), ("3", "#"), ("4", "$"), ("5", "%"), ("6", "^"), ("7", "&"), ("8", "*"), ("9", "("), ("0", ")"),
+    ("-", "_"), ("=", "+"), ("[", "{"), ("]", "}"), ("\\", "|"), (";", ":"), ("'", "\""), (",", "<"), (".", ">"), ("/", "?"),
+];
+
+/// `keys` as gpui reports them: each "shift-<symbol>" becomes the symbol's shifted character
+/// without Shift. Letters, named keys and strokes gpui cannot parse are left as they are.
+pub fn as_gpui(keys: &str) -> String {
+    keys.split_whitespace()
+        .map(|stroke| {
+            let Ok(mut k) = Keystroke::parse(stroke) else { return stroke.to_string() };
+            if k.modifiers.shift {
+                if let Some((_, shifted)) = SHIFTED.iter().find(|(plain, _)| *plain == k.key) {
+                    k.key = shifted.to_string();
+                    k.modifiers.shift = false;
+                }
+            }
+            k.unparse()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The binding for a named action. `keys` must already be validated: `KeyBinding::new` panics
 /// on a keystroke it cannot parse.
 fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> {
+    let keys = &as_gpui(keys);
     Some(match name {
         "clear to start" => KeyBinding::new(keys, ClearToStart, context),
         "focus pane 1" => KeyBinding::new(keys, FocusPane1, context),
@@ -287,13 +315,15 @@ pub fn pretty_keys(keys: &str) -> String {
             if k.modifiers.alt {
                 parts.push("Option".to_string());
             }
-            if k.modifiers.shift {
+            // A shifted symbol reads as Shift plus the plain key, whichever way it was written.
+            let plain = SHIFTED.iter().find(|(_, shifted)| *shifted == k.key).map(|(plain, _)| *plain);
+            if k.modifiers.shift || plain.is_some() {
                 parts.push("Shift".to_string());
             }
             if k.modifiers.platform {
                 parts.push("Cmd".to_string());
             }
-            let key = match k.key.as_str() {
+            let key = match plain.unwrap_or(k.key.as_str()) {
                 "left" => "Left".to_string(),
                 "right" => "Right".to_string(),
                 "up" => "Up".to_string(),
@@ -491,7 +521,8 @@ mod tests {
         assert_eq!(b.len(), SPEC_ROWS.iter().filter(|(keys, _, _)| !keys.is_empty()).count());
         // A row with empty keys is unbound by default: nothing to press.
         for (keys, name, want) in SPEC_ROWS.iter().filter(|(keys, _, _)| !keys.is_empty()) {
-            let kb = b.iter().find(|kb| keys_of(kb) == *keys).unwrap_or_else(|| panic!("{keys} ({name}) unbound"));
+            // Registered as gpui reports them: a shifted symbol is its shifted character.
+            let kb = b.iter().find(|kb| keys_of(kb) == as_gpui(keys)).unwrap_or_else(|| panic!("{keys} ({name}) unbound"));
             assert_eq!(kb.action().name(), format!("arkos::{want}"), "{keys}");
         }
     }
@@ -547,10 +578,32 @@ mod tests {
     }
 
     #[test]
+    fn shifted_symbols_are_registered_as_gpui_reports_them() {
+        // macOS gives the shifted character with Shift cleared for symbols, not for letters.
+        assert_eq!(as_gpui("ctrl-shift-`"), "ctrl-~");
+        assert_eq!(as_gpui("cmd-shift-]"), "cmd-}");
+        assert_eq!(as_gpui("cmd-shift-["), "cmd-{");
+        assert_eq!(as_gpui("cmd-shift-p"), "cmd-shift-p");
+        assert_eq!(as_gpui("cmd-k cmd-shift-left"), "cmd-k cmd-shift-left");
+        assert_eq!(as_gpui("ctrl-~"), "ctrl-~", "already the way gpui sees it");
+        assert_eq!(as_gpui("cmd-shift-t"), "cmd-shift-t");
+        // The new-terminal binding is what Ctrl+Shift+` sends, whichever way it is written.
+        let b = bindings();
+        assert!(b.iter().any(|kb| keys_of(kb) == "ctrl-~" && kb.action().name() == "arkos::NewTerminal"));
+        let mut o = BTreeMap::new();
+        o.insert("new terminal tab".to_string(), "ctrl-shift-`".to_string());
+        assert!(bindings_for(&o).iter().any(|kb| keys_of(kb) == "ctrl-~" && kb.action().name() == "arkos::NewTerminal"));
+        o.insert("new terminal tab".to_string(), "ctrl-~".to_string());
+        assert!(bindings_for(&o).iter().any(|kb| keys_of(kb) == "ctrl-~" && kb.action().name() == "arkos::NewTerminal"));
+    }
+
+    #[test]
     fn keys_print_the_mac_way() {
         assert_eq!(pretty_keys("cmd-shift-p"), "Shift+Cmd+P");
         assert_eq!(pretty_keys("cmd-k cmd-\\"), "Cmd+K then Cmd+\\");
         assert_eq!(pretty_keys("ctrl-shift-`"), "Ctrl+Shift+`");
+        assert_eq!(pretty_keys("ctrl-~"), "Ctrl+Shift+`", "the registered form reads the same");
+        assert_eq!(pretty_keys("cmd-}"), "Shift+Cmd+]");
         assert_eq!(pretty_keys("alt-cmd-right"), "Option+Cmd+Right");
         assert_eq!(pretty_keys("cmd-k w"), "Cmd+K then W");
         assert_eq!(pretty_keys("cmd-,"), "Cmd+,");
