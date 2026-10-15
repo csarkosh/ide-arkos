@@ -177,6 +177,22 @@ fn end_of(from: Pos, text: &str) -> Pos {
     }
 }
 
+/// The file text of a document's lines: what `Document::to_text` gives, for a caller holding only
+/// the shared lines (a background job that must not join them on the UI thread).
+pub fn join_text(lines: &[String], ending: LineEnding, bom: bool, trailing_newline: bool) -> String {
+    let eol = match ending {
+        LineEnding::Lf => "\n",
+        LineEnding::CrLf => "\r\n",
+    };
+    let mut out = if bom { String::from("\u{feff}") } else { String::new() };
+    out.push_str(&lines.join(eol));
+    // An empty last line already ends the text with a break; a typed-into one needs it added.
+    if trailing_newline && !lines.last().is_some_and(|l| l.is_empty()) {
+        out.push_str(eol);
+    }
+    out
+}
+
 impl Document {
     /// The ending is taken from the first line break; an empty text is one empty line. A leading
     /// byte order mark is set aside as `bom`.
@@ -196,17 +212,7 @@ impl Document {
     }
 
     pub fn to_text(&self) -> String {
-        let eol = match self.ending {
-            LineEnding::Lf => "\n",
-            LineEnding::CrLf => "\r\n",
-        };
-        let mut out = if self.bom { String::from("\u{feff}") } else { String::new() };
-        out.push_str(&self.lines.join(eol));
-        // An empty last line already ends the text with a break; a typed-into one needs it added.
-        if self.trailing_newline && !self.lines.last().is_some_and(|l| l.is_empty()) {
-            out.push_str(eol);
-        }
-        out
+        join_text(&self.lines, self.ending, self.bom, self.trailing_newline)
     }
 
     pub fn lines(&self) -> &[String] {

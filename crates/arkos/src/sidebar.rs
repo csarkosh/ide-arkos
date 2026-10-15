@@ -1054,17 +1054,17 @@ impl Root {
                 // Unsaved edits in the preview are written first (its first edit normally pins
                 // it). One that cannot be written stays, and the file opens in a tab of its own.
                 let viewer = self.tree.tab_id(pane, idx).and_then(|id| self.viewers.get(&id).cloned());
-                let kept = viewer.is_some_and(|v| {
+                let kept = viewer.and_then(|v| {
                     v.update(cx, |v, cx| match v.save_now() {
-                        Ok(()) => false,
+                        Ok(()) => None,
                         Err(e) => {
-                            eprintln!("arkos: {e}");
                             cx.notify();
-                            true
+                            Some(e)
                         }
                     })
                 });
-                if kept {
+                if let Some(e) = kept {
+                    self.show_notice(e, cx);
                     let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
                     self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
                     idx

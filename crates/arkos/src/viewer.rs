@@ -42,6 +42,8 @@ pub const MAX_LINE_BYTES: usize = 8 * 1024;
 pub const AUTOSAVE_DELAY: Duration = Duration::from_secs(1);
 /// How long a close or a quit waits for a save already on its way before writing itself.
 pub const SAVE_WAIT: Duration = Duration::from_millis(500);
+/// Why a tab with a conflict does not close, until the banner says it (Task 7).
+pub const CONFLICT_NOTICE: &str = "the file changed on disk; choose Reload or Keep mine first";
 
 /// Numbers the temp files of saves, so two saves in flight never share one.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -134,6 +136,9 @@ pub enum SaveError {
     /// The file is not the one the viewer last read or wrote: another writer got there first, or
     /// it went away. Nothing was written.
     Changed,
+    /// A close or a quit wrote newer text while this save waited; its last step was skipped so
+    /// the older text never lands. Nothing of it reached the file.
+    Superseded,
     Io(std::io::Error),
 }
 
@@ -152,14 +157,24 @@ impl From<std::io::Error> for SaveError {
 /// directory that refuses the temp file refuses the save; the file is never half written. A
 /// symlink is written in place through the link, since a rename would replace the link itself.
 pub fn save_text(path: &Path, text: &str, expect: Option<(u128, u64)>) -> Result<(u128, u64), SaveError> {
+    save_text_guarded(path, text, expect, || Some(()))
+}
+
+/// `save_text` with a gate before the step that changes the file (the rename, or for a symlink
+/// the write in place): `gate` returns a guard held across that step, or `None` to skip it, which
+/// leaves the file as it was and returns `SaveError::Superseded`. The guard is not held across the
+/// temp file's write or its sync.
+pub fn save_text_guarded<G>(path: &Path, text: &str, expect: Option<(u128, u64)>, gate: impl FnOnce() -> Option<G>) -> Result<(u128, u64), SaveError> {
     if expect.is_some() && fingerprint(path) != expect {
         return Err(SaveError::Changed);
     }
     let is_link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if is_link {
+        let Some(guard) = gate() else { return Err(SaveError::Superseded) };
         // Opening follows the link; without `create` a dangling link is an error, not a new file.
         let mut f = std::fs::OpenOptions::new().write(true).truncate(true).open(path)?;
         f.write_all(text.as_bytes())?;
+        drop(guard);
         f.sync_all()?;
     } else {
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -172,47 +187,78 @@ pub fn save_text(path: &Path, text: &str, expect: Option<(u128, u64)>) -> Result
                 file.set_permissions(meta.permissions())?;
             }
             file.sync_all()?;
-            std::fs::rename(&tmp, path)
+            let Some(guard) = gate() else { return Ok(false) };
+            std::fs::rename(&tmp, path)?;
+            drop(guard);
+            Ok(true)
         })();
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(SaveError::Io(e));
+        match written {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(SaveError::Superseded);
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(SaveError::Io(e));
+            }
         }
     }
     fingerprint(path).ok_or_else(|| SaveError::Io(std::io::Error::other("the file is gone right after the write")))
 }
 
 /// A background save as a close or a quit sees it: they may not block on the UI thread for the
-/// save to land, so the writer reports here as soon as the write is done.
+/// save to land, so the writer reports here as soon as the write is done, and a close that gave
+/// up waiting stops the write's last step.
 #[derive(Default)]
 pub struct SaveFlight {
-    /// `Some` once the write finished: the fingerprint it left, or `None` when it failed.
-    done: Mutex<Option<Option<(u128, u64)>>>,
+    state: Mutex<FlightState>,
     finished: Condvar,
 }
 
+#[derive(Default)]
+struct FlightState {
+    /// `Some` once the write finished: the fingerprint it left, or `None` when it failed.
+    done: Option<Option<(u128, u64)>>,
+    /// A close or a quit stopped waiting and writes newer text itself: the rename must not
+    /// happen. Checked by the writer under the same lock it holds across the rename.
+    abandoned: bool,
+}
+
 impl SaveFlight {
+    /// The writer's gate before its rename: the lock, held across the rename, or `None` once the
+    /// save was abandoned.
+    fn gate(&self) -> Option<std::sync::MutexGuard<'_, FlightState>> {
+        self.state.lock().ok().filter(|s| !s.abandoned)
+    }
+
     fn finish(&self, fp: Option<(u128, u64)>) {
-        if let Ok(mut done) = self.done.lock() {
-            *done = Some(fp);
+        if let Ok(mut state) = self.state.lock() {
+            state.done = Some(fp);
         }
         self.finished.notify_all();
     }
 
-    /// Waits up to `limit` for the write: `None` while it is still running.
-    fn wait(&self, limit: Duration) -> Option<Option<(u128, u64)>> {
-        let done = self.done.lock().ok()?;
-        let (done, _) = self.finished.wait_timeout_while(done, limit, |d| d.is_none()).ok()?;
-        *done
+    /// Waits up to `limit` for the write. When it is still running then, it is abandoned before
+    /// this returns `None`, so its rename never lands over what the caller writes next.
+    fn wait_or_abandon(&self, limit: Duration) -> Option<Option<(u128, u64)>> {
+        let state = self.state.lock().ok()?;
+        let (mut state, _) = self.finished.wait_timeout_while(state, limit, |s| s.done.is_none()).ok()?;
+        if state.done.is_none() {
+            state.abandoned = true;
+        }
+        state.done
     }
 }
 
 /// The document a markdown file becomes, or why it stays read-only: strict UTF-8 with one kind
-/// of line ending.
+/// of line ending. A carriage return without a line feed after it (an old Mac file, a stray one at
+/// the end) counts as mixed: the document could not write it back.
 fn markdown_document(bytes: &[u8]) -> Result<edit::Document, ReadOnlyWhy> {
     let text = std::str::from_utf8(bytes).map_err(|_| ReadOnlyWhy::NotUtf8)?;
     let crlf = text.matches("\r\n").count();
-    if crlf != 0 && crlf != text.matches('\n').count() {
+    let lone_cr = text.matches('\r').count() != crlf;
+    if lone_cr || (crlf != 0 && crlf != text.matches('\n').count()) {
         return Err(ReadOnlyWhy::MixedEndings);
     }
     Ok(edit::Document::from_text(text))
@@ -665,7 +711,7 @@ impl Viewer {
             let (result, text) = cx
                 .background_executor()
                 .spawn(async move {
-                    let result = save_text(&path, &text, expect);
+                    let result = save_text_guarded(&path, &text, expect, || report.gate());
                     report.finish(result.as_ref().ok().copied());
                     (result, text)
                 })
@@ -691,14 +737,25 @@ impl Viewer {
                 self.rediff_saved(text, seq, applied, cx);
                 cx.emit(ViewerEvent::Saved);
             }
-            Err(SaveError::Changed) => self.conflict = true,
+            Err(SaveError::Changed) => {
+                self.conflict = true;
+                // The conflict is the news; no re-check is needed on top of it.
+                self.recheck_after_save = false;
+            }
             Err(SaveError::Io(e)) => {
                 self.save_error = Some(format!("cannot save {}: {e}", self.path.display()));
                 cx.emit(ViewerEvent::SaveFailed);
             }
+            // Only a close or a quit abandons a save, and it took the flight over first.
+            Err(SaveError::Superseded) => {}
         }
         if std::mem::take(&mut self.save_again) && self.dirty && !self.conflict {
-            self.save(cx);
+            // A composition in progress is not written half done: the timer comes back later.
+            if self.marked.is_none() {
+                self.save(cx);
+            } else {
+                self.schedule_autosave(cx);
+            }
         }
         cx.notify();
     }
@@ -728,12 +785,12 @@ impl Viewer {
             return Ok(());
         }
         if self.conflict {
-            return Err(format!("{} changed on disk; edits not saved", self.path.display()));
+            return Err(CONFLICT_NOTICE.to_string());
         }
         let mut expect = self.fingerprint;
         if let Some((seq, flight)) = self.flight.take() {
             self.saving = false;
-            match flight.wait(SAVE_WAIT) {
+            match flight.wait_or_abandon(SAVE_WAIT) {
                 Some(Some(fp)) => {
                     expect = Some(fp);
                     self.fingerprint = Some(fp);
@@ -743,6 +800,8 @@ impl Viewer {
                 }
                 // It failed: the file is as it was, and so is the expectation.
                 Some(None) => {}
+                // Abandoned: it will not rename over this write, and it may have been the one
+                // that changed the file, so no check.
                 None => expect = None,
             }
         }
@@ -758,13 +817,15 @@ impl Viewer {
             }
             Err(SaveError::Changed) => {
                 self.conflict = true;
-                Err(format!("{} changed on disk; edits not saved", self.path.display()))
+                Err(CONFLICT_NOTICE.to_string())
             }
             Err(SaveError::Io(e)) => {
                 let message = format!("cannot save {}: {e}", self.path.display());
                 self.save_error = Some(message.clone());
                 Err(message)
             }
+            // `save_text` always passes its gate; this arm only keeps the match total.
+            Err(SaveError::Superseded) => Err(format!("cannot save {}: superseded", self.path.display())),
         }
     }
 
@@ -1128,8 +1189,9 @@ impl Root {
             match event {
                 // An edited preview is kept: the next file opens in a tab of its own.
                 ViewerEvent::Edited if root.preview_tab == Some(tab) => root.preview_tab = None,
-                ViewerEvent::Edited | ViewerEvent::SaveFailed => {}
-                ViewerEvent::Saved => {
+                ViewerEvent::Edited => {}
+                // A watcher pass ignored while the save ran is looked at again however it ended.
+                ViewerEvent::Saved | ViewerEvent::SaveFailed => {
                     if v.update(cx, |v, _| std::mem::take(&mut v.recheck_after_save)) {
                         root.load(tab, true, cx);
                     }
@@ -1184,7 +1246,8 @@ impl Root {
                 match (&v.content, &v.doc) {
                     // Unsaved edits have no diff until they are saved.
                     (_, Some(_)) if v.dirty => continue,
-                    (Content::Text { lines, .. }, Some(doc)) if v.loaded => (v.path.clone(), lines.clone(), Some(doc.to_text()), v.applied),
+                    // The text is joined on the background executor, never here.
+                    (Content::Text { lines, .. }, Some(doc)) if v.loaded => (v.path.clone(), lines.clone(), Some((doc.ending, doc.bom, doc.trailing_newline)), v.applied),
                     (Content::Text { lines, .. }, None) if v.loaded && v.plain != Some(Plain::TooBig) => (v.path.clone(), lines.clone(), None, v.applied),
                     _ => continue,
                 }
@@ -1197,7 +1260,7 @@ impl Root {
                     .spawn(async move {
                         match text {
                             // A document's lines keep their tabs; the base's are split for display.
-                            Some(text) => diff_of(&path, &split_lines(&text)),
+                            Some((ending, bom, trailing)) => diff_of(&path, &split_lines(&edit::join_text(&lines, ending, bom, trailing))),
                             None => diff_of(&path, &lines),
                         }
                     })
@@ -1276,7 +1339,8 @@ impl Root {
                     if saved.is_err() {
                         cx.notify();
                     }
-                    saved.err()
+                    // The conflict's text does not name the file; a write error's does.
+                    saved.err().map(|e| if e == CONFLICT_NOTICE { format!("{}: {e}", v.path.display()) } else { e })
                 })
             })
             .collect()
@@ -1536,6 +1600,40 @@ mod tests {
     }
 
     #[test]
+    fn a_superseded_save_skips_its_last_step_and_leaves_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "newer, from the close").unwrap();
+        let fp = crate::config_watch::fingerprint(&path);
+        let skipped = save_text_guarded(&path, "older", fp, || None::<()>);
+        assert!(matches!(skipped, Err(SaveError::Superseded)), "{skipped:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "newer, from the close", "the rename never happened");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(matches!(save_text_guarded(&link, "older", None, || None::<()>), Err(SaveError::Superseded)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "newer, from the close", "nor the write through the link");
+        let mut gated = false;
+        save_text_guarded(&path, "through the gate", fp, || {
+            gated = true;
+            Some(())
+        })
+        .unwrap();
+        assert!(gated && std::fs::read_to_string(&path).unwrap() == "through the gate");
+    }
+
+    #[test]
+    fn an_abandoned_flight_stops_the_writer_s_rename() {
+        let flight = SaveFlight::default();
+        assert!(flight.wait_or_abandon(Duration::from_millis(1)).is_none(), "still running: abandoned");
+        assert!(flight.gate().is_none(), "the writer's gate is closed");
+        let done = SaveFlight::default();
+        done.finish(Some((1, 2)));
+        assert_eq!(done.wait_or_abandon(Duration::from_millis(1)), Some(Some((1, 2))), "a finished write is reported, not abandoned");
+        assert!(done.gate().is_some());
+    }
+
+    #[test]
     fn the_disk_change_rule_ignores_our_own_write() {
         let ours = Some((1, 10));
         assert_eq!(disk_change(ours, ours, true, false), DiskChange::Ignore, "our own write seen while dirty again");
@@ -1576,6 +1674,12 @@ mod tests {
         let mixed = dir.path().join("mixed.md"); std::fs::write(&mixed, "a\r\nb\nc").unwrap();
         let l = read_file(&mixed, None, None, 1 << 20, false).unwrap();
         assert!(l.doc.is_none()); assert_eq!(l.read_only, Some(ReadOnlyWhy::MixedEndings));
+        for (name, text) in [("cr.md", "a\rb\rc"), ("tail.md", "a\nb\r"), ("crlf-cr.md", "a\r\nb\rc")] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, text).unwrap();
+            let l = read_file(&p, None, None, 1 << 20, false).unwrap();
+            assert!(l.doc.is_none() && l.read_only == Some(ReadOnlyWhy::MixedEndings), "a lone CR in {text:?} is read-only, not dropped");
+        }
         let rs = dir.path().join("x.rs"); std::fs::write(&rs, "fn main() {}\n").unwrap();
         assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().doc.is_none(), "not markdown: no document");
     }

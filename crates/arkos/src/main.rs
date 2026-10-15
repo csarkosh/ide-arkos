@@ -1282,15 +1282,15 @@ impl Root {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
         if let Some(viewer) = self.viewers.get(&id).cloned() {
             let kept = viewer.update(cx, |v, cx| match v.save_now() {
-                Ok(()) => false,
+                Ok(()) => None,
                 Err(e) => {
-                    eprintln!("arkos: {e}");
                     cx.notify();
-                    true
+                    Some(e)
                 }
             });
-            if kept {
-                cx.notify();
+            if let Some(e) = kept {
+                // Until the banners exist (Task 7), the notice says why Cmd+W did nothing.
+                self.show_notice(e, cx);
                 return;
             }
         }
