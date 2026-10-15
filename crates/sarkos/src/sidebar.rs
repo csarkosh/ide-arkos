@@ -5,7 +5,7 @@
 use crate::explorer;
 use crate::gitstatus::Status;
 use crate::keymap;
-use crate::motion;
+use crate::motion::{self, Transient};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::theme::Theme;
@@ -38,6 +38,12 @@ pub struct Sidebar {
     pub worktrees_open: bool,
     /// The Worktrees section's own scroll: few rows, plain divs.
     pub wt_scroll: ScrollHandle,
+    /// Cmd+B's slide while it runs: the width on screen eases to the new `visible_width`.
+    pub slide: Option<motion::Slide>,
+    /// Each section's rows fade in as it opens (they go at once as it closes, since a closing
+    /// list would still take clicks).
+    pub explorer_fade: Transient<()>,
+    pub worktrees_fade: Transient<()>,
 }
 
 pub fn clamp_width(w: f32) -> f32 {
@@ -57,20 +63,82 @@ pub fn visible_width(width: f32, collapsed: bool) -> f32 {
 
 impl Sidebar {
     pub fn new(width: f32, collapsed: bool, explorer_open: bool, worktrees_open: bool, cx: &mut Context<Root>) -> Self {
-        Sidebar { width: clamp_width(width), collapsed, focus: cx.focus_handle(), scroll: UniformListScrollHandle::new(), explorer_open, worktrees_open, wt_scroll: ScrollHandle::new() }
+        // Sections open at launch are already there: no fade as the window first draws.
+        let now = Instant::now();
+        let fade = |open: bool| if open { Transient::shown((), now) } else { Transient::Hidden };
+        Sidebar {
+            width: clamp_width(width),
+            collapsed,
+            focus: cx.focus_handle(),
+            scroll: UniformListScrollHandle::new(),
+            explorer_open,
+            worktrees_open,
+            wt_scroll: ScrollHandle::new(),
+            slide: None,
+            explorer_fade: fade(explorer_open),
+            worktrees_fade: fade(worktrees_open),
+        }
     }
 
     pub fn visible_width(&self) -> f32 {
         visible_width(self.width, self.collapsed)
     }
+
+    /// Collapses or expands the column (Cmd+B), sliding from the width on screen now, so a
+    /// slide turned around half way goes back from where it is.
+    pub fn set_collapsed(&mut self, collapsed: bool, now: Instant) {
+        if collapsed == self.collapsed {
+            return;
+        }
+        let from = self.shown_width(now);
+        self.collapsed = collapsed;
+        self.slide = Some(motion::Slide::new(from, self.visible_width(), now));
+    }
+
+    /// The width on screen at `now`: easing while a slide runs, else `visible_width`.
+    pub fn shown_width(&self, now: Instant) -> f32 {
+        shown_width(self.slide, self.visible_width(), now)
+    }
+
+    pub fn sliding(&self, now: Instant) -> bool {
+        self.slide.is_some_and(|s| s.animating(now))
+    }
+
+    /// Whether anything in the column eases at `now`.
+    pub fn animating(&self, now: Instant) -> bool {
+        self.sliding(now) || self.explorer_fade.animating(now) || self.worktrees_fade.animating(now)
+    }
+}
+
+/// The column's width on screen: the slide's while it runs, else the settled width (which a
+/// drag of the edge may have changed since the slide began).
+pub fn shown_width(slide: Option<motion::Slide>, settled: f32, now: Instant) -> f32 {
+    match slide {
+        Some(s) if s.animating(now) => s.at(now),
+        _ => settled,
+    }
+}
+
+/// Shows a section's rows with a fade as it opens; a closed section's rows go at once.
+fn reveal(fade: &mut Transient<()>, open: bool, now: Instant) -> f32 {
+    if open {
+        fade.set(Some(()), now);
+    } else {
+        fade.clear();
+    }
+    fade.current(now).map_or(0.0, |(_, o)| o)
 }
 
 /// The column: the Explorer and Worktrees sections, each under a header that opens and closes
-/// it, and the resize handle. `None` while collapsed.
+/// it, and the resize handle. `None` while collapsed, once its slide out has finished.
 pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Option<Div> {
-    if root.sidebar.collapsed {
+    let now = root.frame_now;
+    let sliding = root.sidebar.sliding(now);
+    if root.sidebar.collapsed && !sliding {
         return None;
     }
+    let explorer_o = reveal(&mut root.sidebar.explorer_fade, root.sidebar.explorer_open, now);
+    let worktrees_o = reveal(&mut root.sidebar.worktrees_fade, root.sidebar.worktrees_open, now);
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let width = root.sidebar.width;
@@ -122,7 +190,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             root.save(cx);
             cx.notify();
         })))
-        .when(explorer_open, |d| d.child(render_rows(root, &theme, cx)));
+        .when(explorer_open, |d| d.child(render_rows(root, &theme, cx).opacity(explorer_o)));
     let worktrees_open = root.sidebar.worktrees_open;
     let plus = div()
         .id("worktree-create")
@@ -169,24 +237,40 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 }))
                 .child(plus),
         )
-        .when(worktrees_open, |d| d.children(render_prompt(root, &theme, cx)).child(render_worktree_rows(root, window, &theme, cx)));
+        .when(worktrees_open, |d| {
+            d.children(render_prompt(root, &theme, worktrees_o, cx))
+                .child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
+        });
+    let column = div()
+        .relative()
+        .w(px(width))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .bg(c.sidebar.hsla())
+        .border_r_1()
+        .border_color(c.border.hsla())
+        .font_family(family)
+        .text_size(px(13.0))
+        .text_color(c.text.hsla())
+        .child(explorer)
+        .child(worktrees)
+        .child(handle);
+    if !sliding {
+        return Some(column);
+    }
+    // Sliding (Cmd+B): the column keeps its width and is clipped to the width on screen, so its
+    // rows slide rather than reflow. Sliding out, it is only drawn: a cover takes the pointer.
     Some(
         div()
             .relative()
-            .w(px(width))
+            .w(px(root.sidebar.shown_width(now)))
             .h_full()
             .flex_none()
-            .flex()
-            .flex_col()
-            .bg(c.sidebar.hsla())
-            .border_r_1()
-            .border_color(c.border.hsla())
-            .font_family(family)
-            .text_size(px(13.0))
-            .text_color(c.text.hsla())
-            .child(explorer)
-            .child(worktrees)
-            .child(handle),
+            .overflow_hidden()
+            .child(column)
+            .when(root.sidebar.collapsed, |d| d.child(div().absolute().top_0().left_0().size_full().occlude())),
     )
 }
 
@@ -643,7 +727,9 @@ pub fn create_failure_target(prompt_open_and_creating: bool) -> CreateFailure {
 
 /// The create prompt under the Worktrees header: the branch, then the path, and git's or the
 /// prompt's own complaint under them.
-fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Option<Div> {
+/// `section` is the Worktrees rows' own opacity as the section opens; the prompt's fade
+/// multiplies it.
+fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<Root>) -> Option<Div> {
     let (p, opacity) = root.wt_prompt.current(root.frame_now)?;
     // Drawn while it fades out too; only the open prompt holds focus and takes clicks.
     let live = root.wt_prompt.value().is_some();
@@ -664,7 +750,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Opti
             .flex_col()
             .relative()
             .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
-            .opacity(opacity)
+            .opacity(opacity * section)
             .text_size(px(12.0))
             .bg(theme.chrome.tab_inactive.hsla())
             // Keys reach `wt_key` through the section's listener; a click here takes them back.
@@ -1451,6 +1537,33 @@ mod tests {
     fn a_collapsed_sidebar_takes_no_width() {
         assert_eq!(visible_width(300.0, false), 300.0);
         assert_eq!(visible_width(300.0, true), 0.0);
+    }
+
+    #[test]
+    fn cmd_b_slides_the_width_on_screen_then_settles() {
+        let _g = crate::motion::test_lock(false);
+        let t0 = Instant::now();
+        let out = Some(crate::motion::Slide::new(300.0, 0.0, t0));
+        assert_eq!(shown_width(out, 0.0, t0), 300.0, "starts at the width on screen");
+        let mid = shown_width(out, 0.0, t0 + crate::motion::SIDEBAR_SLIDE / 2);
+        assert!(mid > 0.0 && mid < 150.0, "past half way at half time: {mid}");
+        assert_eq!(shown_width(out, 0.0, t0 + crate::motion::SIDEBAR_SLIDE), 0.0);
+        assert_eq!(shown_width(None, 280.0, t0), 280.0, "no slide: the settled width");
+        assert_eq!(shown_width(Some(crate::motion::Slide::new(0.0, 300.0, t0)), 320.0, t0 + crate::motion::SIDEBAR_SLIDE), 320.0, "after the slide, an edge drag's width");
+        let mut fade = Transient::Hidden;
+        assert_eq!(reveal(&mut fade, true, t0), 0.0, "a section opening fades its rows in");
+        assert_eq!(reveal(&mut fade, true, t0 + crate::motion::ENTER), 1.0);
+        assert_eq!(reveal(&mut fade, false, t0 + crate::motion::ENTER), 0.0, "and closing drops them at once");
+        assert!(!fade.animating(t0 + crate::motion::ENTER));
+    }
+
+    #[test]
+    fn cmd_b_snaps_under_reduce_motion() {
+        let _g = crate::motion::test_lock(true);
+        let t0 = Instant::now();
+        assert_eq!(shown_width(Some(crate::motion::Slide::new(300.0, 0.0, t0)), 0.0, t0), 0.0);
+        let mut fade = Transient::Hidden;
+        assert_eq!(reveal(&mut fade, true, t0), 1.0);
     }
 
     #[test]

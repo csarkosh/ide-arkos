@@ -375,6 +375,7 @@ impl Root {
             || self.drop_tints.values().any(|t| t.animating(now))
             || self.glow.animating(now)
             || self.find_bars.animating(now)
+            || self.sidebar.animating(now)
     }
 
     /// Drops what finished fading out, and the per-key fades the frame drawn at `last_frame`
@@ -1152,7 +1153,7 @@ impl Root {
                 .detach();
             }
             ToggleSidebar => {
-                self.sidebar.collapsed = !self.sidebar.collapsed;
+                self.sidebar.set_collapsed(!self.sidebar.collapsed, Instant::now());
                 // A hidden sidebar cannot hold the keys: they go back to the focused pane.
                 if self.sidebar.collapsed {
                     self.sidebar_focused = false;
@@ -1165,7 +1166,7 @@ impl Root {
             }
             FocusFileTree => {
                 if self.sidebar.collapsed {
-                    self.sidebar.collapsed = false;
+                    self.sidebar.set_collapsed(false, Instant::now());
                     self.grids.clear();
                     self.save(cx);
                 }
@@ -1179,7 +1180,7 @@ impl Root {
             }
             FocusWorktrees => {
                 if self.sidebar.collapsed {
-                    self.sidebar.collapsed = false;
+                    self.sidebar.set_collapsed(false, Instant::now());
                     self.grids.clear();
                     self.save(cx);
                 }
@@ -1600,7 +1601,9 @@ impl Render for Root {
         let top = chrome::TITLE_BAR_H;
         // The panes start right of the sidebar. A window shorter than its chrome would give a
         // negative height; lay out at zero instead.
-        let side = self.sidebar.visible_width();
+        // While Cmd+B's slide runs, the panes follow the width on screen frame by frame (each
+        // frame relays them out, as dragging the edge does; no terminal is made again).
+        let side = self.sidebar.shown_width(now);
         let content = Rect {
             x: side,
             y: top + banner_h,

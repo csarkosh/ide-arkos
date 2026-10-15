@@ -77,6 +77,13 @@ Things only a person at the screen can check, in order of value:
 - Cmd+, opens the config file in the default text editor
 - typing in each pane, and that Cmd combinations never reach the shell
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
+- drag a tab across a pane's zones and on into another pane: the tint glides and fades,
+  nothing pops; drop it: the tint fades where it was
+- open and close the ⋯ menu, a right-click menu, the palette and a find bar: each fades in and
+  out; a click while one fades out lands on what is under it
+- Cmd+B: the sidebar slides out and back in, the panes following
+- System Settings > Accessibility > Display > Reduce Motion on, then save the config so it is
+  read again: everything above snaps
 - Cmd+K alone clearing history and screen with the prompt line left at the top, while the Cmd+K chords still work
 - the empty pane's animation holding still after turning on Reduce Motion and saving the config
 - after `kill -9`: the layout, every session, replayed history, the text preset, and typing
@@ -158,6 +165,12 @@ terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repositor
 changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
 amber one, a deletion a red mark at the top of the line that follows; Shift+Cmd+D (or the "inline
 diff" chip) shows the deleted lines in red between the current ones.
+
+Menus, the palette, notices, find bars and the drop preview ease in over 120 ms and out over
+90 ms; Reduce Motion turns that off. The drop preview glides between zones, the focus glow
+cross-fades as focus moves, a section's rows fade in as it opens, and Cmd+B slides the sidebar
+over 150 ms with the panes following. Something on its way out is only drawn: it takes no
+keys, focus or clicks.
 
 ## Keyboard
 
