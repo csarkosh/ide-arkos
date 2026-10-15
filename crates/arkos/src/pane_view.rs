@@ -16,7 +16,7 @@ use crate::palette::Rgb;
 use crate::theme::{Chrome, Theme};
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::viewer::{self, Content};
-use crate::viewer_element::{MarkColors, ViewerElement};
+use crate::viewer_element::{MarkColors, RawColors, ViewerElement};
 use crate::Root;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
@@ -922,7 +922,9 @@ enum Kind {
 }
 
 /// A viewer tab: the file's lines through `ViewerElement`, or a notice when there are none to show.
-/// Arrows, Page Up and Down, Space, Home and End scroll; the wheel scrolls smoothly.
+/// A markdown document takes the editing keys (`Viewer::key`) and nothing else scrolls on a key;
+/// in any other file the arrows, Page Up and Down, Space, Home and End scroll. The wheel scrolls
+/// smoothly.
 fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
@@ -951,6 +953,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 theme.semantic.find_match,
                 theme.semantic.find_current,
                 MarkColors { added: theme.tree.added, modified: theme.tree.modified, deleted: theme.tree.deleted },
+                RawColors { text: theme.chrome.text, dim: theme.chrome.text_dim, code: theme.tree.modified, link: theme.chrome.focus_ring },
             );
             div()
                 .size_full()
@@ -993,6 +996,14 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .track_focus(&focus)
         .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
+            // A document's keys are the editor's; one it does not know goes on to the input
+            // method (a space is text), never to the scroll keys below.
+            if v_keys.read(cx).doc.is_some() {
+                if v_keys.update(cx, |v, cx| v.key(ks, cx)) {
+                    cx.stop_propagation();
+                }
+                return;
+            }
             if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
                 return;
             }

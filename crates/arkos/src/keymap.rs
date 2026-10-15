@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, NewWindow,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
 );
@@ -82,6 +82,10 @@ pub enum Command {
     FocusWorktrees,
     /// Show or hide the focused viewer's deleted lines between its current ones.
     ToggleInlineDiff,
+    /// Flip the focused markdown tab between rendered and raw.
+    ToggleMarkdownView,
+    /// Write the focused markdown document now; during a conflict, keep mine.
+    SaveFile,
     /// Pick a folder with the native picker and open it in a new window.
     OpenFolder,
     /// Show the project chooser in its own window (the File menu's "New Window"); the folder
@@ -149,6 +153,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("show ignored files", ""),
     row("focus worktrees", "ctrl-shift-g"),
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer") },
+    ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer") },
+    ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer") },
     row("open folder", "cmd-o"),
     row("new window", "cmd-n"),
     row("new browser tab", "cmd-shift-b"),
@@ -237,6 +243,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
         "focus worktrees" => KeyBinding::new(keys, FocusWorktrees, context),
         "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
+        "toggle markdown view" => KeyBinding::new(keys, ToggleMarkdownView, context),
+        "save file" => KeyBinding::new(keys, SaveFile, context),
         "open folder" => KeyBinding::new(keys, OpenFolder, context),
         "new window" => KeyBinding::new(keys, NewWindow, context),
         "new browser tab" => KeyBinding::new(keys, NewBrowserTab, context),
@@ -422,6 +430,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "show ignored files" => Command::ShowIgnoredFiles,
         "focus worktrees" => Command::FocusWorktrees,
         "toggle inline diff" => Command::ToggleInlineDiff,
+        "toggle markdown view" => Command::ToggleMarkdownView,
+        "save file" => Command::SaveFile,
         "open folder" => Command::OpenFolder,
         "new window" => Command::NewWindow,
         "new browser tab" => Command::NewBrowserTab,
@@ -470,6 +480,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
+        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile,
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
         NewBrowserTab => Command::NewBrowserTab, NewBrowserTabSinglePage => Command::NewBrowserTabSinglePage,
         DockChromeWindow => Command::DockChromeWindow, UndockChromeWindow => Command::UndockChromeWindow,
@@ -519,6 +530,8 @@ mod tests {
         ("", "show ignored files", "ShowIgnoredFiles"),
         ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
+        ("cmd-shift-m", "toggle markdown view", "ToggleMarkdownView"),
+        ("cmd-s", "save file", "SaveFile"),
         ("cmd-o", "open folder", "OpenFolder"),
         ("cmd-n", "new window", "NewWindow"),
         ("cmd-shift-b", "new browser tab", "NewBrowserTab"),
@@ -552,6 +565,9 @@ mod tests {
         assert_eq!(ACTIONS[0].context, Some("Terminal"));
         let inline = ACTIONS.iter().find(|a| a.name == "toggle inline diff").unwrap();
         assert_eq!(inline.context, Some("Viewer"), "Cmd+Shift+D acts on the focused viewer only");
+        for name in ["toggle markdown view", "save file"] {
+            assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Viewer"), "{name} acts on the focused viewer only");
+        }
     }
 
     #[test]

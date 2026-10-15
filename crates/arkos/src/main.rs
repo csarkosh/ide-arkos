@@ -2472,6 +2472,18 @@ impl Root {
                     v.update(cx, |v, cx| v.toggle_inline_diff(cx));
                 }
             }
+            ToggleMarkdownView => {
+                if let Some(t) = self.active_viewer_tab() {
+                    self.toggle_markdown_view_for(t, cx);
+                }
+            }
+            // Cmd+S reaches the keymap before the viewer's key handler, so it does what the
+            // handler's Save does: during a conflict it keeps mine.
+            SaveFile => {
+                if let Some(v) = self.active_viewer() {
+                    v.update(cx, |v, cx| v.save_command(cx));
+                }
+            }
             OpenFolder => self.pick_folder(cx),
             NewWindow => self.new_window(cx),
             NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),

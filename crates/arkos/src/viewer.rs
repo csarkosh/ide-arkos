@@ -21,8 +21,12 @@ use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
 use crate::tree::{PaneId, Tab, TabId, ViewMode};
 use crate::viewer;
+use crate::viewer_element::{self as element, RawLayout};
 use crate::Root;
-use gpui::{div, prelude::*, px, App, ClickEvent, Context, Div, Entity, EntityId, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
+use gpui::{
+    div, prelude::*, px, App, Bounds, ClickEvent, ClipboardItem, Context, Div, Entity, EntityId, EntityInputHandler, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, MouseButton,
+    MouseDownEvent, Pixels, Point, SharedString, UTF16Selection, Window,
+};
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -465,6 +469,24 @@ pub struct Viewer {
     pub recheck_after_save: bool,
     /// The save in flight with the sequence it wrote, for a close or a quit to wait on.
     flight: Option<(u64, Arc<SaveFlight>)>,
+    /// How far the raw text is scrolled to the right, in pixels: the raw view does not wrap, so it
+    /// follows the caret sideways.
+    pub scroll_x: f32,
+    /// Where the element last laid the text out, written in prepaint: the input handler and the
+    /// mouse map between positions and pixels with it. `None` until a document is painted.
+    pub last_bounds: Option<RawLayout>,
+    /// The composition `marked` belongs to; `Some` exactly while `marked` is.
+    compose: Option<Compose>,
+    /// A left-button drag that started in the text is selecting.
+    selecting: bool,
+}
+
+/// An input method composition in progress: the caret before it began, and whether its marked
+/// text is the undo step on top (taken back when the composition changes or is committed).
+#[derive(Debug, Clone, Copy)]
+struct Compose {
+    before: edit::Caret,
+    step: bool,
 }
 
 impl EventEmitter<ViewerEvent> for Viewer {}
@@ -503,6 +525,10 @@ impl Viewer {
             read_only: None,
             recheck_after_save: false,
             flight: None,
+            scroll_x: 0.0,
+            last_bounds: None,
+            compose: None,
+            selecting: false,
         }
     }
 
@@ -584,6 +610,8 @@ impl Viewer {
         self.conflict = false;
         self.save_error = None;
         self.marked = None;
+        self.compose = None;
+        self.selecting = false;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -596,31 +624,32 @@ impl Viewer {
 
     /// Runs an edit on the document with the caret and the time, and takes the caret it returns.
     /// Nothing happens without a document.
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         self.caret = f(doc, self.caret, Instant::now());
         self.changed(old_lines, cx);
+        // After `changed`: the row count the scroll is clamped to includes any new line.
+        self.reveal_caret();
     }
 
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn undo(&mut self, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         if let Some(caret) = doc.undo() {
             self.caret = caret;
             self.changed(old_lines, cx);
+            self.reveal_caret();
         }
     }
 
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn redo(&mut self, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         if let Some(caret) = doc.redo() {
             self.caret = caret;
             self.changed(old_lines, cx);
+            self.reveal_caret();
         }
     }
 
@@ -678,7 +707,6 @@ impl Viewer {
         .detach();
     }
 
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn set_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
         if self.mode == mode {
             return;
@@ -831,7 +859,6 @@ impl Viewer {
 
     /// The conflict's two buttons: keep mine writes the document over the file at once, adopting
     /// the file's fingerprint so the save's check passes; reload drops the edits.
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn resolve_conflict(&mut self, keep_mine: bool, cx: &mut Context<Self>) {
         let (next, action) = ConflictState { conflict: self.conflict, dirty: self.dirty, save_seq: self.save_seq }.resolve(keep_mine);
         self.conflict = next.conflict;
@@ -970,6 +997,337 @@ impl Viewer {
         let Some(h) = f.hits.get(f.current) else { return };
         let target = (self.row_of_line(h.line) as f32 - (self.rows_visible as f32 / 3.0).floor()).max(0.0);
         self.scroll.target = target.min(self.max_scroll());
+    }
+
+    /// An editing key on a document viewer: `true` when it was handled, and the caller stops its
+    /// propagation (gpui would hand Enter and Tab to the input method too). Edits run
+    /// through `edit`, so the tab turns dirty and the autosave is scheduled; moves only end the
+    /// typing step. A key this does not know returns `false` for the keymap and the input method.
+    pub fn key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        if self.doc.is_none() {
+            return false;
+        }
+        let Some(action) = key_action(ks) else { return false };
+        // A key the input method passed on ends its composition, keeping the text.
+        if self.marked.is_some() {
+            self.finish_composition(cx);
+        }
+        match action {
+            KeyAction::Save => self.save_command(cx),
+            KeyAction::Escape => {
+                if self.find.is_some() {
+                    self.close_find(cx);
+                } else {
+                    self.caret.anchor = self.caret.head;
+                    cx.notify();
+                }
+            }
+            KeyAction::ScrollHome => {
+                self.scroll.jump_to(0.0);
+                cx.notify();
+            }
+            KeyAction::ScrollEnd => {
+                self.scroll.jump_to(self.max_scroll());
+                cx.notify();
+            }
+            KeyAction::Paste => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    let text = normalize_paste(&text);
+                    self.edit(|doc, caret, now| doc.insert(caret, &text, now), cx);
+                }
+            }
+            KeyAction::Undo => self.undo(cx),
+            KeyAction::Redo => self.redo(cx),
+            KeyAction::Move(..) | KeyAction::SelectAll | KeyAction::Copy => {
+                let rows = self.rows_visible.max(1);
+                let Some(doc) = self.doc.as_mut() else { return false };
+                let outcome = apply_action(doc, &mut self.caret, &[], action, rows, Instant::now());
+                if let Outcome::Copy(text) = outcome {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                self.reveal_caret();
+                cx.notify();
+            }
+            _ => {
+                let rows = self.rows_visible.max(1);
+                // Only Enter reads the structure (the fence rule).
+                let blocks = if action == KeyAction::Newline { self.blocks.clone() } else { Vec::new() };
+                let mut outcome = Outcome::Nothing;
+                self.edit(
+                    |doc, caret, now| {
+                        let mut caret = caret;
+                        outcome = apply_action(doc, &mut caret, &blocks, action, rows, now);
+                        caret
+                    },
+                    cx,
+                );
+                if let Outcome::Cut(text) = outcome {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+        }
+        true
+    }
+
+    /// Cmd+S: writes the edits now; during a conflict it keeps mine, as the banner's button does.
+    /// A clean document has nothing to write.
+    pub fn save_command(&mut self, cx: &mut Context<Self>) {
+        if self.conflict {
+            self.resolve_conflict(true, cx);
+        } else if self.dirty {
+            self.save(cx);
+        }
+    }
+
+    /// Scrolls the least that puts the caret's row inside the viewport.
+    fn reveal_caret(&mut self) {
+        if self.doc.is_none() {
+            return;
+        }
+        let row = self.row_of_line(self.caret.head.line) as f32;
+        let rows = self.rows_visible.max(1) as f32;
+        let top = self.scroll.target;
+        let to = if row < top {
+            row
+        } else if row + 1.0 > top + rows {
+            row + 1.0 - rows
+        } else {
+            return;
+        };
+        self.scroll.jump_to(to.clamp(0.0, self.max_scroll().max(0.0)));
+    }
+
+    /// Ends a composition with its marked text kept: the marked step is taken back and the text
+    /// inserted as typing, so it joins the typing before it.
+    fn finish_composition(&mut self, cx: &mut Context<Self>) {
+        let (marked, compose) = (self.marked.take(), self.compose.take());
+        let (Some(m), Some(c), Some(doc)) = (marked, compose, self.doc.as_ref()) else { return };
+        let text = doc.text_in(m.start, m.end);
+        self.edit(
+            |doc, _caret, now| {
+                if c.step {
+                    doc.retract();
+                }
+                doc.insert(c.before, &text, now)
+            },
+            cx,
+        );
+    }
+
+    /// The input method's field: the active block, from its first line's start to its last
+    /// line's end.
+    fn field(&self) -> Option<(edit::Pos, edit::Pos)> {
+        let doc = self.doc.as_ref()?;
+        let b = self.blocks.get(md_blocks::block_at(&self.blocks, self.caret.head.line))?;
+        let from = doc.clamp(edit::Pos { line: b.lines.start, ch: 0 });
+        let to = doc.clamp(edit::Pos { line: b.lines.end.saturating_sub(1).max(b.lines.start), ch: usize::MAX });
+        Some((from, to))
+    }
+
+    /// A position as a UTF-16 offset in the field, clamped into it.
+    fn field_offset(&self, p: edit::Pos) -> usize {
+        match (self.doc.as_ref(), self.field()) {
+            (Some(doc), Some((from, to))) => doc.pos_to_utf16(from, doc.clamp(p).clamp(from, to)),
+            _ => 0,
+        }
+    }
+
+    /// A UTF-16 offset in the field as a position, clamped to the field's end.
+    fn field_pos(&self, units: usize) -> edit::Pos {
+        match (self.doc.as_ref(), self.field()) {
+            (Some(doc), Some((from, to))) => doc.utf16_to_pos(from, units).min(to),
+            _ => edit::Pos::default(),
+        }
+    }
+
+    /// The display row under `y`, mapped to the line it shows (a deleted row of the inline diff
+    /// gives the line it sits before).
+    fn line_at_y(&self, y: Pixels, layout: &RawLayout) -> usize {
+        let rel = f32::from(y - layout.bounds.origin.y) / layout.line_h + self.scroll.current;
+        let row = (rel.floor().max(0.0) as usize).min(self.row_count().saturating_sub(1));
+        match &self.diff {
+            Some(d) if self.inline_diff => diff::line_at_row(d, &diff::display_rows(self.line_count(), d, true), row),
+            _ => row,
+        }
+    }
+
+    /// The document position under a window point, through the last layout.
+    pub fn pos_at_point(&self, at: Point<Pixels>, window: &mut Window) -> Option<edit::Pos> {
+        let (doc, layout) = (self.doc.as_ref()?, self.last_bounds.as_ref()?);
+        let n = self.line_at_y(at.y, layout).min(doc.lines().len() - 1);
+        let line = &doc.lines()[n];
+        let (expanded, shaped) = element::shape_raw(window, line, layout);
+        let col = element::col_for_x(&shaped, &expanded, at.x - layout.text_left + px(self.scroll_x));
+        Some(edit::Pos { line: n, ch: element::ch_for_col(line, col) })
+    }
+
+    /// The window x of a position and the top of its row, through the last layout.
+    fn point_of_pos(&self, p: edit::Pos, window: &mut Window) -> Option<Point<Pixels>> {
+        let (doc, layout) = (self.doc.as_ref()?, self.last_bounds.as_ref()?);
+        let p = doc.clamp(p);
+        let line = &doc.lines()[p.line];
+        let (expanded, shaped) = element::shape_raw(window, line, layout);
+        let x = layout.text_left - px(self.scroll_x) + element::x_for_col(&shaped, &expanded, element::display_col(line, p.ch));
+        let y = layout.bounds.origin.y + px((self.row_of_line(p.line) as f32 - self.scroll.current) * layout.line_h);
+        Some(gpui::point(x, y))
+    }
+
+    /// A left-button press in the text: the caret goes there, Shift extends the selection, and a
+    /// drag from here selects.
+    pub fn mouse_down(&mut self, at: Point<Pixels>, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.marked.is_some() {
+            self.finish_composition(cx);
+        }
+        let Some(p) = self.pos_at_point(at, window) else { return };
+        if let Some(doc) = self.doc.as_mut() {
+            doc.break_coalescing();
+        }
+        let anchor = if extend { self.caret.anchor } else { p };
+        self.caret = edit::Caret { head: p, anchor, goal_col: None };
+        self.selecting = true;
+        cx.notify();
+    }
+
+    /// The mouse moved with the left button down: a drag that began in the text moves the head.
+    pub fn mouse_drag(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        let Some(p) = self.pos_at_point(at, window) else { return };
+        if p != self.caret.head {
+            self.caret.head = p;
+            self.caret.goal_col = None;
+            self.reveal_caret();
+            cx.notify();
+        }
+    }
+
+    pub fn mouse_up(&mut self) {
+        self.selecting = false;
+    }
+}
+
+/// Text input from the system: typing, dead keys and input method compositions. The field the
+/// input method sees is the active block's text (`field`), with UTF-16 offsets from its first
+/// line's start. Typing goes through `Document::insert`, so it coalesces into undo steps; marked
+/// text is written with `replace_range` and retracted until it is committed, so a composition
+/// leaves one step.
+impl EntityInputHandler for Viewer {
+    fn text_for_range(&mut self, range: Range<usize>, adjusted_range: &mut Option<Range<usize>>, _window: &mut Window, _cx: &mut Context<Self>) -> Option<String> {
+        let (from, _) = self.field()?;
+        let doc = self.doc.as_ref()?;
+        let (a, b) = (self.field_pos(range.start), self.field_pos(range.end.max(range.start)));
+        *adjusted_range = Some(doc.pos_to_utf16(from, a)..doc.pos_to_utf16(from, b));
+        Some(doc.text_in(a, b))
+    }
+
+    fn selected_text_range(&mut self, _ignore_disabled_input: bool, _window: &mut Window, _cx: &mut Context<Self>) -> Option<UTF16Selection> {
+        self.field()?;
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
+        Some(UTF16Selection { range: self.field_offset(lo)..self.field_offset(hi), reversed: c.head < c.anchor })
+    }
+
+    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+        let m = self.marked.clone()?;
+        Some(self.field_offset(m.start)..self.field_offset(m.end))
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_composition(cx);
+    }
+
+    fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.field().is_none() {
+            return;
+        }
+        let target = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
+        if let (Some(m), Some(c)) = (self.marked.clone(), self.compose) {
+            // The usual commit: the marked text becomes `text`, typed where the composition began.
+            if target.is_none_or(|t| t == (m.start, m.end)) {
+                self.marked = None;
+                self.compose = None;
+                self.edit(
+                    |doc, _caret, now| {
+                        if c.step {
+                            doc.retract();
+                        }
+                        doc.insert(c.before, text, now)
+                    },
+                    cx,
+                );
+                return;
+            }
+            // Somewhere else: the composition is kept as it stands (its text unchanged, so the
+            // target computed above still holds), then the range is replaced.
+            self.finish_composition(cx);
+        }
+        let c = self.caret;
+        let selection = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
+        match target {
+            Some((a, b)) if (a, b) != selection => self.edit(|doc, _caret, now| edit::Caret::at(doc.replace_range(a, b, text, now)), cx),
+            _ => self.edit(|doc, caret, now| doc.insert(caret, text, now), cx),
+        }
+    }
+
+    fn replace_and_mark_text_in_range(&mut self, range: Option<Range<usize>>, new_text: &str, new_selected_range: Option<Range<usize>>, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.field().is_none() {
+            return;
+        }
+        let explicit = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
+        let at_range = |(a, b): (edit::Pos, edit::Pos)| edit::Caret { head: b, anchor: a, goal_col: None };
+        // Where the marked text goes, in the text before the composition, and whether the marked
+        // step on top is to be taken back first.
+        let (before, retract) = match (self.marked.clone(), self.compose) {
+            (Some(m), Some(c)) if explicit.is_none_or(|t| t == (m.start, m.end)) => (c.before, c.step),
+            (Some(_), Some(_)) => {
+                self.finish_composition(cx);
+                (explicit.map_or(self.caret, at_range), false)
+            }
+            _ => (explicit.map_or(self.caret, at_range), false),
+        };
+        let (lo, hi) = if before.anchor <= before.head { (before.anchor, before.head) } else { (before.head, before.anchor) };
+        let mut wrote = false;
+        self.edit(
+            |doc, caret, now| {
+                if retract {
+                    doc.retract();
+                }
+                if lo == hi && new_text.is_empty() {
+                    return if retract { edit::Caret::at(lo) } else { caret };
+                }
+                wrote = true;
+                edit::Caret::at(doc.replace_range(lo, hi, new_text, now))
+            },
+            cx,
+        );
+        if new_text.is_empty() {
+            // Everything composed was deleted: the composition is over.
+            self.marked = None;
+            self.compose = None;
+            return;
+        }
+        let end = self.caret.head;
+        self.marked = Some(lo..end);
+        self.compose = Some(Compose { before, step: wrote });
+        if let (Some(r), Some(doc)) = (new_selected_range, self.doc.as_ref()) {
+            let (a, b) = (doc.utf16_to_pos(lo, r.start).min(end), doc.utf16_to_pos(lo, r.end.max(r.start)).min(end));
+            self.caret = edit::Caret { head: b, anchor: a, goal_col: None };
+        }
+        cx.notify();
+    }
+
+    fn bounds_for_range(&mut self, range_utf16: Range<usize>, _element_bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        let (a, b) = (self.field_pos(range_utf16.start), self.field_pos(range_utf16.end.max(range_utf16.start)));
+        let line_h = px(self.last_bounds.as_ref()?.line_h);
+        let start = self.point_of_pos(a, window)?;
+        let width = if b.line == a.line { self.point_of_pos(b, window)?.x - start.x } else { px(0.0) };
+        Some(Bounds { origin: start, size: gpui::size(width.max(px(1.0)), line_h) })
+    }
+
+    fn character_index_for_point(&mut self, point: Point<Pixels>, window: &mut Window, _cx: &mut Context<Self>) -> Option<usize> {
+        let p = self.pos_at_point(point, window)?;
+        Some(self.field_offset(p))
     }
 }
 
@@ -1154,6 +1512,249 @@ pub fn should_apply(seq: u64, applied: u64) -> bool {
     seq > applied
 }
 
+/// What an editing key asks of a document viewer, before it meets the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    /// A caret move; `true` extends the selection.
+    Move(edit::Move, bool),
+    DeleteBack(edit::Unit),
+    DeleteFwd(edit::Unit),
+    Newline,
+    Tab,
+    ShiftTab,
+    Undo,
+    Redo,
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+    Save,
+    Escape,
+    /// Home and End scroll the view; the caret stays where it is, as in every Mac text view.
+    ScrollHome,
+    ScrollEnd,
+}
+
+/// The Mac editing keys of a document viewer. Text, a space included, comes through the input
+/// handler instead, and a chord this table does not know is left to the keymap. Page Up and Page
+/// Down carry no row count; `apply_action` takes it from its caller.
+pub fn key_action(ks: &Keystroke) -> Option<KeyAction> {
+    use edit::{Move as M, Unit as U};
+    use KeyAction as K;
+    let m = &ks.modifiers;
+    if m.control {
+        return None;
+    }
+    let (cmd, alt, shift) = (m.platform, m.alt, m.shift);
+    let mv = |to: M| Some(K::Move(to, shift));
+    match (ks.key.as_str(), cmd, alt) {
+        ("left", false, false) => mv(M::Left),
+        ("right", false, false) => mv(M::Right),
+        ("up", false, false) => mv(M::Up),
+        ("down", false, false) => mv(M::Down),
+        ("left", false, true) => mv(M::WordLeft),
+        ("right", false, true) => mv(M::WordRight),
+        ("left", true, false) => mv(M::LineStart),
+        ("right", true, false) => mv(M::LineEnd),
+        ("up", true, false) => mv(M::DocStart),
+        ("down", true, false) => mv(M::DocEnd),
+        ("pageup", false, false) => mv(M::PageUp(0)),
+        ("pagedown", false, false) => mv(M::PageDown(0)),
+        ("home", false, false) if !shift => Some(K::ScrollHome),
+        ("end", false, false) if !shift => Some(K::ScrollEnd),
+        ("backspace", false, false) => Some(K::DeleteBack(U::Grapheme)),
+        ("backspace", false, true) if !shift => Some(K::DeleteBack(U::Word)),
+        ("backspace", true, false) if !shift => Some(K::DeleteBack(U::LineStart)),
+        ("delete", false, false) => Some(K::DeleteFwd(U::Grapheme)),
+        ("delete", false, true) if !shift => Some(K::DeleteFwd(U::Word)),
+        ("delete", true, false) if !shift => Some(K::DeleteFwd(U::LineEnd)),
+        ("enter", false, false) => Some(K::Newline),
+        ("tab", false, false) => Some(if shift { K::ShiftTab } else { K::Tab }),
+        ("escape", false, false) if !shift => Some(K::Escape),
+        ("z", true, false) => Some(if shift { K::Redo } else { K::Undo }),
+        ("a", true, false) if !shift => Some(K::SelectAll),
+        ("c", true, false) if !shift => Some(K::Copy),
+        ("x", true, false) if !shift => Some(K::Cut),
+        ("v", true, false) if !shift => Some(K::Paste),
+        ("s", true, false) if !shift => Some(K::Save),
+        _ => None,
+    }
+}
+
+/// What `apply_action` did, for the caller to finish: the clipboard, a save, the find bar, the
+/// scroll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Edited,
+    Moved,
+    /// The selected text, for the clipboard.
+    Copy(String),
+    /// The text cut out of the document, for the clipboard.
+    Cut(String),
+    /// The caller inserts `normalize_paste` of the clipboard's text.
+    Paste,
+    Save,
+    Escape,
+    Scroll(KeyAction),
+    Nothing,
+}
+
+/// Pasted text with the document's line breaks: `\r\n` and a lone `\r` become `\n`.
+pub fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// The fence a line opens: three or more backticks or tildes at the line start, then an optional
+/// info string (which, after backticks, holds no backtick).
+fn fence_opener(line: &str) -> Option<&str> {
+    let c = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let n = line.chars().take_while(|&x| x == c).count();
+    if n < 3 || (c == '`' && line[n..].contains('`')) {
+        return None;
+    }
+    Some(&line[..n])
+}
+
+/// Whether `line` closes `fence`: the same character at least as many times, up to three spaces
+/// of indent, nothing else but trailing spaces.
+fn closes_fence(line: &str, fence: &str) -> bool {
+    let body = line.trim_end();
+    let trimmed = body.trim_start_matches(' ');
+    let c = fence.chars().next().unwrap_or('`');
+    body.len() - trimmed.len() <= 3 && trimmed.len() >= fence.len() && trimmed.chars().all(|x| x == c)
+}
+
+/// Whether the block structure already has a code block opened on `line` and closed further down
+/// by a matching fence: the fence there was not typed just now, so Enter adds no closing one.
+fn fence_already_closed(lines: &[String], blocks: &[md_blocks::Block], line: usize, fence: &str) -> bool {
+    let Some(b) = blocks.get(md_blocks::block_at(blocks, line)) else { return false };
+    if b.lines.start != line || !matches!(b.kind, md_blocks::BlockKind::CodeBlock { .. }) {
+        return false;
+    }
+    let end = b.lines.end.min(lines.len());
+    (line + 1..end).rev().find(|&i| !lines[i].trim().is_empty()).is_some_and(|last| closes_fence(&lines[last], fence))
+}
+
+/// Enter: a new fence closes itself, a list item continues (an empty one ends the list), anything
+/// else is a plain line break.
+fn newline(doc: &mut edit::Document, caret: edit::Caret, blocks_before: &[md_blocks::Block], now: Instant) -> edit::Caret {
+    if caret.head == caret.anchor {
+        let at = doc.clamp(caret.head);
+        let line = doc.lines()[at.line].clone();
+        let len = line.chars().count();
+        if at.ch == len {
+            if let Some(fence) = fence_opener(&line).filter(|f| !fence_already_closed(doc.lines(), blocks_before, at.line, f)) {
+                doc.insert(caret, &format!("\n\n{fence}"), now);
+                return edit::Caret::at(edit::Pos { line: at.line + 1, ch: 0 });
+            }
+        }
+        // Enter in the indent before a marker is a plain break: the item moves down whole.
+        let indent = line.chars().take_while(|c| c.is_whitespace()).count();
+        if at.ch > indent {
+            if let Some((marker, empty)) = md_blocks::list_continuation(&line) {
+                if empty {
+                    let start = doc.replace_range(edit::Pos { line: at.line, ch: 0 }, edit::Pos { line: at.line, ch: len }, "", now);
+                    return edit::Caret::at(start);
+                }
+                return doc.insert(caret, &format!("\n{marker}"), now);
+            }
+        }
+    }
+    doc.insert(caret, "\n", now)
+}
+
+/// Tab and Shift+Tab on a list item line: two leading spaces added or taken away, the caret and
+/// the anchor moving with the text. `None` when the caret's line is not a list item.
+fn indent_item(doc: &mut edit::Document, caret: &mut edit::Caret, deeper: bool, now: Instant) -> Option<Outcome> {
+    let line_no = doc.clamp(caret.head).line;
+    let line = doc.lines()[line_no].clone();
+    md_blocks::list_continuation(&line)?;
+    let start = edit::Pos { line: line_no, ch: 0 };
+    let shift = |p: &mut edit::Pos, by: isize| {
+        if p.line == line_no {
+            p.ch = (p.ch as isize + by).max(0) as usize;
+        }
+    };
+    if deeper {
+        doc.replace_range(start, start, "  ", now);
+        shift(&mut caret.head, 2);
+        shift(&mut caret.anchor, 2);
+    } else {
+        let spaces = line.chars().take(2).take_while(|&c| c == ' ').count();
+        let n = if spaces == 0 && line.starts_with('\t') { 1 } else { spaces };
+        if n == 0 {
+            return Some(Outcome::Nothing);
+        }
+        doc.replace_range(start, edit::Pos { line: line_no, ch: n }, "", now);
+        shift(&mut caret.head, -(n as isize));
+        shift(&mut caret.anchor, -(n as isize));
+    }
+    caret.goal_col = None;
+    Some(Outcome::Edited)
+}
+
+/// Applies an action to the document and caret; `blocks_before` is the block structure before
+/// this action (the fence rule reads it). Pure: no gpui.
+pub fn apply_action(doc: &mut edit::Document, caret: &mut edit::Caret, blocks_before: &[md_blocks::Block], action: KeyAction, rows: usize, now: Instant) -> Outcome {
+    use edit::Move as M;
+    use KeyAction as K;
+    let selected = |doc: &edit::Document, c: &edit::Caret| doc.text_in(c.anchor, c.head);
+    match action {
+        K::Move(to, select) => {
+            let to = match to {
+                M::PageUp(_) => M::PageUp(rows.max(1)),
+                M::PageDown(_) => M::PageDown(rows.max(1)),
+                other => other,
+            };
+            doc.break_coalescing();
+            *caret = doc.move_by(*caret, to, select);
+            Outcome::Moved
+        }
+        K::SelectAll => {
+            doc.break_coalescing();
+            *caret = doc.select_all();
+            Outcome::Moved
+        }
+        K::DeleteBack(unit) => {
+            *caret = doc.delete_backward(*caret, unit, now);
+            Outcome::Edited
+        }
+        K::DeleteFwd(unit) => {
+            *caret = doc.delete_forward(*caret, unit, now);
+            Outcome::Edited
+        }
+        K::Newline => {
+            *caret = newline(doc, *caret, blocks_before, now);
+            Outcome::Edited
+        }
+        K::Tab => indent_item(doc, caret, true, now).unwrap_or_else(|| {
+            *caret = doc.insert(*caret, "    ", now);
+            Outcome::Edited
+        }),
+        K::ShiftTab => indent_item(doc, caret, false, now).unwrap_or(Outcome::Nothing),
+        K::Undo | K::Redo => match if action == K::Undo { doc.undo() } else { doc.redo() } {
+            Some(c) => {
+                *caret = c;
+                Outcome::Edited
+            }
+            None => Outcome::Nothing,
+        },
+        K::Copy => Some(selected(doc, caret)).filter(|t| !t.is_empty()).map_or(Outcome::Nothing, Outcome::Copy),
+        K::Cut => {
+            let text = selected(doc, caret);
+            if text.is_empty() {
+                return Outcome::Nothing;
+            }
+            *caret = doc.delete_backward(*caret, edit::Unit::Grapheme, now);
+            Outcome::Cut(text)
+        }
+        K::Paste => Outcome::Paste,
+        K::Save => Outcome::Save,
+        K::Escape => Outcome::Escape,
+        K::ScrollHome | K::ScrollEnd => Outcome::Scroll(action),
+    }
+}
+
 impl Root {
     /// Loads the grammars off the UI thread, once, at launch. The result takes the theme's
     /// colours at the moment it lands, so a theme change during the load is not lost.
@@ -1320,7 +1921,6 @@ impl Root {
     }
 
     /// The focused pane's active tab, when it is a viewer whose viewer exists.
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn active_viewer_tab(&self) -> Option<TabId> {
         let p = self.tree.pane(self.tree.focused)?;
         let id = *p.ids.get(p.active)?;
@@ -1347,7 +1947,6 @@ impl Root {
     }
 
     /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer.
-    #[allow(dead_code)] // Used from Task 4 on.
     pub fn toggle_markdown_view_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
         let Some(Tab::Viewer { path, mode }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
@@ -1379,6 +1978,108 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit::{Move, Pos, Unit};
+
+    #[test]
+    fn keystrokes_map_to_editor_actions_the_mac_way() {
+        let k = |s: &str| key_action(&gpui::Keystroke::parse(s).unwrap());
+        assert_eq!(k("left"), Some(KeyAction::Move(Move::Left, false)));
+        assert_eq!(k("shift-right"), Some(KeyAction::Move(Move::Right, true)));
+        assert_eq!(k("alt-left"), Some(KeyAction::Move(Move::WordLeft, false)));
+        assert_eq!(k("cmd-left"), Some(KeyAction::Move(Move::LineStart, false)));
+        assert_eq!(k("cmd-shift-right"), Some(KeyAction::Move(Move::LineEnd, true)));
+        assert_eq!(k("cmd-up"), Some(KeyAction::Move(Move::DocStart, false)));
+        assert_eq!(k("pagedown"), Some(KeyAction::Move(Move::PageDown(0), false)), "the rows are filled in by the caller");
+        assert_eq!(k("home"), Some(KeyAction::ScrollHome));
+        assert_eq!(k("backspace"), Some(KeyAction::DeleteBack(Unit::Grapheme)));
+        assert_eq!(k("alt-backspace"), Some(KeyAction::DeleteBack(Unit::Word)));
+        assert_eq!(k("cmd-backspace"), Some(KeyAction::DeleteBack(Unit::LineStart)));
+        assert_eq!(k("delete"), Some(KeyAction::DeleteFwd(Unit::Grapheme)));
+        assert_eq!(k("enter"), Some(KeyAction::Newline));
+        assert_eq!(k("tab"), Some(KeyAction::Tab));
+        assert_eq!(k("shift-tab"), Some(KeyAction::ShiftTab));
+        assert_eq!(k("cmd-z"), Some(KeyAction::Undo));
+        assert_eq!(k("cmd-shift-z"), Some(KeyAction::Redo));
+        assert_eq!(k("cmd-a"), Some(KeyAction::SelectAll));
+        assert_eq!(k("cmd-c"), Some(KeyAction::Copy));
+        assert_eq!(k("cmd-v"), Some(KeyAction::Paste));
+        assert_eq!(k("escape"), Some(KeyAction::Escape));
+        assert_eq!(k("space"), None, "text comes through the input handler, not the key table");
+        assert_eq!(k("a"), None);
+        assert_eq!(k("cmd-k"), None, "unknown chords are left to the keymap");
+    }
+
+    #[test]
+    fn enter_continues_a_list_tab_indents_the_item_and_a_fence_closes_itself() {
+        let now = Instant::now();
+        let mut d = edit::Document::from_text("- one\n- two");
+        let blocks = md_blocks::split(d.lines());
+        let mut c = edit::Caret { head: Pos { line: 1, ch: 5 }, anchor: Pos { line: 1, ch: 5 }, goal_col: None };
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[2], "- ");
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
+        assert_eq!(d.lines()[2], "", "Enter on an empty item ends the list");
+        c.head = Pos { line: 1, ch: 0 }; c.anchor = c.head;
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!(d.lines()[1], "  - two");
+        apply_action(&mut d, &mut c, &blocks, KeyAction::ShiftTab, 20, now);
+        assert_eq!(d.lines()[1], "- two");
+        c.head = Pos { line: 0, ch: 5 }; c.anchor = c.head;
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("  - one", 7), "Tab anywhere in an item indents the item and carries the caret");
+        // A fence: three backticks and Enter open it and close it when nothing below closes it.
+        let mut d = edit::Document::from_text("```rust\n\nlater");
+        let blocks = md_blocks::split(edit::Document::from_text("\n\nlater").lines()); // the structure before the backticks were typed
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 7 }, anchor: Pos { line: 0, ch: 7 }, goal_col: None };
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
+        assert_eq!(d.lines(), &["```rust".to_string(), String::new(), "```".to_string(), String::new(), "later".to_string()][..]);
+        assert_eq!(c.head, Pos { line: 1, ch: 0 });
+        let mut d = edit::Document::from_text("```\ncode\n```");
+        let blocks = md_blocks::split(d.lines());
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 3 }, anchor: Pos { line: 0, ch: 3 }, goal_col: None };
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
+        assert_eq!(d.lines().len(), 4, "a fence that is already closed gets a plain newline");
+        assert_eq!(normalize_paste("a\r\nb\rc\n"), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn copy_cut_paste_and_the_scroll_keys_leave_their_outcome_to_the_caller() {
+        let now = Instant::now();
+        let mut d = edit::Document::from_text("one two\n```");
+        let blocks = md_blocks::split(d.lines());
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 3 }, anchor: Pos { line: 0, ch: 0 }, goal_col: None };
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Copy, 20, now), Outcome::Copy("one".into()));
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Cut, 20, now), Outcome::Cut("one".into()));
+        assert_eq!((d.lines()[0].as_str(), c.head, c.anchor), (" two", Pos { line: 0, ch: 0 }, Pos { line: 0, ch: 0 }));
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Copy, 20, now), Outcome::Nothing, "nothing selected, nothing copied");
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Paste, 20, now), Outcome::Paste);
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::ScrollEnd, 20, now), Outcome::Scroll(KeyAction::ScrollEnd));
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::ShiftTab, 20, now), Outcome::Nothing, "Shift+Tab outside a list item does nothing");
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("     two", 4), "Tab outside an item is four spaces");
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Move(Move::PageDown(0), false), 20, now), Outcome::Moved);
+        assert_eq!(c.head.line, 1, "the page is the caller's row count");
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Undo, 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[0], " two");
+        let mut d = edit::Document::from_text("- a\n");
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 0 }, anchor: Pos { line: 0, ch: 0 }, goal_col: None };
+        apply_action(&mut d, &mut c, &[], KeyAction::Newline, 20, now);
+        assert_eq!(d.lines()[..2], ["".to_string(), "- a".to_string()], "Enter before the marker moves the item down whole");
+        let mut d = edit::Document::from_text("~~~~\n");
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 4 }, anchor: Pos { line: 0, ch: 4 }, goal_col: None };
+        apply_action(&mut d, &mut c, &[], KeyAction::Newline, 20, now);
+        assert_eq!(d.lines()[..3], ["~~~~".to_string(), String::new(), "~~~~".to_string()], "a tilde fence closes with its own length");
+    }
+
+    #[test]
+    fn utf16_offsets_are_relative_to_the_active_block() {
+        let d = edit::Document::from_text("# T\n\na😀b\nc");
+        let from = Pos { line: 2, ch: 0 };
+        assert_eq!(d.pos_to_utf16(from, Pos { line: 2, ch: 2 }), 3, "the emoji is two UTF-16 units");
+        assert_eq!(d.utf16_to_pos(from, 3), Pos { line: 2, ch: 2 });
+        assert_eq!(d.utf16_to_pos(from, 5), Pos { line: 3, ch: 0 }, "the line break counts one unit");
+        assert_eq!(d.utf16_to_pos(from, 99), Pos { line: 3, ch: 1 }, "clamped");
+    }
 
     #[test]
     fn classify_text_too_big_and_binary() {

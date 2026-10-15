@@ -96,7 +96,6 @@ pub fn split(lines: &[String]) -> Vec<Block> {
 }
 
 /// The index of the block holding `line`; past the end, the last block.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn block_at(blocks: &[Block], line: usize) -> usize {
     blocks.partition_point(|b| b.lines.end <= line).min(blocks.len().saturating_sub(1))
 }
@@ -424,7 +423,6 @@ fn task_box(s: &str) -> Option<bool> {
 
 /// What Enter does on a list item line: the marker to insert on the next line (a number is
 /// incremented, a task starts unchecked) and whether the item was empty, which ends the list.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn list_continuation(line: &str) -> Option<(String, bool)> {
     let (indent, marker, content) = list_parts(line)?;
     let rest = &line[content..];
@@ -444,7 +442,7 @@ pub fn list_continuation(line: &str) -> Option<(String, bool)> {
 }
 
 /// Flips `[ ]` and `[x]` on a task item line.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub fn toggle_task(line: &str) -> Option<String> {
     let (_, _, content) = list_parts(line)?;
     let checked = task_box(&line[content..])?;
@@ -453,7 +451,6 @@ pub fn toggle_task(line: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub enum Mark {
     Marker,
     Heading,
@@ -466,7 +463,6 @@ pub enum Mark {
 /// A light colourer for one line of raw markdown: heading, list, task, fence and quote markers,
 /// emphasis and code pairs, links. Byte ranges that may leave gaps; the painter fills the gaps in
 /// the text colour.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn raw_marks(line: &str) -> Vec<(Range<usize>, Mark)> {
     let mut marks = Vec::new();
     let body = line.trim_start();

@@ -2,13 +2,22 @@
 //! fractional line offset, like the terminal element. Only the lines in the viewport are shaped.
 //! A file with changes against HEAD gets a mark column at the gutter's left; with the inline
 //! diff on, the deleted lines are rows of their own.
+//!
+//! A markdown document is painted as raw text: its tabs drawn four columns wide, coloured from
+//! `md_blocks::raw_marks`, with the caret, the selection and an input method's marked text, scrolled
+//! sideways to follow the caret (it does not wrap). The painting helpers are free functions so the
+//! rendered view's raw block paints the same way.
 use crate::diff::{display_rows, DisplayRow, Mark};
+use crate::edit::{Caret, Pos};
+use crate::md_blocks;
 use crate::palette::Rgb;
 use crate::viewer::{Content, Hit, Span, Viewer};
 use gpui::{
-    fill, font, point, px, size, App, Bounds, ContentMask, Element, ElementId, Entity, FontWeight, GlobalElementId, Hsla, InspectorElementId,
-    IntoElement, LayoutId, Pixels, Rgba, SharedString, Style, TextRun, Window,
+    fill, font, point, px, size, App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, FontWeight,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Rgba, ShapedLine, SharedString, Style, TextRun, Window,
 };
+use std::borrow::Cow;
 use std::ops::Range;
 use std::time::Instant;
 
@@ -22,6 +31,10 @@ const DELETED_H: f32 = 2.0;
 const LEFT_PAD: f32 = 8.0;
 /// The most of one line a frame shapes and paints; the rest is past any screen's right edge.
 pub const MAX_PAINT_BYTES: usize = 16 * 1024;
+/// The columns a tab takes in a document's raw text.
+pub const TAB_COLS: usize = 4;
+/// The caret's width.
+const CARET_W: f32 = 2.0;
 
 /// The part of `line` to paint: at most `MAX_PAINT_BYTES`, cut back to a char boundary, and
 /// whether anything was cut.
@@ -54,6 +67,199 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
+/// A line as it is drawn: each tab four spaces.
+pub fn expand_tabs(line: &str) -> Cow<'_, str> {
+    if line.contains('\t') {
+        Cow::Owned(line.replace('\t', &" ".repeat(TAB_COLS)))
+    } else {
+        Cow::Borrowed(line)
+    }
+}
+
+/// The display column of char `ch`: the chars before it, a tab counting four.
+pub fn display_col(line: &str, ch: usize) -> usize {
+    line.chars().take(ch).map(|c| if c == '\t' { TAB_COLS } else { 1 }).sum()
+}
+
+/// The char at display column `col`; a column inside a tab goes to the nearer side of it, and
+/// one past the end to the line end.
+pub fn ch_for_col(line: &str, col: usize) -> usize {
+    let mut at = 0;
+    for (i, c) in line.chars().enumerate() {
+        let w = if c == '\t' { TAB_COLS } else { 1 };
+        if col < at + w {
+            return if (col - at) * 2 < w { i } else { i + 1 };
+        }
+        at += w;
+    }
+    line.chars().count()
+}
+
+/// Where byte `byte` of `line` lands in the line with its tabs expanded.
+pub fn expanded_byte(line: &str, byte: usize) -> usize {
+    line.as_bytes()[..byte.min(line.len())].iter().map(|&b| if b == b'\t' { TAB_COLS } else { 1 }).sum()
+}
+
+/// The x of display column `col` on a shaped line, from the line's start; past the shaped text,
+/// its width.
+pub fn x_for_col(shaped: &ShapedLine, expanded: &str, col: usize) -> Pixels {
+    let byte = expanded.char_indices().nth(col).map_or(expanded.len(), |(b, _)| b);
+    if byte >= shaped.len() {
+        shaped.width
+    } else {
+        shaped.x_for_index(byte)
+    }
+}
+
+/// The display column nearest `x` (from the line's start) on a shaped line.
+pub fn col_for_x(shaped: &ShapedLine, expanded: &str, x: Pixels) -> usize {
+    let len = shaped.len().min(expanded.len());
+    if len == 0 || x <= px(0.0) {
+        return 0;
+    }
+    let mut byte = shaped.closest_index_for_x(x).min(len);
+    // Past the last glyph's start gpui answers the line end; the last char's start is nearer
+    // while x is in its left half.
+    if byte == len {
+        if let Some((last, _)) = expanded[..len].char_indices().last() {
+            let x0 = shaped.x_for_index(last);
+            if x - x0 < shaped.width - x {
+                byte = last;
+            }
+        }
+    }
+    while !expanded.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    expanded[..byte].chars().count()
+}
+
+/// How far the raw text scrolls sideways so the caret, `caret_x` from the text's start, stays
+/// within `width`: unchanged while it is in view, else the least move that shows it.
+pub fn follow_x(scroll_x: f32, caret_x: f32, width: f32) -> f32 {
+    if caret_x < scroll_x {
+        caret_x.max(0.0)
+    } else if caret_x > scroll_x + width {
+        caret_x - width
+    } else {
+        scroll_x
+    }
+}
+
+/// The colours of raw markdown: plain text, markers and quote bars, code, links.
+#[derive(Debug, Clone, Copy)]
+pub struct RawColors {
+    pub text: Rgb,
+    pub dim: Rgb,
+    pub code: Rgb,
+    pub link: Rgb,
+}
+
+/// Where a document viewer's text was laid out at the last prepaint: what the input handler and
+/// the mouse map between positions and pixels with.
+#[derive(Debug, Clone)]
+pub struct RawLayout {
+    pub bounds: Bounds<Pixels>,
+    /// The window x of column 0 before the sideways scroll.
+    pub text_left: Pixels,
+    pub line_h: f32,
+    pub font_size: f32,
+    pub family: SharedString,
+    pub colors: RawColors,
+}
+
+/// One run of text in the terminal family.
+fn text_run(family: &SharedString, len: usize, color: Rgb, bold: bool, italic: bool) -> TextRun {
+    let mut f = font(family.clone());
+    if bold {
+        f.weight = FontWeight::BOLD;
+    }
+    if italic {
+        f.style = gpui::FontStyle::Italic;
+    }
+    TextRun { len, font: f, color: hsla(color), background_color: None, underline: None, strikethrough: None }
+}
+
+/// The runs of a raw markdown line with its tabs expanded, up to `limit` expanded bytes: the
+/// marks `raw_marks` finds in their colours, the gaps in the text colour.
+pub fn raw_runs(line: &str, family: &SharedString, colors: &RawColors, limit: usize) -> Vec<TextRun> {
+    let marks = md_blocks::raw_marks(line);
+    let mut styled: Vec<(usize, Option<md_blocks::Mark>)> = Vec::new();
+    let mut at = 0;
+    for (b, c) in line.char_indices() {
+        if at >= limit {
+            break;
+        }
+        let w = if c == '\t' { TAB_COLS } else { c.len_utf8() }.min(limit - at);
+        let mark = marks.iter().find(|(r, _)| r.contains(&b)).map(|(_, m)| *m);
+        match styled.last_mut() {
+            Some((len, m)) if *m == mark => *len += w,
+            _ => styled.push((w, mark)),
+        }
+        at += w;
+    }
+    styled
+        .into_iter()
+        .map(|(len, mark)| {
+            use md_blocks::Mark as M;
+            let (color, bold, italic) = match mark {
+                Some(M::Marker | M::Quote) => (colors.dim, false, false),
+                Some(M::Heading) => (colors.text, true, false),
+                Some(M::Emphasis) => (colors.text, false, true),
+                Some(M::Code) => (colors.code, false, false),
+                Some(M::Link) => (colors.link, false, false),
+                None => (colors.text, false, false),
+            };
+            text_run(family, len, color, bold, italic)
+        })
+        .collect()
+}
+
+/// A raw markdown line shaped as it is painted: the expanded text that was shaped (cut like any
+/// painted line) and the shaped line. An empty line shapes nothing.
+pub fn shape_raw(window: &mut Window, line: &str, layout: &RawLayout) -> (String, ShapedLine) {
+    let expanded = expand_tabs(line);
+    let (shown, _) = paint_cut(&expanded);
+    if shown.is_empty() {
+        return (String::new(), ShapedLine::default());
+    }
+    let runs = raw_runs(line, &layout.family, &layout.colors, shown.len());
+    let shaped = window.text_system().shape_line(shown.to_string().into(), px(layout.font_size), &runs, None);
+    (shown.to_string(), shaped)
+}
+
+/// The selection on one row, from `x0` to `x1`, in `color` at half strength.
+pub fn paint_selection(window: &mut Window, x0: Pixels, x1: Pixels, y: Pixels, line_h: Pixels, color: Rgb) {
+    if x1 <= x0 {
+        return;
+    }
+    let mut c = hsla(color);
+    c.a = 0.5;
+    window.paint_quad(fill(Bounds { origin: point(x0, y), size: size(x1 - x0, line_h) }, c));
+}
+
+/// The caret: a bar two pixels wide, the row's height.
+pub fn paint_caret(window: &mut Window, x: Pixels, y: Pixels, line_h: Pixels, color: Rgb) {
+    window.paint_quad(fill(Bounds { origin: point(x, y), size: size(px(CARET_W), line_h) }, hsla(color)));
+}
+
+/// An input method's marked text: a line under it, at the row's foot.
+pub fn paint_marked(window: &mut Window, x0: Pixels, x1: Pixels, y: Pixels, line_h: Pixels, color: Rgb) {
+    if x1 <= x0 {
+        return;
+    }
+    window.paint_quad(fill(Bounds { origin: point(x0, y + line_h - px(2.0)), size: size(x1 - x0, px(1.0)) }, hsla(color)));
+}
+
+/// Find hits on one row, `(x0, x1, current)` each, under the text.
+pub fn paint_hits(window: &mut Window, hits: &[(Pixels, Pixels, bool)], y: Pixels, line_h: Pixels, find_match: Rgb, find_current: Rgb) {
+    for &(x0, x1, current) in hits {
+        let mut col = hsla(if current { find_current } else { find_match });
+        col.a = 0.45;
+        window.paint_quad(fill(Bounds { origin: point(x0, y), size: size(x1 - x0, line_h) }, col));
+    }
+}
+
 /// The diff's colours, the theme's `tree.{added, modified, deleted}`.
 pub struct MarkColors {
     pub added: Rgb,
@@ -70,22 +276,16 @@ pub struct ViewerElement {
     find_match: Rgb,
     find_current: Rgb,
     marks: MarkColors,
+    raw: RawColors,
 }
 
 impl ViewerElement {
-    pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb, marks: MarkColors) -> Self {
-        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks }
+    pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb, marks: MarkColors, raw: RawColors) -> Self {
+        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw }
     }
 
     fn run(&self, len: usize, color: Rgb, bold: bool, italic: bool) -> TextRun {
-        let mut f = font(self.family.clone());
-        if bold {
-            f.weight = FontWeight::BOLD;
-        }
-        if italic {
-            f.style = gpui::FontStyle::Italic;
-        }
-        TextRun { len, font: f, color: hsla(color), background_color: None, underline: None, strikethrough: None }
+        text_run(&self.family, len, color, bold, italic)
     }
 }
 
@@ -111,11 +311,25 @@ struct Frame {
     hits: Vec<Hit>,
     current: Option<Hit>,
     font_size: f32,
+    /// The document's caret, its marked text and whether the caret shows (the viewer has focus);
+    /// `None` for a file that is not a document.
+    doc: Option<DocFrame>,
+}
+
+/// What a document adds to a frame.
+struct DocFrame {
+    caret: Caret,
+    marked: Option<Range<Pos>>,
+    focused: bool,
+    scroll_x: f32,
+    layout: RawLayout,
 }
 
 pub struct Prepaint {
     cell_w: f32,
     line_h: f32,
+    /// A document's text area takes the mouse: the caret, the selection, the I-beam.
+    hitbox: Option<Hitbox>,
 }
 
 impl Element for ViewerElement {
@@ -138,21 +352,44 @@ impl Element for ViewerElement {
     }
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> Prepaint {
-        let (font_size, line_height) = {
+        let (font_size, line_height, line_count, has_diff, caret_line) = {
             let v = self.viewer.read(cx);
-            (v.font_size, v.line_height)
+            // The caret's line and char, for following the caret sideways.
+            let caret_line = v.doc.as_ref().map(|d| {
+                let head = d.clamp(v.caret.head);
+                (d.lines()[head.line].clone(), head.ch)
+            });
+            (v.font_size, v.line_height, v.line_count(), v.diff.is_some(), caret_line)
         };
         let run = TextRun { len: 1, font: font(self.family.clone()), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
         let cell_w = f32::from(window.text_system().layout_line("W", px(font_size), &[run], None).width);
         let line_h = font_size * line_height;
         let rows = (f32::from(bounds.size.height) / line_h).floor().max(1.0) as usize;
-        self.viewer.update(cx, |v, _| v.rows_visible = rows);
-        Prepaint { cell_w, line_h }
+        let Some((line, ch)) = caret_line else {
+            self.viewer.update(cx, |v, _| {
+                v.rows_visible = rows;
+                v.last_bounds = None;
+            });
+            return Prepaint { cell_w, line_h, hitbox: None };
+        };
+        let gutter = if has_diff { gutter_width_with_marks(line_count, cell_w) } else { gutter_width(line_count, cell_w) };
+        let layout = RawLayout { bounds, text_left: bounds.origin.x + px(gutter + LEFT_PAD), line_h, font_size, family: self.family.clone(), colors: self.raw };
+        let (expanded, shaped) = shape_raw(window, &line, &layout);
+        let caret_x = f32::from(x_for_col(&shaped, &expanded, display_col(&line, ch)));
+        // Two cells of room past the caret, so it never sits on the edge.
+        let width = (f32::from(bounds.size.width) - gutter - LEFT_PAD - cell_w * 2.0).max(cell_w);
+        self.viewer.update(cx, |v, _| {
+            v.rows_visible = rows;
+            v.scroll_x = follow_x(v.scroll_x, caret_x, width);
+            v.last_bounds = Some(layout);
+        });
+        Prepaint { cell_w, line_h, hitbox: Some(window.insert_hitbox(bounds, HitboxBehavior::Normal)) }
     }
 
     fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), prepaint: &mut Prepaint, window: &mut Window, cx: &mut App) {
         let (cell_w, line_h) = (prepaint.cell_w, prepaint.line_h);
         window.paint_quad(fill(bounds, hsla(self.bg)));
+        let focused = self.viewer.read(cx).focus.is_focused(window);
         let frame = self.viewer.update(cx, |v, _| {
             let now = Instant::now();
             let dt = v.last_frame.map(|l| now.duration_since(l).as_secs_f32().min(0.05)).unwrap_or(1.0 / 60.0);
@@ -206,6 +443,10 @@ impl Element for ViewerElement {
                 hits,
                 current,
                 font_size: v.font_size,
+                doc: match (&v.doc, &v.last_bounds) {
+                    (Some(_), Some(layout)) => Some(DocFrame { caret: v.caret, marked: v.marked.clone(), focused, scroll_x: v.scroll_x, layout: layout.clone() }),
+                    _ => None,
+                },
             }
         });
         if frame.animating {
@@ -254,6 +495,10 @@ impl Element for ViewerElement {
                 let num_run = self.run(num.len(), self.gutter_fg, false, false);
                 let shaped = window.text_system().shape_line(num, font_size, &[num_run], None);
                 let _ = shaped.paint(point(origin.x + px(gutter - GUTTER_PAD - num_w), y), px(line_h), window, cx);
+                if let Some(doc) = &frame.doc {
+                    self.paint_doc_line(doc, n, line, x, y, line_h, cell_w, gutter, &frame.hits, frame.current, window, cx);
+                    continue;
+                }
                 if line.is_empty() {
                     continue;
                 }
@@ -281,10 +526,87 @@ impl Element for ViewerElement {
                 self.paint_deleted_mark(origin.x, row_y(r), window);
             }
         });
+        if let Some(hitbox) = prepaint.hitbox.clone() {
+            self.listen(hitbox, bounds, window, cx);
+        }
     }
 }
 
 impl ViewerElement {
+    /// One line of a document: the selection, the find hits, the coloured raw text, the marked
+    /// text's underline and the caret, scrolled sideways by `scroll_x` and clipped to the text
+    /// area right of the gutter.
+    fn paint_doc_line(&self, doc: &DocFrame, n: usize, line: &str, x: Pixels, y: Pixels, line_h: f32, cell_w: f32, gutter: f32, hits: &[Hit], current: Option<Hit>, window: &mut Window, cx: &mut App) {
+        let bounds = doc.layout.bounds;
+        let text_area = Bounds::from_corners(point(bounds.origin.x + px(gutter), bounds.origin.y), bounds.bottom_right());
+        let (tx, lh) = (x - px(doc.scroll_x), px(line_h));
+        let (expanded, shaped) = shape_raw(window, line, &doc.layout);
+        let at = |col: usize| tx + x_for_col(&shaped, &expanded, col);
+        window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
+            let c = doc.caret;
+            let (lo, hi) = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
+            if lo != hi && lo.line <= n && n <= hi.line {
+                let c0 = if n == lo.line { display_col(line, lo.ch) } else { 0 };
+                let c1 = if n == hi.line { display_col(line, hi.ch) } else { expanded.chars().count() };
+                // A selection running on past the line's end shows its line break as half a cell.
+                let more = if n < hi.line { px(cell_w / 2.0) } else { px(0.0) };
+                paint_selection(window, at(c0), at(c1) + more, y, lh, self.find_match);
+            }
+            let row_hits: Vec<(Pixels, Pixels, bool)> = hits
+                .iter()
+                .filter(|h| h.line == n)
+                .map(|h| {
+                    let x_of = |byte: usize| {
+                        let e = expanded_byte(line, byte);
+                        tx + if e >= shaped.len() { shaped.width } else { shaped.x_for_index(e) }
+                    };
+                    (x_of(h.start), x_of(h.end), current == Some(*h))
+                })
+                .collect();
+            paint_hits(window, &row_hits, y, lh, self.find_match, self.find_current);
+            if !expanded.is_empty() {
+                let _ = shaped.paint(point(tx, y), lh, window, cx);
+                if expanded.len() < expand_tabs(line).len() {
+                    self.paint_more(tx + shaped.width, y, line_h, px(doc.layout.font_size), window, cx);
+                }
+            }
+            if let Some(m) = doc.marked.as_ref().filter(|m| m.start.line <= n && n <= m.end.line) {
+                let c0 = if n == m.start.line { display_col(line, m.start.ch) } else { 0 };
+                let c1 = if n == m.end.line { display_col(line, m.end.ch) } else { expanded.chars().count() };
+                paint_marked(window, at(c0), at(c1), y, lh, self.text_fg);
+            }
+            if doc.focused && c.head.line == n {
+                paint_caret(window, at(display_col(line, c.head.ch)), y, lh, self.text_fg);
+            }
+        });
+    }
+
+    /// A document takes text input while focused, and the mouse in its text: a press places the
+    /// caret (Shift extends the selection), a drag selects.
+    fn listen(&self, hitbox: Hitbox, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+        let focus = self.viewer.read(cx).focus.clone();
+        window.handle_input(&focus, ElementInputHandler::new(bounds, self.viewer.clone()), cx);
+        let v = self.viewer.clone();
+        window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && hitbox.is_hovered(window) {
+                v.update(cx, |v, cx| v.mouse_down(ev.position, ev.modifiers.shift, window, cx));
+            }
+        });
+        let v = self.viewer.clone();
+        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && ev.pressed_button == Some(MouseButton::Left) {
+                v.update(cx, |v, cx| v.mouse_drag(ev.position, window, cx));
+            }
+        });
+        let v = self.viewer.clone();
+        window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
+            if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                v.update(cx, |v, _| v.mouse_up());
+            }
+        });
+    }
+
     /// A dim marker where the painted part of a cut line ends.
     fn paint_more(&self, x: Pixels, y: Pixels, line_h: f32, font_size: Pixels, window: &mut Window, cx: &mut App) {
         let more = window.text_system().shape_line("…".into(), font_size, &[self.run("…".len(), self.gutter_fg, false, false)], None);
@@ -331,6 +653,27 @@ mod tests {
         assert!(cut);
         assert_eq!(shown.len(), MAX_PAINT_BYTES - 1, "back to the start of the char the limit splits");
         assert!(shown.ends_with('\u{20ac}'));
+    }
+
+    #[test]
+    fn a_tab_is_four_columns_and_a_column_maps_back_to_its_char() {
+        assert_eq!(expand_tabs("a\tb"), "a    b");
+        assert_eq!(display_col("a\tb", 2), 5, "a, then the tab's four columns");
+        assert_eq!(display_col("a\tb", 9), 6, "past the end: the line's width");
+        assert_eq!(ch_for_col("a\tb", 2), 1, "the tab's left half is before it");
+        assert_eq!(ch_for_col("a\tb", 3), 2, "its right half is after it");
+        assert_eq!(ch_for_col("a\tb", 5), 2);
+        assert_eq!(ch_for_col("a\tb", 40), 3, "past the end: the line end");
+        assert_eq!(expanded_byte("\tx\u{e9}y", 1), 4);
+        assert_eq!(expanded_byte("\tx\u{e9}y", 4), 7, "a two-byte char keeps its bytes");
+    }
+
+    #[test]
+    fn the_raw_view_follows_the_caret_sideways_by_the_least_move() {
+        assert_eq!(follow_x(0.0, 50.0, 100.0), 0.0, "in view: unchanged");
+        assert_eq!(follow_x(0.0, 150.0, 100.0), 50.0, "off the right edge: just enough to show it");
+        assert_eq!(follow_x(80.0, 20.0, 100.0), 20.0, "off the left edge: back to it");
+        assert_eq!(follow_x(80.0, 0.0, 100.0), 0.0);
     }
 
     #[test]

@@ -290,6 +290,10 @@ mod tests {
         assert_eq!(items.iter().find(|i| i.label == "New single-page browser tab\u{2026}").unwrap().command, Command::NewBrowserTabSinglePage);
         assert_eq!(items.iter().find(|i| i.label == "Dock a Chrome window\u{2026}").unwrap().command, Command::DockChromeWindow);
         assert_eq!(items.iter().find(|i| i.label == "Undock Chrome window").unwrap().command, Command::UndockChromeWindow);
+        let markdown = items.iter().find(|i| i.label == "Toggle markdown view").unwrap();
+        assert_eq!((markdown.detail.as_str(), &markdown.command), ("Shift+Cmd+M", &Command::ToggleMarkdownView));
+        let save = items.iter().find(|i| i.label == "Save file").unwrap();
+        assert_eq!((save.detail.as_str(), &save.command), ("Cmd+S", &Command::SaveFile));
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
         let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true, 0, 0);

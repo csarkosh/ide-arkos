@@ -32,7 +32,8 @@ pub struct Caret {
 }
 
 impl Caret {
-    fn at(p: Pos) -> Caret {
+    /// A caret at `p` with nothing selected.
+    pub fn at(p: Pos) -> Caret {
         Caret { head: p, anchor: p, goal_col: None }
     }
 }
@@ -45,7 +46,6 @@ pub enum LineEnding {
 
 /// How far a delete reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub enum Unit {
     Grapheme,
     Word,
@@ -54,7 +54,6 @@ pub enum Unit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub enum Move {
     Left,
     Right,
@@ -80,6 +79,9 @@ struct Step {
     caret_before: Caret,
     caret_after: Caret,
     coalescable: bool,
+    /// When typing last landed before this step, so taking the step back (`retract`) lets the
+    /// next keystroke join the typing before it.
+    typed_before: Option<Instant>,
 }
 
 pub struct Document {
@@ -224,7 +226,6 @@ impl Document {
         self.lines.clone()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
@@ -287,7 +288,8 @@ impl Document {
     fn commit(&mut self, from: Pos, to: Pos, text: &str, before: Caret, after: Caret, coalescable: bool, now: Instant) -> Caret {
         let (from, to) = self.ordered(from, to);
         let old = self.splice(from, to, text);
-        self.undo.push(Step { edits: vec![(from, to, old, text.to_string())], caret_before: before, caret_after: after, coalescable });
+        let typed_before = self.last_typed;
+        self.undo.push(Step { edits: vec![(from, to, old, text.to_string())], caret_before: before, caret_after: after, coalescable, typed_before });
         self.redo.clear();
         self.last_typed = coalescable.then_some(now);
         after
@@ -299,7 +301,6 @@ impl Document {
     }
 
     /// Replaces the selection, if any, with `text`; `\n` splits lines.
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn insert(&mut self, caret: Caret, text: &str, now: Instant) -> Caret {
         let text = text.replace("\r\n", "\n");
         let (from, to) = self.selection(caret);
@@ -328,7 +329,6 @@ impl Document {
         self.commit(from, to, &text, caret, Caret::at(end_of(from, &text)), typed, now)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn delete_backward(&mut self, caret: Caret, unit: Unit, now: Instant) -> Caret {
         let (from, to) = self.selection(caret);
         if from != to {
@@ -372,7 +372,6 @@ impl Document {
         Caret::at(start)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn delete_forward(&mut self, caret: Caret, unit: Unit, now: Instant) -> Caret {
         let (from, to) = self.selection(caret);
         if from != to {
@@ -419,7 +418,6 @@ impl Document {
 
     /// Replaces a range as its own undo step, for the input method and the task toggle. Returns
     /// the end of the new text.
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn replace_range(&mut self, from: Pos, to: Pos, text: &str, now: Instant) -> Pos {
         let (from, to) = self.ordered(from, to);
         let text = text.replace("\r\n", "\n");
@@ -438,6 +436,62 @@ impl Document {
         self.redo.push(step);
         self.last_typed = None;
         Some(caret)
+    }
+
+    /// Takes the last step back and forgets it: no redo, and the typing before it may continue.
+    /// The input method's marked text is written as a step and retracted when the composition
+    /// changes or is committed, so a composition leaves one step, the committed text's.
+    pub fn retract(&mut self) -> Option<Caret> {
+        let step = self.undo.pop()?;
+        for (from, _, old, new) in step.edits.iter().rev() {
+            self.splice(*from, end_of(*from, new), old);
+        }
+        self.last_typed = step.typed_before;
+        Some(step.caret_before)
+    }
+
+    /// The UTF-16 code units from `from` to `p`, a line break counting one: the offsets an input
+    /// method speaks in. A `p` before `from` is zero.
+    pub fn pos_to_utf16(&self, from: Pos, p: Pos) -> usize {
+        let (from, p) = (self.clamp(from), self.clamp(p));
+        if p <= from {
+            return 0;
+        }
+        let mut units = 0;
+        for line in from.line..=p.line {
+            let start = if line == from.line { from.ch } else { 0 };
+            let l = &self.lines[line];
+            let end = if line == p.line { p.ch } else { char_len(l) };
+            units += l.chars().skip(start).take(end.saturating_sub(start)).map(char::len_utf16).sum::<usize>();
+            if line != p.line {
+                units += 1;
+            }
+        }
+        units
+    }
+
+    /// The position `units` UTF-16 code units after `from`, a line break counting one; clamped to
+    /// the document's end. An offset inside a surrogate pair rounds back to its char.
+    pub fn utf16_to_pos(&self, from: Pos, units: usize) -> Pos {
+        let from = self.clamp(from);
+        let mut left = units;
+        let (mut line, mut ch) = (from.line, from.ch);
+        loop {
+            for c in self.lines[line].chars().skip(ch) {
+                let n = c.len_utf16();
+                if left < n {
+                    return Pos { line, ch };
+                }
+                left -= n;
+                ch += 1;
+            }
+            if left == 0 || line + 1 >= self.lines.len() {
+                return Pos { line, ch };
+            }
+            left -= 1;
+            line += 1;
+            ch = 0;
+        }
     }
 
     pub fn redo(&mut self) -> Option<Caret> {
@@ -459,7 +513,6 @@ impl Document {
     /// The caret after a move. `select` keeps the anchor so the move extends the selection;
     /// otherwise the caret collapses. Left and Right with a selection and no `select` collapse to
     /// the selection's edge, as every Mac text field does.
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn move_by(&self, caret: Caret, m: Move, select: bool) -> Caret {
         let head = self.clamp(caret.head);
         let anchor = self.clamp(caret.anchor);
@@ -529,7 +582,6 @@ impl Document {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn select_all(&self) -> Caret {
         Caret { head: self.end_pos(), anchor: Pos::default(), goal_col: None }
     }
@@ -663,6 +715,23 @@ mod tests {
         assert_eq!(c.head, Pos { line: 1, ch: 0 }, "Right at a line end goes to the next line");
         assert_eq!(d.move_by(at(1, 3), Move::PageUp(10), false).head, Pos { line: 0, ch: 3 });
         assert_eq!(d.move_by(at(0, 3), Move::PageDown(10), false).head.line, 2);
+    }
+
+    #[test]
+    fn a_retracted_step_leaves_no_redo_and_the_typing_before_it_continues() {
+        let mut d = doc("");
+        let t = t0();
+        let c = d.insert(at(0, 0), "a", t);
+        // A composition's marked text, written and taken back as the input method changes it.
+        let end = d.replace_range(c.head, c.head, "\u{b4}", t + Duration::from_millis(50));
+        assert_eq!((d.lines()[0].as_str(), end.ch), ("a\u{b4}", 2));
+        assert_eq!(d.retract().map(|c| c.head), Some(Pos { line: 0, ch: 1 }));
+        assert_eq!(d.lines()[0], "a");
+        assert_eq!(d.redo(), None, "a retracted step is not redone");
+        let _ = d.insert(c, "\u{e9}", t + Duration::from_millis(100));
+        assert_eq!(d.lines()[0], "a\u{e9}");
+        d.undo();
+        assert_eq!(d.lines()[0], "", "the committed text joined the typing before it");
     }
 
     #[test]
