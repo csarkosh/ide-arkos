@@ -25,7 +25,8 @@ Things only a person at the screen can check, in order of value:
   deletes the word before the cursor
 - drag across terminal text: it tints; Cmd+C, then Cmd+V at a prompt pastes it; double click
   selects a word, triple click a line, a click clears it; a drag inside Claude Code's fullscreen
-  selects without the program reacting; `less` on a long file: the wheel moves the file
+  selects without the program reacting; `less` on a long file: the wheel moves the file;
+  Shift+wheel on a mouse, in a shell with history: wheel up shows older lines, not newer
 - in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
   clears them within ten seconds
 - Worktrees: expand one: a shimmer, then its changed files fade in; collapse and expand again:
