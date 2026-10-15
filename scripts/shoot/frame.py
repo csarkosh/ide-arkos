@@ -2,9 +2,10 @@
 """The raw window capture (scripts/shoot) framed for a page: the window's rounded corners cut
 out, a soft shadow under it, on a transparent background, at the capture's 2x scale. Any
 `--crop name:x,y,w,h` (fractions of the window) is also written beside the output as
-<output stem>-<name>.png, unframed, with small rounded corners.
+<output stem>-<name>.png, unframed, with small rounded corners. `--overlay file:x,y` lays
+another capture (the Chrome window Arkos docked) over the window at those pixels first.
 
-    python3 -I scripts/shoot/frame.py <raw.png> <out.png> [--crop tabs:0,0,0.6,0.12]...
+    python3 -I scripts/shoot/frame.py <raw.png> <out.png> [--overlay chrome.png:1810,70] [--crop tabs:0,0,0.6,0.12]...
 
 Needs Pillow."""
 import sys
@@ -45,15 +46,25 @@ def main(argv):
         sys.exit(__doc__)
     raw, out = Path(argv[0]), Path(argv[1])
     crops = []
+    overlays = []
     args = argv[2:]
     while args:
-        if args[0] != "--crop" or len(args) < 2:
+        if len(args) < 2:
             sys.exit(f"unexpected argument {args[0]}")
-        name, _, rect = args[1].partition(":")
-        x, y, w, h = (float(v) for v in rect.split(","))
-        crops.append((name, x, y, w, h))
+        if args[0] == "--crop":
+            name, _, rect = args[1].partition(":")
+            x, y, w, h = (float(v) for v in rect.split(","))
+            crops.append((name, x, y, w, h))
+        elif args[0] == "--overlay":
+            path, _, at = args[1].rpartition(":")
+            x, y = (int(float(v)) for v in at.split(","))
+            overlays.append((Path(path), x, y))
+        else:
+            sys.exit(f"unexpected argument {args[0]}")
         args = args[2:]
     window = Image.open(raw).convert("RGBA")
+    for path, x, y in overlays:
+        window.alpha_composite(Image.open(path).convert("RGBA"), (x, y))
     if window.getextrema()[3][0] == window.getextrema()[3][1] and len(set(window.convert("RGB").getcolors(16) or [1, 2])) <= 1:
         sys.exit(f"{raw} is one flat colour: the capture saw no window (Screen Recording permission?)")
     framed(window).save(out, optimize=True)

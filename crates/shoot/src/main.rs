@@ -98,6 +98,8 @@ struct Running {
     client: Option<Daemon>,
     sessions: Vec<SessionId>,
     chrome_url: Option<String>,
+    /// Chrome's windows before the shoot opened its page: the docked one is the new one.
+    chrome_before: Option<Vec<u32>>,
 }
 
 fn run(opts: Opts) -> Result<()> {
@@ -151,6 +153,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
                 .spawn()
                 .context("python3 -m http.server")?,
         );
+        std::fs::write(dirs.state.join("site.pid"), running.site.as_ref().map(|s| s.id()).unwrap_or(0).to_string())?;
     }
 
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
@@ -222,9 +225,16 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         say("could not bring the window to the front; it may be behind the app in use");
     }
     std::thread::sleep(Duration::from_secs(2));
+    let window_id = arkos_window_id(repo, window_pid)?;
+    let progress = Progress { dir: out.join("progress"), window_id, started: Instant::now(), last: Some(std::cell::Cell::new(Instant::now() - Duration::from_secs(60))) };
+    std::fs::create_dir_all(&progress.dir)?;
+    let _ = std::fs::remove_file(progress.dir.join("log.txt"));
 
-    // 8. Type into the panes: plain commands at once; `claude`, then (after it has drawn,
-    //    and Enter for the folder-trust question when it asks one) the prompt.
+    // 8. Type into the panes: plain commands at once; `claude`, then the prompt once it has
+    //    drawn. A folder with pre-approved permissions in .claude/settings.json gets Claude
+    //    Code's trust question with "No, exit" selected: Down then Enter says yes to it. Without
+    //    the question (the folder was trusted on an earlier run) the keys land on an empty
+    //    prompt and do nothing.
     for pane in &story.panes {
         if let Some(cmd) = &pane.run {
             client.input(SessionId(sessions[&pane.name]), &format!("{cmd}\r"))?;
@@ -237,9 +247,11 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     if !claude.is_empty() {
         std::thread::sleep(Duration::from_secs(6));
         for pane in &claude {
+            client.input(SessionId(sessions[&pane.name]), "\x1b[B")?;
+            std::thread::sleep(Duration::from_millis(300));
             client.input(SessionId(sessions[&pane.name]), "\r")?;
         }
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(4));
         for pane in &claude {
             let id = SessionId(sessions[&pane.name]);
             client.input(id, pane.claude.as_deref().expect("filtered"))?;
@@ -258,17 +270,24 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             theme = shot.theme.clone();
             std::thread::sleep(Duration::from_millis(1500));
         }
-        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url)?;
+        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
         let raw = out.join(format!("{}.raw.png", shot.name));
-        // In front for the capture: Arkos re-raises its docked Chrome window on activation.
-        activate(window_pid);
-        std::thread::sleep(Duration::from_millis(800));
-        capture(frame, &raw)?;
-        frame_image(repo, &raw, &out.join(format!("{}.png", shot.name)), shot)?;
+        capture_window(window_id, &raw)?;
+        // The Chrome window Arkos docked is another app's window: captured on its own and laid
+        // over the pane it sits on.
+        let overlay = match running.chrome_before.as_deref().map(|before| docked_chrome(repo, frame, before)).transpose()?.flatten() {
+            Some((id, x, y)) => {
+                let path = out.join(format!("{}.chrome.png", shot.name));
+                capture_window(id, &path)?;
+                Some((path, x - frame.0, y - frame.1))
+            }
+            None => None,
+        };
+        frame_image(repo, &raw, &out.join(format!("{}.png", shot.name)), shot, overlay.as_ref())?;
         say(&format!("{}: {}", shot.name, out.join(format!("{}.png", shot.name)).display()));
     }
     if !failures.is_empty() {
@@ -280,14 +299,24 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 /// Polls the sessions' states until the shot's are all as asked (or its timeout passes), and
 /// opens the browser pane's page in Chrome the first time a session works, which is when
 /// Arkos docks a new Chrome window. Returns what was not as asked.
-fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>) -> Result<Vec<String>> {
-    let deadline = Instant::now() + Duration::from_secs(shot.timeout_secs);
+#[allow(clippy::too_many_arguments)]
+fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>, chrome_before: &mut Option<Vec<u32>>, repo: &Path, progress: &Progress) -> Result<Vec<String>> {
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(shot.timeout_secs);
     let mut settle_until = None;
+    let claude_panes: Vec<&str> = story.panes.iter().filter(|p| p.claude.is_some()).map(|p| p.name.as_str()).collect();
     loop {
         let states = client.states()?;
         let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
+        progress.note(&shot.name, &story.panes.iter().filter(|p| !p.is_browser()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "), chrome_url.is_some());
+        // Claude Code says it is working within seconds of a prompt (its UserPromptSubmit
+        // hook). Every pane still idle a minute on: it never started, and waiting is waste.
+        if !claude_panes.is_empty() && started.elapsed() > Duration::from_secs(60) && claude_panes.iter().all(|p| state_of(p) == ClaudeState::Idle) {
+            bail!("{}: no Claude Code pane has reported working after a minute; the latest capture in {} shows what happened", shot.name, progress.dir.display());
+        }
         if shot.chrome && chrome_url.is_none() && states.values().any(|s| *s == ClaudeState::Working) {
             if let Some(url) = story.panes.iter().find_map(|p| p.browser.clone()) {
+                *chrome_before = Some(window_list(repo)?.into_iter().filter(|w| w.owner == "Google Chrome").map(|w| w.id).collect());
                 // -g: Chrome does not come to the front, so the Arkos window keeps its place.
                 Command::new("open").args(["-g", "-na", "Google Chrome", "--args", &format!("--app={url}")]).status().context("open Chrome")?;
                 *chrome_url = Some(url);
@@ -330,30 +359,119 @@ fn activate(pid: u32) -> bool {
     false
 }
 
-/// `screencapture` of the window's frame: points on the main display, top-left origin, the
-/// same coordinates gpui gives the window. It needs the Screen Recording permission for the
-/// app this runs in (a terminal, or Arkos itself); without it the file shows the desktop alone.
-fn capture(frame: (f64, f64, f64, f64), out: &Path) -> Result<()> {
-    let (x, y, w, h) = frame;
-    let region = format!("{},{},{},{}", x.round() as i64, y.round() as i64, w.round() as i64, h.round() as i64);
-    // "could not create image from rect" comes and goes (a window still animating in, a
-    // display waking): a few tries, a second apart.
+/// `screencapture` of one window by its id, without its shadow: the window as it is, in front
+/// or behind whatever else is open. It needs the Screen Recording permission for the app this
+/// runs in (a terminal, or Arkos itself); without it the file shows nothing of the window.
+fn capture_window(id: u32, out: &Path) -> Result<()> {
     for attempt in 1..=4 {
-        let status = Command::new("screencapture").args(["-x", "-R", &region]).arg(out).status().context("screencapture")?;
+        let status = Command::new("screencapture").args(["-x", "-o", "-l", &id.to_string()]).arg(out).status().context("screencapture")?;
         if status.success() && out.is_file() {
             return Ok(());
         }
-        say(&format!("screencapture of {region} failed (try {attempt})"));
+        say(&format!("screencapture of window {id} failed (try {attempt})"));
         std::thread::sleep(Duration::from_secs(1));
     }
     bail!("screencapture failed for {}", out.display())
 }
 
+/// A window the window server lists: `scripts/shoot/windows.swift`'s line.
+struct Win {
+    id: u32,
+    pid: u32,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    owner: String,
+}
+
+fn window_list(repo: &Path) -> Result<Vec<Win>> {
+    let out = Command::new("swift").arg(repo.join("scripts/shoot/windows.swift")).output().context("swift (the Xcode command line tools)")?;
+    if !out.status.success() {
+        bail!("windows.swift failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(8, ' ').collect();
+            if f.len() < 8 {
+                return None;
+            }
+            Some(Win { id: f[0].parse().ok()?, pid: f[1].parse().ok()?, x: f[2].parse().ok()?, y: f[3].parse().ok()?, w: f[4].parse().ok()?, h: f[5].parse().ok()?, owner: f[7].to_string() })
+        })
+        .collect())
+}
+
+/// The project window of the shoot's arkos: its one window wider than a pane.
+fn arkos_window_id(repo: &Path, pid: u32) -> Result<u32> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        // Not its menu bar's window (full width, 33 points high): the biggest one of some height.
+        if let Some(w) = window_list(repo)?.into_iter().filter(|w| w.pid == pid && w.w > 400.0 && w.h > 200.0).max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h))) {
+            return Ok(w.id);
+        }
+        if Instant::now() > deadline {
+            bail!("the window server lists no window for arkos (pid {pid})");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// The Chrome window Arkos docked, if any: a Chrome window that was not there before the
+/// shoot opened its page (`before`), lying inside the window's frame. Its id and top-left
+/// corner in points.
+fn docked_chrome(repo: &Path, frame: (f64, f64, f64, f64), before: &[u32]) -> Result<Option<(u32, f64, f64)>> {
+    let (fx, fy, fw, fh) = frame;
+    let inside = |w: &Win| w.owner == "Google Chrome" && !before.contains(&w.id) && w.x >= fx - 2.0 && w.y >= fy - 2.0 && w.x + w.w <= fx + fw + 2.0 && w.y + w.h <= fy + fh + 2.0;
+    Ok(window_list(repo)?.into_iter().find(inside).map(|w| (w.id, w.x, w.y)))
+}
+
+/// Progress for whoever watches the run: every 20 s a capture of the window into
+/// `<out>/progress/` and a line of the panes' states in `log.txt` there, so a run that has gone
+/// wrong shows it long before its timeout.
+struct Progress {
+    dir: PathBuf,
+    window_id: u32,
+    started: Instant,
+    last: Option<std::cell::Cell<Instant>>,
+}
+
+impl Progress {
+    const EVERY: Duration = Duration::from_secs(20);
+
+    fn note(&self, shot: &str, states: &str, chrome_opened: bool) {
+        let due = match &self.last {
+            Some(last) => last.get().elapsed() >= Self::EVERY,
+            None => true,
+        };
+        if !due {
+            return;
+        }
+        let secs = self.started.elapsed().as_secs();
+        let file = self.dir.join(format!("{shot}-{secs:04}s.png"));
+        let captured = capture_window(self.window_id, &file).is_ok();
+        let line = format!("{secs:4}s {shot}: {states}{}{}", if chrome_opened { " chrome=opened" } else { "" }, if captured { "" } else { " (capture failed)" });
+        if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("log.txt")) {
+            use std::io::Write;
+            let _ = writeln!(log, "{line}");
+        }
+        say(&line);
+        match &self.last {
+            Some(last) => last.set(Instant::now()),
+            None => {}
+        }
+    }
+}
+
 /// `scripts/shoot/frame.py`: the raw capture framed as a macOS window on a transparent
 /// background, plus the shot's crops.
-fn frame_image(repo: &Path, raw: &Path, out: &Path, shot: &Shot) -> Result<()> {
+fn frame_image(repo: &Path, raw: &Path, out: &Path, shot: &Shot, overlay: Option<&(PathBuf, f64, f64)>) -> Result<()> {
     let mut cmd = Command::new("python3");
     cmd.arg("-I").arg(repo.join("scripts/shoot/frame.py")).arg(raw).arg(out);
+    if let Some((path, x, y)) = overlay {
+        // Points to the capture's pixels: Retina, 2 to 1.
+        cmd.arg("--overlay").arg(format!("{}:{},{}", path.display(), (x * 2.0).round(), (y * 2.0).round()));
+    }
     for c in &shot.crops {
         let [x, y, w, h] = c.rect;
         cmd.arg("--crop").arg(format!("{}:{x},{y},{w},{h}", c.name));
@@ -525,7 +643,13 @@ fn make_bundle(repo: &Path, bin: &Path, dir: &Path) -> Result<PathBuf> {
     let cargo = std::fs::read_to_string(repo.join("Cargo.toml")).with_context(|| format!("read {}", repo.join("Cargo.toml").display()))?;
     let version = cargo.lines().find_map(|l| l.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"'))).context("version in Cargo.toml")?;
     let template = repo.join("packaging/Info.plist.in");
-    let plist = std::fs::read_to_string(&template).with_context(|| format!("read {}", template.display()))?.replace("@VERSION@", version);
+    // Its own bundle id and name: macOS keeps permissions (Accessibility, for the browser pane)
+    // by app, and the installed Arkos IDE's must not be mistaken for this bundle's.
+    let plist = std::fs::read_to_string(&template)
+        .with_context(|| format!("read {}", template.display()))?
+        .replace("@VERSION@", version)
+        .replace("<string>sh.csarko.arkos</string>", "<string>sh.csarko.arkos.shoot</string>")
+        .replace("<string>Arkos IDE</string>", "<string>Arkos IDE (shoot)</string>");
     std::fs::create_dir_all(app.join("Contents/MacOS")).with_context(|| format!("create {}", app.display()))?;
     std::fs::create_dir_all(app.join("Contents/Resources"))?;
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
@@ -594,7 +718,7 @@ fn stop(running: &mut Running, dirs: &Dirs) {
             say(&format!("could not close Chrome's {url} window; close it yourself"));
         }
     }
-    for f in ["daemon.pid", "window.pid"] {
+    for f in ["daemon.pid", "window.pid", "site.pid"] {
         let _ = std::fs::remove_file(dirs.state.join(f));
     }
 }
@@ -658,7 +782,7 @@ fn start_window(bin: &Path, app: Option<&Path>, demo: &Path, dirs: &Dirs) -> Res
 
 /// Ends a previous run's daemon and window if they are still there, and clears the state.
 fn clean(dirs: &Dirs) -> Result<()> {
-    for f in ["window.pid", "daemon.pid"] {
+    for f in ["window.pid", "daemon.pid", "site.pid"] {
         if let Ok(text) = std::fs::read_to_string(dirs.state.join(f)) {
             if let Ok(pid) = text.trim().parse::<i32>() {
                 if pid > 1 {
