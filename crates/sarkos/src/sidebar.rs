@@ -135,7 +135,10 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             // The header under it would close the section on the same click.
             cx.stop_propagation();
             root.sidebar.worktrees_open = true;
-            root.wt_prompt = Some(Prompt::new());
+            // A prompt already open keeps what was typed; it just takes the keys.
+            if root.wt_prompt.is_none() {
+                root.wt_prompt = Some(Prompt::new());
+            }
             root.wt_focused = true;
             root.sidebar_focused = false;
             root.save(cx);
@@ -424,6 +427,20 @@ pub fn clamp_selection(selected: Option<usize>, rows: usize) -> Option<usize> {
     selected.filter(|_| rows > 0).map(|i| i.min(rows - 1))
 }
 
+/// How many terminal tabs were opened in `dir` or a folder inside it.
+pub fn terminals_inside(tree: &Tree, dir: &Path) -> usize {
+    tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { cwd: Some(c), .. } if c.starts_with(dir))).count()
+}
+
+/// The notice after a removal that left terminals open in the removed worktree.
+pub fn removed_notice(terminals: usize) -> String {
+    if terminals == 1 {
+        "worktree removed; 1 terminal was open in it".to_string()
+    } else {
+        format!("worktree removed; {terminals} terminals were open in it")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WtMenuAction {
     OpenTerminal(PathBuf),
@@ -472,14 +489,21 @@ pub struct Prompt {
     pub path: LineEdit,
     pub stage: Stage,
     pub error: Option<String>,
+    /// `git worktree add` is running: every key but Escape waits for it.
+    pub creating: bool,
 }
 
 impl Prompt {
     pub fn new() -> Self {
-        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None }
+        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None, creating: false }
     }
 
     pub fn key(&mut self, ks: &Keystroke, root: &Path) -> PromptStep {
+        if self.creating {
+            // Escape closes the prompt; the running git finishes on its own and the list's
+            // refresh shows what it did.
+            return if ks.key == "escape" { PromptStep::Cancel } else { PromptStep::Stay };
+        }
         let edit = match self.stage {
             Stage::Branch => &mut self.branch,
             Stage::Path => &mut self.path,
@@ -504,7 +528,10 @@ impl Prompt {
                         self.error = Some("a path for the worktree".into());
                         return PromptStep::Stay;
                     }
-                    PromptStep::Create { branch: self.branch.text.trim().to_string(), path: PathBuf::from(p) }
+                    let path = PathBuf::from(p);
+                    self.error = None;
+                    self.creating = true;
+                    PromptStep::Create { branch: self.branch.text.trim().to_string(), path }
                 }
             },
             _ => PromptStep::Stay,
@@ -545,7 +572,8 @@ fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Opti
             )
             .child(row(label("branch"), field(&p.branch, "feature/name", p.stage == Stage::Branch)))
             .when(p.stage == Stage::Path, |d| d.child(row(label("path"), field(&p.path, "", true))))
-            .when_some(p.error.clone(), |d, e| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.tree.deleted.hsla()).child(e))),
+            .when(p.creating, |d| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child("creating\u{2026}")))
+            .when_some(p.error.clone().filter(|_| !p.creating), |d, e| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.tree.deleted.hsla()).child(e))),
     )
 }
 
@@ -674,9 +702,10 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
 /// The worktree row's right-click menu, drawn like the file tree's.
 pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let (path, at) = root.wt_menu.clone()?;
-    let wt = root.worktrees.find(&path)?.clone();
-    let items = worktree_menu_items(&wt, root.worktrees.dirty_count(&path));
+    let items = root.worktrees.find(&path).map(|wt| worktree_menu_items(wt, root.worktrees.dirty_count(&path))).unwrap_or_default();
     if items.is_empty() {
+        // The worktree went away (or has nothing to offer): the menu goes too.
+        root.wt_menu = None;
         return None;
     }
     let c = &root.theme.chrome;
@@ -780,6 +809,9 @@ impl Root {
             let _ = this.update(cx, |root, cx| {
                 if seq == root.worktrees_seq {
                     root.worktrees.set_list(list);
+                    if root.wt_menu.as_ref().is_some_and(|m| root.worktrees.find(&m.0).is_none()) {
+                        root.wt_menu = None;
+                    }
                     root.load_pending_worktrees(cx);
                     cx.notify();
                 }
@@ -878,6 +910,7 @@ impl Root {
                     Err(e) => {
                         if let Some(p) = &mut root.wt_prompt {
                             p.error = Some(e);
+                            p.creating = false;
                         }
                     }
                 }
@@ -889,14 +922,19 @@ impl Root {
     }
 
     /// `git worktree remove` off the UI thread; git's refusal (changes, the main checkout) is a
-    /// notice.
+    /// notice, and so are terminals left open in a removed one (they keep running).
     pub fn remove_worktree(&mut self, path: PathBuf, force: bool, cx: &mut Context<Self>) {
         let root = self.project.clone();
+        let removed = path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx.background_executor().spawn(async move { crate::worktrees::remove(&root, &path, force) }).await;
             let _ = this.update(cx, |root, cx| {
-                if let Err(e) = result {
-                    root.show_notice(format!("cannot remove the worktree: {e}"), cx);
+                match result {
+                    Err(e) => root.show_notice(format!("cannot remove the worktree: {e}"), cx),
+                    Ok(()) => match terminals_inside(&root.tree, &removed) {
+                        0 => {}
+                        n => root.show_notice(removed_notice(n), cx),
+                    },
                 }
                 root.refresh_worktrees(cx);
             });
@@ -1133,6 +1171,12 @@ mod tests {
         assert!(p.error.is_none(), "a good branch clears the error");
         assert_eq!(p.path.text, "/Users/me/proj-feat-x", "the default path is filled in");
         assert_eq!(p.key(&key("enter"), root), PromptStep::Create { branch: "feat/x".into(), path: "/Users/me/proj-feat-x".into() });
+        assert!(p.creating);
+        assert_eq!(p.key(&key("enter"), root), PromptStep::Stay, "a second Enter while git works runs nothing");
+        assert_eq!(p.key(&key("z->z"), root), PromptStep::Stay);
+        assert_eq!(p.path.text, "/Users/me/proj-feat-x", "and types nothing");
+        assert!(p.creating);
+        assert_eq!(p.key(&key("escape"), root), PromptStep::Cancel, "Escape still closes it");
         let mut q = Prompt::new();
         assert_eq!(q.key(&key("escape"), root), PromptStep::Cancel);
         for c in "a b".chars() {
@@ -1140,6 +1184,21 @@ mod tests {
         }
         assert_eq!(q.key(&key("enter"), root), PromptStep::Stay, "a space is not a branch name");
         assert_eq!((q.stage, q.error.is_some()), (Stage::Branch, true));
+    }
+
+    #[test]
+    fn terminals_inside_counts_the_tabs_opened_in_a_worktree() {
+        use crate::tree::Tab;
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let pane = tree.focused;
+        tree.add_tab(pane, Tab::Terminal { session: SessionId(2), cwd: Some("/p-f".into()) });
+        tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some("/p-f/sub".into()) });
+        tree.add_tab(pane, Tab::Terminal { session: SessionId(4), cwd: Some("/p-feat".into()) });
+        tree.add_tab(pane, Tab::Viewer { path: "/p-f/a.rs".into() });
+        assert_eq!(terminals_inside(&tree, Path::new("/p-f")), 2, "by path components: /p-feat is not inside /p-f, a viewer is no terminal");
+        assert_eq!(terminals_inside(&tree, Path::new("/elsewhere")), 0);
+        assert_eq!(removed_notice(1), "worktree removed; 1 terminal was open in it");
+        assert_eq!(removed_notice(3), "worktree removed; 3 terminals were open in it");
     }
 
     #[test]

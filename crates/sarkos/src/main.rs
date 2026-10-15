@@ -239,6 +239,12 @@ pub struct Root {
     said_goodbye: bool,
 }
 
+/// The folder a worktree tab's fresh shell starts in: its worktree while that is a directory,
+/// else `None`, the project.
+fn shell_folder(cwd: Option<PathBuf>) -> Option<PathBuf> {
+    cwd.filter(|d| d.is_dir())
+}
+
 /// Whether a window closing tells the daemon the user is leaving, so a restart does not reopen
 /// it: only the last window, and only when the user closed it.
 pub fn says_goodbye(user_closing: bool, windows_left: usize) -> bool {
@@ -719,9 +725,10 @@ impl Root {
     /// in. A worktree gone meanwhile gives the project, and the tab forgets it, so the next
     /// restart checks the shell against the folder it really started in.
     fn start_shell(&mut self, tab: TabId, cwd: Option<PathBuf>, note: bool) {
-        match cwd {
-            Some(dir) if dir.is_dir() => self.sessions.create_in(tab, note, dir),
-            Some(_) => {
+        let wanted = cwd.is_some();
+        match shell_folder(cwd) {
+            Some(dir) => self.sessions.create_in(tab, note, dir),
+            None if wanted => {
                 if let Some((pane, idx)) = self.tree.locate(tab) {
                     if let Some(Tab::Terminal { session, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() {
                         self.tree.replace_tab(pane, idx, Tab::Terminal { session, cwd: None });
@@ -886,10 +893,15 @@ impl Root {
     }
 
     pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {
-        let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: None });
+        self.new_terminal_tab_in(pane, None, cx);
+    }
+
+    /// `new_terminal_tab`, with the shell in `cwd` (a worktree) while that folder exists.
+    fn new_terminal_tab_in(&mut self, pane: PaneId, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: cwd.clone() });
         self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
-            self.sessions.create(id, false);
+            self.start_shell(id, cwd, false);
         }
         self.save(cx);
         cx.notify();
@@ -998,10 +1010,11 @@ impl Root {
                         self.open_viewer(&path, true, cx);
                     }
                     Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
-                    Closed::Session(session, _) => {
+                    Closed::Session(session, cwd) => {
                         eprintln!("sarkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
                         self.sessions.kill(session);
-                        self.new_terminal_tab(pane, cx);
+                        // A worktree terminal reopens in its worktree, if it is still there.
+                        self.new_terminal_tab_in(pane, cwd, cx);
                     }
                 }
             }
@@ -1931,6 +1944,15 @@ mod tests {
         tree.add_tab(root, Tab::Viewer { path: "/f".into() });
         tree.activate(root, 1);
         assert_eq!(focused_session_of(&tree), None);
+    }
+
+    #[test]
+    fn a_shell_starts_in_its_worktree_while_the_folder_exists() {
+        use super::shell_folder;
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(shell_folder(Some(dir.path().to_path_buf())), Some(dir.path().to_path_buf()));
+        assert_eq!(shell_folder(Some(dir.path().join("gone"))), None, "a removed worktree: the project");
+        assert_eq!(shell_folder(None), None);
     }
 
     #[test]
