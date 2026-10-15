@@ -1,4 +1,5 @@
 mod app_nap;
+mod ax;
 mod chrome;
 mod client;
 mod closed_stack;
@@ -2131,6 +2132,10 @@ fn main() {
     // The hook CLI: no window, no daemon start, no QoS. `claude` runs these on every event.
     if matches!(args.get(1).map(String::as_str), Some("notify") | Some("hooks")) {
         std::process::exit(hook_cli::run(&args[1..]));
+    }
+    // Spec 8: a one-off check of the Accessibility calls the browser pane makes, run by hand.
+    if args.get(1).map(String::as_str) == Some("browser-probe") {
+        std::process::exit(ax::probe::run());
     }
     if args.iter().any(|a| a == "--version") {
         println!("{}", version_string());
