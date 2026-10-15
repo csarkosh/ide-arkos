@@ -1454,8 +1454,9 @@ fn recover_puts_a_session_whose_folder_is_gone_in_home() {
         Response::SessionCreated { id } => id,
         other => panic!("{other:?}"),
     };
-    std::thread::sleep(Duration::from_millis(400));
-    assert!(a.sessions_dir().join("manifest.bin").exists());
+    // The first manifest's write ends in an F_FULLFSYNC, which under disk load can take longer
+    // than any fixed sleep: wait, with a deadline, until it lists the session's folder.
+    wait_for_file_containing(&a.sessions_dir().join("manifest.bin"), &folder.path().to_string_lossy());
     drop(folder);
     let dir = a.sigterm();
     let b = Daemon::start_in(dir, &["--recover"]);
