@@ -1,6 +1,6 @@
 # Arkos IDE: title bar icons, notifications and the doctor (milestone 6d)
 
-Date: 2026-10-15. Status: draft for Cyrus's review. Builds on the update and launcher polish
+Date: 2026-10-15. Status: approved by Cyrus on 2026-10-15 ("approve, write the plan"). Builds on the update and launcher polish
 (`2026-10-15-update-launcher-polish-design.md`) and on `arkos doctor` (the read-only printout
 from the update-in-place design). Written against main at `1052c56` (0.2.14).
 
