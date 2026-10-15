@@ -486,6 +486,10 @@ pub struct Viewer {
     /// handler and the mouse map between positions and pixels with them. Emptied when the view is
     /// built, filled as the raw blocks are laid out.
     pub raw_blocks: Vec<md_view::BlockLayout>,
+    /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
+    /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
+    /// freshly opened file has no raw block at the caret's default place.
+    caret_placed: bool,
     /// The composition `marked` belongs to; `Some` exactly while `marked` is.
     compose: Option<Compose>,
     /// A left-button drag that started in the text is selecting.
@@ -541,6 +545,7 @@ impl Viewer {
             scroll_x: 0.0,
             last_bounds: None,
             raw_blocks: Vec::new(),
+            caret_placed: false,
             compose: None,
             selecting: false,
         }
@@ -635,6 +640,7 @@ impl Viewer {
         self.marked = None;
         self.compose = None;
         self.selecting = false;
+        self.caret_placed = false;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -1067,6 +1073,15 @@ impl Viewer {
     /// through `edit`, so the tab turns dirty and the autosave is scheduled; moves only end the
     /// typing step. A key this does not know returns `false` for the keymap and the input method.
     pub fn key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let handled = self.key_inner(ks, cx);
+        // A key the document took puts the caret in play: the rendered view shows its block raw.
+        if handled {
+            self.caret_placed = true;
+        }
+        handled
+    }
+
+    fn key_inner(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
         if self.doc.is_none() {
             return false;
         }
@@ -1201,15 +1216,16 @@ impl Viewer {
     }
 
     /// Whether block `ix` is shown raw in the rendered view: every block the caret or the
-    /// selection touches, and while the find bar is open the block holding the current hit.
-    pub fn renders_raw(&self, ix: usize) -> bool {
+    /// selection touches, once the caret has been placed and while the viewer has the focus
+    /// (`focused`), and while the find bar is open the block holding the current hit.
+    pub fn renders_raw(&self, ix: usize, focused: bool) -> bool {
         if self.doc.is_none() {
             return false;
         }
         let c = self.caret;
         let (lo, hi) = (c.head.min(c.anchor), c.head.max(c.anchor));
         let selected = md_blocks::block_at(&self.blocks, lo.line)..=md_blocks::block_at(&self.blocks, hi.line);
-        selected.contains(&ix) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
+        (self.caret_placed && focused && selected.contains(&ix)) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
     }
 
     /// The lines a raw block shows: from its first line to its last line with text, or further
@@ -1238,8 +1254,16 @@ impl Viewer {
         let caret_y = self
             .raw_blocks
             .iter()
-            .find(|b| b.lines.start == block.lines.start && b.lines.contains(&line))
-            .map(|b| b.row_tops[line - b.lines.start] as f32 * b.raw.line_h)
+            .find(|b| b.lines.start == block.lines.start && line >= b.lines.start)
+            .map(|b| {
+                // A line past the layout's last one (just after Enter on it) is a row per line
+                // below the layout's rows.
+                let row = match b.row_tops.get(line - b.lines.start).filter(|_| line < b.lines.end) {
+                    Some(&r) => r,
+                    None => b.row_tops.last().copied().unwrap_or(0) + (line - b.lines.end.max(b.lines.start)),
+                };
+                row as f32 * b.raw.line_h
+            })
             .unwrap_or(line.saturating_sub(block.lines.start) as f32 * line_h);
         let viewport = self.list_state.viewport_bounds();
         let view_h = f32::from(viewport.size.height);
@@ -1250,8 +1274,9 @@ impl Viewer {
         let top = self.list_state.logical_scroll_top();
         let offset = f32::from(top.offset_in_item);
         if ix < top.item_ix || (ix == top.item_ix && caret_y < offset) {
-            // Above the view: as much of the block above the caret as fits with the caret's row.
-            let to = if ix < top.item_ix { (caret_y + line_h - view_h).max(0.0) } else { caret_y };
+            // Above the view: the block's top when the caret's row fits below it, else the least
+            // scroll, which puts the caret's row at the top.
+            let to = if ix < top.item_ix && caret_y + line_h <= view_h { 0.0 } else { caret_y };
             self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(to) });
             return;
         }
@@ -1278,6 +1303,7 @@ impl Viewer {
     /// A click on the tail of the rendered view: the caret goes to a new paragraph after the last
     /// block (`md_view::append_paragraph`).
     pub fn append_paragraph(&mut self, cx: &mut Context<Self>) {
+        self.caret_placed = true;
         self.edit(|doc, _caret, now| md_view::append_paragraph(doc, now), cx);
     }
 
@@ -1389,6 +1415,7 @@ impl Viewer {
         let anchor = if extend { doc.clamp(self.caret.anchor) } else { p };
         self.caret = edit::Caret { head: p, anchor, goal_col: None };
         self.selecting = true;
+        self.caret_placed = true;
         cx.notify();
     }
 
@@ -1461,6 +1488,7 @@ impl EntityInputHandler for Viewer {
         if self.field().is_none() {
             return;
         }
+        self.caret_placed = true;
         let target = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         if let (Some(m), Some(c)) = (self.marked.clone(), self.compose) {
             // The usual commit: the marked text becomes `text`, typed where the composition began.
@@ -1494,6 +1522,7 @@ impl EntityInputHandler for Viewer {
         if self.field().is_none() {
             return;
         }
+        self.caret_placed = true;
         let explicit = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         let at_range = |(a, b): (edit::Pos, edit::Pos)| edit::Caret { head: b, anchor: a, goal_col: None };
         // Where the marked text goes, in the text before the composition, and whether the marked

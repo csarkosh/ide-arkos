@@ -177,9 +177,11 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         .size_full()
         .child(
             list(state, move |ix, window, cx| {
+                // The caret's block is raw only while the viewer has the focus: gpui redraws the
+                // window when the focus moves, so a blur turns it back to rendered.
                 let (count, raw) = {
                     let v = ctx.viewer.read(cx);
-                    (v.blocks.len(), v.renders_raw(ix))
+                    (v.blocks.len(), v.renders_raw(ix, v.focus.is_focused(window)))
                 };
                 if ix >= count {
                     return tail_element(&ctx);
@@ -358,21 +360,28 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
 }
 
 /// The source position under a window point in rendered block `ix`, read when the press comes:
-/// through the text element under the point (`index_for_position` gives a byte of its rendered
-/// string, `source_offset_at` the byte of the block's text, `pos_of_offset` the position), and
-/// at the block's first character for a part with no text (a bullet, a quote bar, an image, a
-/// rule, the space around them).
+/// through the text element nearest the point (`index_for_position` gives a byte of its rendered
+/// string, `source_offset_at` the byte of the block's text, `pos_of_offset` the position). A
+/// point outside every text element (the block's padding, a heading's space above, a code
+/// block's padding, an item's marker column) goes to the element vertically nearest it, at the
+/// end of its row nearest the pointer. A block with no text (an image, a rule) puts the caret at
+/// its first character.
 fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixels>) -> Option<Pos> {
     let (doc, block) = (v.doc.as_ref()?, v.blocks.get(ix)?);
     let lines = doc.lines();
-    let hit = texts.iter().find(|(layout, _)| layout.bounds().contains(&at));
-    Some(match hit {
-        Some((layout, Part::Runs(runs))) => {
-            let byte = layout.index_for_position(at).unwrap_or_else(|e| e);
-            md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte))
-        }
-        Some((layout, Part::Code(text))) => code_pos(block, lines, text, layout.index_for_position(at).unwrap_or_else(|e| e)),
-        None => doc.clamp(Pos { line: block.lines.start, ch: 0 }),
+    let gap = |layout: &TextLayout| {
+        let b = layout.bounds();
+        f32::from(if at.y < b.top() { b.top() - at.y } else if at.y > b.bottom() { at.y - b.bottom() } else { px(0.0) })
+    };
+    let Some((layout, part)) = texts.iter().min_by(|a, b| gap(&a.0).total_cmp(&gap(&b.0))) else {
+        return Some(doc.clamp(Pos { line: block.lines.start, ch: 0 }));
+    };
+    let b = layout.bounds();
+    let inside = point(at.x.max(b.left()).min((b.right() - px(1.0)).max(b.left())), at.y.max(b.top()).min((b.bottom() - px(1.0)).max(b.top())));
+    let byte = layout.index_for_position(inside).unwrap_or_else(|e| e);
+    Some(match part {
+        Part::Runs(runs) => md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte)),
+        Part::Code(text) => code_pos(block, lines, text, byte),
     })
 }
 
@@ -953,5 +962,31 @@ mod tests {
         let c2 = append_paragraph(&mut d2, Instant::now());
         assert_eq!(d2.lines().len(), 3, "a document already ending in a blank line gets no second one");
         assert_eq!(c2.head.line, 2);
+    }
+
+    /// The first block of `text` with its code text as `md_blocks::inline` gives it.
+    fn code_block(text: &str) -> (Vec<String>, Block, String) {
+        let d = edit::Document::from_text(text);
+        let lines = d.lines().to_vec();
+        let block = split(&lines)[0].clone();
+        let code = match &md_blocks::inline(&lines[block.lines.clone()].join("\n"), &block.kind)[0] {
+            Inline::Code { text, .. } => text.clone(),
+            other => panic!("not code: {other:?}"),
+        };
+        (lines, block, code)
+    }
+
+    #[test]
+    fn a_press_in_a_code_block_maps_to_its_source_line_and_column() {
+        let (lines, block, code) = code_block("```rust\nfn a() {}\n    x\n```");
+        assert_eq!(code_pos(&block, &lines, &code, 3), Pos { line: 1, ch: 3 }, "a fenced block's first row is the line below the fence");
+        assert_eq!(code_pos(&block, &lines, &code, 12), Pos { line: 2, ch: 2 }, "the second row, inside its indent");
+        assert_eq!(code_pos(&block, &lines, &code, 99), Pos { line: 2, ch: 5 }, "past the end: the last code line's end");
+        let (lines, block, code) = code_block("    let a = 1;\n    b");
+        assert_eq!(code_pos(&block, &lines, &code, 4), Pos { line: 0, ch: 8 }, "an indented block's column is past the four-space indent");
+        assert_eq!(code_pos(&block, &lines, &code, 11), Pos { line: 1, ch: 4 });
+        let (lines, block, code) = code_block("```\n\tx\n```");
+        assert_eq!(code_pos(&block, &lines, &code, 4), Pos { line: 1, ch: 1 }, "a tab is drawn four columns wide: after it is the x");
+        assert_eq!(code_pos(&block, &lines, &code, 1), Pos { line: 1, ch: 0 }, "in the tab's left half: before it");
     }
 }

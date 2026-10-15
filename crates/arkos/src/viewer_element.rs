@@ -239,48 +239,98 @@ pub fn shape_raw_wrapped(window: &mut Window, line: &str, layout: &RawLayout, wr
     (shown.to_string(), shaped)
 }
 
-/// The byte ranges of a wrapped line's rows, in order; one row when it did not wrap.
-pub fn wrapped_rows(wrapped: &WrappedLine) -> Vec<Range<usize>> {
-    let layout = &wrapped.unwrapped_layout;
-    let mut out = Vec::with_capacity(wrapped.wrap_boundaries().len() + 1);
+/// Rows as byte ranges from the bytes where each wrapped row after the first begins, for a line
+/// of `len` bytes.
+pub fn rows_from_breaks(breaks: &[usize], len: usize) -> Vec<Range<usize>> {
+    let mut out = Vec::with_capacity(breaks.len() + 1);
     let mut start = 0;
-    for b in wrapped.wrap_boundaries() {
-        let end = layout.runs.get(b.run_ix).and_then(|r| r.glyphs.get(b.glyph_ix)).map_or(start, |g| g.index).max(start);
+    for &b in breaks {
+        let end = b.max(start);
         out.push(start..end);
         start = end;
     }
-    out.push(start..wrapped.len().max(start));
+    out.push(start..len.max(start));
     out
 }
 
-/// The row of a wrapped line that byte `byte` is drawn on: a byte where a row starts is drawn at
-/// that row's start, not at the end of the row above.
-fn wrapped_row_of(rows: &[Range<usize>], byte: usize) -> usize {
+/// The byte ranges of a wrapped line's rows, in order; one row when it did not wrap. A row begins
+/// at the glyph of its wrap boundary.
+pub fn wrapped_rows(wrapped: &WrappedLine) -> Vec<Range<usize>> {
+    let layout = &wrapped.unwrapped_layout;
+    let breaks: Vec<usize> = wrapped.wrap_boundaries().iter().map(|b| layout.runs.get(b.run_ix).and_then(|r| r.glyphs.get(b.glyph_ix)).map_or(0, |g| g.index)).collect();
+    rows_from_breaks(&breaks, wrapped.len())
+}
+
+/// The row that byte `byte` is drawn on: a byte where a row starts is drawn at that row's start,
+/// not at the end of the row above.
+pub fn row_of(rows: &[Range<usize>], byte: usize) -> usize {
     rows.iter().rposition(|r| r.start <= byte).unwrap_or(0)
 }
 
-/// The x of `byte` on a row of a wrapped line, from the row's start.
-fn wrapped_x(wrapped: &WrappedLine, row: &Range<usize>, byte: usize) -> Pixels {
+/// The x of `byte` on `row`, from the row's start; `x_of` is the x of a byte on the unwrapped
+/// line.
+fn x_on_row(x_of: &impl Fn(usize) -> Pixels, row: &Range<usize>, byte: usize) -> Pixels {
+    x_of(byte.clamp(row.start, row.end)) - x_of(row.start)
+}
+
+/// Where byte `byte` is drawn on a line wrapped into `rows`, from the line's top left.
+pub fn point_on_rows(rows: &[Range<usize>], x_of: impl Fn(usize) -> Pixels, byte: usize, line_h: Pixels) -> Point<Pixels> {
+    let r = row_of(rows, byte);
+    point(x_on_row(&x_of, &rows[r], byte), line_h * r as f32)
+}
+
+/// The pieces of the bytes `b0..b1` on a line wrapped into `rows`, one per row they cross:
+/// `(x0, x1, y)` from the line's top left. Empty pieces are left out.
+pub fn spans_on_rows(rows: &[Range<usize>], x_of: impl Fn(usize) -> Pixels, b0: usize, b1: usize, line_h: Pixels) -> Vec<(Pixels, Pixels, Pixels)> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| b0 <= r.end && r.start <= b1)
+        .map(|(i, r)| (x_on_row(&x_of, r, b0), x_on_row(&x_of, r, b1), line_h * i as f32))
+        .filter(|(x0, x1, _)| x1 > x0)
+        .collect()
+}
+
+/// A press past the end of row `row` gets the row's end from gpui, which is the next row's first
+/// byte and would put the caret at the start of the row below. On a row that is not the last
+/// one this steps back one char, so the caret lands at the end of the row pressed.
+pub fn back_off_row_end(rows: &[Range<usize>], row: usize, byte: usize, expanded: &str) -> usize {
+    match rows.get(row) {
+        Some(r) if row + 1 < rows.len() && byte == r.end && byte > r.start => {
+            let at = byte.min(expanded.len());
+            expanded[..expanded.floor_char_boundary(at)].char_indices().last().map_or(at, |(b, _)| b)
+        }
+        _ => byte,
+    }
+}
+
+/// The x of a byte on a wrapped line before wrapping; past the shaped text, its width.
+fn unwrapped_x(wrapped: &WrappedLine) -> impl Fn(usize) -> Pixels + '_ {
     let layout = &wrapped.unwrapped_layout;
-    let at = |b: usize| if b >= layout.len { layout.width } else { layout.x_for_index(b) };
-    at(byte.clamp(row.start, row.end)) - at(row.start)
+    move |b| if b >= layout.len { layout.width } else { layout.x_for_index(b) }
+}
+
+/// The byte of display column `col` in `expanded`, clamped to the shaped length.
+fn col_byte(expanded: &str, col: usize, len: usize) -> usize {
+    expanded.char_indices().nth(col).map_or(expanded.len(), |(b, _)| b).min(len)
 }
 
 /// Where display column `col` of a wrapped line is drawn, from the line's top left: the x on its
 /// row and the row's top.
 pub fn wrapped_point_for_col(wrapped: &WrappedLine, expanded: &str, col: usize, line_h: Pixels) -> Point<Pixels> {
-    let byte = expanded.char_indices().nth(col).map_or(expanded.len(), |(b, _)| b).min(wrapped.len());
-    let rows = wrapped_rows(wrapped);
-    let r = wrapped_row_of(&rows, byte);
-    point(wrapped_x(wrapped, &rows[r], byte), line_h * r as f32)
+    point_on_rows(&wrapped_rows(wrapped), unwrapped_x(wrapped), col_byte(expanded, col, wrapped.len()), line_h)
 }
 
 /// The display column nearest a point given from a wrapped line's top left: a point above the
 /// line is on its first row, one below on its last, one past a row's end at that end.
 pub fn wrapped_col_for_point(wrapped: &WrappedLine, expanded: &str, at: Point<Pixels>, line_h: Pixels) -> usize {
-    let rows = wrapped.wrap_boundaries().len() + 1;
-    let y = at.y.max(px(0.0)).min(line_h * rows as f32 - px(1.0));
-    let mut byte = wrapped.closest_index_for_position(point(at.x.max(px(0.0)), y), line_h).unwrap_or_else(|e| e).min(expanded.len());
+    let rows = wrapped_rows(wrapped);
+    let y = at.y.max(px(0.0)).min(line_h * rows.len() as f32 - px(1.0));
+    let row = ((y / line_h).max(0.0) as usize).min(rows.len() - 1);
+    let byte = match wrapped.closest_index_for_position(point(at.x.max(px(0.0)), y), line_h) {
+        Ok(b) => b,
+        Err(b) => back_off_row_end(&rows, row, b, expanded),
+    };
+    let mut byte = byte.min(expanded.len());
     while !expanded.is_char_boundary(byte) {
         byte -= 1;
     }
@@ -290,15 +340,8 @@ pub fn wrapped_col_for_point(wrapped: &WrappedLine, expanded: &str, at: Point<Pi
 /// The pieces of a wrapped line between display columns `c0` and `c1`, one per row they cross:
 /// `(x0, x1, y)` from the line's top left, for the selection, find hits and marked text.
 pub fn wrapped_spans(wrapped: &WrappedLine, expanded: &str, c0: usize, c1: usize, line_h: Pixels) -> Vec<(Pixels, Pixels, Pixels)> {
-    let byte = |col: usize| expanded.char_indices().nth(col).map_or(expanded.len(), |(b, _)| b).min(wrapped.len());
-    let (b0, b1) = (byte(c0), byte(c1));
-    wrapped_rows(wrapped)
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| b0 <= r.end && r.start <= b1)
-        .map(|(i, r)| (wrapped_x(wrapped, r, b0), wrapped_x(wrapped, r, b1), line_h * i as f32))
-        .filter(|(x0, x1, _)| x1 > x0)
-        .collect()
+    let len = wrapped.len();
+    spans_on_rows(&wrapped_rows(wrapped), unwrapped_x(wrapped), col_byte(expanded, c0, len), col_byte(expanded, c1, len), line_h)
 }
 
 /// The selection on one row, from `x0` to `x1`, in `color` at half strength.
@@ -764,5 +807,24 @@ mod tests {
         let rows = crate::diff::display_rows(2, &d, true);
         assert_eq!(rows, vec![crate::diff::DisplayRow::Line(0), crate::diff::DisplayRow::Deleted(0, 0), crate::diff::DisplayRow::Line(1)]);
         assert_eq!(visible_range(0.0, 10, rows.len()), 0..3);
+    }
+
+    #[test]
+    fn wrapped_rows_place_bytes_spans_and_presses_past_a_row_end() {
+        // A monospace line of 12 bytes, ten pixels a byte, wrapped before bytes 5 and 9.
+        let rows = rows_from_breaks(&[5, 9], 12);
+        assert_eq!(rows, vec![0..5, 5..9, 9..12]);
+        assert_eq!(rows_from_breaks(&[], 3), vec![0..3], "an unwrapped line is one row");
+        let x = |b: usize| px(b as f32 * 10.0);
+        let lh = px(20.0);
+        assert_eq!(point_on_rows(&rows, x, 4, lh), point(px(40.0), px(0.0)));
+        assert_eq!(point_on_rows(&rows, x, 5, lh), point(px(0.0), px(20.0)), "a row's first byte is drawn at that row's start");
+        assert_eq!(point_on_rows(&rows, x, 12, lh), point(px(30.0), px(40.0)), "the line's end, on the last row");
+        assert_eq!(spans_on_rows(&rows, x, 3, 7, lh), vec![(px(30.0), px(50.0), px(0.0)), (px(0.0), px(20.0), px(20.0))]);
+        assert_eq!(spans_on_rows(&rows, x, 5, 9, lh), vec![(px(0.0), px(40.0), px(20.0))], "exactly the middle row");
+        let text = "abcd efghijk";
+        assert_eq!(back_off_row_end(&rows, 0, 5, text), 4, "past the first row's end: its last char, not the next row's start");
+        assert_eq!(back_off_row_end(&rows, 2, 12, text), 12, "the last row's end stays");
+        assert_eq!(back_off_row_end(&rows, 1, 5, text), 5, "a row's start stays");
     }
 }
