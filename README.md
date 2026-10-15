@@ -115,7 +115,9 @@ Things only a person at the screen can check, in order of value:
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
 - the focused pane's glow reaches all four edges, the bottom and right included, and breathes
-  slowly; click another pane: the glow cross-fades; Reduce Motion in System Settings: it rests
+  slowly; click another pane: the glow cross-fades; Reduce Motion in System Settings: it rests;
+  `ps` with four idle terminals and the window in front: the breath's ten repaints a second
+  cost a few percent of one core, and none once another app is in front
 - open from the Dock with Claude running in two tabs of a project: its row says "2 sessions";
   Stop all, then Confirm: the row says "stopping…" and the count goes; `ps` shows the shells
   gone; a folder with no sessions shows nothing on the right; Delete on a selected row arms it

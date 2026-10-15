@@ -34,9 +34,10 @@ const GLOW_BREATH_FLOOR: f32 = 0.7;
 const GLOW_BREATH_LIGHT: f32 = 0.12;
 const GLOW_BREATH_REACH: f32 = 0.25;
 
-/// The glow's reach for a pane `w` by `h`: `GLOW_W`, or less in a pane too small for it.
-pub fn glow_width(w: f32, h: f32) -> f32 {
-    GLOW_W.min(w / 2.0).min(h / 2.0).max(0.0)
+/// The glow's reach for a pane `w` by `h` at `breath` (0 at rest, 1 at the peak): `GLOW_W` plus
+/// the breath's share, or less in a pane too small for it.
+pub fn glow_width(w: f32, h: f32, breath: f32) -> f32 {
+    (GLOW_W * (1.0 + GLOW_BREATH_REACH * breath)).min(w / 2.0).min(h / 2.0).max(0.0)
 }
 
 /// What a tab shows before its title (spec 5): a breathing glyph, a warm dot, nothing, or a
@@ -389,11 +390,15 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // anchored to the pane's own edges (the pane wears a 1 px border, so offsets from the layout
     // rect would land past the clip). When focus moves, the old pane's glow fades out as the new
     // one's fades in. The glow breathes slowly, brighter and a little wider at the peak.
-    let breath = pulse::glow(root.pulse_epoch.elapsed(), crate::motion::reduce_motion());
+    // A window not in front rests: it repaints once on deactivation, and a breath caught
+    // mid-way would freeze there.
+    let breath = if root.window_active { pulse::glow(now.saturating_duration_since(root.pulse_epoch), crate::motion::reduce_motion()) } else { 0.0 };
     let glow = root.glow.sync(pane, focused.then_some(()), now).map(|(_, opacity)| {
-        let g = glow_width(rect.w, rect.h) * (1.0 + GLOW_BREATH_REACH * breath);
+        let g = glow_width(rect.w, rect.h, breath);
         let mut from = theme.chrome.focus_ring.alpha(GLOW_ALPHA * (GLOW_BREATH_FLOOR + (1.0 - GLOW_BREATH_FLOOR) * breath));
-        from.l = (from.l + GLOW_BREATH_LIGHT * breath).min(1.0);
+        // Light at the peak: away from the window's background, so a light theme breathes too.
+        let lift = GLOW_BREATH_LIGHT * breath;
+        from.l = if theme.chrome.window_bg.hsla().l > 0.5 { (from.l - lift).max(0.0) } else { (from.l + lift).min(1.0) };
         let mut to = from;
         to.a = 0.0;
         // The angle is CSS's: the direction the colour fades towards (180 is downwards).
@@ -1034,13 +1039,13 @@ mod tests {
     }
 
     #[test]
-    fn the_glow_fits_a_tiny_pane() {
-        assert_eq!(glow_width(200.0, 100.0), GLOW_W);
-        assert_eq!(glow_width(10.0, 8.0), 4.0, "never wider than half the pane");
-        assert_eq!(glow_width(6.0, 4.0), 2.0);
-        assert_eq!(glow_width(0.0, 0.0), 0.0);
-        // Even at the peak of its breath it stays well inside a pane.
-        assert!(GLOW_W * (1.0 + GLOW_BREATH_REACH) <= 5.0);
+    fn the_glow_fits_a_tiny_pane_even_at_the_peak() {
+        assert_eq!(glow_width(200.0, 100.0, 0.0), GLOW_W);
+        assert_eq!(glow_width(200.0, 100.0, 1.0), 5.0, "a quarter more reach at the peak");
+        assert_eq!(glow_width(10.0, 8.0, 0.0), 4.0, "never wider than half the pane");
+        assert_eq!(glow_width(10.0, 8.0, 1.0), 4.0, "the breath cannot push it past half either");
+        assert_eq!(glow_width(6.0, 4.0, 1.0), 2.0);
+        assert_eq!(glow_width(0.0, 0.0, 1.0), 0.0);
     }
 
     #[test]

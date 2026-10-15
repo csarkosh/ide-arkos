@@ -7,10 +7,12 @@ use std::time::Duration;
 
 /// One breath.
 pub const CYCLE: Duration = Duration::from_secs(2);
-/// How often a working tab asks for a repaint: ten frames a second is a few percent of one core
-/// for a tab bar, and the eye cannot tell at this speed.
+/// How often the active window repaints for its motion (the focus glow's breath, the working
+/// glyphs): ten frames a second, which the eye cannot tell at these speeds. A repaint is the
+/// whole window, every terminal's visible rows included, so this is the window's idle cost
+/// while it is in front; the README's idle check notes the figure.
 pub const TICK: Duration = Duration::from_millis(100);
-/// While nothing pulses: a slow check for a tab that started working.
+/// While the window is not in front, or Reduce Motion is on: a slow check for either changing.
 const IDLE_TICK: Duration = Duration::from_millis(500);
 
 /// The focused pane's glow breathes this slowly: three seconds in, three out.
