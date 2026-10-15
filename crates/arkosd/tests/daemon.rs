@@ -1631,9 +1631,15 @@ fn a_connected_window_hears_update_staged() {
             }
         }
     }
-    // The checks before the release was published found no manifest: a transport failure.
-    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
-    assert!(journal.contains("check: transient, tried again at the next check"), "{journal}");
+}
+
+#[test]
+fn a_check_that_finds_no_manifest_is_journaled_as_transient() {
+    let site = tempfile::tempdir().unwrap();
+    let (_, pk) = test_release_key();
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let journal = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&journal).is_ok_and(|t| t.contains("check: transient, tried again at the next check")), Duration::from_secs(10));
 }
 
 #[test]
