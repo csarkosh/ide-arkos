@@ -302,6 +302,9 @@ pub struct Root {
     /// The project window's `NSWindow`, from gpui's window handle at setup: where the
     /// placeholders are on screen and whether the window is minimized or hidden.
     pub ns_window: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>>,
+    /// Where the window is (display, frame), as last saved with the layout; a relaunch opens
+    /// it there.
+    pub window_saved: Option<workspace::WindowSaved>,
     /// The windows the palette's dock list offers, by row (`Command::DockChromeWindowAt`).
     pub dock_choices: Vec<ax::AxWindow>,
     /// Each pane's body as laid out by the last render, in window points: where a Chrome window
@@ -451,6 +454,7 @@ impl Root {
     fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool, cx: &mut Context<Self>) -> Self {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
+        let window_saved = saved.as_ref().and_then(|w| w.window.clone());
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
             Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
@@ -545,6 +549,7 @@ impl Root {
             dock_timer: false,
             chrome_windows: Vec::new(),
             ns_window: None,
+            window_saved,
             dock_choices: Vec::new(),
             pane_rects: Vec::new(),
             browser_drop: None,
@@ -738,9 +743,25 @@ impl Root {
         self.tree.layout(self.content)
     }
 
+    /// Remembers where the window is, whenever that changes, so a relaunch opens it there. A
+    /// full-screen or minimized window is no place to come back to and is not noted.
+    fn note_window_placement(&mut self, window: &Window, cx: &mut App) {
+        let Some(ns) = self.ns_window.as_ref() else { return };
+        if window.is_fullscreen() || ax::screen::window_hidden(ns) {
+            return;
+        }
+        let Some((x, y, w, h)) = ax::screen::placement(ns) else { return };
+        if self.window_saved.as_ref().is_some_and(|s| (s.x, s.y, s.w, s.h) == (x, y, w, h)) {
+            return;
+        }
+        let Some(display) = window.display(cx).and_then(|d| d.uuid().ok()) else { return };
+        self.window_saved = Some(workspace::WindowSaved { display: display.to_string(), x, y, w, h });
+        self.save(cx);
+    }
+
     pub fn save(&mut self, cx: &mut App) {
         let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open };
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar) };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2723,6 +2744,7 @@ impl Render for Root {
         let now = Instant::now();
         let last_frame = std::mem::replace(&mut self.frame_now, now);
         self.settle(now, last_frame);
+        self.note_window_placement(window, cx);
         let theme = self.theme.clone();
         let status = if banner_visible(self.reconnecting_since, now) { self.status.clone() } else { String::new() };
         // A notice fades in and out; it keeps its row until it has faded.
@@ -3207,6 +3229,17 @@ struct Startup {
 }
 
 /// Opens the window on `project` and starts everything that serves it.
+/// Where the project window opens: on the saved display at the saved size when that display is
+/// attached (`true`: its exact place follows once the window exists), else that size centered
+/// on the main display; 1200 by 800 centered with nothing saved.
+fn open_bounds(saved: Option<&workspace::WindowSaved>, cx: &App) -> (Option<gpui::DisplayId>, Bounds<gpui::Pixels>, bool) {
+    let Some(s) = saved.filter(|s| s.w.is_finite() && s.h.is_finite() && s.w >= 200.0 && s.h >= 200.0) else {
+        return (None, Bounds::centered(None, size(px(1200.), px(800.)), cx), false);
+    };
+    let display = cx.displays().into_iter().find(|d| d.uuid().ok().is_some_and(|u| u.to_string() == s.display)).map(|d| d.id());
+    (display, Bounds::centered(display, size(px(s.w as f32), px(s.h as f32)), cx), display.is_some())
+}
+
 fn open_project_window(
     project: PathBuf,
     // The connection, and what the launch chooser read from it before the window existed.
@@ -3228,7 +3261,11 @@ fn open_project_window(
         })
         .detach();
     {
-        let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
+        // The window comes back where it was: on its display when that is still attached, at
+        // its size; its exact place follows once the window exists (`ax::screen::place`).
+        let saved_window = saved.as_ref().and_then(|s| s.window.clone());
+        let (display_id, bounds, place) = open_bounds(saved_window.as_ref(), cx);
+        let place = place.then_some(saved_window).flatten();
         let client_for_view = client.clone();
         let view_queue = save_queue.clone();
         let view_project = project.clone();
@@ -3238,6 +3275,7 @@ fn open_project_window(
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    display_id,
                     // The window draws its own bar in the title bar's space (chrome.rs); the
                     // traffic lights stay where macOS puts them.
                     titlebar: Some(gpui::TitlebarOptions { title: Some(ax::screen::WINDOW_TITLE.into()), appears_transparent: true, traffic_light_position: None }),
@@ -3260,6 +3298,9 @@ fn open_project_window(
                         .detach();
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
                         root.ns_window = ax::screen::ns_window_of(window);
+                        if let (Some(ns), Some(w)) = (root.ns_window.as_ref(), place.as_ref()) {
+                            ax::screen::place(ns, w.x, w.y, w.w, w.h);
+                        }
                         root.save_queue = view_queue;
                         root.build_highlighter(cx);
                         root

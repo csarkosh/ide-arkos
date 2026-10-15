@@ -75,6 +75,10 @@ Things only a person at the screen can check, in order of value:
   shell and tab where it was; `arkos --version` in a tab prints X
 - `[update] auto = false`: the badge stays and "Update now" applies it
 - a relaunched window opens without taking focus from the app in use (verify by eye)
+- move the window to a second display and resize it, then "Update now" (or quit and open the
+  folder again): the window comes back on that display, the same size, in the same place; with
+  that display unplugged it opens centered on the main display at that size (macOS puts a new
+  window on the current Space; an app cannot pick one)
 - editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
