@@ -35,10 +35,13 @@ pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
     };
     let bytes = match key {
         "enter" => b"\r".to_vec(),
+        // Option+Delete is readline's backward-kill-word (ESC DEL), as in Terminal.app.
+        "backspace" if m.alt => vec![0x1b, 0x7f],
         "backspace" => vec![0x7f],
         "tab" if m.shift => b"\x1b[Z".to_vec(),
         "tab" => b"\t".to_vec(),
         "escape" => vec![0x1b],
+        "delete" if mods > 1 => format!("\x1b[3;{mods}~").into_bytes(),
         "delete" => b"\x1b[3~".to_vec(),
         "space" if m.control => vec![0x00],
         "space" => b" ".to_vec(),
@@ -127,6 +130,15 @@ mod tests {
         assert_eq!(keystroke_to_bytes(&ks("tab", None, shift()), false), Some(b"\x1b[Z".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("escape", None, none()), false), Some(vec![0x1b]));
         assert_eq!(keystroke_to_bytes(&ks("delete", None, none()), false), Some(b"\x1b[3~".to_vec()));
+    }
+
+    #[test]
+    fn option_delete_kills_the_word_before_the_cursor() {
+        // Option+Delete (the backspace key) is readline's backward-kill-word: ESC DEL.
+        assert_eq!(keystroke_to_bytes(&ks("backspace", None, alt()), false), Some(vec![0x1b, 0x7f]));
+        // Option+forward-delete, and any other modified forward delete, is xterm's ESC [ 3 ; m ~.
+        assert_eq!(keystroke_to_bytes(&ks("delete", None, alt()), false), Some(b"\x1b[3;3~".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("delete", None, shift()), false), Some(b"\x1b[3;2~".to_vec()));
     }
 
     #[test]
