@@ -347,7 +347,6 @@ fn walk(src: &str) -> Vec<Inline> {
 /// A byte index into the rendered string (the runs' texts joined) to a byte offset in the block's
 /// text: linear within a run's source, the next run's start between runs, and past the end the end
 /// of the last run's source.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6 on.
 pub fn source_offset_at(runs: &[Run], rendered_byte: usize) -> usize {
     let mut at = 0;
     for run in runs {

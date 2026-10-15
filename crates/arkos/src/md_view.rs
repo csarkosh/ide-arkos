@@ -3,19 +3,32 @@
 //! and dropped only for the blocks an edit changed. Paragraphs are in the UI font, code and tables
 //! in the terminal's; a task item's box toggles the item through an undoable edit, and a link
 //! opens on Cmd+click.
+//!
+//! The block holding the caret (and every block a selection touches) is drawn raw instead, by
+//! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
+//! caret, the selection and the marked text. A click on a rendered block puts the caret at the
+//! source position under it, Up and Down cross from block to block (`navigate`), and the input
+//! handler sits on a canvas over the whole list, so typing reaches the document even when the
+//! caret's block is scrolled out of view.
 
-use crate::edit;
+use crate::edit::{self, Pos};
 use crate::highlight::Highlighter;
-use crate::md_blocks::{self, BlockKind, Inline, Run};
+use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
+use crate::palette::Rgb;
 use crate::theme::Theme;
-use crate::viewer::{Span, Viewer};
+use crate::viewer::{Hit, Span, Viewer};
+use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
-    div, font, img, list, prelude::*, px, relative, AnyElement, App, Context, Entity, FontStyle, FontWeight, Hsla, InteractiveText, MouseButton, MouseDownEvent, SharedString, StrikethroughStyle,
-    StyledText, TextLayout, TextRun, UnderlineStyle,
+    canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
+    Entity, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
 };
+use std::cell::Cell;
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// The paragraph size as a multiple of the font size.
 pub const PARA: f32 = 1.1;
@@ -122,12 +135,21 @@ pub struct BlockCtx {
     pub code_bg: Hsla,
     pub border: Hsla,
     pub on_accent: Hsla,
+    /// The raw blocks' colours: the raw view's markdown colours, the selection (the find match
+    /// colour, as in the raw view), the current find hit and the caret.
+    pub raw: RawColors,
+    pub selection: Rgb,
+    pub find_current: Rgb,
+    pub caret: Rgb,
 }
 
 /// The rendered view of a document: a `list` with one row per block, each built from the block's
-/// cached rendering (filled on demand). The list scrolls itself and keeps its place in
-/// `Viewer.list_state`.
-pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, cx: &App) -> AnyElement {
+/// cached rendering (filled on demand) or drawn raw when the caret or the selection is in it, and
+/// a tail row below the last block. The list scrolls itself and keeps its place in
+/// `Viewer.list_state`. A canvas over the list takes the text input.
+pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, cx: &mut App) -> AnyElement {
+    // The raw blocks of this frame record their layouts as they are laid out.
+    viewer.update(cx, |v, _| v.raw_blocks.clear());
     let v = viewer.read(cx);
     let state = v.list_state.clone();
     let ctx = Rc::new(BlockCtx {
@@ -143,12 +165,28 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         code_bg: theme.chrome.tab_inactive.hsla(),
         border: theme.chrome.border.hsla(),
         on_accent: theme.chrome.window_bg.hsla(),
+        raw: RawColors { text: theme.chrome.text, dim: theme.chrome.text_dim, code: theme.tree.modified, link: theme.chrome.focus_ring },
+        selection: theme.semantic.find_match,
+        find_current: theme.semantic.find_current,
+        caret: theme.chrome.text,
     });
+    let input = input_canvas(viewer.clone());
     div()
         .id(("md-view", viewer.entity_id()))
+        .relative()
         .size_full()
         .child(
-            list(state, move |ix, _window, cx| {
+            list(state, move |ix, window, cx| {
+                let (count, raw) = {
+                    let v = ctx.viewer.read(cx);
+                    (v.blocks.len(), v.renders_raw(ix))
+                };
+                if ix >= count {
+                    return tail_element(&ctx);
+                }
+                if raw {
+                    return raw_row(ix, &ctx, window, cx);
+                }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
                 ctx.viewer.update(cx, |v, _| fill(v, ix, highlighter.as_ref()));
@@ -160,11 +198,95 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
             })
             .size_full(),
         )
+        .child(input)
         .into_any_element()
 }
 
-/// One block's row: its inlines in the block's type, 6 px of space below. Every text element's
-/// layout is kept on the row's mouse-down for the caret placement of Task 6.
+/// The canvas over the list that registers the document's input handler every frame, whatever
+/// rows are on screen, so typing reaches the active block even when it is scrolled away. It also
+/// ends a drag selection wherever the button comes up. It paints nothing and takes no mouse
+/// presses, so the rows below it get them.
+fn input_canvas(viewer: Entity<Viewer>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, cx| {
+            let focus = viewer.read(cx).focus.clone();
+            window.handle_input(&focus, ElementInputHandler::new(bounds, viewer.clone()), cx);
+            let v = viewer.clone();
+            // In the capture phase, which no handler can stop, so a drag always ends.
+            window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Capture && ev.button == MouseButton::Left {
+                    v.update(cx, |v, _| v.mouse_up());
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// The row below the last block, two paragraph lines high: a press there starts a new paragraph
+/// at the end of the document and puts the caret in it.
+fn tail_element(ctx: &BlockCtx) -> AnyElement {
+    let viewer = ctx.viewer.clone();
+    div()
+        .id("md-tail")
+        .w_full()
+        .h(px(ctx.font_size * PARA * PARA_LINE * 2.0))
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, cx| viewer.update(cx, |v, cx| v.append_paragraph(cx)))
+        .into_any_element()
+}
+
+/// A block drawn raw: its source lines (`Viewer::raw_lines`) in a `RawBlockElement`, with the
+/// rendered rows' side padding and space below.
+fn raw_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyElement {
+    let v = ctx.viewer.read(cx);
+    let Some(doc) = v.doc.as_ref() else { return div().into_any_element() };
+    let shown = v.raw_lines(ix);
+    let (hits, current) = match &v.find {
+        Some(f) => (f.hits.iter().filter(|h| shown.contains(&h.line)).copied().collect(), f.hits.get(f.current).copied()),
+        None => (Vec::new(), None),
+    };
+    let el = RawBlockElement {
+        viewer: ctx.viewer.clone(),
+        lines: doc.shared_lines(),
+        shown,
+        family: ctx.mono.clone(),
+        font_size: ctx.font_size,
+        line_h: ctx.font_size * ctx.mono_line_height,
+        colors: ctx.raw,
+        caret: v.caret,
+        marked: v.marked.clone(),
+        focused: v.focus.is_focused(window),
+        hits,
+        current,
+        selection: ctx.selection,
+        find_current: ctx.find_current,
+        caret_color: ctx.caret,
+    };
+    div().id(("md-block", ix)).w_full().px(px(SIDE)).pb(px(BLOCK_GAP)).child(el).into_any_element()
+}
+
+/// What a press on a rendered block maps through: each text element's layout with the source it
+/// shows, and whether a task box took the press (so the caret stays put and the box's click
+/// lands).
+struct Parts {
+    texts: Vec<(TextLayout, Part)>,
+    task_press: Rc<Cell<bool>>,
+}
+
+/// The source behind one text element: inline runs, or a code block's text.
+enum Part {
+    Runs(Vec<Run>),
+    Code(String),
+}
+
+/// One block's row: its inlines in the block's type, 6 px of space below. A press puts the caret
+/// at the source position under it (Shift extends the selection); a drag that reaches the row
+/// moves the selection's head there.
 pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) -> AnyElement {
     let size = ctx.font_size * scale(kind);
     let row = div()
@@ -176,27 +298,27 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
         .font_family(ctx.ui.clone())
         .text_size(px(size))
         .line_height(relative(PARA_LINE));
+    let mut parts = Parts { texts: Vec::new(), task_press: Rc::new(Cell::new(false)) };
+    let mut children: Vec<AnyElement> = Vec::with_capacity(r.inlines.len().max(1));
     if *kind == BlockKind::Blank {
-        return row.child(div().h(px(BLANK_H))).into_any_element();
+        children.push(div().h(px(BLANK_H)).into_any_element());
     }
-    let mut layouts: Vec<TextLayout> = Vec::new();
-    let mut children: Vec<AnyElement> = Vec::with_capacity(r.inlines.len());
     for (j, inline) in r.inlines.iter().enumerate() {
         let child = match inline {
-            Inline::Para(runs) => text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, &mut layouts),
+            Inline::Para(runs) => text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, &mut parts),
             Inline::Heading(level, runs) => div()
                 .pt(px(HEADING_GAP))
                 .text_size(px(ctx.font_size * heading_scale(*level)))
-                .child(text_element(j, runs, FontWeight::SEMIBOLD, ctx.text, ctx, &mut layouts))
+                .child(text_element(j, runs, FontWeight::SEMIBOLD, ctx.text, ctx, &mut parts))
                 .into_any_element(),
             Inline::Quote(runs) => div()
                 .border_l(px(QUOTE_BAR))
                 .border_color(ctx.border)
                 .pl(px(10.0))
-                .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, &mut layouts))
+                .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, &mut parts))
                 .into_any_element(),
-            Inline::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut layouts),
-            Inline::Code { text, .. } => code_element(text, r.code_spans.as_ref().map(|(_, s)| s.as_slice()), ctx, &mut layouts),
+            Inline::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut parts),
+            Inline::Code { text, .. } => code_element(text, r.code_spans.as_ref().map(|(_, s)| s.as_slice()), ctx, &mut parts),
             Inline::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
             Inline::Table(t) | Inline::Html(t) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
             Inline::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
@@ -204,13 +326,82 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
         };
         children.push(child);
     }
+    let Parts { texts, task_press } = parts;
+    let texts = Rc::new(texts);
+    let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
     row.children(children)
-        // Task 6 maps a press here to a source position through `layouts` (and
-        // `md_blocks::source_offset_at` over the block's runs); this task leaves it a no-op.
-        .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| {
-            let _ = &layouts;
+        .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
+            // A task box's press is for the box, and Cmd+click is for a link: the block stays
+            // rendered so their clicks land on the button's release.
+            if task_press.replace(false) || ev.modifiers.platform {
+                return;
+            }
+            v_down.update(cx, |v, cx| {
+                if let Some(p) = caret_at(v, ix, &texts_down, ev.position) {
+                    v.place_caret(p, ev.modifiers.shift, cx);
+                }
+            });
+        })
+        .on_mouse_move(move |ev: &MouseMoveEvent, _window, cx| {
+            if ev.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            v_move.update(cx, |v, cx| {
+                if v.is_selecting() {
+                    if let Some(p) = caret_at(v, ix, &texts, ev.position) {
+                        v.drag_to(p, cx);
+                    }
+                }
+            });
         })
         .into_any_element()
+}
+
+/// The source position under a window point in rendered block `ix`, read when the press comes:
+/// through the text element under the point (`index_for_position` gives a byte of its rendered
+/// string, `source_offset_at` the byte of the block's text, `pos_of_offset` the position), and
+/// at the block's first character for a part with no text (a bullet, a quote bar, an image, a
+/// rule, the space around them).
+fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixels>) -> Option<Pos> {
+    let (doc, block) = (v.doc.as_ref()?, v.blocks.get(ix)?);
+    let lines = doc.lines();
+    let hit = texts.iter().find(|(layout, _)| layout.bounds().contains(&at));
+    Some(match hit {
+        Some((layout, Part::Runs(runs))) => {
+            let byte = layout.index_for_position(at).unwrap_or_else(|e| e);
+            md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte))
+        }
+        Some((layout, Part::Code(text))) => code_pos(block, lines, text, layout.index_for_position(at).unwrap_or_else(|e| e)),
+        None => doc.clamp(Pos { line: block.lines.start, ch: 0 }),
+    })
+}
+
+/// A byte of a code block's drawn text (its lines with tabs expanded, joined) to a document
+/// position: the drawn line is the source line as many lines below the opening fence (or the
+/// block's first line, for an indented block), and the column counts back through the tabs and
+/// past the indent the source line has before the code.
+fn code_pos(block: &Block, lines: &[String], text: &str, byte: usize) -> Pos {
+    let drawn = code_lines(text);
+    let code: Vec<&str> = text.strip_suffix('\n').unwrap_or(text).split('\n').collect();
+    let (mut row, mut rest) = (0, byte);
+    while row + 1 < drawn.len() && rest > drawn[row].len() {
+        rest -= drawn[row].len() + 1;
+        row += 1;
+    }
+    let shown = &drawn[row];
+    let col = shown[..shown.floor_char_boundary(rest.min(shown.len()))].chars().count();
+    let ch = element::ch_for_col(code.get(row).copied().unwrap_or(""), col);
+    let first = block.lines.start.min(lines.len().saturating_sub(1));
+    let fenced = lines.get(first).is_some_and(|l| {
+        let t = l.trim_start();
+        t.starts_with("```") || t.starts_with("~~~")
+    });
+    let last = md_blocks::pos_of_offset(block, lines, usize::MAX).line;
+    let line = (first + usize::from(fenced) + row).min(last);
+    let source = &lines[line];
+    let code_line = code.get(row).copied().unwrap_or("");
+    let indent = source.strip_suffix(code_line).map_or(0, |pre| pre.chars().count());
+    Pos { line, ch: (indent + ch).min(source.chars().count()) }
 }
 
 /// The runs of a paragraph, heading, quote or item as one string with a `TextRun` per run (their
@@ -250,10 +441,10 @@ fn styled_runs(runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx) ->
 }
 
 /// A run list as text: a `StyledText`, wrapped to open its links on Cmd+click when it has any.
-fn text_element(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx, layouts: &mut Vec<TextLayout>) -> AnyElement {
+fn text_element(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let (text, text_runs, links) = styled_runs(runs, weight, color, ctx);
     let styled = StyledText::new(text).with_runs(text_runs);
-    layouts.push(styled.layout().clone());
+    parts.texts.push((styled.layout().clone(), Part::Runs(runs.to_vec())));
     if links.is_empty() {
         return styled.into_any_element();
     }
@@ -261,7 +452,8 @@ fn text_element(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &B
     let base_dir = ctx.base_dir.clone();
     InteractiveText::new(("md-text", j), styled)
         .on_click(ranges, move |i, window, cx| {
-            // A plain click is for the text (the caret, from Task 6); Cmd+click follows the link.
+            // A plain click is for the text (the row put the caret there); Cmd+click follows the
+            // link.
             if window.modifiers().platform {
                 if let Some(target) = targets.get(i) {
                     open_link(target, &base_dir, cx);
@@ -291,7 +483,7 @@ fn open_link(target: &str, base_dir: &Path, cx: &mut App) {
 /// A list item: the marker column (a bullet, or the number with its delimiter) indented by its
 /// depth, a task's box, and the item's text.
 #[allow(clippy::too_many_arguments)]
-fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &[Run], size: f32, ctx: &BlockCtx, layouts: &mut Vec<TextLayout>) -> AnyElement {
+fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &[Run], size: f32, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let ch = size * CH_EM;
     let bullet = match marker {
         "-" | "*" | "+" | "" => "\u{2022}".to_string(),
@@ -303,6 +495,7 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
     let offset = runs.first().map(|r| r.source.start);
     let check = task.map(|done| {
         let viewer = ctx.viewer.clone();
+        let press = parts.task_press.clone();
         div()
             .id(("md-task", j))
             .flex_none()
@@ -320,6 +513,9 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
             .line_height(px(CHECKBOX))
             .text_color(ctx.on_accent)
             .cursor_pointer()
+            // The row's press handler runs next and leaves the caret alone for this press, so the
+            // block stays rendered and the box's click lands.
+            .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
             .when_some(offset, move |d, offset| d.on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| toggle_item(v, ix, offset, cx))))
     });
     div()
@@ -329,7 +525,7 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
         .pl(px(f32::from(depth) * 2.0 * ch))
         .child(div().flex_none().min_w(px(2.0 * ch)).pr(px(ch * 0.5)).text_color(ctx.dim).child(bullet))
         .children(check)
-        .child(div().flex_1().min_w_0().child(text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, layouts)))
+        .child(div().flex_1().min_w_0().child(text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts)))
         .into_any_element()
 }
 
@@ -351,11 +547,11 @@ fn toggle_item(v: &mut Viewer, ix: usize, offset: usize, cx: &mut Context<Viewer
 
 /// A code block: its lines in the terminal font on the inactive tab colour, coloured by the
 /// highlighter's spans when they are there.
-fn code_element(text: &str, spans: Option<&[Vec<Span>]>, ctx: &BlockCtx, layouts: &mut Vec<TextLayout>) -> AnyElement {
+fn code_element(text: &str, spans: Option<&[Vec<Span>]>, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let lines = code_lines(text);
     let runs = code_runs(&lines, spans, ctx);
     let styled = StyledText::new(lines.join("\n")).with_runs(runs);
-    layouts.push(styled.layout().clone());
+    parts.texts.push((styled.layout().clone(), Part::Code(text.to_string())));
     div()
         .bg(ctx.code_bg)
         .p(px(CODE_PAD))
@@ -423,9 +619,295 @@ fn image_element(alt: &str, path: &str, ctx: &BlockCtx) -> AnyElement {
     }
 }
 
+/// Where a raw block was laid out in a frame, kept in `Viewer.raw_blocks` for the input handler
+/// and the mouse: the layout of its text (`raw.bounds` is the text's box, its width the wrap
+/// width), the document lines it shows, and the first wrapped row of each of them with the total
+/// row count last.
+#[derive(Debug, Clone)]
+pub struct BlockLayout {
+    pub raw: RawLayout,
+    pub lines: Range<usize>,
+    pub row_tops: Vec<usize>,
+}
+
+impl BlockLayout {
+    /// The window y below the block's last row.
+    pub fn bottom(&self) -> Pixels {
+        self.raw.bounds.origin.y + px(self.raw.line_h * self.row_tops.last().copied().unwrap_or(0) as f32)
+    }
+
+    /// The document position nearest a window point: the row under it (the first or last row for
+    /// a point above or below the text), the column nearest it on that row.
+    pub fn pos_at(&self, lines: &[String], at: Point<Pixels>, window: &mut Window) -> Pos {
+        let lh = px(self.raw.line_h);
+        let rows = self.row_tops.last().copied().unwrap_or(1).max(1);
+        let rel_y = at.y - self.raw.bounds.origin.y;
+        let row = ((rel_y / lh).floor().max(0.0) as usize).min(rows - 1);
+        let i = self.row_tops.partition_point(|&t| t <= row).saturating_sub(1).min(self.lines.len().saturating_sub(1));
+        let n = (self.lines.start + i).min(lines.len().saturating_sub(1));
+        let Some(line) = lines.get(n) else { return Pos::default() };
+        let (expanded, wrapped) = element::shape_raw_wrapped(window, line, &self.raw, self.raw.bounds.size.width);
+        let within = point(at.x - self.raw.text_left, rel_y - lh * self.row_tops[i] as f32);
+        Pos { line: n, ch: element::ch_for_col(line, element::wrapped_col_for_point(&wrapped, &expanded, within, lh)) }
+    }
+
+    /// The window point where position `p` is drawn (the top of its row), when its line is one
+    /// this block shows.
+    pub fn point_of(&self, lines: &[String], p: Pos, window: &mut Window) -> Option<Point<Pixels>> {
+        let i = p.line.checked_sub(self.lines.start).filter(|_| self.lines.contains(&p.line))?;
+        let line = lines.get(p.line)?;
+        let lh = px(self.raw.line_h);
+        let (expanded, wrapped) = element::shape_raw_wrapped(window, line, &self.raw, self.raw.bounds.size.width);
+        let at = element::wrapped_point_for_col(&wrapped, &expanded, element::display_col(line, p.ch), lh);
+        Some(point(self.raw.text_left + at.x, self.raw.bounds.origin.y + lh * self.row_tops[i] as f32 + at.y))
+    }
+}
+
+/// How many wrapped rows each of `lines[shown]` takes at `wrap_width`. An ASCII line that fits
+/// with a cell to spare is one row without shaping; any other line is shaped (gpui caches the
+/// shape for the paint). With no usable width every line is one row.
+fn row_counts(window: &mut Window, lines: &[String], shown: Range<usize>, layout: &RawLayout, wrap_width: Option<Pixels>) -> Vec<usize> {
+    let run = TextRun { len: 1, font: font(layout.family.clone()), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
+    let cell_w = f32::from(window.text_system().layout_line("W", px(layout.font_size), &[run], None).width);
+    shown
+        .map(|n| {
+            let (Some(line), Some(width)) = (lines.get(n), wrap_width) else { return 1 };
+            let expanded = element::expand_tabs(line);
+            let (cut, _) = element::paint_cut(&expanded);
+            if cut.is_ascii() && (cut.len() as f32 + 1.0) * cell_w <= f32::from(width) {
+                return 1;
+            }
+            element::shape_raw_wrapped(window, line, layout, width).1.wrap_boundaries().len() + 1
+        })
+        .collect()
+}
+
+/// A block of the rendered view drawn as its source: the lines `shown` in the terminal family at
+/// the terminal's size, coloured from `md_blocks::raw_marks`, wrapped to the row's width (its
+/// height is the wrapped rows times the line height), with the caret, the selection, the marked
+/// text and find hits painted as the raw view paints them. Only the lines inside the list's
+/// visible area are painted. A press places the caret (Shift extends the selection) and a drag
+/// selects; the text input itself is the list's canvas's.
+pub struct RawBlockElement {
+    viewer: Entity<Viewer>,
+    lines: Arc<Vec<String>>,
+    shown: Range<usize>,
+    family: SharedString,
+    font_size: f32,
+    line_h: f32,
+    colors: RawColors,
+    caret: edit::Caret,
+    marked: Option<Range<Pos>>,
+    focused: bool,
+    hits: Vec<Hit>,
+    current: Option<Hit>,
+    selection: Rgb,
+    find_current: Rgb,
+    caret_color: Rgb,
+}
+
+impl RawBlockElement {
+    /// The text layout before it has bounds: the font, the size, the colours.
+    fn raw_layout(&self, bounds: Bounds<Pixels>) -> RawLayout {
+        RawLayout { bounds, text_left: bounds.origin.x, line_h: self.line_h, font_size: self.font_size, family: self.family.clone(), colors: self.colors }
+    }
+}
+
+/// What a raw block's paint needs from its prepaint: where its rows start and the area that takes
+/// the mouse (the text and the row's padding around it).
+pub struct RawPrepaint {
+    block: BlockLayout,
+    hitbox: Hitbox,
+    cell_w: f32,
+}
+
+impl Element for RawBlockElement {
+    type RequestLayoutState = ();
+    type PrepaintState = RawPrepaint;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, window: &mut Window, _cx: &mut App) -> (LayoutId, ()) {
+        let mut style = Style::default();
+        style.size.width = relative(1.0).into();
+        let (lines, shown, layout, line_h) = (self.lines.clone(), self.shown.clone(), self.raw_layout(Bounds::default()), self.line_h);
+        let id = window.request_measured_layout(style, move |known, available, window, _cx| {
+            let width = known.width.or(match available.width {
+                AvailableSpace::Definite(w) => Some(w),
+                _ => None,
+            });
+            let rows: usize = row_counts(window, &lines, shown.clone(), &layout, width.filter(|w| *w > px(0.0))).iter().sum();
+            size(width.unwrap_or_default(), px(line_h * rows.max(1) as f32))
+        });
+        (id, ())
+    }
+
+    fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> RawPrepaint {
+        let layout = self.raw_layout(bounds);
+        let counts = row_counts(window, &self.lines, self.shown.clone(), &layout, Some(bounds.size.width).filter(|w| *w > px(0.0)));
+        let mut row_tops = Vec::with_capacity(counts.len() + 1);
+        let mut at = 0;
+        for c in &counts {
+            row_tops.push(at);
+            at += c;
+        }
+        row_tops.push(at);
+        let text = Bounds { origin: bounds.origin, size: size(bounds.size.width, px(self.line_h * at.max(1) as f32)) };
+        let block = BlockLayout { raw: self.raw_layout(text), lines: self.shown.clone(), row_tops };
+        self.viewer.update(cx, |v, _| v.raw_blocks.push(block.clone()));
+        // The row's padding takes the mouse too: a press beside the text is on its nearest column.
+        let hit = Bounds { origin: point(bounds.origin.x - px(SIDE), bounds.origin.y), size: size(bounds.size.width + px(SIDE * 2.0), bounds.size.height + px(BLOCK_GAP)) };
+        let hitbox = window.insert_hitbox(hit, HitboxBehavior::Normal);
+        let run = TextRun { len: 1, font: font(self.family.clone()), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
+        let cell_w = f32::from(window.text_system().layout_line("W", px(self.font_size), &[run], None).width);
+        RawPrepaint { block, hitbox, cell_w }
+    }
+
+    fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), prepaint: &mut RawPrepaint, window: &mut Window, cx: &mut App) {
+        let block = &prepaint.block;
+        let lh = px(self.line_h);
+        let x = bounds.origin.x;
+        let mask = window.content_mask().bounds;
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
+        for (i, n) in self.shown.clone().enumerate() {
+            let y = bounds.origin.y + lh * block.row_tops[i] as f32;
+            let h = lh * (block.row_tops[i + 1] - block.row_tops[i]) as f32;
+            // Only the lines inside the list's visible area are shaped and painted.
+            if y + h < mask.top() || y > mask.bottom() {
+                continue;
+            }
+            let Some(line) = self.lines.get(n) else { continue };
+            let (expanded, wrapped) = element::shape_raw_wrapped(window, line, &block.raw, bounds.size.width);
+            let end_col = expanded.chars().count();
+            if lo != hi && lo.line <= n && n <= hi.line {
+                let c0 = if n == lo.line { element::display_col(line, lo.ch) } else { 0 };
+                let c1 = if n == hi.line { element::display_col(line, hi.ch) } else { end_col };
+                for (x0, x1, dy) in element::wrapped_spans(&wrapped, &expanded, c0, c1, lh) {
+                    element::paint_selection(window, x + x0, x + x1, y + dy, lh, self.selection);
+                }
+                // A selection running on past the line's end shows its line break as half a cell.
+                if n < hi.line {
+                    let end = element::wrapped_point_for_col(&wrapped, &expanded, end_col, lh);
+                    element::paint_selection(window, x + end.x, x + end.x + px(prepaint.cell_w / 2.0), y + end.y, lh, self.selection);
+                }
+            }
+            for hit in self.hits.iter().filter(|h| h.line == n) {
+                let col = |byte: usize| element::display_col(line, line[..line.floor_char_boundary(byte.min(line.len()))].chars().count());
+                let current = self.current == Some(*hit);
+                for (x0, x1, dy) in element::wrapped_spans(&wrapped, &expanded, col(hit.start), col(hit.end), lh) {
+                    element::paint_hits(window, &[(x + x0, x + x1, current)], y + dy, lh, self.selection, self.find_current);
+                }
+            }
+            let _ = wrapped.paint(point(x, y), lh, TextAlign::Left, None, window, cx);
+            if let Some(m) = self.marked.as_ref().filter(|m| m.start.line <= n && n <= m.end.line) {
+                let c0 = if n == m.start.line { element::display_col(line, m.start.ch) } else { 0 };
+                let c1 = if n == m.end.line { element::display_col(line, m.end.ch) } else { end_col };
+                for (x0, x1, dy) in element::wrapped_spans(&wrapped, &expanded, c0, c1, lh) {
+                    element::paint_marked(window, x + x0, x + x1, y + dy, lh, self.caret_color);
+                }
+            }
+            if self.focused && c.head.line == n {
+                let at = element::wrapped_point_for_col(&wrapped, &expanded, element::display_col(line, c.head.ch), lh);
+                element::paint_caret(window, x + at.x, y + at.y, lh, self.caret_color);
+            }
+        }
+        self.listen(prepaint, window);
+    }
+}
+
+impl RawBlockElement {
+    /// The mouse in the block: an I-beam, a press placing the caret (Shift extends the
+    /// selection), a drag over the block moving the selection's head. A drag that leaves the block
+    /// is followed by the rows it reaches; the canvas over the list ends it.
+    fn listen(&self, prepaint: &RawPrepaint, window: &mut Window) {
+        let hitbox = prepaint.hitbox.clone();
+        window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+        let (v, block, lines, hb) = (self.viewer.clone(), prepaint.block.clone(), self.lines.clone(), hitbox.clone());
+        window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && hb.is_hovered(window) {
+                let p = block.pos_at(&lines, ev.position, window);
+                v.update(cx, |v, cx| v.place_caret(p, ev.modifiers.shift, cx));
+            }
+        });
+        let (v, block, lines) = (self.viewer.clone(), prepaint.block.clone(), self.lines.clone());
+        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && ev.pressed_button == Some(MouseButton::Left) && hitbox.is_hovered(window) && v.read(cx).is_selecting() {
+                let p = block.pos_at(&lines, ev.position, window);
+                v.update(cx, |v, cx| v.drag_to(p, cx));
+            }
+        });
+    }
+}
+
+impl IntoElement for RawBlockElement {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+/// A vertical caret move in the rendered view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Up,
+    Down,
+}
+
+/// The caret after Up or Down in the rendered view, where the blank lines after a block are not a
+/// place for the caret: Down on the active block's last line with text (or below it) goes to the
+/// start of the next block, Up on its first line to the end of the previous block's last line with
+/// text, and any other move is a plain line move. At the document's ends the caret stays. With
+/// `select` the anchor stays, so the selection grows across blocks.
+pub fn navigate(doc: &edit::Document, blocks: &[Block], caret: edit::Caret, dir: Dir, select: bool) -> edit::Caret {
+    let m = match dir {
+        Dir::Up => edit::Move::Up,
+        Dir::Down => edit::Move::Down,
+    };
+    let lines = doc.lines();
+    let head = doc.clamp(caret.head);
+    let ix = md_blocks::block_at(blocks, head.line);
+    let Some(block) = blocks.get(ix) else { return doc.move_by(caret, m, select) };
+    let across = match dir {
+        Dir::Down if head.line >= md_blocks::pos_of_offset(block, lines, usize::MAX).line => Some(blocks.get(ix + 1).map(|next| Pos { line: next.lines.start, ch: 0 })),
+        Dir::Up if head.line <= block.lines.start => Some(ix.checked_sub(1).map(|prev| md_blocks::pos_of_offset(&blocks[prev], lines, usize::MAX))),
+        _ => None,
+    };
+    let anchor = |to: Pos| if select { doc.clamp(caret.anchor) } else { to };
+    match across {
+        None => doc.move_by(caret, m, select),
+        Some(Some(to)) => edit::Caret { head: doc.clamp(to), anchor: anchor(doc.clamp(to)), goal_col: None },
+        // The first block's first line, or the last block's last line with text: it stays.
+        Some(None) => edit::Caret { head, anchor: anchor(head), goal_col: caret.goal_col },
+    }
+}
+
+/// A press below the last block: the document gets blank lines at its end until it ends in two
+/// (a paragraph needs one blank line after the text above it, and the caret the line after that),
+/// as one undoable step, and the caret goes to the last line. A document that already ends in
+/// two blank lines, or holds only blank lines, is left as it is.
+pub fn append_paragraph(doc: &mut edit::Document, now: Instant) -> edit::Caret {
+    doc.break_coalescing();
+    let lines = doc.lines();
+    let blank_tail = lines.iter().rev().take_while(|l| l.trim().is_empty()).count();
+    if blank_tail < 2 && blank_tail < lines.len() {
+        let last = lines.len() - 1;
+        let end = Pos { line: last, ch: lines[last].chars().count() };
+        doc.replace_range(end, end, &"\n".repeat(2 - blank_tail), now);
+    }
+    edit::Caret::at(Pos { line: doc.lines().len() - 1, ch: 0 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::md_blocks::split;
 
     #[test]
     fn the_type_scale_follows_the_spec() {
@@ -444,5 +926,32 @@ mod tests {
         assert_eq!(resolve_image(base, "/abs/b.png"), Some(PathBuf::from("/abs/b.png")));
         assert_eq!(resolve_image(base, "https://x.y/c.png"), None);
         assert_eq!(resolve_image(base, "../c.png"), Some(PathBuf::from("/p/c.png")), "normalised");
+    }
+
+    #[test]
+    fn block_navigation_crosses_blocks_and_clamps_at_the_ends() {
+        let d = edit::Document::from_text("# H\n\npara one\npara two\n\n- item");
+        let blocks = split(d.lines());
+        let at = |l, c| edit::Caret { head: Pos { line: l, ch: c }, anchor: Pos { line: l, ch: c }, goal_col: None };
+        assert_eq!(navigate(&d, &blocks, at(0, 1), Dir::Up, false).head, Pos { line: 0, ch: 1 }, "the first line of the first block stays");
+        assert_eq!(navigate(&d, &blocks, at(5, 2), Dir::Down, false).head, Pos { line: 5, ch: 2 }, "the last line of the last block stays");
+        assert_eq!(navigate(&d, &blocks, at(3, 4), Dir::Down, false).head, Pos { line: 5, ch: 0 }, "Down from the paragraph's last text line lands at the start of the list block");
+        assert_eq!(navigate(&d, &blocks, at(5, 2), Dir::Up, false).head, Pos { line: 3, ch: 8 }, "Up from the list's first line lands at the end of the paragraph's last text line");
+        assert_eq!(navigate(&d, &blocks, at(2, 4), Dir::Down, false).head, Pos { line: 3, ch: 4 }, "inside a block: a plain line move");
+        let c = navigate(&d, &blocks, at(3, 4), Dir::Down, true);
+        assert_eq!((c.head, c.anchor), (Pos { line: 5, ch: 0 }, Pos { line: 3, ch: 4 }), "Shift keeps the anchor across blocks");
+    }
+
+    #[test]
+    fn a_click_below_the_last_block_appends_a_paragraph() {
+        let mut d = edit::Document::from_text("one");
+        let c = append_paragraph(&mut d, Instant::now());
+        assert_eq!(d.lines(), &["one".to_string(), String::new(), String::new()][..]);
+        assert_eq!(c.head, Pos { line: 2, ch: 0 });
+        let d2 = edit::Document::from_text("one\n\n");
+        let mut d2 = d2;
+        let c2 = append_paragraph(&mut d2, Instant::now());
+        assert_eq!(d2.lines().len(), 3, "a document already ending in a blank line gets no second one");
+        assert_eq!(c2.head.line, 2);
     }
 }

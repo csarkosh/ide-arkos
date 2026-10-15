@@ -482,6 +482,10 @@ pub struct Viewer {
     /// Where the element last laid the text out, written in prepaint: the input handler and the
     /// mouse map between positions and pixels with it. `None` until a document is painted.
     pub last_bounds: Option<RawLayout>,
+    /// Where the rendered view's raw blocks were laid out this frame, top to bottom: the input
+    /// handler and the mouse map between positions and pixels with them. Emptied when the view is
+    /// built, filled as the raw blocks are laid out.
+    pub raw_blocks: Vec<md_view::BlockLayout>,
     /// The composition `marked` belongs to; `Some` exactly while `marked` is.
     compose: Option<Compose>,
     /// A left-button drag that started in the text is selecting.
@@ -536,6 +540,7 @@ impl Viewer {
             flight: None,
             scroll_x: 0.0,
             last_bounds: None,
+            raw_blocks: Vec::new(),
             compose: None,
             selecting: false,
         }
@@ -616,8 +621,9 @@ impl Viewer {
                 self.blocks.clear();
             }
         }
-        // Every row is new; never `reset`, which would jump to the top.
-        self.list_state.splice(0..self.list_state.item_count(), self.blocks.len());
+        // Every row is new; never `reset`, which would jump to the top. The row after the blocks is
+        // the tail, where a click starts a new paragraph.
+        self.list_state.splice(0..self.list_state.item_count(), list_rows(self.blocks.len()));
         self.block_cache = std::iter::repeat_with(|| None).take(self.blocks.len()).collect();
         if let Some(line) = old_top_line.filter(|_| !self.blocks.is_empty()) {
             self.list_state.scroll_to(ListOffset { item_ix: md_blocks::block_at(&self.blocks, line), offset_in_item: px(0.0) });
@@ -710,8 +716,14 @@ impl Viewer {
         let tail = range.start + count;
         self.blocks.splice(range.clone(), new_blocks[range.start..tail].iter().cloned());
         // The rendered rows and their cache follow the same splice; never `reset`, which would
-        // jump to the top.
+        // jump to the top. gpui moves a top row inside the splice to the splice's start at its top,
+        // which would jump a long block being typed into back to its first line, so the row and
+        // the offset into it are kept.
+        let top = self.list_state.logical_scroll_top();
         self.list_state.splice(range.clone(), count);
+        if range.contains(&top.item_ix) && count > 0 {
+            self.list_state.scroll_to(ListOffset { item_ix: top.item_ix.min(range.start + count - 1), offset_in_item: top.offset_in_item });
+        }
         self.block_cache.splice(range.clone(), std::iter::repeat_with(|| None).take(count));
         // The blocks after the change kept their kind and text but may have moved.
         for (block, new) in self.blocks[tail..].iter_mut().zip(&new_blocks[tail..]) {
@@ -958,6 +970,10 @@ impl Viewer {
         self.find = None;
         // A search still running lands in no later bar.
         self.find_seq += 1;
+        // The current hit's block was raw while the bar was open; the view goes back to the caret.
+        if self.rendered() {
+            self.reveal_in_list();
+        }
         cx.notify();
     }
 
@@ -1038,7 +1054,7 @@ impl Viewer {
     fn show_current_hit(&mut self) {
         let Some(f) = &self.find else { return };
         let Some(h) = f.hits.get(f.current) else { return };
-        if self.mode == ViewMode::Rendered && self.doc.is_some() {
+        if self.rendered() {
             self.list_state.scroll_to_reveal_item(md_blocks::block_at(&self.blocks, h.line));
             return;
         }
@@ -1059,8 +1075,8 @@ impl Viewer {
         if self.marked.is_some() {
             self.finish_composition(cx);
         }
-        if self.mode == ViewMode::Rendered {
-            return self.rendered_key(action, cx);
+        if self.rendered() && self.rendered_key(action, cx) {
+            return true;
         }
         match action {
             KeyAction::Save => self.save_command(cx),
@@ -1119,21 +1135,23 @@ impl Viewer {
         true
     }
 
-    /// A key in the rendered view, where the list scrolls itself: the page keys move it by its
-    /// height, Home and End go to the ends, and saving, undo, redo and Escape work as in the raw
-    /// view. Typing into the block under the caret comes with the active block (Task 6); until
-    /// then the other keys are left to the keymap.
+    /// The keys the rendered view takes differently: the page keys scroll the list by its height,
+    /// Home and End go to its ends, and Up and Down cross from block to block (`md_view::navigate`).
+    /// `false` for every other key, which works as in the raw view.
     fn rendered_key(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
         let page = self.list_state.viewport_bounds().size.height;
         match action {
             KeyAction::Move(edit::Move::PageDown(_), _) => self.list_state.scroll_by(page),
             KeyAction::Move(edit::Move::PageUp(_), _) => self.list_state.scroll_by(-page),
             KeyAction::ScrollHome => self.list_state.scroll_to(ListOffset::default()),
-            KeyAction::ScrollEnd => self.list_state.scroll_to(ListOffset { item_ix: self.blocks.len(), offset_in_item: px(0.0) }),
-            KeyAction::Save => self.save_command(cx),
-            KeyAction::Undo => self.undo(cx),
-            KeyAction::Redo => self.redo(cx),
-            KeyAction::Escape if self.find.is_some() => self.close_find(cx),
+            KeyAction::ScrollEnd => self.list_state.scroll_to(ListOffset { item_ix: self.list_state.item_count(), offset_in_item: px(0.0) }),
+            KeyAction::Move(m @ (edit::Move::Up | edit::Move::Down), select) => {
+                let dir = if m == edit::Move::Up { md_view::Dir::Up } else { md_view::Dir::Down };
+                let Some(doc) = self.doc.as_mut() else { return false };
+                doc.break_coalescing();
+                self.caret = md_view::navigate(doc, &self.blocks, self.caret, dir, select);
+                self.reveal_caret();
+            }
             _ => return false,
         }
         cx.notify();
@@ -1156,8 +1174,8 @@ impl Viewer {
         if self.doc.is_none() {
             return;
         }
-        if self.mode == ViewMode::Rendered {
-            self.list_state.scroll_to_reveal_item(md_blocks::block_at(&self.blocks, self.caret.head.line));
+        if self.rendered() {
+            self.reveal_in_list();
         }
         let row = self.row_of_line(self.caret.head.line) as f32;
         let rows = self.rows_visible.max(1) as f32;
@@ -1170,6 +1188,97 @@ impl Viewer {
             return;
         };
         self.scroll.jump_to(to.clamp(0.0, self.max_scroll().max(0.0)));
+    }
+
+    /// Whether the rendered view shows this viewer: a markdown document in Rendered mode.
+    pub fn rendered(&self) -> bool {
+        self.mode == ViewMode::Rendered && self.doc.is_some()
+    }
+
+    /// The block holding the caret, which the rendered view shows raw.
+    pub fn active_block(&self) -> usize {
+        md_blocks::block_at(&self.blocks, self.caret.head.line)
+    }
+
+    /// Whether block `ix` is shown raw in the rendered view: every block the caret or the
+    /// selection touches, and while the find bar is open the block holding the current hit.
+    pub fn renders_raw(&self, ix: usize) -> bool {
+        if self.doc.is_none() {
+            return false;
+        }
+        let c = self.caret;
+        let (lo, hi) = (c.head.min(c.anchor), c.head.max(c.anchor));
+        let selected = md_blocks::block_at(&self.blocks, lo.line)..=md_blocks::block_at(&self.blocks, hi.line);
+        selected.contains(&ix) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
+    }
+
+    /// The lines a raw block shows: from its first line to its last line with text, or further
+    /// down to the caret, the selection's ends or the marked text when they are on the blank lines
+    /// after it.
+    pub fn raw_lines(&self, ix: usize) -> Range<usize> {
+        let (Some(doc), Some(b)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return 0..0 };
+        let lines = doc.lines();
+        let mut last = md_blocks::pos_of_offset(b, lines, usize::MAX).line;
+        let ends = [self.caret.head, self.caret.anchor].into_iter().chain(self.marked.iter().flat_map(|m| [m.start, m.end]));
+        for p in ends.filter(|p| b.lines.contains(&p.line)) {
+            last = last.max(p.line);
+        }
+        b.lines.start..(last + 1).min(lines.len()).max(b.lines.start)
+    }
+
+    /// Scrolls the rendered view the least that shows the caret's row: the caret's block when it
+    /// is above the view, and within a block taller than the view, the caret's line rather than
+    /// the block's top or bottom (which `scroll_to_reveal_item` would show). The caret's place in
+    /// its block comes from the block's raw layout of the last frame, else a row per line.
+    fn reveal_in_list(&mut self) {
+        let ix = self.active_block();
+        let Some(block) = self.blocks.get(ix) else { return };
+        let line = self.caret.head.line;
+        let line_h = self.font_size * self.line_height;
+        let caret_y = self
+            .raw_blocks
+            .iter()
+            .find(|b| b.lines.start == block.lines.start && b.lines.contains(&line))
+            .map(|b| b.row_tops[line - b.lines.start] as f32 * b.raw.line_h)
+            .unwrap_or(line.saturating_sub(block.lines.start) as f32 * line_h);
+        let viewport = self.list_state.viewport_bounds();
+        let view_h = f32::from(viewport.size.height);
+        if view_h <= 0.0 {
+            self.list_state.scroll_to_reveal_item(ix);
+            return;
+        }
+        let top = self.list_state.logical_scroll_top();
+        let offset = f32::from(top.offset_in_item);
+        if ix < top.item_ix || (ix == top.item_ix && caret_y < offset) {
+            // Above the view: as much of the block above the caret as fits with the caret's row.
+            let to = if ix < top.item_ix { (caret_y + line_h - view_h).max(0.0) } else { caret_y };
+            self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(to) });
+            return;
+        }
+        if ix == top.item_ix {
+            if caret_y + line_h > offset + view_h {
+                self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(caret_y + line_h - view_h) });
+            }
+            return;
+        }
+        // Below the top row: where the block starts on screen, from the list's last layout of it
+        // or of the row above it (an edited block is measured again on the next frame).
+        let item_top = self.list_state.bounds_for_item(ix).map(|b| b.top()).or_else(|| self.list_state.bounds_for_item(ix - 1).map(|b| b.bottom()));
+        match item_top {
+            Some(t) => {
+                let over = f32::from(t - viewport.top()) + caret_y + line_h - view_h;
+                if over > 0.0 {
+                    self.list_state.scroll_by(px(over));
+                }
+            }
+            None => self.list_state.scroll_to_reveal_item(ix),
+        }
+    }
+
+    /// A click on the tail of the rendered view: the caret goes to a new paragraph after the last
+    /// block (`md_view::append_paragraph`).
+    pub fn append_paragraph(&mut self, cx: &mut Context<Self>) {
+        self.edit(|doc, _caret, now| md_view::append_paragraph(doc, now), cx);
     }
 
     /// Ends a composition with its marked text kept: the marked step is taken back and the text
@@ -1228,6 +1337,12 @@ impl Viewer {
 
     /// The document position under a window point, through the last layout.
     pub fn pos_at_point(&self, at: Point<Pixels>, window: &mut Window) -> Option<edit::Pos> {
+        if self.rendered() {
+            // The raw block at that height, else the first one below it, else the last one.
+            let doc = self.doc.as_ref()?;
+            let b = self.raw_blocks.iter().find(|b| at.y < b.bottom()).or(self.raw_blocks.last())?;
+            return Some(b.pos_at(doc.lines(), at, window));
+        }
         let (doc, layout) = (self.doc.as_ref()?, self.last_bounds.as_ref()?);
         let n = self.line_at_y(at.y, layout).min(doc.lines().len() - 1);
         let line = &doc.lines()[n];
@@ -1238,6 +1353,11 @@ impl Viewer {
 
     /// The window x of a position and the top of its row, through the last layout.
     fn point_of_pos(&self, p: edit::Pos, window: &mut Window) -> Option<Point<Pixels>> {
+        if self.rendered() {
+            // Only a raw block on screen knows where its text is.
+            let doc = self.doc.as_ref()?;
+            return self.raw_blocks.iter().find(|b| b.lines.contains(&p.line))?.point_of(doc.lines(), doc.clamp(p), window);
+        }
         let (doc, layout) = (self.doc.as_ref()?, self.last_bounds.as_ref()?);
         let p = doc.clamp(p);
         let line = &doc.lines()[p.line];
@@ -1254,10 +1374,19 @@ impl Viewer {
             self.finish_composition(cx);
         }
         let Some(p) = self.pos_at_point(at, window) else { return };
-        if let Some(doc) = self.doc.as_mut() {
-            doc.break_coalescing();
+        self.place_caret(p, extend, cx);
+    }
+
+    /// Puts the caret at `p` (Shift keeps the anchor, so the selection extends) for a press in the
+    /// text of either view, and starts a drag selection. The typing step ends there.
+    pub fn place_caret(&mut self, p: edit::Pos, extend: bool, cx: &mut Context<Self>) {
+        if self.marked.is_some() {
+            self.finish_composition(cx);
         }
-        let anchor = if extend { self.caret.anchor } else { p };
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.break_coalescing();
+        let p = doc.clamp(p);
+        let anchor = if extend { doc.clamp(self.caret.anchor) } else { p };
         self.caret = edit::Caret { head: p, anchor, goal_col: None };
         self.selecting = true;
         cx.notify();
@@ -1269,12 +1398,28 @@ impl Viewer {
             return;
         }
         let Some(p) = self.pos_at_point(at, window) else { return };
+        self.drag_to(p, cx);
+    }
+
+    /// A drag selection reached `p`. The raw view scrolls to follow it; the rendered view does
+    /// not, since the head is under the mouse and revealing its block could move a tall block
+    /// away from it.
+    pub fn drag_to(&mut self, p: edit::Pos, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_ref().filter(|_| self.selecting) else { return };
+        let p = doc.clamp(p);
         if p != self.caret.head {
             self.caret.head = p;
             self.caret.goal_col = None;
-            self.reveal_caret();
+            if !self.rendered() {
+                self.reveal_caret();
+            }
             cx.notify();
         }
+    }
+
+    /// Whether a drag selection is in progress.
+    pub fn is_selecting(&self) -> bool {
+        self.selecting
     }
 
     pub fn mouse_up(&mut self) {
@@ -1394,7 +1539,7 @@ impl EntityInputHandler for Viewer {
 
     fn bounds_for_range(&mut self, range_utf16: Range<usize>, _element_bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let (a, b) = (self.field_pos(range_utf16.start), self.field_pos(range_utf16.end.max(range_utf16.start)));
-        let line_h = px(self.last_bounds.as_ref()?.line_h);
+        let line_h = px(if self.rendered() { self.raw_blocks.first()?.raw.line_h } else { self.last_bounds.as_ref()?.line_h });
         let start = self.point_of_pos(a, window)?;
         let width = if b.line == a.line { self.point_of_pos(b, window)?.x - start.x } else { px(0.0) };
         Some(Bounds { origin: start, size: gpui::size(width.max(px(1.0)), line_h) })
@@ -1585,6 +1730,15 @@ pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: Sh
 /// newer one does, so a slow, older result never replaces a newer one.
 pub fn should_apply(seq: u64, applied: u64) -> bool {
     seq > applied
+}
+
+/// The rendered view's row count for `blocks` blocks: one per block and the tail after them.
+pub fn list_rows(blocks: usize) -> usize {
+    if blocks == 0 {
+        0
+    } else {
+        blocks + 1
+    }
 }
 
 /// What an editing key asks of a document viewer, before it meets the document.

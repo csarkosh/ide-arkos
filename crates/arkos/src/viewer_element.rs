@@ -6,7 +6,8 @@
 //! A markdown document is painted as raw text: its tabs drawn four columns wide, coloured from
 //! `md_blocks::raw_marks`, with the caret, the selection and an input method's marked text, scrolled
 //! sideways to follow the caret (it does not wrap). The painting helpers are free functions so the
-//! rendered view's raw block paints the same way.
+//! rendered view's raw block paints the same way; that block wraps its lines, so the helpers that
+//! measure a line also come in a version for a wrapped line.
 use crate::diff::{display_rows, DisplayRow, Mark};
 use crate::edit::{Caret, Pos};
 use crate::md_blocks;
@@ -15,7 +16,7 @@ use crate::viewer::{Content, Hit, Span, Viewer};
 use gpui::{
     fill, font, point, px, size, App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Rgba, ShapedLine, SharedString, Style, TextRun, Window,
+    Pixels, Point, Rgba, ShapedLine, SharedString, Style, TextRun, Window, WrappedLine,
 };
 use std::borrow::Cow;
 use std::ops::Range;
@@ -226,6 +227,78 @@ pub fn shape_raw(window: &mut Window, line: &str, layout: &RawLayout) -> (String
     let runs = raw_runs(line, &layout.family, &layout.colors, shown.len());
     let shaped = window.text_system().shape_line(shown.to_string().into(), px(layout.font_size), &runs, None);
     (shown.to_string(), shaped)
+}
+
+/// A raw markdown line shaped as the rendered view's raw block paints it: like `shape_raw`, but
+/// wrapped at `wrap_width`. An empty line shapes to an empty wrapped line of one row.
+pub fn shape_raw_wrapped(window: &mut Window, line: &str, layout: &RawLayout, wrap_width: Pixels) -> (String, WrappedLine) {
+    let expanded = expand_tabs(line);
+    let (shown, _) = paint_cut(&expanded);
+    let runs = raw_runs(line, &layout.family, &layout.colors, shown.len());
+    let shaped = window.text_system().shape_text(shown.to_string().into(), px(layout.font_size), &runs, Some(wrap_width), None).ok().and_then(|lines| lines.into_iter().next()).unwrap_or_default();
+    (shown.to_string(), shaped)
+}
+
+/// The byte ranges of a wrapped line's rows, in order; one row when it did not wrap.
+pub fn wrapped_rows(wrapped: &WrappedLine) -> Vec<Range<usize>> {
+    let layout = &wrapped.unwrapped_layout;
+    let mut out = Vec::with_capacity(wrapped.wrap_boundaries().len() + 1);
+    let mut start = 0;
+    for b in wrapped.wrap_boundaries() {
+        let end = layout.runs.get(b.run_ix).and_then(|r| r.glyphs.get(b.glyph_ix)).map_or(start, |g| g.index).max(start);
+        out.push(start..end);
+        start = end;
+    }
+    out.push(start..wrapped.len().max(start));
+    out
+}
+
+/// The row of a wrapped line that byte `byte` is drawn on: a byte where a row starts is drawn at
+/// that row's start, not at the end of the row above.
+fn wrapped_row_of(rows: &[Range<usize>], byte: usize) -> usize {
+    rows.iter().rposition(|r| r.start <= byte).unwrap_or(0)
+}
+
+/// The x of `byte` on a row of a wrapped line, from the row's start.
+fn wrapped_x(wrapped: &WrappedLine, row: &Range<usize>, byte: usize) -> Pixels {
+    let layout = &wrapped.unwrapped_layout;
+    let at = |b: usize| if b >= layout.len { layout.width } else { layout.x_for_index(b) };
+    at(byte.clamp(row.start, row.end)) - at(row.start)
+}
+
+/// Where display column `col` of a wrapped line is drawn, from the line's top left: the x on its
+/// row and the row's top.
+pub fn wrapped_point_for_col(wrapped: &WrappedLine, expanded: &str, col: usize, line_h: Pixels) -> Point<Pixels> {
+    let byte = expanded.char_indices().nth(col).map_or(expanded.len(), |(b, _)| b).min(wrapped.len());
+    let rows = wrapped_rows(wrapped);
+    let r = wrapped_row_of(&rows, byte);
+    point(wrapped_x(wrapped, &rows[r], byte), line_h * r as f32)
+}
+
+/// The display column nearest a point given from a wrapped line's top left: a point above the
+/// line is on its first row, one below on its last, one past a row's end at that end.
+pub fn wrapped_col_for_point(wrapped: &WrappedLine, expanded: &str, at: Point<Pixels>, line_h: Pixels) -> usize {
+    let rows = wrapped.wrap_boundaries().len() + 1;
+    let y = at.y.max(px(0.0)).min(line_h * rows as f32 - px(1.0));
+    let mut byte = wrapped.closest_index_for_position(point(at.x.max(px(0.0)), y), line_h).unwrap_or_else(|e| e).min(expanded.len());
+    while !expanded.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    expanded[..byte].chars().count()
+}
+
+/// The pieces of a wrapped line between display columns `c0` and `c1`, one per row they cross:
+/// `(x0, x1, y)` from the line's top left, for the selection, find hits and marked text.
+pub fn wrapped_spans(wrapped: &WrappedLine, expanded: &str, c0: usize, c1: usize, line_h: Pixels) -> Vec<(Pixels, Pixels, Pixels)> {
+    let byte = |col: usize| expanded.char_indices().nth(col).map_or(expanded.len(), |(b, _)| b).min(wrapped.len());
+    let (b0, b1) = (byte(c0), byte(c1));
+    wrapped_rows(wrapped)
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| b0 <= r.end && r.start <= b1)
+        .map(|(i, r)| (wrapped_x(wrapped, r, b0), wrapped_x(wrapped, r, b1), line_h * i as f32))
+        .filter(|(x0, x1, _)| x1 > x0)
+        .collect()
 }
 
 /// The selection on one row, from `x0` to `x1`, in `color` at half strength.
