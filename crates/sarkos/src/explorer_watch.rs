@@ -99,12 +99,12 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
                 }
             }
             // The worktree list, and the expanded worktrees' changes, on the slow timer: the
-            // changes are dropped (the worktrees stay expanded and keep their ease-in instant) so
-            // the list's landing loads them again.
+            // changes are marked stale and reloaded, their rows staying up until each lands.
             if worktrees_run.elapsed() >= STATUS_EVERY {
                 worktrees_run = Instant::now();
                 let refreshed = root.update(cx, |root, cx| {
-                    root.worktrees.changes.clear();
+                    root.worktrees.mark_all_stale();
+                    root.load_pending_worktrees(cx);
                     root.refresh_worktrees(cx);
                 });
                 if refreshed.is_err() {

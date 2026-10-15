@@ -91,9 +91,9 @@ fn branch_exists(root: &Path, branch: &str) -> bool {
 pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
     let path = path.to_string_lossy();
     if branch_exists(root, branch) {
-        run(root, &["worktree", "add", &path, branch])
+        run(root, &["worktree", "add", "--", &path, branch])
     } else {
-        run(root, &["worktree", "add", "-b", branch, &path])
+        run(root, &["worktree", "add", "-b", branch, "--", &path])
     }
 }
 
@@ -103,9 +103,9 @@ pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
 pub fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
     let path = path.to_string_lossy();
     if force {
-        run(root, &["worktree", "remove", "--force", &path])
+        run(root, &["worktree", "remove", "--force", "--", &path])
     } else {
-        run(root, &["worktree", "remove", &path])
+        run(root, &["worktree", "remove", "--", &path])
     }
 }
 
@@ -121,6 +121,8 @@ pub struct Worktrees {
     pub expanded: BTreeSet<PathBuf>,
     pub changes: HashMap<PathBuf, Changes>,
     loading: HashSet<PathBuf>,
+    /// Expanded worktrees whose loaded changes are due a reload; their rows stay up meanwhile.
+    stale: HashSet<PathBuf>,
     /// When each expanded worktree's changes landed, for the ease-in.
     pub opened_at: HashMap<PathBuf, Instant>,
     /// The keyboard's row, by index into `rows()`.
@@ -129,7 +131,7 @@ pub struct Worktrees {
 
 impl Worktrees {
     pub fn new(expanded: Vec<PathBuf>) -> Self {
-        Worktrees { list: None, not_git: false, expanded: expanded.into_iter().collect(), changes: HashMap::new(), loading: HashSet::new(), opened_at: HashMap::new(), selected: None }
+        Worktrees { list: None, not_git: false, expanded: expanded.into_iter().collect(), changes: HashMap::new(), loading: HashSet::new(), stale: HashSet::new(), opened_at: HashMap::new(), selected: None }
     }
 
     pub fn set_list(&mut self, list: Option<Vec<Worktree>>) {
@@ -141,6 +143,7 @@ impl Worktrees {
             self.expanded.retain(|p| known.contains(p.as_path()));
             self.changes.retain(|p, _| known.contains(p.as_path()));
             self.opened_at.retain(|p, _| known.contains(p.as_path()));
+            self.stale.retain(|p| known.contains(p.as_path()));
         }
     }
 
@@ -153,6 +156,7 @@ impl Worktrees {
         if self.expanded.remove(path) {
             self.changes.remove(path);
             self.loading.remove(path);
+            self.stale.remove(path);
             self.opened_at.remove(path);
             return false;
         }
@@ -163,8 +167,15 @@ impl Worktrees {
         true
     }
 
+    /// Expanded worktrees not loaded yet, or stale, and not already loading.
     pub fn to_load(&self) -> Vec<PathBuf> {
-        self.expanded.iter().filter(|p| !self.changes.contains_key(*p) && !self.loading.contains(*p)).cloned().collect()
+        self.expanded.iter().filter(|p| (!self.changes.contains_key(*p) || self.stale.contains(*p)) && !self.loading.contains(*p)).cloned().collect()
+    }
+
+    /// The slow timer: every expanded worktree with changes loaded reloads them, keeping its
+    /// rows until the new result lands.
+    pub fn mark_all_stale(&mut self) {
+        self.stale.extend(self.expanded.iter().filter(|p| self.changes.contains_key(*p)).cloned());
     }
 
     pub fn mark_loading(&mut self, path: &Path) {
@@ -174,11 +185,14 @@ impl Worktrees {
     /// The status result for an expanded worktree; `None` when git failed (shown as no changes).
     pub fn set_changes(&mut self, path: &Path, changes: Option<Changes>) {
         self.loading.remove(path);
+        self.stale.remove(path);
         if !self.expanded.contains(path) {
             return;
         }
-        self.changes.insert(path.to_path_buf(), changes.unwrap_or_default());
-        self.opened_at.entry(path.to_path_buf()).or_insert_with(Instant::now);
+        // A reload replaces the rows without a second ease-in.
+        if self.changes.insert(path.to_path_buf(), changes.unwrap_or_default()).is_none() {
+            self.opened_at.insert(path.to_path_buf(), Instant::now());
+        }
     }
 
     pub fn dirty_count(&self, path: &Path) -> Option<usize> {
@@ -265,6 +279,20 @@ worktree /Users/me/other\nHEAD 89abcdef0123456789abcdef0123456789abcdef\ndetache
         assert!(matches!(&rows[2], WtRow::Change { rel, status: Status::Modified, .. } if rel == Path::new("a.rs")));
         assert_eq!(w.dirty_count(Path::new("/p-f")), Some(2));
         assert_eq!(w.dirty_count(Path::new("/p")), None, "not loaded: no count");
+        let opened = w.opened_at[Path::new("/p-f")];
+        w.mark_all_stale();
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-f")], "the slow timer reloads it");
+        let rows = w.rows();
+        assert_eq!(rows.len(), 4, "the old changes stay up while stale");
+        assert!(matches!(&rows[1], WtRow::Worktree { dirty: Some(2), loading: false, .. }), "no shimmer on a refresh");
+        w.mark_loading(Path::new("/p-f"));
+        assert!(w.to_load().is_empty(), "already loading");
+        w.set_changes(Path::new("/p-f"), Some(vec![(PathBuf::from("c.rs"), Status::Added)]));
+        let rows = w.rows();
+        assert_eq!(rows.len(), 3, "the new list replaces the old");
+        assert!(matches!(&rows[2], WtRow::Change { rel, status: Status::Added, .. } if rel == Path::new("c.rs")));
+        assert_eq!(w.opened_at[Path::new("/p-f")], opened, "no second ease-in");
+        assert!(w.to_load().is_empty(), "fresh again");
         assert!(!w.toggle(Path::new("/p-f")), "collapsed");
         assert_eq!(w.rows().len(), 2);
         assert_eq!(w.dirty_count(Path::new("/p-f")), None, "collapsing drops the result");
