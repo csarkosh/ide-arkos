@@ -65,7 +65,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use closed_stack::{Closed, ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
 use terminal::{Terminal, TerminalCore};
 use sidebar::{after_close, after_drop, keeps_tree_focus};
@@ -101,8 +101,7 @@ fn daemon_label(status: &str) -> &'static str {
     }
 }
 
-/// `daemon_label`, except that while the window is reconnecting the bar says so at once.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
+/// `daemon_label`, except that while the window is reconnecting the bell says so at once.
 fn daemon_label_with(status: &str, reconnecting: bool) -> &'static str {
     if reconnecting {
         "arkosd reconnecting"
@@ -182,6 +181,8 @@ pub struct Root {
     pub context_menu: Transient<sidebar::ContextMenu>,
     /// What the bell shows.
     pub notices: notices::Notices,
+    /// When the bell was last opened before the opening now; notices newer than this are unread.
+    pub bell_read_before: Option<SystemTime>,
     /// The title bar popover that is open (or fading out).
     pub popover: Transient<chrome::Popover>,
     /// Which title bar icon the pointer is over (`Closed`: none).
@@ -277,7 +278,6 @@ pub struct Root {
     /// The idle timer that applies a staged update is running (`start_idle_timer`).
     pub auto_apply_timer: bool,
     /// "updates unreachable for N days" (`update::unreachable_text`) from the last `UpdateStatus`.
-    #[cfg_attr(not(test), allow(dead_code))] // Written now, read again from Task 6b on.
     pub update_unreachable: Option<String>,
     /// The poll behind a check the user asked for; None when none runs.
     pub check_poll: Option<update_check::Poll>,
@@ -505,6 +505,7 @@ impl Root {
             context_menu: Transient::Hidden,
             notices: Default::default(),
             popover: Transient::Hidden,
+            bell_read_before: None,
             icon_hover: chrome::Popover::Closed,
             status_seq: 0,
             status_runs: explorer_watch::StatusRuns::default(),
@@ -603,16 +604,89 @@ impl Root {
         self.tab_menu.hide(now);
         let next = self.popover.value().copied().unwrap_or_default().toggled(which);
         if next == chrome::Popover::Closed {
-            self.popover.hide(now);
+            self.close_popovers(now);
         } else {
+            if next == chrome::Popover::Bell {
+                self.bell_read_before = self.notices.opened_at();
+                self.notices.opened(SystemTime::now());
+            }
             self.popover.show(next, now);
         }
         cx.notify();
     }
 
-    /// Closes the popover; true when one was open.
+    /// Closes the popover; true when one was open. Closing the bell marks its notices read.
     pub fn close_popovers(&mut self, now: Instant) -> bool {
-        self.popover.hide(now)
+        let was_bell = self.popover.value() == Some(&chrome::Popover::Bell);
+        let closed = self.popover.hide(now);
+        if closed && was_bell {
+            self.notices.closed();
+        }
+        closed
+    }
+
+    /// Derives the bell's notices from the state the bar used to show, every frame; idempotent
+    /// because a notice with the same text keeps its time. No assignment site needs to know.
+    fn sync_notices(&mut self, now: SystemTime) {
+        match self.update_ready.as_deref().filter(|_| self.updating.is_none()) {
+            Some(t) => self.notices.set(notices::Kind::UpdateReady, notices::update_ready_text(t), Some(notices::Action::UpdateNow), now),
+            None => {
+                self.notices.clear(notices::Kind::UpdateReady);
+            }
+        }
+        let label = daemon_label_with(&self.status, self.reconnecting_since.is_some());
+        match notices::daemon_notice(label, self.update_error.as_deref(), self.update_unreachable.as_deref()) {
+            Some(t) => self.notices.set(notices::Kind::Daemon, t, None, now),
+            None => {
+                self.notices.clear(notices::Kind::Daemon);
+            }
+        }
+        match &self.config_error {
+            Some(e) => self.notices.set(notices::Kind::ConfigError, e.clone(), Some(notices::Action::OpenConfig), now),
+            None => {
+                self.notices.clear(notices::Kind::ConfigError);
+            }
+        }
+        match &self.theme_error {
+            Some(e) => self.notices.set(notices::Kind::ThemeError, e.clone(), Some(notices::Action::OpenTheme), now),
+            None => {
+                self.notices.clear(notices::Kind::ThemeError);
+            }
+        }
+    }
+
+    /// Seeds the notices a window starts with: "Updated to X" when this launch is an update.
+    fn seed_notices(&mut self, updated: Option<String>) {
+        if let Some(v) = updated {
+            self.notices.set(notices::Kind::Updated, format!("Updated to {v}"), None, SystemTime::now());
+        }
+    }
+
+    /// Runs what a notice's button (or its row) offers.
+    fn run_notice_action(&mut self, action: notices::Action, cx: &mut Context<Self>) {
+        match action {
+            notices::Action::UpdateNow => self.update_clicked(cx),
+            notices::Action::OpenConfig => self.open_config(cx),
+            notices::Action::OpenTheme => self.open_theme(cx),
+        }
+    }
+
+    /// Opens the current theme's file in the default text editor, else the themes folder.
+    pub fn open_theme(&mut self, cx: &mut Context<Self>) {
+        let dir = paths::themes_dir();
+        let file = dir.join(format!("{}.toml", self.theme.name));
+        let mut cmd = std::process::Command::new("open");
+        let target = if file.is_file() {
+            cmd.arg("-t");
+            file
+        } else {
+            dir
+        };
+        if let Err(e) = cmd.arg(&target).spawn() {
+            let text = format!("cannot open {}: {e}", target.display());
+            eprintln!("arkos: {text}");
+            self.show_notice(text, cx);
+        }
     }
 
     /// How many fixes the doctor has to offer; the dot on its icon shows when there are any.
@@ -620,15 +694,71 @@ impl Root {
         0
     }
 
-    /// The open popover's card, drawn while it fades out too. Its rows come in later tasks.
-    fn render_popover(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<gpui::Div> {
+    /// The open popover's card, drawn while it fades out too. The bell lists its notices; the
+    /// doctor's rows come in a later task.
+    fn render_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let (which, opacity) = self.popover.current(self.frame_now)?;
         let which = *which;
         let live = self.popover.value().is_some();
         let w = f32::from(window.viewport_size().width);
         let dim = self.theme.chrome.text_dim.hsla();
-        let row = div().px(px(10.0)).py(px(4.0)).text_color(dim).child(if which == chrome::Popover::Bell { "Nothing new" } else { "Checking..." });
-        Some(chrome::popover_card(which, w, opacity, live, &self.theme, self.family()).child(row))
+        let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.family());
+        if which != chrome::Popover::Bell {
+            return Some(card.child(div().px(px(10.0)).py(px(4.0)).text_color(dim).child("Checking...")));
+        }
+        let c = &self.theme.chrome;
+        let (text_c, dim_c) = (c.text.hsla(), c.text_dim.hsla());
+        let items = self.notices.items().to_vec();
+        if items.is_empty() {
+            return Some(card.child(div().px(px(10.0)).py(px(4.0)).text_color(dim_c).child("Nothing new")));
+        }
+        let now = SystemTime::now();
+        let mut card = card;
+        for (i, n) in items.iter().enumerate() {
+            let unread = self.notices.unread_since(n, self.bell_read_before);
+            let mut row = div()
+                .id(("notice", i))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(4.0))
+                .child(div().flex_1().min_w_0().truncate().text_color(if unread { text_c } else { dim_c }).child(n.text.clone()))
+                .child(div().flex_none().text_color(dim_c).child(notices::relative_time(n.at, now)));
+            if let Some(action) = n.action {
+                let label = match action {
+                    notices::Action::UpdateNow => "Update now",
+                    notices::Action::OpenConfig => "Open config",
+                    notices::Action::OpenTheme => "Open theme",
+                };
+                row = row.child(
+                    div()
+                        .id(("notice-action", i))
+                        .flex_none()
+                        .text_color(text_c)
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .child(label)
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            // The update-ready row runs the same action; the button alone must.
+                            cx.stop_propagation();
+                            root.run_notice_action(action, cx);
+                            root.close_popovers(Instant::now());
+                            cx.notify();
+                        })),
+                );
+                if n.kind == notices::Kind::UpdateReady {
+                    row = row.cursor_pointer().on_click(cx.listener(move |root, _, _, cx| {
+                        root.run_notice_action(action, cx);
+                        root.close_popovers(Instant::now());
+                        cx.notify();
+                    }));
+                }
+            }
+            card = card.child(row);
+        }
+        Some(card)
     }
 
     /// Whether any transition is under way at `now`, so the next frame looks different.
@@ -2310,8 +2440,7 @@ impl Root {
         }
     }
 
-    /// A click on the title bar's "update ready" badge: apply the staged release, else update from disk.
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
+    /// The bell's "Update now" (or its update-ready row): apply the staged release, else update from disk.
     pub fn update_clicked(&mut self, cx: &mut Context<Self>) {
         if self.staged.is_some() {
             self.apply_staged(cx);
@@ -2364,7 +2493,7 @@ impl Root {
         .detach();
     }
 
-    /// Shows the staged release in the badge when there is one, else what the launch path holds.
+    /// Reads the staged release into `update_ready` (the bell's update-ready notice) when there is one, else what the launch path holds.
     pub fn refresh_update_badge(&mut self, cx: &mut Context<Self>) {
         self.update_ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref());
         cx.notify();
@@ -2833,6 +2962,7 @@ impl Render for Root {
         let now = Instant::now();
         let last_frame = std::mem::replace(&mut self.frame_now, now);
         self.settle(now, last_frame);
+        self.sync_notices(SystemTime::now());
         self.note_window_placement(window, cx);
         // A rename whose tab closed, moved, or sits behind a slim bar has no editor to hold the
         // keys; it ends, else the keys would go nowhere.
@@ -3000,7 +3130,7 @@ impl Render for Root {
                     root.commit_tab_rename(cx);
                 }),
             )
-            // A right-click menu (the tree's or a worktree's) closes on any press outside it
+            // A right-click menu (the tree's or a worktree's) or a popover (the bell or the doctor) closes on any press outside it
             // (its rows stop theirs), and on Escape wherever the keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
@@ -3133,6 +3263,8 @@ fn main() {
     let cwd = std::env::current_dir().expect("cwd");
     let relaunched = !should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref());
     let plan = launch::startup_plan(&cwd, relaunched);
+    // Once per process: a synchronous read and write of one tiny file, before any window.
+    let updated = startup::updated_from(&paths::last_version_file(), env!("CARGO_PKG_VERSION"));
     let yes = |b: bool| if b { "yes" } else { "no" };
     eprintln!("{} starting in {} (relaunch: {}, chooser: {})", version_string(), cwd.display(), yes(relaunched), yes(plan.is_chooser()));
     // The connect runs off the main thread once the app runs, the chooser included: a window the
@@ -3161,7 +3293,7 @@ fn main() {
             }
         };
         let (look_config, look_theme) = (config.clone(), theme.clone());
-        let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark };
+        let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark, updated };
         let launch = Rc::new(Launch {
             plan,
             cwd,
@@ -3342,6 +3474,8 @@ struct Startup {
     theme: theme::Theme,
     theme_error: Option<String>,
     system_is_dark: bool,
+    /// The version this launch updated from, as "Updated to X" for the bell.
+    updated: Option<String>,
 }
 
 /// Where the project window opens: where it was, on its display, when that display is attached;
@@ -3373,7 +3507,7 @@ fn open_project_window(
     start: Startup,
     cx: &mut App,
 ) {
-    let Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark } = start;
+    let Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark, updated } = start;
     // Synchronous on purpose: one small file read, done before the window opens, so it cannot
     // stall painting or input. Saves happen on the background executor.
     let saved = workspace::load(&project);
@@ -3450,6 +3584,7 @@ fn open_project_window(
         root.update(cx, |root, cx| {
             root.config_error = config_error;
             root.theme_error = theme_error;
+            root.seed_notices(updated.clone());
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
             root.refresh_status(cx);

@@ -5,7 +5,6 @@
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub enum Kind {
     UpdateReady,
     Updated,
@@ -16,7 +15,6 @@ pub enum Kind {
 
 /// What clicking a notice does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub enum Action {
     UpdateNow,
     OpenConfig,
@@ -110,7 +108,6 @@ impl Notices {
 }
 
 /// How long ago `at` was, for the notice list. A clock that went back reads "just now".
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub fn relative_time(at: SystemTime, now: SystemTime) -> String {
     let Ok(ago) = now.duration_since(at) else {
         return "just now".into();
@@ -142,9 +139,17 @@ fn local_clock(at: SystemTime) -> (i32, i32) {
     (tm.tm_hour, tm.tm_min)
 }
 
+/// The notice text for the update-ready field the bar used to show: its "update ready: "
+/// prefix capitalised; a text without the prefix is kept as it is.
+pub fn update_ready_text(bar_text: &str) -> String {
+    match bar_text.strip_prefix("update ready: ") {
+        Some(v) => format!("Update ready: {v}"),
+        None => bar_text.to_string(),
+    }
+}
+
 /// What the Daemon kind shows: connection trouble first, then a failed update, then an
 /// unreachable update server, else nothing.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub fn daemon_notice(label: &str, update_error: Option<&str>, unreachable: Option<&str>) -> Option<String> {
     if label != "arkosd connected" && label != "arkosd connecting" {
         Some(label.to_string())
@@ -237,6 +242,12 @@ mod tests {
         assert_eq!(daemon_notice("arkosd connected", None, None), None);
         assert_eq!(daemon_notice("arkosd connecting", None, None), None, "the moment at every launch is not news");
         assert_eq!(daemon_notice("arkosd connecting", Some("x"), None), Some("update failed: x".into()));
+    }
+
+    #[test]
+    fn the_update_badge_text_becomes_the_notice_text() {
+        assert_eq!(update_ready_text("update ready: 0.2.15"), "Update ready: 0.2.15");
+        assert_eq!(update_ready_text("something else"), "something else");
     }
 
     #[test]

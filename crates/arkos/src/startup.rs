@@ -78,7 +78,6 @@ pub fn connect_in_background(daemon_args: Vec<String>, cx: &mut App) -> Task<Res
 /// this launch is an update: the recorded version was older. A missing or unreadable file, the
 /// same version, or a newer one (a downgrade) gives None. The write goes through a temp file
 /// and a rename, as the workspace file does, so a crash leaves the old record, not a torn one.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub fn updated_from(file: &Path, current: &str) -> Option<String> {
     let previous = std::fs::read_to_string(file).ok().and_then(|s| parse_version(s.trim()));
     let now = parse_version(current);

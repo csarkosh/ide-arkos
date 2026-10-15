@@ -36,7 +36,6 @@ pub fn recent_file() -> PathBuf {
 }
 
 /// The version the last launch ran, so a relaunch can say "Updated to X" (notices.rs).
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub fn last_version_file() -> PathBuf {
     app_support().join("last_version")
 }
