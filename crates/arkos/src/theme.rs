@@ -27,7 +27,10 @@ pub struct Chrome {
     pub tab_active: Rgb,
     pub tab_inactive: Rgb,
     pub border: Rgb,
+    /// Unused since 0.2.11 (a handle at rest paints nothing); kept so theme files that name it
+    /// still load.
     pub split_handle: Rgb,
+    /// The stripe over a handle under the pointer or being dragged.
     pub split_handle_hover: Rgb,
     pub focus_ring: Rgb,
     pub text: Rgb,

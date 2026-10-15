@@ -56,7 +56,7 @@ use gpui::{
 };
 use protocol::{Event, Request, SessionId, StagedUpdate};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -213,6 +213,9 @@ pub struct Root {
     pub drop_tints: HashMap<PaneId, drag::Tint>,
     /// The focus glow of the focused pane, and of the one it just left while that fades.
     pub glow: motion::Fades<PaneId, ()>,
+    /// The split handles under the pointer, and each handle's stripe while it fades in or out.
+    pub handle_hovered: HashSet<SplitId>,
+    pub handle_fades: motion::Fades<SplitId, ()>,
     /// The find bars as drawn, by terminal or viewer entity: the open bar, and a closed one
     /// while it fades out.
     pub find_bars: motion::Fades<gpui::EntityId, find::FindLook>,
@@ -489,6 +492,8 @@ impl Root {
             drop_target: None,
             drop_tints: HashMap::new(),
             glow: motion::Fades::default(),
+            handle_hovered: HashSet::new(),
+            handle_fades: motion::Fades::default(),
             find_bars: motion::Fades::default(),
             empty_anim: HashMap::new(),
             shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
@@ -553,6 +558,7 @@ impl Root {
             || self.url_prompt.animating(now)
             || self.drop_tints.values().any(|t| t.animating(now))
             || self.glow.animating(now)
+            || self.handle_fades.animating(now)
             || self.find_bars.animating(now)
             || self.sidebar.animating(now)
     }
@@ -565,6 +571,7 @@ impl Root {
             !t.fade.is_hidden()
         });
         self.glow.settle(now, last_frame);
+        self.handle_fades.settle(now, last_frame);
         self.find_bars.settle(now, last_frame);
         self.tab_menu.settle(now);
         self.context_menu.settle(now);

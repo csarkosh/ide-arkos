@@ -114,6 +114,9 @@ Things only a person at the screen can check, in order of value:
 - revoke Accessibility in System Settings: the pane shows the permission screen within a second
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
+- with two panes side by side, the separator between them is a hairline and the focused pane's
+  glow looks the same on its separator side as on its others; hover the separator: a wider
+  stripe fades in and the panes do not move; drag it; move away: it fades out
 - the focused pane's glow reaches all four edges, the bottom and right included, and breathes
   slowly; click another pane: the glow cross-fades; Reduce Motion in System Settings: it rests;
   `ps` with four idle terminals and the window in front: the breath's ten repaints a second

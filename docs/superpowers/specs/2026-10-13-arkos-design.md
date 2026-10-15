@@ -166,7 +166,10 @@ ratio. Leaf: a pane with an ordered list of tabs and an active index. The screen
 a vertical split at about 0.5 whose right child is a horizontal split at 0.5. A tab is either a
 terminal (session id) or a viewer (path, worktree root).
 
-**Resizing.** Every split edge is a 4 px handle with a wider invisible hit area. Dragging
+**Resizing.** Every split edge is a 2 px gap with an 8 px invisible hit area; at rest it shows
+only the window background between the pane borders, and while the pointer is over it or drags
+it a 6 px stripe fades in over the neighbours' edges, so the panes never move for it (2 px and
+the stripe from 2026-10-15; before, a 4 px painted handle). Dragging
 updates the ratio live; double-click resets to equal. A minimum pane size (default 160 px wide,
 80 px tall) stops a pane being squeezed below readable.
 

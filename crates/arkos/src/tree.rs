@@ -14,8 +14,9 @@ pub type TabId = u64;
 
 pub const MIN_PANE_W: f32 = 160.0;
 pub const MIN_PANE_H: f32 = 80.0;
-/// The visible width of a split handle. The hit area is wider (the view decides).
-pub const HANDLE: f32 = 4.0;
+/// The gap between two panes at a split: a hairline, painted only while the pointer is over it
+/// or drags it (`split_view`). The hit area is wider (the view decides).
+pub const HANDLE: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Orientation {
