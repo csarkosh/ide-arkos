@@ -9,7 +9,8 @@ use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point};
+use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 pub use alacritty_terminal::term::search::Match;
 use alacritty_terminal::term::search::RegexSearch;
@@ -74,6 +75,14 @@ pub struct Highlight {
     pub start: usize,
     pub end: usize,
     pub current: bool,
+}
+
+/// The selection's part on one viewport row, columns inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionSpan {
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
 pub struct TerminalCore {
@@ -286,6 +295,58 @@ impl TerminalCore {
         out
     }
 
+    /// A viewport cell as a grid point (history lines are negative).
+    fn grid_point(&self, col: usize, row: usize) -> Point {
+        Point::new(Line(row as i32 - self.display_offset() as i32), Column(col.min(self.columns().saturating_sub(1))))
+    }
+
+    /// Starts a selection at a viewport cell: characters from a drag, a word from a double click,
+    /// a line from a triple. Alacritty owns it from here, so it follows its text as output scrolls.
+    pub fn selection_start(&mut self, col: usize, row: usize, side: Side, ty: SelectionType) {
+        self.term.selection = Some(Selection::new(ty, self.grid_point(col, row), side));
+    }
+
+    /// Moves the selection's end to a viewport cell.
+    pub fn selection_update(&mut self, col: usize, row: usize, side: Side) {
+        let p = self.grid_point(col, row);
+        if let Some(s) = self.term.selection.as_mut() {
+            s.update(p, side);
+        }
+    }
+
+    pub fn selection_clear(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// True while a selection exists, even one that covers nothing yet.
+    pub fn selection_active(&self) -> bool {
+        self.term.selection.is_some()
+    }
+
+    /// The selected text, or None when nothing is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string().filter(|s| !s.is_empty())
+    }
+
+    /// The selection's on-screen parts at the current display offset.
+    pub fn selection_spans(&self) -> Vec<SelectionSpan> {
+        let Some(r) = self.term.selection.as_ref().and_then(|s| s.to_range(&self.term)) else { return Vec::new() };
+        let off = self.display_offset() as i32;
+        let screen = self.screen_lines() as i32;
+        let cols = self.columns();
+        let mut out = Vec::new();
+        for line in r.start.line.0..=r.end.line.0 {
+            let row = line + off;
+            if row < 0 || row >= screen {
+                continue;
+            }
+            let start = if r.is_block || line == r.start.line.0 { r.start.column.0 } else { 0 };
+            let end = if r.is_block || line == r.end.line.0 { r.end.column.0 } else { cols.saturating_sub(1) };
+            out.push(SelectionSpan { row: row as usize, start, end });
+        }
+        out
+    }
+
     /// Scrolls just enough to show `line` (history lines are negative). The animator lands with
     /// the grid, so there is no glide: a find jump should not animate across 10,000 lines.
     pub fn reveal_line(&mut self, line: Line) {
@@ -399,6 +460,8 @@ pub struct Terminal {
     /// The cell of a left press the program will hear about at release, unless it turns into a
     /// drag first (see `mouse_pressed`).
     pub pending_click: Option<(usize, usize)>,
+    /// The cell of the left press being held; a move to another cell makes it a selection.
+    pub drag_anchor: Option<(usize, usize)>,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -430,16 +493,25 @@ impl Terminal {
             origin: None,
             wheel_carry: WheelCarry::default(),
             pending_click: None,
+            drag_anchor: None,
         }
     }
 
     /// The grid cell under a window position, clamped to the grid; None before the first paint.
     pub fn cell_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize)> {
+        self.point_at(position).map(|(c, r, _)| (c, r))
+    }
+
+    /// `cell_at` with the half of the cell the pointer is on, which decides whether a selection
+    /// takes that cell.
+    pub fn point_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize, Side)> {
         let (ox, oy) = self.origin?;
         let cell = self.cell?;
-        let col = ((f32::from(position.x) - ox) / cell.width).floor().max(0.0) as usize;
+        let x = ((f32::from(position.x) - ox) / cell.width).max(0.0);
         let row = ((f32::from(position.y) - oy) / cell.height).floor().max(0.0) as usize;
-        Some((col.min(self.core.columns().saturating_sub(1)), row.min(self.core.screen_lines().saturating_sub(1))))
+        let side = if x.fract() >= 0.5 { Side::Right } else { Side::Left };
+        let col = (x.floor() as usize).min(self.core.columns().saturating_sub(1));
+        Some((col, row.min(self.core.screen_lines().saturating_sub(1)), side))
     }
 
     /// A wheel step of `lines` (positive is up). The local history scrolls unless the program
@@ -461,18 +533,57 @@ impl Terminal {
         self.client.send(Request::Input { session: self.session, bytes });
     }
 
-    /// A left press. When the program reports the mouse, the click is held until the release
-    /// so a drag can become a local selection instead; returns true when the press was taken.
-    pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
-        if !matches!(self.core.mouse_mode(), MouseMode::Report { .. }) {
-            return false;
+    /// A left press. One click clears the selection; a double click selects the word and a
+    /// triple the line. When the program reports the mouse, a single click is held until the
+    /// release so a drag can become a selection instead of a report.
+    pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>, click_count: usize, cx: &mut Context<Self>) {
+        let Some((col, row, side)) = self.point_at(position) else { return };
+        self.drag_anchor = Some((col, row));
+        match click_count {
+            2 => {
+                self.pending_click = None;
+                self.core.selection_start(col, row, side, SelectionType::Semantic);
+            }
+            n if n >= 3 => {
+                self.pending_click = None;
+                self.core.selection_start(col, row, side, SelectionType::Lines);
+            }
+            _ => {
+                self.core.selection_clear();
+                if matches!(self.core.mouse_mode(), MouseMode::Report { .. }) {
+                    self.pending_click = Some((col, row));
+                }
+            }
         }
-        self.pending_click = self.cell_at(position);
-        self.pending_click.is_some()
+        cx.notify();
+    }
+
+    /// A move while the left button is down extends the selection, starting one when the pointer
+    /// leaves the pressed cell; a drag is never a click for the program.
+    pub fn mouse_moved(&mut self, position: gpui::Point<gpui::Pixels>, left_down: bool, cx: &mut Context<Self>) {
+        if !left_down {
+            self.drag_anchor = None;
+            return;
+        }
+        let Some((acol, arow)) = self.drag_anchor else { return };
+        let Some((col, row, side)) = self.point_at(position) else { return };
+        if self.core.selection_active() {
+            self.core.selection_update(col, row, side);
+        } else if (col, row) != (acol, arow) {
+            self.pending_click = None;
+            // The pressed cell is always taken: its anchor faces the way the drag goes.
+            let anchor_side = if (row, col) > (arow, acol) { Side::Left } else { Side::Right };
+            self.core.selection_start(acol, arow, anchor_side, SelectionType::Simple);
+            self.core.selection_update(col, row, side);
+        } else {
+            return;
+        }
+        cx.notify();
     }
 
     /// A left release: a held click reaches the program as a press at its cell and a release here.
     pub fn mouse_released(&mut self, position: gpui::Point<gpui::Pixels>) {
+        self.drag_anchor = None;
         let Some((col, row)) = self.pending_click.take() else { return };
         let MouseMode::Report { sgr } = self.core.mouse_mode() else { return };
         if !self.alive {
@@ -747,6 +858,49 @@ mod tests {
         assert_eq!(t.mouse_mode(), MouseMode::Local);
         t.apply_output(b"\x1b[?1049l\x1b[?1007h");
         assert_eq!(t.mouse_mode(), MouseMode::Local, "alternate scroll means nothing on the primary screen");
+    }
+
+    #[test]
+    fn a_drag_selects_text_for_the_clipboard() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        t.apply_output(b"hello world\r\nsecond line");
+        assert_eq!(t.selection_text(), None);
+        t.selection_start(0, 0, Side::Left, SelectionType::Simple);
+        t.selection_update(4, 0, Side::Right);
+        assert_eq!(t.selection_text().as_deref(), Some("hello"));
+        assert_eq!(t.selection_spans(), vec![SelectionSpan { row: 0, start: 0, end: 4 }]);
+        // Across rows: the first row runs to its end, the last from its start.
+        t.selection_start(6, 0, Side::Left, SelectionType::Simple);
+        t.selection_update(5, 1, Side::Right);
+        assert_eq!(t.selection_text().as_deref(), Some("world\nsecond"));
+        assert_eq!(t.selection_spans(), vec![SelectionSpan { row: 0, start: 6, end: 19 }, SelectionSpan { row: 1, start: 0, end: 5 }]);
+        t.selection_clear();
+        assert_eq!(t.selection_text(), None);
+        assert!(t.selection_spans().is_empty());
+    }
+
+    #[test]
+    fn double_and_triple_clicks_select_a_word_and_a_line() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        t.apply_output(b"hello world\r\nsecond line");
+        t.selection_start(2, 0, Side::Left, SelectionType::Semantic);
+        assert_eq!(t.selection_text().as_deref(), Some("hello"));
+        t.selection_start(2, 1, Side::Left, SelectionType::Lines);
+        assert_eq!(t.selection_text().as_deref(), Some("second line\n"));
+    }
+
+    #[test]
+    fn a_selection_follows_its_text_into_history() {
+        let mut t = TerminalCore::new(20, 2, 100);
+        t.apply_output(b"hello world\r\nsecond");
+        t.selection_start(0, 0, Side::Left, SelectionType::Simple);
+        t.selection_update(4, 0, Side::Right);
+        // One more line scrolls "hello" into history; the selection goes with it.
+        t.apply_output(b"\r\nthird");
+        assert_eq!(t.selection_text().as_deref(), Some("hello"));
+        assert!(t.selection_spans().is_empty(), "off screen at the live bottom");
+        t.set_display_offset(1);
+        assert_eq!(t.selection_spans(), vec![SelectionSpan { row: 0, start: 0, end: 4 }]);
     }
 
     #[test]

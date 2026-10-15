@@ -19,7 +19,7 @@ use crate::viewer::{self, Content};
 use crate::viewer_element::{MarkColors, ViewerElement};
 use crate::Root;
 use gpui::{
-    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
+    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
     KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
@@ -568,6 +568,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_wheel = terminal.clone();
     let t_click = terminal.clone();
     let t_up = terminal.clone();
+    let t_move = terminal.clone();
     let t_drop = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
     let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
@@ -578,6 +579,13 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
+            // Cmd+C copies the selection and nothing else: Ctrl+C stays the interrupt.
+            if ks.modifiers.platform && ks.key == "c" {
+                if let Some(text) = t_keys.read(cx).core.selection_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                return;
+            }
             if ks.modifiers.platform && ks.key == "v" {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     t_keys.update(cx, |t, _| t.paste(&text));
@@ -610,8 +618,9 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                     if t.find.is_some() {
                         t.close_find(cx);
                     }
-                    // A program reporting the mouse hears the click at the release.
-                    t.mouse_pressed(ev.position);
+                    // One click clears the selection, two select a word, three a line; a program
+                    // reporting the mouse hears a single click at the release.
+                    t.mouse_pressed(ev.position, ev.click_count, cx);
                 });
             }),
         )
@@ -624,8 +633,12 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             }
         }))
         // The element finds the link under the pointer when it paints; a move over the
-        // terminal asks for that paint (the inner div below asks on enter and exit).
-        .on_mouse_move(cx.listener(|_root, _ev: &MouseMoveEvent, _window, cx| cx.notify()))
+        // terminal asks for that paint (the inner div below asks on enter and exit). A move
+        // with the button down extends the selection.
+        .on_mouse_move(cx.listener(move |_root, ev: &MouseMoveEvent, _window, cx| {
+            t_move.update(cx, |t, cx| t.mouse_moved(ev.position, ev.pressed_button == Some(MouseButton::Left), cx));
+            cx.notify();
+        }))
         .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);

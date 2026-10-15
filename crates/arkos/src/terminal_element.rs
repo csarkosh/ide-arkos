@@ -136,7 +136,7 @@ impl Element for TerminalElement {
         let cw = cell.width;
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
         // The colours come from the terminal's palette, which follows the theme.
-        let (rows, frac, cursor, animating, highlights, palette, find_owed) = self.terminal.update(cx, |t, _| {
+        let (rows, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -153,7 +153,7 @@ impl Element for TerminalElement {
             let find_owed = t.refresh_find();
             let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, palette.clone(), find_owed)
+            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         window.paint_quad(fill(bounds, hsla(bg)));
@@ -203,6 +203,13 @@ impl Element for TerminalElement {
                     c.a = 0.85;
                     window.paint_quad(fill(Bounds { origin: point(x, y), size: size(px(cw), lh) }, c));
                 }
+            }
+            // The selection: a translucent tint over the text, like the find matches below.
+            for s in &selection {
+                let x = origin.x + px(s.start as f32 * cw);
+                let w = px((s.end + 1 - s.start) as f32 * cw);
+                let y = origin.y + px((s.row as f32 + frac) * cell.height);
+                window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, palette.selection.alpha(0.4)));
             }
             // Find matches: translucent quads over the text, so no run is re-shaped.
             for h in &highlights {
