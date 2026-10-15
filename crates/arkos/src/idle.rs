@@ -24,6 +24,12 @@ pub fn may_apply(now: Instant, last_input: Instant, idle_after: Duration, chrome
     now.saturating_duration_since(last_input) >= idle_after
 }
 
+/// When the quiet spell starts: now while anything is open, so closing the palette, a menu or a
+/// find bar (whose keys may never reach the window) is not followed by an update a second later.
+pub fn quiet_since(last_input: Instant, now: Instant, chrome: Chrome) -> Instant {
+    if chrome.any() { now } else { last_input }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,5 +48,19 @@ mod tests {
         assert!(!may_apply(t0 + Duration::from_secs(60), t0, after, quiet, true, true), "an update already running");
         assert!(!may_apply(t0 + Duration::from_secs(60), t0, after, quiet, false, false), "offline");
         assert!(may_apply(t0, t0 + Duration::from_secs(5), Duration::ZERO, quiet, false, true), "a last input in the future (clock skew) counts as idle only when idle_after is zero");
+    }
+
+    #[test]
+    fn open_chrome_restarts_the_quiet_spell() {
+        let t0 = Instant::now();
+        let after = Duration::from_secs(30);
+        let now = t0 + Duration::from_secs(60);
+        let open = Chrome { find: true, ..Chrome::default() };
+        assert_eq!(quiet_since(t0, now, Chrome::default()), t0);
+        let since = quiet_since(t0, now, open);
+        assert_eq!(since, now, "a find bar open at this tick");
+        // Closed on the next tick: the 30 seconds count from the last tick it was open.
+        assert!(!may_apply(now + Duration::from_secs(1), since, after, Chrome::default(), false, true));
+        assert!(may_apply(now + Duration::from_secs(30), since, after, Chrome::default(), false, true));
     }
 }

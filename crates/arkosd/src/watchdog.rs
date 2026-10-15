@@ -68,6 +68,8 @@ fn scan(state: &Shared, timeout: Duration) {
 pub fn launch_ui(exe: &Path, cwd: Option<&Path>) -> std::io::Result<()> {
     let mut cmd = Command::new(exe);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // The window opens without taking focus: the user may be in another app.
+    cmd.env("ARKOS_RELAUNCH", "1");
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }

@@ -118,6 +118,9 @@ fn banner_visible(reconnecting_since: Option<Instant>, now: Instant) -> bool {
 /// reconnects), or the window asking to be relaunched and quitting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateStage {
+    /// The daemon swapping in the staged bundle (`ApplyUpdate` in flight); `Applied` moves on
+    /// to "Update now".
+    Applying,
     DaemonUpgrading,
     Relaunching,
 }
@@ -289,6 +292,12 @@ fn daemon_args(config: &config::Config) -> Vec<String> {
     ]
 }
 
+/// Whether the new window takes focus: not when the daemon started it (`ARKOS_RELAUNCH` set by
+/// `watchdog::launch_ui`), so a relaunch never interrupts another app.
+fn should_activate(relaunch_env: Option<&str>) -> bool {
+    relaunch_env.map_or(true, |v| v.is_empty())
+}
+
 /// Whether a window closing tells the daemon the user is leaving, so a restart does not reopen
 /// it: only the last window, and only when the user closed it.
 pub fn says_goodbye(user_closing: bool, windows_left: usize) -> bool {
@@ -329,8 +338,13 @@ impl Root {
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
-        // Every keystroke counts as input for the idle rule, whichever element handles it.
-        cx.observe_keystrokes(|root, _ev, _window, _cx| root.last_input = Instant::now()).detach();
+        // Every keystroke counts as input for the idle rule. An interceptor runs before dispatch,
+        // so keys a find bar or the Escape capture stops still count.
+        let weak = cx.weak_entity();
+        cx.intercept_keystrokes(move |_ev, _window, cx| {
+            let _ = weak.update(cx, |root, _| root.last_input = Instant::now());
+        })
+        .detach();
         Self {
             tree,
             sessions,
@@ -1364,7 +1378,7 @@ impl Root {
             menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some(),
             prompt: self.wt_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
-            drag: self.drop_target.is_some(),
+            drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
         }
     }
 
@@ -1378,12 +1392,17 @@ impl Root {
         cx.spawn(async move |root, cx| loop {
             cx.background_executor().timer(IDLE_TICK).await;
             let more = root.update(cx, |root, cx| {
-                if root.staged.is_none() || !root.config.update.auto {
+                // A failed update waits for "Retry update" or a newly staged release.
+                if root.staged.is_none() || !root.config.update.auto || root.update_error.is_some() {
                     root.auto_apply_timer = false;
                     return false;
                 }
+                let now = Instant::now();
+                let chrome = root.chrome_state(cx);
+                // Anything open restarts the quiet spell, so closing it is not followed by an update.
+                root.last_input = idle::quiet_since(root.last_input, now, chrome);
                 let idle_after = Duration::from_secs(root.config.update.idle_after_secs);
-                if idle::may_apply(Instant::now(), root.last_input, idle_after, root.chrome_state(cx), root.updating.is_some(), !root.sessions.is_offline()) {
+                if idle::may_apply(now, root.last_input, idle_after, chrome, root.updating.is_some(), !root.sessions.is_offline()) {
                     root.auto_apply_timer = false;
                     root.apply_staged(cx);
                     return false;
@@ -1404,7 +1423,7 @@ impl Root {
             return;
         }
         let version = s.version.clone();
-        self.updating = Some(UpdateStage::DaemonUpgrading);
+        self.updating = Some(UpdateStage::Applying);
         self.show_notice(format!("updating to {version}; sessions stay"), cx);
         self.sessions.apply_update(version);
     }
@@ -1497,6 +1516,12 @@ impl Root {
         if self.updating == Some(UpdateStage::Relaunching) {
             self.updating = None;
             self.show_notice("update interrupted: arkosd disconnected before relaunching this window; try again".into(), cx);
+        }
+        // The apply went unanswered; the reconnect's `UpdateStatus` says what is staged and the
+        // idle rule decides again. `connected` never relaunches for it.
+        if self.updating == Some(UpdateStage::Applying) {
+            self.updating = None;
+            self.show_notice("update interrupted; checking again".into(), cx);
         }
         // An error the daemon sent before hanging up (a protocol mismatch) says why; keep it.
         self.status = if self.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", self.status) } else { reason };
@@ -2001,6 +2026,9 @@ fn main() {
                     titlebar: Some(gpui::TitlebarOptions { title: Some("Arkos IDE".into()), appears_transparent: true, traffic_light_position: None }),
                     // One minimum pane with its border, tab bar and the window's bar.
                     window_min_size: Some(size(px(tree::MIN_PANE_W + 8.0), px(tree::MIN_PANE_H + pane_view::TAB_BAR_H + chrome::TITLE_BAR_H))),
+                    // A window the daemon relaunched (an update, the watchdog) does not take the
+                    // keyboard from the app in use.
+                    focus: should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref()),
                     ..Default::default()
                 },
                 move |window, cx| {
@@ -2089,7 +2117,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_label, pick_grid, says_goodbye, shell_name, CONNECTING, ERROR_PREFIX};
+    use super::{daemon_label, pick_grid, says_goodbye, shell_name, should_activate, CONNECTING, ERROR_PREFIX};
+
+    #[test]
+    fn a_window_the_daemon_relaunched_does_not_take_focus() {
+        assert!(should_activate(None), "opened by the user");
+        assert!(should_activate(Some("")));
+        assert!(!should_activate(Some("1")), "ARKOS_RELAUNCH from watchdog::launch_ui");
+    }
 
     #[test]
     fn only_the_users_close_of_the_last_window_says_goodbye() {
