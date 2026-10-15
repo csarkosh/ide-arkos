@@ -24,16 +24,19 @@ use gpui::{
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
-/// How far the focused pane's glow reaches in from each edge.
-pub const GLOW_W: f32 = 6.0;
-/// The glow's opacity at the edge; it fades to nothing by `GLOW_W`.
+/// How far the focused pane's glow reaches in from each edge, at rest.
+pub const GLOW_W: f32 = 4.0;
+/// The glow's opacity at the edge, at the peak of its breath; it fades to nothing by its reach.
 pub const GLOW_ALPHA: f32 = 0.3;
+/// The breath (`pulse::glow`): at rest the glow keeps this share of its opacity, and at the peak
+/// it gains this much lightness and this share of its reach, so it reads as light at the edge.
+const GLOW_BREATH_FLOOR: f32 = 0.7;
+const GLOW_BREATH_LIGHT: f32 = 0.12;
+const GLOW_BREATH_REACH: f32 = 0.25;
 
-/// The four strips of the focus glow for a pane `w` by `h`: (x, y, width, height, gradient
-/// angle), the angle being CSS's, the direction the colour fades towards (180 is downwards).
-pub fn glow_strips(w: f32, h: f32) -> [(f32, f32, f32, f32, f32); 4] {
-    let g = GLOW_W.min(w / 2.0).min(h / 2.0).max(0.0);
-    [(0.0, 0.0, w, g, 180.0), (0.0, h - g, w, g, 0.0), (0.0, 0.0, g, h, 90.0), (w - g, 0.0, g, h, 270.0)]
+/// The glow's reach for a pane `w` by `h`: `GLOW_W`, or less in a pane too small for it.
+pub fn glow_width(w: f32, h: f32) -> f32 {
+    GLOW_W.min(w / 2.0).min(h / 2.0).max(0.0)
 }
 
 /// What a tab shows before its title (spec 5): a breathing glyph, a warm dot, nothing, or a
@@ -382,15 +385,26 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         m
     });
     // The focused pane glows at its edges instead of wearing a hard line: four strips that fade
-    // from the focus colour to nothing, drawn over the pane so they never move its content.
-    // When focus moves, the old pane's glow fades out as the new one's fades in.
+    // from the focus colour to nothing, drawn over the pane so they never move its content, and
+    // anchored to the pane's own edges (the pane wears a 1 px border, so offsets from the layout
+    // rect would land past the clip). When focus moves, the old pane's glow fades out as the new
+    // one's fades in. The glow breathes slowly, brighter and a little wider at the peak.
+    let breath = pulse::glow(root.pulse_epoch.elapsed(), crate::motion::reduce_motion());
     let glow = root.glow.sync(pane, focused.then_some(()), now).map(|(_, opacity)| {
-        let from = theme.chrome.focus_ring.alpha(GLOW_ALPHA);
+        let g = glow_width(rect.w, rect.h) * (1.0 + GLOW_BREATH_REACH * breath);
+        let mut from = theme.chrome.focus_ring.alpha(GLOW_ALPHA * (GLOW_BREATH_FLOOR + (1.0 - GLOW_BREATH_FLOOR) * breath));
+        from.l = (from.l + GLOW_BREATH_LIGHT * breath).min(1.0);
         let mut to = from;
         to.a = 0.0;
-        glow_strips(rect.w, rect.h).map(|(x, y, w, h, angle)| {
-            div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)))
-        })
+        // The angle is CSS's: the direction the colour fades towards (180 is downwards).
+        let strip = |angle: f32| div().absolute().opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)));
+        let z = px(0.0);
+        [
+            strip(180.0).top(z).left(z).right(z).h(px(g)),
+            strip(0.0).bottom(z).left(z).right(z).h(px(g)),
+            strip(90.0).left(z).top(z).bottom(z).w(px(g)),
+            strip(270.0).right(z).top(z).bottom(z).w(px(g)),
+        ]
     });
     div()
         .size_full()
@@ -1020,15 +1034,13 @@ mod tests {
     }
 
     #[test]
-    fn the_glow_hugs_every_edge_and_fits_a_tiny_pane() {
-        let [top, bottom, left, right] = glow_strips(200.0, 100.0);
-        assert_eq!(top, (0.0, 0.0, 200.0, GLOW_W, 180.0));
-        assert_eq!(bottom, (0.0, 100.0 - GLOW_W, 200.0, GLOW_W, 0.0));
-        assert_eq!(left, (0.0, 0.0, GLOW_W, 100.0, 90.0));
-        assert_eq!(right, (200.0 - GLOW_W, 0.0, GLOW_W, 100.0, 270.0));
-        let [top, ..] = glow_strips(10.0, 8.0);
-        assert_eq!(top.3, 4.0, "never wider than half the pane");
-        assert!(glow_strips(0.0, 0.0).iter().all(|s| s.2 >= 0.0 && s.3 >= 0.0));
+    fn the_glow_fits_a_tiny_pane() {
+        assert_eq!(glow_width(200.0, 100.0), GLOW_W);
+        assert_eq!(glow_width(10.0, 8.0), 4.0, "never wider than half the pane");
+        assert_eq!(glow_width(6.0, 4.0), 2.0);
+        assert_eq!(glow_width(0.0, 0.0), 0.0);
+        // Even at the peak of its breath it stays well inside a pane.
+        assert!(GLOW_W * (1.0 + GLOW_BREATH_REACH) <= 5.0);
     }
 
     #[test]

@@ -114,6 +114,8 @@ Things only a person at the screen can check, in order of value:
 - revoke Accessibility in System Settings: the pane shows the permission screen within a second
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
+- the focused pane's glow reaches all four edges, the bottom and right included, and breathes
+  slowly; click another pane: the glow cross-fades; Reduce Motion in System Settings: it rests
 - open from the Dock with Claude running in two tabs of a project: its row says "2 sessions";
   Stop all, then Confirm: the row says "stopping…" and the count goes; `ps` shows the shells
   gone; a folder with no sessions shows nothing on the right; Delete on a selected row arms it
@@ -196,7 +198,9 @@ diff" chip) shows the deleted lines in red between the current ones.
 
 Menus, the palette, notices, find bars and the drop preview ease in over 120 ms and out over
 90 ms; Reduce Motion turns that off. The drop preview glides between zones, the focus glow
-cross-fades as focus moves, a section's rows fade in as it opens, and Cmd+B slides the sidebar
+cross-fades as focus moves and breathes slowly while the window is active (six seconds a
+breath, a little brighter and wider at the peak; Reduce Motion rests it), a section's rows fade
+in as it opens, and Cmd+B slides the sidebar
 over 150 ms with the panes following. Something on its way out is only drawn: it takes no
 keys, focus or clicks.
 
