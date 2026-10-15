@@ -27,7 +27,7 @@ Things only a person at the screen can check, in order of value:
   dirty one is refused with git's words, force removes it
 - Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
 - edit a tracked file in another app while the viewer shows it: the gutter bars appear within a
-  second; Cmd+Shift+D shows the deleted lines; `git commit` clears the bars within ten seconds; a
+  second; Shift+Cmd+D shows the deleted lines; `git commit` clears the bars within ten seconds; a
   file in a worktree diffs against that worktree's HEAD
 - Cmd+B, expand `src`, click a file: a dimmed preview tab with colours and line numbers; click
   another file: the same tab shows it; double click: a second tab; edit the file in another app:
@@ -155,7 +155,7 @@ of the file changing on disk. Files over `[viewer] highlight_limit_bytes` (5 MB 
 plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
 terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repository shows its
 changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
-amber one, a deletion a red mark at the top of the line that follows; Cmd+Shift+D (or the "inline
+amber one, a deletion a red mark at the top of the line that follows; Shift+Cmd+D (or the "inline
 diff" chip) shows the deleted lines in red between the current ones.
 
 ## Keyboard
@@ -200,7 +200,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+B | toggle the sidebar |
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
-| Cmd+Shift+D | inline diff in the viewer |
+| Shift+Cmd+D | inline diff in the viewer |
 | Cmd+, | open config file |
 | Shift+Cmd+P | command palette |
 
