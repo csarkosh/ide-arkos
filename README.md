@@ -268,6 +268,10 @@ check_every_secs = 300
 idle_after_secs = 30
 ```
 
+`check_every_secs` is the daemon's: it reaches a running daemon only when the window starts it or
+the login item is reinstalled ("Start at login" in the palette); a daemon already running keeps
+the interval it started with. `auto` and `idle_after_secs` apply at once.
+
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
 from the palette lasts until the config reloads or the app relaunches; the config file decides
@@ -284,7 +288,16 @@ Updates arrive by themselves: the daemon checks the release manifest every five 
 and verifies a newer build, and the window applies it once you have been idle for thirty seconds
 (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
 still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for
-updates" in the palette asks now.
+updates" in the palette asks now, and says "no update" when nothing newer is out.
+
+A check that cannot reach GitHub (offline, a captive portal) is retried quietly at the next one.
+When the daemon's last check or update failed for a reason that is the release's (a bad
+signature, a download that does not match its manifest) or the swap's, the title bar shows the
+reason once as a notice, the badge says "update failed", and the palette offers "Retry update".
+If the new window does not come up within 20 seconds of its relaunch, the daemon puts the
+previous app back, reopens your windows, and records the version in
+`~/Library/Application Support/arkos/updates/rejected` so it is never downloaded again (a newer
+release still is). To try a rejected version again, delete that file.
 
 Sessions live in `arkosd`, so updating never ends one. After `cargo build --release` into the
 binaries you run (a build from source), the title bar shows "update ready" within
@@ -304,6 +317,19 @@ tab becomes a fresh shell with the "(restarted)" note.
 A window newer than its daemon (one started from a new build while an older daemon still runs)
 is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
 one-time path above: `pkill -x arkosd`, which ends every session, and open the window again.
+
+### Renamed from Sarkos
+
+The IDE used to be called Sarkos. A machine that ran it keeps the old login item, daemon,
+config and saved workspaces under the old name; move them over once (this ends the old
+daemon's sessions):
+
+1. `launchctl bootout gui/$(id -u)/sh.csarko.sarkosd && rm ~/Library/LaunchAgents/sh.csarko.sarkosd.plist`
+2. `pkill -x sarkosd`
+3. `mv ~/.config/sarkos ~/.config/arkos`
+4. `mv "$HOME/Library/Application Support/sarkos/workspaces" "$HOME/Library/Application Support/arkos/"`
+5. Open Arkos IDE and run "Install Claude Code hooks" and "Start at login" from the palette
+   (Cmd+Shift+P).
 
 ## Releasing
 

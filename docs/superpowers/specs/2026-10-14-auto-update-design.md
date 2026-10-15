@@ -70,7 +70,7 @@ arm64 runner (free on this public repository; it is manual so no minute is spent
      "min_protocol": 1
    }
    ```
-   and sign the manifest bytes with `scripts/release-sign` (a tiny Rust binary in
+   and sign the manifest bytes with `release-tool sign` (a tiny Rust binary in
    `crates/release-tool`, run on the runner) into `manifest.json.sig` (the base64 of the raw
    64-byte ed25519 signature over the manifest bytes; `release-tool verify` checks it by hand).
 8. `gh release create v0.2.1` with the zip, `manifest.json` and `manifest.json.sig`, and
@@ -78,9 +78,11 @@ arm64 runner (free on this public repository; it is manual so no minute is spent
 
 `scripts/release-key` generates the key pair once (`release-tool keygen`): the secret key is
 pasted into the repository secret and into Cyrus's password manager and never written to the
-repository; the public key is committed as a constant. Rotating the key is a new constant and a
-release signed by both keys (the manifest carries a list of signatures; the IDE accepts any
-known key).
+repository; the public key is committed as a constant. The manifest carries one signature, and
+the IDE accepts it from any key in `RELEASE_PUBLIC_KEYS`. Rotating the key is a release that adds
+the new public key to that list while still signed with the old key; once that release is out,
+later ones are signed with the new key, and the old public key stays listed so an IDE that
+missed a release still updates.
 
 `min_protocol` lets a release say which daemons it can talk to, so a window never updates past
 a daemon it cannot replace (section 4 of the update-in-place design has the daemon
@@ -136,19 +138,21 @@ UI to block. Every `check_every` (default five minutes) and on `CheckForUpdates`
    than any staged one (semver only; a re-release is a new patch version, so a replayed older
    manifest can never roll back); otherwise there is nothing to do. A version
    already marked bad (step 5) is skipped until the manifest changes.
-4. Download the zip to `<staging>/<version>/bundle.zip` with `curl` (`--max-filesize` from
+4. Download the zip to `<staging>/<version>.zip` with `curl` (`--max-filesize` from
    the manifest's `size` plus a 200 MB cap, `--max-time 600`), then check the size and the
    sha256 (crate `sha2`) against the manifest.
-5. Unpack with `ditto -x -k` into `<staging>/<version>/Arkos IDE.app`, check the structure
-   (both executables present and executable, `Info.plist` version equal to the manifest's),
-   and run `<new>/Contents/MacOS/arkosd --version` with a two-second limit to be sure it
-   runs. Any failure deletes the folder and marks the version bad.
+5. Unpack with `ditto -x -k` into `<staging>/<version>/Arkos IDE.app`. The structure check is
+   the `--version` probe: `<new>/Contents/MacOS/arkosd --version`, run with a short limit, must
+   run and name the manifest's version. Any failure deletes the folder and marks the version
+   bad. A manifest or zip that cannot be fetched (offline, a timeout) is not the release's
+   fault: it is logged and tried again at the next check, and does not set the error the
+   windows show.
 6. Record `staged = { version, git, path }` and notify every connected window
    (`Event::UpdateStaged { version }`).
 
 Staging lives under `~/Library/Application Support/arkos/updates/`; the daemon deletes
 anything there that is not the current staged version on every check. Only one fetch runs at
-a time; a check during a download is ignored. The on-disk check the window already does (its
+a time; a check requested during a check runs right after it. The on-disk check the window already does (its
 launch path's `--version` every five minutes) stays, so a manual `brew reinstall` or a local
 build into the bundle still shows up as "update ready".
 
@@ -173,7 +177,9 @@ and the palette's "Update now" remain.
 
 ## 7. Failure and rollback
 
-- The new window must connect within 20 s of launch. If it does not, the daemon renames `.old`
+- The new window must connect within 20 s of launch: the grace starts when the daemon launches
+  it (the old window's disconnect with a pending relaunch) or when a daemon starts and finds the
+  marker, not at the swap. If it does not, the daemon renames `.old`
   back into place, launches the old window, and marks the version bad; the title bar says
   "update 0.2.1 rolled back". The daemon itself was already exec'd from the new binary; a daemon
   that fails to come up after exec is the update-in-place design's section 7 case (the window's
@@ -224,7 +230,7 @@ The daemon reads `check_every` and `--update-url`; the window reads the other tw
 - Stage and swap on temporary directories: a bundle is a directory with two scripts; the two
   renames, the `.old` cleanup, the rollback, a refused rename.
 - Idle: a pure function of (last input, open chrome, in flight) against time.
-- Protocol: `Hello.staged`, `UpdateStaged`, `ApplyUpdate` additive; protocol 3 windows still
+- Protocol: `UpdateStatus`, `UpdateStaged`, `ApplyUpdate` additive; protocol 3 windows still
   connect to a protocol 4 daemon.
 - Daemon integration: a staged update followed by `ApplyUpdate` swaps a fake bundle, execs
   the handover and relaunches the client (the existing upgrade test, extended).
