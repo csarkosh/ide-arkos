@@ -38,6 +38,13 @@ fn main() {
     let mut backpressure = session::Backpressure::default();
     let mut resume = None;
     let mut recover = false;
+    // The update arguments; the staging folder's default follows `--socket`, wherever it comes.
+    let mut update_url = None;
+    let mut check_every_secs = None;
+    let mut curl = None;
+    let mut ditto = None;
+    let mut updates_dir = None;
+    let mut release_keys = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -75,12 +82,37 @@ fn main() {
             "--flush-quiet-millis" => {
                 flush_quiet_millis = args.next().and_then(|v| v.parse().ok()).expect("--flush-quiet-millis needs a number")
             }
+            // Where `manifest.json` and its `.sig` are fetched from; a `file://` folder in tests.
+            "--update-url" => {
+                let mut url = args.next().expect("--update-url needs a url");
+                if !url.ends_with('/') {
+                    url.push('/');
+                }
+                update_url = Some(url)
+            }
+            // How often to look for a release; 0 turns polling off.
+            "--check-every-secs" => {
+                check_every_secs = Some(args.next().and_then(|v| v.parse::<u64>().ok()).expect("--check-every-secs needs a number"))
+            }
+            "--curl" => curl = Some(PathBuf::from(args.next().expect("--curl needs a path"))),
+            "--ditto" => ditto = Some(PathBuf::from(args.next().expect("--ditto needs a path"))),
+            "--updates-dir" => updates_dir = Some(PathBuf::from(args.next().expect("--updates-dir needs a path"))),
+            // Test only: trusts one more release key (base64), so the tests can sign a release.
+            // Never read from the environment; a release is signed by a compiled-in key.
+            "--release-key" => release_keys.push(args.next().expect("--release-key needs a key")),
             other => {
                 eprintln!("arkosd: unknown argument {other}");
                 std::process::exit(2);
             }
         }
     }
+    let mut update = updates::UpdateOptions::defaults(&socket);
+    update.url = update_url.unwrap_or(update.url);
+    update.check_every = check_every_secs.map(Duration::from_secs).unwrap_or(update.check_every);
+    update.curl = curl.unwrap_or(update.curl);
+    update.ditto = ditto.unwrap_or(update.ditto);
+    update.dir = updates_dir.unwrap_or(update.dir);
+    update.extra_keys = release_keys;
     if let Some(path) = resume {
         let h = match handover::read(&path) {
             Ok(h) => h,
@@ -92,7 +124,7 @@ fn main() {
             }
         };
         let _ = std::fs::remove_file(&path);
-        if let Err(e) = server::run_resumed(h, socket) {
+        if let Err(e) = server::run_resumed(h, socket, update) {
             eprintln!("arkosd: {e:#}");
             std::process::exit(1);
         }
@@ -111,6 +143,7 @@ fn main() {
         dead_session_ttl: Duration::from_secs(dead_session_secs),
         socket,
         flush_quiet: Duration::from_millis(flush_quiet_millis),
+        update,
     };
     if let Err(e) = server::run_with(opts, recover) {
         if recover && e.to_string().contains(server::ALREADY_LISTENING) {

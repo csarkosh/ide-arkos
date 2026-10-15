@@ -4,7 +4,7 @@ use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Request, Response, ServerMessage, SessionId, PROTOCOL_MIN, PROTOCOL_VERSION};
+use protocol::{ClientMessage, Event, Request, Response, ServerMessage, SessionId, StagedUpdate, PROTOCOL_MIN, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
@@ -30,10 +30,11 @@ pub struct Options {
     pub socket: PathBuf,
     /// How long output must have stopped before a session's ring is written to disk.
     pub flush_quiet: Duration,
+    /// Where and how often to look for a release; polling is off when `check_every` is zero.
+    pub update: crate::updates::UpdateOptions,
 }
 
 pub struct ClientRecord {
-    #[allow(dead_code)] // kept so the watchdog can reach a client
     pub tx: ClientSink,
     pub attached: Vec<SessionId>,
     pub last_heartbeat: Instant,
@@ -67,6 +68,8 @@ pub struct State {
     pub windows: HashMap<PathBuf, Option<PathBuf>>,
     /// Set by every change the manifest records; the flusher writes it and clears this.
     pub manifest_dirty: bool,
+    /// The poll thread's findings: what is staged and how the last check went.
+    pub update: crate::updates::UpdateState,
 }
 
 impl State {
@@ -89,6 +92,14 @@ impl State {
 }
 
 pub type Shared = Arc<Mutex<State>>;
+
+/// Queues `event` for every connected client. A client whose sink is closed is skipped; its
+/// reader thread is already removing it.
+pub fn broadcast(st: &State, event: Event) {
+    for rec in st.clients.values().filter(|r| r.connected) {
+        rec.tx.send(ServerMessage::Event(event.clone()));
+    }
+}
 
 /// How `run_with` fails when a daemon already serves the socket; `--recover` treats it as success.
 pub const ALREADY_LISTENING: &str = "another arkosd is already listening on";
@@ -129,7 +140,7 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
 }
 
 /// The new image after an upgrade: adopt the listener and every session, then serve.
-pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
+pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateOptions) -> Result<()> {
     use std::os::fd::FromRawFd;
     // Before anything is adopted: the numbers come from a file.
     let records = crate::handover::adoptable(&h).map_err(anyhow::Error::msg)?;
@@ -153,6 +164,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
         dead_session_ttl: Duration::from_secs(h.dead_session_secs),
         socket,
         flush_quiet: Duration::from_millis(h.flush_quiet_millis),
+        update,
     };
     let mut st = State::new();
     st.next_session = h.next_session;
@@ -176,10 +188,16 @@ pub fn run_resumed(h: Handover, socket: PathBuf) -> Result<()> {
     serve(listener, Arc::new(Mutex::new(st)), opts)
 }
 
-/// The watchdog, the reaper, the flusher, the signal watcher and the accept loop, shared by a
-/// fresh start and a resume.
+/// The watchdog, the reaper, the flusher, the signal watcher, the update poll and the accept
+/// loop, shared by a fresh start and a resume.
 fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     crate::watchdog::start(state.clone(), opts.watchdog);
+    let u = &opts.update;
+    if !u.check_every.is_zero() {
+        let keys = protocol::release_key::RELEASE_PUBLIC_KEYS.iter().map(|k| k.to_string()).chain(u.extra_keys.iter().cloned()).collect();
+        let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone() };
+        crate::updates::poll::start(state.clone(), fetcher, u.dir.clone(), keys, u.check_every, u.ditto.clone());
+    }
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     let dir = crate::recovery::sessions_dir(&opts.socket);
     let flusher = crate::recovery::start(state.clone(), dir, opts.flush_quiet);
@@ -530,6 +548,15 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             list.sort_by_key(|s| s.id.0);
             Response::Sessions(list)
         }
+        Request::UpdateStatus => {
+            let st = state.lock().unwrap();
+            Response::UpdateStatus { staged: st.update.staged.as_ref().map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }), last_error: st.update.last_error.clone() }
+        }
+        Request::CheckForUpdates => {
+            state.lock().unwrap().update.check_now = true;
+            Response::Ok
+        }
+        Request::ApplyUpdate { .. } => Response::Error("not yet".into()), // Task 4
         Request::SetState { session: sid, state: claude } => match session(sid) {
             Some(s) => {
                 s.set_state(claude);

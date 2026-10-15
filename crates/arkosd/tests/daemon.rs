@@ -21,9 +21,11 @@ impl Daemon {
     /// A daemon whose socket, and so its sessions dir, is in `dir`: a later daemon can share it.
     fn start_in(dir: tempfile::TempDir, extra: &[&str]) -> Daemon {
         let socket = dir.path().join("d.sock");
+        // No test reaches GitHub: polling is off unless a test turns it on (later arguments win).
         let child = Command::new(env!("CARGO_BIN_EXE_arkosd"))
             .arg("--socket")
             .arg(&socket)
+            .args(["--check-every-secs", "0"])
             .args(extra)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -857,7 +859,7 @@ fn hello_version_1_gets_ok_and_version_2_gets_the_daemon_version() {
     match c2.request(Request::Hello { protocol_version: 2, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() }) {
         Response::Hello { daemon_version, protocol_min, protocol_max } => {
             assert!(daemon_version.starts_with("arkosd "), "{daemon_version}");
-            assert_eq!((protocol_min, protocol_max), (1, 3));
+            assert_eq!((protocol_min, protocol_max), (1, PROTOCOL_VERSION));
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -1262,7 +1264,7 @@ fn hello_version_3_gets_the_range_and_goodbye_is_ok() {
     let d = Daemon::start(&[]);
     let mut c = d.connect_raw();
     let r = c.request(Request::Hello { protocol_version: 3, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() });
-    assert!(matches!(r, Response::Hello { protocol_min: 1, protocol_max: 3, .. }), "{r:?}");
+    assert!(matches!(r, Response::Hello { protocol_min: 1, protocol_max, .. } if protocol_max == PROTOCOL_VERSION), "{r:?}");
     assert_eq!(c.request(Request::Goodbye), Response::Ok);
     assert_eq!(c.request(Request::Goodbye), Response::Ok, "a second Goodbye is harmless");
 }
@@ -1506,4 +1508,111 @@ fn recover_while_a_daemon_is_listening_exits_zero_and_leaves_it() {
     let mut c = a.connect();
     let sid = c.create("/bin/sh");
     c.attach(sid);
+}
+
+/// A throwaway ed25519 pair, base64 (secret, public), as `verify.rs`'s test helpers make it.
+fn test_release_key() -> (String, String) {
+    use base64::Engine;
+    let kp = ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::generate());
+    (base64::engine::general_purpose::STANDARD.encode(kp.sk.as_ref()), base64::engine::general_purpose::STANDARD.encode(kp.pk.as_ref()))
+}
+
+/// A release site in `dir`: a fake `Arkos IDE.app` whose arkosd prints `version`, zipped with
+/// ditto, and a manifest signed with `sk`. Returns the zip.
+fn publish_fake_release(dir: &std::path::Path, version: &str, git: &str, sk: &str) -> PathBuf {
+    use base64::Engine;
+    use sha2::Digest;
+    use std::os::unix::fs::PermissionsExt;
+    let src = dir.join("src");
+    let app = src.join("Arkos IDE.app");
+    std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+    std::fs::write(app.join("Contents/Info.plist"), format!("<plist><dict><key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>")).unwrap();
+    for name in ["arkos", "arkosd"] {
+        let p = app.join("Contents/MacOS").join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo '{name} {version} ({git})'\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let zip = dir.join("bundle.zip");
+    let st = Command::new("/usr/bin/ditto").args(["-c", "-k", "--keepParent"]).arg(&app).arg(&zip).stdin(Stdio::null()).status().unwrap();
+    assert!(st.success());
+    std::fs::remove_dir_all(&src).unwrap();
+    let bytes = std::fs::read(&zip).unwrap();
+    let sha: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let json = format!(
+        r#"{{"format":1,"version":"{version}","git":"{git}","published":"","arm64":{{"url":"file://{}","size":{},"sha256":"{sha}"}},"min_protocol":1}}"#,
+        zip.display(),
+        bytes.len()
+    );
+    std::fs::write(dir.join("manifest.json"), &json).unwrap();
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let sk = ed25519_compact::SecretKey::from_slice(&b64.decode(sk).unwrap()).unwrap();
+    std::fs::write(dir.join("manifest.json.sig"), b64.encode(sk.sign(json.as_bytes(), None).as_ref())).unwrap();
+    zip
+}
+
+#[test]
+fn a_staged_update_is_announced_and_listed() {
+    // A site on disk, signed with a throwaway key the daemon is told to trust.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    let zip = publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let mut c = d.connect();
+    // Before the first check lands: nothing staged.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let staged = loop {
+        match c.request(Request::UpdateStatus) {
+            Response::UpdateStatus { staged: Some(s), .. } => break s,
+            Response::UpdateStatus { staged: None, last_error } => {
+                assert!(last_error.is_none(), "{last_error:?}");
+                assert!(Instant::now() < deadline, "never staged");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(staged.version, "9.9.9");
+    assert_eq!(staged.git, "fffffff");
+    assert!(d.path().join("updates/9.9.9/Arkos IDE.app/Contents/MacOS/arkosd").is_file(), "staged next to the socket");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(d.path().join("updates")).unwrap().permissions().mode() & 0o777, 0o700, "the staging folder is private");
+    let _ = zip;
+    // A second check finds the same release already staged: still staged, nothing new.
+    assert_eq!(c.request(Request::CheckForUpdates), Response::Ok);
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }));
+}
+
+#[test]
+fn a_connected_window_hears_update_staged() {
+    // The site is empty until both windows are connected, so the check that stages the release
+    // surely runs after they are: the first checks fail on the missing manifest.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let mut c = d.connect();
+    let mut other = d.connect();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    for conn in [&mut c, &mut other] {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            assert!(Instant::now() < deadline, "never heard UpdateStaged");
+            if let ServerMessage::Event(Event::UpdateStaged { update }) = conn.next_message() {
+                assert_eq!(update.version, "9.9.9");
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn with_polling_off_a_check_request_fetches_nothing() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "0", "--release-key", &pk]);
+    let mut c = d.connect();
+    assert_eq!(c.request(Request::CheckForUpdates), Response::Ok);
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None });
+    assert!(!d.path().join("updates").exists(), "no poll thread, so no staging folder");
 }

@@ -11,8 +11,9 @@ use std::path::PathBuf;
 /// Bumped only for a breaking change. New enum variants are appended, never inserted, and
 /// existing structs never change shape, so a daemon can keep serving older windows: it answers
 /// a `Hello` with the range it speaks (spec update-in-place section 5). Version 3 adds the agent
-/// record, the detailed list and Goodbye for recovery after a restart.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// record, the detailed list and Goodbye for recovery after a restart. Version 4 adds the update
+/// status, check and apply requests and the staged event.
+pub const PROTOCOL_VERSION: u32 = 4;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 
@@ -60,6 +61,13 @@ pub struct SessionDetail {
     pub agent: Option<AgentRecord>,
 }
 
+/// A release the daemon downloaded, verified and unpacked, ready to swap in when a window asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedUpdate {
+    pub version: String,
+    pub git: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     /// First message on a connection. `protocol_version` comes first so it decodes even when the
@@ -100,6 +108,13 @@ pub enum Request {
     ClearAgent { session: SessionId, id: String },
     /// `ListSessions` with the recovery fields. A version 3 window sends this one.
     ListSessionsDetailed,
+    /// What is staged and the last check's error. Answered `UpdateStatus`.
+    UpdateStatus,
+    /// Check for a release now rather than at the next poll. Answered `Ok` at once; a release
+    /// staged by it arrives as `Event::UpdateStaged`.
+    CheckForUpdates,
+    /// Swap in the staged release `version` and restart onto it.
+    ApplyUpdate { version: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +134,7 @@ pub enum Response {
     /// The answer to a version 2 `Hello`: what runs and what it speaks.
     Hello { daemon_version: String, protocol_min: u32, protocol_max: u32 },
     SessionsDetailed(Vec<SessionDetail>),
+    UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +142,8 @@ pub enum Event {
     Output { session: SessionId, bytes: Vec<u8> },
     Exited { session: SessionId, code: Option<i32> },
     State { session: SessionId, state: ClaudeState },
+    /// Sent to every connected client when a release has been staged.
+    UpdateStaged { update: StagedUpdate },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,7 +159,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(PROTOCOL_VERSION, 4);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -158,5 +176,11 @@ mod tests {
         let bytes = postcard::to_allocvec(&Response::SessionsDetailed(vec![detail.clone()])).unwrap();
         assert_eq!(bytes[0], 6);
         assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), Response::SessionsDetailed(vec![detail]));
+        assert_eq!(postcard::to_allocvec(&Request::UpdateStatus).unwrap()[0], 16);
+        assert_eq!(postcard::to_allocvec(&Request::CheckForUpdates).unwrap()[0], 17);
+        assert_eq!(postcard::to_allocvec(&Request::ApplyUpdate { version: "0.2.1".into() }).unwrap()[0], 18);
+        let staged = StagedUpdate { version: "0.2.1".into(), git: "a1b2c3d".into() };
+        assert_eq!(postcard::to_allocvec(&Response::UpdateStatus { staged: Some(staged.clone()), last_error: None }).unwrap()[0], 7);
+        assert_eq!(postcard::to_allocvec(&Event::UpdateStaged { update: staged }).unwrap()[0], 3);
     }
 }

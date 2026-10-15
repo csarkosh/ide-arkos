@@ -135,6 +135,8 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
     for ev in events {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
+            // Not a session's: the update notice is the window's to show (a later task).
+            Event::UpdateStaged { .. } => continue,
         };
         match out.iter_mut().find(|(s, _)| *s == sid) {
             Some((_, list)) => list.push(ev.clone()),
@@ -446,6 +448,7 @@ impl SessionManager {
     pub fn stash_if_restoring(&mut self, ev: &Event) -> bool {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
+            Event::UpdateStaged { .. } => return false,
         };
         if !self.restoring.contains(&sid) {
             return false;
@@ -495,7 +498,7 @@ impl SessionManager {
                 Event::Exited { session, .. } => {
                     self.states.remove(session);
                 }
-                Event::Output { .. } => {}
+                Event::Output { .. } | Event::UpdateStaged { .. } => {}
             }
         }
     }

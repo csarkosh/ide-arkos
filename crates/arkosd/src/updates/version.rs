@@ -12,7 +12,6 @@ pub struct Version {
 }
 
 /// `<name> <major>.<minor>.<patch> (<git>)`, as `--version` prints.
-#[allow(dead_code)] // used from Task 3
 pub fn parse_version_string(s: &str) -> Option<Version> {
     let s = s.trim();
     let (_, rest) = s.split_once(' ')?;
@@ -35,7 +34,6 @@ pub fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
 }
 
 impl Version {
-    #[allow(dead_code)] // used from Task 3
     pub fn is_newer_than(&self, running: &Version) -> bool {
         (self.major, self.minor, self.patch) > (running.major, running.minor, running.patch)
     }

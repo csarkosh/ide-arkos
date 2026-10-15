@@ -5,7 +5,6 @@ use serde::Deserialize;
 pub const FORMAT: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[allow(dead_code)] // used from Task 3
 pub struct Asset {
     pub url: String,
     pub size: u64,
@@ -13,7 +12,6 @@ pub struct Asset {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[allow(dead_code)] // used from Task 3
 pub struct Manifest {
     pub format: u32,
     pub version: String,
@@ -25,7 +23,6 @@ pub struct Manifest {
     pub min_protocol: u32,
 }
 
-#[allow(dead_code)] // used from Task 3
 pub fn parse(bytes: &[u8]) -> Result<Manifest, String> {
     let m: Manifest = serde_json::from_slice(bytes).map_err(|e| format!("manifest: {e}"))?;
     if m.format != FORMAT {
@@ -44,7 +41,6 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, String> {
 }
 
 impl Manifest {
-    #[allow(dead_code)] // used from Task 3
     pub fn version(&self) -> Option<Version> {
         let (major, minor, patch) = parse_semver(&self.version)?;
         Some(Version { major, minor, patch, git: self.git.clone() })

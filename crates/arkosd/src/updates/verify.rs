@@ -8,7 +8,6 @@ use std::path::Path;
 
 /// Accepts the manifest when any listed key signed exactly these bytes. A key that does not
 /// decode is skipped.
-#[allow(dead_code)] // used from Task 3
 pub fn verify_manifest(bytes: &[u8], sig_b64: &str, keys: &[&str]) -> Result<(), String> {
     let sig_bytes = B64.decode(sig_b64.trim()).map_err(|e| format!("signature: not base64: {e}"))?;
     let sig = Signature::from_slice(&sig_bytes).map_err(|_| "signature: not 64 bytes".to_string())?;
@@ -23,7 +22,6 @@ pub fn verify_manifest(bytes: &[u8], sig_b64: &str, keys: &[&str]) -> Result<(),
 }
 
 /// Streams the file through SHA-256.
-#[allow(dead_code)] // used from Task 3
 pub fn sha256_hex(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
     let mut h = Sha256::new();
@@ -39,7 +37,7 @@ pub fn sha256_hex(path: &Path) -> std::io::Result<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]

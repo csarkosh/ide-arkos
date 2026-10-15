@@ -218,7 +218,10 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         pty::cstring(Path::new("--resume")),
         pty::cstring(&path),
     ];
-    let args: Vec<_> = match args.into_iter().collect::<Result<Vec<_>, _>>() {
+    // The resumed daemon keeps polling as this one does: the update arguments that differ from
+    // the defaults (none for a release) ride along like the socket.
+    let update_args = opts.update.args(&opts.socket);
+    let args: Vec<_> = match args.into_iter().chain(update_args.iter().map(|a| pty::cstring(Path::new(a)))).collect::<Result<Vec<_>, _>>() {
         Ok(a) => a,
         Err(e) => return restore(format!("bad argument: {e}")),
     };
