@@ -456,8 +456,8 @@ A check that cannot reach GitHub (offline, a captive portal) is retried quietly 
 when none has reached the signed manifest for over a day, the bell's popover says
 "updates unreachable for N days" until one does.
 When the daemon's last check or update failed for a reason that is the release's (a bad
-signature, a download that does not match its manifest) or the swap's, the bell shows the
-reason once as a notice, its popover says "update failed", and the palette offers "Retry update".
+signature, a download that does not match its manifest) or the swap's, the bell's popover reads
+"update failed: <reason>", a toast shows the reason once, and the palette offers "Retry update".
 If the new window does not come up within 20 seconds of its relaunch, or the daemon's own
 upgrade onto the new build fails (the journal says "the upgrade onto X failed: …; the grace for
 X starts now"), the daemon puts the previous app back 20 seconds later, reopens your windows,

@@ -4,6 +4,7 @@
 
 use std::time::{Duration, SystemTime};
 
+/// What a notice is about; a kind holds at most one notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     UpdateReady,
@@ -21,6 +22,7 @@ pub enum Action {
     OpenTheme,
 }
 
+/// One line in the bell's list: its kind, the text shown, when it last changed, and what a click does.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub kind: Kind,
@@ -71,10 +73,12 @@ impl Notices {
         since.map_or(true, |o| n.at > o)
     }
 
+    /// Whether `n` arrived after the popover was last opened or marked read.
     pub fn unread(&self, n: &Notice) -> bool {
         self.unread_since(n, self.opened_at)
     }
 
+    /// How many notices are unread.
     pub fn unread_count(&self) -> usize {
         self.items.iter().filter(|n| self.unread(n)).count()
     }
@@ -84,6 +88,7 @@ impl Notices {
         self.unread_count() > 0 || self.has(Kind::UpdateReady)
     }
 
+    /// When the popover was last opened or marked read, if ever.
     pub fn opened_at(&self) -> Option<SystemTime> {
         self.opened_at
     }
@@ -94,6 +99,12 @@ impl Notices {
         self.seen_updated = self.has(Kind::Updated);
     }
 
+    /// Marks everything now standing as read without touching the Updated bookkeeping, for a notice
+    /// that arrived while the popover was open.
+    pub fn mark_read(&mut self, now: SystemTime) {
+        self.opened_at = Some(now);
+    }
+
     /// The popover closed: an Updated notice that was on show has been seen and goes.
     pub fn closed(&mut self) {
         if self.seen_updated {
@@ -102,6 +113,7 @@ impl Notices {
         self.seen_updated = false;
     }
 
+    /// Whether a notice of this kind is standing.
     pub fn has(&self, kind: Kind) -> bool {
         self.items.iter().any(|n| n.kind == kind)
     }
@@ -222,6 +234,20 @@ mod tests {
     }
 
     #[test]
+    fn marking_read_covers_a_notice_that_came_while_open() {
+        let mut n = Notices::default();
+        n.set(Kind::Updated, "updated", None, t(10));
+        n.opened(t(20));
+        n.set(Kind::Daemon, "arkosd gone", None, t(30));
+        assert_eq!(n.unread_count(), 1);
+        n.mark_read(t(40));
+        assert_eq!(n.unread_count(), 0);
+        assert!(n.has(Kind::Updated), "mark_read leaves the Updated bookkeeping alone");
+        n.closed();
+        assert!(!n.has(Kind::Updated), "the Updated notice seen at opening still goes");
+    }
+
+    #[test]
     fn the_updated_notice_goes_once_seen() {
         let mut n = Notices::default();
         n.set(Kind::Updated, "Updated to 0.2.14", None, t(0));
@@ -236,6 +262,7 @@ mod tests {
     fn the_daemon_notice_ranks_connection_over_update_trouble() {
         assert_eq!(daemon_notice("arkosd reconnecting", Some("update failed: x"), Some("updates unreachable for 2 days")), Some("arkosd reconnecting".into()));
         assert_eq!(daemon_notice("arkosd: see banner", None, None), Some("arkosd: see banner".into()));
+        assert_eq!(daemon_notice("connection refused", None, None), Some("connection refused".into()), "a status text with no known prefix is passed through");
         assert_eq!(daemon_notice("arkosd connected", Some("bad signature"), Some("updates unreachable for 2 days")), Some("update failed: bad signature".into()));
         assert_eq!(daemon_notice("arkosd connected", Some("update failed: bad signature"), None), Some("update failed: bad signature".into()), "never doubled");
         assert_eq!(daemon_notice("arkosd connected", None, Some("updates unreachable for 2 days")), Some("updates unreachable for 2 days".into()));

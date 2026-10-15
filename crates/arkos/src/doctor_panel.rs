@@ -1,10 +1,13 @@
-//! The doctor's table (spec 6d, section 5): each check is a probe of the user's setup and the one action that fixes it. Probes read files and flags handed in by Root; nothing here prompts, runs launchctl, or opens a window.
+//! The doctor's table (spec 6d, section 5): each check is a probe of the user's setup and the one
+//! action that fixes it. Probes read files and flags handed in by Root; nothing here prompts, runs
+//! launchctl, or opens a window.
 
 use std::path::Path;
 
 use crate::config::StartAtLogin;
 use crate::hook_cli;
 
+/// Which row of the doctor a check is; Root uses it to route an action and to mark a row broken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckId {
     WheelScroll,
@@ -54,10 +57,10 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
         (StartAtLogin::On, _) => (State::Pinned("on, set in config.toml ([recovery] start_at_login)".into()), None),
         (StartAtLogin::Off, _) => (State::Pinned("off, set in config.toml ([recovery] start_at_login)".into()), None),
     };
-    let (hook_state, hook_button) = if hook_cli::hooks_installed_at(p.settings, p.exe) {
-        (State::Good("installed".into()), None)
-    } else {
-        (State::Fix("missing: tabs show no Claude Code state".into()), Some("Install"))
+    let (hook_state, hook_button) = match hook_cli::hooks_installed_at(p.settings, p.exe) {
+        Ok(true) => (State::Good("installed".into()), None),
+        Ok(false) => (State::Fix("missing: tabs show no Claude Code state".into()), Some("Install")),
+        Err(e) => (State::Broken(e), None),
     };
     let (ax_state, ax_button) = if p.accessibility {
         (State::Good("granted".into()), None)
@@ -158,7 +161,8 @@ mod tests {
         let checks = probe_all(&probe(&settings, Path::new("/x/arkos")));
         assert!(matches!(&checks[0].state, State::Broken(t) if t.starts_with(&format!("cannot parse {}", settings.display()))), "{:?}", checks[0].state);
         assert_eq!(checks[0].button, None);
-        assert_eq!(checks[2].state, State::Fix("missing: tabs show no Claude Code state".into()), "the hook probe reads false, as the palette would");
-        assert_eq!(needs_fix(&checks), 2, "a broken row is not a fix the doctor can make");
+        assert!(matches!(&checks[2].state, State::Broken(t) if t.starts_with("cannot parse")), "{:?}", checks[2].state);
+        assert_eq!(checks[2].button, None);
+        assert_eq!(needs_fix(&checks), 1, "a broken row is not a fix the doctor can make; only start at login is left");
     }
 }

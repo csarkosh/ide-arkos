@@ -183,6 +183,8 @@ pub struct Root {
     pub notices: notices::Notices,
     /// The doctor's table as last probed.
     pub doctor_states: Vec<doctor_panel::Check>,
+    /// The doctor row whose action is running off the UI thread; a second click waits for it.
+    pub doctor_busy: Option<doctor_panel::CheckId>,
     /// True once the doctor turned the scroll-acceleration key off during this run.
     pub scroll_applied: bool,
     /// When the bell was last opened before the opening now; notices newer than this are unread.
@@ -509,6 +511,7 @@ impl Root {
             context_menu: Transient::Hidden,
             notices: Default::default(),
             doctor_states: Vec::new(),
+            doctor_busy: None,
             scroll_applied: false,
             popover: Transient::Hidden,
             bell_read_before: None,
@@ -599,6 +602,7 @@ impl Root {
         self.toggle_popover(chrome::Popover::Bell, cx);
     }
 
+    /// Opens the doctor's popover, or closes it when it is the one open.
     fn toggle_doctor(&mut self, cx: &mut Context<Self>) {
         self.toggle_popover(chrome::Popover::Doctor, cx);
     }
@@ -612,6 +616,9 @@ impl Root {
         if next == chrome::Popover::Closed {
             self.close_popovers(now);
         } else {
+            if self.popover.value() == Some(&chrome::Popover::Bell) && next != chrome::Popover::Bell {
+                self.bell_closed();
+            }
             if next == chrome::Popover::Doctor {
                 self.probe_doctor();
             }
@@ -629,9 +636,16 @@ impl Root {
         let was_bell = self.popover.value() == Some(&chrome::Popover::Bell);
         let closed = self.popover.hide(now);
         if closed && was_bell {
-            self.notices.closed();
+            self.bell_closed();
         }
         closed
+    }
+
+    /// The bell is no longer showing: whatever arrived while it was open counts as read, and an
+    /// Updated notice that was on show goes.
+    fn bell_closed(&mut self) {
+        self.notices.mark_read(SystemTime::now());
+        self.notices.closed();
     }
 
     /// Derives the bell's notices from the state the bar used to show, every frame; idempotent
@@ -644,6 +658,8 @@ impl Root {
             }
         }
         let label = daemon_label_with(&self.status, self.reconnecting_since.is_some());
+        // "see banner" is a stand-in for a banner the user may have missed, so show the text itself.
+        let label = if label == "arkosd: see banner" { self.status.as_str() } else { label };
         match notices::daemon_notice(label, self.update_error.as_deref(), self.update_unreachable.as_deref()) {
             Some(t) => self.notices.set(notices::Kind::Daemon, t, None, now),
             None => {
@@ -681,10 +697,11 @@ impl Root {
         }
     }
 
-    /// Opens the current theme's file in the default text editor, else the themes folder.
+    /// Opens the configured theme's file in the default text editor, else the themes folder.
     pub fn open_theme(&mut self, cx: &mut Context<Self>) {
         let dir = paths::themes_dir();
-        let file = dir.join(format!("{}.toml", self.theme.name));
+        let name = theme::pick_name(self.config.appearance.mode, self.system_is_dark, &self.config.theme);
+        let file = dir.join(format!("{name}.toml"));
         let mut cmd = std::process::Command::new("open");
         let target = if file.is_file() {
             cmd.arg("-t");
@@ -722,7 +739,13 @@ impl Root {
 
     /// Runs what a doctor row's button offers. The file actions re-probe when they finish.
     fn doctor_action(&mut self, id: doctor_panel::CheckId, cx: &mut Context<Self>) {
-        use doctor_panel::{CheckId, State};
+        use doctor_panel::CheckId;
+        if self.doctor_busy.is_some() {
+            return;
+        }
+        if id != CheckId::Accessibility {
+            self.doctor_busy = Some(id);
+        }
         match id {
             CheckId::WheelScroll => {
                 let path = hook_cli::claude_settings_path();
@@ -730,15 +753,13 @@ impl Root {
                 cx.spawn(async move |_, cx| {
                     let r = cx.background_executor().spawn(async move { hook_cli::set_wheel_scroll_acceleration_at(&path, false) }).await;
                     let _ = root.update(cx, |root, cx| {
-                        if r.is_ok() {
-                            root.scroll_applied = true;
-                        }
-                        root.probe_doctor();
-                        if let Err(e) = r {
-                            if let Some(c) = root.doctor_states.iter_mut().find(|c| c.id == CheckId::WheelScroll) {
-                                c.state = State::Broken(e);
-                                c.button = None;
+                        root.doctor_busy = None;
+                        match r {
+                            Ok(()) => {
+                                root.scroll_applied = true;
+                                root.probe_doctor();
                             }
+                            Err(e) => root.mark_doctor_broken(CheckId::WheelScroll, e),
                         }
                         cx.notify();
                     });
@@ -751,19 +772,33 @@ impl Root {
         }
     }
 
+    /// Re-probes the doctor, then shows `id`'s row as broken with `error` and no button: an action
+    /// that failed once will fail again until the user fixes what the message names.
+    fn mark_doctor_broken(&mut self, id: doctor_panel::CheckId, error: String) {
+        self.probe_doctor();
+        if let Some(c) = self.doctor_states.iter_mut().find(|c| c.id == id) {
+            c.state = doctor_panel::State::Broken(error);
+            c.button = None;
+        }
+    }
+
     /// Installs the Claude Code hooks off the UI thread and says what happened.
     fn install_hooks(&mut self, cx: &mut Context<Self>) {
         let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
             let result = cx.background_executor().spawn(async move { hook_cli::install_hooks(&exe) }).await;
-            let text = match result {
-                Ok((path, added, replaced)) => format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", path.display()),
-                Err(e) => format!("cannot install hooks: {e}"),
+            let (text, error) = match result {
+                Ok((path, added, replaced)) => (format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", path.display()), None),
+                Err(e) => (format!("cannot install hooks: {e}"), Some(e)),
             };
             let _ = root.update(cx, |root, cx| {
+                root.doctor_busy = None;
                 root.show_notice(text, cx);
-                root.probe_doctor();
+                match error {
+                    Some(e) => root.mark_doctor_broken(doctor_panel::CheckId::TitleHook, e),
+                    None => root.probe_doctor(),
+                }
                 cx.notify();
             });
         })
@@ -817,7 +852,7 @@ impl Root {
                             .child(div().text_color(text_c).child(check.title))
                             .child(div().text_color(state_c).child(state_text)),
                     );
-                if let Some(label) = check.button {
+                if let Some(label) = check.button.filter(|_| self.doctor_busy != Some(id)) {
                     row = row.child(
                         div()
                             .id(("doctor-action", i))
@@ -882,7 +917,7 @@ impl Root {
                         .hover(|s| s.underline())
                         .child(label)
                         .on_click(cx.listener(move |root, _, _, cx| {
-                            // The update-ready row runs the same action; the button alone must.
+                            // The update-ready row runs this action too; stopping here keeps it to one run.
                             cx.stop_propagation();
                             root.run_notice_action(action, cx);
                             root.close_popovers(Instant::now());
@@ -1007,6 +1042,7 @@ impl Root {
             eprintln!("arkos: config reloaded");
             self.apply_config(cfg, cx);
         }
+        self.probe_doctor();
         cx.notify();
     }
 
@@ -1435,6 +1471,7 @@ impl Root {
             self.close_palette(cx);
             return;
         }
+        self.close_popovers(Instant::now());
         let themes_dir = paths::themes_dir();
         let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix());
         self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
@@ -2517,8 +2554,13 @@ impl Root {
     /// leaves the file as it is, and says so when the user asked (`asked`).
     fn set_start_at_login(&mut self, on: bool, asked: bool, cx: &mut Context<Self>) {
         if on && !launch_agent::may_install_here() {
+            if self.doctor_busy == Some(doctor_panel::CheckId::StartAtLogin) {
+                self.doctor_busy = None;
+            }
             if asked {
-                self.show_notice("Start at login needs the app in /Applications or ~/Applications".into(), cx);
+                let text = "Start at login needs the app in /Applications or ~/Applications";
+                self.show_notice(text.into(), cx);
+                self.mark_doctor_broken(doctor_panel::CheckId::StartAtLogin, text.into());
             } else {
                 eprintln!("arkos: not running from /Applications: the login item is left as it is");
             }
@@ -2533,15 +2575,23 @@ impl Root {
                 .spawn(async move { if on { launch_agent::install(&path, &contents) } else { launch_agent::remove(&path) } })
                 .await;
             // A reload that changed nothing stays quiet: no notice replaces what is showing.
-            let text = match (on, result) {
-                (_, Ok(false)) => return,
-                (true, Ok(true)) => "start at login is on: after a restart, sessions come back on their own".to_string(),
-                (false, Ok(true)) => "start at login is off".to_string(),
-                (_, Err(e)) => format!("start at login: {e}"),
+            let (text, error) = match (on, result) {
+                (_, Ok(false)) => (None, None),
+                (true, Ok(true)) => (Some("start at login is on: after a restart, sessions come back on their own".to_string()), None),
+                (false, Ok(true)) => (Some("start at login is off".to_string()), None),
+                (_, Err(e)) => (Some(format!("start at login: {e}")), Some(e.to_string())),
             };
             let _ = root.update(cx, |root, cx| {
-                root.show_notice(text, cx);
-                root.probe_doctor();
+                if root.doctor_busy == Some(doctor_panel::CheckId::StartAtLogin) {
+                    root.doctor_busy = None;
+                }
+                if let Some(text) = text {
+                    root.show_notice(text, cx);
+                }
+                match error {
+                    Some(e) => root.mark_doctor_broken(doctor_panel::CheckId::StartAtLogin, e),
+                    None => root.probe_doctor(),
+                }
                 cx.notify();
             });
         })
@@ -2556,7 +2606,10 @@ impl Root {
                 let on = !launch_agent::installed(&launch_agent::agent_path());
                 self.set_start_at_login(on, true, cx);
             }
-            _ => self.open_config(cx),
+            _ => {
+                self.doctor_busy = None;
+                self.open_config(cx)
+            }
         }
     }
 
@@ -2626,7 +2679,8 @@ impl Root {
         .detach();
     }
 
-    /// Reads the staged release into `update_ready` (the bell's update-ready notice) when there is one, else what the launch path holds.
+    /// Reads the staged release into `update_ready` (the bell's update-ready notice) when there is
+    /// one, else what the launch path holds.
     pub fn refresh_update_badge(&mut self, cx: &mut Context<Self>) {
         self.update_ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref());
         cx.notify();
@@ -3263,8 +3317,9 @@ impl Render for Root {
                     root.commit_tab_rename(cx);
                 }),
             )
-            // A right-click menu (the tree's or a worktree's) or a popover (the bell or the doctor) closes on any press outside it
-            // (its rows stop theirs), and on Escape wherever the keys are.
+            // A right-click menu (the tree's or a worktree's) or a popover (the bell or the doctor)
+            // closes on any press outside it (its rows stop theirs), and on Escape wherever the
+            // keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
@@ -3717,7 +3772,7 @@ fn open_project_window(
         root.update(cx, |root, cx| {
             root.config_error = config_error;
             root.theme_error = theme_error;
-            root.seed_notices(updated.clone());
+            root.seed_notices(updated);
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
             root.refresh_status(cx);

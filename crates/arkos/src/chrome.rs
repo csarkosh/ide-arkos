@@ -140,10 +140,10 @@ pub fn popover_right_inset(which: Popover) -> f32 {
     }
 }
 
-/// A popover's width, never more than the window less a 12 px margin on each side.
+/// A popover's width, never more than the window less its right inset and a 12 px margin on the left.
 pub fn popover_width(which: Popover, window_w: f32) -> f32 {
     let wanted: f32 = if which == Popover::Bell { 320.0 } else { 360.0 };
-    wanted.min(window_w - 24.0)
+    wanted.min(window_w - popover_right_inset(which) - 12.0)
 }
 
 /// One icon: a square target holding the 16 px drawing, lit while hovered or open, with a dot
@@ -256,6 +256,7 @@ mod tests {
         assert_eq!(popover_width(Popover::Bell, 1200.0), 320.0);
         assert_eq!(popover_width(Popover::Doctor, 1200.0), 360.0);
         assert_eq!(popover_width(Popover::Doctor, 300.0), 276.0, "a narrow window");
+        assert_eq!(popover_width(Popover::Bell, 300.0), 244.0, "the bell sits further left, so it has less room");
     }
 
     #[test]
