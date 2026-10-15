@@ -75,52 +75,88 @@ pub fn fixture_git(dir: &Path) -> std::process::Command {
     cmd
 }
 
-/// The filter drivers named in `git config --null --get-regexp '^filter\.'` output, read as
+/// Every filter driver named in `git config --null --get-regexp '^filter\.'` output, read as
 /// git reads them: each record is `key\nvalue` up to a NUL (the value may hold newlines), and a
 /// key `filter.<name>.<var>` splits at its last dot, so a name may hold dots. A key with no
-/// name is not a driver. `None` for a name that is empty or holds anything outside
-/// `[A-Za-z0-9_.-]`: git might read an override for it differently (an `=` ends `-c`'s key), so
-/// no query runs.
-fn filter_driver_names(out: &[u8]) -> Option<BTreeSet<String>> {
+/// name is not a driver.
+fn named_filter_drivers(out: &[u8]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let key = rec.split(|b| *b == b'\n').next().unwrap_or_default();
         let Some(rest) = key.strip_prefix(b"filter.") else { continue };
         let Some(dot) = rest.iter().rposition(|b| *b == b'.') else { continue };
-        let name = &rest[..dot];
-        if name.is_empty() || !name.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')) {
-            return None;
-        }
-        names.insert(String::from_utf8_lossy(name).into_owned());
+        names.insert(String::from_utf8_lossy(&rest[..dot]).into_owned());
     }
-    Some(names)
+    names
 }
 
-/// `git -C <root>` for a read-only query: `GIT_SAFE_ARGS`, `--no-optional-locks` (a status
-/// leaves `.git/index` alone, so the user's own `git add` never meets its lock), and every
-/// filter driver the config names emptied and made optional: re-hashing a touched file runs
-/// no program from the folder's config. Spawns one `git config` read first (it runs nothing),
-/// so it is called off the UI thread like the query itself. `None`, and nothing to run, when
-/// that read fails or names a driver it cannot safely override.
-pub fn git_read(root: &Path) -> Option<std::process::Command> {
+/// The filter drivers `named_filter_drivers` reads, or `None` for a name that is empty or holds
+/// anything outside `[A-Za-z0-9_.-]`: git might read an override for it differently (an `=`
+/// ends `-c`'s key), so no query runs. A byte that is not UTF-8 reads as U+FFFD, refused too.
+fn filter_driver_names(out: &[u8]) -> Option<BTreeSet<String>> {
+    let names = named_filter_drivers(out);
+    let usual = |n: &String| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    names.iter().all(usual).then_some(names)
+}
+
+/// The repository's `filter.*` config as `--null` records (empty when none is set), from one
+/// `git config` read that runs nothing. `None` when git cannot read it.
+fn read_filter_config(root: &Path) -> Option<Vec<u8>> {
     use std::process::Stdio;
     let out = git(root).args(["config", "--null", "--get-regexp", r"^filter\."]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     // Exit 1: no filter configured.
-    let names = match out.status.code() {
-        Some(0) => filter_driver_names(&out.stdout)?,
-        Some(1) => BTreeSet::new(),
-        _ => return None,
-    };
-    let mut cmd = git(root);
-    cmd.arg("--no-optional-locks");
+    match out.status.code() {
+        Some(0) => Some(out.stdout),
+        Some(1) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// Why a read-only git query gave nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoRead {
+    /// No repository there, or git could not run or read its config.
+    NotRepo,
+    /// The repository configures a filter driver whose name an override might miss: nothing ran.
+    Refused,
+}
+
+/// What the sidebar says in place of git status while `NoRead::Refused` holds.
+pub const STATUS_OFF: &str = "git status off: unusual filter config";
+
+/// The arguments every read-only query passes after `git -C <root>` and `GIT_SAFE_ARGS`:
+/// `--no-optional-locks` (a status leaves `.git/index` alone, so the user's own `git add` never
+/// meets its lock), and every filter driver the config names emptied and made optional:
+/// re-hashing a touched file runs no program from the folder's config. Spawns one `git config`
+/// read (it runs nothing), so it is called off the UI thread like the query itself; a caller
+/// running two queries reads it once and builds both with `git_with`.
+pub fn read_filter_args(root: &Path) -> Result<Vec<String>, NoRead> {
+    let out = read_filter_config(root).ok_or(NoRead::NotRepo)?;
+    let names = filter_driver_names(&out).ok_or(NoRead::Refused)?;
+    let mut args = vec!["--no-optional-locks".to_string()];
     for name in names {
         for key in ["clean", "process", "smudge"] {
-            cmd.arg("-c").arg(format!("filter.{name}.{key}="));
+            args.push("-c".into());
+            args.push(format!("filter.{name}.{key}="));
         }
         // An emptied driver git-lfs marks `required` would fail the query instead.
-        cmd.arg("-c").arg(format!("filter.{name}.required=false"));
+        args.push("-c".into());
+        args.push(format!("filter.{name}.required=false"));
     }
-    Some(cmd)
+    Ok(args)
+}
+
+/// `git -C <root>` with `GIT_SAFE_ARGS` and `args` from `read_filter_args`.
+pub fn git_with(root: &Path, args: &[String]) -> std::process::Command {
+    let mut cmd = git(root);
+    cmd.args(args);
+    cmd
+}
+
+/// `git -C <root>` for one read-only query: `read_filter_args` then `git_with`. `None`, and
+/// nothing to run, when that read fails or names a driver it cannot safely override.
+pub fn git_read(root: &Path) -> Option<std::process::Command> {
+    read_filter_args(root).ok().map(|args| git_with(root, &args))
 }
 
 /// Marks the entries `.gitignore` ignores, by asking git from the repository root. Outside a
@@ -188,6 +224,8 @@ pub struct Explorer {
     dirty: HashSet<PathBuf>,
     /// The last `git status` found no repository.
     pub not_git: bool,
+    /// Why git status is off in a repository (`STATUS_OFF`), shown where the worktrees would be.
+    pub status_off: Option<&'static str>,
 }
 
 impl Explorer {
@@ -206,6 +244,7 @@ impl Explorer {
             status: HashMap::new(),
             dirty: HashSet::new(),
             not_git: false,
+            status_off: None,
         }
     }
 
@@ -269,16 +308,19 @@ impl Explorer {
         self.expanded.iter().cloned().collect()
     }
 
-    /// The repository's changes, or `None` outside a repository.
-    pub fn set_status(&mut self, entries: Option<Vec<(PathBuf, Status)>>) {
+    /// The repository's changes, or why there are none: outside a repository, or in one whose
+    /// filter config `read_filter_args` refused (status off, said so in the sidebar).
+    pub fn set_status(&mut self, entries: Result<Vec<(PathBuf, Status)>, NoRead>) {
         match entries {
-            None => {
-                self.not_git = true;
+            Err(why) => {
+                self.not_git = why == NoRead::NotRepo;
+                self.status_off = (why == NoRead::Refused).then_some(STATUS_OFF);
                 self.status.clear();
                 self.dirty.clear();
             }
-            Some(entries) => {
+            Ok(entries) => {
                 self.not_git = false;
+                self.status_off = None;
                 self.dirty = crate::gitstatus::dirty_dirs(&self.root, &entries);
                 self.status = entries.into_iter().map(|(rel, s)| (self.root.join(rel), s)).collect();
             }
@@ -627,7 +669,7 @@ mod tests {
         let mut ex = Explorer::new(root.clone(), vec![root.join("src")], false);
         ex.set_loaded(&root, list_dir(&root).unwrap());
         ex.set_loaded(&root.join("src"), list_dir(&root.join("src")).unwrap());
-        ex.set_status(Some(vec![(PathBuf::from("src/main.rs"), Status::Modified), (PathBuf::from("a.txt"), Status::Untracked)]));
+        ex.set_status(Ok(vec![(PathBuf::from("src/main.rs"), Status::Modified), (PathBuf::from("a.txt"), Status::Untracked)]));
         assert!(!ex.not_git);
         let rows = ex.rows();
         let row = |name: &str| rows.iter().find(|r| r.name == name).unwrap();
@@ -638,10 +680,18 @@ mod tests {
         assert!(!row("deep").dirty);
         assert_eq!(ex.status_of(&root.join("src/main.rs")), Some(Status::Modified));
         // A file inside an untracked directory inherits untracked.
-        ex.set_status(Some(vec![(PathBuf::from("src"), Status::Untracked)]));
+        ex.set_status(Ok(vec![(PathBuf::from("src"), Status::Untracked)]));
         assert_eq!(ex.rows().iter().find(|r| r.name == "main.rs").unwrap().status, Some(Status::Untracked));
-        ex.set_status(None);
+        ex.set_status(Err(NoRead::NotRepo));
         assert!(ex.not_git);
+        assert_eq!(ex.status_off, None);
         assert!(ex.rows().iter().all(|r| r.status.is_none() && !r.dirty));
+        // A refused filter config is a repository with status off, said so; not "not a repository".
+        ex.set_status(Err(NoRead::Refused));
+        assert!(!ex.not_git);
+        assert_eq!(ex.status_off, Some(STATUS_OFF));
+        assert!(ex.rows().iter().all(|r| r.status.is_none() && !r.dirty));
+        ex.set_status(Ok(vec![]));
+        assert_eq!((ex.not_git, ex.status_off), (false, None), "a status that runs clears both");
     }
 }

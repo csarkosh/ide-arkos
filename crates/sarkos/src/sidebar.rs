@@ -598,7 +598,9 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
         .overflow_y_scroll()
         .track_scroll(&root.sidebar.wt_scroll);
     if root.worktrees.not_git {
-        list = list.child(div().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child("not a git repository"));
+        // A repository whose filter config turned git status off says that instead.
+        let why = root.explorer.status_off.unwrap_or("not a git repository");
+        list = list.child(div().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child(why));
     }
     for (i, row) in rows.into_iter().enumerate() {
         let base = div()
@@ -784,7 +786,7 @@ impl Root {
         let seq = self.status_seq;
         let root = self.project.clone();
         cx.spawn(async move |this, cx| {
-            let entries = cx.background_executor().spawn(async move { crate::gitstatus::run_status(&root) }).await;
+            let entries = cx.background_executor().spawn(async move { crate::gitstatus::read_status(&root) }).await;
             let _ = this.update(cx, |root, cx| {
                 if crate::explorer_watch::status_result_applies(seq, root.status_seq) {
                     root.explorer.set_status(entries);

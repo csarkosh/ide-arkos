@@ -2,7 +2,7 @@
 //! through `similar`, kept as one mark per current line plus the deleted lines and where they
 //! were. The base comes from `git cat-file blob HEAD:<path>` run from the file's own worktree.
 
-use crate::explorer::git_read;
+use crate::explorer::{git_with, read_filter_args};
 use crate::viewer::{split_lines, MAX_PLAIN_BYTES, SNIFF};
 use similar::{capture_diff_slices_deadline, Algorithm, DiffTag};
 use std::io::Read;
@@ -69,9 +69,9 @@ pub fn compute(base: &str, lines: &[String]) -> DiffMarks {
 }
 
 /// The worktree root of `dir`, through git, so a file in another worktree diffs against that
-/// worktree's HEAD.
-fn worktree_root(dir: &Path) -> Option<PathBuf> {
-    let out = git_read(dir)?.args(["rev-parse", "--show-toplevel"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+/// worktree's HEAD. `args` from `read_filter_args`.
+fn worktree_root(dir: &Path, args: &[String]) -> Option<PathBuf> {
+    let out = git_with(dir, args).args(["rev-parse", "--show-toplevel"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -83,11 +83,14 @@ fn worktree_root(dir: &Path) -> Option<PathBuf> {
 /// and for a base that is binary or over `MAX_PLAIN_BYTES`. Never reads the working file.
 /// Background executor only.
 pub fn base_for(path: &Path) -> Option<String> {
-    let root = worktree_root(path.parent()?)?;
+    let dir = path.parent()?;
+    // One config read for both queries: the worktrees of a repository share its config.
+    let args = read_filter_args(dir).ok()?;
+    let root = worktree_root(dir, &args)?;
     let rel = path.canonicalize().ok()?.strip_prefix(root.canonicalize().ok()?).ok()?.to_path_buf();
     let mut spec = std::ffi::OsString::from("HEAD:");
     spec.push(rel.as_os_str());
-    let mut child = git_read(&root)?.args(["cat-file", "blob"]).arg(&spec).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = git_with(&root, &args).args(["cat-file", "blob"]).arg(&spec).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let mut bytes = Vec::new();
     let read = child.stdout.take()?.take(MAX_PLAIN_BYTES + 1).read_to_end(&mut bytes);
     if read.is_err() || bytes.len() as u64 > MAX_PLAIN_BYTES {
@@ -260,6 +263,24 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("f.txt"), "").unwrap();
         assert_eq!(base_for(&outside.path().join("f.txt")), None, "not a repository");
+    }
+
+    #[test]
+    fn the_base_runs_no_filter_driver_from_the_repository_config() {
+        let _lock = crate::client::fork_lock();
+        let (_dir, root) = repo();
+        let config = |args: &[&str]| assert!(fixture_git(&root).arg("config").args(args).status().unwrap().success());
+        // Git runs a driver from the repository's top, so a driver that ran leaves MARKER there.
+        config(&["filter.x.clean", "sh -c 'touch MARKER; cat'"]);
+        config(&["filter.x.process", "sh -c 'touch MARKER; cat'"]);
+        std::fs::write(root.join(".gitattributes"), "* filter=x\n").unwrap();
+        // The same size, so a query that re-hashes the file would run it through the driver.
+        std::fs::write(root.join("src/a.rs"), "one\nTWO\n").unwrap();
+        assert_eq!(base_for(&root.join("src/a.rs")).as_deref(), Some("one\ntwo\n"));
+        assert!(!root.join("MARKER").exists(), "the repository's filter driver ran");
+        // The driver is live: a plain status, without the overrides, runs it.
+        let _ = fixture_git(&root).arg("status").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+        assert!(root.join("MARKER").exists(), "the fixture's driver never runs, so the check above proves nothing");
     }
 
     #[test]

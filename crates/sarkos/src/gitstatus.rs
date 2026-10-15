@@ -1,7 +1,8 @@
 //! Git status for the tree and the worktree explorer (spec 6): `git status --porcelain=v2 -z`
-//! parsed into (path, status) pairs, run through `explorer::git_read` on the background executor.
+//! parsed into (path, status) pairs, run with `explorer::read_filter_args` on the background
+//! executor.
 
-use crate::explorer::git_read;
+use crate::explorer::{git_with, read_filter_args, NoRead};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -52,28 +53,36 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(PathBuf, Status)> {
 }
 
 /// The repository's changes under `root`, relative to `root`. `None` outside a repository,
-/// without git, or with a filter driver `git_read` cannot override (nothing runs). Untracked directories are one entry each; renames show as a deletion and an
-/// addition; ignored entries are not listed (the tree asks `check-ignore` for those).
+/// without git, or with a filter driver `read_filter_args` cannot override (nothing runs).
 pub fn run_status(root: &Path) -> Option<Vec<(PathBuf, Status)>> {
+    read_status(root).ok()
+}
+
+/// `run_status`, saying why there is nothing: `NoRead::Refused` for a filter config it will not
+/// run a query under, `NoRead::NotRepo` otherwise. Untracked directories are one entry each;
+/// renames show as a deletion and an addition; ignored entries are not listed (the tree asks
+/// `check-ignore` for those). One `git config` read, then the two queries.
+pub fn read_status(root: &Path) -> Result<Vec<(PathBuf, Status)>, NoRead> {
     use std::process::Stdio;
+    let args = read_filter_args(root)?;
     // Porcelain paths are relative to the repository's top, which `root` may be inside of.
-    let prefix = git_read(root)?.args(["rev-parse", "--show-prefix"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let prefix = git_with(root, &args).args(["rev-parse", "--show-prefix"]).stdin(Stdio::null()).stderr(Stdio::null()).output().map_err(|_| NoRead::NotRepo)?;
     if !prefix.status.success() {
-        return None;
+        return Err(NoRead::NotRepo);
     }
     let prefix = PathBuf::from(String::from_utf8_lossy(&prefix.stdout).trim_end_matches('\n'));
-    let out = git_read(root)?
+    let out = git_with(root, &args)
         .args(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--no-renames", "--ignored=no", "--ignore-submodules=all", "--", "."])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .ok()?;
+        .map_err(|_| NoRead::NotRepo)?;
     if !out.status.success() {
-        return None;
+        return Err(NoRead::NotRepo);
     }
     // An entry that is `root` itself (a wholly untracked project) is not a row: dropped.
     let entries = parse_porcelain_v2(&out.stdout).into_iter().filter_map(|(p, s)| p.strip_prefix(&prefix).ok().filter(|r| !r.as_os_str().is_empty()).map(|r| (r.to_path_buf(), s)));
-    Some(entries.collect())
+    Ok(entries.collect())
 }
 
 /// Every directory strictly between the root and a changed path: those rows carry a dot.
@@ -244,6 +253,7 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
         let marker = elsewhere.path().join("ran");
         marker_filter(dir.path(), "a=b", &marker);
         assert_eq!(run_status(dir.path()), None);
+        assert_eq!(read_status(dir.path()), Err(NoRead::Refused), "refused, not taken for a folder outside a repository");
         assert!(!marker.exists(), "the repository's clean filter ran");
     }
 
@@ -277,5 +287,6 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
         let _lock = crate::client::fork_lock();
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(run_status(dir.path()), None);
+        assert_eq!(read_status(dir.path()), Err(NoRead::NotRepo));
     }
 }
