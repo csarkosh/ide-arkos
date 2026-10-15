@@ -312,6 +312,12 @@ fn markdown_document(bytes: &[u8]) -> Result<edit::Document, ReadOnlyWhy> {
     Ok(edit::Document::from_text(text))
 }
 
+/// Whether two documents write the same bytes: the same lines, line ending, byte order mark and
+/// final line break.
+fn same_text(a: &edit::Document, b: &edit::Document) -> bool {
+    a.ending == b.ending && a.bom == b.bom && a.trailing_newline == b.trailing_newline && a.lines() == b.lines()
+}
+
 /// Why a text file is shown without colours, under a banner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plain {
@@ -459,6 +465,9 @@ pub struct Loaded {
     pub doc: Option<edit::Document>,
     /// Why a markdown file is shown read-only; `None` for every other file.
     pub read_only: Option<ReadOnlyWhy>,
+    /// The document's top-level blocks, split on the background thread with it; empty without a
+    /// document.
+    pub blocks: Vec<md_blocks::Block>,
 }
 
 pub struct Viewer {
@@ -657,8 +666,9 @@ impl Viewer {
         // The rendered view keeps its place by line: the line the top row starts on.
         let old_top_line = self.blocks.get(self.list_state.logical_scroll_top().item_ix).map(|b| b.lines.start);
         match (self.doc.take(), loaded.doc) {
-            // The same text again: the old document stays, and with it the undo history.
-            (Some(old), Some(new)) if old.to_text() == new.to_text() => {
+            // The same text again: the old document stays, and with it the undo history. The
+            // lines are compared one by one, never joined.
+            (Some(old), Some(new)) if same_text(&old, &new) => {
                 self.content = Content::Text { lines: old.shared_lines(), spans: Vec::new() };
                 self.doc = Some(old);
             }
@@ -667,7 +677,8 @@ impl Viewer {
         match &self.doc {
             Some(doc) => {
                 self.caret = edit::Caret { head: doc.clamp(self.caret.head), anchor: doc.clamp(self.caret.anchor), goal_col: None };
-                self.blocks = md_blocks::split(doc.lines());
+                // Split with the load, off this thread; the same lines when the old document stayed.
+                self.blocks = loaded.blocks;
             }
             None => {
                 self.caret = edit::Caret::default();
@@ -1733,8 +1744,8 @@ impl EntityInputHandler for Viewer {
 ///
 /// A markdown file is never highlighted and has no size limit but `MAX_PLAIN_BYTES`: clean UTF-8
 /// with one kind of line ending, in a file the user may write, becomes a document whose lines
-/// (tabs kept, the empty last line after a final break kept) are the content's; anything else is
-/// plain text, read-only, saying why.
+/// (tabs kept, the empty last line after a final break kept) are the content's, its blocks split
+/// here too; anything else is plain text, read-only, saying why.
 pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize, with_diff: bool) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
@@ -1785,7 +1796,8 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
         _ => None,
     };
-    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only })
+    let blocks = doc.as_ref().map_or_else(Vec::new, |d| md_blocks::split(d.lines()));
+    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks })
 }
 
 /// The file's changes against its worktree's HEAD, or `None` when it has no base or no changes.
@@ -2911,6 +2923,16 @@ mod tests {
     }
 
     #[test]
+    fn the_same_text_is_the_same_lines_ending_mark_and_final_break() {
+        let d = edit::Document::from_text;
+        assert!(same_text(&d("# a\nb\n"), &d("# a\nb\n")));
+        assert!(!same_text(&d("# a\nb\n"), &d("# a\nB\n")));
+        assert!(!same_text(&d("a\nb\n"), &d("a\r\nb\r\n")), "the line ending counts");
+        assert!(!same_text(&d("a"), &d("\u{feff}a")), "the byte order mark counts");
+        assert!(!same_text(&d("a"), &d("a\n")), "the final line break counts");
+    }
+
+    #[test]
     fn a_recovery_file_is_named_after_the_file_and_the_time() {
         let dir = Path::new("/support/recovered");
         assert_eq!(recovery_path(dir, Path::new("/p/docs/notes.md"), 1_760_000_000, 0), PathBuf::from("/support/recovered/notes-1760000000.md"));
@@ -2950,6 +2972,9 @@ mod tests {
             let l = read_file(&p, None, None, 1 << 20, false).unwrap();
             assert!(l.doc.is_none() && l.read_only == Some(ReadOnlyWhy::MixedEndings), "a lone CR in {text:?} is read-only, not dropped");
         }
+        let again = read_file(&ok, None, None, 1 << 20, false).unwrap();
+        assert_eq!(again.blocks, md_blocks::split(again.doc.as_ref().unwrap().lines()), "the blocks come with the load");
+        assert!(!again.blocks.is_empty());
         let rs = dir.path().join("x.rs"); std::fs::write(&rs, "fn main() {}\n").unwrap();
         assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().doc.is_none(), "not markdown: no document");
     }
