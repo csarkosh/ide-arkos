@@ -58,7 +58,7 @@ pub fn keystroke_to_bytes(k: &Keystroke, mode: KeyMode) -> Option<Vec<u8>> {
             "enter" if mods > 1 => Some(13),
             "tab" if mods > 1 => Some(9),
             "backspace" if mods > 1 => Some(127),
-            "space" if m.control || m.alt => Some(32),
+            "space" if m.control || (m.alt && mode.option_as_meta) => Some(32),
             _ => None,
         };
         if let Some(code) = code {
