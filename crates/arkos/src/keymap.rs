@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Find, UpdateNow, StartAtLogin, InstallHooks,
+        OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, RetryUpdate, StartAtLogin, InstallHooks,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, Quit
     ]
 );
@@ -58,6 +58,10 @@ pub enum Command {
     Find,
     /// Run the installed update: the daemon first when its binary changed, then this window.
     UpdateNow,
+    /// Ask the daemon to check for a new release now.
+    CheckForUpdates,
+    /// Forget the last update error and check again (the palette offers it only after one).
+    RetryUpdate,
     /// Install or remove the login item that brings sessions back after a restart; with the
     /// config pinning it, open the config instead.
     StartAtLogin,
@@ -87,9 +91,9 @@ const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: None }
 }
 
-/// The spec's table (section 4) plus open config, the command palette, find, update now and
-/// quit. The order is the registration order. "update now" has no default keys: it is a palette
-/// command unless the config binds it.
+/// The spec's table (section 4) plus open config, the command palette, find, the update commands
+/// and quit. The order is the registration order. "update now", "check for updates" and "retry
+/// update" have no default keys: they are palette commands unless the config binds them.
 pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
@@ -114,6 +118,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("command palette", "cmd-shift-p"),
     row("find", "cmd-f"),
     row("update now", ""),
+    row("check for updates", ""),
+    row("retry update", ""),
     row("start at login", ""),
     row("install claude code hooks", ""),
     row("toggle sidebar", "cmd-b"),
@@ -164,6 +170,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "find" => KeyBinding::new(keys, Find, context),
         "update now" => KeyBinding::new(keys, UpdateNow, context),
+        "check for updates" => KeyBinding::new(keys, CheckForUpdates, context),
+        "retry update" => KeyBinding::new(keys, RetryUpdate, context),
         "start at login" => KeyBinding::new(keys, StartAtLogin, context),
         "install claude code hooks" => KeyBinding::new(keys, InstallHooks, context),
         "toggle sidebar" => KeyBinding::new(keys, ToggleSidebar, context),
@@ -324,6 +332,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "open config" => Command::OpenConfig,
         "find" => Command::Find,
         "update now" => Command::UpdateNow,
+        "check for updates" => Command::CheckForUpdates,
+        "retry update" => Command::RetryUpdate,
         "start at login" => Command::StartAtLogin,
         "install claude code hooks" => Command::InstallHooks,
         "toggle sidebar" => Command::ToggleSidebar,
@@ -370,7 +380,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         NewTerminal => Command::NewTerminal, ClearToStart => Command::ClearToStart,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
-        UpdateNow => Command::UpdateNow, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
+        UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
     )
@@ -408,6 +418,8 @@ mod tests {
         ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-f", "find", "Find"),
         ("", "update now", "UpdateNow"),
+        ("", "check for updates", "CheckForUpdates"),
+        ("", "retry update", "RetryUpdate"),
         ("", "start at login", "StartAtLogin"),
         ("", "install claude code hooks", "InstallHooks"),
         ("cmd-b", "toggle sidebar", "ToggleSidebar"),
@@ -460,7 +472,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 5, "an empty string unbinds, and update now, start at login, install hooks and show ignored files have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 7, "an empty string unbinds, and update now, check for updates, retry update, start at login, install hooks and show ignored files have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -469,7 +481,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 4, "only update now, start at login, install hooks and show ignored files are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 6, "only update now, check for updates, retry update, start at login, install hooks and show ignored files are unbound by default");
     }
 
     #[test]

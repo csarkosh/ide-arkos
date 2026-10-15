@@ -247,9 +247,21 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
-the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `sidebar` (its width and
+the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
 whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` for a later
 milestone.
+
+```toml
+[update]
+# The daemon checks the release manifest every check_every_secs and downloads a newer, signed
+# build in the background. With auto = true the window applies it once you have been idle for
+# idle_after_secs (no typing, nothing open): the daemon swaps in place and the window relaunches
+# with every shell still there. auto = false keeps the "update ready" badge and the palette's
+# "Update now" instead.
+auto = true
+check_every_secs = 300
+idle_after_secs = 30
+```
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
@@ -258,6 +270,12 @@ otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) a
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
 ## Updating
+
+Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
+and verifies a newer build, and the window applies it once you have been idle for thirty seconds
+(no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
+still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for
+updates" in the palette asks now.
 
 Sessions live in `arkosd`, so updating never ends one. After `brew upgrade arkos`, or
 `cargo build --release` into the binaries you run, the title bar shows "update ready" within

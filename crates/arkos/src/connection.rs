@@ -164,7 +164,7 @@ async fn pump(root: &Entity<Root>, client: &Client, events: &mut UnboundedReceiv
                         answered = true;
                         // Events that came before this response are applied first, keeping order.
                         if !pending.is_empty() {
-                            root.sessions.route_events(&pending, cx);
+                            root.route_events(&pending, cx);
                             pending.clear();
                         }
                         let is_error = matches!(response, Response::Error(_));
@@ -179,7 +179,7 @@ async fn pump(root: &Entity<Root>, client: &Client, events: &mut UnboundedReceiv
                 }
             }
             if !pending.is_empty() {
-                root.sessions.route_events(&pending, cx);
+                root.route_events(&pending, cx);
             }
         })
         .ok()?;

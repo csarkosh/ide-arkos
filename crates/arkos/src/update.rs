@@ -4,6 +4,7 @@
 //! process keeps running the old file.
 use crate::Root;
 use gpui::{App, Entity};
+use protocol::StagedUpdate;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -54,7 +55,13 @@ pub fn status_text(installed: &str) -> String {
     format!("update ready: {version}")
 }
 
-/// Checks now and every `CHECK_EVERY`, off the UI thread, and records the result on the root.
+/// "update ready: 0.2.1": the daemon's staged release, by its version.
+pub fn status_text_for(s: &StagedUpdate) -> String {
+    format!("update ready: {}", s.version)
+}
+
+/// Checks now and every `CHECK_EVERY`, off the UI thread, and records the result on the root
+/// (`update_ready_on_disk`; a release the daemon staged takes precedence in the badge).
 pub fn start(root: Entity<Root>, cx: &mut App) {
     let running = crate::version_string();
     cx.spawn(async move |cx| loop {
@@ -68,9 +75,9 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
             })
             .await;
         if root.update(cx, |root, cx| {
-            if root.update_ready != ready {
-                root.update_ready = ready;
-                cx.notify();
+            if root.update_ready_on_disk != ready {
+                root.update_ready_on_disk = ready;
+                root.refresh_update_badge(cx);
             }
         }).is_err() {
             return;
@@ -92,6 +99,7 @@ mod tests {
         assert_eq!(status_text("arkos 0.2.0 (def5678)"), "update ready: 0.2.0 (def5678)");
         assert_eq!(status_text("garbage"), "update ready: garbage");
         assert_eq!(sibling_daemon(std::path::Path::new("/opt/homebrew/bin/arkos")), std::path::PathBuf::from("/opt/homebrew/bin/arkosd"));
+        assert_eq!(status_text_for(&StagedUpdate { version: "0.2.1".into(), git: "abc".into() }), "update ready: 0.2.1");
     }
 
     #[test]

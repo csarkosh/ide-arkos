@@ -15,6 +15,7 @@ mod find;
 mod gitstatus;
 mod highlight;
 mod hook_cli;
+mod idle;
 mod keys;
 mod keymap;
 mod links;
@@ -45,7 +46,7 @@ use gpui::{
     div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
     KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
 };
-use protocol::{Request, SessionId};
+use protocol::{Event, Request, SessionId, StagedUpdate};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -235,8 +236,20 @@ pub struct Root {
     pub bar_scroll: HashMap<PaneId, gpui::ScrollHandle>,
     /// The pane whose tab overflow menu is open.
     pub tab_menu: Transient<PaneId>,
-    /// "update ready: <version>" while the binary at the launch path differs from this one.
+    /// The badge: "update ready: <version>" for the release the daemon staged, else for the
+    /// binary at the launch path when it differs from this one (`refresh_update_badge`).
     pub update_ready: Option<String>,
+    /// What `update::start` last found at the launch path; the staged release takes precedence.
+    pub update_ready_on_disk: Option<String>,
+    /// The release the daemon has downloaded, verified and staged (protocol 4).
+    pub staged: Option<StagedUpdate>,
+    /// Why the last update failed, from the daemon or a refused apply; offers "Retry update".
+    pub update_error: Option<String>,
+    /// The idle timer that applies a staged update is running (`start_idle_timer`).
+    pub auto_apply_timer: bool,
+    /// The last key, pointer move or click in this window: a staged update applies only once the
+    /// window has been quiet for `[update] idle_after_secs`.
+    pub last_input: Instant,
     /// The update "Update now" started, while it runs.
     pub updating: Option<UpdateStage>,
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
@@ -258,6 +271,22 @@ pub struct Root {
 /// else `None`, the project.
 fn shell_folder(cwd: Option<PathBuf>) -> Option<PathBuf> {
     cwd.filter(|d| d.is_dir())
+}
+
+/// How often the idle timer asks whether a staged update may apply itself.
+const IDLE_TICK: Duration = Duration::from_secs(1);
+
+/// What arkosd starts with when this window (or the login item) starts it; a running daemon
+/// keeps its own settings.
+fn daemon_args(config: &config::Config) -> Vec<String> {
+    vec![
+        "--watchdog-secs".to_string(),
+        config.daemon.watchdog_secs.to_string(),
+        "--replay-bytes".to_string(),
+        config.daemon.replay_bytes.to_string(),
+        "--check-every-secs".to_string(),
+        config.update.check_every_secs.to_string(),
+    ]
 }
 
 /// Whether a window closing tells the daemon the user is leaving, so a restart does not reopen
@@ -300,6 +329,8 @@ impl Root {
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
+        // Every keystroke counts as input for the idle rule, whichever element handles it.
+        cx.observe_keystrokes(|root, _ev, _window, _cx| root.last_input = Instant::now()).detach();
         Self {
             tree,
             sessions,
@@ -355,6 +386,11 @@ impl Root {
             bar_scroll: HashMap::new(),
             tab_menu: Transient::Hidden,
             update_ready: None,
+            update_ready_on_disk: None,
+            staged: None,
+            update_error: None,
+            auto_apply_timer: false,
+            last_input: Instant::now(),
             updating: None,
             window_active: true,
             pulse_epoch: Instant::now(),
@@ -486,6 +522,8 @@ impl Root {
         self.shell_name = shell_name(t.shell.as_deref(), std::env::var("SHELL").ok().as_deref());
         cx.background_executor().spawn(async { motion::refresh() }).detach();
         self.apply_recovery(false, cx);
+        // `[update] auto` may have just been turned on with a release already staged.
+        self.start_idle_timer(cx);
         cx.notify();
     }
 
@@ -851,7 +889,7 @@ impl Root {
             return;
         }
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored);
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored);
         self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
         cx.notify();
     }
@@ -1138,6 +1176,17 @@ impl Root {
             }
             SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
             UpdateNow => self.update_now(cx),
+            CheckForUpdates => {
+                self.sessions.check_for_updates();
+                self.show_notice("checking for updates".into(), cx);
+            }
+            RetryUpdate => {
+                self.update_error = None;
+                self.refresh_update_badge(cx);
+                self.sessions.check_for_updates();
+                // A release still staged gets another go once the window is idle.
+                self.start_idle_timer(cx);
+            }
             StartAtLogin => self.toggle_start_at_login(cx),
             InstallHooks => {
                 let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
@@ -1208,13 +1257,7 @@ impl Root {
 
     /// The plist for this install: the sibling daemon, the config's daemon arguments, the log.
     fn agent_plist(&self) -> String {
-        let args = vec![
-            "--watchdog-secs".to_string(),
-            self.config.daemon.watchdog_secs.to_string(),
-            "--replay-bytes".to_string(),
-            self.config.daemon.replay_bytes.to_string(),
-        ];
-        launch_agent::plist(&paths::daemon_exe(), &args, &client::daemon_log(&paths::socket_path()))
+        launch_agent::plist(&paths::daemon_exe(), &daemon_args(&self.config), &client::daemon_log(&paths::socket_path()))
     }
 
     /// Installs or removes the login item off the UI thread and says what happened.
@@ -1306,6 +1349,77 @@ impl Root {
             });
         })
         .detach();
+    }
+
+    /// Shows the staged release in the badge when there is one, else what the launch path holds.
+    pub fn refresh_update_badge(&mut self, cx: &mut Context<Self>) {
+        self.update_ready = self.staged.as_ref().map(update::status_text_for).or_else(|| self.update_ready_on_disk.clone());
+        cx.notify();
+    }
+
+    /// What is open that an update must not pull out from under the user.
+    fn chrome_state(&self, cx: &App) -> idle::Chrome {
+        idle::Chrome {
+            palette: self.palette.value().is_some(),
+            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some(),
+            prompt: self.wt_prompt.value().is_some(),
+            find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
+            drag: self.drop_target.is_some(),
+        }
+    }
+
+    /// Checks every second whether a staged update may apply itself (`idle::may_apply`), and
+    /// applies it once. Stops when nothing is staged or `[update] auto` is off; one at a time.
+    pub fn start_idle_timer(&mut self, cx: &mut Context<Self>) {
+        if self.auto_apply_timer {
+            return;
+        }
+        self.auto_apply_timer = true;
+        cx.spawn(async move |root, cx| loop {
+            cx.background_executor().timer(IDLE_TICK).await;
+            let more = root.update(cx, |root, cx| {
+                if root.staged.is_none() || !root.config.update.auto {
+                    root.auto_apply_timer = false;
+                    return false;
+                }
+                let idle_after = Duration::from_secs(root.config.update.idle_after_secs);
+                if idle::may_apply(Instant::now(), root.last_input, idle_after, root.chrome_state(cx), root.updating.is_some(), !root.sessions.is_offline()) {
+                    root.auto_apply_timer = false;
+                    root.apply_staged(cx);
+                    return false;
+                }
+                true
+            });
+            if !matches!(more, Ok(true)) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Asks the daemon to swap in the staged bundle; `Outcome::Applied` then runs "Update now".
+    pub fn apply_staged(&mut self, cx: &mut Context<Self>) {
+        let Some(s) = &self.staged else { return };
+        if self.updating.is_some() {
+            return;
+        }
+        let version = s.version.clone();
+        self.updating = Some(UpdateStage::DaemonUpgrading);
+        self.show_notice(format!("updating to {version}; sessions stay"), cx);
+        self.sessions.apply_update(version);
+    }
+
+    /// A batch of daemon events: the window's own (`UpdateStaged`) first, then the sessions'.
+    pub fn route_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
+        for ev in events {
+            if let Event::UpdateStaged { update } = ev {
+                self.staged = Some(update.clone());
+                self.update_error = None;
+                self.refresh_update_badge(cx);
+                self.start_idle_timer(cx);
+            }
+        }
+        self.sessions.route_events(events, cx);
     }
 
     /// Asks the daemon to start the installed window in this project once we are gone. The window
@@ -1406,9 +1520,39 @@ impl Root {
     pub fn handle_outcome(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
         match outcome {
             Outcome::None => {}
-            Outcome::DaemonHello { version, .. } => {
+            Outcome::DaemonHello { version, protocol_max, .. } => {
                 self.daemon_version = Some(version);
+                // An older daemon answers an unknown request with an error: ask only protocol 4.
+                if protocol_max >= 4 {
+                    self.sessions.update_status();
+                }
             }
+            Outcome::UpdateStatus { staged, last_error } => {
+                // A failed attempt is not retried by itself: "Retry update" does that.
+                let apply = staged.is_some() && last_error.is_none();
+                self.staged = staged;
+                self.update_error = last_error;
+                self.refresh_update_badge(cx);
+                if apply {
+                    self.start_idle_timer(cx);
+                }
+            }
+            Outcome::Applied => {
+                // The bundle at the launch path is the new one: "Update now" upgrades the daemon
+                // and relaunches the window from it.
+                self.updating = None;
+                self.staged = None;
+                self.refresh_update_badge(cx);
+                self.update_now(cx);
+            }
+            Outcome::ApplyFailed(e) => {
+                eprintln!("arkos: update failed: {e}");
+                self.updating = None;
+                self.update_error = Some(e.clone());
+                self.refresh_update_badge(cx);
+                self.show_notice(format!("update failed: {e}"), cx);
+            }
+            Outcome::CheckFailed(e) => self.show_notice(e, cx),
             Outcome::Sessions(list) => {
                 if self.status == CONNECTING {
                     // The banner goes away, so every pane grows: forget measurements taken under
@@ -1474,6 +1618,8 @@ impl Root {
                 self.show_notice(format!("update failed: {e}"), cx);
             }
             Outcome::RelaunchAccepted => {
+                // No Goodbye: the daemon reopens this project after a rollback only while the
+                // folder is still in its window list.
                 self.flush_for_quit(false);
                 cx.quit();
             }
@@ -1650,7 +1796,9 @@ impl Render for Root {
             }
         }
         let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
-        let items = chrome::status_items(self.update_ready.as_deref(), (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
+        // A failed update says so until a release is staged again or "Retry update" runs.
+        let update_text = if self.staged.is_none() && self.update_error.is_some() { Some("update failed") } else { self.update_ready.as_deref() };
+        let items = chrome::status_items(update_text, (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
         let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme);
         let family = self.family();
         let root_div = div()
@@ -1667,6 +1815,7 @@ impl Render for Root {
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+                root.last_input = Instant::now();
                 if root.sidebar_resizing {
                     if ev.pressed_button != Some(MouseButton::Left) {
                         // Released outside the window, where no mouse-up reaches us: end the drag.
@@ -1704,6 +1853,7 @@ impl Render for Root {
             // (its rows stop theirs), and on Escape wherever the keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
+                root.last_input = now;
                 if root.context_menu.hide(now) | root.wt_menu.hide(now) {
                     cx.notify();
                 }
@@ -1804,12 +1954,7 @@ fn main() {
         }
     };
     // Used only when this window starts the daemon; a running one keeps its own settings.
-    let daemon_args = vec![
-        "--watchdog-secs".to_string(),
-        config.daemon.watchdog_secs.to_string(),
-        "--replay-bytes".to_string(),
-        config.daemon.replay_bytes.to_string(),
-    ];
+    let daemon_args = daemon_args(&config);
     let (client, events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
         Ok(c) => c,
         Err(e) => {

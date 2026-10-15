@@ -19,6 +19,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub appearance: AppearanceConfig,
     pub recovery: RecoveryConfig,
+    pub update: UpdateConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -175,6 +176,23 @@ pub struct RecoveryConfig {
     pub start_at_login: StartAtLogin,
 }
 
+/// Automatic updates (auto-update spec): how often the daemon checks for a signed release (it
+/// takes `check_every_secs` as an argument when the window starts it), and whether and when the
+/// window applies a staged one by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    pub auto: bool,
+    pub check_every_secs: u64,
+    pub idle_after_secs: u64,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self { auto: true, check_every_secs: 300, idle_after_secs: 30 }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -188,6 +206,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             appearance: AppearanceConfig::default(),
             recovery: RecoveryConfig::default(),
+            update: UpdateConfig::default(),
         }
     }
 }
@@ -401,6 +420,8 @@ nice = 0
 # "command palette" = "cmd-shift-p"
 # "find" = "cmd-f"
 # "update now" = ""
+# "check for updates" = ""
+# "retry update" = ""
 # "start at login" = ""
 # "install claude code hooks" = ""
 # "toggle sidebar" = "cmd-b"
@@ -450,6 +471,16 @@ mode = "system"
 # "Start at login" runs from the command palette; "on" installs the login item
 # (~/Library/LaunchAgents/sh.csarko.arkosd.plist) and keeps it; "off" removes it.
 start_at_login = "ask"
+
+[update]
+# The daemon checks the release manifest every check_every_secs and downloads a newer, signed
+# build in the background. With auto = true the window applies it once you have been idle for
+# idle_after_secs (no typing, nothing open): the daemon swaps in place and the window relaunches
+# with every shell still there. auto = false keeps the "update ready" badge and the palette's
+# "Update now" instead.
+auto = true
+check_every_secs = 300
+idle_after_secs = 30
 "##;
 
 /// The preset a workspace uses: what it saved, else the config's default, else comfortable.
@@ -547,6 +578,15 @@ mod tests {
         assert_eq!(cfg.theme.dark, "navy");
         assert_eq!(cfg.theme.light, "navy-light");
         assert_eq!(cfg.appearance.mode, AppearanceMode::System);
+    }
+
+    #[test]
+    fn the_update_table_defaults_to_automatic_and_accepts_the_three_fields() {
+        let c = parse("").unwrap();
+        assert_eq!(c.update, UpdateConfig { auto: true, check_every_secs: 300, idle_after_secs: 30 });
+        let c = parse("[update]\nauto = false\ncheck_every_secs = 60\nidle_after_secs = 5\n").unwrap();
+        assert_eq!(c.update, UpdateConfig { auto: false, check_every_secs: 60, idle_after_secs: 5 });
+        assert!(parse("[update]\nspeed = 1\n").is_err(), "unknown keys are refused like everywhere else");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::terminal::Terminal;
 use crate::tree::{Tab, TabId, Tree};
 use gpui::{App, Entity};
 use protocol::ClaudeState;
-use protocol::{Event, Request, Response, SessionDetail, SessionId, SessionInfo};
+use protocol::{Event, Request, Response, SessionDetail, SessionId, SessionInfo, StagedUpdate};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -50,6 +50,12 @@ pub enum Pending {
     Upgrade,
     /// The daemon starting the installed window once this one disconnects.
     Relaunch,
+    /// What the daemon has staged and the last update error (protocol 4).
+    Status,
+    /// A check for a new release now; answered `Ok`, or refused when checks are off.
+    Check,
+    /// The daemon swapping in the staged bundle.
+    Apply,
     #[allow(dead_code)] // In Task 4's interface; nothing in milestone 2a sends an untracked request yet
     Other,
 }
@@ -72,6 +78,14 @@ pub enum Outcome {
     RelaunchAccepted,
     /// The daemon will not relaunch the window, which therefore stays.
     RelaunchRefused(String),
+    /// What the daemon has staged and why its last update attempt failed, when it did.
+    UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String> },
+    /// The staged bundle is in place: the window runs "Update now" to finish.
+    Applied,
+    /// The daemon could not apply the staged update; nothing changed.
+    ApplyFailed(String),
+    /// The daemon would not check now ("update checks are off"): a notice, not a connection error.
+    CheckFailed(String),
 }
 
 /// One launch step for one saved terminal tab.
@@ -135,7 +149,7 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
     for ev in events {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
-            // Not a session's: the update notice is the window's to show (a later task).
+            // Not a session's: the root shows it (`Root::route_events`).
             Event::UpdateStaged { .. } => continue,
         };
         match out.iter_mut().find(|(s, _)| *s == sid) {
@@ -256,6 +270,24 @@ impl SessionManager {
     pub fn relaunch(&mut self, exe: PathBuf) {
         let id = self.transport.send(Request::RelaunchClient { exe, cwd: self.project.clone() });
         self.pending.insert(id, Pending::Relaunch);
+    }
+
+    /// Asks what the daemon has staged (protocol 4 daemons only).
+    pub fn update_status(&mut self) {
+        let id = self.transport.send(Request::UpdateStatus);
+        self.pending.insert(id, Pending::Status);
+    }
+
+    /// Asks the daemon to check for a new release now.
+    pub fn check_for_updates(&mut self) {
+        let id = self.transport.send(Request::CheckForUpdates);
+        self.pending.insert(id, Pending::Check);
+    }
+
+    /// Asks the daemon to swap in the staged bundle, which must be `version`.
+    pub fn apply_update(&mut self, version: String) {
+        let id = self.transport.send(Request::ApplyUpdate { version });
+        self.pending.insert(id, Pending::Apply);
     }
 
     pub fn list(&mut self) {
@@ -380,6 +412,9 @@ impl SessionManager {
         if let Response::Hello { daemon_version, protocol_min, protocol_max } = &response {
             return Outcome::DaemonHello { version: daemon_version.clone(), protocol_min: *protocol_min, protocol_max: *protocol_max };
         }
+        if let Response::UpdateStatus { staged, last_error } = &response {
+            return Outcome::UpdateStatus { staged: staged.clone(), last_error: last_error.clone() };
+        }
         if let Response::Error(e) = &response {
             match pending {
                 Some(Pending::Attach { session, tab, .. }) => {
@@ -391,6 +426,8 @@ impl SessionManager {
                 }
                 Some(Pending::Upgrade) => return Outcome::UpgradeFailed(e.clone()),
                 Some(Pending::Relaunch) => return Outcome::RelaunchRefused(e.clone()),
+                Some(Pending::Apply) => return Outcome::ApplyFailed(e.clone()),
+                Some(Pending::Check) => return Outcome::CheckFailed(e.clone()),
                 Some(Pending::Kill { session }) if e.starts_with("no session") => {
                     // Reaped before the kill arrived: the session is gone, which is what we asked.
                     eprintln!("arkos: session {} was already gone when killed", session.0);
@@ -418,6 +455,8 @@ impl SessionManager {
             }
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
             (Some(Pending::Relaunch), Response::Ok) => Outcome::RelaunchAccepted,
+            (Some(Pending::Apply), Response::Ok) => Outcome::Applied,
+            (Some(Pending::Apply), _) => Outcome::ApplyFailed(format!("unexpected response {response:?} to {pending:?}")),
             (Some(Pending::Relaunch), _) => Outcome::RelaunchRefused(format!("unexpected response {response:?} to {pending:?}")),
             (Some(Pending::Attach { session, tab, .. }), _) => {
                 self.busy.remove(&tab);
@@ -498,6 +537,7 @@ impl SessionManager {
                 Event::Exited { session, .. } => {
                     self.states.remove(session);
                 }
+                // The root reads `UpdateStaged` itself (`Root::route_events`).
                 Event::Output { .. } | Event::UpdateStaged { .. } => {}
             }
         }
@@ -1025,5 +1065,33 @@ mod tests {
         let r3 = Recorder::new();
         m.set_client_for_test(r3.clone());
         assert!(r3.requests().is_empty(), "sent once");
+    }
+
+    #[test]
+    fn update_requests_map_to_their_outcomes() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.update_status();
+        assert!(matches!(rec.requests()[0], Request::UpdateStatus));
+        let staged = StagedUpdate { version: "0.2.1".into(), git: "abc".into() };
+        assert_eq!(m.handle_response(1, Response::UpdateStatus { staged: Some(staged.clone()), last_error: None }), Outcome::UpdateStatus { staged: Some(staged.clone()), last_error: None });
+        m.check_for_updates();
+        assert!(matches!(rec.requests()[1], Request::CheckForUpdates));
+        assert_eq!(m.handle_response(2, Response::Ok), Outcome::None);
+        m.apply_update("0.2.1".into());
+        assert!(matches!(&rec.requests()[2], Request::ApplyUpdate { version } if version == "0.2.1"));
+        assert_eq!(m.handle_response(3, Response::Ok), Outcome::Applied);
+        m.apply_update("0.2.1".into());
+        assert_eq!(m.handle_response(4, Response::Error("nothing staged".into())), Outcome::ApplyFailed("nothing staged".into()));
+        m.note_events(&[Event::UpdateStaged { update: staged }]);
+        assert!(!m.stash_if_restoring(&Event::UpdateStaged { update: StagedUpdate { version: "1".into(), git: "g".into() } }), "not a session event");
+    }
+
+    #[test]
+    fn a_refused_check_is_a_notice_not_a_connection_error() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.check_for_updates();
+        assert_eq!(m.handle_response(1, Response::Error("update checks are off".into())), Outcome::CheckFailed("update checks are off".into()));
     }
 }
