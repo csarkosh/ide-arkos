@@ -3,6 +3,7 @@
 //! Every request from the UI carries an id; the daemon answers with a `ServerMessage::Response`
 //! bearing the same id, and pushes `ServerMessage::Event`s on its own schedule.
 pub mod codec;
+pub mod release_key;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

@@ -1,0 +1,10 @@
+[package]
+name = "release-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ed25519-compact = { version = "2", default-features = false, features = ["random", "std"] }
+base64 = "0.22"
