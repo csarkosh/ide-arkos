@@ -2,15 +2,19 @@
 //! directory: the window asks which folder to open instead, listing the most recent ones
 //! (`recent.rs`) with a way to show them all and the native folder picker. "Open recent..." from
 //! a running window shows the same chooser; the folder chosen there opens in a new process.
+use crate::chooser_sessions::{self, LinkEvent};
 use crate::config::Config;
 use crate::keymap::{self, OpenFolder};
+use crate::launch_link::Link;
 use crate::recent::{self, Recent};
 use crate::theme::Theme;
-use crate::paths;
+use crate::{paths, workspace};
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHandle, KeyDownEvent, PathPromptOptions, ScrollHandle, Task, Window,
-    WindowBounds, WindowHandle, WindowOptions,
+    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, PathPromptOptions,
+    ScrollHandle, Task, Window, WindowBounds, WindowHandle, WindowOptions,
 };
+use protocol::SessionId;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -178,6 +182,19 @@ pub struct Chooser {
     on_choice: Option<OnChoice>,
     /// The native picker is up: Enter and Cmd+O do not open a second one.
     picking: bool,
+    /// The daemon, at launch only: a chooser opened from a running window has no line of its own
+    /// and shows no counts.
+    link: Option<Link>,
+    /// Each recent folder's saved sessions, read with the list.
+    saved: HashMap<PathBuf, Vec<SessionId>>,
+    /// Each recent folder's live sessions, from the daemon's last list; absent means none.
+    live: HashMap<PathBuf, Vec<SessionId>>,
+    /// The folder whose "Stop all" was asked once; the second ask stops its sessions.
+    confirm: Option<PathBuf>,
+    /// Folders whose kills are out and not yet all answered.
+    stopping: HashSet<PathBuf>,
+    /// A line under the list: what the daemon refused.
+    notice: Option<String>,
 }
 
 impl Chooser {
@@ -185,9 +202,62 @@ impl Chooser {
         rows(&self.recents, self.expanded)
     }
 
+    fn live_of(&self, folder: &Path) -> &[SessionId] {
+        self.live.get(folder).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         self.selected = move_selection(self.rows().len(), self.selected, delta);
         self.scroll.scroll_to_item(self.selected);
+        self.confirm = None;
+        cx.notify();
+    }
+
+    /// "Stop all" for a folder: the first ask arms the row, the second sends a Kill for each of
+    /// its sessions. Nothing while its kills are out.
+    fn request_stop(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if self.stopping.contains(&folder) {
+            return;
+        }
+        if self.confirm.as_ref() == Some(&folder) {
+            let sessions = self.live_of(&folder).to_vec();
+            if let Some(link) = &self.link {
+                link.stop(folder.clone(), &sessions);
+                self.stopping.insert(folder);
+            }
+            self.confirm = None;
+        } else {
+            self.confirm = Some(folder);
+        }
+        cx.notify();
+    }
+
+    /// The daemon's answers, through the link.
+    pub fn on_link(&mut self, ev: LinkEvent, cx: &mut Context<Self>) {
+        match ev {
+            LinkEvent::Sessions(list) => {
+                self.live = self
+                    .recents
+                    .iter()
+                    .map(|r| {
+                        let saved = self.saved.get(&r.path).map(|v| v.as_slice()).unwrap_or(&[]);
+                        (r.path.clone(), chooser_sessions::sessions_of(&r.path, saved, &list))
+                    })
+                    .filter(|(_, v)| !v.is_empty())
+                    .collect();
+            }
+            LinkEvent::Stopped { folder, errors } => {
+                self.stopping.remove(&folder);
+                if let Some(first) = errors.first() {
+                    let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| folder.display().to_string());
+                    self.notice = Some(format!("{} of {name}'s sessions could not be stopped: {first}", errors.len()));
+                }
+                // The list again: what is left after the kills.
+                if let Some(link) = &self.link {
+                    link.list();
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -253,10 +323,68 @@ impl Chooser {
             "up" => self.step(-1, cx),
             "down" => self.step(1, cx),
             "enter" => self.activate(window, cx),
-            "escape" => window.remove_window(),
+            // Delete asks to stop the selected folder's sessions; a second Delete does it.
+            "backspace" | "delete" => {
+                if let Some(Row::Folder(r)) = self.rows().get(self.selected).cloned() {
+                    if !self.live_of(&r.path).is_empty() {
+                        self.request_stop(r.path, cx);
+                    }
+                }
+            }
+            // Esc first takes back an armed "Stop all"; with none armed it closes the chooser.
+            "escape" => {
+                if self.confirm.take().is_some() {
+                    cx.notify();
+                } else {
+                    window.remove_window();
+                }
+            }
             _ => return,
         }
         cx.stop_propagation();
+    }
+
+    /// The right-hand side of a folder's row: its live session count and "Stop all", the armed
+    /// confirmation, or the wait while its kills are out.
+    fn trailing(&self, ix: usize, folder: &Path, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let c = &self.theme.chrome;
+        let (dim, text, ring, hover_bg) = (c.text_dim.hsla(), c.text.hsla(), c.focus_ring.hsla(), c.tab_inactive.hsla());
+        let n = self.live_of(folder).len();
+        if self.stopping.contains(folder) {
+            return Some(div().flex_none().text_color(dim).child("stopping\u{2026}").into_any_element());
+        }
+        let button = |label: String, id: &'static str, color: gpui::Hsla| {
+            let path = folder.to_path_buf();
+            div()
+                .id((id, ix))
+                .flex_none()
+                .px(px(6.0))
+                .rounded(px(3.0))
+                .text_color(color)
+                .cursor_pointer()
+                .hover(|s| s.bg(hover_bg))
+                // Not a click on the row: the row would open the folder.
+                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| this.request_stop(path.clone(), cx)))
+                .child(label)
+                .into_any_element()
+        };
+        if self.confirm.as_deref() == Some(folder) {
+            let label = format!("Stop {}? Confirm", chooser_sessions::count_label(n).unwrap_or_else(|| "sessions".into()));
+            return Some(button(label, "chooser-confirm", ring));
+        }
+        let label = chooser_sessions::count_label(n)?;
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(div().text_color(dim).child(label))
+                .child(button("Stop all".into(), "chooser-stop", text))
+                .into_any_element(),
+        )
     }
 }
 
@@ -279,14 +407,18 @@ impl Render for Chooser {
                 Row::Picker => ("Open another folder\u{2026}".to_string(), picker_keys.clone()),
             };
             let folder = matches!(row, Row::Folder(_));
+            let trailing = match &row {
+                Row::Folder(r) => self.trailing(ix, &r.path, cx),
+                _ => None,
+            };
             list = list.child(
                 div()
                     .id(("chooser-row", ix))
                     .flex_none()
                     .flex()
                     .flex_row()
+                    .items_center()
                     .gap(px(12.0))
-                    .justify_between()
                     .px(px(10.0))
                     .py(px(6.0))
                     .rounded(px(4.0))
@@ -300,9 +432,11 @@ impl Render for Chooser {
                         this.activate(window, cx);
                     }))
                     .child(div().flex_none().text_color(if folder { text } else { dim }).child(label))
-                    .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(dim).child(detail)),
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(dim).child(detail))
+                    .children(trailing),
             );
         }
+        let notice = self.notice.clone();
         div()
             .id("chooser")
             .key_context("Chooser")
@@ -321,17 +455,29 @@ impl Render for Chooser {
             .child(div().px(px(10.0)).text_color(dim).child("Recent"))
             .when(self.recents.is_empty(), |d| d.child(div().px(px(10.0)).py(px(6.0)).text_color(dim).child("No recent folders")))
             .child(list)
+            .children(notice.map(|n| div().flex_none().px(px(10.0)).text_color(dim).child(n)))
     }
 }
 
 /// Opens the chooser once the recent list is read (off the UI thread). `at_launch`: closing it
 /// with nothing chosen quits (the app's window-closed observer sees no windows left). `focus`
-/// is whether the window takes the keyboard, as for the project window. The task gives the
+/// is whether the window takes the keyboard, as for the project window. `link` is the daemon
+/// line at launch, for the session counts; none from a running window. The task gives the
 /// window's handle once it is open.
-pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, on_choice: OnChoice) -> Task<Option<WindowHandle<Chooser>>> {
+pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, link: Option<Link>, on_choice: OnChoice) -> Task<Option<WindowHandle<Chooser>>> {
     let file = paths::recent_file();
+    let with_saved = link.is_some();
     cx.spawn(async move |cx| {
-        let recents = cx.background_executor().spawn(async move { recent::visible(&recent::load(&file)) }).await;
+        let (recents, saved) = cx
+            .background_executor()
+            .spawn(async move {
+                let recents = recent::visible(&recent::load(&file));
+                // Each folder's saved sessions, so a worktree tab counts for its project.
+                let saved: HashMap<PathBuf, Vec<SessionId>> =
+                    if with_saved { recents.iter().map(|r| (r.path.clone(), workspace::session_ids(&r.path))).collect() } else { HashMap::new() };
+                (recents, saved)
+            })
+            .await;
         let opened = cx.update(|cx| {
             let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
             let options = WindowOptions {
@@ -352,8 +498,24 @@ pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, 
                     home: std::env::var("HOME").unwrap_or_default(),
                     on_choice: Some(on_choice),
                     picking: false,
+                    link,
+                    saved,
+                    live: HashMap::new(),
+                    confirm: None,
+                    stopping: HashSet::new(),
+                    notice: None,
                 });
                 window.focus(&view.read(cx).focus);
+                // The daemon's answers reach the chooser while it lives; the list is asked for now.
+                if let Some(link) = view.read(cx).link.clone() {
+                    let weak = view.downgrade();
+                    link.start(
+                        Box::new(move |ev, cx| {
+                            let _ = weak.update(cx, |chooser, cx| chooser.on_link(ev, cx));
+                        }),
+                        cx,
+                    );
+                }
                 view
             })
         });

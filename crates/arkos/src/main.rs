@@ -1,5 +1,6 @@
 mod app_nap;
 mod ax;
+mod chooser_sessions;
 mod chrome;
 mod client;
 mod closed_stack;
@@ -22,6 +23,7 @@ mod idle;
 mod keys;
 mod keymap;
 mod launch;
+mod launch_link;
 mod links;
 mod launch_agent;
 mod layout;
@@ -2018,7 +2020,7 @@ impl Root {
         let open = Box::new(move |folder: PathBuf, cx: &mut App| {
             let _ = weak.update(cx, |root, cx| root.open_elsewhere(folder, cx));
         });
-        let opening = launch::open_chooser(cx, false, true, self.config.clone(), (*self.theme).clone(), open);
+        let opening = launch::open_chooser(cx, false, true, self.config.clone(), (*self.theme).clone(), None, open);
         cx.spawn(async move |root, cx| {
             let handle = opening.await;
             let _ = root.update(cx, |root, _| {
@@ -2916,12 +2918,17 @@ fn main() {
             })
             .detach();
             let (config, theme) = (start.config.clone(), start.theme.clone());
+            // The chooser's line to the daemon: the session counts and "Stop all". It holds the
+            // connection's receiver until a folder is chosen, then the project window gets it.
+            let link = launch_link::Link::new(client.clone(), events);
+            let link_for_choice = link.clone();
             launch::open_chooser(
                 cx,
                 true,
                 plan.focus(),
                 config,
                 theme,
+                Some(link),
                 Box::new(move |folder, cx| {
                     // The project is the working directory, as for a terminal launch: the
                     // daemon's Hello, its relaunches and the shells all start from it.
@@ -2934,7 +2941,12 @@ fn main() {
                     opened.set(true);
                     // The same connection goes on: its second Hello names the project.
                     client.hello();
-                    open_project_window(project, (client, events), start, cx);
+                    let finishing = link_for_choice.finish();
+                    cx.spawn(async move |cx| {
+                        let events = finishing.await;
+                        let _ = cx.update(|cx| open_project_window(project, (client, events), start, cx));
+                    })
+                    .detach();
                 }),
             )
             .detach();

@@ -114,6 +114,10 @@ Things only a person at the screen can check, in order of value:
 - revoke Accessibility in System Settings: the pane shows the permission screen within a second
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
+- open from the Dock with Claude running in two tabs of a project: its row says "2 sessions";
+  Stop all, then Confirm: the row says "stopping…" and the count goes; `ps` shows the shells
+  gone; a folder with no sessions shows nothing on the right; Delete on a selected row arms it
+  and Escape disarms it without closing the chooser
 
 ## Session awareness
 
@@ -457,7 +461,12 @@ assembles it.
 
 Opening from the Dock (or Finder, or Spotlight) asks which folder to open: a small chooser lists
 the five most recent folders, newest first, with "Show all" for the rest and "Open another
-folder…" for the native picker. Up, Down and Enter choose; Escape quits. From a running window,
+folder…" for the native picker. Up, Down and Enter choose; Escape quits. Each folder's row ends
+with how many of its sessions the daemon is running (a tab closed within its minute and a
+worktree tab both count) and "Stop all": one click, or Delete on the selected row, arms it as
+"Stop N sessions? Confirm"; a second ends every one of them (a window open on that folder sees
+its shells end); Escape or moving the selection takes it back. Those counts show at launch, not
+in the chooser opened from a running window. From a running window,
 Cmd+O ("Open folder…") and "Open recent…" in the palette open the folder in a second window;
 the folder this window already shows gets the notice "already open here". The list lives in
 `~/Library/Application Support/arkos/recent.json`.

@@ -84,6 +84,22 @@ fn load_or_migrate(file: &Path, legacy: &Path, project: &Path) -> Option<Workspa
 }
 
 /// Writes to disk; run it off the UI thread (see `request_save`).
+/// The sessions `project`'s saved layout names, for the chooser's counts; none without a file.
+pub fn session_ids(project: &Path) -> Vec<SessionId> {
+    load(project)
+        .map(|ws| {
+            ws.tree
+                .tabs()
+                .into_iter()
+                .filter_map(|(_, _, t)| match t {
+                    Tab::Terminal { session, .. } => Some(*session),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn save(project: &Path, ws: &Workspace) -> std::io::Result<()> {
     save_to(&workspace_file(project), ws)
 }

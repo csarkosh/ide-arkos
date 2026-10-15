@@ -190,7 +190,11 @@ new folder started one shell).
 **Choosing a folder.** An `arkos` launched from the Dock, Finder or Spotlight (working directory
 `/`) first shows a small chooser: the five most recent folders, "Show all" for the rest, and the
 native folder picker; Escape quits. From a window, "Open folder…" (Cmd+O) and "Open recent…"
-open the chosen folder in a new window process (added 2026-10-15).
+open the chosen folder in a new window process (added 2026-10-15). At launch each folder's row
+ends with its live session count (the sessions its workspace names plus any whose shell runs in
+the folder) and "Stop all", which arms on the first ask and kills on the second; the chooser
+holds the connection's receiver until a folder is chosen and the window takes it over (added
+2026-10-15).
 
 **Keyboard.** VS Code's macOS defaults for terminals in the editor area. Every binding lives in
 the config file and can be changed, chords included.
