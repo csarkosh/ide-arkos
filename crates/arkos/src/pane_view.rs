@@ -239,6 +239,8 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
     let tabs = tab_labels(root, &p, cx);
     let bar_h = bar_height_for(p.tabs.get(p.active));
+    // The body under the bar, for a Chrome window dragged over arkos (`Root::browser_drop`).
+    root.pane_rects.push((pane, Rect { x: rect.x, y: rect.y + bar_h, w: rect.w, h: rect.h - bar_h }));
     let bar = render_tab_bar(root, pane, &p, number, &tabs, bar_h, cx);
     let labels: Vec<String> = tabs.into_iter().map(|(label, _)| label).collect();
     if !p.tabs.is_empty() {
@@ -283,9 +285,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // The five drop zones of a dragged tab: the hovered one is tinted. The tint fades in and
     // out and glides between zones; the drop itself reads `drop_target`, never the tint.
     let now = root.frame_now;
+    // A Chrome window dragged over arkos (`browser_drop`) tints the same way.
     let zone = match root.drop_target {
         Some(drag::DropTarget::Pane { pane: p, zone }) if p == pane => Some(zone),
-        _ => None,
+        _ => root.browser_drop.filter(|(p, _)| *p == pane).map(|(_, zone)| zone),
     };
     let painted = if zone.is_some() || root.drop_tints.contains_key(&pane) {
         let tint = root.drop_tints.entry(pane).or_default();
@@ -312,6 +315,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(target @ drag::DropTarget::Pane { pane: p, .. }) if p == pane => root.drop_tab(d, target, cx),
             _ => {
                 root.drop_target = None;
+                root.tab_drag_browser = None;
                 cx.notify();
             }
         }))

@@ -289,6 +289,21 @@ pub struct Root {
     pub ns_window: Option<objc2::rc::Retained<objc2_app_kit::NSWindow>>,
     /// The windows the palette's dock list offers, by row (`Command::DockChromeWindowAt`).
     pub dock_choices: Vec<ax::AxWindow>,
+    /// Each pane's body as laid out by the last render, in window points: where a Chrome window
+    /// dragged over arkos lands (`browser_drop`).
+    pub pane_rects: Vec<(PaneId, Rect)>,
+    /// The pane and zone a Chrome window dragged over arkos docks into if released now; the
+    /// pane tints it as it tints a tab drag's.
+    pub browser_drop: Option<(PaneId, drag::Zone)>,
+    /// The Chrome window dragged over arkos (`Drag::In`), until the release.
+    browser_drag_in: Option<ax::AxWindow>,
+    /// A docked window held past the threshold (`Drag::Out`): the release lets it go.
+    browser_drag_out: Option<(TabId, ax::AxWindow, ax::Rect)>,
+    /// The browser tab being dragged by its arkos tab, until it lands: released outside the
+    /// window, its Chrome window goes to the pointer and the tab closes.
+    pub tab_drag_browser: Option<TabId>,
+    /// The last tick's snapshot, which `detect_drag` compares against.
+    last_snapshot: Option<dock::Snapshot>,
     /// macOS was asked for Accessibility access in this process; it is asked once.
     pub ax_prompted: bool,
     /// The URL prompt ("New browser tab") while it is open, and while it fades out. While open it
@@ -505,6 +520,12 @@ impl Root {
             chrome_windows: Vec::new(),
             ns_window: None,
             dock_choices: Vec::new(),
+            pane_rects: Vec::new(),
+            browser_drop: None,
+            browser_drag_in: None,
+            browser_drag_out: None,
+            tab_drag_browser: None,
+            last_snapshot: None,
             ax_prompted: false,
             url_prompt: Transient::Hidden,
             url_prompt_focus: cx.focus_handle(),
@@ -1072,11 +1093,21 @@ impl Root {
     /// only when the drag emptied it, and never when it is the last pane (spec 4).
     pub fn drop_tab(&mut self, d: &drag::TabDrag, target: drag::DropTarget, cx: &mut Context<Self>) {
         self.drop_target = None;
-        let Some((source, idx)) = self.tree.locate(d.tab) else {
-            cx.notify();
-            return;
-        };
-        self.preview_tab = after_drop(self.preview_tab, d.tab);
+        self.tab_drag_browser = None;
+        if self.tree.locate(d.tab).is_some() {
+            self.preview_tab = after_drop(self.preview_tab, d.tab);
+        }
+        if self.place_tab(d.tab, target) {
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
+    /// Moves the tab with id `tab` to `target`: onto a tab bar, into a pane (center), or into a
+    /// new pane split off one (an edge zone). The source pane closes when this emptied it.
+    /// False when nothing changed.
+    fn place_tab(&mut self, tab: TabId, target: drag::DropTarget) -> bool {
+        let Some((source, idx)) = self.tree.locate(tab) else { return false };
         match target {
             drag::DropTarget::TabBar { pane, at } => {
                 // Back onto its own place, `move_tab` changes nothing.
@@ -1084,8 +1115,7 @@ impl Root {
             }
             drag::DropTarget::Pane { pane, zone: drag::Zone::Center } => {
                 if pane == source {
-                    cx.notify();
-                    return;
+                    return false;
                 }
                 self.tree.move_tab(source, idx, pane, None);
             }
@@ -1099,8 +1129,7 @@ impl Root {
                 };
                 let lone = self.tree.pane(source).map(|p| p.tabs.len()).unwrap_or(0) == 1;
                 if self.tree.pane(pane).is_none() || (pane == source && lone) {
-                    cx.notify();
-                    return;
+                    return false;
                 }
                 if let Some((id, tab)) = self.tree.take_tab(source, idx) {
                     self.tree.split_with_tab(pane, side, id, tab);
@@ -1110,8 +1139,7 @@ impl Root {
         if self.tree.pane(source).map(|p| p.tabs.is_empty()).unwrap_or(false) {
             self.tree.close_pane(source);
         }
-        self.save(cx);
-        cx.notify();
+        true
     }
 
     pub fn new_terminal_tab(&mut self, pane: PaneId, cx: &mut Context<Self>) {
@@ -1335,11 +1363,26 @@ impl Root {
     pub fn dock_tick(&mut self, cx: &mut Context<Self>) {
         self.sync_docks(cx);
         if self.docks.tabs.is_empty() {
+            self.last_snapshot = None;
             return;
         }
         let snapshot = self.dock_snapshot(Instant::now());
+        let drag = match &self.last_snapshot {
+            Some(prev) => self.docks.detect_drag(&snapshot, prev),
+            None => dock::Drag::None,
+        };
+        self.follow_drag(drag, &snapshot, cx);
+        if !snapshot.mouse_down {
+            self.release_drags(&snapshot, cx);
+        }
         let actions = self.docks.tick(&snapshot);
         self.apply_actions(actions, cx);
+        if !snapshot.mouse_down && (self.browser_drag_in.is_some() || self.browser_drop.is_some()) {
+            // After the tick: the new tab's placeholder is drawn in the next frame, and the tick
+            // after it puts the window there.
+            self.finish_browser_drop(cx);
+        }
+        self.last_snapshot = Some(snapshot);
         // A window the palette took from another tab leaves that tab's title behind.
         let before = self.browser_titles.len();
         let docks = &self.docks;
@@ -1365,12 +1408,16 @@ impl Root {
             }
         };
         let docked: Vec<ax::AxWindow> = self.docks.tabs.keys().filter_map(|t| self.docks.docked_window(*t).cloned()).collect();
+        // With the button down every window's frame is read: one may be dragged over arkos.
+        let mouse_down = ax.mouse_down();
         let mut titles = Vec::new();
         let windows = listed.map(|all| {
             all.into_iter()
                 .map(|w| {
                     let frame = if docked.contains(&w) {
                         titles.push((w.clone(), ax.title(&w).unwrap_or_default()));
+                        ax.frame(&w)
+                    } else if mouse_down {
                         ax.frame(&w)
                     } else {
                         None
@@ -1402,10 +1449,12 @@ impl Root {
             titles,
             placeholders,
             any_working: self.sessions.any_working(&self.tree),
-            mouse_down: ax.mouse_down(),
+            mouse_down,
             window_active: self.window_active,
             window_hidden: arkos.is_some_and(|(_, hidden)| hidden),
             screens_right: ax::screen::screens_right(),
+            arkos_frame: arkos.map(|(content, _)| content),
+            pointer: ax.mouse_location(),
             now,
         }
     }
@@ -1538,6 +1587,99 @@ impl Root {
             return;
         };
         self.apply_actions(vec![dock::Action::Undock { tab, win: Some(win), leave_at }], cx);
+    }
+
+    /// A docked window dragged out (by its title bar past the threshold, or by its arkos tab out
+    /// of the window): it is released at `rect` and its tab closes, reopenable like any closed
+    /// browser tab. A tab with no docked window keeps its place.
+    pub fn undock_at(&mut self, tab: TabId, rect: ax::Rect, cx: &mut Context<Self>) {
+        let Some((win, _)) = self.docks.undock(tab) else { return };
+        self.apply_actions(vec![dock::Action::Undock { tab, win: Some(win), leave_at: Some(rect) }], cx);
+        if let Some((pane, idx)) = self.tree.locate(tab) {
+            // Pushes `Closed::Browser`; the window is no longer docked, so nothing moves it back.
+            self.close_tab(pane, idx, cx);
+        }
+    }
+
+    /// A Chrome window dragged over arkos was released: over a pane it docks into a new browser
+    /// tab there (center) or in a new pane split off it (an edge zone), the way a dropped tab
+    /// lands; anywhere else nothing docks. The tint goes either way.
+    pub fn finish_browser_drop(&mut self, cx: &mut Context<Self>) {
+        let win = self.browser_drag_in.take();
+        if self.browser_drop.is_some() {
+            cx.notify();
+        }
+        let (Some(win), Some((pane, zone))) = (win, self.browser_drop.take()) else { return };
+        if self.tree.pane(pane).is_none() {
+            return;
+        }
+        let idx = self.tree.add_tab(pane, Tab::Browser { url: None, app_mode: false });
+        let Some(tab) = self.tree.tab_id(pane, idx) else { return };
+        if zone != drag::Zone::Center {
+            // An empty pane cannot split off its only tab: the window docks in it instead.
+            self.place_tab(tab, drag::DropTarget::Pane { pane, zone });
+        }
+        if let Some((pane, _)) = self.tree.locate(tab) {
+            self.tree.focus(pane);
+        }
+        self.docks.add(tab, false, Instant::now());
+        self.dock_window_into(tab, win, cx);
+    }
+
+    /// The dock tick's view of the user's hand: while the button is down, a window dragged over
+    /// arkos aims the pane tint, a docked one held past the threshold is marked to go.
+    fn follow_drag(&mut self, drag: dock::Drag, s: &dock::Snapshot, cx: &mut Context<Self>) {
+        match drag {
+            dock::Drag::In { win, pointer } => {
+                let panes: Vec<(PaneId, ax::Rect)> = match s.arkos_frame {
+                    Some(c) => self.pane_rects.iter().map(|(p, r)| (*p, ax::Rect { x: c.x + f64::from(r.x), y: c.y + f64::from(r.y), w: f64::from(r.w), h: f64::from(r.h) })).collect(),
+                    None => Vec::new(),
+                };
+                let target = drag::zone_and_pane_for(&panes, pointer);
+                self.browser_drag_in = Some(win);
+                self.browser_drag_out = None;
+                if self.browser_drop != target {
+                    self.browser_drop = target;
+                    cx.notify();
+                }
+            }
+            dock::Drag::Out { tab, win, frame } => {
+                self.browser_drag_out = Some((tab, win, frame));
+                self.browser_drag_in = None;
+                if self.browser_drop.take().is_some() {
+                    cx.notify();
+                }
+            }
+            // With the button up the drags are settled by the release (`release_drags`,
+            // `finish_browser_drop`); with it down, nothing is being dragged now.
+            dock::Drag::None if s.mouse_down => {
+                self.browser_drag_in = None;
+                self.browser_drag_out = None;
+                if self.browser_drop.take().is_some() {
+                    cx.notify();
+                }
+            }
+            dock::Drag::None => {}
+        }
+    }
+
+    /// The button came up: a docked window held past the threshold is released where it is, and
+    /// a browser tab dragged out of the arkos window releases its window at the pointer, its
+    /// current size kept. Before the engine's tick, which would put them back.
+    fn release_drags(&mut self, s: &dock::Snapshot, cx: &mut Context<Self>) {
+        let frame_of = |win: &ax::AxWindow| s.windows.iter().flatten().find(|(w, _, _)| w == win).and_then(|(_, f, _)| *f);
+        if let Some((tab, win, frame)) = self.browser_drag_out.take() {
+            self.undock_at(tab, frame_of(&win).unwrap_or(frame), cx);
+        }
+        if let Some(tab) = self.tab_drag_browser.take() {
+            let (px, py) = s.pointer;
+            let outside = s.arkos_frame.is_some_and(|a| !a.contains(px, py));
+            if let (true, Some(win)) = (outside, self.docks.docked_window(tab).cloned()) {
+                let size = frame_of(&win).or_else(|| self.docks.last_shown(tab)).unwrap_or(ax::Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 });
+                // The title bar under the pointer, as if the window had been carried there.
+                self.undock_at(tab, ax::Rect { x: px - size.w / 2.0, y: py, ..size }, cx);
+            }
+        }
     }
 
     /// Splits the focused pane and starts a fresh shell in the new one.
@@ -1992,7 +2134,7 @@ impl Root {
             menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some(),
             prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
-            drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
+            drag: self.drop_target.is_some() || self.browser_drop.is_some() || self.resizing.is_some() || self.sidebar_resizing,
         }
     }
 
@@ -2507,10 +2649,15 @@ impl Render for Root {
             .bg(theme.chrome.window_bg.hsla())
             .flex()
             .flex_col()
-            .on_drag_move(cx.listener(|root, _ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
+            .on_drag_move(cx.listener(|root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
                 // Capture listeners run parent first, so this forgets the last target before
                 // the bar, tab or pane under the pointer claims it; over none of them, none.
                 root.drop_target = None;
+                // A browser tab released outside the window releases its Chrome window there
+                // (the dock tick sees the release: no mouse-up reaches us outside).
+                let tab = ev.drag(cx).tab;
+                let browser = root.tree.locate(tab).and_then(|(p, i)| root.tree.pane(p).and_then(|p| p.tabs.get(i))).is_some_and(|t| matches!(t, Tab::Browser { .. }));
+                root.tab_drag_browser = browser.then_some(tab);
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
@@ -2582,6 +2729,7 @@ impl Render for Root {
                         root.save(cx);
                     }
                     // A drop stops the event before it gets here; this is a release elsewhere.
+                    root.tab_drag_browser = None;
                     if root.drop_target.take().is_some() {
                         cx.notify();
                     }

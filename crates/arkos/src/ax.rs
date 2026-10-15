@@ -52,7 +52,6 @@ pub const OFFSCREEN_GAP: f64 = 64.0;
 
 impl Rect {
     /// Half-open: the left and top edges are inside, the right and bottom ones are not.
-    #[allow(dead_code)] // used from Task 4 (drag in)
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
     }
@@ -169,7 +168,6 @@ pub trait Ax {
     fn minimized(&self, w: &AxWindow) -> bool;
     fn mouse_down(&self) -> bool;
     /// Global, top-left origin.
-    #[allow(dead_code)] // used from Task 4 (drag in)
     fn mouse_location(&self) -> (f64, f64);
 }
 
@@ -496,7 +494,6 @@ impl FakeAx {
     }
 
     /// Where the pointer is, global top-left coordinates.
-    #[allow(dead_code)] // used from Task 4 (drag in)
     pub fn set_mouse(&self, x: f64, y: f64) {
         self.mouse.set((x, y));
     }
