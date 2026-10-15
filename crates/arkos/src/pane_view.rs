@@ -225,6 +225,75 @@ impl UrlPrompt {
     }
 }
 
+/// A tab dragged within its own bar: its slot closes behind it and a gap the tab's width opens
+/// where it would land, gliding between slots as the pointer crosses the tabs. A drop lands the
+/// tab in the gap (nothing moves); a cancel closes the gap and opens the slot again. Under
+/// Reduce Motion every slide lands at once.
+pub struct Reorder {
+    pub pane: PaneId,
+    pub tab: TabId,
+    width: f32,
+    at: Option<usize>,
+    /// Gaps by the slot they sit before (one per slot the pointer visited, the old ones closing).
+    gaps: Vec<(usize, motion::Slide)>,
+    /// The dragged tab's own slot, closing at the start and opening again on a cancel.
+    slot: motion::Slide,
+    ending: bool,
+}
+
+impl Reorder {
+    pub fn start(pane: PaneId, tab: TabId, width: f32, now: std::time::Instant) -> Self {
+        Reorder { pane, tab, width, at: None, gaps: Vec::new(), slot: motion::Slide::new(width, 0.0, now), ending: false }
+    }
+
+    /// Points the gap at the slot the tab would land before (`None`: the pointer is elsewhere).
+    pub fn aim(&mut self, at: Option<usize>, now: std::time::Instant) {
+        if self.ending || at == self.at {
+            return;
+        }
+        for (slot, s) in self.gaps.iter_mut() {
+            if Some(*slot) != at {
+                *s = motion::Slide::new(s.at(now), 0.0, now);
+            }
+        }
+        if let Some(a) = at {
+            match self.gaps.iter_mut().find(|(s, _)| *s == a) {
+                Some((_, s)) => *s = motion::Slide::new(s.at(now), self.width, now),
+                None => self.gaps.push((a, motion::Slide::new(0.0, self.width, now))),
+            }
+        }
+        self.at = at;
+    }
+
+    /// A cancel: every gap closes and the slot opens again; `done` once that has played.
+    pub fn end(&mut self, now: std::time::Instant) {
+        self.ending = true;
+        self.at = None;
+        for (_, s) in self.gaps.iter_mut() {
+            *s = motion::Slide::new(s.at(now), 0.0, now);
+        }
+        self.slot = motion::Slide::new(self.slot.at(now), self.width, now);
+    }
+
+    /// The gap drawn before `slot` this frame.
+    pub fn gap_before(&self, slot: usize, now: std::time::Instant) -> f32 {
+        self.gaps.iter().filter(|(s, _)| *s == slot).map(|(_, g)| g.at(now)).sum()
+    }
+
+    /// The dragged tab's slot width this frame.
+    pub fn slot_width(&self, now: std::time::Instant) -> f32 {
+        self.slot.at(now)
+    }
+
+    pub fn animating(&self, now: std::time::Instant) -> bool {
+        self.slot.animating(now) || self.gaps.iter().any(|(_, g)| g.animating(now))
+    }
+
+    pub fn done(&self, now: std::time::Instant) -> bool {
+        self.ending && !self.animating(now)
+    }
+}
+
 /// A tab the user is renaming in place (double-click on its title): the editor shows where the
 /// label was; Enter keeps the name, Escape drops the edit, a click elsewhere keeps it.
 pub struct TabRename {
@@ -477,6 +546,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
             if ev.bounds.contains(&ev.event.position) {
+                root.begin_reorder(pane, ev.drag(cx));
                 root.drop_target = Some(drag::DropTarget::TabBar { pane, at: usize::MAX });
                 cx.notify();
             }
@@ -494,8 +564,25 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     let rename_focus = root.tab_rename_focus.clone();
     let family = root.family();
     let mut strip = div().id(("tabs", pane)).flex_1().min_w_0().h_full().flex().flex_row().overflow_x_scroll().track_scroll(&handle);
+    // A tab dragged within this bar: the gap follows the drop target's insertion point.
+    let now = root.frame_now;
+    let at = match root.drop_target {
+        Some(drag::DropTarget::TabBar { pane: target, at }) if target == pane => Some(at.min(p.tabs.len())),
+        _ => None,
+    };
+    if let Some(r) = root.reorder.as_mut().filter(|r| r.pane == pane) {
+        r.aim(at, now);
+    }
+    let reorder = root.reorder.as_ref().filter(|r| r.pane == pane);
+    let gaps: Vec<f32> = (0..=p.tabs.len()).map(|slot| reorder.map_or(0.0, |r| r.gap_before(slot, now))).collect();
+    let collapsed = reorder.map(|r| (r.tab, r.slot_width(now)));
     for (idx, (label, mark)) in tabs.iter().enumerate() {
         let (label, mark) = (label.clone(), *mark);
+        if gaps[idx] > 0.5 {
+            strip = strip.child(div().flex_none().h_full().w(px(gaps[idx])));
+        }
+        let tab_id_for_width = p.ids.get(idx).copied();
+        let slot_width = collapsed.filter(|(tab, _)| Some(*tab) == tab_id_for_width).map(|(_, w)| w);
         // The title under edit: an editor in its place, holding the keys until Enter or Escape.
         let renaming = rename.as_ref().filter(|(tab, _)| p.ids.get(idx) == Some(tab)).map(|(_, edit)| edit.clone());
         let is_active = idx == p.active;
@@ -544,11 +631,31 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             })
             .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
                 if ev.bounds.contains(&ev.event.position) {
+                    root.begin_reorder(pane, ev.drag(cx));
                     let at = drag::insert_index(ev.bounds, ev.event.position, idx);
                     root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
                     cx.notify();
                 }
-            }));
+            }))
+            // The tab's painted width, for the gap a reorder opens where it would land.
+            .child(canvas(
+                {
+                    let weak = cx.weak_entity();
+                    move |bounds, _window, cx| {
+                        if let Some(id) = tab_id_for_width {
+                            let _ = weak.update(cx, |root, _| {
+                                root.tab_widths.insert(id, f32::from(bounds.size.width));
+                            });
+                        }
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full())
+            .when_some(slot_width, |el, w| el.flex_none().w(px(w)).overflow_hidden());
         if slim {
             // A dot per tab in a 22 px square to hit; the label rides along on a drag.
             let (lit, unlit) = dot_colors(c);
@@ -585,6 +692,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                         })),
                 ),
         );
+    }
+    // A gap past the last tab: the dragged tab would land at the end.
+    if gaps[p.tabs.len()] > 0.5 {
+        strip = strip.child(div().flex_none().h_full().w(px(gaps[p.tabs.len()])));
     }
     if slim {
         // No titles, no +, no overflow menu: the height goes to the docked window.
@@ -1054,6 +1165,41 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reorder_opens_a_gap_where_the_tab_would_land_and_closes_it_on_a_cancel() {
+        use std::time::{Duration, Instant};
+        let _g = motion::test_lock(true);
+        let now = Instant::now();
+        let mut r = Reorder::start(1, 7, 80.0, now);
+        assert_eq!(r.slot_width(now), 0.0, "the slot closes behind the tab");
+        assert_eq!(r.gap_before(2, now), 0.0);
+        r.aim(Some(2), now);
+        assert_eq!((r.gap_before(1, now), r.gap_before(2, now)), (0.0, 80.0));
+        r.aim(Some(3), now);
+        assert_eq!((r.gap_before(2, now), r.gap_before(3, now)), (0.0, 80.0), "the gap moved to the next slot");
+        r.aim(Some(3), now);
+        assert_eq!(r.gap_before(3, now), 80.0, "aiming at the same slot changes nothing");
+        r.aim(None, now);
+        assert_eq!(r.gap_before(3, now), 0.0, "the pointer left the bar");
+        assert!(!r.done(now));
+        r.end(now);
+        assert_eq!(r.slot_width(now), 80.0, "a cancel opens the slot again");
+        assert!(r.done(now), "under Reduce Motion the slides land at once");
+        r.aim(Some(1), now);
+        assert_eq!(r.gap_before(1, now), 0.0, "nothing moves after the end");
+        drop(_g);
+        // With motion on, the gap grows over the slide rather than appearing.
+        let _g = motion::test_lock(false);
+        let t0 = Instant::now();
+        let mut r = Reorder::start(1, 7, 80.0, t0);
+        r.aim(Some(2), t0);
+        let mid = r.gap_before(2, t0 + Duration::from_millis(40));
+        assert!(mid > 0.0 && mid < 80.0, "part way: {mid}");
+        assert!(r.animating(t0 + Duration::from_millis(40)));
+        assert_eq!(r.gap_before(2, t0 + Duration::from_secs(1)), 80.0);
+        assert!(!r.animating(t0 + Duration::from_secs(1)));
+    }
 
     #[test]
     fn tab_labels_show_state_after_the_title() {

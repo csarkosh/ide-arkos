@@ -317,6 +317,10 @@ pub struct Root {
     /// The browser tab being dragged by its arkos tab, until it lands: released outside the
     /// window, its Chrome window goes to the pointer and the tab closes.
     pub tab_drag_browser: Option<TabId>,
+    /// A tab dragged within its own bar: the slot and gap that slide (`pane_view::Reorder`).
+    pub reorder: Option<pane_view::Reorder>,
+    /// Each tab's painted width, from the last frame, for the gap a reorder opens.
+    pub tab_widths: HashMap<TabId, f32>,
     /// The last tick's snapshot, which `detect_drag` compares against.
     last_snapshot: Option<dock::Snapshot>,
     /// macOS was asked for Accessibility access in this process; it is asked once.
@@ -547,6 +551,8 @@ impl Root {
             browser_drag_in: None,
             browser_drag_out: None,
             tab_drag_browser: None,
+            reorder: None,
+            tab_widths: HashMap::new(),
             last_snapshot: None,
             ax_prompted: false,
             url_prompt: Transient::Hidden,
@@ -572,6 +578,7 @@ impl Root {
             || self.wt_prompt.animating(now)
             || self.url_prompt.animating(now)
             || self.drop_tints.values().any(|t| t.animating(now))
+            || self.reorder.as_ref().is_some_and(|r| r.animating(now))
             || self.glow.animating(now)
             || self.handle_fades.animating(now)
             || self.find_bars.animating(now)
@@ -581,6 +588,9 @@ impl Root {
     /// Drops what finished fading out, and the per-key fades the frame drawn at `last_frame`
     /// did not draw.
     fn settle(&mut self, now: Instant, last_frame: Instant) {
+        if self.reorder.as_ref().is_some_and(|r| r.done(now)) {
+            self.reorder = None;
+        }
         self.drop_tints.retain(|_, t| {
             t.fade.settle(now);
             !t.fade.is_hidden()
@@ -1126,9 +1136,22 @@ impl Root {
     /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
     /// still lands the right one, and one whose tab closed does nothing. The source pane closes
     /// only when the drag emptied it, and never when it is the last pane (spec 4).
+    /// The first move of a tab dragged within its own bar starts the reorder slide: its slot
+    /// closes and a gap its width follows the insertion point. A drag from another pane keeps
+    /// the plain insertion marker.
+    pub fn begin_reorder(&mut self, pane: PaneId, d: &drag::TabDrag) {
+        if d.pane != pane || self.reorder.as_ref().is_some_and(|r| r.tab == d.tab) {
+            return;
+        }
+        let width = self.tab_widths.get(&d.tab).copied().unwrap_or(80.0);
+        self.reorder = Some(pane_view::Reorder::start(pane, d.tab, width, Instant::now()));
+    }
+
     pub fn drop_tab(&mut self, d: &drag::TabDrag, target: drag::DropTarget, cx: &mut Context<Self>) {
         self.drop_target = None;
         self.tab_drag_browser = None;
+        // The tab lands in the gap the reorder opened, which was its own width: nothing to slide.
+        self.reorder = None;
         if self.tree.locate(d.tab).is_some() {
             self.preview_tab = after_drop(self.preview_tab, d.tab);
         }
@@ -2808,6 +2831,9 @@ impl Render for Root {
                 if root.drop_target.is_some() && ev.pressed_button != Some(MouseButton::Left) {
                     // A tab drag released outside the window, where no mouse-up reaches us.
                     root.drop_target = None;
+                    if let Some(r) = root.reorder.as_mut() {
+                        r.end(Instant::now());
+                    }
                     cx.notify();
                 }
                 if root.resizing.is_some() && ev.pressed_button != Some(MouseButton::Left) {
@@ -2866,6 +2892,11 @@ impl Render for Root {
                     }
                     // A drop stops the event before it gets here; this is a release elsewhere.
                     root.tab_drag_browser = None;
+                    // A release with no drop: the slot a reorder opened closes again.
+                    if let Some(r) = root.reorder.as_mut() {
+                        r.end(Instant::now());
+                        cx.notify();
+                    }
                     if root.drop_target.take().is_some() {
                         cx.notify();
                     }

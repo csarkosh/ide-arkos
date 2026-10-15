@@ -117,6 +117,10 @@ Things only a person at the screen can check, in order of value:
 - revoke Accessibility in System Settings: the pane shows the permission screen within a second
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
+- with three tabs in a pane, drag the first slowly to the right: its slot closes, the others
+  slide left, and a gap its width glides along as the pointer crosses each tab; drop: the tab
+  lands in the gap with no jump; drag again and press Escape or release over the sidebar: the
+  gap closes and the slot opens again; Reduce Motion: the same without the glide
 - double-click a tab's title, type a name, Enter: the tab shows it; `claude` retitles its own
   window and the name stays; relaunch (Update now): the name is back; close the tab and
   Shift+Cmd+T: the automatic title is back; a link in terminal output is underlined before the
