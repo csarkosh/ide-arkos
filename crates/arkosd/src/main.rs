@@ -45,6 +45,7 @@ fn main() {
     let mut ditto = None;
     let mut updates_dir = None;
     let mut release_keys = Vec::new();
+    let mut bundle = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -100,6 +101,8 @@ fn main() {
             // Test only: trusts one more release key (base64), so the tests can sign a release.
             // Never read from the environment; a release is signed by a compiled-in key.
             "--release-key" => release_keys.push(args.next().expect("--release-key needs a key")),
+            // The installed app that `ApplyUpdate` swaps; by default the one this binary runs from.
+            "--bundle" => bundle = Some(PathBuf::from(args.next().expect("--bundle needs a path"))),
             other => {
                 eprintln!("arkosd: unknown argument {other}");
                 std::process::exit(2);
@@ -113,6 +116,7 @@ fn main() {
     update.ditto = ditto.unwrap_or(update.ditto);
     update.dir = updates_dir.unwrap_or(update.dir);
     update.extra_keys = release_keys;
+    update.bundle = bundle.or(update.bundle);
     if let Some(path) = resume {
         let h = match handover::read(&path) {
             Ok(h) => h,

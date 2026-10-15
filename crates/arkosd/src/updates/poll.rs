@@ -132,6 +132,19 @@ fn staged_version(s: &Staged) -> Option<Version> {
     Some(Version { major, minor, patch, git: s.git.clone() })
 }
 
+/// A version this process swapped in, as the comparison reads it.
+fn swapped_version(v: &str) -> Option<Version> {
+    let (major, minor, patch) = super::version::parse_semver(v)?;
+    Some(Version { major, minor, patch, git: String::new() })
+}
+
+fn newest(a: Option<Version>, b: Option<Version>) -> Option<Version> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if b.is_newer_than(&a) { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
 /// The poll thread: every `every`, or sooner when a window asked (`check_now`). The state lock
 /// is never held across a check.
 pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf) {
@@ -151,7 +164,9 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                     if due {
                         st.update.checking = true;
                     }
-                    (due, st.update.staged.as_ref().and_then(staged_version))
+                    let staged = st.update.staged.as_ref().and_then(staged_version);
+                    let swapped = st.update.swapped.as_deref().and_then(swapped_version);
+                    (due, newest(staged, swapped))
                 };
                 if due {
                     last = Some(std::time::Instant::now());

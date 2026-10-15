@@ -1,9 +1,11 @@
 //! Automatic updates (auto-update spec, sections 5 to 7): the daemon polls a signed manifest,
 //! downloads and verifies the release, stages it, and swaps the app bundle when a window asks.
+pub mod apply;
 pub mod fetch;
 pub mod manifest;
 pub mod poll;
 pub mod stage;
+pub mod swap;
 pub mod verify;
 pub mod version;
 
@@ -31,6 +33,9 @@ pub struct UpdateOptions {
     pub dir: PathBuf,
     /// Test only: keys trusted besides `RELEASE_PUBLIC_KEYS`.
     pub extra_keys: Vec<String>,
+    /// The installed `Arkos IDE.app` that `ApplyUpdate` swaps; None when the daemon does not run
+    /// from a bundle, which refuses `ApplyUpdate`.
+    pub bundle: Option<PathBuf>,
 }
 
 impl UpdateOptions {
@@ -42,6 +47,7 @@ impl UpdateOptions {
             ditto: PathBuf::from("/usr/bin/ditto"),
             dir: socket.parent().unwrap_or(Path::new("/")).join("updates"),
             extra_keys: Vec::new(),
+            bundle: std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)),
         }
     }
 
@@ -70,8 +76,20 @@ impl UpdateOptions {
         for k in &self.extra_keys {
             out.extend(["--release-key".into(), k.clone()]);
         }
+        if let Some(b) = self.bundle.as_ref().filter(|b| d.bundle.as_ref() != Some(b)) {
+            out.extend(["--bundle".into(), path(b)]);
+        }
         out
     }
+}
+
+/// The app bundle holding `exe` when it runs from one (`<bundle>.app/Contents/MacOS/<exe>`).
+pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let is_app = bundle.extension().is_some_and(|e| e == "app");
+    (is_app && macos.file_name()? == "MacOS" && contents.file_name()? == "Contents").then(|| bundle.to_path_buf())
 }
 
 /// What the poll thread knows, kept in the daemon's shared state.
@@ -84,6 +102,14 @@ pub struct UpdateState {
     /// Whether a poll thread runs (`--check-every-secs` is not zero); `CheckForUpdates` is
     /// refused when not.
     pub polling: bool,
+    /// The update swapped in and not yet confirmed by a window or rolled back (the marker's
+    /// contents).
+    pub applied: Option<apply::Applied>,
+    /// Whether a window said Hello since this daemon started or since the last swap.
+    pub connected_since_start: bool,
+    /// The last version this process swapped in or found applied: the poll treats it like a
+    /// staged one, so an applied or rolled-back release is not fetched and staged again.
+    pub swapped: Option<String>,
 }
 
 /// Runs `cmd` with stdin null, a minimal environment and both outputs captured, killing it once
@@ -154,6 +180,16 @@ mod tests {
         assert!(d.args(socket).is_empty(), "a release's daemon passes none, so an older one can resume");
         let o = UpdateOptions { check_every: Duration::ZERO, extra_keys: vec!["k".into()], ..d };
         assert_eq!(o.args(socket), ["--check-every-secs", "0", "--release-key", "k"]);
+    }
+
+    #[test]
+    fn the_bundle_is_found_only_for_an_executable_inside_an_app() {
+        assert_eq!(bundle_of(Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkosd")), Some(PathBuf::from("/Applications/Arkos IDE.app")));
+        assert_eq!(bundle_of(Path::new("/x/target/debug/arkosd")), None);
+        assert_eq!(bundle_of(Path::new("/x/Arkos IDE.app/Contents/Resources/arkosd")), None);
+        let socket = Path::new("/s/arkosd.sock");
+        let o = UpdateOptions { bundle: Some(PathBuf::from("/t/Arkos IDE.app")), ..UpdateOptions::defaults(socket) };
+        assert_eq!(o.args(socket), ["--bundle", "/t/Arkos IDE.app"], "a non-default bundle passes through the exec");
     }
 
     #[test]

@@ -1649,3 +1649,99 @@ fn a_protocol_3_window_never_hears_update_staged_and_keeps_its_connection() {
         }
     }
 }
+
+/// Polls `f` every 50 ms until it holds; panics at the deadline.
+fn wait_until(mut f: impl FnMut() -> bool, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !f() {
+        assert!(Instant::now() < deadline, "the condition never held within {timeout:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+impl Daemon {
+    /// The marker an applied update leaves until a window confirms it or it is rolled back.
+    fn updates_marker(&self) -> PathBuf {
+        self.socket.parent().unwrap().join("updates/applied.json")
+    }
+}
+
+/// A fake `Arkos IDE.app` at exactly `app`, the shape of `publish_fake_release`'s: its arkosd
+/// prints `version`, and its arkos appends "launched" to `launches` next to the bundle.
+fn fake_bundle_at(app: &std::path::Path, version: &str, git: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let launches = app.parent().unwrap().join("launches");
+    std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+    std::fs::write(app.join("Contents/Info.plist"), format!("<plist><dict><key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>")).unwrap();
+    let arkosd = format!("#!/bin/sh\n[ \"$1\" = --version ] && echo 'arkosd {version} ({git})'\n");
+    let arkos = format!("#!/bin/sh\n[ \"$1\" = --version ] && echo 'arkos {version} ({git})' && exit 0\necho launched >> '{}'\n", launches.display());
+    for (name, script) in [("arkos", arkos), ("arkosd", arkosd)] {
+        let p = app.join("Contents/MacOS").join(name);
+        std::fs::write(&p, script).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    app.to_path_buf()
+}
+
+/// `<home>/Arkos IDE.app`, whose arkos appends to `<home>/launches`.
+fn fake_installed_bundle(home: &std::path::Path, version: &str, git: &str) -> PathBuf {
+    fake_bundle_at(&home.join("Arkos IDE.app"), version, git)
+}
+
+#[test]
+fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000"); // its arkos script appends "launched" to <home>/launches
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap()]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.8".into() }), Response::Error("staged 9.9.9 is not 9.9.8".into()));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("9.9.9"), "the new bundle is in place");
+    assert!(installed.with_extension("app.old").exists(), "the old one is kept until a window confirms");
+    assert!(d.updates_marker().exists());
+    // The window's Upgrade and RelaunchClient follow in production; here a second Hello stands in
+    // for the relaunched window.
+    let _c2 = d.connect();
+    wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
+    assert!(!d.updates_marker().exists());
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("nothing staged".into()), "applied once");
+}
+
+#[test]
+fn a_window_that_never_connects_rolls_the_bundle_back() {
+    // The marker says an update was applied 25 s ago and nobody has connected: a daemon starting
+    // now rolls back and launches the old window in each remembered project.
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "9.9.9", "fffffff");
+    let old = fake_bundle_at(&home.path().join("Arkos IDE.app.old"), "0.0.1", "0000000");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("updates")).unwrap();
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 25;
+    std::fs::write(dir.path().join("updates/applied.json"), format!("{{\"version\":\"9.9.9\",\"old_kept\":true,\"at_unix\":{at}}}")).unwrap();
+    let d = Daemon::start_in(dir, &["--check-every-secs", "0", "--bundle", installed.to_str().unwrap()]);
+    // Read leniently: the bundle is briefly absent between the two renames of the rollback.
+    wait_until(|| std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap_or_default().contains("0.0.1"), Duration::from_secs(5));
+    assert!(!old.exists(), "renamed back");
+    assert!(!home.path().join("launches").exists(), "no project folder was remembered, so no window is launched");
+    assert!(!d.updates_marker().exists());
+    let mut c = d.connect();
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: Some(e) } if e.contains("rolled back")));
+}
+
+#[test]
+fn apply_update_outside_an_app_bundle_is_refused_and_touches_nothing() {
+    // The test binary runs from target/, not from an app: no bundle to swap.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("not running from an app bundle".into()));
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), "still staged");
+    assert!(!d.updates_marker().exists());
+}
