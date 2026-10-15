@@ -29,9 +29,20 @@ use std::time::{Duration, Instant};
 pub type OnEvent = Box<dyn Fn(LinkEvent, &mut App)>;
 
 type Receiver = UnboundedReceiver<ServerMessage>;
-/// What `finish` gives back: the messages that were not the chooser's, in order, then the
-/// receiver they came from.
-pub type Handback = (Vec<ServerMessage>, Receiver);
+/// What `finish` gives back: the messages that were not the chooser's, in order, the receiver
+/// they came from, and the client of that same connection (the window sends its Hello and its
+/// requests on this one, never on a client read earlier).
+pub type Handback = (Vec<ServerMessage>, Receiver, Arc<Client>);
+
+/// A connection made by an attempt that finished after the link was stopped is dropped, so no
+/// stray connection stays open and the handback's client and receiver stay one pair.
+fn adopt_unless_stopped<T>(stopped: bool, connection: T) -> Option<T> {
+    if stopped {
+        None
+    } else {
+        Some(connection)
+    }
+}
 
 /// Cheap to clone: every copy is the same link.
 #[derive(Clone)]
@@ -112,7 +123,10 @@ impl Link {
                             policy.next_attempt();
                             let start = policy.should_start();
                             match connection::attempt(&socket, &daemon_exe, &daemon_args, start, cx).await {
-                                Ok(c) => break Some(c),
+                                Ok(c) => {
+                                    let stopped = !matches!(stop_rx.try_recv(), Ok(None));
+                                    break adopt_unless_stopped(stopped, c);
+                                }
                                 Err(e) => {
                                     if start {
                                         policy.failed_start();
@@ -148,7 +162,8 @@ impl Link {
                     Either::Right(_) => break,
                 }
             }
-            (backlog, events)
+            let current = client.borrow().clone();
+            (backlog, events, current)
         });
         *self.running.borrow_mut() = Some((stop_tx, task));
         self.list();
@@ -184,10 +199,33 @@ impl Link {
             return task;
         }
         match self.events.borrow_mut().take() {
-            Some(events) => Task::ready((Vec::new(), events)),
+            Some(events) => Task::ready((Vec::new(), events, self.client())),
             // Finished twice: a closed receiver, which the window's loop treats as a lost
             // connection and reconnects.
-            None => Task::ready((Vec::new(), unbounded().1)),
+            None => Task::ready((Vec::new(), unbounded().1, self.client())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_late_success_after_stop_is_dropped_and_a_live_one_kept() {
+        // The pair (client, receiver) is adopted whole or not at all.
+        assert_eq!(adopt_unless_stopped(true, ("client", "receiver")), None);
+        assert_eq!(adopt_unless_stopped(false, ("client", "receiver")), Some(("client", "receiver")));
+    }
+
+    #[test]
+    fn the_stop_signal_is_seen_after_an_attempt() {
+        let (tx, mut rx) = oneshot::channel::<()>();
+        assert!(matches!(rx.try_recv(), Ok(None)), "not stopped yet");
+        tx.send(()).unwrap();
+        assert!(!matches!(rx.try_recv(), Ok(None)), "stopped");
+        let (tx, mut rx) = oneshot::channel::<()>();
+        drop(tx);
+        assert!(!matches!(rx.try_recv(), Ok(None)), "a dropped link counts as stopped");
     }
 }

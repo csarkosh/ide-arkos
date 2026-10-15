@@ -2999,11 +2999,12 @@ fn main() {
             let Some(start) = choosing.start.borrow_mut().take() else { return };
             choosing.opened.set(true);
             // The same connection goes on: its second Hello names the project.
-            let client = link.client();
-            client.hello();
+            // The client comes back with the receiver it belongs to: a reconnect that was
+            // under way may have replaced the one the link had.
             let finishing = link.finish();
             cx.spawn(async move |cx| {
-                let (backlog, events) = finishing.await;
+                let (backlog, events, client) = finishing.await;
+                client.hello();
                 let _ = cx.update(|cx| open_project_window(project, (client, events, backlog), start, cx));
             })
             .detach();

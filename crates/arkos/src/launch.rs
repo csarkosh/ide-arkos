@@ -570,17 +570,17 @@ impl Render for Chooser {
     }
 }
 
+/// The chooser's text size: the config's default preset.
+fn text_px(config: &Config) -> f32 {
+    config::resolve_preset(None, &config.font.preset, &config.font.presets).1.size
+}
+
 /// Opens the chooser once the recent list is read (off the UI thread). `at_launch`: closing it
 /// with nothing chosen quits (the app's window-closed observer sees it gone). `focus`
 /// is whether the window takes the keyboard, as for the project window. `link` is the daemon
 /// line at launch, for the session counts; none from a running window, and none at launch
 /// until the connection exists (`Chooser::attach_link`): the footer says it is coming. The task
 /// gives the window's handle once it is open.
-/// The chooser's text size: the config's default preset.
-fn text_px(config: &Config) -> f32 {
-    config::resolve_preset(None, &config.font.preset, &config.font.presets).1.size
-}
-
 pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, link: Option<Link>, on_choice: OnChoice) -> Task<Option<WindowHandle<Chooser>>> {
     let file = paths::recent_file();
     // The saved sessions serve the counts, which only the launch chooser shows, link or not yet.
@@ -628,11 +628,11 @@ pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, 
                     chosen: None,
                 });
                 window.focus(&view.read(cx).focus);
-                let observed = view.clone();
+                let observed = view.downgrade();
                 window
                     .observe_window_appearance(move |window, cx| {
                         let dark = theme::is_dark(window.appearance());
-                        observed.update(cx, |chooser, cx| chooser.set_system_appearance(dark, cx));
+                        let _ = observed.update(cx, |chooser, cx| chooser.set_system_appearance(dark, cx));
                     })
                     .detach();
                 view.update(cx, |chooser, cx| chooser.start_link(cx));
