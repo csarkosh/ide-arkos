@@ -962,7 +962,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let kind_is_text = matches!(kind, Kind::Text { .. });
     let body = match kind {
         Kind::Text { .. } if rendered => {
-            let element = md_view::render(&viewer, &theme, SharedString::from(chrome::UI_FONT), family.clone(), font_size, root.highlighter.clone(), cx);
+            let element = md_view::render(&viewer, &theme, SharedString::from(chrome::UI_FONT), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, cx);
             div().size_full().child(element)
         }
         Kind::Text { plain } => {

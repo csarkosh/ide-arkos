@@ -97,14 +97,26 @@ pub struct Rendered {
     pub code_spans: Option<(Arc<Highlighter>, Vec<Vec<Span>>)>,
 }
 
+/// The most lines a code block may have and still be coloured: the highlighter runs on the UI
+/// thread when the block is first drawn.
+pub const HIGHLIGHT_MAX_LINES: usize = 2000;
+
+/// Whether a code block of `bytes` bytes and `lines` lines is coloured: at most the configured
+/// highlight limit (`limit`, `viewer.highlight_limit_bytes`) and `HIGHLIGHT_MAX_LINES`. A bigger
+/// one is drawn plain in the terminal font.
+pub fn should_highlight(bytes: usize, lines: usize, limit: usize) -> bool {
+    bytes <= limit && lines <= HIGHLIGHT_MAX_LINES
+}
+
 /// A code block's lines as drawn: the trailing newline dropped and tabs expanded.
 fn code_lines(text: &str) -> Vec<String> {
     text.strip_suffix('\n').unwrap_or(text).split('\n').map(|l| l.replace('\t', "    ")).collect()
 }
 
 /// Fills block `ix`'s cache entry if it is empty, and colours a code block once the highlighter is
-/// there (again when it changed). Nothing is computed for a block already cached.
-pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>) {
+/// there (again when it changed), unless it is over the highlight limit `limit` or
+/// `HIGHLIGHT_MAX_LINES` (`should_highlight`). Nothing is computed for a block already cached.
+pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, limit: usize) {
     let (Some(doc), Some(block), Some(slot)) = (v.doc.as_ref(), v.blocks.get(ix), v.block_cache.get_mut(ix)) else { return };
     let r = slot.get_or_insert_with(|| {
         let lines = doc.lines();
@@ -113,7 +125,7 @@ pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>) {
         Rendered { inlines: md_blocks::inline(&text, &block.kind), code_spans: None }
     });
     if let (Some(h), Some(Inline::Code { info, text })) = (highlighter, r.inlines.first()) {
-        if !r.code_spans.as_ref().is_some_and(|(by, _)| Arc::ptr_eq(by, h)) {
+        if !r.code_spans.as_ref().is_some_and(|(by, _)| Arc::ptr_eq(by, h)) && should_highlight(text.len(), text.lines().count(), limit) {
             r.code_spans = Some((h.clone(), h.highlight_token(info, &code_lines(text))));
         }
     }
@@ -129,6 +141,8 @@ pub struct BlockCtx {
     /// The terminal's line height, as a multiple of the font size, for code and tables.
     pub mono_line_height: f32,
     pub base_dir: PathBuf,
+    /// A code block over this many bytes is drawn plain (`viewer.highlight_limit_bytes`).
+    pub highlight_limit: usize,
     pub text: Hsla,
     pub dim: Hsla,
     pub link: Hsla,
@@ -147,7 +161,9 @@ pub struct BlockCtx {
 /// cached rendering (filled on demand) or drawn raw when the caret or the selection is in it, and
 /// a tail row below the last block. The list scrolls itself and keeps its place in
 /// `Viewer.list_state`. A canvas over the list takes the text input.
-pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, cx: &mut App) -> AnyElement {
+/// A code block over `highlight_limit` bytes (`viewer.highlight_limit_bytes`) is drawn plain.
+#[allow(clippy::too_many_arguments)]
+pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, highlight_limit: usize, cx: &mut App) -> AnyElement {
     // The raw blocks of this frame record their layouts as they are laid out.
     viewer.update(cx, |v, _| v.raw_blocks.clear());
     let v = viewer.read(cx);
@@ -159,6 +175,7 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         font_size,
         mono_line_height: v.line_height,
         base_dir: v.path.parent().map(Path::to_path_buf).unwrap_or_default(),
+        highlight_limit,
         text: theme.chrome.text.hsla(),
         dim: theme.chrome.text_dim.hsla(),
         link: theme.chrome.focus_ring.hsla(),
@@ -191,7 +208,7 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
                 }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
-                ctx.viewer.update(cx, |v, _| fill(v, ix, highlighter.as_ref()));
+                ctx.viewer.update(cx, |v, _| fill(v, ix, highlighter.as_ref(), ctx.highlight_limit));
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
                     (Some(block), Some(r)) => block_element(ix, &block.kind, r, &ctx),
@@ -1040,6 +1057,14 @@ mod tests {
         }
         assert_eq!(percent_decode("a%2"), "a%2", "a cut escape stays");
         assert_eq!(percent_decode("%ff"), "%ff", "not UTF-8: kept as written");
+    }
+
+    #[test]
+    fn a_code_block_is_coloured_only_within_the_limits() {
+        assert!(should_highlight(100, 10, 1000));
+        assert!(should_highlight(1000, HIGHLIGHT_MAX_LINES, 1000), "at both limits");
+        assert!(!should_highlight(1001, 10, 1000), "over the configured bytes");
+        assert!(!should_highlight(100, HIGHLIGHT_MAX_LINES + 1, usize::MAX), "over the line count");
     }
 
     #[test]
