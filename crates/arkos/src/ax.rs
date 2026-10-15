@@ -387,6 +387,15 @@ pub mod screen {
         NSScreen::screens(mtm).iter().map(|s| { let f = s.frame(); f.origin.x + f.size.width }).fold(0.0, f64::max)
     }
 
+    /// The menu bar's height in points, from the main display (every display carries one of the
+    /// same height). Zero off the main thread or without a display.
+    pub fn menu_bar_height() -> f64 {
+        let Some(mtm) = MainThreadMarker::new() else { return 0.0 };
+        let Some(screen) = NSScreen::mainScreen(mtm).or_else(|| NSScreen::screens(mtm).firstObject()) else { return 0.0 };
+        let (f, v) = (screen.frame(), screen.visibleFrame());
+        ((f.origin.y + f.size.height) - (v.origin.y + v.size.height)).max(0.0)
+    }
+
     /// The window is minimized to the Dock or hidden (Cmd+H, or not on screen at all).
     pub fn window_hidden(window: &NSWindow) -> bool {
         window.isMiniaturized() || !window.isVisible()

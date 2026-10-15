@@ -584,7 +584,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 let (from, tab) = { let d = ev.drag(cx); (d.pane, d.tab) };
                 let at = if from == pane {
                     root.begin_reorder(pane, ev.drag(cx));
-                    root.reorder_slot_for(pane, tab, ev.bounds, ev.event.position)
+                    root.reorder_slot_for(pane, tab, ev.event.position)
                 } else {
                     usize::MAX
                 };
@@ -1251,7 +1251,9 @@ mod tests {
         let w = [100.0, 100.0, 100.0];
         // The first tab dragged right: past the middle of the next tab, it lands after it.
         assert_eq!(reorder_slot(&w, 0, None, 30.0), 0, "over its own place");
-        assert_eq!(reorder_slot(&w, 0, None, 149.0), 2, "past the midpoint of the second tab");
+        assert_eq!(reorder_slot(&w, 0, Some(0), 149.0), 0, "grabbed off centre, the gap in its own place: stays");
+        assert_eq!(reorder_slot(&w, 0, Some(0), 151.0), 2, "past the midpoint of the second tab");
+        assert_eq!(reorder_slot(&w, 0, None, 149.0), 2, "with no gap open the second tab starts at 0");
         assert_eq!(reorder_slot(&w, 0, Some(2), 149.0), 2, "resting in the gap the slot opened");
         assert_eq!(reorder_slot(&w, 0, Some(2), 260.0), 3, "on to the end");
         assert_eq!(reorder_slot(&w, 0, Some(3), 260.0), 3);
@@ -1263,8 +1265,8 @@ mod tests {
         assert_eq!(reorder_slot(&w, 1, None, 250.0), 3);
         assert_eq!(reorder_slot(&w, 1, Some(3), 250.0), 3, "in the gap after the last tab");
         // Uneven widths.
-        assert_eq!(reorder_slot(&[60.0, 200.0, 40.0], 2, None, 170.0), 2, "left of the wide tab's midpoint: stays before it");
-        assert_eq!(reorder_slot(&[60.0, 200.0, 40.0], 2, None, 150.0), 1, "past it: before the wide tab");
+        assert_eq!(reorder_slot(&[60.0, 200.0, 40.0], 2, None, 170.0), 2, "right of the wide tab's midpoint: stays after it");
+        assert_eq!(reorder_slot(&[60.0, 200.0, 40.0], 2, None, 150.0), 1, "left of it: lands before the wide tab");
     }
 
     #[test]

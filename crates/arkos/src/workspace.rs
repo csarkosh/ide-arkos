@@ -43,12 +43,12 @@ pub struct WindowSaved {
     pub h: f64,
 }
 
-/// A `w` by `h` frame at (`x`, `y`) kept within a `dw` by `dh` display (top-left origin): no
-/// larger than the display, and moved in so no edge lies outside it. macOS keeps the title bar
-/// under the menu bar on its own.
-pub fn fit_window(x: f64, y: f64, w: f64, h: f64, dw: f64, dh: f64) -> (f64, f64, f64, f64) {
-    let (w, h) = (w.min(dw), h.min(dh));
-    (x.clamp(0.0, dw - w), y.clamp(0.0, dh - h), w, h)
+/// A `w` by `h` frame at (`x`, `y`) kept within a `dw` by `dh` display (top-left origin) below
+/// its menu bar (`top` high): no larger than that area, and moved in so no edge lies outside it.
+pub fn fit_window(x: f64, y: f64, w: f64, h: f64, dw: f64, dh: f64, top: f64) -> (f64, f64, f64, f64) {
+    let top = top.clamp(0.0, dh);
+    let (w, h) = (w.min(dw), h.min(dh - top));
+    (x.clamp(0.0, dw - w), y.clamp(top, dh - h), w, h)
 }
 
 /// The sidebar as the user left it for this folder (spec 4: "sidebar width and collapsed
@@ -321,10 +321,10 @@ mod tests {
 
     #[test]
     fn a_restored_window_stays_within_its_display() {
-        assert_eq!(fit_window(100.0, 80.0, 1200.0, 800.0, 1800.0, 1125.0), (100.0, 80.0, 1200.0, 800.0), "fits where it was");
-        assert_eq!(fit_window(-40.0, -10.0, 1200.0, 800.0, 1800.0, 1125.0), (0.0, 0.0, 1200.0, 800.0), "pulled onto the display");
-        assert_eq!(fit_window(900.0, 900.0, 1200.0, 800.0, 1800.0, 1125.0), (600.0, 325.0, 1200.0, 800.0), "pulled back from the far corner");
-        assert_eq!(fit_window(100.0, 80.0, 2400.0, 1500.0, 1440.0, 900.0), (0.0, 0.0, 1440.0, 900.0), "a window from a bigger display fills this one");
+        assert_eq!(fit_window(100.0, 80.0, 1200.0, 800.0, 1800.0, 1125.0, 25.0), (100.0, 80.0, 1200.0, 800.0), "fits where it was");
+        assert_eq!(fit_window(-40.0, -10.0, 1200.0, 800.0, 1800.0, 1125.0, 25.0), (0.0, 25.0, 1200.0, 800.0), "pulled onto the display, below the menu bar");
+        assert_eq!(fit_window(900.0, 900.0, 1200.0, 800.0, 1800.0, 1125.0, 25.0), (600.0, 325.0, 1200.0, 800.0), "pulled back from the far corner");
+        assert_eq!(fit_window(100.0, 80.0, 2400.0, 1500.0, 1440.0, 900.0, 25.0), (0.0, 25.0, 1440.0, 875.0), "a window from a bigger display fills this one below the menu bar");
     }
 
     #[test]

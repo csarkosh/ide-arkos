@@ -1167,16 +1167,17 @@ impl Root {
     }
 
     /// The slot a tab dragged along its own bar would land in, from the pointer's place in the
-    /// bar (`bounds` is the strip's, scrolled by the bar's handle). The tabs' recorded widths
-    /// decide, not what is under the pointer: the gap itself moves the tabs.
-    pub fn reorder_slot_for(&self, pane: PaneId, tab: TabId, bounds: Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> usize {
+    /// strip of tabs (its bounds and scroll come from the bar's scroll handle). The tabs'
+    /// recorded widths decide, not what is under the pointer: the gap itself moves the tabs. At
+    /// the start the gap sits in the tab's own place, so grabbing a tab off centre moves nothing.
+    pub fn reorder_slot_for(&self, pane: PaneId, tab: TabId, pos: gpui::Point<gpui::Pixels>) -> usize {
         let Some(p) = self.tree.pane(pane) else { return usize::MAX };
         let Some(idx) = p.ids.iter().position(|i| *i == tab) else { return usize::MAX };
+        let Some(strip) = self.bar_scroll.get(&pane) else { return usize::MAX };
         let widths: Vec<f32> = p.ids.iter().map(|id| self.tab_widths.get(id).copied().unwrap_or(80.0)).collect();
-        let scrolled = self.bar_scroll.get(&pane).map_or(0.0, |h| f32::from(h.offset().x));
-        let x = f32::from(pos.x - bounds.origin.x) - scrolled;
+        let x = f32::from(pos.x - strip.bounds().origin.x - strip.offset().x);
         let current = self.reorder.as_ref().filter(|r| r.pane == pane && r.tab == tab).and_then(|r| r.at());
-        pane_view::reorder_slot(&widths, idx, current, x)
+        pane_view::reorder_slot(&widths, idx, current.or(Some(idx)), x)
     }
 
     /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
@@ -2770,6 +2771,11 @@ impl Render for Root {
         let last_frame = std::mem::replace(&mut self.frame_now, now);
         self.settle(now, last_frame);
         self.note_window_placement(window, cx);
+        // A rename whose tab closed, moved, or sits behind a slim bar has no editor to hold the
+        // keys; it ends, else the keys would go nowhere.
+        if self.tab_rename.as_ref().is_some_and(|r| !self.tree.pane(r.pane).is_some_and(|p| p.ids.contains(&r.tab) && !matches!(p.tabs.get(p.active), Some(Tab::Browser { .. })))) {
+            self.tab_rename = None;
+        }
         let theme = self.theme.clone();
         let status = if banner_visible(self.reconnecting_since, now) { self.status.clone() } else { String::new() };
         // A notice fades in and out; it keeps its row until it has faded.
@@ -2863,7 +2869,7 @@ impl Render for Root {
                 root.tab_drag_browser = browser.then_some(tab);
                 cx.notify();
             }))
-            .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, _window, cx| {
+            .on_mouse_move(cx.listener(|root, ev: &MouseMoveEvent, window, cx| {
                 root.last_input = Instant::now();
                 if root.sidebar_resizing {
                     if ev.pressed_button != Some(MouseButton::Left) {
@@ -2878,13 +2884,17 @@ impl Render for Root {
                     return;
                 }
                 if ev.pressed_button != Some(MouseButton::Left) {
-                    // A tab drag released outside the window, where no mouse-up reaches us.
+                    // A tab drag released outside the window, where no mouse-up reaches us: it
+                    // ends here and in gpui, else a later click would drop it.
                     if root.drop_target.take().is_some() {
                         cx.notify();
                     }
                     if let Some(r) = root.reorder.as_mut().filter(|r| !r.ended()) {
                         r.end(Instant::now());
                         cx.notify();
+                    }
+                    if cx.has_active_drag() {
+                        cx.stop_active_drag(window);
                     }
                 }
                 if root.resizing.is_some() && ev.pressed_button != Some(MouseButton::Left) {
@@ -3270,9 +3280,10 @@ fn open_bounds(saved: Option<&workspace::WindowSaved>, cx: &App) -> (Option<gpui
         return (None, Bounds::centered(None, size(px(s.w as f32), px(s.h as f32)), cx));
     };
     let (dw, dh) = (f64::from(f32::from(screen.width)), f64::from(f32::from(screen.height)));
+    let top = ax::screen::menu_bar_height();
     let (x, y, w, h) = match display {
-        Some(_) => workspace::fit_window(s.x, s.y, s.w, s.h, dw, dh),
-        None => workspace::fit_window((dw - s.w) / 2.0, (dh - s.h) / 2.0, s.w, s.h, dw, dh),
+        Some(_) => workspace::fit_window(s.x, s.y, s.w, s.h, dw, dh, top),
+        None => workspace::fit_window((dw - s.w) / 2.0, (dh - s.h) / 2.0, s.w, s.h, dw, dh, top),
     };
     (display, Bounds::new(point(px(x as f32), px(y as f32)), size(px(w as f32), px(h as f32))))
 }
