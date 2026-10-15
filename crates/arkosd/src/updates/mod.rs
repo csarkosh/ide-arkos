@@ -148,6 +148,8 @@ pub struct UpdateState {
     pub last_check_unix: Option<u64>,
     /// The last check's transport failure, None once a check reaches the manifest again.
     pub transient_error: Option<String>,
+    /// Repeated "found nothing" and transient lines of the check, counted for the journal.
+    pub collapse: poll::Collapse,
 }
 
 impl UpdateState {

@@ -2089,3 +2089,54 @@ fn a_staged_release_not_newer_than_a_hand_installed_app_is_never_offered_or_appl
     assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, .. }));
     assert!(!d.path().join("updates/9.9.9").exists());
 }
+
+#[test]
+fn upgrade_whose_exec_fails_after_an_apply_rolls_back_after_the_grace() {
+    // An apply waits for its window; the upgrade onto a binary that cannot run is refused, and
+    // that failure starts the grace, so the bundle is put back when no window says Hello.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0", "--connect-grace-secs", "2"]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    let missing = home.path().join("no-such-arkosd");
+    assert!(matches!(c.request(Request::Upgrade { exe: missing }), Response::Error(_)));
+    let journal_path = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&journal_path).is_ok_and(|t| t.contains("rollback of 9.9.9")), Duration::from_secs(10));
+    let journal = std::fs::read_to_string(&journal_path).unwrap();
+    assert!(journal.contains("the upgrade onto 9.9.9 failed: "), "{journal}");
+    assert!(journal.contains("; the grace for 9.9.9 starts now"), "{journal}");
+    wait_until(|| std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap_or_default().contains("0.0.1"), Duration::from_secs(5));
+}
+
+#[test]
+fn the_collapsed_count_is_journaled_at_the_handover() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "9.9.9", "fffffff");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    let journal_path = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&journal_path).is_ok_and(|t| t.contains("check: the manifest has 9.9.9 (fffffff), not newer than running")), Duration::from_secs(10));
+    // Three checks: the first is written, the next two are counted.
+    std::thread::sleep(Duration::from_millis(3500));
+    let check = Command::new(env!("CARGO_BIN_EXE_arkosd")).arg("--check-handover").output().unwrap();
+    let formats = Command::new(env!("CARGO_BIN_EXE_arkosd")).arg("--handover-formats").output().unwrap();
+    let (check, formats) = (String::from_utf8_lossy(&check.stdout).trim().to_string(), String::from_utf8_lossy(&formats.stdout).trim().to_string());
+    let newest = formats.split_whitespace().last().unwrap().to_string();
+    let (rm_on_check, rm_on_formats) = if check == format!("handover {newest}") { ("; rm \"$0\"", "") } else { ("", "; rm \"$0\"") };
+    let dir = tempfile::tempdir().unwrap();
+    let exe = fake_arkosd(dir.path(), &format!("case \"$1\" in\n--check-handover) echo '{check}'{rm_on_check} ;;\n--handover-formats) echo '{formats}'{rm_on_formats} ;;\nesac"));
+    let mut c = d.connect();
+    assert!(matches!(c.request(Request::Upgrade { exe }), Response::Error(e) if e.contains("execv failed")));
+    let journal = std::fs::read_to_string(&journal_path).unwrap();
+    let count = journal.find(" more checks since ").unwrap_or_else(|| panic!("no count line:\n{journal}"));
+    let exec = journal.find("exec ").unwrap_or_else(|| panic!("no exec line:\n{journal}"));
+    assert!(count < exec, "the count comes before the handover:\n{journal}");
+    assert!(journal.contains("found 9.9.9 (fffffff), still not newer than 9.9.9"), "{journal}");
+}

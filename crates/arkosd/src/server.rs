@@ -469,6 +469,10 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             if let Err(e) = crate::upgrade::validate(&exe) {
                 crate::journal::note(format_args!("upgrade to {} refused: {e}", exe.display()));
                 crate::upgrade::abort(state);
+                let line = crate::updates::apply::clock_after_failed_upgrade(&mut state.lock().unwrap().update, &opts.update.dir, &exe.display().to_string(), &e);
+                if let Some(l) = line {
+                    crate::journal::note(l);
+                }
                 return Some(Response::Error(e));
             }
             // Returns only on failure; on success this process is now the new binary.
@@ -476,7 +480,12 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         }
         Request::RelaunchClient { exe, cwd } => {
             if !is_arkos_binary(&exe) {
-                Response::Error(format!("{} is not a arkos binary owned by this user", exe.display()))
+                let why = format!("{} is not a arkos binary owned by this user", exe.display());
+                let line = crate::updates::apply::clock_after_failed_upgrade(&mut state.lock().unwrap().update, &opts.update.dir, &exe.display().to_string(), &why);
+                if let Some(l) = line {
+                    crate::journal::note(l);
+                }
+                Response::Error(why)
             } else {
                 if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                     rec.relaunch = Some((exe, cwd));

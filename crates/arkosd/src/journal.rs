@@ -88,6 +88,17 @@ pub fn open_capped(path: &Path, cap: u64) -> std::io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
+/// The local clock as `HH:MM`, for the journal's counted lines.
+pub fn clock_hhmm() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as libc::time_t;
+    // SAFETY: zeroed is a valid `tm`; localtime_r is reentrant and gets valid pointers.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+        return "??:??".into();
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
 /// Local time with its offset, `2026-10-15 08:04:12 -0400`, to match what the user saw.
 fn timestamp() -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as libc::time_t;

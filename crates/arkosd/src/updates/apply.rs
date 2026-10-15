@@ -81,6 +81,19 @@ pub fn restart_clock(u: &mut super::UpdateState, dir: &Path) -> Option<String> {
     Some(line)
 }
 
+/// An upgrade attempt that ended without a relaunch while an apply waits: the grace starts
+/// now, so the watch rolls back in `CONNECT_GRACE` unless a new window says Hello. Returns the
+/// journal line; None when nothing is applied or the clock already runs.
+#[must_use]
+pub fn clock_after_failed_upgrade(u: &mut super::UpdateState, dir: &Path, _exe: &str, why: &str) -> Option<String> {
+    let version = u.applied.as_ref()?.version.clone();
+    if u.clock_running {
+        return None;
+    }
+    let _ = restart_clock(u, dir)?;
+    Some(format!("the upgrade onto {version} failed: {why}; the grace for {version} starts now"))
+}
+
 /// The versions rolled back, one per line, so a later daemon does not stage them again (they
 /// stay until a newer release replaces them as the floor).
 pub fn rejected_path(updates_dir: &Path) -> PathBuf {
@@ -239,6 +252,18 @@ pub fn on_start(state: &Shared, bundle: Option<&Path>, dir: &Path, grace: Durati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_upgrade_with_an_apply_pending_starts_the_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut u = super::super::UpdateState::default();
+        assert_eq!(clock_after_failed_upgrade(&mut u, dir.path(), "/x/arkosd", "exec failed"), None, "nothing applied: nothing to time");
+        u.applied = Some(Applied { version: "0.3.0".into(), old_kept: true, at_unix: 1, pids_at_apply: vec![] });
+        let line = clock_after_failed_upgrade(&mut u, dir.path(), "/x/arkosd", "exec failed").unwrap();
+        assert_eq!(line, "the upgrade onto 0.3.0 failed: exec failed; the grace for 0.3.0 starts now");
+        assert!(u.clock_running);
+        assert!(u.applied.as_ref().unwrap().at_unix > 1);
+    }
 
     #[test]
     fn the_marker_round_trips_and_the_decision_waits_then_rolls_back() {

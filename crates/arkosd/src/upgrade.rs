@@ -177,6 +177,10 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         abort(state);
         eprintln!("arkosd: upgrade to {} failed: {why}; the old daemon keeps running", exe.display());
         crate::journal::note(format_args!("upgrade to {} failed: {why}; the old daemon keeps running", exe.display()));
+        let line = crate::updates::apply::clock_after_failed_upgrade(&mut state.lock().unwrap().update, &opts.update.dir, &exe.display().to_string(), &why);
+        if let Some(l) = line {
+            crate::journal::note(l);
+        }
         why
     };
     if !settled {
@@ -245,6 +249,10 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
             return format!("cannot make the listener inheritable: {e}");
         }
         eprintln!("arkosd: upgrading to {} with {} sessions, handover {}", exe.display(), h.sessions.len(), path.display());
+        let counted = state.lock().unwrap().update.collapse.flush();
+        if let Some(l) = counted {
+            crate::journal::note(l);
+        }
         crate::journal::note(format_args!("exec {} (upgrade from {}, {} sessions)", exe.display(), crate::version_string(), h.sessions.len()));
         // SAFETY: argv is NULL-terminated and every pointer in it, and exe_c, outlives the call;
         // execv returns only on failure, in which case this process continues unchanged.

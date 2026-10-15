@@ -14,7 +14,6 @@ pub enum Outcome {
     /// The check worked and found nothing newer than what runs and what is staged: the
     /// manifest's version and git, and the " or than X staged or applied" text (None when
     /// nothing is staged).
-    #[allow(dead_code)] // read by the collapse of repeated "found nothing" lines (next task)
     Nothing { version: String, git: String, staged: Option<String> },
     Staged(Staged),
     /// The manifest or the zip could not be fetched (offline, a captive portal, a timeout): logged
@@ -73,7 +72,6 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
     let Some(v) = m.version() else { return Outcome::Failed("manifest: bad version".into()) };
     if !v.is_newer_than(running) || staged.is_some_and(|s| !v.is_newer_than(s)) {
         let staged = staged.map(|s| format!(" or than {}.{}.{} staged or applied", s.major, s.minor, s.patch));
-        crate::journal::note(format_args!("check: the manifest has {} ({}), not newer than running {}.{}.{}{}", m.version, m.git, running.major, running.minor, running.patch, staged.as_deref().unwrap_or("")));
         return Outcome::Nothing { version: m.version, git: m.git, staged };
     }
     let key = bad_key(&m);
@@ -110,6 +108,90 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
             Outcome::Failed(e)
         }
     }
+}
+
+/// An outcome the check can repeat, in the pieces its journal lines are built from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Repeat {
+    /// `what` is "{version} ({git})", `floor` the running or installed semver, `first_line` the
+    /// line as it is written today (with its "or than X staged or applied" suffix when any).
+    NotNewer { what: String, floor: String, first_line: String },
+    Transient { error: String },
+}
+
+impl Repeat {
+    pub fn first_line(&self) -> String {
+        match self {
+            Repeat::NotNewer { first_line, .. } => first_line.clone(),
+            Repeat::Transient { error } => format!("check: transient, tried again at the next check: {error}"),
+        }
+    }
+    fn count_line(&self, repeats: u32, since: &str) -> String {
+        match self {
+            Repeat::NotNewer { what, floor, .. } => format!("check: {repeats} more checks since {since} found {what}, still not newer than {floor}"),
+            Repeat::Transient { error } => format!("check: transient, {repeats} more times since {since}: {error}"),
+        }
+    }
+}
+
+/// Repeated journal lines from the check (the same "not newer" or the same transient failure)
+/// are counted, not written: the count goes out when the outcome changes, at a handover, and
+/// once a day while it keeps repeating.
+#[derive(Default)]
+pub struct Collapse {
+    current: Option<Repeat>,
+    repeats: u32,
+    since: Option<std::time::Instant>,
+    since_wall: String,
+    pending: Option<String>,
+}
+
+const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
+
+impl Collapse {
+    /// `wall` is the local clock as "HH:MM" (`journal::clock_hhmm()`), passed in so tests pin it.
+    pub fn note(&mut self, r: Repeat, now: std::time::Instant, wall: &str) -> Option<String> {
+        if self.current.as_ref() == Some(&r) {
+            self.repeats += 1;
+            if self.since.is_some_and(|s| now.duration_since(s) >= DAILY) {
+                let out = r.count_line(self.repeats, &self.since_wall);
+                self.repeats = 0;
+                self.since = Some(now);
+                self.since_wall = wall.to_string();
+                return Some(out);
+            }
+            return None;
+        }
+        let out = match (&self.current, self.repeats) {
+            (Some(prev), n) if n > 0 => {
+                self.pending = Some(r.first_line());
+                prev.count_line(n, &self.since_wall)
+            }
+            _ => r.first_line(),
+        };
+        self.current = Some(r);
+        self.repeats = 0;
+        self.since = Some(now);
+        self.since_wall = wall.to_string();
+        Some(out)
+    }
+
+    /// The held first line of a new outcome, else the count so far (for a handover or exit).
+    pub fn flush(&mut self) -> Option<String> {
+        if let Some(p) = self.pending.take() {
+            return Some(p);
+        }
+        if self.repeats > 0 {
+            let out = self.current.as_ref()?.count_line(self.repeats, &self.since_wall);
+            self.repeats = 0;
+            return Some(out);
+        }
+        None
+    }
+}
+
+fn semver_of(v: &Version) -> String {
+    format!("{}.{}.{}", v.major, v.minor, v.patch)
 }
 
 /// A check's outcome into the shared state. Returns the event to tell the windows, if any.
@@ -225,12 +307,33 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                     super::drop_stale_staged(&state, &dir, &floor);
                     let staged = staged.filter(|s| s.is_newer_than(&floor));
                     let outcome = run_check(&f, &dir, &keys, &floor, &mut bad, &ditto, staged.as_ref());
-                    match &outcome {
-                        Outcome::Nothing { .. } => {}
-                        Outcome::Staged(s) => crate::journal::note(format_args!("staged {} ({}) at {}", s.version, s.git, s.bundle.display())),
-                        Outcome::Transient(e) => crate::journal::note(format_args!("check: transient, tried again at the next check: {e}")),
-                        Outcome::Invalid(e) | Outcome::Failed(e) => crate::journal::note(format_args!("check failed: {e}")),
-                        Outcome::Skipped(e) => crate::journal::note(format_args!("check: the release failed before, skipped: {e}")),
+                    let repeat = match &outcome {
+                        Outcome::Nothing { version, git, staged } => Some(Repeat::NotNewer {
+                            what: format!("{version} ({git})"),
+                            floor: semver_of(&floor),
+                            first_line: format!("check: the manifest has {version} ({git}), not newer than running {}{}", semver_of(&floor), staged.as_deref().unwrap_or("")),
+                        }),
+                        Outcome::Transient(error) => Some(Repeat::Transient { error: error.clone() }),
+                        _ => None,
+                    };
+                    if let Some(r) = repeat {
+                        let mut st = state.lock().unwrap();
+                        let lines = [st.update.collapse.note(r, std::time::Instant::now(), &crate::journal::clock_hhmm()), st.update.collapse.flush()];
+                        drop(st);
+                        for l in lines.into_iter().flatten() {
+                            crate::journal::note(l);
+                        }
+                    } else {
+                        let flushed = state.lock().unwrap().update.collapse.flush();
+                        if let Some(l) = flushed {
+                            crate::journal::note(l);
+                        }
+                        match &outcome {
+                            Outcome::Staged(s) => crate::journal::note(format_args!("staged {} ({}) at {}", s.version, s.git, s.bundle.display())),
+                            Outcome::Invalid(e) | Outcome::Failed(e) => crate::journal::note(format_args!("check failed: {e}")),
+                            Outcome::Skipped(e) => crate::journal::note(format_args!("check: the release failed before, skipped: {e}")),
+                            Outcome::Nothing { .. } | Outcome::Transient(_) => {}
+                        }
                     }
                     let reached_now = !matches!(outcome, Outcome::Transient(_) | Outcome::Invalid(_));
                     let reached = {
@@ -258,6 +361,31 @@ mod tests {
     use super::*;
     use crate::updates::stage::tests::{fake_bundle, manifest_for, zip_of};
     use crate::updates::verify::tests::{test_keygen, test_sign};
+
+    #[test]
+    fn repeated_check_lines_are_counted_and_flushed_on_change_and_daily() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut c = Collapse::default();
+        let nothing = Repeat::NotNewer { what: "1.2.3 (abc1234)".into(), floor: "1.2.3".into(), first_line: "check: the manifest has 1.2.3 (abc1234), not newer than running 1.2.3".into() };
+        assert_eq!(c.note(nothing.clone(), t0, "10:00"), Some(nothing.first_line().to_string()));
+        assert_eq!(c.note(nothing.clone(), t0 + Duration::from_secs(300), "10:05"), None);
+        assert_eq!(c.note(nothing.clone(), t0 + Duration::from_secs(600), "10:10"), None);
+        let transient = Repeat::Transient { error: "dns".into() };
+        let flushed = c.note(transient.clone(), t0 + Duration::from_secs(900), "10:15").unwrap();
+        assert_eq!(flushed, "check: 2 more checks since 10:00 found 1.2.3 (abc1234), still not newer than 1.2.3");
+        // The new outcome's first line is held until the flush that follows.
+        assert_eq!(c.flush(), Some("check: transient, tried again at the next check: dns".into()));
+        assert_eq!(c.note(transient.clone(), t0 + Duration::from_secs(1200), "10:20"), None);
+        // A day of repeats writes a count without a change.
+        let daily = c.note(transient.clone(), t0 + Duration::from_secs(1200 + 86_400), "10:20").unwrap();
+        assert_eq!(daily, "check: transient, 2 more times since 10:15: dns");
+        assert_eq!(c.flush(), None);
+        // The daemon's handover flushes what is counted so far.
+        c.note(transient.clone(), t0 + Duration::from_secs(1500 + 86_400), "10:25");
+        assert_eq!(c.flush(), Some("check: transient, 1 more times since 10:20: dns".into()));
+    }
+
 
     struct Site {
         _dir: tempfile::TempDir,

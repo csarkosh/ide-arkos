@@ -448,6 +448,10 @@ pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>) {
             }
             let name = if sig == libc::SIGTERM { "SIGTERM" } else { "SIGHUP" };
             eprintln!("arkosd: {name}: writing every session's history and the manifest before exiting");
+            let counted = state.lock().unwrap_or_else(|p| p.into_inner()).update.collapse.flush();
+            if let Some(l) = counted {
+                crate::journal::note(l);
+            }
             // SIGTERM and SIGHUP are blocked in every thread, so this thread must reach the exit:
             // a panic here would leave a daemon only SIGKILL can stop.
             let pass = catch_unwind(AssertUnwindSafe(|| flusher.lock().unwrap_or_else(|p| p.into_inner()).tick(&state, Duration::ZERO, true)));
