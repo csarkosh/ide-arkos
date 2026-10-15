@@ -503,10 +503,14 @@ impl FakeAx {
         self.with(w, |f| f.title = title.to_string());
     }
 
-    /// The user moves or resizes the window: not recorded as a call.
+    /// The user moves or resizes the window: not recorded as a call. With the button down the
+    /// user's hand carries it, so the pointer goes along, onto its title bar.
     pub fn set_frame_outside(&self, w: &AxWindow, r: Rect) {
         if let Some(f) = self.windows.borrow_mut().iter_mut().find(|f| f.window == *w) {
             f.rect = r;
+        }
+        if self.mouse_down.get() {
+            self.mouse.set((r.x + r.w / 2.0, r.y + 10.0));
         }
     }
 

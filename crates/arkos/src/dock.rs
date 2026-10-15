@@ -95,6 +95,23 @@ fn off_origin(frame: Rect, at: Rect) -> bool {
     (frame.x - at.x).abs() >= IN_PLACE || (frame.y - at.y).abs() >= IN_PLACE
 }
 
+/// Whether the user's hand holds a visible docked window (the button down, checked by the
+/// caller): it left the origin arkos put it at (`at`: where it settled after the last write,
+/// else that write) and the pointer is on it, on its title bar. A write that failed or landed
+/// late also leaves a window off its origin, but then the pointer is elsewhere (on a divider,
+/// on arkos's title bar), so tracking goes on.
+fn held_by_hand(frame: Option<Rect>, at: Option<Rect>, parked: Option<Rect>, pointer: (f64, f64)) -> bool {
+    match (frame, at, parked) {
+        (Some(f), Some(at), None) => off_origin(f, at) && f.contains(pointer.0, pointer.1),
+        _ => false,
+    }
+}
+
+/// A free window moved without changing size: dragged, not resized.
+fn pure_move(now: Rect, before: Rect) -> bool {
+    off_origin(now, before) && (now.w - before.w).abs() < IN_PLACE && (now.h - before.h).abs() < IN_PLACE
+}
+
 /// Whether a docked, visible window must be written: its placeholder moved since the last write,
 /// or (the mouse up) the window left the frame it settled at after that write. `settled` is
 /// `None` on the tick right after a write: whatever frame the window landed at then is taken as
@@ -154,6 +171,9 @@ pub struct Docks {
     held: BTreeSet<TabId>,
     /// The free window being dragged since this press (it moved while the button was down).
     held_in: Option<AxWindow>,
+    /// Tabs whose window was written again because it was found off the target's origin after
+    /// a write: once only, so a window macOS keeps elsewhere is not written every tick.
+    retried: BTreeSet<TabId>,
 }
 
 impl Docks {
@@ -199,6 +219,7 @@ impl Docks {
         self.revoked.remove(&tab);
         self.pending_launch.remove(&tab);
         self.held.remove(&tab);
+        self.retried.remove(&tab);
         out
     }
 
@@ -214,6 +235,7 @@ impl Docks {
         self.settled.remove(&tab);
         self.titles.remove(&tab);
         self.held.remove(&tab);
+        self.retried.remove(&tab);
         if self.held_in.as_ref() == Some(&win) {
             self.held_in = None;
         }
@@ -230,6 +252,7 @@ impl Docks {
         self.settled.remove(&tab);
         self.titles.remove(&tab);
         self.held.remove(&tab);
+        self.retried.remove(&tab);
         Some((win, self.restore_rect(tab, parked)))
     }
 
@@ -310,14 +333,6 @@ impl Docks {
         }
     }
 
-    /// Whether the user moved the tab's visible docked window away from where arkos put it (the
-    /// frame it settled at after the last write, else the write itself). Arkos's own writes
-    /// (a placeholder moving under a divider drag) never count.
-    fn hand_moved(&self, tab: TabId, frame: Option<Rect>) -> bool {
-        let Some(DockState::Docked { shown, parked: None, .. }) = self.tabs.get(&tab) else { return false };
-        frame.zip(self.settled.get(&tab).copied().or(*shown)).is_some_and(|(f, at)| off_origin(f, at))
-    }
-
     /// What the user's hand is doing to Chrome's windows, from this tick's snapshot and the last
     /// one (spec 8 "Docking by drag"). Only with the button down: a docked window that moved is
     /// held (tracking leaves it alone) and is `Out` once past `OUT_THRESHOLD` from its
@@ -332,15 +347,15 @@ impl Docks {
         let (Some(now_ws), Some(prev_ws)) = (s.windows.as_deref(), prev.windows.as_deref()) else { return Drag::None };
         let frame_in = |ws: &[(AxWindow, Option<Rect>, bool)], win: &AxWindow| ws.iter().find(|(w, _, _)| w == win).and_then(|(_, f, _)| *f);
         let moved = |win: &AxWindow| match (frame_in(now_ws, win), frame_in(prev_ws, win)) {
-            (Some(a), Some(b)) => !same(a, b),
+            (Some(a), Some(b)) => pure_move(a, b),
             _ => false,
         };
         let placeholder_of = |tab: TabId| s.placeholders.iter().find(|(t, _)| *t == tab).and_then(|(_, r)| *r);
         let mut docked: Vec<&AxWindow> = Vec::new();
         for (tab, state) in &self.tabs {
-            let DockState::Docked { win, .. } = state else { continue };
+            let DockState::Docked { win, shown, parked } = state else { continue };
             docked.push(win);
-            if self.hand_moved(*tab, frame_in(now_ws, win)) {
+            if held_by_hand(frame_in(now_ws, win), self.settled.get(tab).copied().or(*shown), *parked, s.pointer) {
                 self.held.insert(*tab);
             }
             if !self.held.contains(tab) {
@@ -449,7 +464,7 @@ impl Docks {
             // The user holds the window (it left where it was put while the button is down):
             // no writes until the release, which puts it back (or, past the threshold, the
             // caller undocks it first).
-            if s.mouse_down && parked.is_none() && frame.zip(self.settled.get(tab).copied().or(*shown)).is_some_and(|(f, at)| off_origin(f, at)) {
+            if s.mouse_down && held_by_hand(frame, self.settled.get(tab).copied().or(*shown), *parked, s.pointer) {
                 self.held.insert(*tab);
             }
             let held = if s.mouse_down { self.held.contains(tab) } else { self.held.remove(tab) };
@@ -464,12 +479,20 @@ impl Docks {
                         self.settled.remove(tab);
                         self.last_shown.insert(*tab, target);
                     } else if (held && frame.is_some_and(|f| !same(f, target))) || needs_move(frame, *shown, self.settled.get(tab).copied(), target, s.mouse_down) {
+                        self.retried.remove(tab);
                         out.push(Action::Move { win: win.clone(), rect: target });
                         *shown = Some(target);
                         self.settled.remove(tab);
                         self.last_shown.insert(*tab, target);
+                    } else if !s.mouse_down && !self.settled.contains_key(tab) && !self.retried.contains(tab) && frame.is_some_and(|f| off_origin(f, target)) {
+                        // The first frame after a write is taken as settled (Chrome clamps sizes),
+                        // unless it is off the target's origin: the write failed or was overtaken,
+                        // so it is written once more.
+                        self.retried.insert(*tab);
+                        out.push(Action::Move { win: win.clone(), rect: target });
                     } else if let (Some(f), false) = (frame, s.mouse_down) {
                         self.settled.entry(*tab).or_insert(f);
+                        self.retried.remove(tab);
                     }
                     if was_active == Some(false) && s.window_active && parked.is_none() {
                         out.push(Action::Raise(win.clone()));
@@ -1124,5 +1147,60 @@ mod tests {
         ax.set_mouse_down(false);
         let s4 = snap(&ax, vec![(1, Some(R))], t0 + Duration::from_millis(200));
         assert_eq!(d.tick(&s4), vec![Action::Move { win: w, rect: R }]);
+    }
+
+    #[test]
+    fn a_window_left_behind_by_a_failed_write_is_not_held_and_never_released() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        let w = ax.add_window("W", R);
+        d.dock_by_choice(1, w.clone());
+        d.tick(&snap(&ax, vec![(1, Some(R))], t0));
+        // A divider drag: the button down on the divider, outside the Chrome window.
+        ax.set_mouse_down(true);
+        ax.set_mouse(R.x - 4.0, R.y + 300.0);
+        let moved = Rect { x: R.x + 100.0, ..R };
+        let s0 = snap(&ax, vec![(1, Some(R))], t0);
+        let s1 = snap(&ax, vec![(1, Some(moved))], t0 + Duration::from_millis(50));
+        assert_eq!(d.detect_drag(&s1, &s0), Drag::None);
+        assert!(d.tick(&s1).contains(&Action::Move { win: w.clone(), rect: moved }));
+        // The write failed: the window stays at R, 100 pt from where it was put.
+        ax.set_frame_outside(&w, R);
+        ax.set_mouse(R.x - 4.0, R.y + 300.0);
+        let s2 = snap(&ax, vec![(1, Some(moved))], t0 + Duration::from_millis(100));
+        assert_eq!(d.detect_drag(&s2, &s1), Drag::None, "not the user's hand: never released");
+        assert!(d.tick(&s2).is_empty(), "the button is down: nothing until the release");
+        ax.set_mouse_down(false);
+        let s3 = snap(&ax, vec![(1, Some(moved))], t0 + Duration::from_millis(150));
+        assert_eq!(d.detect_drag(&s3, &s2), Drag::None);
+        assert!(d.tick(&s3).contains(&Action::Move { win: w, rect: moved }), "tracking writes it again");
+    }
+
+    #[test]
+    fn resizing_a_free_window_over_arkos_is_not_a_drag_in() {
+        let ax = FakeAx::new(true);
+        let t0 = Instant::now();
+        let mut d = Docks::default();
+        d.add(1, false, t0);
+        let w = ax.add_window("Free", Rect { x: 320.0, y: 240.0, w: 400.0, h: 300.0 });
+        let arkos = Some(Rect { x: 200.0, y: 100.0, w: 1200.0, h: 800.0 });
+        ax.set_mouse_down(true);
+        ax.set_mouse(400.0, 300.0);
+        let mut prev = snap(&ax, vec![(1, Some(R))], t0);
+        prev.arkos_frame = arkos;
+        // Its left edge dragged: the origin and the size change together.
+        ax.set_frame_outside(&w, Rect { x: 300.0, y: 240.0, w: 420.0, h: 300.0 });
+        ax.set_mouse(400.0, 300.0);
+        let mut now = snap(&ax, vec![(1, Some(R))], t0 + Duration::from_millis(50));
+        now.arkos_frame = arkos;
+        assert_eq!(d.detect_drag(&now, &prev), Drag::None);
+        // Its bottom edge dragged: the size alone changes.
+        ax.set_frame_outside(&w, Rect { x: 300.0, y: 240.0, w: 420.0, h: 350.0 });
+        ax.set_mouse(400.0, 300.0);
+        let mut later = snap(&ax, vec![(1, Some(R))], t0 + Duration::from_millis(100));
+        later.arkos_frame = arkos;
+        assert_eq!(d.detect_drag(&later, &now), Drag::None);
     }
 }

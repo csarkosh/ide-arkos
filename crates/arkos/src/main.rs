@@ -1334,7 +1334,8 @@ impl Root {
     }
 
     /// Ticks the docking engine at its cadence (`Docks::cadence`): 1 Hz while tabs wait, 20 Hz
-    /// while a window is docked or the mouse is down; it stops with the last browser tab and
+    /// while a window is docked or the mouse is down (an idle second is slept in 50 ms slices
+    /// that check only the button, so a press ticks at once); it stops with the last browser tab and
     /// `sync_docks` or a new tab starts it again. One loop at a time.
     pub fn start_dock_timer(&mut self, cx: &mut Context<Self>) {
         if self.dock_timer || self.docks.tabs.is_empty() {
@@ -1350,7 +1351,21 @@ impl Root {
                 wait
             });
             let Ok(Some(wait)) = wait else { break };
-            cx.background_executor().timer(wait).await;
+            if wait <= dock::TRACK_POLL {
+                cx.background_executor().timer(wait).await;
+            } else {
+                // Idle (tabs waiting): the AX work stays at `wait`, but the button is checked
+                // every `TRACK_POLL` (a class-method read, no AX call), so a Chrome window
+                // dragged over arkos is seen at once.
+                let start = Instant::now();
+                loop {
+                    cx.background_executor().timer(dock::TRACK_POLL).await;
+                    let Ok(down) = root.update(cx, |root, _| root.ax.mouse_down()) else { return };
+                    if down || start.elapsed() >= wait {
+                        break;
+                    }
+                }
+            }
             if root.update(cx, |root, cx| root.dock_tick(cx)).is_err() {
                 break;
             }
