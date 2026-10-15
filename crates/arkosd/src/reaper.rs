@@ -33,18 +33,14 @@ fn scan(state: &Shared, ttl: Duration) {
     // A closed tab nobody reopened (milestone 6a spec, section 14): ended the way `Kill` ends
     // a session, so the escalation to SIGKILL follows a second later from `escalate_kill`.
     for s in &sessions {
-        if !s.grace_due() {
-            continue;
-        }
-        if !s.has_subscribers() && s.info().alive {
-            let secs = s.grace_secs().unwrap_or(0);
+        // Taken once: a shell that ended by itself has nothing to end.
+        let Some(secs) = s.take_due_grace() else { continue };
+        if s.info().alive {
             crate::journal::note(format_args!("session {} in {}: not reopened within {secs} s, ended", s.id.0, s.cwd().display()));
             if let Err(e) = s.kill() {
                 eprintln!("arkosd: session {}: cannot end it after its grace: {e:#}", s.id.0);
             }
         }
-        // Once: a shell that ended by itself, or one a window shows again, has nothing to end.
-        s.clear_grace();
     }
     let mut dead = Vec::new();
     for s in &sessions {
@@ -96,6 +92,26 @@ mod tests {
         };
         // No reader: the scan's `poll_exit` is what records the exit.
         Session::spawn_for_test(spec, false).unwrap()
+    }
+
+    /// The reaper's decision is one step under the session lock: an attach is never killed
+    /// between "due" and "nobody attached".
+    #[test]
+    fn a_due_grace_is_taken_once_and_one_within_it_or_attached_is_not() {
+        let s = session(34);
+        assert_eq!(s.take_due_grace(), None, "no grace");
+        s.set_grace(60);
+        assert_eq!(s.take_due_grace(), None, "within it");
+        assert_eq!(s.grace_secs(), Some(60), "kept while within it");
+        s.set_grace_left(Duration::ZERO, 60);
+        assert_eq!(s.take_due_grace(), Some(60));
+        assert_eq!((s.take_due_grace(), s.grace_secs()), (None, None), "taken once");
+        // An attach clears the grace: nothing is due to a session a window shows.
+        s.set_grace_left(Duration::ZERO, 60);
+        let (a, _b) = UnixStream::pair().unwrap();
+        s.subscribe(1, ClientSink::new(1, a, 1 << 20), 1);
+        assert_eq!(s.take_due_grace(), None);
+        let _ = s.kill();
     }
 
     #[test]

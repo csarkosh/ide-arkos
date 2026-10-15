@@ -379,6 +379,26 @@ impl Drop for Creating<'_> {
 /// miss the handover, and a kill could reap a shell after its snapshot called it alive.
 const UPGRADE_IN_PROGRESS: &str = "an upgrade is in progress; retry in a moment";
 
+/// Starts a closed tab's grace unless an upgrade began meanwhile: the request's `upgrading`
+/// check comes before `set_grace`, and a handover snapshot taken between the two would not carry
+/// the grace. Re-checked after it, under the state lock alone (never under the session lock);
+/// an upgrade seen then drops the grace and answers false, so the window keeps its own minute.
+/// Otherwise the manifest is marked, so a restart in the minute keeps the grace.
+fn grace_unless_upgrading(state: &Shared, s: &Session, secs: u32) -> bool {
+    s.set_grace(secs);
+    let upgrading = {
+        let mut st = state.lock().unwrap();
+        if !st.upgrading {
+            st.manifest_dirty = true;
+        }
+        st.upgrading
+    };
+    if upgrading {
+        s.clear_grace();
+    }
+    !upgrading
+}
+
 /// The folder a window's Hello names, as the daemon keeps it: None for an empty one (the
 /// protocol's "keep the daemon's", which the launch chooser sends) and for `/`, where macOS starts
 /// an app opened from the Dock. A window relaunched at `/` shows the chooser instead of a project,
@@ -660,18 +680,21 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         // session that already ended, or is gone, answers `Ok` like `Detach` does: the tab is
         // closed either way, and an error would put a banner in the window for nothing.
         Request::DetachForGrace { session: sid, secs } => {
+            let mut refused = false;
             if let Some(s) = session(sid) {
                 s.unsubscribe(client_id);
                 if s.info().alive {
-                    s.set_grace(secs);
-                    // The manifest records the grace, so a restart in the minute keeps it.
-                    state.lock().unwrap().manifest_dirty = true;
+                    refused = !grace_unless_upgrading(state, &s, secs);
                 }
             }
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                 rec.attached.retain(|x| *x != sid);
             }
-            Response::Ok
+            if refused {
+                Response::Error(UPGRADE_IN_PROGRESS.into())
+            } else {
+                Response::Ok
+            }
         }
         Request::CheckForUpdates => {
             let mut st = state.lock().unwrap();
@@ -783,4 +806,38 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         },
     };
     Some(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The handover's snapshot can fall between the request's `upgrading` check and the grace:
+    /// re-checked after, the grace is dropped and refused, so the window keeps its own minute.
+    #[test]
+    fn a_grace_set_while_an_upgrade_began_is_dropped_and_refused() {
+        let spec = SpawnSpec {
+            id: SessionId(41),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 64,
+            backpressure: crate::session::Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
+        };
+        let s = Session::spawn_for_test(spec, false).unwrap();
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        assert!(grace_unless_upgrading(&state, &s, 60));
+        assert_eq!(s.grace_secs(), Some(60));
+        assert!(state.lock().unwrap().manifest_dirty);
+        state.lock().unwrap().upgrading = true;
+        assert!(!grace_unless_upgrading(&state, &s, 60));
+        assert_eq!(s.grace_secs(), None, "no grace the snapshot may have missed");
+        let _ = s.kill();
+    }
 }

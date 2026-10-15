@@ -117,6 +117,8 @@ pub enum Repeat {
     /// line as it is written today (with its "or than X staged or applied" suffix when any).
     NotNewer { what: String, floor: String, first_line: String },
     Transient { error: String },
+    /// Any other outcome, by its line: a staged release, a failed or skipped one.
+    Other { line: String },
 }
 
 impl Repeat {
@@ -124,17 +126,19 @@ impl Repeat {
         match self {
             Repeat::NotNewer { first_line, .. } => first_line.clone(),
             Repeat::Transient { error } => format!("check: transient, tried again at the next check: {error}"),
+            Repeat::Other { line } => line.clone(),
         }
     }
     fn count_line(&self, repeats: u32, since: &str) -> String {
         match self {
             Repeat::NotNewer { what, floor, .. } => format!("check: {repeats} more checks since {since} found {what}, still not newer than {floor}"),
             Repeat::Transient { error } => format!("check: transient, {repeats} more times since {since}: {error}"),
+            Repeat::Other { line } => format!("check: {repeats} more times since {since}: {line}"),
         }
     }
 }
 
-/// Repeated journal lines from the check (the same "not newer" or the same transient failure)
+/// Repeated journal lines from the check (the same outcome, whichever it is, check after check)
 /// are counted, not written: the count goes out when the outcome changes, at a handover, and
 /// once a day while it keeps repeating.
 #[derive(Default)]
@@ -196,6 +200,22 @@ impl Collapse {
 
 fn semver_of(v: &Version) -> String {
     format!("{}.{}.{}", v.major, v.minor, v.patch)
+}
+
+/// What the journal says about one check, as a `Repeat` for the collapse; `floor` is what the
+/// check compared against.
+pub fn repeat_of(outcome: &Outcome, floor: &Version) -> Repeat {
+    match outcome {
+        Outcome::Nothing { version, git, staged } => Repeat::NotNewer {
+            what: format!("{version} ({git})"),
+            floor: semver_of(floor),
+            first_line: format!("check: the manifest has {version} ({git}), not newer than running {}{}", semver_of(floor), staged.as_deref().unwrap_or("")),
+        },
+        Outcome::Transient(error) => Repeat::Transient { error: error.clone() },
+        Outcome::Staged(s) => Repeat::Other { line: format!("staged {} ({}) at {}", s.version, s.git, s.bundle.display()) },
+        Outcome::Invalid(e) | Outcome::Failed(e) => Repeat::Other { line: format!("check failed: {e}") },
+        Outcome::Skipped(e) => Repeat::Other { line: format!("check: the release failed before, skipped: {e}") },
+    }
 }
 
 /// A check's outcome into the shared state. Returns the event to tell the windows, if any.
@@ -311,33 +331,15 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                     super::drop_stale_staged(&state, &dir, &floor);
                     let staged = staged.filter(|s| s.is_newer_than(&floor));
                     let outcome = run_check(&f, &dir, &keys, &floor, &mut bad, &ditto, staged.as_ref());
-                    let repeat = match &outcome {
-                        Outcome::Nothing { version, git, staged } => Some(Repeat::NotNewer {
-                            what: format!("{version} ({git})"),
-                            floor: semver_of(&floor),
-                            first_line: format!("check: the manifest has {version} ({git}), not newer than running {}{}", semver_of(&floor), staged.as_deref().unwrap_or("")),
-                        }),
-                        Outcome::Transient(error) => Some(Repeat::Transient { error: error.clone() }),
-                        _ => None,
-                    };
-                    if let Some(r) = repeat {
+                    // Every outcome through the collapse: a change always writes the new first
+                    // line, and a repeat of any outcome is counted.
+                    let r = repeat_of(&outcome, &floor);
+                    let lines = {
                         let mut st = state.lock().unwrap();
-                        let lines = [st.update.collapse.note(r, std::time::Instant::now(), &crate::journal::clock_hhmm()), st.update.collapse.take_pending()];
-                        drop(st);
-                        for l in lines.into_iter().flatten() {
-                            crate::journal::note(l);
-                        }
-                    } else {
-                        let flushed = state.lock().unwrap().update.collapse.flush();
-                        if let Some(l) = flushed {
-                            crate::journal::note(l);
-                        }
-                        match &outcome {
-                            Outcome::Staged(s) => crate::journal::note(format_args!("staged {} ({}) at {}", s.version, s.git, s.bundle.display())),
-                            Outcome::Invalid(e) | Outcome::Failed(e) => crate::journal::note(format_args!("check failed: {e}")),
-                            Outcome::Skipped(e) => crate::journal::note(format_args!("check: the release failed before, skipped: {e}")),
-                            Outcome::Nothing { .. } | Outcome::Transient(_) => {}
-                        }
+                        [st.update.collapse.note(r, std::time::Instant::now(), &crate::journal::clock_hhmm()), st.update.collapse.take_pending()]
+                    };
+                    for l in lines.into_iter().flatten() {
+                        crate::journal::note(l);
                     }
                     let reached_now = !matches!(outcome, Outcome::Transient(_) | Outcome::Invalid(_));
                     let reached = {
@@ -399,6 +401,30 @@ mod tests {
         }
         assert_eq!(c.flush(), Some("check: 3 more checks since 10:00 found 1.2.3 (abc1234), still not newer than 1.2.3".into()));
         assert_eq!(c.flush(), None);
+        // A change back to an earlier outcome writes its first line again, never a silent count.
+        let failed = Repeat::Other { line: "check failed: bad signature".into() };
+        let mut c = Collapse::default();
+        assert_eq!(c.note(nothing.clone(), t0, "10:00"), Some(nothing.first_line()));
+        assert_eq!(c.note(failed.clone(), t0 + Duration::from_secs(300), "10:05"), Some("check failed: bad signature".into()));
+        assert_eq!(c.take_pending(), None);
+        assert_eq!(c.note(nothing.clone(), t0 + Duration::from_secs(600), "10:10"), Some(nothing.first_line()));
+        assert_eq!(c.note(failed.clone(), t0 + Duration::from_secs(900), "10:15"), Some("check failed: bad signature".into()));
+        assert_eq!(c.note(failed.clone(), t0 + Duration::from_secs(1200), "10:20"), None, "a repeated failure is counted");
+        assert_eq!(c.note(nothing.clone(), t0 + Duration::from_secs(1500), "10:25"), Some("check: 1 more times since 10:15: check failed: bad signature".into()));
+        assert_eq!(c.take_pending(), Some(nothing.first_line()));
+    }
+
+    /// Every outcome goes through the collapse, each with the first line it always had.
+    #[test]
+    fn every_outcome_has_its_repeat_and_first_line() {
+        let floor = ver(1, 2, 3);
+        let line = |o: Outcome| repeat_of(&o, &floor).first_line();
+        assert_eq!(line(Outcome::Nothing { version: "1.2.3".into(), git: "abc".into(), staged: None }), "check: the manifest has 1.2.3 (abc), not newer than running 1.2.3");
+        assert_eq!(line(Outcome::Transient("dns".into())), "check: transient, tried again at the next check: dns");
+        assert_eq!(line(Outcome::Invalid("bad signature".into())), "check failed: bad signature");
+        assert_eq!(line(Outcome::Failed("bad hash".into())), "check failed: bad hash");
+        assert_eq!(line(Outcome::Skipped("bad hash".into())), "check: the release failed before, skipped: bad hash");
+        assert_eq!(repeat_of(&Outcome::Skipped("e".into()), &floor), Repeat::Other { line: "check: the release failed before, skipped: e".into() });
     }
 
     struct Site {

@@ -323,9 +323,9 @@ Notes:
   The daemon keeps that minute, so a window that crashes or is killed within it still has the
   shell ended on time (the update journal says "not reopened within 60 s, ended"), and an update
   or a restart in the minute keeps the deadline; any window that attaches the session first
-  cancels it. Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
-  kept for Shift+Cmd+T, since nothing is left to end or bring back. A closed viewer tab comes
-  back too, pinned, in the pane it was closed from.
+  cancels it. Quitting ends every closed tab's shell at once. A tab whose shell has already
+  ended is not kept for Shift+Cmd+T, since nothing is left to end or bring back. A closed
+  viewer tab comes back too, pinned, in the pane it was closed from.
 - Option is Meta, as with Terminal.app's "Use Option as Meta Key": Option+a key sends ESC plus
   the key, so Claude Code's Option+Enter (newline), Option+P, Option+T, Option+O and Alt+B/F/D/Y
   all work. Option+Left and Option+Right send the word-jump sequences ESC b and ESC f; every
@@ -439,8 +439,9 @@ process (same pid, the shells stay its children) and the window reconnects; then
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
 history. The daemon and window speak protocol 5; the daemon still serves protocol 1 to 4 windows,
 and reads the previous handover formats and recovery manifest, so updating from 0.2.12 or the
-update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
-daemon knows nothing of handovers), which ends every session.
+update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one
+update that needs `pkill -x arkosd` (the old daemon knows nothing of handovers), which ends
+every session.
 
 Click the badge to update at once.
 

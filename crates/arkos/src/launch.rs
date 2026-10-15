@@ -307,7 +307,13 @@ impl Chooser {
                 self.theme = t;
                 cx.notify();
             }
-            Err(e) => eprintln!("arkos: chooser theme: {e}"),
+            Err(e) => {
+                // As at launch: a broken user theme falls back to the built-in one.
+                let t = theme::builtin(&name).or_else(|| theme::builtin("navy")).expect("navy is built in");
+                eprintln!("arkos: chooser theme: {e}; using built-in {}", t.name);
+                self.theme = t;
+                cx.notify();
+            }
         }
     }
 

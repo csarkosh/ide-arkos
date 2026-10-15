@@ -2382,7 +2382,10 @@ impl Root {
         // the dead client: the reconnect attaches the session again.
         self.connection_generation += 1;
         self.sessions.disconnect();
-        self.check_poll = None;
+        // The daemon still runs the check; its result shows in the reconnect's status.
+        if self.check_poll.take().is_some() {
+            self.show_notice("the update check is still running".into(), cx);
+        }
         // The relaunch request went with the connection, unanswered: keep the window.
         if self.updating == Some(UpdateStage::Relaunching) {
             self.updating = None;
@@ -2428,30 +2431,24 @@ impl Root {
             }
             Outcome::UpdateStatus { staged, last_error, unreachable_for_secs } => self.note_update_status(staged, last_error, unreachable_for_secs, false, cx),
             Outcome::CheckStarted => {
-                self.check_poll = Some(update_check::Poll::new(recent::now_unix()));
-                self.poll_check_after(cx);
+                // A second click while a check polls: the running chain answers for both.
+                if update_check::Poll::begin(&mut self.check_poll, recent::now_unix()) {
+                    self.poll_check_after(cx);
+                }
             }
             Outcome::Checked(answer) => {
-                self.note_update_status(answer.staged.clone(), answer.last_error.clone(), answer.unreachable_for_secs, true, cx);
-                match self.check_poll.as_mut().map(|p| p.answer(&answer)) {
-                    Some(None) => self.poll_check_after(cx),
-                    Some(Some(verdict)) => {
+                let step = update_check::step(self.check_poll.as_mut(), &answer);
+                // Only the answer that ends the check notices an error the user already saw.
+                self.note_update_status(answer.staged.clone(), answer.last_error.clone(), answer.unreachable_for_secs, step.requested(), cx);
+                match step {
+                    update_check::Step::Again => self.poll_check_after(cx),
+                    update_check::Step::Done(verdict) => {
                         self.check_poll = None;
-                        use update_check::Verdict;
-                        let notice = match verdict {
-                            Verdict::Ready(v) => Some(format!("update ready: {v}")),
-                            // `note_update_status` already noticed the error, as requested.
-                            Verdict::Failed(_) => None,
-                            Verdict::Unreachable(e) => Some(format!("updates unreachable: {e}")),
-                            Verdict::StillRunning => Some("the update check is still running".into()),
-                            Verdict::NotReachedYet => Some("the daemon has not reached the update server yet".into()),
-                            Verdict::NoUpdate => Some("no update".into()),
-                        };
-                        if let Some(n) = notice {
+                        if let Some(n) = update_check::notice(&verdict) {
                             self.show_notice(n, cx);
                         }
                     }
-                    None => {}
+                    update_check::Step::NoPoll => {}
                 }
             }
             Outcome::Applied => {

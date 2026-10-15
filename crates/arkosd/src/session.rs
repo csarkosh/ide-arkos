@@ -695,8 +695,21 @@ impl Session {
         self.state_even_poisoned().grace_secs
     }
 
+    #[cfg(test)]
     pub fn grace_due(&self) -> bool {
         self.state.lock().unwrap().grace_deadline.is_some_and(|d| d <= Instant::now())
+    }
+
+    /// The grace's length, taken (the deadline cleared) when it is due and no window is
+    /// attached; None otherwise. One step under the lock `subscribe` takes, so an attach is never
+    /// ended between the two checks.
+    pub fn take_due_grace(&self) -> Option<u32> {
+        let mut st = self.state.lock().unwrap();
+        if !st.grace_deadline.is_some_and(|d| d <= Instant::now()) || !st.subscribers.is_empty() {
+            return None;
+        }
+        st.grace_deadline = None;
+        st.grace_secs.take()
     }
 
     pub fn clear_grace(&self) {

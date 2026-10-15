@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// The newest format this daemon reads and writes. Written only while a closed tab's grace runs:
+/// otherwise the manifest is format 1, which 0.2.12's `--recover` reads after a rollback.
 pub const MANIFEST_FORMAT: u32 = 2;
+pub const MANIFEST_FORMAT_V1: u32 = 1;
 const MANIFEST_MAGIC: [u8; 4] = *b"SKMF";
 /// A session printing without pause is still written this often.
 pub const MAX_WAIT: Duration = Duration::from_secs(15);
@@ -83,7 +86,23 @@ impl From<ManifestV1> for Manifest {
             .into_iter()
             .map(|s| ManifestSession { id: s.id, cwd: s.cwd, shell: s.shell, nice: s.nice, env: s.env, agent: s.agent, rows: s.rows, cols: s.cols, grace_left_secs: None, grace_secs: None })
             .collect();
-        Manifest { format: MANIFEST_FORMAT, written_by: v.written_by, sessions, windows: v.windows }
+        Manifest { format: v.format, written_by: v.written_by, sessions, windows: v.windows }
+    }
+}
+
+impl Manifest {
+    fn has_grace(&self) -> bool {
+        self.sessions.iter().any(|s| s.grace_left_secs.is_some() || s.grace_secs.is_some())
+    }
+
+    /// The format 1 shape, for a manifest with no grace in it.
+    fn to_v1(&self) -> ManifestV1 {
+        let sessions = self
+            .sessions
+            .iter()
+            .map(|s| ManifestSessionV1 { id: s.id, cwd: s.cwd.clone(), shell: s.shell.clone(), nice: s.nice, env: s.env.clone(), agent: s.agent.clone(), rows: s.rows, cols: s.cols })
+            .collect();
+        ManifestV1 { format: MANIFEST_FORMAT_V1, written_by: self.written_by.clone(), sessions, windows: self.windows.clone() }
     }
 }
 
@@ -125,7 +144,11 @@ pub fn manifest_of(st: &State) -> Manifest {
     sessions.sort_by_key(|s| s.id);
     let mut windows: Vec<ManifestWindow> = st.windows.iter().map(|(cwd, exe)| ManifestWindow { cwd: cwd.clone(), exe: exe.clone() }).collect();
     windows.sort_by(|a, b| a.cwd.cmp(&b.cwd));
-    Manifest { format: MANIFEST_FORMAT, written_by: crate::version_string(), sessions, windows }
+    let mut m = Manifest { format: MANIFEST_FORMAT, written_by: crate::version_string(), sessions, windows };
+    if !m.has_grace() {
+        m.format = MANIFEST_FORMAT_V1;
+    }
+    m
 }
 
 /// Creates the dir when missing and makes it private whatever mode it had.
@@ -137,9 +160,10 @@ fn ensure_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Format 2 only while a grace runs; format 1 otherwise, whatever `m.format` says.
 pub fn write_manifest(dir: &Path, m: &Manifest) -> io::Result<()> {
     ensure_dir(dir)?;
-    let body = postcard::to_allocvec(m).map_err(io::Error::other)?;
+    let body = if m.has_grace() { postcard::to_allocvec(m) } else { postcard::to_allocvec(&m.to_v1()) }.map_err(io::Error::other)?;
     crate::handover::atomic_write(&manifest_path(dir), &[MANIFEST_MAGIC.as_slice(), &body].concat())
 }
 
@@ -159,8 +183,8 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>, String> {
     let (format, _) = postcard::take_from_bytes::<u32>(body).map_err(decode_err)?;
     match format {
         MANIFEST_FORMAT => postcard::from_bytes(body).map(Some).map_err(decode_err),
-        // Written by 0.2.12, before a restart that brought this daemon.
-        1 => postcard::from_bytes::<ManifestV1>(body).map(|m| Some(Manifest::from(m))).map_err(decode_err),
+        // Written by 0.2.12, or by this daemon with no grace running.
+        MANIFEST_FORMAT_V1 => postcard::from_bytes::<ManifestV1>(body).map(|m| Some(Manifest::from(m))).map_err(decode_err),
         // Garbage after the magic reads as some other format too, so this is a decode error.
         _ => Err(format!("cannot decode {}: manifest format {format} is not one this arkosd reads (1 to {MANIFEST_FORMAT})", path.display())),
     }
@@ -747,7 +771,7 @@ mod tests {
         let body = postcard::to_allocvec(&v1).unwrap();
         crate::handover::atomic_write(&manifest_path(dir.path()), &[MANIFEST_MAGIC.as_slice(), &body].concat()).unwrap();
         let m = read_manifest(dir.path()).unwrap().unwrap();
-        assert_eq!(m.format, MANIFEST_FORMAT);
+        assert_eq!(m.format, 1);
         assert_eq!(m.written_by, "arkosd 0.2.12 (old)");
         assert_eq!(m.windows, v1.windows);
         let s = &m.sessions[0];
@@ -757,6 +781,38 @@ mod tests {
         let body = postcard::to_allocvec(&(MANIFEST_FORMAT + 1)).unwrap();
         std::fs::write(manifest_path(dir.path()), [MANIFEST_MAGIC.as_slice(), &body].concat()).unwrap();
         assert!(read_manifest(dir.path()).unwrap_err().contains(&format!("format {}", MANIFEST_FORMAT + 1)));
+    }
+
+    /// After an automatic rollback the next login's `--recover` is 0.2.12's, which reads format
+    /// 1 only: the manifest is format 1 unless a closed tab's grace is running.
+    #[test]
+    fn a_manifest_is_format_1_without_a_grace_and_format_2_with_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (open, closed) = (seeded(16, b""), seeded(17, b""));
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().sessions.insert(open.id, open.clone());
+        state.lock().unwrap().windows.insert("/p".into(), None);
+        let m = manifest_of(&state.lock().unwrap());
+        assert_eq!(m.format, 1);
+        write_manifest(dir.path(), &m).unwrap();
+        // 0.2.12's reader: the magic, then the frozen format 1 shape.
+        let bytes = std::fs::read(manifest_path(dir.path())).unwrap();
+        assert_eq!(bytes[..MANIFEST_MAGIC.len()], MANIFEST_MAGIC);
+        let v1: ManifestV1 = postcard::from_bytes(&bytes[MANIFEST_MAGIC.len()..]).unwrap();
+        assert_eq!(v1.format, 1);
+        assert_eq!(v1.sessions.iter().map(|s| s.id).collect::<Vec<_>>(), vec![16]);
+        assert_eq!(v1.windows, m.windows);
+        assert_eq!(read_manifest(dir.path()), Ok(Some(m)));
+        state.lock().unwrap().sessions.insert(closed.id, closed.clone());
+        closed.set_grace(60);
+        let m = manifest_of(&state.lock().unwrap());
+        assert_eq!(m.format, 2);
+        write_manifest(dir.path(), &m).unwrap();
+        let bytes = std::fs::read(manifest_path(dir.path())).unwrap();
+        assert_eq!(postcard::take_from_bytes::<u32>(&bytes[MANIFEST_MAGIC.len()..]).unwrap().0, 2);
+        assert_eq!(read_manifest(dir.path()), Ok(Some(m)));
+        let _ = open.kill();
+        let _ = closed.kill();
     }
 
     #[test]
