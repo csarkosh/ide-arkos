@@ -315,7 +315,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
 }
 
 fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
-    let (relaunch, ui_exe, ui_cwd) = {
+    let (relaunch, ui_exe, ui_cwd, clock) = {
         let mut st = state.lock().unwrap();
         if let Some(rec) = st.clients.get_mut(&client_id) {
             rec.connected = false;
@@ -326,16 +326,17 @@ fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
                 }
             }
         }
-        let gone = match st.clients.remove(&client_id) {
+        let (relaunch, ui_exe, ui_cwd) = match st.clients.remove(&client_id) {
             Some(rec) => (rec.relaunch, rec.ui_exe, rec.ui_cwd),
             None => return,
         };
         // The new window starts now: an applied update's grace counts from here.
-        if gone.0.is_some() {
-            crate::updates::apply::restart_clock(&mut st.update, updates_dir);
-        }
-        gone
+        let clock = if relaunch.is_some() { crate::updates::apply::restart_clock(&mut st.update, updates_dir) } else { None };
+        (relaunch, ui_exe, ui_cwd, clock)
     };
+    if let Some(line) = clock {
+        crate::journal::note(line);
+    }
     // The lock is released: launching never blocks other threads.
     if let Some((exe, cwd)) = relaunch {
         if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd), "relaunch the window asked for") {

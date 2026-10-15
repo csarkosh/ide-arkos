@@ -1855,10 +1855,13 @@ fn the_grace_counts_from_the_relaunch_so_a_slow_relaunch_keeps_the_old_bundle() 
 #[test]
 fn a_window_that_never_connects_rolls_the_bundle_back() {
     // The marker says an update was applied 25 s ago and nobody has connected: a daemon starting
-    // now rolls back and launches the old window in each remembered project.
+    // now rolls back and launches the old window in each remembered project, or, with none
+    // remembered (the 2026-10-15 case: the window was at `/`), once at `/`, the chooser.
     let home = tempfile::tempdir().unwrap();
     let installed = fake_installed_bundle(home.path(), "9.9.9", "fffffff");
     let old = fake_bundle_at(&home.path().join("Arkos IDE.app.old"), "0.0.1", "0000000");
+    let launches = home.path().join("launches");
+    std::fs::write(old.join("Contents/MacOS/arkos"), format!("#!/bin/sh\npwd -P >> '{}'\n", launches.display())).unwrap();
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("updates")).unwrap();
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 25;
@@ -1868,14 +1871,41 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
     // Read leniently: the bundle is briefly absent between the two renames of the rollback.
     wait_until(|| std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap_or_default().contains("0.0.1"), Duration::from_secs(5));
     assert!(!old.exists(), "renamed back");
-    assert!(!home.path().join("launches").exists(), "no project folder was remembered, so no window is launched");
+    wait_until(|| marker_written(&launches), Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(std::fs::read_to_string(&launches).unwrap(), "/\n", "no folder remembered: one window, at `/`, which shows the chooser");
     assert!(!d.updates_marker().exists());
     let mut c = d.connect();
     assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: Some(e), .. } if e.contains("rolled back")));
     let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
-    for step in ["marker found at start: 9.9.9", "reject 9.9.9", "rollback of 9.9.9: update 9.9.9 rolled back"] {
+    for step in ["marker found at start: 9.9.9", "reject 9.9.9", "rollback of 9.9.9: update 9.9.9 rolled back", "relaunch spawned (the previous app after a rollback, no folder remembered)"] {
         assert!(journal.contains(step), "{step:?} missing from the journal:\n{journal}");
     }
+}
+
+#[test]
+fn a_hello_naming_no_window_during_a_pending_apply_confirms_nothing() {
+    // `arkos doctor`'s Hello: pid 0 and no folder. It must not count as the new window.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    let mut doctor = d.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: 0, ui_exe: None, ui_cwd: PathBuf::new() };
+    assert!(matches!(doctor.request(hello), Response::Hello { .. }));
+    assert!(matches!(doctor.request(Request::UpdateStatus), Response::UpdateStatus { .. }));
+    drop(doctor);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(installed.with_extension("app.old").exists(), "not confirmed");
+    assert!(d.updates_marker().exists(), "still waiting for the new window");
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    assert!(journal.contains("pid none, no folder, protocol 4, during the pending apply of 9.9.9: does not confirm (no window pid)"), "{journal}");
+    assert!(!journal.contains("relaunch spawned"), "its disconnect relaunches nothing: {journal}");
 }
 
 #[test]

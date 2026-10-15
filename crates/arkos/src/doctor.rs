@@ -90,7 +90,9 @@ pub fn report(w: &Where, now: SystemTime) -> String {
     text.push_str(&read_lossy(&journal));
     section(&mut out, &format!("last {JOURNAL_LINES} lines of {}", journal.display()), &tail(&text, JOURNAL_LINES));
     let window_log = w.app_support.join("window.log");
-    section(&mut out, &format!("last {WINDOW_LOG_LINES} lines of {}", window_log.display()), &tail(&read_lossy(&window_log), WINDOW_LOG_LINES));
+    let mut text = read_lossy(&window_log.with_file_name("window.log.1"));
+    text.push_str(&read_lossy(&window_log));
+    section(&mut out, &format!("last {WINDOW_LOG_LINES} lines of {}", window_log.display()), &tail(&text, WINDOW_LOG_LINES));
     let reports: Vec<String> = recent_reports(&w.reports, now).into_iter().map(|p| p.display().to_string()).collect();
     section(&mut out, &format!("crash reports from the last day in {}", w.reports.display()), &reports);
     let _ = writeln!(out, "the daemon's own log: {}", w.socket.with_file_name("arkosd.log").display());
@@ -210,7 +212,8 @@ mod tests {
         std::fs::write(updates.join("rejected"), "0.2.4\n").unwrap();
         std::fs::write(updates.join("applied.json"), r#"{"version":"0.2.4"}"#).unwrap();
         let window: String = (0..30).map(|i| format!("window line {i}\n")).collect();
-        std::fs::write(support.join("window.log"), &window).unwrap();
+        std::fs::write(support.join("window.log.1"), &window[..window.find("window line 25").unwrap()]).unwrap();
+        std::fs::write(support.join("window.log"), &window[window.find("window line 25").unwrap()..]).unwrap();
         let bundle = root.path().join("Arkos IDE.app");
         std::fs::create_dir_all(bundle.with_extension("app.old")).unwrap();
         let reports = root.path().join("reports");

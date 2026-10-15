@@ -343,8 +343,9 @@ marker and the rejected versions, the last lines of the daemon's update journal 
 `window.log`, and any crash reports from the last day. The journal,
 `~/Library/Application Support/arkos/updates/journal.log`, has one timestamped line per step of
 each check, apply, relaunch, confirmation and rollback, including every Hello the daemon heard
-while it waited for the new window; `window.log` next to it keeps the output of every window the
-daemon launched. Both are what to attach to a bug report.
+while it waited for the new window. `~/Library/Application Support/arkos/window.log` keeps the
+output of every window the daemon launched. Both are what to attach to a bug report; both name
+the folders your windows had open, so look them over first.
 
 ### Renamed from Sarkos
 

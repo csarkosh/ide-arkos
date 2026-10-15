@@ -2,8 +2,9 @@
 //! one timestamped line per step of a check, an apply and its confirmation or rollback, written
 //! by the daemon whatever its stderr is (a daemon a window started inherits nothing useful), and
 //! rotated to `journal.log.1` at `JOURNAL_CAP`. And `window.log` next to the socket: the stdout
-//! and stderr of every window the daemon launches, truncated at each launch once over
-//! `WINDOW_LOG_CAP`. `arkos doctor` prints the end of both.
+//! and stderr of every window the daemon launches, rotated to `window.log.1` at a launch once
+//! over `WINDOW_LOG_CAP`, so the output of the window that died before it is kept. `arkos
+//! doctor` prints the end of both.
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -78,13 +79,13 @@ pub fn open_window_log() -> Option<File> {
     }
 }
 
-/// Opens `path` to append, emptying it first when it is over `cap` bytes.
+/// Opens `path` to append, first moving it to `<path>.1` (replacing the one there) when it is
+/// over `cap` bytes. Never emptied in place: the end of it may be why this launch happens.
 pub fn open_capped(path: &Path, cap: u64) -> std::io::Result<File> {
-    let f = OpenOptions::new().create(true).append(true).open(path)?;
-    if f.metadata()?.len() > cap {
-        f.set_len(0)?;
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > cap) {
+        std::fs::rename(path, rotated(path))?;
     }
-    Ok(f)
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 /// Local time with its offset, `2026-10-15 08:04:12 -0400`, to match what the user saw.
@@ -130,14 +131,18 @@ mod tests {
     }
 
     #[test]
-    fn the_window_log_appends_and_is_emptied_once_over_its_cap() {
+    fn the_window_log_appends_and_rotates_once_over_its_cap() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("window.log");
         open_capped(&path, 10).unwrap().write_all(b"first\n").unwrap();
         open_capped(&path, 10).unwrap().write_all(b"second\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n", "appended");
         open_capped(&path, 10).unwrap().write_all(b"third\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third\n", "over the cap: emptied first");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third\n", "over the cap: a new file");
+        assert_eq!(std::fs::read_to_string(rotated(&path)).unwrap(), "first\nsecond\n", "the old output is kept");
+        std::fs::write(&path, "0123456789ab\n").unwrap();
+        open_capped(&path, 10).unwrap();
+        assert_eq!(std::fs::read_to_string(rotated(&path)).unwrap(), "0123456789ab\n", "the older .1 is replaced");
     }
 
     #[test]
