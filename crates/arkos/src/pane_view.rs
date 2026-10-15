@@ -339,6 +339,7 @@ pub struct TabRename {
 
 /// Every tab's label and mark, in bar order; the bar and the overflow menu both show the labels.
 /// A name the user gave the tab replaces the automatic label; the mark still follows the shell.
+/// A viewer with unsaved edits ends its label in " •".
 fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark)> {
     p.tabs
         .iter()
@@ -346,7 +347,9 @@ fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark
         .map(|(idx, tab)| {
             let (label, mark) = automatic_label(root, p, idx, tab, cx);
             let named = p.ids.get(idx).and_then(|id| root.tree.tab_name(*id)).map(str::to_string);
-            (named.unwrap_or(label), mark)
+            let dirty = matches!(tab, Tab::Viewer { .. }) && p.ids.get(idx).and_then(|id| root.viewers.get(id)).is_some_and(|v| v.read(cx).dirty);
+            let label = named.unwrap_or(label);
+            (if dirty { format!("{label} •") } else { label }, mark)
         })
         .collect()
 }
@@ -365,7 +368,7 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab, cx: &Context<Ro
                 None => (tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))), TabMark::None),
             }
         }
-        Tab::Viewer { path } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
+        Tab::Viewer { path, .. } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
         // `browser_titles` holds a title only while a window is docked.
         Tab::Browser { url, .. } => (browser_label(p.ids.get(idx).and_then(|id| root.browser_titles.get(id)).map(String::as_str), url.as_deref()), TabMark::None),
     }
@@ -397,7 +400,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
-        Some(Tab::Viewer { path }) => match p.ids.get(p.active).copied() {
+        Some(Tab::Viewer { path, .. }) => match p.ids.get(p.active).copied() {
             Some(tab) => render_viewer(root, pane, tab, path, cx),
             None => div(),
         },
@@ -1306,7 +1309,7 @@ mod tests {
         use protocol::SessionId;
         assert_eq!(bar_height_for(Some(&Tab::Browser { url: None, app_mode: false })), slim_bar_height());
         assert_eq!(bar_height_for(Some(&Tab::Terminal { session: SessionId(1), cwd: None })), TAB_BAR_H);
-        assert_eq!(bar_height_for(Some(&Tab::Viewer { path: "/p/a.rs".into() })), TAB_BAR_H);
+        assert_eq!(bar_height_for(Some(&Tab::Viewer { path: "/p/a.rs".into(), mode: crate::tree::ViewMode::default() })), TAB_BAR_H);
         assert_eq!(bar_height_for(None), TAB_BAR_H);
         assert!(slim_bar_height() < TAB_BAR_H);
         assert_eq!(slim_bar_height(), 14.0);

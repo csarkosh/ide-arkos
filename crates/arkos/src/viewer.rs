@@ -3,24 +3,32 @@
 //! scroll position in lines (in display rows while the inline diff shows deleted lines);
 //! reloaded when the poll sees the file change. A file in a repository carries its diff
 //! against HEAD (`diff`), recomputed on every load and on the ten-second timer.
+//!
+//! A markdown file that is clean UTF-8 with one kind of line ending is also an editable
+//! `edit::Document`: edits mark the tab dirty and autosave a second later through `save_text`,
+//! and a change on disk either reloads the file or, over unsaved edits, raises a conflict.
 
 use crate::config_watch::fingerprint;
 use crate::diff::{self, DiffMarks};
+use crate::edit;
 use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
+use crate::md_blocks;
 use crate::motion::{self, Fades};
 use crate::palette::Rgb;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
-use crate::tree::{PaneId, Tab, TabId};
+use crate::tree::{PaneId, Tab, TabId, ViewMode};
 use crate::viewer;
 use crate::Root;
-use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, EntityId, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
-use std::io::Read;
+use gpui::{div, prelude::*, px, App, ClickEvent, Context, Div, Entity, EntityId, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
+use std::io::{Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 /// Bytes a binary check looks at: a NUL in the first 8 KiB means not text.
 pub const SNIFF: usize = 8 * 1024;
@@ -30,6 +38,185 @@ pub const MAX_PLAIN_BYTES: u64 = 64 << 20;
 /// A file with a line longer than this (a minified bundle, a one-line JSON dump) is shown
 /// plain: the grammars would chew on the whole line at once.
 pub const MAX_LINE_BYTES: usize = 8 * 1024;
+/// How long after the last edit the document is written.
+pub const AUTOSAVE_DELAY: Duration = Duration::from_secs(1);
+/// How long a close or a quit waits for a save already on its way before writing itself.
+pub const SAVE_WAIT: Duration = Duration::from_millis(500);
+
+/// Numbers the temp files of saves, so two saves in flight never share one.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Whether a viewer of `path` holds an editable markdown document: the extension is `md`,
+/// `markdown` or `mdx`, in any case.
+pub fn is_markdown(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["md", "markdown", "mdx"].iter().any(|m| e.eq_ignore_ascii_case(m)))
+}
+
+/// Why a markdown file is shown read-only instead of as a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnlyWhy {
+    /// The bytes are not strict UTF-8; saving the lossy text would corrupt them.
+    NotUtf8,
+    /// `\r\n` and a bare `\n` both occur; a save could keep only one.
+    MixedEndings,
+}
+
+/// What the viewer tells `Root`, which keeps the tab bar and the preview tab in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerEvent {
+    /// The document changed: the tab is dirty and is no longer a preview.
+    Edited,
+    Saved,
+    SaveFailed,
+}
+
+/// What a load that found the file changed does to a viewer holding a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskChange {
+    /// The file is what the viewer last wrote or read, or a save is in flight and the change is
+    /// looked at again when it lands.
+    Ignore,
+    /// Someone else changed the file under unsaved edits: the user decides.
+    Conflict,
+    Reload,
+}
+
+/// What a load that found the file changed should do. `disk` is the file's fingerprint now,
+/// `known` the one the viewer holds.
+pub fn disk_change(disk: Option<(u128, u64)>, known: Option<(u128, u64)>, dirty: bool, saving: bool) -> DiskChange {
+    if disk == known || saving {
+        DiskChange::Ignore
+    } else if dirty {
+        DiskChange::Conflict
+    } else {
+        DiskChange::Reload
+    }
+}
+
+/// Whether the autosave timer that carried `carried` may write now: no newer edit rescheduled
+/// it, there is something to write, no conflict waits for the user, no save is in flight, and no
+/// input method composition is half done.
+pub fn autosave_due(carried: u64, save_seq: u64, dirty: bool, conflict: bool, saving: bool, composing: bool) -> bool {
+    carried == save_seq && dirty && !conflict && !saving && !composing
+}
+
+/// The part of a viewer the conflict buttons change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConflictState {
+    pub conflict: bool,
+    pub dirty: bool,
+    pub save_seq: u64,
+}
+
+/// What follows a conflict button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictAction {
+    /// Keep mine: write the document over the file now.
+    SaveNow,
+    /// Reload: drop the edits and read the file again.
+    Reload,
+}
+
+impl ConflictState {
+    /// "Keep mine" keeps the edits and saves them; "Reload" drops them and bumps the sequence, so
+    /// an autosave timer still pending finds nothing to write.
+    pub fn resolve(self, keep_mine: bool) -> (ConflictState, ConflictAction) {
+        if keep_mine {
+            (ConflictState { conflict: false, ..self }, ConflictAction::SaveNow)
+        } else {
+            (ConflictState { conflict: false, dirty: false, save_seq: self.save_seq + 1 }, ConflictAction::Reload)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum SaveError {
+    /// The file is not the one the viewer last read or wrote: another writer got there first, or
+    /// it went away. Nothing was written.
+    Changed,
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for SaveError {
+    fn from(e: std::io::Error) -> Self {
+        SaveError::Io(e)
+    }
+}
+
+/// Writes `text` to `path` and returns the file's fingerprint taken right after the write, so
+/// the watcher's next look at the file sees nothing new. With `expect`, a file whose fingerprint
+/// is not `expect` is left alone (`SaveError::Changed`); `None` writes regardless ("Keep mine").
+///
+/// A regular file is replaced atomically: a temp file `.{name}.arkos-{pid}-{n}.tmp` beside it
+/// takes the text and the target's permissions, is synced, and is renamed over the target. A
+/// directory that refuses the temp file refuses the save; the file is never half written. A
+/// symlink is written in place through the link, since a rename would replace the link itself.
+pub fn save_text(path: &Path, text: &str, expect: Option<(u128, u64)>) -> Result<(u128, u64), SaveError> {
+    if expect.is_some() && fingerprint(path) != expect {
+        return Err(SaveError::Changed);
+    }
+    let is_link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if is_link {
+        // Opening follows the link; without `create` a dangling link is an error, not a new file.
+        let mut f = std::fs::OpenOptions::new().write(true).truncate(true).open(path)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+    } else {
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let name = path.file_name().ok_or_else(|| std::io::Error::other("the path has no file name"))?;
+        let tmp = parent.join(format!(".{}.arkos-{}-{}.tmp", name.to_string_lossy(), std::process::id(), TEMP_SEQ.fetch_add(1, Ordering::Relaxed)));
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let written = (|| {
+            file.write_all(text.as_bytes())?;
+            if let Ok(meta) = std::fs::metadata(path) {
+                file.set_permissions(meta.permissions())?;
+            }
+            file.sync_all()?;
+            std::fs::rename(&tmp, path)
+        })();
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(SaveError::Io(e));
+        }
+    }
+    fingerprint(path).ok_or_else(|| SaveError::Io(std::io::Error::other("the file is gone right after the write")))
+}
+
+/// A background save as a close or a quit sees it: they may not block on the UI thread for the
+/// save to land, so the writer reports here as soon as the write is done.
+#[derive(Default)]
+pub struct SaveFlight {
+    /// `Some` once the write finished: the fingerprint it left, or `None` when it failed.
+    done: Mutex<Option<Option<(u128, u64)>>>,
+    finished: Condvar,
+}
+
+impl SaveFlight {
+    fn finish(&self, fp: Option<(u128, u64)>) {
+        if let Ok(mut done) = self.done.lock() {
+            *done = Some(fp);
+        }
+        self.finished.notify_all();
+    }
+
+    /// Waits up to `limit` for the write: `None` while it is still running.
+    fn wait(&self, limit: Duration) -> Option<Option<(u128, u64)>> {
+        let done = self.done.lock().ok()?;
+        let (done, _) = self.finished.wait_timeout_while(done, limit, |d| d.is_none()).ok()?;
+        *done
+    }
+}
+
+/// The document a markdown file becomes, or why it stays read-only: strict UTF-8 with one kind
+/// of line ending.
+fn markdown_document(bytes: &[u8]) -> Result<edit::Document, ReadOnlyWhy> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ReadOnlyWhy::NotUtf8)?;
+    let crlf = text.matches("\r\n").count();
+    if crlf != 0 && crlf != text.matches('\n').count() {
+        return Err(ReadOnlyWhy::MixedEndings);
+    }
+    Ok(edit::Document::from_text(text))
+}
 
 /// Why a text file is shown without colours, under a banner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +359,11 @@ pub struct Loaded {
     /// The changes against HEAD; `None` outside a repository, for a file HEAD lacks, a clean
     /// file, or one shown plain for its size.
     pub diff: Option<DiffMarks>,
+    /// The editable document, built on the background thread for a markdown file that is strict
+    /// UTF-8 with one kind of line ending (a byte order mark is set aside in `Document.bom`).
+    pub doc: Option<edit::Document>,
+    /// Why a markdown file is shown read-only; `None` for every other file.
+    pub read_only: Option<ReadOnlyWhy>,
 }
 
 pub struct Viewer {
@@ -200,7 +392,36 @@ pub struct Viewer {
     pub diff: Option<DiffMarks>,
     /// The deleted lines are shown between the current ones; the scroll is then in display rows.
     pub inline_diff: bool,
+    /// A markdown file's editable text; `content.lines` shares its lines.
+    pub doc: Option<edit::Document>,
+    pub caret: edit::Caret,
+    /// The document's top-level blocks, spliced on every edit.
+    pub blocks: Vec<md_blocks::Block>,
+    pub mode: ViewMode,
+    /// Edits not yet on disk: the tab's label ends in " •".
+    pub dirty: bool,
+    /// The file changed on disk under unsaved edits; nothing is written until the user picks.
+    pub conflict: bool,
+    /// A background save is on its way.
+    pub saving: bool,
+    /// An autosave came due while a save was in flight: save again when it lands.
+    pub save_again: bool,
+    /// The last save's failure, for the banner.
+    pub save_error: Option<String>,
+    /// Numbers every edit (and a dropped edit set), so a save knows whether what it wrote is still
+    /// the latest and an autosave timer whether a newer edit took over.
+    pub save_seq: u64,
+    /// The input method's uncommitted text, while a composition is in progress.
+    pub marked: Option<Range<edit::Pos>>,
+    pub read_only: Option<ReadOnlyWhy>,
+    /// A watcher pass was ignored because a save was in flight: look at the file again once it
+    /// lands.
+    pub recheck_after_save: bool,
+    /// The save in flight with the sequence it wrote, for a close or a quit to wait on.
+    flight: Option<(u64, Arc<SaveFlight>)>,
 }
+
+impl EventEmitter<ViewerEvent> for Viewer {}
 
 impl Viewer {
     pub fn new(path: PathBuf, font_size: f32, line_height: f32, cx: &mut Context<Self>) -> Self {
@@ -222,6 +443,20 @@ impl Viewer {
             find_seq: 0,
             diff: None,
             inline_diff: false,
+            doc: None,
+            caret: edit::Caret::default(),
+            blocks: Vec::new(),
+            mode: ViewMode::default(),
+            dirty: false,
+            conflict: false,
+            saving: false,
+            save_again: false,
+            save_error: None,
+            save_seq: 0,
+            marked: None,
+            read_only: None,
+            recheck_after_save: false,
+            flight: None,
         }
     }
 
@@ -279,6 +514,30 @@ impl Viewer {
         self.fingerprint = loaded.fingerprint;
         self.plain = loaded.plain;
         self.diff = loaded.diff;
+        self.read_only = loaded.read_only;
+        match (self.doc.take(), loaded.doc) {
+            // The same text again: the old document stays, and with it the undo history.
+            (Some(old), Some(new)) if old.to_text() == new.to_text() => {
+                self.content = Content::Text { lines: old.shared_lines(), spans: Vec::new() };
+                self.doc = Some(old);
+            }
+            (_, new) => self.doc = new,
+        }
+        match &self.doc {
+            Some(doc) => {
+                self.caret = edit::Caret { head: doc.clamp(self.caret.head), anchor: doc.clamp(self.caret.anchor), goal_col: None };
+                self.blocks = md_blocks::split(doc.lines());
+            }
+            None => {
+                self.caret = edit::Caret::default();
+                self.blocks.clear();
+            }
+        }
+        // What is shown is what is on disk now.
+        self.dirty = false;
+        self.conflict = false;
+        self.save_error = None;
+        self.marked = None;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -287,6 +546,269 @@ impl Viewer {
         }
         self.search(false, cx);
         cx.notify();
+    }
+
+    /// Runs an edit on the document with the caret and the time, and takes the caret it returns.
+    /// Nothing happens without a document.
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        let old_lines = doc.shared_lines();
+        self.caret = f(doc, self.caret, Instant::now());
+        self.changed(old_lines, cx);
+    }
+
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn undo(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        let old_lines = doc.shared_lines();
+        if let Some(caret) = doc.undo() {
+            self.caret = caret;
+            self.changed(old_lines, cx);
+        }
+    }
+
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn redo(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        let old_lines = doc.shared_lines();
+        if let Some(caret) = doc.redo() {
+            self.caret = caret;
+            self.changed(old_lines, cx);
+        }
+    }
+
+    /// After an edit, undo or redo: the shown lines become the document's, the blocks are
+    /// spliced, the diff waits for the next save, the tab is dirty and the autosave is scheduled.
+    fn changed(&mut self, old_lines: Arc<Vec<String>>, cx: &mut Context<Self>) {
+        let Some(doc) = &self.doc else { return };
+        let new_lines = doc.shared_lines();
+        // `old_lines` holds the buffer, so any edit copied it: the same buffer means no edit (an
+        // empty insert, a delete at the document's edge), only perhaps a caret move.
+        if Arc::ptr_eq(&old_lines, &new_lines) {
+            cx.notify();
+            return;
+        }
+        // This needs the old text, so the edit above copied the lines once: the price of
+        // comparing blocks by their text.
+        let new_blocks = md_blocks::split(&new_lines);
+        let (range, count) = md_blocks::changed_blocks(&self.blocks, &old_lines, &new_blocks, &new_lines);
+        let tail = range.start + count;
+        self.blocks.splice(range.clone(), new_blocks[range.start..tail].iter().cloned());
+        // The blocks after the change kept their kind and text but may have moved.
+        for (block, new) in self.blocks[tail..].iter_mut().zip(&new_blocks[tail..]) {
+            block.lines = new.lines.clone();
+        }
+        self.content = Content::Text { lines: new_lines, spans: Vec::new() };
+        // The marks point at lines that may have moved; the next save computes them again.
+        self.diff = None;
+        self.scroll.clamp_max(self.max_scroll());
+        if let Some(f) = &mut self.find {
+            // The old hits point into the old lines.
+            f.hits.clear();
+        }
+        self.search(false, cx);
+        self.dirty = true;
+        self.save_seq += 1;
+        self.schedule_autosave(cx);
+        cx.emit(ViewerEvent::Edited);
+        cx.notify();
+    }
+
+    /// Saves `AUTOSAVE_DELAY` after this edit unless a newer edit, a reload or a conflict came
+    /// first. A save still in flight then is asked to run again when it lands.
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        let seq = self.save_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DELAY).await;
+            let _ = this.update(cx, |v, cx| {
+                if seq == v.save_seq && v.saving {
+                    v.save_again = true;
+                } else if autosave_due(seq, v.save_seq, v.dirty, v.conflict, v.saving, v.marked.is_some()) {
+                    v.save(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn set_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        if let Some(doc) = &mut self.doc {
+            doc.break_coalescing();
+        }
+        cx.notify();
+    }
+
+    /// Writes the document on the background executor, refusing when the file changed since it
+    /// was read or last written (that raises the conflict instead). A save already in flight
+    /// runs this again when it lands.
+    pub fn save(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = &self.doc else { return };
+        if self.saving {
+            self.save_again = true;
+            return;
+        }
+        if self.conflict {
+            return;
+        }
+        self.saving = true;
+        let (text, expect, seq, applied, path) = (doc.to_text(), self.fingerprint, self.save_seq, self.applied, self.path.clone());
+        let flight = Arc::new(SaveFlight::default());
+        self.flight = Some((seq, flight.clone()));
+        cx.spawn(async move |this, cx| {
+            let report = flight.clone();
+            let (result, text) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = save_text(&path, &text, expect);
+                    report.finish(result.as_ref().ok().copied());
+                    (result, text)
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| v.save_landed(result, seq, applied, text, &flight, cx));
+        })
+        .detach();
+    }
+
+    fn save_landed(&mut self, result: Result<(u128, u64), SaveError>, seq: u64, applied: u64, text: String, flight: &Arc<SaveFlight>, cx: &mut Context<Self>) {
+        // A close that waited for this write took it over and already settled the state.
+        if !self.flight.as_ref().is_some_and(|(_, f)| Arc::ptr_eq(f, flight)) {
+            return;
+        }
+        self.flight = None;
+        self.saving = false;
+        match result {
+            Ok(fp) => {
+                self.fingerprint = Some(fp);
+                // An edit made while the write ran is still to be written.
+                self.dirty = self.save_seq != seq;
+                self.save_error = None;
+                self.rediff_saved(text, seq, applied, cx);
+                cx.emit(ViewerEvent::Saved);
+            }
+            Err(SaveError::Changed) => self.conflict = true,
+            Err(SaveError::Io(e)) => {
+                self.save_error = Some(format!("cannot save {}: {e}", self.path.display()));
+                cx.emit(ViewerEvent::SaveFailed);
+            }
+        }
+        if std::mem::take(&mut self.save_again) && self.dirty && !self.conflict {
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
+    /// The diff against HEAD for the text a save wrote, as `Root::rediff_viewers` computes it. It
+    /// lands only while that text is still what the viewer shows.
+    fn rediff_saved(&mut self, text: String, seq: u64, applied: u64, cx: &mut Context<Self>) {
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let diff = cx.background_executor().spawn(async move { diff_of(&path, &split_lines(&text)) }).await;
+            let _ = this.update(cx, |v, cx| {
+                if v.save_seq == seq && v.applied == applied {
+                    v.set_diff(diff, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Writes unsaved edits now, on the calling thread, for a tab that closes or a window that
+    /// quits. A save in flight is waited for, up to `SAVE_WAIT`; one still running then is written
+    /// over without the fingerprint check (its own write may be what changed the file). `Err`
+    /// says why the edits are not on disk: a conflict or a write error.
+    pub fn save_now(&mut self) -> Result<(), String> {
+        let Some(doc) = &self.doc else { return Ok(()) };
+        if !self.dirty && !self.saving {
+            return Ok(());
+        }
+        if self.conflict {
+            return Err(format!("{} changed on disk; edits not saved", self.path.display()));
+        }
+        let mut expect = self.fingerprint;
+        if let Some((seq, flight)) = self.flight.take() {
+            self.saving = false;
+            match flight.wait(SAVE_WAIT) {
+                Some(Some(fp)) => {
+                    expect = Some(fp);
+                    self.fingerprint = Some(fp);
+                    if seq == self.save_seq {
+                        self.dirty = false;
+                    }
+                }
+                // It failed: the file is as it was, and so is the expectation.
+                Some(None) => {}
+                None => expect = None,
+            }
+        }
+        if !self.dirty {
+            return Ok(());
+        }
+        match save_text(&self.path, &doc.to_text(), expect) {
+            Ok(fp) => {
+                self.fingerprint = Some(fp);
+                self.dirty = false;
+                self.save_error = None;
+                Ok(())
+            }
+            Err(SaveError::Changed) => {
+                self.conflict = true;
+                Err(format!("{} changed on disk; edits not saved", self.path.display()))
+            }
+            Err(SaveError::Io(e)) => {
+                let message = format!("cannot save {}: {e}", self.path.display());
+                self.save_error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// The conflict's two buttons: keep mine writes the document over the file at once, adopting
+    /// the file's fingerprint so the save's check passes; reload drops the edits.
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn resolve_conflict(&mut self, keep_mine: bool, cx: &mut Context<Self>) {
+        let (next, action) = ConflictState { conflict: self.conflict, dirty: self.dirty, save_seq: self.save_seq }.resolve(keep_mine);
+        self.conflict = next.conflict;
+        self.dirty = next.dirty;
+        self.save_seq = next.save_seq;
+        match action {
+            ConflictAction::SaveNow => {
+                self.fingerprint = fingerprint(&self.path);
+                self.save(cx);
+            }
+            ConflictAction::Reload => self.reload_document(cx),
+        }
+        cx.notify();
+    }
+
+    /// Reads the file again and shows it, whatever its fingerprint. A markdown file needs neither
+    /// the highlighter nor the size limit. An edit made before it lands keeps the conflict up
+    /// instead.
+    fn reload_document(&mut self, cx: &mut Context<Self>) {
+        self.loads += 1;
+        let (seq, path) = (self.loads, self.path.clone());
+        cx.spawn(async move |this, cx| {
+            let loaded = cx.background_executor().spawn(async move { read_file(&path, None, None, usize::MAX, true) }).await;
+            let Some(loaded) = loaded else { return };
+            let _ = this.update(cx, |v, cx| {
+                if !should_apply(seq, v.applied) {
+                    return;
+                }
+                if v.dirty {
+                    v.conflict = true;
+                    cx.notify();
+                    return;
+                }
+                v.applied = seq;
+                v.apply(loaded, cx);
+            });
+        })
+        .detach();
     }
 
     pub fn scroll_lines(&mut self, lines: f32, cx: &mut Context<Self>) {
@@ -394,6 +916,10 @@ impl Viewer {
 /// fingerprint is still `known` (nothing to reload). Over `limit`, or with a line over
 /// `MAX_LINE_BYTES`, the text is shown plain; binaries and unreadable files say so. With
 /// `with_diff`, text not shown plain for its size is diffed against its worktree's HEAD.
+///
+/// A markdown file is never highlighted and has no size limit but `MAX_PLAIN_BYTES`: clean UTF-8
+/// with one kind of line ending becomes a document whose lines (tabs kept, the empty last line
+/// after a final break kept) are the content's; anything else is plain text, read-only, saying why.
 pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize, with_diff: bool) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
@@ -403,10 +929,23 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         let spans = vec![Vec::new(); lines.len()];
         Content::Text { lines: Arc::new(lines), spans }
     };
+    let mut doc = None;
+    let mut read_only = None;
     let (content, why_plain) = match read_capped(path) {
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
         Ok(Capped::Binary) => (Content::Binary, None),
+        Ok(Capped::Bytes(bytes)) if is_markdown(path) => match markdown_document(&bytes) {
+            Ok(d) => {
+                let lines = d.shared_lines();
+                doc = Some(d);
+                (Content::Text { lines, spans: Vec::new() }, None)
+            }
+            Err(why) => {
+                read_only = Some(why);
+                (plain(split_lines(&String::from_utf8_lossy(&bytes))), None)
+            }
+        },
         Ok(Capped::Bytes(bytes)) => match classify(&bytes, limit) {
             Classified::Binary => (Content::Binary, None),
             Classified::TooBig => (plain(split_lines(&String::from_utf8_lossy(&bytes))), Some(Plain::TooBig)),
@@ -424,11 +963,14 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
             }
         },
     };
-    let diff = match &content {
-        Content::Text { lines, .. } if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
+    let diff = match (&content, &doc) {
+        // The base is split the same way, so the document's text is too (tabs expanded, no empty
+        // last line).
+        (_, Some(d)) if with_diff => diff_of(path, &split_lines(&d.to_text())),
+        (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
         _ => None,
     };
-    Some(Loaded { content, fingerprint, plain: why_plain, diff })
+    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only })
 }
 
 /// The file's changes against its worktree's HEAD, or `None` when it has no base or no changes.
@@ -573,7 +1115,30 @@ impl Root {
             return v.clone();
         }
         let (font_size, line_height) = (self.font_size, self.line_height);
-        let v = cx.new(|cx| Viewer::new(path.to_path_buf(), font_size, line_height, cx));
+        let mode = match self.tree.locate(tab).and_then(|(pane, idx)| self.tree.pane(pane)?.tabs.get(idx)) {
+            Some(Tab::Viewer { mode, .. }) => *mode,
+            _ => ViewMode::default(),
+        };
+        let v = cx.new(|cx| {
+            let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
+            v.mode = mode;
+            v
+        });
+        cx.subscribe(&v, move |root, v, event: &ViewerEvent, cx| {
+            match event {
+                // An edited preview is kept: the next file opens in a tab of its own.
+                ViewerEvent::Edited if root.preview_tab == Some(tab) => root.preview_tab = None,
+                ViewerEvent::Edited | ViewerEvent::SaveFailed => {}
+                ViewerEvent::Saved => {
+                    if v.update(cx, |v, _| std::mem::take(&mut v.recheck_after_save)) {
+                        root.load(tab, true, cx);
+                    }
+                }
+            }
+            // The tab's label shows whether it is dirty.
+            cx.notify();
+        })
+        .detach();
         self.viewers.insert(tab, v.clone());
         self.load_viewer(tab, cx);
         v
@@ -595,12 +1160,13 @@ impl Root {
         !tabs.is_empty()
     }
 
-    /// Reloads the viewers whose colours depend on the highlighter: plain text, binaries and
-    /// files too large to show have nothing to recolour.
+    /// Reloads the viewers whose colours depend on the highlighter: plain text, binaries, files
+    /// too large to show and markdown documents (a theme change repaints them) have nothing to
+    /// recolour.
     pub(crate) fn reload_all_viewers(&mut self, cx: &mut Context<Self>) {
         let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| {
             let v = v.read(cx);
-            v.plain.is_none() && matches!(v.content, viewer::Content::Text { .. })
+            v.plain.is_none() && v.doc.is_none() && matches!(v.content, viewer::Content::Text { .. })
         }).map(|(t, _)| *t).collect();
         for tab in tabs {
             self.load_viewer(tab, cx);
@@ -613,17 +1179,29 @@ impl Root {
     pub(crate) fn rediff_viewers(&mut self, cx: &mut Context<Self>) {
         let viewers: Vec<Entity<Viewer>> = self.viewers.values().cloned().collect();
         for viewer in viewers {
-            let (path, lines, applied) = {
+            let (path, shown, text, applied) = {
                 let v = viewer.read(cx);
-                match &v.content {
-                    Content::Text { lines, .. } if v.loaded && v.plain != Some(Plain::TooBig) => (v.path.clone(), lines.clone(), v.applied),
+                match (&v.content, &v.doc) {
+                    // Unsaved edits have no diff until they are saved.
+                    (_, Some(_)) if v.dirty => continue,
+                    (Content::Text { lines, .. }, Some(doc)) if v.loaded => (v.path.clone(), lines.clone(), Some(doc.to_text()), v.applied),
+                    (Content::Text { lines, .. }, None) if v.loaded && v.plain != Some(Plain::TooBig) => (v.path.clone(), lines.clone(), None, v.applied),
                     _ => continue,
                 }
             };
             let weak = viewer.downgrade();
             cx.spawn(async move |_, cx| {
-                let shown = lines.clone();
-                let diff = cx.background_executor().spawn(async move { diff_of(&path, &lines) }).await;
+                let lines = shown.clone();
+                let diff = cx
+                    .background_executor()
+                    .spawn(async move {
+                        match text {
+                            // A document's lines keep their tabs; the base's are split for display.
+                            Some(text) => diff_of(&path, &split_lines(&text)),
+                            None => diff_of(&path, &lines),
+                        }
+                    })
+                    .await;
                 let _ = weak.update(cx, |v, cx| {
                     let same = matches!(&v.content, Content::Text { lines, .. } if Arc::ptr_eq(lines, &shown));
                     if v.applied == applied && same {
@@ -651,13 +1229,77 @@ impl Root {
             let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit, true) }).await;
             let Some(loaded) = loaded else { return };
             let _ = weak.update(cx, |v, cx| {
-                if should_apply(seq, v.applied) {
-                    v.applied = seq;
-                    v.apply(loaded, cx);
+                if !should_apply(seq, v.applied) {
+                    return;
                 }
+                // A document decides here, with the state it has now, never before the read.
+                if v.doc.is_some() {
+                    match disk_change(loaded.fingerprint, v.fingerprint, v.dirty, v.saving) {
+                        DiskChange::Ignore => {
+                            if v.saving && loaded.fingerprint != v.fingerprint {
+                                v.recheck_after_save = true;
+                            }
+                            return;
+                        }
+                        DiskChange::Conflict => {
+                            v.conflict = true;
+                            cx.notify();
+                            return;
+                        }
+                        DiskChange::Reload => {}
+                    }
+                }
+                v.applied = seq;
+                v.apply(loaded, cx);
             });
         })
         .detach();
+    }
+
+    /// The focused pane's active tab, when it is a viewer whose viewer exists.
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn active_viewer_tab(&self) -> Option<TabId> {
+        let p = self.tree.pane(self.tree.focused)?;
+        let id = *p.ids.get(p.active)?;
+        (matches!(p.tabs.get(p.active)?, Tab::Viewer { .. }) && self.viewers.contains_key(&id)).then_some(id)
+    }
+
+    /// Writes every viewer's unsaved edits now, on this thread, for a quit; returns the errors
+    /// (conflicts and failed writes), whose edits are not on disk.
+    pub fn save_dirty_viewers_now(&mut self, cx: &mut App) -> Vec<String> {
+        let viewers: Vec<Entity<Viewer>> = self.viewers.values().cloned().collect();
+        viewers
+            .into_iter()
+            .filter_map(|v| {
+                v.update(cx, |v, cx| {
+                    let saved = v.save_now();
+                    if saved.is_err() {
+                        cx.notify();
+                    }
+                    saved.err()
+                })
+            })
+            .collect()
+    }
+
+    /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer.
+    #[allow(dead_code)] // Used from Task 4 on.
+    pub fn toggle_markdown_view_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let Some((pane, idx)) = self.tree.locate(tab) else { return };
+        let Some(Tab::Viewer { path, mode }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
+        if !is_markdown(&path) {
+            return;
+        }
+        let next = match mode {
+            ViewMode::Rendered => ViewMode::Raw,
+            ViewMode::Raw => ViewMode::Rendered,
+        };
+        self.tree.set_viewer_mode(pane, idx, next);
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| v.set_mode(next, cx));
+        }
+        self.save(cx);
+        cx.notify();
     }
 
     /// The focused pane's active viewer, once its tab has been shown.
@@ -826,5 +1468,115 @@ mod tests {
         assert!(should_apply(5, 3), "newer than what is shown");
         assert!(!should_apply(3, 3), "already shown");
         assert!(!should_apply(2, 3), "an older load finishing late");
+    }
+
+    #[test]
+    fn markdown_is_known_by_extension() {
+        for p in ["a.md", "b.MD", "c.markdown", "d.mdx"] {
+            assert!(is_markdown(Path::new(p)), "{p}");
+        }
+        for p in ["a.rs", "README", "x.md.bak", "y.txt"] {
+            assert!(!is_markdown(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn a_save_restores_the_file_s_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("n.md");
+        std::fs::write(&path, "\u{feff}# T\r\n\r\ntext").unwrap();
+        let mut d = edit::Document::from_text(&std::fs::read_to_string(&path).unwrap());
+        assert!(d.bom && d.lines()[0] == "# T", "the BOM is a flag, not text");
+        d.insert(edit::Caret::default(), "X", std::time::Instant::now());
+        let fp = crate::config_watch::fingerprint(&path);
+        save_text(&path, &d.to_text(), fp).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), "\u{feff}X# T\r\n\r\ntext".as_bytes());
+    }
+
+    #[test]
+    fn a_save_is_atomic_keeps_permissions_follows_a_symlink_and_refuses_a_changed_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.md");
+        std::fs::write(&real, "old").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let fp = crate::config_watch::fingerprint(&link);
+        let after = save_text(&link, "new", fp).unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new", "written through the link");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+        assert_eq!(Some(after), crate::config_watch::fingerprint(&link), "the returned fingerprint is the file's");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let after2 = save_text(&real, "newer", Some(after)).unwrap();
+        assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600, "permissions copied onto the renamed file");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "no temp file left behind");
+        std::fs::write(&real, "someone else").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(matches!(save_text(&real, "mine", Some(after2)), Err(SaveError::Changed)), "another writer got there first");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "someone else", "and their file is untouched");
+        assert!(save_text(&real, "forced", None).is_ok(), "no expectation: Keep mine");
+    }
+
+    #[test]
+    fn an_unwritable_target_leaves_the_file_intact() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("ro");
+        std::fs::create_dir(&sub).unwrap();
+        let path = sub.join("a.md");
+        std::fs::write(&path, "keep").unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let fp = crate::config_watch::fingerprint(&path);
+        let err = save_text(&path, "lost?", fp);
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(err, Err(SaveError::Io(_))), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep");
+        assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 1, "no temp file left behind");
+    }
+
+    #[test]
+    fn the_disk_change_rule_ignores_our_own_write() {
+        let ours = Some((1, 10));
+        assert_eq!(disk_change(ours, ours, true, false), DiskChange::Ignore, "our own write seen while dirty again");
+        assert_eq!(disk_change(Some((2, 10)), ours, false, true), DiskChange::Ignore, "a save in flight: re-check when it lands");
+        assert_eq!(disk_change(Some((2, 10)), ours, true, false), DiskChange::Conflict);
+        assert_eq!(disk_change(Some((2, 10)), ours, false, false), DiskChange::Reload);
+        assert_eq!(disk_change(None, ours, false, false), DiskChange::Reload, "the file went away: reload shows why");
+    }
+
+    #[test]
+    fn a_timer_after_reload_does_not_write() {
+        assert!(autosave_due(3, 3, true, false, false, false));
+        assert!(!autosave_due(3, 4, true, false, false, false), "a newer edit rescheduled");
+        assert!(!autosave_due(3, 3, false, false, false, false), "nothing dirty: Reload bumped save_seq and cleared dirty");
+        assert!(!autosave_due(3, 3, true, true, false, false), "a conflict waits for the user");
+        assert!(!autosave_due(3, 3, true, false, true, false), "a save in flight: save_again instead");
+        assert!(!autosave_due(3, 3, true, false, false, true), "an IME composition in progress");
+    }
+
+    #[test]
+    fn the_conflict_buttons_do_what_they_say() {
+        // The pure state machine behind resolve_conflict: (conflict, dirty, save_seq) before and after.
+        let s = ConflictState { conflict: true, dirty: true, save_seq: 7 };
+        assert_eq!(s.resolve(true), (ConflictState { conflict: false, dirty: true, save_seq: 7 }, ConflictAction::SaveNow), "Keep mine saves at once, adopting the disk fingerprint");
+        assert_eq!(s.resolve(false), (ConflictState { conflict: false, dirty: false, save_seq: 8 }, ConflictAction::Reload), "Reload drops the edits and bumps the sequence so a pending timer stays quiet");
+    }
+
+    #[test]
+    fn markdown_loads_as_a_document_only_when_it_is_clean_utf8_with_one_ending() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("ok.md"); std::fs::write(&ok, "# a\n\tb\n").unwrap();
+        let l = read_file(&ok, None, None, 1 << 20, false).unwrap();
+        assert_eq!(l.doc.as_ref().unwrap().lines(), &["# a".to_string(), "\tb".to_string(), String::new()][..], "the document keeps its tab and its phantom last line");
+        assert_eq!(l.read_only, None);
+        let bad = dir.path().join("bad.md"); std::fs::write(&bad, b"# a\n\xff\n").unwrap();
+        let l = read_file(&bad, None, None, 1 << 20, false).unwrap();
+        assert!(l.doc.is_none()); assert_eq!(l.read_only, Some(ReadOnlyWhy::NotUtf8));
+        let mixed = dir.path().join("mixed.md"); std::fs::write(&mixed, "a\r\nb\nc").unwrap();
+        let l = read_file(&mixed, None, None, 1 << 20, false).unwrap();
+        assert!(l.doc.is_none()); assert_eq!(l.read_only, Some(ReadOnlyWhy::MixedEndings));
+        let rs = dir.path().join("x.rs"); std::fs::write(&rs, "fn main() {}\n").unwrap();
+        assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().doc.is_none(), "not markdown: no document");
     }
 }

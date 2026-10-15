@@ -13,7 +13,7 @@ pub const TITLE_BAR_H: f32 = 28.0;
 /// Room for the traffic lights, which macOS keeps drawing where it always does.
 const TRAFFIC_LIGHTS_W: f32 = 80.0;
 /// The system UI font, by gpui's name for it: the bar looks like the title bar it replaces.
-const UI_FONT: &str = ".SystemUIFont";
+pub const UI_FONT: &str = ".SystemUIFont";
 
 /// Width of one icon's click target, and the space between the two.
 pub const ICON_TARGET: f32 = 24.0;

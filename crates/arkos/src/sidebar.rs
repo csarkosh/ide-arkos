@@ -10,7 +10,7 @@ use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::sidebar;
-use crate::tree::{PaneId, Tab, TabId, Tree};
+use crate::tree::{PaneId, Tab, TabId, Tree, ViewMode};
 use crate::worktrees::{Worktree, WtRow};
 use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
@@ -1051,15 +1051,34 @@ impl Root {
                 idx
             }
             OpenPlan::Replace(idx) => {
-                // Same tab id, another file: the old viewer goes, the render makes the new one.
-                if let Some(id) = self.tree.tab_id(pane, idx) {
-                    self.viewers.remove(&id);
+                // Unsaved edits in the preview are written first (its first edit normally pins
+                // it). One that cannot be written stays, and the file opens in a tab of its own.
+                let viewer = self.tree.tab_id(pane, idx).and_then(|id| self.viewers.get(&id).cloned());
+                let kept = viewer.is_some_and(|v| {
+                    v.update(cx, |v, cx| match v.save_now() {
+                        Ok(()) => false,
+                        Err(e) => {
+                            eprintln!("arkos: {e}");
+                            cx.notify();
+                            true
+                        }
+                    })
+                });
+                if kept {
+                    let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
+                    self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
+                    idx
+                } else {
+                    // Same tab id, another file: the old viewer goes, the render makes the new one.
+                    if let Some(id) = self.tree.tab_id(pane, idx) {
+                        self.viewers.remove(&id);
+                    }
+                    self.tree.replace_tab(pane, idx, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
+                    idx
                 }
-                self.tree.replace_tab(pane, idx, Tab::Viewer { path: path.to_path_buf() });
-                idx
             }
             OpenPlan::Add => {
-                let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf() });
+                let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
                 self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
                 idx
             }
@@ -1531,7 +1550,7 @@ mod tests {
         tree.add_tab(pane, Tab::Terminal { session: SessionId(2), cwd: Some("/p-f".into()) });
         tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some("/p-f/sub".into()) });
         tree.add_tab(pane, Tab::Terminal { session: SessionId(4), cwd: Some("/p-feat".into()) });
-        tree.add_tab(pane, Tab::Viewer { path: "/p-f/a.rs".into() });
+        tree.add_tab(pane, Tab::Viewer { path: "/p-f/a.rs".into(), mode: ViewMode::default() });
         assert_eq!(terminals_inside(&tree, Path::new("/p-f")), 2, "by path components: /p-feat is not inside /p-f, a viewer is no terminal");
         assert_eq!(terminals_inside(&tree, Path::new("/elsewhere")), 0);
         assert_eq!(removed_notice(1), "worktree removed; 1 terminal was open in it");
@@ -1607,7 +1626,7 @@ mod tests {
         let pane = tree.panes()[0];
         // Nothing open yet: a new tab.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, false), OpenPlan::Add);
-        let a = tree.add_tab(pane, Tab::Viewer { path: "/p/a.rs".into() });
+        let a = tree.add_tab(pane, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
         let a_id = tree.tab_id(pane, a).unwrap();
         // The same file again, previewed: just activate it.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), Some(a_id), false), OpenPlan::Activate(a));

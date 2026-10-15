@@ -5,8 +5,7 @@
 //! Positions count Unicode scalar values (`Pos::ch`), never bytes, so a position stays valid
 //! whatever the line holds; the conversion to a byte offset happens inside this module. Every
 //! function is total: a position past the end is clamped, never indexed raw.
-// Used from Task 3 on.
-#![cfg_attr(not(test), allow(dead_code))]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -46,6 +45,7 @@ pub enum LineEnding {
 
 /// How far a delete reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub enum Unit {
     Grapheme,
     Word,
@@ -54,6 +54,7 @@ pub enum Unit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub enum Move {
     Left,
     Right,
@@ -82,8 +83,13 @@ struct Step {
 }
 
 pub struct Document {
-    lines: Vec<String>,
+    /// Shared with the viewer's content, the find and the diff. Every edit goes through
+    /// `Arc::make_mut`, which copies the lines only while someone else holds them.
+    lines: Arc<Vec<String>>,
     pub ending: LineEnding,
+    /// Whether the file started with a byte order mark, restored by `to_text`. The mark is never
+    /// part of the first line.
+    pub bom: bool,
     /// Whether the file ended with a line break, restored by `to_text`.
     pub trailing_newline: bool,
     undo: Vec<Step>,
@@ -172,16 +178,21 @@ fn end_of(from: Pos, text: &str) -> Pos {
 }
 
 impl Document {
-    /// The ending is taken from the first line break; an empty text is one empty line.
+    /// The ending is taken from the first line break; an empty text is one empty line. A leading
+    /// byte order mark is set aside as `bom`.
     pub fn from_text(text: &str) -> Document {
+        let (bom, text) = match text.strip_prefix('\u{feff}') {
+            Some(rest) => (true, rest),
+            None => (false, text),
+        };
         let ending = match text.find('\n') {
             Some(i) if text[..i].ends_with('\r') => LineEnding::CrLf,
             _ => LineEnding::Lf,
         };
         let trailing_newline = text.ends_with('\n');
         // A final line break leaves an empty last line, so the caret can sit after it.
-        let lines = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect();
-        Document { lines, ending, trailing_newline, undo: Vec::new(), redo: Vec::new(), last_typed: None }
+        let lines = Arc::new(text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect());
+        Document { lines, ending, bom, trailing_newline, undo: Vec::new(), redo: Vec::new(), last_typed: None }
     }
 
     pub fn to_text(&self) -> String {
@@ -189,7 +200,8 @@ impl Document {
             LineEnding::Lf => "\n",
             LineEnding::CrLf => "\r\n",
         };
-        let mut out = self.lines.join(eol);
+        let mut out = if self.bom { String::from("\u{feff}") } else { String::new() };
+        out.push_str(&self.lines.join(eol));
         // An empty last line already ends the text with a break; a typed-into one needs it added.
         if self.trailing_newline && !self.lines.last().is_some_and(|l| l.is_empty()) {
             out.push_str(eol);
@@ -201,6 +213,12 @@ impl Document {
         &self.lines
     }
 
+    /// The lines as the viewer's content holds them: a cheap clone of the shared buffer.
+    pub fn shared_lines(&self) -> Arc<Vec<String>> {
+        self.lines.clone()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
@@ -255,7 +273,7 @@ impl Document {
         if let Some(last) = new.last_mut() {
             last.push_str(&tail);
         }
-        self.lines.splice(from.line..=to.line, new);
+        Arc::make_mut(&mut self.lines).splice(from.line..=to.line, new);
         old
     }
 
@@ -275,6 +293,7 @@ impl Document {
     }
 
     /// Replaces the selection, if any, with `text`; `\n` splits lines.
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn insert(&mut self, caret: Caret, text: &str, now: Instant) -> Caret {
         let text = text.replace("\r\n", "\n");
         let (from, to) = self.selection(caret);
@@ -303,6 +322,7 @@ impl Document {
         self.commit(from, to, &text, caret, Caret::at(end_of(from, &text)), typed, now)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn delete_backward(&mut self, caret: Caret, unit: Unit, now: Instant) -> Caret {
         let (from, to) = self.selection(caret);
         if from != to {
@@ -346,6 +366,7 @@ impl Document {
         Caret::at(start)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn delete_forward(&mut self, caret: Caret, unit: Unit, now: Instant) -> Caret {
         let (from, to) = self.selection(caret);
         if from != to {
@@ -392,6 +413,7 @@ impl Document {
 
     /// Replaces a range as its own undo step, for the input method and the task toggle. Returns
     /// the end of the new text.
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn replace_range(&mut self, from: Pos, to: Pos, text: &str, now: Instant) -> Pos {
         let (from, to) = self.ordered(from, to);
         let text = text.replace("\r\n", "\n");
@@ -431,6 +453,7 @@ impl Document {
     /// The caret after a move. `select` keeps the anchor so the move extends the selection;
     /// otherwise the caret collapses. Left and Right with a selection and no `select` collapse to
     /// the selection's edge, as every Mac text field does.
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn move_by(&self, caret: Caret, m: Move, select: bool) -> Caret {
         let head = self.clamp(caret.head);
         let anchor = self.clamp(caret.anchor);
@@ -500,6 +523,7 @@ impl Document {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
     pub fn select_all(&self) -> Caret {
         Caret { head: self.end_pos(), anchor: Pos::default(), goal_col: None }
     }
@@ -537,9 +561,9 @@ mod tests {
         let mut d = doc("a, ");
         let c = d.delete_backward(at(0, 3), Unit::Word, t0());
         assert_eq!((d.lines()[0].as_str(), c.head.ch), ("a", 1));
-        let mut d = doc("one two");
+        let mut d = doc("one, two");
         let c = d.delete_forward(at(0, 3), Unit::Word, t0());
-        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("one", 3));
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("one, ", 3), "the word goes; the caret stays before the punctuation");
         assert_eq!(d.undo().map(|c| c.head.ch), Some(3));
         assert_eq!(d.redo().map(|c| c.head.ch), Some(3), "redo leaves the caret where the delete did");
         let mut d = doc("e\u{301}x"); // e with a combining accent, then x

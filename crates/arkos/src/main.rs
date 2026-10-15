@@ -1276,9 +1276,24 @@ impl Root {
     /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back: by the daemon when
     /// it speaks protocol 5 (a window that crashes in the minute orphans nothing), else by this
     /// window. A session whose shell has ended is killed at once and never enters the closed
-    /// stack.
+    /// stack. A viewer's unsaved edits are written first, on this thread; a tab whose file changed
+    /// on disk, or whose write failed, stays open with its banner.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
+        if let Some(viewer) = self.viewers.get(&id).cloned() {
+            let kept = viewer.update(cx, |v, cx| match v.save_now() {
+                Ok(()) => false,
+                Err(e) => {
+                    eprintln!("arkos: {e}");
+                    cx.notify();
+                    true
+                }
+            });
+            if kept {
+                cx.notify();
+                return;
+            }
+        }
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
@@ -1316,7 +1331,7 @@ impl Root {
             self.sessions.tab_closed(id);
         } else {
             let closed = match tab {
-                Tab::Viewer { path } => Closed::Viewer(path),
+                Tab::Viewer { path, .. } => Closed::Viewer(path),
                 Tab::Browser { url, app_mode } => {
                     // Its window is released where it was last shown; arkos never closes it.
                     self.release_browser_tab(id, cx);
@@ -2827,9 +2842,12 @@ impl Root {
     }
 
     /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen
-    /// them later) and the pending layout save is written. `goodbye` is whether a Goodbye was
-    /// queued just before, which the same wait covers.
-    pub fn flush_for_quit(&mut self, goodbye: bool) {
+    /// them later), unsaved markdown edits are written, and the pending layout save is written.
+    /// `goodbye` is whether a Goodbye was queued just before, which the same wait covers.
+    pub fn flush_for_quit(&mut self, goodbye: bool, cx: &mut App) {
+        for e in self.save_dirty_viewers_now(cx) {
+            eprintln!("arkos: quitting with unsaved edits: {e}");
+        }
         self.unpark_windows();
         let killed = self.end_closed_tabs();
         // The process may exit before the writer thread sends what is queued; wait for it, once
@@ -2843,13 +2861,13 @@ impl Root {
     /// The user is quitting: tell the daemon not to reopen this window after a restart, then
     /// the flush every quit does. Not for the relaunch an update makes (`RelaunchAccepted`) nor
     /// macOS's terminate (`says_goodbye`). Says it once.
-    pub fn leaving(&mut self) {
+    pub fn leaving(&mut self, cx: &mut App) {
         if self.said_goodbye {
             return;
         }
         self.said_goodbye = true;
         self.sessions.goodbye();
-        self.flush_for_quit(true);
+        self.flush_for_quit(true, cx);
     }
 
     /// A connection is up (the first one, or a reconnect): its session list reconciles the tree.
@@ -3042,7 +3060,7 @@ impl Root {
             Outcome::RelaunchAccepted => {
                 // No Goodbye: the daemon reopens this project after a rollback only while the
                 // folder is still in its window list.
-                self.flush_for_quit(false);
+                self.flush_for_quit(false, cx);
                 cx.quit();
             }
             Outcome::RelaunchRefused(e) => {
@@ -3796,9 +3814,9 @@ fn open_project_window(
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
             // Goodbye here, while everything runs; the close this quit makes finds it said.
-            quit_root.update(cx, |root, _| {
+            quit_root.update(cx, |root, cx| {
                 root.user_closing = true;
-                root.leaving();
+                root.leaving(cx);
             });
             cx.quit();
         });
@@ -3813,7 +3831,7 @@ fn open_project_window(
             let chooser = close_root.read(cx).chooser.filter(|h| cx.windows().iter().any(|w| w.window_id() == h.window_id()));
             match after_window_closed(left, project_open, chooser.is_some()) {
                 AfterClose::Quit => {
-                    close_root.update(cx, |root, _| if says_goodbye(root.user_closing, left) { root.leaving() } else { root.flush_for_quit(false) });
+                    close_root.update(cx, |root, cx| if says_goodbye(root.user_closing, left) { root.leaving(cx) } else { root.flush_for_quit(false, cx) });
                     cx.quit();
                 }
                 // Its own close comes back here with no window left, and quits as above.
@@ -3943,7 +3961,7 @@ mod tests {
         let mut tree = Tree::new(Tab::Terminal { session: SessionId(5), cwd: None });
         let root = tree.panes()[0];
         assert_eq!(focused_session_of(&tree), Some(SessionId(5)));
-        tree.add_tab(root, Tab::Viewer { path: "/f".into() });
+        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default() });
         tree.activate(root, 1);
         assert_eq!(focused_session_of(&tree), None);
     }

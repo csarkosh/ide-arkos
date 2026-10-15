@@ -48,6 +48,15 @@ impl Side {
     }
 }
 
+/// How a markdown viewer shows its document: rendered, with the block under the caret raw, or
+/// all of it as raw text. Other viewers ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ViewMode {
+    #[default]
+    Rendered,
+    Raw,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tab {
     /// `cwd` is the folder its shell was started in when that is not the project (a worktree):
@@ -58,8 +67,13 @@ pub enum Tab {
         #[serde(default)]
         cwd: Option<PathBuf>,
     },
-    /// Milestone 4's read-only viewer. Persisted now so the format does not change later.
-    Viewer { path: PathBuf },
+    /// Milestone 4's viewer; a markdown file is editable and keeps its mode. Absent in files from
+    /// before milestone 7, which means rendered.
+    Viewer {
+        path: PathBuf,
+        #[serde(default)]
+        mode: ViewMode,
+    },
     /// Milestone 5's browser pane: a placeholder a docked Chrome window sits on. Only the URL it
     /// opens with is kept (`None`: a blank window), never the window. `app_mode` opens it as a
     /// single-page window with no tab strip or address bar; absent in older files, which means a
@@ -413,6 +427,13 @@ impl Tree {
         idx
     }
 
+    /// Sets a viewer tab's mode; any other tab is left alone.
+    pub fn set_viewer_mode(&mut self, pane: PaneId, idx: usize, mode: ViewMode) {
+        if let Some(Tab::Viewer { mode: m, .. }) = self.pane_mut(pane).and_then(|p| p.tabs.get_mut(idx)) {
+            *m = mode;
+        }
+    }
+
     /// Swaps a tab's content in place; the tab keeps its id.
     pub fn replace_tab(&mut self, pane: PaneId, idx: usize, tab: Tab) {
         if let Some(p) = self.pane_mut(pane) {
@@ -507,7 +528,7 @@ impl Tree {
 
     /// The index of the viewer tab showing `path` in `pane`, if any.
     pub fn find_viewer(&self, pane: PaneId, path: &Path) -> Option<usize> {
-        self.pane(pane)?.tabs.iter().position(|t| matches!(t, Tab::Viewer { path: p } if p == path))
+        self.pane(pane)?.tabs.iter().position(|t| matches!(t, Tab::Viewer { path: p, .. } if p == path))
     }
 
     /// Where a tab is now: its pane and index. `None` once it has closed.
@@ -725,11 +746,23 @@ mod tests {
     fn find_viewer_locates_a_tab_by_path_in_one_pane() {
         let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = t.panes()[0];
-        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into() });
-        let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into() }).unwrap();
+        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into(), mode: ViewMode::default() }).unwrap();
         assert_eq!(t.find_viewer(root, Path::new("/p/a.rs")), Some(1));
         assert_eq!(t.find_viewer(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
         assert_eq!(t.find_viewer(right, Path::new("/p/b.rs")), Some(0));
+    }
+
+    #[test]
+    fn a_viewer_tab_s_mode_round_trips_and_an_old_file_renders() {
+        let mut t = Tree::new(Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Raw });
+        let json = serde_json::to_string(&t).unwrap();
+        let back: Tree = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.pane(back.panes()[0]).unwrap().tabs[0], Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Raw });
+        let old: Tree = serde_json::from_str(&json.replace(",\"mode\":\"Raw\"", "")).unwrap();
+        assert_eq!(old.pane(old.panes()[0]).unwrap().tabs[0], Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Rendered });
+        t.set_viewer_mode(t.panes()[0], 0, ViewMode::Rendered);
+        assert!(matches!(t.pane(t.panes()[0]).unwrap().tabs[0], Tab::Viewer { mode: ViewMode::Rendered, .. }));
     }
 
     #[test]

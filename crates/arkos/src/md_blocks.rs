@@ -12,7 +12,6 @@ pub const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
 pub enum BlockKind {
     Paragraph,
     Heading(u8),
@@ -29,7 +28,6 @@ pub enum BlockKind {
 /// A run of whole lines. Blank lines after a block belong to it; blank lines before the first
 /// block are a `Blank` block of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
 pub struct Block {
     pub lines: Range<usize>,
     pub kind: BlockKind,
@@ -38,7 +36,6 @@ pub struct Block {
 /// Splits the document into top-level blocks: block i covers its start line up to block i+1's
 /// start, so every line is in exactly one block. An empty slice has no blocks; a document with
 /// no content is one `Blank` block.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
 pub fn split(lines: &[String]) -> Vec<Block> {
     if lines.is_empty() {
         return Vec::new();
@@ -99,7 +96,7 @@ pub fn split(lines: &[String]) -> Vec<Block> {
 }
 
 /// The index of the block holding `line`; past the end, the last block.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn block_at(blocks: &[Block], line: usize) -> usize {
     blocks.partition_point(|b| b.lines.end <= line).min(blocks.len().saturating_sub(1))
 }
@@ -108,7 +105,6 @@ pub fn block_at(blocks: &[Block], line: usize) -> usize {
 /// `range` in the old list, replaced by `count` new blocks. Two blocks are equal when their kind,
 /// their line count and their joined text match, so a block that only moved down the document is
 /// unchanged and a block whose text changed is seen.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
 pub fn changed_blocks(old: &[Block], old_lines: &[String], new: &[Block], new_lines: &[String]) -> (Range<usize>, usize) {
     let same = |a: &Block, b: &Block| {
         let (ra, rb) = (a.lines.clone(), b.lines.clone());
@@ -372,7 +368,7 @@ pub fn source_offset_at(runs: &[Run], rendered_byte: usize) -> usize {
 /// The blank lines at the end of the block belong to it but are not a place for the caret, so an
 /// offset past the end clamps to the end of the block's last non-blank line, and a block of only
 /// blank lines clamps to its first line at column 0.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6 on.
 pub fn pos_of_offset(block: &Block, lines: &[String], byte: usize) -> edit::Pos {
     let first = block.lines.start.min(lines.len().saturating_sub(1));
     let end = block.lines.end.min(lines.len());
@@ -457,7 +453,7 @@ pub fn toggle_task(line: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub enum Mark {
     Marker,
     Heading,
@@ -470,7 +466,7 @@ pub enum Mark {
 /// A light colourer for one line of raw markdown: heading, list, task, fence and quote markers,
 /// emphasis and code pairs, links. Byte ranges that may leave gaps; the painter fills the gaps in
 /// the text colour.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn raw_marks(line: &str) -> Vec<(Range<usize>, Mark)> {
     let mut marks = Vec::new();
     let body = line.trim_start();
