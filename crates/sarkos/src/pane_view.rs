@@ -3,6 +3,7 @@
 
 use crate::drag;
 use crate::find;
+use crate::motion;
 use crate::pulse;
 use crate::sessions::Note;
 use crate::terminal::Terminal;
@@ -180,17 +181,21 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
-    if root.tab_menu == Some(pane) && !show_overflow(p.tabs.len()) {
+    let now = root.frame_now;
+    if root.tab_menu.value() == Some(&pane) && !show_overflow(p.tabs.len()) {
         // Down to one tab: the ⋯ button is gone, so its menu goes too and does not come back
         // with the next tab.
-        root.tab_menu = None;
+        root.tab_menu.hide(now);
     }
-    let menu = (root.tab_menu == Some(pane)).then(|| {
+    // Drawn while it fades out too; only the open menu takes clicks.
+    let live = root.tab_menu.value() == Some(&pane);
+    let menu = root.tab_menu.current(now).filter(|(p, _)| **p == pane).map(|(_, opacity)| {
         let mut m = div()
             .id(("menu", pane))
             .absolute()
-            .top(px(TAB_BAR_H))
+            .top(px(TAB_BAR_H - motion::lift(opacity, motion::MENU_LIFT)))
             .right_0()
+            .opacity(opacity)
             .min_w(px(180.0))
             .flex()
             .flex_col()
@@ -200,7 +205,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             .border_color(theme.chrome.border.hsla())
             .font_family(root.family())
             .text_size(px(12.0))
-            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+            .when(live, |m| m.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
         for (idx, label, active) in menu_rows(&p, &labels) {
             m = m.child(
                 div()
@@ -209,12 +214,13 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
                     .py(px(4.0))
                     .bg(if active { theme.chrome.tab_active.hsla() } else { theme.chrome.banner.hsla() })
                     .text_color(if active { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
-                    .cursor_pointer()
                     .child(label)
-                    .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                        root.close_tab_menu(cx);
-                        root.activate_tab(pane, idx, cx);
-                    })),
+                    .when(live, |row| {
+                        row.cursor_pointer().on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                            root.close_tab_menu(cx);
+                            root.activate_tab(pane, idx, cx);
+                        }))
+                    }),
             );
         }
         m

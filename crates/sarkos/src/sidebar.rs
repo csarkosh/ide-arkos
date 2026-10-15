@@ -5,6 +5,7 @@
 use crate::explorer;
 use crate::gitstatus::Status;
 use crate::keymap;
+use crate::motion;
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::theme::Theme;
@@ -136,8 +137,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             cx.stop_propagation();
             root.sidebar.worktrees_open = true;
             // A prompt already open keeps what was typed; it just takes the keys.
-            if root.wt_prompt.is_none() {
-                root.wt_prompt = Some(Prompt::new());
+            if root.wt_prompt.value().is_none() {
+                root.wt_prompt.show(Prompt::new(), Instant::now());
                 root.read_prompt_drivers(cx);
             }
             root.wt_focused = true;
@@ -161,7 +162,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                     if !root.sidebar.worktrees_open {
                         // A closed section cannot hold the keys or a prompt.
                         root.wt_focused = false;
-                        root.wt_prompt = None;
+                        root.wt_prompt.hide(Instant::now());
                     }
                     root.save(cx);
                     cx.notify();
@@ -303,8 +304,9 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                         // The root's mouse-down closes an open menu; this one just opened.
                         cx.stop_propagation();
                         let _ = w_menu.update(cx, |root, cx| {
-                            root.wt_menu = None;
-                            root.context_menu = Some(ContextMenu { path: p_menu.clone(), at: ev.position });
+                            let now = Instant::now();
+                            root.wt_menu.hide(now);
+                            root.context_menu.show(ContextMenu { path: p_menu.clone(), at: ev.position }, now);
                             cx.notify();
                         });
                     })
@@ -326,12 +328,15 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
 /// The right-click menu, drawn over everything at the click. A mouse-down anywhere else closes
 /// it (the root's listener); its own rows stop the event so their click lands.
 pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
-    let menu = root.context_menu.as_ref()?;
+    let (menu, opacity) = root.context_menu.current(root.frame_now)?;
+    // Drawn while it fades out too, but only the open menu occludes and takes clicks.
+    let live = root.context_menu.value().is_some();
     let c = &root.theme.chrome;
     let mut m = div()
         .absolute()
         .left(menu.at.x)
-        .top(menu.at.y)
+        .top(menu.at.y - px(motion::lift(opacity, motion::MENU_LIFT)))
+        .opacity(opacity)
         .min_w(px(200.0))
         .flex()
         .flex_col()
@@ -343,24 +348,16 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         .text_size(px(12.0))
         .text_color(c.text.hsla())
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
-        .occlude()
-        .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+        .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
     let hover = c.tab_active.hsla();
     for (i, (label, action)) in context_menu_items(&menu.path, &root.project).into_iter().enumerate() {
-        m = m.child(
-            div()
-                .id(("context-menu-row", i))
-                .px(px(10.0))
-                .py(px(4.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .child(label)
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                    run_menu_action(&action, cx);
-                    root.context_menu = None;
-                    cx.notify();
-                })),
-        );
+        m = m.child(div().id(("context-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
+            row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                run_menu_action(&action, cx);
+                root.context_menu.hide(Instant::now());
+                cx.notify();
+            }))
+        }));
     }
     Some(m)
 }
@@ -647,7 +644,9 @@ pub fn create_failure_target(prompt_open_and_creating: bool) -> CreateFailure {
 /// The create prompt under the Worktrees header: the branch, then the path, and git's or the
 /// prompt's own complaint under them.
 fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Option<Div> {
-    let p = root.wt_prompt.as_ref()?;
+    let (p, opacity) = root.wt_prompt.current(root.frame_now)?;
+    // Drawn while it fades out too; only the open prompt holds focus and takes clicks.
+    let live = root.wt_prompt.value().is_some();
     let family = root.family();
     let label = |text: &'static str| div().flex_none().w(px(44.0)).text_color(theme.chrome.text_dim.hsla()).child(text);
     let field = |edit: &LineEdit, placeholder: &str, active: bool| -> Div {
@@ -663,18 +662,22 @@ fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Opti
             .flex_none()
             .flex()
             .flex_col()
+            .relative()
+            .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
+            .opacity(opacity)
             .text_size(px(12.0))
             .bg(theme.chrome.tab_inactive.hsla())
             // Keys reach `wt_key` through the section's listener; a click here takes them back.
-            .track_focus(&root.wt_prompt_focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                    root.wt_focused = true;
-                    root.sidebar_focused = false;
-                    cx.notify();
-                }),
-            )
+            .when(live, |d| {
+                d.track_focus(&root.wt_prompt_focus).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
+                        root.wt_focused = true;
+                        root.sidebar_focused = false;
+                        cx.notify();
+                    }),
+                )
+            })
             .child(row(label("branch"), field(&p.branch, "feature/name", p.stage == Stage::Branch)))
             .when(p.stage != Stage::Branch, |d| d.child(row(label("path"), field(&p.path, "", p.stage == Stage::Path))))
             .when_some(p.note(), |d, t| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child(t)))
@@ -773,8 +776,9 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                             cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
                                 // The root's mouse-down closes an open menu; this one just opened.
                                 cx.stop_propagation();
-                                root.context_menu = None;
-                                root.wt_menu = Some((p_menu.clone(), ev.position));
+                                let now = Instant::now();
+                                root.context_menu.hide(now);
+                                root.wt_menu.show((p_menu.clone(), ev.position), now);
                                 cx.notify();
                             }),
                         )
@@ -809,19 +813,23 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
 
 /// The worktree row's right-click menu, drawn like the file tree's.
 pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
-    let (path, at) = root.wt_menu.clone()?;
+    let ((path, at), opacity) = root.wt_menu.current(root.frame_now).map(|(m, o)| (m.clone(), o))?;
     let items = root.worktrees.find(&path).map(|wt| worktree_menu_items(wt, root.worktrees.dirty_count(&path))).unwrap_or_default();
     if items.is_empty() {
-        // The worktree went away (or has nothing to offer): the menu goes too.
-        root.wt_menu = None;
+        // The worktree went away (or has nothing to offer): the menu goes too, at once, since
+        // there is nothing left to draw.
+        root.wt_menu.clear();
         return None;
     }
+    // Drawn while it fades out too, but only the open menu occludes and takes clicks.
+    let live = root.wt_menu.value().is_some();
     let c = &root.theme.chrome;
     let hover = c.tab_active.hsla();
     let mut m = div()
         .absolute()
         .left(at.x)
-        .top(at.y)
+        .top(at.y - px(motion::lift(opacity, motion::MENU_LIFT)))
+        .opacity(opacity)
         .min_w(px(200.0))
         .flex()
         .flex_col()
@@ -832,27 +840,19 @@ pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<D
         .font_family(root.family())
         .text_size(px(12.0))
         .text_color(c.text.hsla())
-        .occlude()
-        .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+        .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
     for (i, (label, action)) in items.into_iter().enumerate() {
-        m = m.child(
-            div()
-                .id(("worktree-menu-row", i))
-                .px(px(10.0))
-                .py(px(4.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .child(label)
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                    root.wt_menu = None;
-                    match action.clone() {
-                        WtMenuAction::OpenTerminal(p) => root.open_terminal_in(p, cx),
-                        WtMenuAction::Remove(p) => root.remove_worktree(p, false, cx),
-                        WtMenuAction::RemoveForce(p) => root.remove_worktree(p, true, cx),
-                    }
-                    cx.notify();
-                })),
-        );
+        m = m.child(div().id(("worktree-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
+            row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                root.wt_menu.hide(Instant::now());
+                match action.clone() {
+                    WtMenuAction::OpenTerminal(p) => root.open_terminal_in(p, cx),
+                    WtMenuAction::Remove(p) => root.remove_worktree(p, false, cx),
+                    WtMenuAction::RemoveForce(p) => root.remove_worktree(p, true, cx),
+                }
+                cx.notify();
+            }))
+        }));
     }
     Some(m)
 }
@@ -917,8 +917,8 @@ impl Root {
             let _ = this.update(cx, |root, cx| {
                 if seq == root.worktrees_seq {
                     root.worktrees.set_list(list);
-                    if root.wt_menu.as_ref().is_some_and(|m| root.worktrees.find(&m.0).is_none()) {
-                        root.wt_menu = None;
+                    if root.wt_menu.value().is_some_and(|m| root.worktrees.find(&m.0).is_none()) {
+                        root.wt_menu.hide(Instant::now());
                     }
                     root.load_pending_worktrees(cx);
                     cx.notify();
@@ -982,11 +982,12 @@ impl Root {
     /// Escape while a right-click menu (the tree's or a worktree's) is open closes the menu and
     /// nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if ks.key != "escape" || (self.context_menu.is_none() && self.wt_menu.is_none()) {
+        if ks.key != "escape" || (self.context_menu.value().is_none() && self.wt_menu.value().is_none()) {
             return false;
         }
-        self.context_menu = None;
-        self.wt_menu = None;
+        let now = Instant::now();
+        self.context_menu.hide(now);
+        self.wt_menu.hide(now);
         cx.notify();
         true
     }
@@ -1030,10 +1031,12 @@ impl Root {
             let result = cx.background_executor().spawn(async move { crate::worktrees::create(&root, &branch, &path) }).await;
             let _ = this.update(cx, |root, cx| {
                 match result {
-                    Ok(()) => root.wt_prompt = None,
-                    Err(e) => match create_failure_target(root.wt_prompt.as_ref().is_some_and(|p| p.creating)) {
+                    Ok(()) => {
+                        root.wt_prompt.hide(Instant::now());
+                    }
+                    Err(e) => match create_failure_target(root.wt_prompt.value().is_some_and(|p| p.creating)) {
                         CreateFailure::InPrompt => {
-                            if let Some(p) = &mut root.wt_prompt {
+                            if let Some(p) = root.wt_prompt.value_mut() {
                                 p.error = Some(e);
                                 p.creating = false;
                                 // Back to the path, which the error is most likely about.
@@ -1078,7 +1081,7 @@ impl Root {
     /// prompt open, the keys go to it (Cmd+V pastes).
     pub fn wt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         let drivers = self.wt_prompt_drivers.clone();
-        if let Some(p) = &mut self.wt_prompt {
+        if let Some(p) = self.wt_prompt.value_mut() {
             if ks.modifiers.platform && ks.key == "v" {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     p.paste(&text);
@@ -1089,7 +1092,7 @@ impl Root {
             match p.key(ks, &self.project.clone(), &drivers) {
                 PromptStep::Stay => {}
                 PromptStep::Cancel => {
-                    self.wt_prompt = None;
+                    self.wt_prompt.hide(Instant::now());
                     self.wt_focused = false;
                 }
                 PromptStep::Create { branch, path } => self.create_worktree(branch, path, cx),

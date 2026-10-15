@@ -4,6 +4,7 @@
 use crate::config::{Config, StartAtLogin};
 use crate::keymap::{self, Command, ACTIONS};
 use crate::line_edit::{self, LineEdit};
+use crate::motion;
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent};
 use std::path::Path;
@@ -130,11 +131,13 @@ impl Palette {
 }
 
 /// The overlay: a query line and up to `MAX_ROWS` rows, centred near the top. A click outside
-/// closes it; the keys go through `Root::palette_key`.
+/// closes it; the keys go through `Root::palette_key`. While it fades out it is only drawn: no
+/// focus, no keys, no clicks, nothing hidden from the pointer.
 pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let theme = root.theme.clone();
     let family = root.family();
-    let p = root.palette.as_ref()?;
+    let (p, opacity) = root.palette.current(root.frame_now)?;
+    let live = root.palette.value().is_some();
     let focus = p.focus.clone()?;
     let mut rows = div().flex().flex_col().mt(px(6.0));
     for (row, idx) in p.visible.iter().take(MAX_ROWS).enumerate() {
@@ -152,13 +155,14 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
                 .bg(if selected { theme.chrome.tab_active.hsla() } else { theme.chrome.banner.hsla() })
                 .border_1()
                 .border_color(if selected { theme.chrome.focus_ring.hsla() } else { theme.chrome.banner.hsla() })
-                .cursor_pointer()
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
-                    if let Some(p) = root.palette.as_mut() {
-                        p.selected = row;
-                    }
-                    root.run_palette_selection(window, cx);
-                }))
+                .when(live, |d| {
+                    d.cursor_pointer().on_click(cx.listener(move |root, _ev: &ClickEvent, window, cx| {
+                        if let Some(p) = root.palette.value_mut() {
+                            p.selected = row;
+                        }
+                        root.run_palette_selection(window, cx);
+                    }))
+                })
                 .child(item.label.clone())
                 .child(div().text_color(theme.chrome.text_dim.hsla()).child(item.detail.clone())),
         );
@@ -169,7 +173,10 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let panel = div()
         .id("palette")
         .key_context("Palette")
-        .track_focus(&focus)
+        .when(live, |d| d.track_focus(&focus))
+        .relative()
+        .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
+        .opacity(opacity)
         .w(px(WIDTH))
         .p(px(10.0))
         .rounded(px(8.0))
@@ -179,8 +186,10 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         .text_color(theme.chrome.text.hsla())
         .font_family(family.clone())
         .text_size(px(TEXT))
-        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
-        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, window, cx| root.palette_key(&ev.keystroke, window, cx)))
+        .when(live, |d| {
+            d.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                .on_key_down(cx.listener(|root, ev: &KeyDownEvent, window, cx| root.palette_key(&ev.keystroke, window, cx)))
+        })
         .child(div().px(px(10.0)).py(px(6.0)).child(line_edit::render(&p.query, "type a command", &theme, family, TEXT)))
         .child(rows);
     Some(
@@ -195,8 +204,7 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             .pt(px(60.0))
             // Hides the panes beneath from the pointer, so a click that closes the palette does
             // not also land on a tab or a terminal.
-            .occlude()
-            .on_mouse_down(MouseButton::Left, cx.listener(|root, _: &MouseDownEvent, _window, cx| root.close_palette(cx)))
+            .when(live, |d| d.occlude().on_mouse_down(MouseButton::Left, cx.listener(|root, _: &MouseDownEvent, _window, cx| root.close_palette(cx))))
             .child(panel),
     )
 }

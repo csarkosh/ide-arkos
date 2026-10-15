@@ -58,6 +58,7 @@ use viewer::Viewer;
 use tree::{Orientation, PaneId, Rect, Side, SplitId, Tab, TabId, Tree};
 use workspace::{request_save, SharedSaveQueue, SidebarSaved, Workspace, FORMAT_VERSION};
 use keymap::Quit;
+use motion::Transient;
 
 const BANNER_H: f32 = 28.0;
 
@@ -156,8 +157,8 @@ pub struct Root {
     /// The tab a single click previews into; the next single click replaces it. `None` once
     /// pinned or closed.
     pub preview_tab: Option<TabId>,
-    /// The file tree's right-click menu while it is open.
-    pub context_menu: Option<sidebar::ContextMenu>,
+    /// The file tree's right-click menu while it is open, and while it fades out.
+    pub context_menu: Transient<sidebar::ContextMenu>,
     /// Bumped per `git status` run; only the newest run's result is applied.
     pub status_seq: u64,
     /// The `git status` run in flight, and whether another was asked for meanwhile.
@@ -171,11 +172,11 @@ pub struct Root {
     pub wt_focused: bool,
     /// The create prompt under the Worktrees header while it is open; it holds the keys while
     /// `wt_focused`.
-    pub wt_prompt: Option<sidebar::Prompt>,
+    pub wt_prompt: Transient<sidebar::Prompt>,
     /// The repository's filter drivers, read as the prompt opens; `Unknown` until the read lands.
     pub wt_prompt_drivers: sidebar::Drivers,
     /// A worktree row's right-click menu while it is open: the worktree and the click.
-    pub wt_menu: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
+    pub wt_menu: Transient<(PathBuf, gpui::Point<gpui::Pixels>)>,
     /// The Worktrees section's focus handle, and the create prompt's.
     pub wt_focus: FocusHandle,
     pub wt_prompt_focus: FocusHandle,
@@ -217,15 +218,15 @@ pub struct Root {
     pub theme_error: Option<String>,
     /// A one-off result (themes extracted, the editor failed to open), shown under `theme_error`
     /// until the next command or for `NOTICE_FOR`. Never in `status`, which is the connection's.
-    pub notice: Option<String>,
+    pub notice: Transient<String>,
     /// Bumped by every notice, so an older notice's timer leaves a newer notice up.
     pub notice_seq: u64,
-    /// The command palette while it is open (Cmd+Shift+P).
-    pub palette: Option<command_palette::Palette>,
+    /// The command palette while it is open (Cmd+Shift+P), and while it fades out.
+    pub palette: Transient<command_palette::Palette>,
     /// Each pane's tab strip scroll state, so the active tab can be kept in view.
     pub bar_scroll: HashMap<PaneId, gpui::ScrollHandle>,
     /// The pane whose tab overflow menu is open.
-    pub tab_menu: Option<PaneId>,
+    pub tab_menu: Transient<PaneId>,
     /// "update ready: <version>" while the binary at the launch path differs from this one.
     pub update_ready: Option<String>,
     /// The update "Update now" started, while it runs.
@@ -234,6 +235,9 @@ pub struct Root {
     pub window_active: bool,
     /// Where the working glyph's pulse starts; every working tab shares its phase.
     pub pulse_epoch: Instant,
+    /// When this frame is drawn: every transition in one render reads the same instant, and
+    /// `any_motion` asks for the next frame with it.
+    pub frame_now: Instant,
     /// The user is closing the window: the Quit action, or the red button
     /// (`windowShouldClose:`). Never set by macOS's own terminate or the update relaunch.
     pub user_closing: bool,
@@ -307,15 +311,15 @@ impl Root {
             sidebar_focused: false,
             explorer,
             preview_tab: None,
-            context_menu: None,
+            context_menu: Transient::Hidden,
             status_seq: 0,
             status_runs: explorer_watch::StatusRuns::default(),
             worktrees,
             worktrees_seq: 0,
             wt_focused: false,
-            wt_prompt: None,
+            wt_prompt: Transient::Hidden,
             wt_prompt_drivers: sidebar::Drivers::Unknown,
-            wt_menu: None,
+            wt_menu: Transient::Hidden,
             wt_focus: cx.focus_handle(),
             wt_prompt_focus: cx.focus_handle(),
             font_size: preset.size,
@@ -334,18 +338,39 @@ impl Root {
             system_is_dark,
             config_error: None,
             theme_error: None,
-            notice: None,
+            notice: Transient::Hidden,
             notice_seq: 0,
-            palette: None,
+            palette: Transient::Hidden,
             bar_scroll: HashMap::new(),
-            tab_menu: None,
+            tab_menu: Transient::Hidden,
             update_ready: None,
             updating: None,
             window_active: true,
             pulse_epoch: Instant::now(),
+            frame_now: Instant::now(),
             user_closing: false,
             said_goodbye: false,
         }
+    }
+
+    /// Whether any transition is under way at `now`, so the next frame looks different.
+    pub fn any_motion(&self, now: Instant) -> bool {
+        self.tab_menu.animating(now)
+            || self.context_menu.animating(now)
+            || self.wt_menu.animating(now)
+            || self.palette.animating(now)
+            || self.notice.animating(now)
+            || self.wt_prompt.animating(now)
+    }
+
+    /// Drops what finished fading out.
+    fn settle(&mut self, now: Instant) {
+        self.tab_menu.settle(now);
+        self.context_menu.settle(now);
+        self.wt_menu.settle(now);
+        self.palette.settle(now);
+        self.notice.settle(now);
+        self.wt_prompt.settle(now);
     }
 
     /// The theme the config and the current appearance name, loaded from the themes folder.
@@ -491,8 +516,9 @@ impl Root {
         self.pane_focus.remove(&pane);
         self.empty_anim.remove(&pane);
         self.bar_scroll.remove(&pane);
-        if self.tab_menu == Some(pane) {
-            self.tab_menu = None;
+        if self.tab_menu.current(self.frame_now).is_some_and(|(p, _)| *p == pane) {
+            // The pane is gone, and the menu with nothing to fade over.
+            self.tab_menu.clear();
         }
     }
 
@@ -601,17 +627,18 @@ impl Root {
     }
 
     pub fn toggle_tab_menu(&mut self, pane: PaneId, cx: &mut Context<Self>) {
-        if self.tab_menu == Some(pane) {
-            self.tab_menu = None;
+        let now = Instant::now();
+        if self.tab_menu.value() == Some(&pane) {
+            self.tab_menu.hide(now);
         } else {
-            self.tab_menu = Some(pane);
+            self.tab_menu.show(pane, now);
             self.focus_pane(pane, cx);
         }
         cx.notify();
     }
 
     pub fn close_tab_menu(&mut self, cx: &mut Context<Self>) {
-        if self.tab_menu.take().is_some() {
+        if self.tab_menu.hide(Instant::now()) {
             cx.notify();
         }
     }
@@ -779,12 +806,12 @@ impl Root {
     pub fn show_notice(&mut self, text: String, cx: &mut Context<Self>) {
         self.notice_seq += 1;
         let seq = self.notice_seq;
-        self.notice = Some(text);
+        self.notice.show(text, Instant::now());
         cx.notify();
         cx.spawn(async move |root, cx| {
             cx.background_executor().timer(NOTICE_FOR).await;
             let _ = root.update(cx, |root, cx| {
-                if root.notice_seq == seq && root.notice.take().is_some() {
+                if root.notice_seq == seq && root.notice.hide(Instant::now()) {
                     cx.notify();
                 }
             });
@@ -794,18 +821,18 @@ impl Root {
 
     /// Cmd+Shift+P: opens the palette with every action, preset and theme, or closes it.
     pub fn toggle_palette(&mut self, cx: &mut Context<Self>) {
-        if self.palette.is_some() {
+        if self.palette.value().is_some() {
             self.close_palette(cx);
             return;
         }
         let themes_dir = paths::themes_dir();
         let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored);
-        self.palette = Some(command_palette::Palette::new(items, cx.focus_handle()));
+        self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
         cx.notify();
     }
 
     pub fn close_palette(&mut self, cx: &mut Context<Self>) {
-        self.palette = None;
+        self.palette.hide(Instant::now());
         cx.notify();
     }
 
@@ -814,7 +841,7 @@ impl Root {
     pub fn palette_key(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         if ks.modifiers.platform && ks.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                if let Some(p) = self.palette.as_mut() {
+                if let Some(p) = self.palette.value_mut() {
                     p.query.insert_str(&text);
                     p.refilter();
                     cx.notify();
@@ -822,7 +849,7 @@ impl Root {
             }
             return;
         }
-        let Some(p) = self.palette.as_mut() else { return };
+        let Some(p) = self.palette.value_mut() else { return };
         match p.query.handle(ks) {
             line_edit::Edit::Changed => p.refilter(),
             line_edit::Edit::Up => p.step(-1),
@@ -842,7 +869,7 @@ impl Root {
 
     /// Closes the palette and runs the selected command, if any row is visible.
     pub fn run_palette_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let cmd = self.palette.as_ref().and_then(|p| p.selected_command());
+        let cmd = self.palette.value().and_then(|p| p.selected_command());
         self.close_palette(cx);
         if let Some(cmd) = cmd {
             self.run(cmd, window, cx);
@@ -928,7 +955,7 @@ impl Root {
         use keymap::Command::*;
         let focused = self.tree.focused;
         // The user has moved on: the last notice goes (a command may put up a new one).
-        if self.notice.take().is_some() {
+        if self.notice.hide(Instant::now()) {
             cx.notify();
         }
         // A command on the focused pane (Cmd+F, Cmd+T, a split) takes the keys back from the
@@ -1529,16 +1556,21 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         self.window_active = window.is_window_active();
+        let now = Instant::now();
+        self.frame_now = now;
+        self.settle(now);
         let theme = self.theme.clone();
-        let status = if banner_visible(self.reconnecting_since, Instant::now()) { self.status.clone() } else { String::new() };
-        let banners: Vec<String> = [
-            status,
-            self.config_error.clone().unwrap_or_default(),
-            self.theme_error.clone().unwrap_or_default(),
-            self.notice.clone().unwrap_or_default(),
+        let status = if banner_visible(self.reconnecting_since, now) { self.status.clone() } else { String::new() };
+        // A notice fades in and out; it keeps its row until it has faded.
+        let notice = self.notice.current(now).map_or((String::new(), 1.0), |(text, o)| (text.clone(), o));
+        let banners: Vec<(String, f32)> = [
+            (status, 1.0),
+            (self.config_error.clone().unwrap_or_default(), 1.0),
+            (self.theme_error.clone().unwrap_or_default(), 1.0),
+            notice,
         ]
             .into_iter()
-            .filter(|b| !b.is_empty())
+            .filter(|(b, _)| !b.is_empty())
             .collect();
         let banner_h = BANNER_H * banners.len() as f32;
         let top = chrome::TITLE_BAR_H;
@@ -1564,9 +1596,9 @@ impl Render for Root {
         // worktree prompt, the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
         // while they hold the keys. An open prompt holds them only while the list does, so a
         // click on a pane takes them back without losing what was typed.
-        let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
+        let wanted = if let Some(f) = self.palette.value().and_then(|p| p.focus.clone()) {
             Some(f)
-        } else if self.wt_focused && self.wt_prompt.is_some() {
+        } else if self.wt_focused && self.wt_prompt.value().is_some() {
             Some(self.wt_prompt_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
@@ -1644,7 +1676,8 @@ impl Render for Root {
             // A right-click menu (the tree's or a worktree's) closes on any press outside it
             // (its rows stop theirs), and on Escape wherever the keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                if root.context_menu.take().is_some() | root.wt_menu.take().is_some() {
+                let now = Instant::now();
+                if root.context_menu.hide(now) | root.wt_menu.hide(now) {
                     cx.notify();
                 }
             }))
@@ -1670,7 +1703,7 @@ impl Render for Root {
                 }),
             )
             .child(title_bar)
-            .children(banners.into_iter().map(|text| banner_bar(text, family.clone(), &theme)))
+            .children(banners.into_iter().map(|(text, opacity)| banner_bar(text, opacity, family.clone(), &theme)))
             .child(
                 div()
                     .flex_1()
@@ -1683,6 +1716,10 @@ impl Render for Root {
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))
             .children(sidebar::render_worktree_menu(self, cx));
+        // One request per frame while anything eases; an idle window asks for none.
+        if self.any_motion(now) {
+            window.request_animation_frame();
+        }
         keymap::attach(root_div, cx)
     }
 }
@@ -1692,8 +1729,9 @@ fn menus() -> Vec<Menu> {
     vec![Menu { name: "Sarkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] }]
 }
 
-fn banner_bar(text: String, family: gpui::SharedString, theme: &theme::Theme) -> Div {
+fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme) -> Div {
     div()
+        .opacity(opacity)
         .w_full()
         .h(px(BANNER_H))
         .flex_none()

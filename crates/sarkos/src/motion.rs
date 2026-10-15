@@ -62,6 +62,17 @@ pub fn exit_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
     (1.0 - t) * (1.0 - t)
 }
 
+/// How far above its resting place a menu starts as it enters, and a panel (the palette, a find
+/// bar, the worktree prompt).
+pub const MENU_LIFT: f32 = 4.0;
+pub const PANEL_LIFT: f32 = 6.0;
+
+/// How far above its resting place something at `opacity` is drawn: `distance` while invisible,
+/// none once fully shown, so it settles downwards as it fades in and rises as it fades out.
+pub fn lift(opacity: f32, distance: f32) -> f32 {
+    (1.0 - opacity.clamp(0.0, 1.0)) * distance
+}
+
 /// `now` moved back by `elapsed`, so a curve started then is at the same point now.
 fn back(now: Instant, elapsed: Duration) -> Instant {
     now.checked_sub(elapsed).unwrap_or(now)
@@ -346,6 +357,14 @@ mod tests {
         assert_eq!(s.at(t0), 0.0);
         assert!(!s.animating(t0));
         set(false);
+    }
+
+    #[test]
+    fn chrome_settles_downwards_as_it_fades_in() {
+        assert_eq!(lift(0.0, MENU_LIFT), 4.0);
+        assert_eq!(lift(0.5, PANEL_LIFT), 3.0);
+        assert_eq!(lift(1.0, PANEL_LIFT), 0.0);
+        assert_eq!(lift(1.5, MENU_LIFT), 0.0, "never below its place");
     }
 
     #[test]
