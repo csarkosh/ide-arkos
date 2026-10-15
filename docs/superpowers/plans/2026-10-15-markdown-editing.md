@@ -236,13 +236,13 @@ git commit -m "An editing core: a line buffer with caret, selection, undo and mo
   pub fn split(lines: &[String]) -> Vec<Block>; // block i covers its start up to block i+1's start; leading blank lines are a Blank block; every line in exactly one block
   pub fn block_at(blocks: &[Block], line: usize) -> usize;
   /// The blocks an edit replaced: the common prefix and suffix of the old and new structures leave `range` in the old list, replaced by `count` new blocks.
-  pub fn changed_blocks(old: &[Block], new: &[Block]) -> (Range<usize>, usize);
+  pub fn changed_blocks(old: &[Block], old_lines: &[String], new: &[Block], new_lines: &[String]) -> (Range<usize>, usize); // blocks are equal when kind, line count and joined text match, so line shifts are ignored and text changes seen
   #[derive(Debug, Clone, PartialEq, Eq, Default)] pub struct Style { pub bold: bool, pub italic: bool, pub code: bool, pub strike: bool, pub html: bool, pub link: Option<String> }
   #[derive(Debug, Clone, PartialEq, Eq)] pub struct Run { pub text: String, pub style: Style, pub source: Range<usize> } // source: the byte range of the run's own text in the block's text (inside any markers)
   #[derive(Debug, Clone, PartialEq, Eq)] pub enum Inline { Para(Vec<Run>), Heading(u8, Vec<Run>), Item { depth: u8, marker: String, task: Option<bool>, runs: Vec<Run> }, Code { info: String, text: String }, Quote(Vec<Run>), Rule, Table(String), Html(String), Metadata(String), Image { alt: String, path: String } }
   pub fn inline(block_text: &str, kind: &BlockKind) -> Vec<Inline>; // SoftBreak becomes " ", HardBreak "\n", InlineHtml a run with style.html; Code's source range excludes the backticks
   pub fn source_offset_at(runs: &[Run], rendered_byte: usize) -> usize; // a byte index into the rendered string (the runs' texts joined) to a byte offset in the block's text; inside a run, linear within its source; between runs, the next run's start; past the end, the end of the last run's source
-  pub fn pos_of_offset(block: &Block, lines: &[String], byte: usize) -> edit::Pos; // a byte offset in the block's text (lines joined with "\n") to a document position
+  pub fn pos_of_offset(block: &Block, lines: &[String], byte: usize) -> edit::Pos; // a byte offset in the block's text (lines joined with "\n") to a document position; past the end: the end of the block's last non-blank line
   pub fn list_continuation(line: &str) -> Option<(String, bool)>;
   pub fn toggle_task(line: &str) -> Option<String>;
   #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Mark { Marker, Heading, Emphasis, Code, Link, Quote }
@@ -290,7 +290,7 @@ Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkos --bin arkos -- md_blocks::`
 
 - [ ] **Step 3: Implement**
 
-`split` joins the lines with `\n`, runs `Parser::new_ext(text, OPTIONS).into_offset_iter()`, and records a start offset and kind for every depth-0 `Event::Start` (`Tag::Paragraph`, `Tag::Heading { level, .. }` with `level as u8`, `Tag::List(_)`, `Tag::CodeBlock(kind)`, `Tag::BlockQuote(_)`, `Tag::Table(_)`, `Tag::HtmlBlock`, `Tag::MetadataBlock(_)`) and for `Event::Rule` (not a start event). Block i spans from its start line to block i+1's start line; the first block starts at line 0, as a `Blank` block when the first start is later; a document whose last block is followed by blank lines keeps them in that block; an empty document is one `Blank` block. `changed_blocks` compares `Block` values for the common prefix and suffix.
+`split` joins the lines with `\n`, runs `Parser::new_ext(text, OPTIONS).into_offset_iter()`, and records a start offset and kind for every depth-0 `Event::Start` (`Tag::Paragraph`, `Tag::Heading { level, .. }` with `level as u8`, `Tag::List(_)`, `Tag::CodeBlock(kind)`, `Tag::BlockQuote(_)`, `Tag::Table(_)`, `Tag::HtmlBlock`, `Tag::MetadataBlock(_)`) and for `Event::Rule` (not a start event). Block i spans from its start line to block i+1's start line; the first block starts at line 0, as a `Blank` block when the first start is later; a document whose last block is followed by blank lines keeps them in that block; an empty document is one `Blank` block. `changed_blocks` compares blocks by kind, line count and joined text for the common prefix and suffix (the lines are passed in for that).
 
 `inline` parses the block's own text with `OPTIONS` and `into_offset_iter`, keeping a `Style` stack through `Start`/`End` of `Strong`, `Emphasis`, `Strikethrough`, `Link { dest_url, .. }`; `Event::Text(t)` gives a run over the event's range; `Event::Code(t)` a code run whose source range is the event range shrunk by the backticks on each side; `SoftBreak` a plain " " run with the break's range; `HardBreak` a "\n" run; `InlineHtml` a run with `style.html`. For a list, every `Tag::Item` opens an `Item` whose depth is the list nesting at that point, whose marker is read from the source line (`-`, `*`, `+`, or the number with its delimiter) and whose `task` comes from `Event::TaskListMarker` inside the item (or inside the item's paragraph in a loose list). A paragraph whose only content is one `Tag::Image` gives `Image`. `source_offset_at` walks the runs accumulating rendered bytes.
 
@@ -332,7 +332,7 @@ Only if the user's release-build run of `a_megabyte_splits_in_time` misses 4 ms.
   #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum ViewerEvent { Edited, Saved, SaveFailed }
   impl EventEmitter<ViewerEvent> for Viewer {}
   impl Viewer {
-      /// Runs an edit, refreshes `content.lines` (an Arc clone of the document's), splices `blocks` by `changed_blocks`, clears `diff` until the next save, sets dirty, bumps save_seq, schedules the autosave, emits Edited, notifies.
+      /// Runs an edit, refreshes `content.lines` (an Arc clone of the document's), splices `blocks` by `changed_blocks(old_blocks, old_lines, new_blocks, new_lines)` (keep the old lines Arc for the comparison), clears `diff` until the next save, sets dirty, bumps save_seq, schedules the autosave, emits Edited, notifies.
       pub fn edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>);
       pub fn undo(&mut self, cx); pub fn redo(&mut self, cx);
       pub fn set_mode(&mut self, mode: ViewMode, cx);
