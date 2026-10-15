@@ -27,6 +27,57 @@ pub fn needs_chooser(cwd: &Path) -> bool {
     cwd == Path::new("/")
 }
 
+/// What a process opens at start. Either way it connects to the daemon first, before any window
+/// opens: a window the daemon relaunched after an update confirms it with that Hello, even while
+/// the chooser waits for a folder (the 2026-10-15 incident: a relaunch at `/` that waited
+/// silently in the chooser was rolled back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plan {
+    /// The launch chooser; the project window follows on the same connection.
+    Chooser { focus: bool },
+    Project { focus: bool },
+}
+
+impl Plan {
+    /// Always: the Hello is what tells the daemon a window came up.
+    pub fn connects_first(self) -> bool {
+        true
+    }
+
+    /// Whether the first window takes the keyboard: not when the daemon relaunched it (an update,
+    /// the watchdog), since the user may be in another app.
+    pub fn focus(self) -> bool {
+        match self {
+            Plan::Chooser { focus } | Plan::Project { focus } => focus,
+        }
+    }
+
+    pub fn is_chooser(self) -> bool {
+        matches!(self, Plan::Chooser { .. })
+    }
+}
+
+/// The plan for a process started in `cwd`; `relaunched` is `ARKOS_RELAUNCH=1` (the daemon
+/// started it). A relaunch at `/` shows the chooser too: the daemon has no folder for it.
+pub fn startup_plan(cwd: &Path, relaunched: bool) -> Plan {
+    let focus = !relaunched;
+    if needs_chooser(cwd) {
+        Plan::Chooser { focus }
+    } else {
+        Plan::Project { focus }
+    }
+}
+
+/// The folder the Hello names: empty at `/` (the protocol's "keep the daemon's"), since the
+/// chooser has no project yet and the daemon must not remember `/`.
+pub fn hello_cwd(cwd: &Path) -> PathBuf {
+    if needs_chooser(cwd) {
+        PathBuf::new()
+    } else {
+        cwd.to_path_buf()
+    }
+}
+
 /// `path` with the home folder written as `~`.
 pub fn shorten_home(path: &str, home: &str) -> String {
     let home = home.trim_end_matches('/');
@@ -343,6 +394,29 @@ mod tests {
         assert!(needs_chooser(Path::new("/")));
         assert!(!needs_chooser(Path::new("/Users/me/p")));
         assert!(!needs_chooser(Path::new("")));
+    }
+
+    #[test]
+    fn launch_startup_plan_connects_first_whatever_opens() {
+        let cases = [
+            ("/", false, Plan::Chooser { focus: true }),
+            ("/", true, Plan::Chooser { focus: false }),
+            ("/Users/me/project", false, Plan::Project { focus: true }),
+            ("/Users/me/project", true, Plan::Project { focus: false }),
+        ];
+        for (cwd, relaunched, want) in cases {
+            let plan = startup_plan(Path::new(cwd), relaunched);
+            assert_eq!(plan, want, "{cwd} relaunched={relaunched}");
+            assert!(plan.connects_first(), "the chooser connects too, so a relaunch confirms at once");
+            assert_eq!(plan.focus(), !relaunched);
+        }
+        assert!(startup_plan(Path::new("/"), true).is_chooser());
+    }
+
+    #[test]
+    fn launch_hello_names_no_folder_from_the_chooser() {
+        assert_eq!(hello_cwd(Path::new("/")), PathBuf::new(), "empty: keep the daemon's");
+        assert_eq!(hello_cwd(Path::new("/Users/me/p")), PathBuf::from("/Users/me/p"));
     }
 
     #[test]

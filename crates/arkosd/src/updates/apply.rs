@@ -64,14 +64,19 @@ pub fn decide(m: &Applied, connected_since_start: bool, clock_running: bool, now
 /// Starts the grace from now: when the new window is launched (`disconnect` with a pending
 /// relaunch) and when a daemon starts with a marker, so the window gets the whole grace from its
 /// launch whatever came before. Rewrites the marker too, so a daemon that dies now restarts from
-/// a time close to this one. Nothing when no update waits.
-pub fn restart_clock(u: &mut super::UpdateState, dir: &Path) {
-    let Some(m) = u.applied.as_mut() else { return };
+/// a time close to this one. Nothing when no update waits. Returns the journal line, which the
+/// caller notes once the state lock is released.
+#[must_use]
+pub fn restart_clock(u: &mut super::UpdateState, dir: &Path) -> Option<String> {
+    let m = u.applied.as_mut()?;
     m.at_unix = now_unix();
+    let mut line = format!("the grace for {} starts now: a window not connected at the apply must say Hello", m.version);
     if let Err(e) = write_marker(dir, m) {
         eprintln!("arkosd: cannot rewrite the update marker for {}: {e}", m.version);
+        line.push_str(&format!(" (cannot rewrite the marker: {e})"));
     }
     u.clock_running = true;
+    Some(line)
 }
 
 /// The versions rolled back, one per line, so a later daemon does not stage them again (they
@@ -124,39 +129,60 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf, grace: Duration) {
                     clear_marker(&dir);
                     if let Err(e) = super::swap::finish(&bundle) {
                         eprintln!("arkosd: update {} confirmed, but the old bundle stays: {e}", m.version);
+                        crate::journal::note(format_args!("confirm {}: cannot remove the previous app: {e}", m.version));
                     }
                     state.lock().unwrap().update.applied = None;
                     eprintln!("arkosd: update {} confirmed by a window", m.version);
+                    crate::journal::note(format_args!("confirm {}: a new window said Hello; the previous app removed", m.version));
                     return;
                 }
                 Decision::Rollback => {
                     let result = super::swap::rollback(&bundle);
-                    let folders: Vec<PathBuf> = {
+                    let mut rejected = None;
+                    let (folders, window_open): (Vec<PathBuf>, bool) = {
                         let mut st = state.lock().unwrap();
                         st.update.applied = None;
                         match &result {
                             Ok(()) => {
                                 // Rejected before the marker goes: a daemon dying between the two
                                 // never stages the rolled-back version again.
-                                if let Err(e) = reject(&dir, &m.version) {
-                                    eprintln!("arkosd: cannot record {} as rejected: {e}", m.version);
-                                }
+                                rejected = Some(match reject(&dir, &m.version) {
+                                    Ok(()) => format!("reject {}: recorded in {}", m.version, rejected_path(&dir).display()),
+                                    Err(e) => {
+                                        eprintln!("arkosd: cannot record {} as rejected: {e}", m.version);
+                                        format!("reject {}: cannot record it in {}: {e}", m.version, rejected_path(&dir).display())
+                                    }
+                                });
                                 clear_marker(&dir);
                                 st.update.last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, grace.as_secs()));
                                 // A folder whose window is connected already has one.
                                 let open: Vec<&PathBuf> = st.clients.values().filter(|c| c.connected).filter_map(|c| c.ui_cwd.as_ref()).collect();
-                                st.windows.keys().filter(|f| !open.contains(f)).cloned().collect()
+                                let window_open = st.clients.values().any(|c| c.connected && c.ui_pid.is_some());
+                                (st.windows.keys().filter(|f| !open.contains(f)).cloned().collect(), window_open)
                             }
                             Err(e) => {
                                 st.update.last_error = Some(format!("update {}: no window came up within {}s and the rollback failed: {e}", m.version, grace.as_secs()));
-                                Vec::new()
+                                // Nothing was put back: no window of the previous app to open.
+                                (Vec::new(), true)
                             }
                         }
                     };
-                    eprintln!("arkosd: {}", state.lock().unwrap().update.last_error.as_deref().unwrap_or(""));
+                    if let Some(line) = rejected {
+                        crate::journal::note(line);
+                    }
+                    let why = state.lock().unwrap().update.last_error.clone().unwrap_or_default();
+                    eprintln!("arkosd: {why}");
+                    crate::journal::note(format_args!("rollback of {}: {why}; reopening {} folders", m.version, folders.len()));
                     let exe = bundle.join("Contents/MacOS/arkos");
+                    if folders.is_empty() && !window_open {
+                        // No folder remembered (the window was at `/`, or a chooser) and no window
+                        // up: the chooser opens, so the user is never left with no app at all.
+                        if let Err(e) = crate::watchdog::launch_ui(&exe, None, "the previous app after a rollback, no folder remembered") {
+                            eprintln!("arkosd: cannot open the previous app after the rollback: {e}");
+                        }
+                    }
                     for cwd in folders {
-                        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd)) {
+                        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd), "the previous app after a rollback") {
                             eprintln!("arkosd: cannot reopen the window in {}: {e}", cwd.display());
                         }
                     }
@@ -186,16 +212,21 @@ pub fn on_start(state: &Shared, bundle: Option<&Path>, dir: &Path, grace: Durati
     match marker {
         Some(m) if !super::swap::old_of(bundle).exists() => {
             eprintln!("arkosd: update marker for {} found with no previous bundle beside it; clearing it", m.version);
+            crate::journal::note(format_args!("marker for {} found at start with no .old beside {}: cleared", m.version, bundle.display()));
             clear_marker(dir);
             super::swap::cleanup_leftovers(bundle);
         }
         Some(m) => {
             eprintln!("arkosd: update marker found: {} applied, waiting {}s for a window", m.version, grace.as_secs());
-            {
+            crate::journal::note(format_args!("marker found at start: {} applied, pids at the apply {:?}; waiting {}s for a window", m.version, m.pids_at_apply, grace.as_secs()));
+            let line = {
                 let mut st = state.lock().unwrap();
                 st.update.swapped = Some(m.version.clone());
                 st.update.applied = Some(m);
-                restart_clock(&mut st.update, dir);
+                restart_clock(&mut st.update, dir)
+            };
+            if let Some(line) = line {
+                crate::journal::note(line);
             }
             watch(state.clone(), bundle.to_path_buf(), dir.to_path_buf(), grace);
         }
@@ -237,7 +268,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), &m).unwrap();
         let mut u = crate::updates::UpdateState { applied: Some(m), ..Default::default() };
-        restart_clock(&mut u, dir.path());
+        assert!(restart_clock(&mut u, dir.path()).is_some());
         assert!(u.clock_running);
         let restarted = u.applied.clone().unwrap();
         assert!(restarted.at_unix >= now_unix() - 1, "{restarted:?}");
@@ -245,7 +276,7 @@ mod tests {
         assert_eq!(decide(&restarted, false, true, restarted.at_unix + 19, g), Decision::Wait);
         assert_eq!(decide(&restarted, false, true, restarted.at_unix + 20, g), Decision::Rollback);
         let mut none = crate::updates::UpdateState::default();
-        restart_clock(&mut none, dir.path());
+        assert_eq!(restart_clock(&mut none, dir.path()), None);
         assert!(!none.clock_running, "nothing applied: no clock");
     }
 

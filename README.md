@@ -366,6 +366,8 @@ and reads the previous handover format, so updating from the update-in-place bui
 "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
 daemon knows nothing of handovers), which ends every session.
 
+Click the badge to update at once.
+
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
 shows the error. If the window loses the daemon for ten seconds, it starts a new one and every
 tab becomes a fresh shell with the "(restarted)" note.
@@ -373,6 +375,19 @@ tab becomes a fresh shell with the "(restarted)" note.
 A window newer than its daemon (one started from a new build while an older daemon still runs)
 is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
 one-time path above: `pkill -x arkosd`, which ends every session, and open the window again.
+
+### When an update goes wrong
+
+Run `arkos doctor` (from the app: `"/Applications/Arkos IDE.app/Contents/MacOS/arkos" doctor`).
+It only reads: it prints the installed app and its version, whether a previous (`.old`) or
+half-swapped (`.new`) copy sits beside it, the running daemon's version and pid, the update
+marker and the rejected versions, the last lines of the daemon's update journal and of
+`window.log`, and any crash reports from the last day. The journal,
+`~/Library/Application Support/arkos/updates/journal.log`, has one timestamped line per step of
+each check, apply, relaunch, confirmation and rollback, including every Hello the daemon heard
+while it waited for the new window. `~/Library/Application Support/arkos/window.log` keeps the
+output of every window the daemon launched. Both are what to attach to a bug report; both name
+the folders your windows had open, so look them over first.
 
 ### Renamed from Sarkos
 

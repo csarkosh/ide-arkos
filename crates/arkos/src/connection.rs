@@ -1,5 +1,5 @@
 //! The window's link to arkosd for the life of the window (update-in-place spec, section 3):
-//! one client at a time, its heartbeat and event loop, and a reconnect with backoff when the
+//! one client at a time, its heartbeat (also the launch chooser's) and event loop, and a reconnect with backoff when the
 //! daemon's connection ends, which an upgrade's exec does on purpose. After ten seconds without
 //! a daemon the window starts one, since the old one is gone for good.
 use crate::client::{self, Client};
@@ -52,7 +52,12 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
                 Ok(g) => g,
                 Err(_) => return,
             };
-            heartbeat(root.clone(), client.clone(), generation, cx);
+            let (beat_root, beat_client) = (root.clone(), client.clone());
+            cx.spawn(async move |cx| {
+                let alive = move |cx: &mut AsyncApp| beat_root.read_with(cx, |root, _| root.connection_generation).ok() == Some(generation);
+                heartbeat(beat_client, alive, cx).await
+            })
+            .detach();
             let Some(reason) = pump(&root, &client, &mut events, cx).await else { return };
             let Ok(status) = root.update(cx, |root, cx| {
                 root.disconnected(reason, cx);
@@ -113,21 +118,20 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
     .detach();
 }
 
-/// Sends a heartbeat each second while `generation` is the window's current connection.
-fn heartbeat(root: Entity<Root>, client: Arc<Client>, generation: u64, cx: &mut AsyncApp) {
-    cx.spawn(async move |cx| {
-        let mut seq = 0u64;
-        loop {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            match root.read_with(cx, |root, _| root.connection_generation) {
-                Ok(g) if g == generation => {}
-                _ => return,
-            }
-            client.send(Request::Heartbeat { seq });
-            seq += 1;
+/// Sends a heartbeat on `client` each second while `alive` holds: for the project window, while
+/// its connection is the current one; for the launch chooser, until the project window takes
+/// the connection over. Run on the main thread (a task of the app's foreground executor), so a
+/// main thread that hangs stops the heartbeat and the daemon's watchdog relaunches the window.
+pub async fn heartbeat(client: Arc<Client>, alive: impl Fn(&mut AsyncApp) -> bool, cx: &mut AsyncApp) {
+    let mut seq = 0u64;
+    loop {
+        cx.background_executor().timer(Duration::from_secs(1)).await;
+        if !alive(cx) {
+            return;
         }
-    })
-    .detach();
+        client.send(Request::Heartbeat { seq });
+        seq += 1;
+    }
 }
 
 /// Applies everything `client` delivers until its connection ends, and returns why it ended.

@@ -136,6 +136,7 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
     let mut st = State::new();
     st.listener_fd = listener.as_raw_fd();
     let state: Shared = Arc::new(Mutex::new(st));
+    crate::journal::note(format_args!("started {} (pid {}){}", crate::version_string(), std::process::id(), if recover { ", recovering" } else { "" }));
     if recover {
         let dir = crate::recovery::sessions_dir(&opts.socket);
         let done = crate::recovery::recover(&state, &dir, &opts);
@@ -188,9 +189,11 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
         let s = Session::adopt(rec, master, opts.replay_capacity, opts.backpressure);
         st.sessions.insert(SessionId(rec.id), s);
     }
-    st.windows = h.windows.into_iter().collect();
+    // An older daemon may have remembered `/`.
+    st.windows = h.windows.into_iter().filter(|(cwd, _)| window_folder(cwd.clone()).is_some()).collect();
     st.manifest_dirty = true;
     eprintln!("arkosd: resumed {} sessions from a handover written by {}", st.sessions.len(), h.written_by);
+    crate::journal::note(format_args!("resumed as {} (pid {}) from a handover written by {}, {} sessions", crate::version_string(), std::process::id(), h.written_by, st.sessions.len()));
     let state = Arc::new(Mutex::new(st));
     crate::updates::apply::on_start(&state, opts.update.bundle.as_deref(), &opts.update.dir, opts.update.connect_grace);
     serve(listener, state, opts)
@@ -312,7 +315,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
 }
 
 fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
-    let (relaunch, ui_exe, ui_cwd) = {
+    let (relaunch, ui_exe, ui_cwd, clock) = {
         let mut st = state.lock().unwrap();
         if let Some(rec) = st.clients.get_mut(&client_id) {
             rec.connected = false;
@@ -323,22 +326,23 @@ fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
                 }
             }
         }
-        let gone = match st.clients.remove(&client_id) {
+        let (relaunch, ui_exe, ui_cwd) = match st.clients.remove(&client_id) {
             Some(rec) => (rec.relaunch, rec.ui_exe, rec.ui_cwd),
             None => return,
         };
         // The new window starts now: an applied update's grace counts from here.
-        if gone.0.is_some() {
-            crate::updates::apply::restart_clock(&mut st.update, updates_dir);
-        }
-        gone
+        let clock = if relaunch.is_some() { crate::updates::apply::restart_clock(&mut st.update, updates_dir) } else { None };
+        (relaunch, ui_exe, ui_cwd, clock)
     };
+    if let Some(line) = clock {
+        crate::journal::note(line);
+    }
     // The lock is released: launching never blocks other threads.
     if let Some((exe, cwd)) = relaunch {
-        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd)) {
+        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd), "relaunch the window asked for") {
             eprintln!("arkosd: relaunch of {} failed: {e}; launching the previous window instead", exe.display());
             if let Some(old) = ui_exe {
-                if let Err(e) = crate::watchdog::launch_ui(&old, ui_cwd.as_deref()) {
+                if let Err(e) = crate::watchdog::launch_ui(&old, ui_cwd.as_deref(), "the previous window, after the relaunch failed") {
                     eprintln!("arkosd: relaunch of {} failed too: {e}", old.display());
                 }
             }
@@ -360,6 +364,14 @@ impl Drop for Creating<'_> {
 /// What `CreateSession` and `Kill` answer while an upgrade holds the slot: a new session would
 /// miss the handover, and a kill could reap a shell after its snapshot called it alive.
 const UPGRADE_IN_PROGRESS: &str = "an upgrade is in progress; retry in a moment";
+
+/// The folder a window's Hello names, as the daemon keeps it: None for an empty one (the
+/// protocol's "keep the daemon's", which the launch chooser sends) and for `/`, where macOS starts
+/// an app opened from the Dock. A window relaunched at `/` shows the chooser instead of a project,
+/// so `/` is never remembered, reopened or relaunched into.
+pub fn window_folder(cwd: PathBuf) -> Option<PathBuf> {
+    (!cwd.as_os_str().is_empty() && cwd != Path::new("/")).then_some(cwd)
+}
 
 /// A regular file named `arkos` owned by this user: the only binary the daemon launches as a
 /// window, whoever named it.
@@ -391,7 +403,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                     ok
                 });
                 rec.ui_exe = ui_exe;
-                rec.ui_cwd = (!ui_cwd.as_os_str().is_empty()).then_some(ui_cwd);
+                rec.ui_cwd = window_folder(ui_cwd);
                 rec.last_heartbeat = Instant::now();
                 rec.protocol = protocol_version;
             }
@@ -399,15 +411,33 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             // an applied update (see `updates::apply::watch`). The old window's reconnect after
             // the upgrade carries a pid the marker lists, and confirms nothing.
             let pid = st.clients.get(&client_id).and_then(|r| r.ui_pid);
-            if let (Some(pid), Some(applied)) = (pid, &st.update.applied) {
-                if !applied.pids_at_apply.contains(&pid) {
-                    st.update.new_window_seen = true;
-                }
+            let (mut journal, mut confirmed) = (None, false);
+            if let Some(applied) = &st.update.applied {
+                let folder = st.clients.get(&client_id).and_then(|r| r.ui_cwd.as_ref()).map_or("no folder".to_string(), |c| c.display().to_string());
+                let (confirms, why) = match pid {
+                    Some(pid) if !applied.pids_at_apply.contains(&pid) => (true, "a window not connected at the apply"),
+                    Some(_) => (false, "this pid was connected at the apply (the old window reconnecting)"),
+                    None => (false, "no window pid"),
+                };
+                journal = Some(format!(
+                    "hello from client {client_id}, pid {}, {folder}, protocol {protocol_version}, during the pending apply of {}: {} ({why})",
+                    pid.map_or("none".to_string(), |p| p.to_string()),
+                    applied.version,
+                    if confirms { "confirms" } else { "does not confirm" }
+                ));
+                confirmed = confirms;
+            }
+            if confirmed {
+                st.update.new_window_seen = true;
             }
             let window = st.clients.get(&client_id).and_then(|r| r.ui_cwd.clone().map(|cwd| (cwd, r.ui_exe.clone())));
             if let Some((cwd, exe)) = window {
                 st.windows.insert(cwd, exe);
                 st.manifest_dirty = true;
+            }
+            drop(st);
+            if let Some(line) = journal {
+                crate::journal::note(line);
             }
             if protocol_version >= 2 {
                 Response::Hello { daemon_version: crate::version_string(), protocol_min: PROTOCOL_MIN, protocol_max: PROTOCOL_VERSION }
@@ -423,6 +453,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             let _released_if_this_unwinds = crate::upgrade::SlotGuard(state);
             if let Err(e) = crate::upgrade::validate(&exe) {
+                crate::journal::note(format_args!("upgrade to {} refused: {e}", exe.display()));
                 crate::upgrade::abort(state);
                 return Some(Response::Error(e));
             }
@@ -611,18 +642,25 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             };
             let (s, bundle, pids) = match claimed {
                 Ok(c) => c,
-                Err(e) => return Some(Response::Error(e)),
+                Err(e) => {
+                    crate::journal::note(format_args!("apply {version} refused: {e}"));
+                    return Some(Response::Error(e));
+                }
             };
+            crate::journal::note(format_args!("apply {} ({}) to {} asked by client {client_id}; windows at the apply: pids {pids:?}", s.version, s.git, bundle.display()));
             let dir = opts.update.dir.clone();
             // The marker first: a daemon that dies mid-swap must find it at its next start, or
             // the start would clean the `.old` away unconfirmed.
             let marker = apply::Applied { version: s.version.clone(), old_kept: true, at_unix: apply::now_unix(), pids_at_apply: pids };
             if let Err(e) = apply::write_marker(&dir, &marker) {
+                crate::journal::note(format_args!("cannot write the update marker for {}: {e}", s.version));
                 state.lock().unwrap().update.applying = None;
                 return Some(Response::Error(format!("cannot write the update marker: {e}")));
             }
+            crate::journal::note(format_args!("marker written for {}", s.version));
             match crate::updates::swap::swap_in(&bundle, &s.bundle) {
                 Ok(()) => {
+                    crate::journal::note(format_args!("swap ok: {} is now {}; the previous app kept as .old until a window confirms", bundle.display(), s.version));
                     {
                         let mut st = state.lock().unwrap();
                         st.update.applying = None;
@@ -641,6 +679,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                     Response::Ok
                 }
                 Err(e) => {
+                    crate::journal::note(format_args!("swap of {} failed: {e}", s.version));
                     // Only the marker this request wrote: never one another apply left.
                     if apply::read_marker(&dir).as_ref() == Some(&marker) {
                         apply::clear_marker(&dir);

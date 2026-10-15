@@ -55,24 +55,41 @@ fn scan(state: &Shared, timeout: Duration) {
             libc::kill(pid as libc::pid_t, libc::SIGKILL);
         }
         if let Some(exe) = exe {
-            if let Err(e) = launch_ui(&exe, cwd.as_deref()) {
+            if let Err(e) = launch_ui(&exe, cwd.as_deref(), "the watchdog, for a silent window") {
                 eprintln!("arkosd: relaunch {} failed: {e}", exe.display());
             }
         }
     }
 }
 
-/// Starts a window in its own session with no stdio, in `cwd` (the window picks its project
-/// from its working directory; without one it would inherit the daemon's), and reaps it when it
-/// exits. Used for the watchdog's relaunch and for `RelaunchClient`.
-pub fn launch_ui(exe: &Path, cwd: Option<&Path>) -> std::io::Result<()> {
+/// Starts a window in its own session, with stdin null and its output appended to `window.log`,
+/// in `cwd` (the window picks its project from its working directory), and reaps it when it
+/// exits. Without a folder (a window that said Hello from the launch chooser) it starts at `/`,
+/// which shows the chooser again, rather than in whatever folder the daemon was started from.
+/// Used for the watchdog's relaunch, `RelaunchClient`, a rollback and a recovery. `why` is for
+/// the update journal, which records every launch with its pid.
+pub fn launch_ui(exe: &Path, cwd: Option<&Path>, why: &str) -> std::io::Result<u32> {
+    let folder = cwd.unwrap_or(Path::new("/"));
+    let launched = spawn_ui(exe, folder);
+    match &launched {
+        Ok(pid) => crate::journal::note(format_args!("relaunch spawned ({why}): {} in {}, pid {pid}", exe.display(), folder.display())),
+        Err(e) => crate::journal::note(format_args!("relaunch failed ({why}): {} in {}: {e}", exe.display(), folder.display())),
+    }
+    launched
+}
+
+fn spawn_ui(exe: &Path, cwd: &Path) -> std::io::Result<u32> {
     let mut cmd = Command::new(exe);
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null());
+    // Both outputs to window.log, so a window that dies at start (or waits in the chooser) says
+    // why; with no log, nowhere.
+    match crate::journal::open_window_log().and_then(|f| Some((f.try_clone().ok()?, f))) {
+        Some((out, err)) => cmd.stdout(out).stderr(err),
+        None => cmd.stdout(Stdio::null()).stderr(Stdio::null()),
+    };
     // The window opens without taking focus: the user may be in another app.
     cmd.env("ARKOS_RELAUNCH", "1");
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
+    cmd.current_dir(cwd);
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();
@@ -85,9 +102,10 @@ pub fn launch_ui(exe: &Path, cwd: Option<&Path>) -> std::io::Result<()> {
         let _no_open_pty_inheritable = crate::pty::spawn_lock();
         cmd.spawn()?
     };
+    let pid = child.id();
     // Reap the child when it exits so it does not linger as a zombie.
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    Ok(())
+    Ok(pid)
 }

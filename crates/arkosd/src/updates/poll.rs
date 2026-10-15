@@ -69,6 +69,8 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
     };
     let Some(v) = m.version() else { return Outcome::Failed("manifest: bad version".into()) };
     if !v.is_newer_than(running) || staged.is_some_and(|s| !v.is_newer_than(s)) {
+        let staged = staged.map_or(String::new(), |s| format!(" or than {}.{}.{} staged or applied", s.major, s.minor, s.patch));
+        crate::journal::note(format_args!("check: the manifest has {} ({}), not newer than running {}.{}.{}{staged}", m.version, m.git, running.major, running.minor, running.patch));
         return Outcome::Nothing;
     }
     let key = bad_key(&m);
@@ -194,6 +196,13 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                 if due {
                     last = Some(std::time::Instant::now());
                     let outcome = run_check(&f, &dir, &keys, &running, &mut bad, &ditto, staged.as_ref());
+                    match &outcome {
+                        Outcome::Nothing => {}
+                        Outcome::Staged(s) => crate::journal::note(format_args!("staged {} ({}) at {}", s.version, s.git, s.bundle.display())),
+                        Outcome::Transient(e) => crate::journal::note(format_args!("check: transient, tried again at the next check: {e}")),
+                        Outcome::Invalid(e) | Outcome::Failed(e) => crate::journal::note(format_args!("check failed: {e}")),
+                        Outcome::Skipped(e) => crate::journal::note(format_args!("check: the release failed before, skipped: {e}")),
+                    }
                     let mut st = state.lock().unwrap();
                     st.update.checking = false;
                     if let Some(update) = record(&mut st.update, outcome) {

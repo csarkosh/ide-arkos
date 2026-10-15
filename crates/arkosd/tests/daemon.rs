@@ -919,9 +919,16 @@ fn upgrade_onto_the_same_binary_keeps_sessions_the_pid_and_parenthood() {
         other => panic!("unexpected {other:?}"),
     };
     assert_eq!(parent_pid(shell_pid), d.pid(), "the shell is the daemon's child before");
+    // The journal writes only into an updates folder the poll made; polling is off here.
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
     c.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_arkosd")) });
     c.expect_disconnect(Duration::from_secs(10));
     let mut c = d.reconnect();
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    let exec = journal.find(&format!("exec {} (upgrade from arkosd ", env!("CARGO_BIN_EXE_arkosd"))).unwrap_or_else(|| panic!("{journal}"));
+    let resumed = journal.find(&format!("resumed as arkosd {} (", env!("CARGO_PKG_VERSION"))).unwrap_or_else(|| panic!("{journal}"));
+    assert!(exec < resumed, "{journal}");
+    assert!(journal[resumed..].lines().next().unwrap().contains(&format!("(pid {})", d.pid())), "{journal}");
     let listed = match c.request(Request::ListSessions) {
         Response::Sessions(list) => list.into_iter().find(|s| s.id == sid).expect("the session survived"),
         other => panic!("unexpected {other:?}"),
@@ -1448,6 +1455,28 @@ fn recover_reopens_windows_that_were_open_and_not_those_that_said_goodbye() {
 }
 
 #[test]
+fn a_hello_from_the_root_folder_is_never_remembered_or_reopened() {
+    // A window opened from the Dock starts at `/`: the daemon must not keep `/` as a project,
+    // or a restart or a rollback would reopen a window there, which shows the chooser.
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let (script, marker) = relaunch_script(a.path());
+    let keep = tempfile::tempdir().unwrap();
+    let hello = |cwd: &std::path::Path| Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: Some(script.clone()), ui_cwd: cwd.to_path_buf() };
+    let mut root = a.connect_raw();
+    assert!(matches!(root.request(hello(std::path::Path::new("/"))), Response::Hello { .. }));
+    let mut project = a.connect_raw();
+    assert!(matches!(project.request(hello(keep.path())), Response::Hello { .. }));
+    wait_for_file_containing(&a.sessions_dir().join("manifest.bin"), &keep.path().to_string_lossy());
+    let dir = a.sigterm();
+    let _b = Daemon::start_in(dir, &["--recover"]);
+    wait_until(|| marker_written(&marker), Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(500));
+    let launches = std::fs::read_to_string(&marker).unwrap();
+    let want = keep.path().canonicalize().unwrap();
+    assert_eq!(launches.lines().collect::<Vec<_>>(), vec![want.to_string_lossy()], "only the project is reopened, never `/`");
+}
+
+#[test]
 fn recover_puts_a_session_whose_folder_is_gone_in_home() {
     let a = Daemon::start(&["--flush-quiet-millis", "100"]);
     let mut c = a.connect();
@@ -1605,6 +1634,15 @@ fn a_connected_window_hears_update_staged() {
 }
 
 #[test]
+fn a_check_that_finds_no_manifest_is_journaled_as_transient() {
+    let site = tempfile::tempdir().unwrap();
+    let (_, pk) = test_release_key();
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let journal = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&journal).is_ok_and(|t| t.contains("check: transient, tried again at the next check")), Duration::from_secs(10));
+}
+
+#[test]
 fn with_polling_off_a_check_request_fetches_nothing() {
     let site = tempfile::tempdir().unwrap();
     let (sk, pk) = test_release_key();
@@ -1718,6 +1756,37 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("nothing staged".into()), "applied once");
 }
 
+#[test]
+fn a_hello_with_an_empty_cwd_confirms_an_applied_update() {
+    // The relaunched window may open the launch chooser (it was relaunched at `/`): it connects
+    // at once with an empty `ui_cwd`, the protocol's "keep the daemon's", and that confirms.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0", "--flush-quiet-millis", "100"]);
+    let project = tempfile::tempdir().unwrap();
+    let mut c = d.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: None, ui_cwd: project.path().to_path_buf() };
+    assert!(matches!(c.request(hello), Response::Hello { .. }));
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    assert!(d.updates_marker().exists());
+    let mut chooser = d.connect_raw();
+    let empty = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id() + 1, ui_exe: None, ui_cwd: PathBuf::new() };
+    assert!(matches!(chooser.request(empty), Response::Hello { .. }));
+    wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
+    assert!(!d.updates_marker().exists(), "confirmed: the marker is cleared");
+    // The folder is chosen: the same connection says Hello again with the project, and the
+    // daemon takes it, so a later relaunch of this window reopens that folder.
+    let folder = tempfile::tempdir().unwrap();
+    let chosen = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id() + 1, ui_exe: None, ui_cwd: folder.path().to_path_buf() };
+    assert!(matches!(chooser.request(chosen), Response::Hello { .. }), "a second Hello on one connection is answered");
+    wait_for_file_containing(&d.sessions_dir().join("manifest.bin"), &folder.path().to_string_lossy());
+    assert!(matches!(chooser.request(Request::ListSessions), Response::Sessions(_)), "and the connection keeps serving");
+}
+
 /// The response to request `id` on `c`, skipping events and other responses.
 fn response_to(c: &mut Conn, id: u32) -> Response {
     loop {
@@ -1786,10 +1855,13 @@ fn the_grace_counts_from_the_relaunch_so_a_slow_relaunch_keeps_the_old_bundle() 
 #[test]
 fn a_window_that_never_connects_rolls_the_bundle_back() {
     // The marker says an update was applied 25 s ago and nobody has connected: a daemon starting
-    // now rolls back and launches the old window in each remembered project.
+    // now rolls back and launches the old window in each remembered project, or, with none
+    // remembered (the 2026-10-15 case: the window was at `/`), once at `/`, the chooser.
     let home = tempfile::tempdir().unwrap();
     let installed = fake_installed_bundle(home.path(), "9.9.9", "fffffff");
     let old = fake_bundle_at(&home.path().join("Arkos IDE.app.old"), "0.0.1", "0000000");
+    let launches = home.path().join("launches");
+    std::fs::write(old.join("Contents/MacOS/arkos"), format!("#!/bin/sh\npwd -P >> '{}'\n", launches.display())).unwrap();
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("updates")).unwrap();
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 25;
@@ -1799,10 +1871,92 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
     // Read leniently: the bundle is briefly absent between the two renames of the rollback.
     wait_until(|| std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap_or_default().contains("0.0.1"), Duration::from_secs(5));
     assert!(!old.exists(), "renamed back");
-    assert!(!home.path().join("launches").exists(), "no project folder was remembered, so no window is launched");
+    wait_until(|| marker_written(&launches), Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(std::fs::read_to_string(&launches).unwrap(), "/\n", "no folder remembered: one window, at `/`, which shows the chooser");
     assert!(!d.updates_marker().exists());
     let mut c = d.connect();
     assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: Some(e), .. } if e.contains("rolled back")));
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    for step in ["marker found at start: 9.9.9", "reject 9.9.9", "rollback of 9.9.9: update 9.9.9 rolled back", "relaunch spawned (the previous app after a rollback, no folder remembered)"] {
+        assert!(journal.contains(step), "{step:?} missing from the journal:\n{journal}");
+    }
+}
+
+#[test]
+fn a_hello_naming_no_window_during_a_pending_apply_confirms_nothing() {
+    // `arkos doctor`'s Hello: pid 0 and no folder. It must not count as the new window.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    let mut doctor = d.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: 0, ui_exe: None, ui_cwd: PathBuf::new() };
+    assert!(matches!(doctor.request(hello), Response::Hello { .. }));
+    assert!(matches!(doctor.request(Request::UpdateStatus), Response::UpdateStatus { .. }));
+    drop(doctor);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(installed.with_extension("app.old").exists(), "not confirmed");
+    assert!(d.updates_marker().exists(), "still waiting for the new window");
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    assert!(journal.contains("pid none, no folder, protocol 4, during the pending apply of 9.9.9: does not confirm (no window pid)"), "{journal}");
+    assert!(!journal.contains("relaunch spawned"), "its disconnect relaunches nothing: {journal}");
+}
+
+#[test]
+fn the_journal_records_an_apply_from_check_to_confirm_and_the_window_log_keeps_its_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    // The relaunched "window": prints to both outputs, as a window's startup line does.
+    let bin = tempfile::tempdir().unwrap();
+    let window = bin.path().join("arkos");
+    std::fs::write(&window, "#!/bin/sh\necho \"window says hi on stdout\"\necho \"arkos starting in $(pwd -P)\" >&2\n").unwrap();
+    std::fs::set_permissions(&window, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    assert_eq!(c.request(Request::RelaunchClient { exe: window.clone(), cwd: home.path().to_path_buf() }), Response::Ok);
+    drop(c);
+    let log = d.path().join("window.log");
+    wait_until(|| std::fs::read_to_string(&log).is_ok_and(|t| t.contains("arkos starting in")), Duration::from_secs(5));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("window says hi on stdout"), "{text}");
+    let _new = d.connect_as(std::process::id() + 1);
+    wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
+    let journal = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&journal).is_ok_and(|t| t.contains("confirm 9.9.9")), Duration::from_secs(5));
+    let journal = std::fs::read_to_string(&journal).unwrap();
+    let pid = std::process::id();
+    let steps = [
+        "staged 9.9.9 (fffffff)".to_string(),
+        format!("apply 9.9.9 (fffffff) to {}", installed.display()),
+        format!("windows at the apply: pids [{pid}]"),
+        "marker written for 9.9.9".to_string(),
+        "swap ok".to_string(),
+        "the grace for 9.9.9 starts now".to_string(),
+        format!("relaunch spawned (relaunch the window asked for): {} in {}, pid ", window.display(), home.path().display()),
+        format!("pid {}, {}, protocol {PROTOCOL_VERSION}, during the pending apply of 9.9.9: confirms", pid + 1, std::env::temp_dir().display()),
+        "confirm 9.9.9".to_string(),
+    ];
+    let mut at = 0;
+    for step in &steps {
+        let found = journal[at..].find(step.as_str()).unwrap_or_else(|| panic!("{step:?} missing or out of order in the journal:\n{journal}"));
+        at += found;
+    }
+    // Every line is timestamped: `2026-10-15 08:04:12 -0400 ...`.
+    assert!(journal.lines().all(|l| l.as_bytes().get(4) == Some(&b'-') && l.as_bytes().get(19) == Some(&b' ')), "{journal}");
+    let later = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&later).is_ok_and(|t| t.contains("check: the manifest has 9.9.9 (fffffff), not newer than running")), Duration::from_secs(5));
 }
 
 #[test]
