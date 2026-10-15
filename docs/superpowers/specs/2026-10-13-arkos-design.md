@@ -179,6 +179,11 @@ the user's request). It honours the system Reduce Motion setting, which holds th
 than on a shell nobody asked for (revised 2026-10-14; before, an emptied pane stayed open and a
 new folder started one shell).
 
+**Choosing a folder.** An `arkos` launched from the Dock, Finder or Spotlight (working directory
+`/`) first shows a small chooser: the five most recent folders, "Show all" for the rest, and the
+native folder picker; Escape quits. From a window, "Open folder…" (Cmd+O) and "Open recent…"
+open the chosen folder in a new window process (added 2026-10-15).
+
 **Keyboard.** VS Code's macOS defaults for terminals in the editor area. Every binding lives in
 the config file and can be changed, chords included.
 

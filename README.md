@@ -95,6 +95,8 @@ Things only a person at the screen can check, in order of value:
 - the window minimized for two minutes keeps its sessions: compare the `arkos` pid before and
   after, and look for no "relaunching" line in `~/Library/Application Support/arkos/arkosd.log`
 - `ps` after thirty seconds idle with four terminals
+- open from the Dock: the chooser shows the five most recent folders; Show all; Open another
+  folder; Escape quits; Cmd+O from a window opens a second window
 
 ## Session awareness
 
@@ -220,6 +222,8 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
+| Cmd+O | open folder…: the native picker; the folder opens in a new window |
+| palette | open recent…: the project chooser; the folder opens in a new window |
 | Cmd+, | open config file |
 | Shift+Cmd+P | command palette |
 
@@ -363,6 +367,13 @@ cargo build --release
 This runs a build from source. The released app is `/Applications/Arkos IDE.app`, installed by
 the Homebrew cask and kept current by the daemon (see Updating); `packaging/bundle.sh` is what
 assembles it.
+
+Opening from the Dock (or Finder, or Spotlight) asks which folder to open: a small chooser lists
+the five most recent folders, newest first, with "Show all" for the rest and "Open another
+folder…" for the native picker. Up, Down and Enter choose; Escape quits. From a running window,
+Cmd+O ("Open folder…") and "Open recent…" in the palette open the folder in a second window;
+the folder this window already shows gets the notice "already open here". The list lives in
+`~/Library/Application Support/arkos/recent.json`.
 
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
 `~/Library/Application Support/arkos/arkosd.log`. A window newer than the daemon is refused
