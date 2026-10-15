@@ -253,6 +253,10 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             eprintln!("arkosd: window for {}: no binary recorded, not reopened", w.cwd.display());
             continue;
         };
+        if crate::server::window_folder(w.cwd.clone()).is_none() {
+            eprintln!("arkosd: window for {}: not a project folder, not reopened", w.cwd.display());
+            continue;
+        }
         if !w.cwd.is_dir() {
             eprintln!("arkosd: window for {}: the folder is gone, not reopened", w.cwd.display());
             continue;

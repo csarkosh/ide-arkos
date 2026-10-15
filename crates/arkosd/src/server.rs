@@ -188,7 +188,8 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
         let s = Session::adopt(rec, master, opts.replay_capacity, opts.backpressure);
         st.sessions.insert(SessionId(rec.id), s);
     }
-    st.windows = h.windows.into_iter().collect();
+    // An older daemon may have remembered `/`.
+    st.windows = h.windows.into_iter().filter(|(cwd, _)| window_folder(cwd.clone()).is_some()).collect();
     st.manifest_dirty = true;
     eprintln!("arkosd: resumed {} sessions from a handover written by {}", st.sessions.len(), h.written_by);
     let state = Arc::new(Mutex::new(st));
@@ -361,6 +362,14 @@ impl Drop for Creating<'_> {
 /// miss the handover, and a kill could reap a shell after its snapshot called it alive.
 const UPGRADE_IN_PROGRESS: &str = "an upgrade is in progress; retry in a moment";
 
+/// The folder a window's Hello names, as the daemon keeps it: None for an empty one (the
+/// protocol's "keep the daemon's", which the launch chooser sends) and for `/`, where macOS starts
+/// an app opened from the Dock. A window relaunched at `/` shows the chooser instead of a project,
+/// so `/` is never remembered, reopened or relaunched into.
+pub fn window_folder(cwd: PathBuf) -> Option<PathBuf> {
+    (!cwd.as_os_str().is_empty() && cwd != Path::new("/")).then_some(cwd)
+}
+
 /// A regular file named `arkos` owned by this user: the only binary the daemon launches as a
 /// window, whoever named it.
 pub fn is_arkos_binary(p: &Path) -> bool {
@@ -391,7 +400,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                     ok
                 });
                 rec.ui_exe = ui_exe;
-                rec.ui_cwd = (!ui_cwd.as_os_str().is_empty()).then_some(ui_cwd);
+                rec.ui_cwd = window_folder(ui_cwd);
                 rec.last_heartbeat = Instant::now();
                 rec.protocol = protocol_version;
             }

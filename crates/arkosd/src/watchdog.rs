@@ -63,16 +63,16 @@ fn scan(state: &Shared, timeout: Duration) {
 }
 
 /// Starts a window in its own session with no stdio, in `cwd` (the window picks its project
-/// from its working directory; without one it would inherit the daemon's), and reaps it when it
-/// exits. Used for the watchdog's relaunch and for `RelaunchClient`.
+/// from its working directory), and reaps it when it exits. Without a folder (a window that said
+/// Hello from the launch chooser) it starts at `/`, which shows the chooser again, rather than
+/// in whatever folder the daemon was started from. Used for the watchdog's relaunch and for
+/// `RelaunchClient`.
 pub fn launch_ui(exe: &Path, cwd: Option<&Path>) -> std::io::Result<()> {
     let mut cmd = Command::new(exe);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // The window opens without taking focus: the user may be in another app.
     cmd.env("ARKOS_RELAUNCH", "1");
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-    }
+    cmd.current_dir(cwd.unwrap_or(Path::new("/")));
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();

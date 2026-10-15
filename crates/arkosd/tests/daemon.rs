@@ -1448,6 +1448,28 @@ fn recover_reopens_windows_that_were_open_and_not_those_that_said_goodbye() {
 }
 
 #[test]
+fn a_hello_from_the_root_folder_is_never_remembered_or_reopened() {
+    // A window opened from the Dock starts at `/`: the daemon must not keep `/` as a project,
+    // or a restart or a rollback would reopen a window there, which shows the chooser.
+    let a = Daemon::start(&["--flush-quiet-millis", "100"]);
+    let (script, marker) = relaunch_script(a.path());
+    let keep = tempfile::tempdir().unwrap();
+    let hello = |cwd: &std::path::Path| Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: Some(script.clone()), ui_cwd: cwd.to_path_buf() };
+    let mut root = a.connect_raw();
+    assert!(matches!(root.request(hello(std::path::Path::new("/"))), Response::Hello { .. }));
+    let mut project = a.connect_raw();
+    assert!(matches!(project.request(hello(keep.path())), Response::Hello { .. }));
+    wait_for_file_containing(&a.sessions_dir().join("manifest.bin"), &keep.path().to_string_lossy());
+    let dir = a.sigterm();
+    let _b = Daemon::start_in(dir, &["--recover"]);
+    wait_until(|| marker_written(&marker), Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(500));
+    let launches = std::fs::read_to_string(&marker).unwrap();
+    let want = keep.path().canonicalize().unwrap();
+    assert_eq!(launches.lines().collect::<Vec<_>>(), vec![want.to_string_lossy()], "only the project is reopened, never `/`");
+}
+
+#[test]
 fn recover_puts_a_session_whose_folder_is_gone_in_home() {
     let a = Daemon::start(&["--flush-quiet-millis", "100"]);
     let mut c = a.connect();
@@ -1716,6 +1738,37 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
     assert!(!d.updates_marker().exists());
     assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("nothing staged".into()), "applied once");
+}
+
+#[test]
+fn a_hello_with_an_empty_cwd_confirms_an_applied_update() {
+    // The relaunched window may open the launch chooser (it was relaunched at `/`): it connects
+    // at once with an empty `ui_cwd`, the protocol's "keep the daemon's", and that confirms.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0", "--flush-quiet-millis", "100"]);
+    let project = tempfile::tempdir().unwrap();
+    let mut c = d.connect_raw();
+    let hello = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id(), ui_exe: None, ui_cwd: project.path().to_path_buf() };
+    assert!(matches!(c.request(hello), Response::Hello { .. }));
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    assert!(d.updates_marker().exists());
+    let mut chooser = d.connect_raw();
+    let empty = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id() + 1, ui_exe: None, ui_cwd: PathBuf::new() };
+    assert!(matches!(chooser.request(empty), Response::Hello { .. }));
+    wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
+    assert!(!d.updates_marker().exists(), "confirmed: the marker is cleared");
+    // The folder is chosen: the same connection says Hello again with the project, and the
+    // daemon takes it, so a later relaunch of this window reopens that folder.
+    let folder = tempfile::tempdir().unwrap();
+    let chosen = Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: std::process::id() + 1, ui_exe: None, ui_cwd: folder.path().to_path_buf() };
+    assert!(matches!(chooser.request(chosen), Response::Hello { .. }), "a second Hello on one connection is answered");
+    wait_for_file_containing(&d.sessions_dir().join("manifest.bin"), &folder.path().to_string_lossy());
+    assert!(matches!(chooser.request(Request::ListSessions), Response::Sessions(_)), "and the connection keeps serving");
 }
 
 /// The response to request `id` on `c`, skipping events and other responses.
