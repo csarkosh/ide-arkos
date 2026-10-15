@@ -256,6 +256,13 @@ pub struct Root {
     pub update_unreachable: Option<String>,
     /// The daemon's `last_error` last shown as a notice, so each one is shown once.
     pub update_error_noticed: Option<String>,
+    /// The native folder picker is up: Cmd+O again does not open a second one.
+    pub picking_folder: bool,
+    /// The chooser "Open recent..." opened, while it may still be open: asking again brings it
+    /// forward, and closing this window closes it.
+    pub chooser: Option<gpui::WindowHandle<launch::Chooser>>,
+    /// "Open recent..." is reading the list before its window exists.
+    pub chooser_opening: bool,
     /// The last key, pointer move or click in this window: a staged update applies only once the
     /// window has been quiet for `[update] idle_after_secs`.
     pub last_input: Instant,
@@ -307,6 +314,25 @@ fn daemon_args(config: &config::Config) -> Vec<String> {
 /// `watchdog::launch_ui`), so a relaunch never interrupts another app.
 fn should_activate(relaunch_env: Option<&str>) -> bool {
     relaunch_env.map_or(true, |v| v.is_empty())
+}
+
+#[derive(Debug, PartialEq)]
+enum AfterClose {
+    Quit,
+    CloseChooser,
+    Stay,
+}
+
+/// What a window closing leads to: the last one quits; the project window gone with only its
+/// "Open recent..." chooser left closes that chooser, so the quit follows.
+fn after_window_closed(windows_left: usize, project_open: bool, chooser_open: bool) -> AfterClose {
+    if windows_left == 0 {
+        AfterClose::Quit
+    } else if !project_open && chooser_open {
+        AfterClose::CloseChooser
+    } else {
+        AfterClose::Stay
+    }
 }
 
 /// Whether a window closing tells the daemon the user is leaving, so a restart does not reopen
@@ -416,6 +442,9 @@ impl Root {
             update_error: None,
             auto_apply_timer: false,
             update_error_noticed: None,
+            picking_folder: false,
+            chooser: None,
+            chooser_opening: false,
             update_unreachable: None,
             last_input: Instant::now(),
             updating: None,
@@ -1279,30 +1308,61 @@ impl Root {
                 }
             }
             OpenFolder => self.pick_folder(cx),
-            OpenRecent => {
-                let root = cx.entity();
-                let open = Box::new(move |folder: PathBuf, cx: &mut App| root.update(cx, |root, cx| root.open_elsewhere(folder, cx)));
-                launch::open_chooser(cx, false, true, self.config.clone(), (*self.theme).clone(), open);
-            }
+            OpenRecent => self.open_recent(cx),
         }
         let _ = window;
     }
 
     /// The native folder picker; the folder chosen opens in a new window.
     fn pick_folder(&mut self, cx: &mut Context<Self>) {
+        if self.picking_folder {
+            return;
+        }
+        self.picking_folder = true;
         let rx = cx.prompt_for_paths(launch::picker_options());
         cx.spawn(async move |root, cx| {
-            let folder = match rx.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                Ok(Err(e)) => {
-                    let _ = root.update(cx, |root, cx| root.show_notice(format!("cannot show the folder picker: {e}"), cx));
-                    None
+            let picked = rx.await;
+            let _ = root.update(cx, |root, cx| {
+                root.picking_folder = false;
+                match picked {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(folder) = paths.into_iter().next() {
+                            root.open_elsewhere(folder, cx);
+                        }
+                    }
+                    Ok(Err(e)) => root.show_notice(format!("cannot show the folder picker: {e}"), cx),
+                    _ => {}
                 }
-                _ => None,
-            };
-            if let Some(folder) = folder {
-                let _ = root.update(cx, |root, cx| root.open_elsewhere(folder, cx));
+            });
+        })
+        .detach();
+    }
+
+    /// The chooser; the folder chosen opens in a new window. One at a time: asking again brings
+    /// the open one forward.
+    fn open_recent(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.chooser {
+            if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+                return;
             }
+            self.chooser = None;
+        }
+        if self.chooser_opening {
+            return;
+        }
+        self.chooser_opening = true;
+        // Weak: a chooser left open after this window closes keeps nothing of it alive.
+        let weak = cx.entity().downgrade();
+        let open = Box::new(move |folder: PathBuf, cx: &mut App| {
+            let _ = weak.update(cx, |root, cx| root.open_elsewhere(folder, cx));
+        });
+        let opening = launch::open_chooser(cx, false, true, self.config.clone(), (*self.theme).clone(), open);
+        cx.spawn(async move |root, cx| {
+            let handle = opening.await;
+            let _ = root.update(cx, |root, _| {
+                root.chooser_opening = false;
+                root.chooser = handle;
+            });
         })
         .detach();
     }
@@ -2157,7 +2217,8 @@ fn main() {
                     let connection = connect(&start.daemon_args);
                     open_project_window(project, connection, start, cx);
                 }),
-            );
+            )
+            .detach();
             return;
         };
         open_project_window(cwd, connection, start, cx);
@@ -2276,11 +2337,23 @@ fn open_project_window(
         // no windowless process lingers. macOS closes the window itself on terminate (logout,
         // shutdown): that close flushes but says no Goodbye, so a restart reopens the window.
         let close_root = root.clone();
+        let project_window = window.window_id();
         cx.on_window_closed(move |cx| {
             let left = cx.windows().len();
-            if left == 0 {
-                close_root.update(cx, |root, _| if says_goodbye(root.user_closing, left) { root.leaving() } else { root.flush_for_quit(false) });
-                cx.quit();
+            let project_open = cx.windows().iter().any(|w| w.window_id() == project_window);
+            let chooser = close_root.read(cx).chooser.filter(|h| cx.windows().iter().any(|w| w.window_id() == h.window_id()));
+            match after_window_closed(left, project_open, chooser.is_some()) {
+                AfterClose::Quit => {
+                    close_root.update(cx, |root, _| if says_goodbye(root.user_closing, left) { root.leaving() } else { root.flush_for_quit(false) });
+                    cx.quit();
+                }
+                // Its own close comes back here with no window left, and quits as above.
+                AfterClose::CloseChooser => {
+                    if let Some(h) = chooser {
+                        let _ = h.update(cx, |_, window, _| window.remove_window());
+                    }
+                }
+                AfterClose::Stay => {}
             }
         })
         .detach();
@@ -2315,13 +2388,21 @@ fn open_project_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_label, pick_grid, says_goodbye, shell_name, should_activate, CONNECTING, ERROR_PREFIX};
+    use super::{after_window_closed, daemon_label, pick_grid, says_goodbye, AfterClose, shell_name, should_activate, CONNECTING, ERROR_PREFIX};
 
     #[test]
     fn a_window_the_daemon_relaunched_does_not_take_focus() {
         assert!(should_activate(None), "opened by the user");
         assert!(should_activate(Some("")));
         assert!(!should_activate(Some("1")), "ARKOS_RELAUNCH from watchdog::launch_ui");
+    }
+
+    #[test]
+    fn launch_closing_the_project_window_closes_its_chooser_then_quits() {
+        assert_eq!(after_window_closed(0, false, false), AfterClose::Quit);
+        assert_eq!(after_window_closed(1, false, true), AfterClose::CloseChooser, "only the chooser is left");
+        assert_eq!(after_window_closed(1, true, false), AfterClose::Stay, "the chooser closed; the project stays");
+        assert_eq!(after_window_closed(2, true, true), AfterClose::Stay);
     }
 
     #[test]

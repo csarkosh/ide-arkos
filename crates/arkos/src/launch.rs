@@ -8,8 +8,8 @@ use crate::recent::{self, Recent};
 use crate::theme::Theme;
 use crate::paths;
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHandle, KeyDownEvent, PathPromptOptions, ScrollHandle, Window,
-    WindowBounds, WindowOptions,
+    div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHandle, KeyDownEvent, PathPromptOptions, ScrollHandle, Task, Window,
+    WindowBounds, WindowHandle, WindowOptions,
 };
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -275,8 +275,9 @@ impl Render for Chooser {
 
 /// Opens the chooser once the recent list is read (off the UI thread). `at_launch`: closing it
 /// with nothing chosen quits (the app's window-closed observer sees no windows left). `focus`
-/// is whether the window takes the keyboard, as for the project window.
-pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, on_choice: OnChoice) {
+/// is whether the window takes the keyboard, as for the project window. The task gives the
+/// window's handle once it is open.
+pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, on_choice: OnChoice) -> Task<Option<WindowHandle<Chooser>>> {
     let file = paths::recent_file();
     cx.spawn(async move |cx| {
         let recents = cx.background_executor().spawn(async move { recent::visible(&recent::load(&file)) }).await;
@@ -304,16 +305,18 @@ pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, 
                 window.focus(&view.read(cx).focus);
                 view
             })
-            .map(|_| ())
         });
-        if !matches!(opened, Ok(Ok(()))) {
-            eprintln!("arkos: cannot open the project chooser");
-            if at_launch {
-                let _ = cx.update(|cx| cx.quit());
+        match opened {
+            Ok(Ok(handle)) => Some(handle),
+            _ => {
+                eprintln!("arkos: cannot open the project chooser");
+                if at_launch {
+                    let _ = cx.update(|cx| cx.quit());
+                }
+                None
             }
         }
     })
-    .detach();
 }
 
 #[cfg(test)]
