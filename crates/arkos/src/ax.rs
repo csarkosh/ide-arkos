@@ -411,7 +411,7 @@ pub mod screen {
         view.window()
     }
 
-    /// The project window's title; the process's other windows (the "Open recent..." chooser, a
+    /// The project window's title; the process's other windows (the "New Window" chooser, a
     /// folder picker) have their own.
     pub const WINDOW_TITLE: &str = "Arkos IDE";
 

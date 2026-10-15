@@ -291,10 +291,10 @@ pub struct Root {
     pub update_error_noticed: Option<String>,
     /// The native folder picker is up: Cmd+O again does not open a second one.
     pub picking_folder: bool,
-    /// The chooser "Open recent..." opened, while it may still be open: asking again brings it
+    /// The chooser "New Window" opened, while it may still be open: asking again brings it
     /// forward, and closing this window closes it.
     pub chooser: Option<gpui::WindowHandle<launch::Chooser>>,
-    /// "Open recent..." is reading the list before its window exists.
+    /// "New Window" is reading the list before its window exists.
     pub chooser_opening: bool,
     /// The last key, pointer move or click in this window: a staged update applies only once the
     /// window has been quiet for `[update] idle_after_secs`.
@@ -429,7 +429,7 @@ enum AfterClose {
 }
 
 /// What a window closing leads to: the last one quits; the project window gone with only its
-/// "Open recent..." chooser left closes that chooser, so the quit follows.
+/// "New Window" chooser left closes that chooser, so the quit follows.
 fn after_window_closed(windows_left: usize, project_open: bool, chooser_open: bool) -> AfterClose {
     if windows_left == 0 {
         AfterClose::Quit

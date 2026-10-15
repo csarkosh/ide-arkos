@@ -559,7 +559,7 @@ worktree tab both count) and "Stop all": one click, or Delete on the selected ro
 "Stop N sessions? Confirm"; a second ends every one of them (a window open on that folder sees
 its shells end); Escape or moving the selection takes it back. Those counts show at launch, not
 in the chooser opened from a running window. From a running window,
-Cmd+O ("Open folder…") and "Open recent…" in the palette open the folder in a second window;
+Cmd+O ("Open folder…") and Cmd+N ("New window", the chooser) open the folder in a second window;
 the folder this window already shows gets the notice "already open here". The list lives in
 `~/Library/Application Support/arkos/recent.json`.
 

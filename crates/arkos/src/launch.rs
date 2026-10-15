@@ -1,10 +1,10 @@
 //! The project chooser. A Dock, Finder or Spotlight launch starts with `/` as its working
 //! directory: the window asks which folder to open instead, listing the most recent ones
-//! (`recent.rs`) with a way to show them all and the native folder picker. "Open recent..." from
+//! (`recent.rs`) with a way to show them all and the native folder picker. "New Window" from
 //! a running window shows the same chooser; the folder chosen there opens in a new process.
 use crate::chooser_sessions::{self, LinkEvent};
 use crate::config::{self, Config};
-use crate::keymap::{self, OpenFolder};
+use crate::keymap::{self, NewWindow, OpenFolder};
 use crate::launch_link::Link;
 use crate::recent::{self, Recent};
 use crate::theme::{self, Theme};
@@ -559,6 +559,8 @@ impl Render for Chooser {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.key(ev, window, cx)))
             .on_action(cx.listener(|this, _: &OpenFolder, window, cx| this.pick(window, cx)))
+            // Cmd+N in the chooser itself: there is nothing newer to open than this window.
+            .on_action(|_: &NewWindow, window, _cx| window.activate_window())
             .size_full()
             .flex()
             .flex_col()
