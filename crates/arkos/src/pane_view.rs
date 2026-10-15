@@ -2,11 +2,13 @@
 //! tab's placeholder, a busy notice while a shell starts or a replay is parsed, or the empty
 //! state), and the URL prompt over the focused pane.
 
+use crate::chrome;
 use crate::drag;
 use crate::dock::DockState;
 use crate::find;
 use crate::keymap::Command;
 use crate::line_edit::{self, Edit, LineEdit};
+use crate::md_view;
 use crate::motion;
 use crate::pulse;
 use crate::sessions::Note;
@@ -14,7 +16,7 @@ use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
 use crate::palette::Rgb;
 use crate::theme::{Chrome, Theme};
-use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
+use crate::tree::{Pane, PaneId, Rect, Tab, TabId, ViewMode};
 use crate::viewer::{self, Content};
 use crate::viewer_element::{MarkColors, RawColors, ViewerElement};
 use crate::Root;
@@ -912,6 +914,17 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         .children(find::render(&terminal, pane, theme, family, find_bars, now, cx))
 }
 
+/// The width of a markdown tab's mode pill: fixed, so the inline-diff chip can sit beside it.
+pub const PILL_W: f32 = 104.0;
+
+/// The mode pill's text: it names the mode a click switches to.
+pub fn pill_label(mode: ViewMode) -> &'static str {
+    match mode {
+        ViewMode::Rendered => "show raw",
+        ViewMode::Raw => "show rendered",
+    }
+}
+
 /// What a viewer tab shows under its find bar.
 enum Kind {
     Loading,
@@ -924,12 +937,13 @@ enum Kind {
 /// A viewer tab: the file's lines through `ViewerElement`, or a notice when there are none to show.
 /// A markdown document takes the editing keys (`Viewer::key`) and nothing else scrolls on a key;
 /// in any other file the arrows, Page Up and Down, Space, Home and End scroll. The wheel scrolls
-/// smoothly.
+/// smoothly. An editable markdown document shows rendered (`md_view`, a list that scrolls itself)
+/// or raw, with a pill at the top right that switches between the two.
 fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
     let family = root.family();
-    let (focus, kind, font_size, has_changes, inline, find_open) = {
+    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
@@ -938,11 +952,18 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             Content::Binary => Kind::Binary,
             Content::Unreadable(e) => Kind::Unreadable(e.clone()),
         };
-        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some())
+        // A markdown file shown read-only (`read_only` set) has no document: no pill, raw text.
+        let editable = viewer::is_markdown(path) && v.doc.is_some() && v.read_only.is_none();
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable)
     };
+    let rendered = editable && mode == ViewMode::Rendered;
     let dim = theme.chrome.text_dim.hsla();
     let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
     let body = match kind {
+        Kind::Text { .. } if rendered => {
+            let element = md_view::render(&viewer, &theme, SharedString::from(chrome::UI_FONT), family.clone(), font_size, root.highlighter.clone(), cx);
+            div().size_full().child(element)
+        }
         Kind::Text { plain } => {
             let element = ViewerElement::new(
                 viewer.clone(),
@@ -967,14 +988,18 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         Kind::Binary => notice("a binary file; nothing to show".into()),
         Kind::Unreadable(e) => notice(format!("cannot read this file: {e}")),
     };
-    // The inline diff's switch, at the top right where the find bar opens, below it when open.
+    // The mode pill's top: where the find bar opens, below it when open.
+    let pill_top = if find_open { 44.0 } else { 10.0 };
+    // The inline diff's switch, at the top right where the find bar opens, below it when open; on
+    // a markdown document, left of the mode pill at its top.
     let chip = has_changes.then(|| {
         let v_chip = viewer.clone();
+        let (top, right) = if editable { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
         div()
             .id(("viewer-inline-diff", viewer.entity_id()))
             .absolute()
-            .top(px(if find_open { 44.0 } else { 6.0 }))
-            .right(px(14.0))
+            .top(px(top))
+            .right(px(right))
             .px(px(8.0))
             .py(px(3.0))
             .rounded(px(6.0))
@@ -996,6 +1021,35 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 }),
             )
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_chip.update(cx, |v, cx| v.toggle_inline_diff(cx))))
+    });
+    // The mode pill, drawn like the terminal's "jump to bottom" pill.
+    let pill = editable.then(|| {
+        div()
+            .id(("viewer-mode-pill", viewer.entity_id()))
+            .absolute()
+            .top(px(pill_top))
+            .right(px(14.0))
+            .w(px(PILL_W))
+            .flex()
+            .justify_center()
+            .py(px(4.0))
+            .rounded(px(10.0))
+            .bg(theme.chrome.banner.hsla())
+            .text_color(theme.chrome.text.hsla())
+            .font_family(family.clone())
+            .text_size(px(12.0))
+            .cursor_pointer()
+            .child(pill_label(mode))
+            // A press on the pill is not a click in the text below; stopping it also stops the
+            // pane's, so the pill focuses the pane itself.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                    root.focus_pane(pane, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
     let (v_keys, v_wheel) = (viewer.clone(), viewer.clone());
     div()
@@ -1037,20 +1091,24 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 }
             });
         }))
-        .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
-            v_wheel.update(cx, |v, cx| {
-                let line_h = v.font_size * v.line_height;
-                // The wheel's y is positive when the content should move down: scroll up.
-                let lines = match ev.delta {
-                    ScrollDelta::Lines(p) => -p.y,
-                    ScrollDelta::Pixels(p) => -f32::from(p.y) / line_h,
-                };
-                v.scroll_lines(lines, cx);
-            });
-        }))
+        // The rendered view's list scrolls itself.
+        .when(!rendered, |d| {
+            d.on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
+                v_wheel.update(cx, |v, cx| {
+                    let line_h = v.font_size * v.line_height;
+                    // The wheel's y is positive when the content should move down: scroll up.
+                    let lines = match ev.delta {
+                        ScrollDelta::Lines(p) => -p.y,
+                        ScrollDelta::Pixels(p) => -f32::from(p.y) / line_h,
+                    };
+                    v.scroll_lines(lines, cx);
+                });
+            }))
+        })
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
         .child(body)
         .children(chip)
+        .children(pill)
         .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
 }
 
@@ -1233,6 +1291,12 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pill_names_the_other_mode() {
+        assert_eq!(pill_label(ViewMode::Rendered), "show raw");
+        assert_eq!(pill_label(ViewMode::Raw), "show rendered");
+    }
 
     #[test]
     fn a_reorder_opens_a_gap_where_the_tab_would_land_and_closes_it_on_a_cancel() {

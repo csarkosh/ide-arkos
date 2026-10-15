@@ -15,6 +15,7 @@ use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
+use crate::md_view;
 use crate::motion::{self, Fades};
 use crate::palette::Rgb;
 use crate::scroll::ScrollAnimator;
@@ -24,8 +25,8 @@ use crate::viewer;
 use crate::viewer_element::{self as element, RawLayout};
 use crate::Root;
 use gpui::{
-    div, prelude::*, px, App, Bounds, ClickEvent, ClipboardItem, Context, Div, Entity, EntityId, EntityInputHandler, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, Pixels, Point, SharedString, UTF16Selection, Window,
+    div, prelude::*, px, App, Bounds, ClickEvent, ClipboardItem, Context, Div, Entity, EntityId, EntityInputHandler, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, ListAlignment,
+    ListOffset, ListState, MouseButton, MouseDownEvent, Pixels, Point, SharedString, UTF16Selection, Window,
 };
 use std::io::{Read, Write};
 use std::ops::Range;
@@ -448,6 +449,12 @@ pub struct Viewer {
     /// The document's top-level blocks, spliced on every edit.
     pub blocks: Vec<md_blocks::Block>,
     pub mode: ViewMode,
+    /// The rendered view's rows, one per block, spliced with `blocks`: gpui keeps each row's
+    /// measured height and the scroll position in it.
+    pub list_state: ListState,
+    /// Each block's inline runs (and a code block's colours), filled when the row is first drawn
+    /// and spliced with `blocks`, so an edit only drops the blocks it changed.
+    pub block_cache: Vec<Option<md_view::Rendered>>,
     /// Edits not yet on disk: the tab's label ends in " •".
     pub dirty: bool,
     /// The file changed on disk under unsaved edits; nothing is written until the user picks.
@@ -515,6 +522,8 @@ impl Viewer {
             caret: edit::Caret::default(),
             blocks: Vec::new(),
             mode: ViewMode::default(),
+            list_state: ListState::new(0, ListAlignment::Top, px(600.0)),
+            block_cache: Vec::new(),
             dirty: false,
             conflict: false,
             saving: false,
@@ -587,6 +596,8 @@ impl Viewer {
         self.plain = loaded.plain;
         self.diff = loaded.diff;
         self.read_only = loaded.read_only;
+        // The rendered view keeps its place by line: the line the top row starts on.
+        let old_top_line = self.blocks.get(self.list_state.logical_scroll_top().item_ix).map(|b| b.lines.start);
         match (self.doc.take(), loaded.doc) {
             // The same text again: the old document stays, and with it the undo history.
             (Some(old), Some(new)) if old.to_text() == new.to_text() => {
@@ -604,6 +615,12 @@ impl Viewer {
                 self.caret = edit::Caret::default();
                 self.blocks.clear();
             }
+        }
+        // Every row is new; never `reset`, which would jump to the top.
+        self.list_state.splice(0..self.list_state.item_count(), self.blocks.len());
+        self.block_cache = std::iter::repeat_with(|| None).take(self.blocks.len()).collect();
+        if let Some(line) = old_top_line.filter(|_| !self.blocks.is_empty()) {
+            self.list_state.scroll_to(ListOffset { item_ix: md_blocks::block_at(&self.blocks, line), offset_in_item: px(0.0) });
         }
         // What is shown is what is on disk now.
         self.dirty = false;
@@ -630,15 +647,27 @@ impl Viewer {
         self.edit_raw(f, cx);
     }
 
+    /// `edit` for a change away from the caret, such as a task box clicked in the rendered view:
+    /// the view stays where it is instead of scrolling to the caret.
+    pub fn edit_elsewhere(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
+        self.finish_composition(cx);
+        self.run_edit(f, cx);
+    }
+
     /// `edit` without the composition guard, for the input handler, which keeps the composition
     /// itself.
     fn edit_raw(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
+        self.run_edit(f, cx);
+        // After `changed`: the row count the scroll is clamped to includes any new line.
+        self.reveal_caret();
+    }
+
+    /// Runs the edit and takes in its result, without scrolling.
+    fn run_edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         self.caret = f(doc, self.caret, Instant::now());
         self.changed(old_lines, cx);
-        // After `changed`: the row count the scroll is clamped to includes any new line.
-        self.reveal_caret();
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
@@ -680,6 +709,10 @@ impl Viewer {
         let (range, count) = md_blocks::changed_blocks(&self.blocks, &old_lines, &new_blocks, &new_lines);
         let tail = range.start + count;
         self.blocks.splice(range.clone(), new_blocks[range.start..tail].iter().cloned());
+        // The rendered rows and their cache follow the same splice; never `reset`, which would
+        // jump to the top.
+        self.list_state.splice(range.clone(), count);
+        self.block_cache.splice(range.clone(), std::iter::repeat_with(|| None).take(count));
         // The blocks after the change kept their kind and text but may have moved.
         for (block, new) in self.blocks[tail..].iter_mut().zip(&new_blocks[tail..]) {
             block.lines = new.lines.clone();
@@ -1005,6 +1038,10 @@ impl Viewer {
     fn show_current_hit(&mut self) {
         let Some(f) = &self.find else { return };
         let Some(h) = f.hits.get(f.current) else { return };
+        if self.mode == ViewMode::Rendered && self.doc.is_some() {
+            self.list_state.scroll_to_reveal_item(md_blocks::block_at(&self.blocks, h.line));
+            return;
+        }
         let target = (self.row_of_line(h.line) as f32 - (self.rows_visible as f32 / 3.0).floor()).max(0.0);
         self.scroll.target = target.min(self.max_scroll());
     }
@@ -1021,6 +1058,9 @@ impl Viewer {
         // A key the input method passed on ends its composition, keeping the text.
         if self.marked.is_some() {
             self.finish_composition(cx);
+        }
+        if self.mode == ViewMode::Rendered {
+            return self.rendered_key(action, cx);
         }
         match action {
             KeyAction::Save => self.save_command(cx),
@@ -1079,6 +1119,27 @@ impl Viewer {
         true
     }
 
+    /// A key in the rendered view, where the list scrolls itself: the page keys move it by its
+    /// height, Home and End go to the ends, and saving, undo, redo and Escape work as in the raw
+    /// view. Typing into the block under the caret comes with the active block (Task 6); until
+    /// then the other keys are left to the keymap.
+    fn rendered_key(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
+        let page = self.list_state.viewport_bounds().size.height;
+        match action {
+            KeyAction::Move(edit::Move::PageDown(_), _) => self.list_state.scroll_by(page),
+            KeyAction::Move(edit::Move::PageUp(_), _) => self.list_state.scroll_by(-page),
+            KeyAction::ScrollHome => self.list_state.scroll_to(ListOffset::default()),
+            KeyAction::ScrollEnd => self.list_state.scroll_to(ListOffset { item_ix: self.blocks.len(), offset_in_item: px(0.0) }),
+            KeyAction::Save => self.save_command(cx),
+            KeyAction::Undo => self.undo(cx),
+            KeyAction::Redo => self.redo(cx),
+            KeyAction::Escape if self.find.is_some() => self.close_find(cx),
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     /// Cmd+S: writes the edits now; during a conflict it keeps mine, as the banner's button does.
     /// A clean document has nothing to write.
     pub fn save_command(&mut self, cx: &mut Context<Self>) {
@@ -1089,10 +1150,14 @@ impl Viewer {
         }
     }
 
-    /// Scrolls the least that puts the caret's row inside the viewport.
+    /// Scrolls the least that puts the caret's row inside the viewport; in the rendered view, the
+    /// least that shows the caret's block.
     fn reveal_caret(&mut self) {
         if self.doc.is_none() {
             return;
+        }
+        if self.mode == ViewMode::Rendered {
+            self.list_state.scroll_to_reveal_item(md_blocks::block_at(&self.blocks, self.caret.head.line));
         }
         let row = self.row_of_line(self.caret.head.line) as f32;
         let rows = self.rows_visible.max(1) as f32;

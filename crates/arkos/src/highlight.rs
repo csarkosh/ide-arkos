@@ -72,6 +72,18 @@ impl Highlighter {
         let syntax = by_ext(path.file_name())
             .or_else(|| by_ext(path.extension()))
             .or_else(|| lines.first().and_then(|l| self.syntaxes.find_syntax_by_first_line(l)));
+        self.highlight_with(syntax, lines)
+    }
+
+    /// `highlight` for a fenced code block: the grammar comes from the info string's first word
+    /// ("rust", "py", "sh"), and an unknown or empty one gives plain spans.
+    pub fn highlight_token(&self, info: &str, lines: &[String]) -> Vec<Vec<Span>> {
+        let token = info.split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("");
+        let syntax = (!token.is_empty()).then(|| self.syntaxes.find_syntax_by_token(token)).flatten();
+        self.highlight_with(syntax, lines)
+    }
+
+    fn highlight_with(&self, syntax: Option<&syntect::parsing::SyntaxReference>, lines: &[String]) -> Vec<Vec<Span>> {
         let Some(syntax) = syntax else {
             return lines.iter().map(|l| plain(l, self.text)).collect();
         };

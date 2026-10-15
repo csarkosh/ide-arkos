@@ -121,7 +121,6 @@ fn block_lines(lines: &[String], range: Range<usize>) -> impl Iterator<Item = &s
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub struct Style {
     pub bold: bool,
     pub italic: bool,
@@ -134,7 +133,6 @@ pub struct Style {
 /// A piece of rendered text. `source` is the byte range of the run's own text in the block's
 /// text, inside any markers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub struct Run {
     pub text: String,
     pub style: Style,
@@ -142,7 +140,6 @@ pub struct Run {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub enum Inline {
     Para(Vec<Run>),
     Heading(u8, Vec<Run>),
@@ -158,7 +155,6 @@ pub enum Inline {
 
 /// The inline content of one block's text. A soft break becomes a space, a hard break a newline,
 /// inline HTML a run with `style.html`; a code run's source range excludes its backticks.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub fn inline(block_text: &str, kind: &BlockKind) -> Vec<Inline> {
     match kind {
         BlockKind::Blank => Vec::new(),
@@ -351,7 +347,7 @@ fn walk(src: &str) -> Vec<Inline> {
 /// A byte index into the rendered string (the runs' texts joined) to a byte offset in the block's
 /// text: linear within a run's source, the next run's start between runs, and past the end the end
 /// of the last run's source.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6 on.
 pub fn source_offset_at(runs: &[Run], rendered_byte: usize) -> usize {
     let mut at = 0;
     for run in runs {
@@ -367,7 +363,6 @@ pub fn source_offset_at(runs: &[Run], rendered_byte: usize) -> usize {
 /// The blank lines at the end of the block belong to it but are not a place for the caret, so an
 /// offset past the end clamps to the end of the block's last non-blank line, and a block of only
 /// blank lines clamps to its first line at column 0.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6 on.
 pub fn pos_of_offset(block: &Block, lines: &[String], byte: usize) -> edit::Pos {
     let first = block.lines.start.min(lines.len().saturating_sub(1));
     let end = block.lines.end.min(lines.len());
@@ -442,7 +437,6 @@ pub fn list_continuation(line: &str) -> Option<(String, bool)> {
 }
 
 /// Flips `[ ]` and `[x]` on a task item line.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub fn toggle_task(line: &str) -> Option<String> {
     let (_, _, content) = list_parts(line)?;
     let checked = task_box(&line[content..])?;

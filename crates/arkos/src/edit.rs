@@ -226,7 +226,6 @@ impl Document {
         self.lines.clone()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
