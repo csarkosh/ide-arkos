@@ -1,5 +1,6 @@
 //! When a staged update may apply itself (auto-update spec, section 6): the window has been
-//! quiet for `idle_after`, nothing transient is open, nothing is in flight, the daemon is there.
+//! quiet for `idle_after`, nothing transient is open, nothing is in flight, the daemon is there,
+//! and no markdown tab holds edits that could not be saved.
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -9,6 +10,9 @@ pub struct Chrome {
     pub prompt: bool,
     pub find: bool,
     pub drag: bool,
+    /// A markdown tab holds edits that are not on disk and will not get there by themselves: a
+    /// conflict waits for the user, or the last save failed. An update would drop them.
+    pub unsaved: bool,
 }
 
 impl Chrome {
@@ -18,7 +22,7 @@ impl Chrome {
 }
 
 pub fn may_apply(now: Instant, last_input: Instant, idle_after: Duration, chrome: Chrome, in_flight: bool, connected: bool) -> bool {
-    if chrome.any() || in_flight || !connected {
+    if chrome.any() || chrome.unsaved || in_flight || !connected {
         return false;
     }
     now.saturating_duration_since(last_input) >= idle_after
@@ -70,6 +74,9 @@ mod tests {
             assert!(!may_apply(t0 + Duration::from_secs(60), t0, after, open, false, true), "{open:?}");
         }
         assert!(!may_apply(t0 + Duration::from_secs(60), t0, after, quiet, true, true), "an update already running");
+        let unsaved = Chrome { unsaved: true, ..quiet };
+        assert!(!may_apply(t0 + Duration::from_secs(600), t0, after, unsaved, false, true), "a conflict or a failed save waits for the user");
+        assert!(!unsaved.any(), "unsaved edits are not chrome: they do not restart the quiet spell");
         assert!(!may_apply(t0 + Duration::from_secs(60), t0, after, quiet, false, false), "offline");
         assert!(may_apply(t0, t0 + Duration::from_secs(5), Duration::ZERO, quiet, false, true), "a last input in the future (clock skew) counts as idle only when idle_after is zero");
     }

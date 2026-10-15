@@ -212,6 +212,34 @@ pub fn save_text_guarded<G>(path: &Path, text: &str, expect: Option<(u128, u64)>
     fingerprint(path).ok_or_else(|| SaveError::Io(std::io::Error::other("the file is gone right after the write")))
 }
 
+/// Where the unsaved text of `source` goes when arkos drops it anyway: `<dir>/<file stem>-<unix
+/// time>.md`, and from the second `attempt` on `<file stem>-<unix time>-<attempt>.md`, so two files
+/// of one name dropped in the same second never share a recovery file.
+pub fn recovery_path(dir: &Path, source: &Path, unix_secs: u64, attempt: u32) -> PathBuf {
+    let stem = source.file_stem().map_or_else(|| "untitled".into(), |s| s.to_string_lossy());
+    let name = if attempt == 0 { format!("{stem}-{unix_secs}.md") } else { format!("{stem}-{unix_secs}-{attempt}.md") };
+    dir.join(name)
+}
+
+/// Writes `text`, the unsaved edits of `source`, to a new file in `dir` (created on demand) and
+/// returns its path. An existing file is never replaced: the next free `recovery_path` is taken.
+pub fn write_recovery(dir: &Path, source: &Path, text: &str, unix_secs: u64) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    for attempt in 0..1000 {
+        let path = recovery_path(dir, source, unix_secs, attempt);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                file.sync_all()?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("no free recovery file name"))
+}
+
 /// A background save as a close or a quit sees it: they may not block on the UI thread for the
 /// save to land, so the writer reports here as soon as the write is done, and a close that gave
 /// up waiting stops the write's last step.
@@ -476,6 +504,9 @@ pub struct Viewer {
     pub recheck_after_save: bool,
     /// The save in flight with the sequence it wrote, for a close or a quit to wait on.
     flight: Option<(u64, Arc<SaveFlight>)>,
+    /// The edit (`save_seq`) whose text was last written to the recovery folder, so a second
+    /// flush on the way out does not write the same text again.
+    recovered: Option<u64>,
     /// How far the raw text is scrolled to the right, in pixels: the raw view does not wrap, so it
     /// follows the caret sideways.
     pub scroll_x: f32,
@@ -542,6 +573,7 @@ impl Viewer {
             read_only: None,
             recheck_after_save: false,
             flight: None,
+            recovered: None,
             scroll_x: 0.0,
             last_bounds: None,
             raw_blocks: Vec::new(),
@@ -916,6 +948,18 @@ impl Viewer {
             // `save_text` always passes its gate; this arm only keeps the match total.
             Err(SaveError::Superseded) => Err(format!("cannot save {}: superseded", self.path.display())),
         }
+    }
+
+    /// Writes edits that are not on disk to the recovery folder `dir`, for a quit or a relaunch
+    /// that goes ahead without them: `None` when there is nothing to write (no document, nothing
+    /// unsaved, or this text already written there).
+    pub fn recover(&mut self, dir: &Path, unix_secs: u64) -> Option<std::io::Result<PathBuf>> {
+        let doc = self.doc.as_ref().filter(|_| self.dirty && self.recovered != Some(self.save_seq))?;
+        let written = write_recovery(dir, &self.path, &doc.to_text(), unix_secs);
+        if written.is_ok() {
+            self.recovered = Some(self.save_seq);
+        }
+        Some(written)
     }
 
     /// The conflict's two buttons: keep mine writes the document over the file at once, adopting
@@ -2206,22 +2250,44 @@ impl Root {
     }
 
     /// Writes every viewer's unsaved edits now, on this thread, for a quit; returns the errors
-    /// (conflicts and failed writes), whose edits are not on disk.
-    pub fn save_dirty_viewers_now(&mut self, cx: &mut App) -> Vec<String> {
-        let viewers: Vec<Entity<Viewer>> = self.viewers.values().cloned().collect();
+    /// (conflicts and failed writes) with their tabs, whose edits are not on disk.
+    pub fn save_dirty_viewers_now(&mut self, cx: &mut App) -> Vec<(TabId, String)> {
+        let viewers: Vec<(TabId, Entity<Viewer>)> = self.viewers.iter().map(|(t, v)| (*t, v.clone())).collect();
         viewers
             .into_iter()
-            .filter_map(|v| {
+            .filter_map(|(tab, v)| {
                 v.update(cx, |v, cx| {
                     let saved = v.save_now();
                     if saved.is_err() {
                         cx.notify();
                     }
                     // The conflict's text does not name the file; a write error's does.
-                    saved.err().map(|e| if e == CONFLICT_NOTICE { format!("{}: {e}", v.path.display()) } else { e })
+                    saved.err().map(|e| (tab, if e == CONFLICT_NOTICE { format!("{}: {e}", v.path.display()) } else { e }))
                 })
             })
             .collect()
+    }
+
+    /// Writes every viewer's edits that are still not on disk to the recovery folder, for a quit
+    /// or a relaunch that goes ahead without them, and says where on stderr. Returns the files
+    /// written.
+    pub fn recover_unsaved(&mut self, cx: &mut App) -> Vec<PathBuf> {
+        let dir = crate::paths::recovered_dir();
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let viewers: Vec<Entity<Viewer>> = self.viewers.values().cloned().collect();
+        let mut written = Vec::new();
+        for v in viewers {
+            let path = v.read(cx).path.clone();
+            match v.update(cx, |v, _| v.recover(&dir, unix)) {
+                Some(Ok(to)) => {
+                    eprintln!("arkos: unsaved edits of {} written to {}", path.display(), to.display());
+                    written.push(to);
+                }
+                Some(Err(e)) => eprintln!("arkos: the unsaved edits of {} are lost: cannot write them to {}: {e}", path.display(), dir.display()),
+                None => {}
+            }
+        }
+        written
     }
 
     /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer.
@@ -2670,6 +2736,27 @@ mod tests {
         let s = ConflictState { conflict: true, dirty: true, save_seq: 7 };
         assert_eq!(s.resolve(true), (ConflictState { conflict: false, dirty: true, save_seq: 7 }, ConflictAction::SaveNow), "Keep mine saves at once, adopting the disk fingerprint");
         assert_eq!(s.resolve(false), (ConflictState { conflict: false, dirty: false, save_seq: 8 }, ConflictAction::Reload), "Reload drops the edits and bumps the sequence so a pending timer stays quiet");
+    }
+
+    #[test]
+    fn a_recovery_file_is_named_after_the_file_and_the_time() {
+        let dir = Path::new("/support/recovered");
+        assert_eq!(recovery_path(dir, Path::new("/p/docs/notes.md"), 1_760_000_000, 0), PathBuf::from("/support/recovered/notes-1760000000.md"));
+        assert_eq!(recovery_path(dir, Path::new("/p/a.markdown"), 5, 2), PathBuf::from("/support/recovered/a-5-2.md"), "a later attempt is numbered");
+        assert_eq!(recovery_path(dir, Path::new("/"), 5, 0), PathBuf::from("/support/recovered/untitled-5.md"));
+    }
+
+    #[test]
+    fn unsaved_edits_are_written_to_a_new_recovery_file_never_over_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("recovered");
+        let source = Path::new("/elsewhere/notes.md");
+        let first = write_recovery(&dir, source, "mine", 7).unwrap();
+        assert_eq!(first, dir.join("notes-7.md"), "the folder is made on demand");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "mine");
+        let second = write_recovery(&dir, Path::new("/other/notes.md"), "theirs", 7).unwrap();
+        assert_eq!(second, dir.join("notes-7-1.md"), "the same name in the same second gets its own file");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "mine", "and the first is untouched");
     }
 
     #[test]

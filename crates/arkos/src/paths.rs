@@ -50,6 +50,12 @@ pub fn last_version_file() -> PathBuf {
     app_support().join("last_version")
 }
 
+/// Where unsaved markdown edits go when arkos has to drop them (a forced quit, macOS's terminate,
+/// an update's relaunch): `viewer::write_recovery` creates it on demand.
+pub fn recovered_dir() -> PathBuf {
+    app_support().join("recovered")
+}
+
 pub fn socket_path() -> PathBuf {
     app_support().join("arkosd.sock")
 }
@@ -150,5 +156,10 @@ mod tests {
     #[test]
     fn last_version_lives_in_app_support() {
         assert!(last_version_file().ends_with("arkos/last_version"));
+    }
+
+    #[test]
+    fn recovered_edits_live_in_app_support() {
+        assert!(recovered_dir().ends_with("arkos/recovered"));
     }
 }

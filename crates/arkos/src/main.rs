@@ -370,6 +370,9 @@ pub struct Root {
     /// The Goodbye went out: the Quit action sends it, and the close its quit makes must not
     /// send a second one.
     said_goodbye: bool,
+    /// When a quit or a window close last stopped because a markdown tab's edits could not be
+    /// saved: another within `FORCE_QUIT_WITHIN` goes ahead without them (`quit_forced`).
+    pub last_quit_attempt: Option<Instant>,
 }
 
 /// The folder a worktree tab's fresh shell starts in: its worktree while that is a directory,
@@ -429,6 +432,15 @@ enum AfterClose {
     Quit,
     CloseChooser,
     Stay,
+}
+
+/// How soon a second Cmd+Q (or close) after one stopped by unsaved edits quits without them.
+const FORCE_QUIT_WITHIN: Duration = Duration::from_secs(10);
+
+/// Whether a quit goes ahead although a markdown tab's edits cannot be saved: the user asked once
+/// already, `FORCE_QUIT_WITHIN` ago at most.
+fn quit_forced(last_attempt: Option<Instant>, now: Instant) -> bool {
+    last_attempt.is_some_and(|t| now.saturating_duration_since(t) <= FORCE_QUIT_WITHIN)
 }
 
 /// What a window closing leads to: the last one quits; the project window gone with only its
@@ -596,6 +608,7 @@ impl Root {
             frame_now: Instant::now(),
             user_closing: false,
             said_goodbye: false,
+            last_quit_attempt: None,
         }
     }
 
@@ -1290,7 +1303,7 @@ impl Root {
                 }
             });
             if let Some(e) = kept {
-                // Until the banners exist (Task 7), the notice says why Cmd+W did nothing.
+                // The banner says it too; the notice says why Cmd+W did nothing.
                 self.show_notice(e, cx);
                 return;
             }
@@ -2725,6 +2738,10 @@ impl Root {
             prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.browser_drop.is_some() || self.resizing.is_some() || self.sidebar_resizing,
+            unsaved: self.viewers.values().any(|v| {
+                let v = v.read(cx);
+                v.conflict || v.save_error.is_some()
+            }),
         }
     }
 
@@ -2856,11 +2873,14 @@ impl Root {
 
     /// What quitting must finish first: closed tabs' sessions are killed (nothing could reopen
     /// them later), unsaved markdown edits are written, and the pending layout save is written.
-    /// `goodbye` is whether a Goodbye was queued just before, which the same wait covers.
+    /// Edits that cannot be saved (a conflict, a failed write) go to the recovery folder instead,
+    /// so no quit drops them. `goodbye` is whether a Goodbye was queued just before, which the
+    /// same wait covers.
     pub fn flush_for_quit(&mut self, goodbye: bool, cx: &mut App) {
-        for e in self.save_dirty_viewers_now(cx) {
+        for (_, e) in self.save_dirty_viewers_now(cx) {
             eprintln!("arkos: quitting with unsaved edits: {e}");
         }
+        self.recover_unsaved(cx);
         self.unpark_windows();
         let killed = self.end_closed_tabs();
         // The process may exit before the writer thread sends what is queued; wait for it, once
@@ -2869,6 +2889,30 @@ impl Root {
             eprintln!("arkos: could not send {killed} kill requests{} before quitting", if goodbye { " and the goodbye" } else { "" });
         }
         workspace::flush_now(&self.save_queue);
+    }
+
+    /// The user asked to quit, or to close the window: every markdown tab's unsaved edits are
+    /// written first. When some cannot be (a conflict, a failed save) the window stays, the first
+    /// such tab comes to the front and a notice says why; `false` then. Asking again within
+    /// `FORCE_QUIT_WITHIN` goes ahead, and the quit's flush puts those edits in the recovery folder.
+    pub fn may_quit(&mut self, cx: &mut Context<Self>) -> bool {
+        let now = Instant::now();
+        let errors = self.save_dirty_viewers_now(cx);
+        let Some((tab, problem)) = errors.first().cloned() else { return true };
+        if quit_forced(self.last_quit_attempt, now) {
+            return true;
+        }
+        self.last_quit_attempt = Some(now);
+        if let Some((pane, idx)) = self.tree.locate(tab) {
+            self.focus_pane(pane, cx);
+            self.activate_tab(pane, idx, cx);
+        }
+        let more = match errors.len() {
+            1 => String::new(),
+            n => format!(" (and {} more)", n - 1),
+        };
+        self.show_notice(format!("{problem}{more}; press Cmd+Q again to quit without saving"), cx);
+        false
     }
 
     /// The user is quitting: tell the daemon not to reopen this window after a restart, then
@@ -3796,9 +3840,13 @@ fn open_project_window(
                     });
                     // The red button asks first; a close during macOS's terminate does not.
                     let closing = view.clone();
+                    // Unsaved edits that cannot be written keep the window open, once (`may_quit`).
                     window.on_window_should_close(cx, move |_, cx| {
-                        closing.update(cx, |root, _| root.user_closing = true);
-                        true
+                        closing.update(cx, |root, cx| {
+                            let close = root.may_quit(cx);
+                            root.user_closing |= close;
+                            close
+                        })
                     });
                     let observed = view.clone();
                     window
@@ -3826,12 +3874,19 @@ fn open_project_window(
         });
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
-            // Goodbye here, while everything runs; the close this quit makes finds it said.
-            quit_root.update(cx, |root, cx| {
+            // Goodbye here, while everything runs; the close this quit makes finds it said. Unsaved
+            // edits that cannot be written stop the first Cmd+Q (`may_quit`).
+            let quit = quit_root.update(cx, |root, cx| {
+                if !root.may_quit(cx) {
+                    return false;
+                }
                 root.user_closing = true;
                 root.leaving(cx);
+                true
             });
-            cx.quit();
+            if quit {
+                cx.quit();
+            }
         });
         // gpui keeps running without windows; quit with the last one so the heartbeat stops and
         // no windowless process lingers. macOS closes the window itself on terminate (logout,
@@ -3888,7 +3943,7 @@ fn open_project_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{after_window_closed, daemon_label, pick_grid, says_goodbye, AfterClose, shell_name, should_activate, CONNECTING, ERROR_PREFIX};
+    use super::{after_window_closed, daemon_label, pick_grid, quit_forced, says_goodbye, AfterClose, shell_name, should_activate, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
 
     #[test]
     fn a_window_the_daemon_relaunched_does_not_take_focus() {
@@ -3903,6 +3958,16 @@ mod tests {
         assert_eq!(after_window_closed(1, false, true), AfterClose::CloseChooser, "only the chooser is left");
         assert_eq!(after_window_closed(1, true, false), AfterClose::Stay, "the chooser closed; the project stays");
         assert_eq!(after_window_closed(2, true, true), AfterClose::Stay);
+    }
+
+    #[test]
+    fn a_second_quit_within_ten_seconds_goes_ahead_without_the_unsaved_edits() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        assert!(!quit_forced(None, t0), "the first attempt stops");
+        assert!(quit_forced(Some(t0), t0 + Duration::from_secs(3)));
+        assert!(quit_forced(Some(t0), t0 + FORCE_QUIT_WITHIN), "at the limit");
+        assert!(!quit_forced(Some(t0), t0 + FORCE_QUIT_WITHIN + Duration::from_millis(1)), "too late: it stops again");
     }
 
     #[test]
