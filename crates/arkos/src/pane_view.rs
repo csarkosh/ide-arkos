@@ -568,6 +568,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_wheel = terminal.clone();
     let t_click = terminal.clone();
     let t_up = terminal.clone();
+    let t_up_out = terminal.clone();
     let t_move = terminal.clone();
     let t_drop = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
@@ -610,6 +611,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 if ev.modifiers.platform {
                     if let Some(link) = t_click.read(cx).hovered_link.clone() {
                         cx.open_url(&link.url);
+                        t_click.update(cx, |t, _| t.mouse_cancelled());
                         return;
                     }
                 }
@@ -620,11 +622,13 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                     }
                     // One click clears the selection, two select a word, three a line; a program
                     // reporting the mouse hears a single click at the release.
-                    t.mouse_pressed(ev.position, ev.click_count, cx);
+                    t.mouse_pressed(ev.position, ev.click_count, ev.first_mouse, cx);
                 });
             }),
         )
         .on_mouse_up(MouseButton::Left, cx.listener(move |_root, ev: &MouseUpEvent, _window, cx| t_up.update(cx, |t, _| t.mouse_released(ev.position))))
+        // The button came up outside the terminal: the program hears nothing of the press.
+        .on_mouse_up_out(MouseButton::Left, cx.listener(move |_root, _ev: &MouseUpEvent, _window, cx| t_up_out.update(cx, |t, _| t.mouse_cancelled())))
         // A file dragged from the tree types its path at the prompt.
         .on_drop(cx.listener(move |_root, d: &crate::drag::FileDrag, _window, cx| {
             match crate::drag::paste_text(&d.path) {
@@ -643,10 +647,13 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
                 // Positive wheel y means the content moves down, which is scrolling up into history.
-                let lines = match ev.delta {
-                    ScrollDelta::Lines(p) => p.y,
-                    ScrollDelta::Pixels(p) => f32::from(p.y) / cell_h,
+                // macOS turns a Shift+wheel on a mouse into a horizontal step, so Shift reads x
+                // when y is still.
+                let (x, y) = match ev.delta {
+                    ScrollDelta::Lines(p) => (p.x, p.y),
+                    ScrollDelta::Pixels(p) => (f32::from(p.x) / cell_h, f32::from(p.y) / cell_h),
                 };
+                let lines = if ev.modifiers.shift && y == 0.0 { x } else { y };
                 t.wheel(lines, ev.modifiers.shift, ev.position, cx);
             });
         }))

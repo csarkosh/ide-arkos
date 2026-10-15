@@ -4,7 +4,7 @@
 use crate::client::Client;
 use crate::keys::keystroke_to_bytes;
 use crate::layout::{CellKind, CellStyle};
-use crate::mouse::{self, MouseMode, WheelCarry};
+use crate::mouse::{self, Clicks, Gesture, MouseMode, WheelCarry};
 use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
@@ -188,6 +188,8 @@ impl TerminalCore {
         // From the cursor to the end of the screen; what is left of the cursor stays.
         self.term.clear_screen(ClearMode::Below);
         self.term.grid_mut().clear_history();
+        // The grid moved under alacritty's feet above, so its selection bookkeeping did not run.
+        self.term.selection = None;
         self.set_display_offset(0);
         self.scroll.jump_to(0.0);
         self.scroll.clamp_max(0.0);
@@ -452,16 +454,15 @@ pub struct Terminal {
     pub find: Option<crate::find::FindState>,
     /// The link under the mouse at the last paint: underlined, and what Cmd+click opens.
     pub hovered_link: Option<HoveredLink>,
-    /// Where the element last painted its top left, in window pixels: with `cell`, what maps
-    /// the pointer to a grid cell.
+    /// Where the element last painted its top left, in window pixels: with `cell` and `frac`,
+    /// what maps the pointer to a grid cell.
     pub origin: Option<(f32, f32)>,
+    /// The fraction of a row the rows were painted down by at the last paint (a smooth scroll).
+    pub frac: f32,
     /// The fraction of a wheel line owed to the program (see `mouse::WheelCarry`).
     pub wheel_carry: WheelCarry,
-    /// The cell of a left press the program will hear about at release, unless it turns into a
-    /// drag first (see `mouse_pressed`).
-    pub pending_click: Option<(usize, usize)>,
-    /// The cell of the left press being held; a move to another cell makes it a selection.
-    pub drag_anchor: Option<(usize, usize)>,
+    /// The left button between a press and its release (see `mouse::Clicks`).
+    pub clicks: Clicks,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -491,108 +492,87 @@ impl Terminal {
             find: None,
             hovered_link: None,
             origin: None,
+            frac: 0.0,
             wheel_carry: WheelCarry::default(),
-            pending_click: None,
-            drag_anchor: None,
+            clicks: Clicks::default(),
         }
     }
 
-    /// The grid cell under a window position, clamped to the grid; None before the first paint.
-    pub fn cell_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize)> {
-        self.point_at(position).map(|(c, r, _)| (c, r))
-    }
-
-    /// `cell_at` with the half of the cell the pointer is on, which decides whether a selection
-    /// takes that cell.
+    /// The grid cell under a window position and the half of the cell the pointer is on, from
+    /// the last paint; None before the first paint.
     pub fn point_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize, Side)> {
-        let (ox, oy) = self.origin?;
+        let origin = self.origin?;
         let cell = self.cell?;
-        let x = ((f32::from(position.x) - ox) / cell.width).max(0.0);
-        let row = ((f32::from(position.y) - oy) / cell.height).floor().max(0.0) as usize;
-        let side = if x.fract() >= 0.5 { Side::Right } else { Side::Left };
-        let col = (x.floor() as usize).min(self.core.columns().saturating_sub(1));
-        Some((col, row.min(self.core.screen_lines().saturating_sub(1)), side))
+        Some(mouse::cell_under(f32::from(position.x), f32::from(position.y), origin, (cell.width, cell.height), self.frac, self.core.columns(), self.core.screen_lines()))
     }
 
     /// A wheel step of `lines` (positive is up). The local history scrolls unless the program
     /// reports the mouse or runs on the alternate screen, where the step goes to it as a report
-    /// or an arrow key; Shift forces the local scroll, as in xterm.
+    /// or an arrow key; Shift forces the local scroll, as in xterm, and so does an ended session.
     pub fn wheel(&mut self, lines: f32, shift: bool, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
-        let mode = if shift { MouseMode::Local } else { self.core.mouse_mode() };
+        let mode = if shift || !self.alive { MouseMode::Local } else { self.core.mouse_mode() };
         if mode == MouseMode::Local {
             self.wheel_carry.reset();
             self.scroll_lines(lines, cx);
             return;
         }
+        // The program's rows are the live ones: a view left in the history comes back first.
+        if self.core.scrolled_up() {
+            self.jump_to_bottom(cx);
+        }
         let whole = self.wheel_carry.whole_lines(lines);
-        if whole == 0 || !self.alive {
+        if whole == 0 {
             return;
         }
-        let (col, row) = self.cell_at(position).unwrap_or((0, 0));
+        let (col, row, _) = self.point_at(position).unwrap_or((0, 0, Side::Left));
         let bytes = mouse::wheel_bytes(mode, whole, col, row);
         self.client.send(Request::Input { session: self.session, bytes });
     }
 
-    /// A left press. One click clears the selection; a double click selects the word and a
-    /// triple the line. When the program reports the mouse, a single click is held until the
-    /// release so a drag can become a selection instead of a report.
-    pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>, click_count: usize, cx: &mut Context<Self>) {
+    /// A left press (see `mouse::Clicks::press`). The click that focused the window is never
+    /// forwarded: it was meant for the window, not for the program.
+    pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>, click_count: usize, first_mouse: bool, cx: &mut Context<Self>) {
         let Some((col, row, side)) = self.point_at(position) else { return };
-        self.drag_anchor = Some((col, row));
-        match click_count {
-            2 => {
-                self.pending_click = None;
-                self.core.selection_start(col, row, side, SelectionType::Semantic);
-            }
-            n if n >= 3 => {
-                self.pending_click = None;
-                self.core.selection_start(col, row, side, SelectionType::Lines);
-            }
-            _ => {
-                self.core.selection_clear();
-                if matches!(self.core.mouse_mode(), MouseMode::Report { .. }) {
-                    self.pending_click = Some((col, row));
-                }
-            }
-        }
-        cx.notify();
+        let report = matches!(self.core.mouse_mode(), MouseMode::Report { .. }) && !first_mouse;
+        let gesture = self.clicks.press(col, row, side, click_count, report);
+        self.apply(gesture, cx);
     }
 
-    /// A move while the left button is down extends the selection, starting one when the pointer
-    /// leaves the pressed cell; a drag is never a click for the program.
+    /// A move (see `mouse::Clicks::moved`); `left_down` is whether the left button is held.
     pub fn mouse_moved(&mut self, position: gpui::Point<gpui::Pixels>, left_down: bool, cx: &mut Context<Self>) {
-        if !left_down {
-            self.drag_anchor = None;
-            return;
-        }
-        let Some((acol, arow)) = self.drag_anchor else { return };
         let Some((col, row, side)) = self.point_at(position) else { return };
-        if self.core.selection_active() {
-            self.core.selection_update(col, row, side);
-        } else if (col, row) != (acol, arow) {
-            self.pending_click = None;
-            // The pressed cell is always taken: its anchor faces the way the drag goes.
-            let anchor_side = if (row, col) > (arow, acol) { Side::Left } else { Side::Right };
-            self.core.selection_start(acol, arow, anchor_side, SelectionType::Simple);
-            self.core.selection_update(col, row, side);
-        } else {
-            return;
-        }
-        cx.notify();
+        let gesture = self.clicks.moved(col, row, side, left_down, self.core.selection_active());
+        self.apply(gesture, cx);
     }
 
-    /// A left release: a held click reaches the program as a press at its cell and a release here.
+    /// A left release over the terminal: a held click reaches a live program now.
     pub fn mouse_released(&mut self, position: gpui::Point<gpui::Pixels>) {
-        self.drag_anchor = None;
-        let Some((col, row)) = self.pending_click.take() else { return };
-        let MouseMode::Report { sgr } = self.core.mouse_mode() else { return };
-        if !self.alive {
-            return;
+        let (col, row, _) = self.point_at(position).unwrap_or((0, 0, Side::Left));
+        if let Some(bytes) = self.clicks.release(col, row, self.core.mouse_mode()) {
+            if self.alive {
+                self.client.send(Request::Input { session: self.session, bytes });
+            }
         }
-        let (rcol, rrow) = self.cell_at(position).unwrap_or((col, row));
-        let mut bytes = mouse::button_bytes(sgr, mouse::LEFT, col, row, true);
-        bytes.extend(mouse::button_bytes(sgr, mouse::LEFT, rcol, rrow, false));
-        self.client.send(Request::Input { session: self.session, bytes });
+    }
+
+    /// The button came up somewhere else, or the press was a Cmd+click on a link: nothing is
+    /// held for the program.
+    pub fn mouse_cancelled(&mut self) {
+        self.clicks.cancel();
+    }
+
+    fn apply(&mut self, gesture: Gesture, cx: &mut Context<Self>) {
+        match gesture {
+            Gesture::Nothing => return,
+            Gesture::Clear => self.core.selection_clear(),
+            Gesture::Select { ty, col, row, side } => self.core.selection_start(col, row, side, ty),
+            Gesture::Start { anchor: (acol, arow, aside), to: (col, row, side) } => {
+                self.core.selection_start(acol, arow, aside, SelectionType::Simple);
+                self.core.selection_update(col, row, side);
+            }
+            Gesture::Extend { col, row, side } => self.core.selection_update(col, row, side),
+        }
+        cx.notify();
     }
 
     /// Applies one daemon event. Returns true when a repaint is needed.

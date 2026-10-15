@@ -294,9 +294,10 @@ Notes:
 - Drag across terminal text to select it (double click a word, triple click a line); Cmd+C
   copies it and a click clears it. A program that asks for mouse reports, such as Claude Code's
   fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and its
-  options can be clicked; a drag still selects locally and the program never sees it. On the
-  alternate screen without mouse reports (`less`, for one) the wheel sends arrow keys, and
-  Shift+wheel always scrolls Arkos's own history.
+  options can be clicked; a drag still selects locally and the program never sees it, though the
+  first click of a double click has already reached it. On the alternate screen without mouse
+  reports (`less`, for one) the wheel sends arrow keys (xterm's alternate scroll, `?1007`, on by
+  default), and Shift+wheel always scrolls Arkos's own history.
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
   or quote) is underlined under the pointer, and Cmd+click opens it in your browser, as in
   Terminal.app. A plain click does nothing to it.
