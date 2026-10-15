@@ -416,6 +416,16 @@ window above it. A brief flash during that re-raise is the accepted seam.
 **Permissions.** The first browser pane triggers the one-time Accessibility permission prompt,
 with an explanation screen. Without permission the pane shows instructions instead.
 
+**Rulings, 2026-10-15** (taken while planning the implementation):
+
+1. Hiding a docked window moves it off every display, to x = primary width + 64 at its current y and size, and remembers where it was; showing it moves it back onto the placeholder. `AXMinimized` would animate to the Dock on every tab switch and app hiding would hide all of Chrome.
+2. Drag-in detection polls the Chrome windows' frames (20 Hz while the mouse button is down and a browser pane exists) instead of using an `AXObserver`: a frame that changes between two ticks while the button is down is a drag. The same loop serves tracking.
+3. Geometry comes from AppKit (the arkos `NSWindow`'s content rect in screen coordinates, flipped against the primary display's height), not from gpui's `window_bounds()`.
+4. The Accessibility prompt for a development binary can only be answered at the screen, so `arkos browser-probe` is run once by the user to confirm rulings 1 and 3 and the raise behaviour. The engine is pure and tested with a fake.
+5. A window asked for by URL is launched with `open -na "Google Chrome" --args --new-window <url>` (or `--app=<url>` for a single page); the first new Chrome window within 10 s docks into that tab regardless of the working state, after which the tab waits like any other.
+6. Persisted state is the URL and the app-mode flag only. After a relaunch a browser tab waits; it never looks for the old window by title.
+7. The slim tab bar is 14 px: the pane number and one dot per tab, no titles. It stays a drop target for tab drags.
+
 ## 9. Resilience and performance budgets
 
 - Never block the UI thread: socket reads, PTY parsing, git, file reads and watchers run on

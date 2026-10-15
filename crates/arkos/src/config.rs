@@ -109,12 +109,15 @@ impl Default for ViewerConfig {
     }
 }
 
-/// Milestone 5 reads this; parsed now so the file format does not change then.
-#[allow(dead_code)]
+/// What "New browser tab" opens when its prompt is left empty, and how.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserConfig {
+    /// Empty: a blank Chrome window.
     pub url: String,
+    /// Open new browser tabs' windows as single pages (Chrome's app mode: no tab strip, no
+    /// address bar). "New single-page browser tab" does so whatever this says.
+    pub app_mode: bool,
 }
 
 /// Passed to arkosd when the window starts it; a running daemon keeps its own values.
@@ -431,6 +434,10 @@ nice = 0
 # "toggle inline diff" = "cmd-shift-d"
 # "open folder" = "cmd-o"
 # "open recent" = ""
+# "new browser tab" = "cmd-shift-b"
+# "new single-page browser tab" = ""
+# "dock a chrome window" = ""
+# "undock chrome window" = ""
 # "quit" = "cmd-q"
 
 [sidebar]
@@ -443,8 +450,13 @@ collapsed = false
 highlight_limit_bytes = 5242880
 
 [browser]
-# Milestone 5. The URL a new browser pane opens. Empty opens a blank page.
+# A browser tab is a placeholder a real Chrome window docks onto. "New browser tab" (Cmd+Shift+B)
+# asks for a URL; left empty it opens this one, and this empty opens a blank window. A URL
+# without a scheme gets https://.
 url = ""
+# true opens new browser tabs' windows as single pages (Chrome's app mode: no tab strip, no
+# address bar). "New single-page browser tab" in the command palette always does.
+app_mode = false
 
 [daemon]
 # Read when the window starts arkosd. A daemon that is already running keeps its values until
@@ -589,6 +601,20 @@ mod tests {
         let c = parse("[update]\nauto = false\ncheck_every_secs = 60\nidle_after_secs = 5\n").unwrap();
         assert_eq!(c.update, UpdateConfig { auto: false, check_every_secs: 60, idle_after_secs: 5 });
         assert!(parse("[update]\nspeed = 1\n").is_err(), "unknown keys are refused like everywhere else");
+    }
+
+    #[test]
+    fn the_browser_table_defaults_and_accepts_app_mode() {
+        let c = parse("").unwrap();
+        assert_eq!(c.browser, BrowserConfig { url: String::new(), app_mode: false });
+        let c = parse(DEFAULT_CONFIG).unwrap();
+        assert_eq!(c.browser, BrowserConfig { url: String::new(), app_mode: false }, "the written defaults");
+        let c = parse("[browser]\nurl = \"https://example.com\"\napp_mode = true\n").unwrap();
+        assert_eq!(c.browser, BrowserConfig { url: "https://example.com".into(), app_mode: true });
+        let c = parse("[browser]\nurl = \"https://example.com\"\n").unwrap();
+        assert!(!c.browser.app_mode, "app_mode defaults to false");
+        assert!(parse("[browser]\nhome = \"x\"\n").is_err(), "unknown keys are refused like everywhere else");
+        assert!(parse("[browser]\napp_mode = \"yes\"\n").is_err(), "app_mode is a boolean");
     }
 
     #[test]

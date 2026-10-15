@@ -59,6 +59,15 @@ pub enum Tab {
     },
     /// Milestone 4's read-only viewer. Persisted now so the format does not change later.
     Viewer { path: PathBuf },
+    /// Milestone 5's browser pane: a placeholder a docked Chrome window sits on. Only the URL it
+    /// opens with is kept (`None`: a blank window), never the window. `app_mode` opens it as a
+    /// single-page window with no tab strip or address bar; absent in older files, which means a
+    /// normal window.
+    Browser {
+        url: Option<String>,
+        #[serde(default)]
+        app_mode: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -700,6 +709,15 @@ mod tests {
         assert_eq!(t.find_viewer(root, Path::new("/p/a.rs")), Some(1));
         assert_eq!(t.find_viewer(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
         assert_eq!(t.find_viewer(right, Path::new("/p/b.rs")), Some(0));
+    }
+
+    #[test]
+    fn a_browser_tab_round_trips_and_an_old_file_without_app_mode_reads_false() {
+        let t = Tab::Browser { url: Some("https://example.com".into()), app_mode: true };
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<Tab>(&json).unwrap(), t);
+        let old: Tab = serde_json::from_str(r#"{"Browser":{"url":null}}"#).unwrap();
+        assert_eq!(old, Tab::Browser { url: None, app_mode: false });
     }
 
     #[test]

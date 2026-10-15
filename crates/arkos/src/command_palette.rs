@@ -55,7 +55,9 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
         // The two that ask for a folder end in an ellipsis, as macOS writes a command that asks more.
         let label = match command {
             Command::InstallHooks => "Install Claude Code hooks".to_string(),
-            Command::OpenFolder | Command::OpenRecent => format!("{}\u{2026}", keymap::label(a.name)),
+            Command::OpenFolder | Command::OpenRecent | Command::NewBrowserTab | Command::NewBrowserTabSinglePage => format!("{}\u{2026}", keymap::label(a.name)),
+            Command::DockChromeWindow => "Dock a Chrome window\u{2026}".to_string(),
+            Command::UndockChromeWindow => "Undock Chrome window".to_string(),
             _ => keymap::label(a.name),
         };
         out.push(Item { label, detail, command });
@@ -112,11 +114,19 @@ pub struct Palette {
     pub visible: Vec<usize>,
     /// None only in tests.
     pub focus: Option<FocusHandle>,
+    /// The query line's hint: what the rows are.
+    pub placeholder: &'static str,
 }
 
 impl Palette {
     pub fn new(items: Vec<Item>, focus: FocusHandle) -> Self {
-        let mut p = Self { query: LineEdit::new(), selected: 0, items, visible: vec![], focus: Some(focus) };
+        Self::list(items, "type a command", focus)
+    }
+
+    /// The palette over a list of choices of one kind (the Chrome windows to dock), each row
+    /// running its own command; filtered and picked like the commands.
+    pub fn list(items: Vec<Item>, placeholder: &'static str, focus: FocusHandle) -> Self {
+        let mut p = Self { query: LineEdit::new(), selected: 0, items, visible: vec![], focus: Some(focus), placeholder };
         p.refilter();
         p
     }
@@ -178,7 +188,7 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
         );
     }
     if p.visible.is_empty() {
-        rows = rows.child(div().px(px(10.0)).py(px(5.0)).text_color(theme.chrome.text_dim.hsla()).child("no matching command"));
+        rows = rows.child(div().px(px(10.0)).py(px(5.0)).text_color(theme.chrome.text_dim.hsla()).child("nothing matches"));
     }
     let panel = div()
         .id("palette")
@@ -200,7 +210,7 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             d.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
                 .on_key_down(cx.listener(|root, ev: &KeyDownEvent, window, cx| root.palette_key(&ev.keystroke, window, cx)))
         })
-        .child(div().px(px(10.0)).py(px(6.0)).child(line_edit::render(&p.query, "type a command", &theme, family, TEXT)))
+        .child(div().px(px(10.0)).py(px(6.0)).child(line_edit::render(&p.query, p.placeholder, &theme, family, TEXT)))
         .child(rows);
     Some(
         div()
@@ -273,6 +283,11 @@ mod tests {
         assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
         let recent = items.iter().find(|i| i.label == "Open recent\u{2026}").unwrap();
         assert_eq!((recent.detail.as_str(), &recent.command), ("", &Command::OpenRecent));
+        let browser = items.iter().find(|i| i.label == "New browser tab\u{2026}").unwrap();
+        assert_eq!((browser.detail.as_str(), &browser.command), ("Shift+Cmd+B", &Command::NewBrowserTab));
+        assert_eq!(items.iter().find(|i| i.label == "New single-page browser tab\u{2026}").unwrap().command, Command::NewBrowserTabSinglePage);
+        assert_eq!(items.iter().find(|i| i.label == "Dock a Chrome window\u{2026}").unwrap().command, Command::DockChromeWindow);
+        assert_eq!(items.iter().find(|i| i.label == "Undock Chrome window").unwrap().command, Command::UndockChromeWindow);
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
         let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true);
@@ -333,7 +348,7 @@ mod tests {
     #[test]
     fn stepping_wraps_within_the_visible_rows() {
         let items: Vec<Item> = (0..3).map(|i| Item { label: format!("Item {i}"), detail: String::new(), command: Command::MruTab }).collect();
-        let mut p = Palette { query: crate::line_edit::LineEdit::new(), selected: 0, items, visible: vec![], focus: None };
+        let mut p = Palette { query: crate::line_edit::LineEdit::new(), selected: 0, items, visible: vec![], focus: None, placeholder: "type a command" };
         p.refilter();
         assert_eq!(p.visible, vec![0, 1, 2]);
         p.step(-1);
