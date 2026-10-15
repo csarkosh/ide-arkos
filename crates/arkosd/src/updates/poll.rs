@@ -11,8 +11,11 @@ use std::time::Duration;
 
 #[derive(Debug)]
 pub enum Outcome {
-    /// The check worked and found nothing newer than what runs and what is staged.
-    Nothing,
+    /// The check worked and found nothing newer than what runs and what is staged: the
+    /// manifest's version and git, and the " or than X staged or applied" text (None when
+    /// nothing is staged).
+    #[allow(dead_code)] // read by the collapse of repeated "found nothing" lines (next task)
+    Nothing { version: String, git: String, staged: Option<String> },
     Staged(Staged),
     /// The manifest or the zip could not be fetched (offline, a captive portal, a timeout): logged
     /// and tried again at the next check, never reported to the windows.
@@ -69,9 +72,9 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
     };
     let Some(v) = m.version() else { return Outcome::Failed("manifest: bad version".into()) };
     if !v.is_newer_than(running) || staged.is_some_and(|s| !v.is_newer_than(s)) {
-        let staged = staged.map_or(String::new(), |s| format!(" or than {}.{}.{} staged or applied", s.major, s.minor, s.patch));
-        crate::journal::note(format_args!("check: the manifest has {} ({}), not newer than running {}.{}.{}{staged}", m.version, m.git, running.major, running.minor, running.patch));
-        return Outcome::Nothing;
+        let staged = staged.map(|s| format!(" or than {}.{}.{} staged or applied", s.major, s.minor, s.patch));
+        crate::journal::note(format_args!("check: the manifest has {} ({}), not newer than running {}.{}.{}{}", m.version, m.git, running.major, running.minor, running.patch, staged.as_deref().unwrap_or("")));
+        return Outcome::Nothing { version: m.version, git: m.git, staged };
     }
     let key = bad_key(&m);
     if let Some(e) = bad.get(&key) {
@@ -121,11 +124,16 @@ pub fn record(u: &mut UpdateState, outcome: Outcome) -> Option<protocol::StagedU
 /// verified manifest, which is what `last_ok_unix` counts.
 pub fn record_at(u: &mut UpdateState, outcome: Outcome, now_unix: u64) -> Option<protocol::StagedUpdate> {
     u.last_check_transient = matches!(outcome, Outcome::Transient(_));
+    u.last_check_unix = Some(now_unix);
+    u.transient_error = match &outcome {
+        Outcome::Transient(e) => Some(e.clone()),
+        _ => None,
+    };
     if !matches!(outcome, Outcome::Transient(_) | Outcome::Invalid(_)) {
         u.last_ok_unix = Some(now_unix);
     }
     match outcome {
-        Outcome::Nothing => {
+        Outcome::Nothing { .. } => {
             u.last_error = None;
             None
         }
@@ -181,12 +189,23 @@ fn newest(a: Option<Version>, b: Option<Version>) -> Option<Version> {
 /// `running` is this daemon's version; each check compares against the newer of it and the
 /// installed `bundle`'s (`super::floor`), read afresh, so a hand-installed newer app is seen.
 pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf, running: Version, bundle: Option<PathBuf>) {
-    state.lock().unwrap().update.polling = true;
+    {
+        let mut st = state.lock().unwrap();
+        st.update.polling = true;
+        // A daemon exec that carried a newer value keeps it.
+        if st.update.last_ok_unix.is_none() {
+            st.update.last_ok_unix = super::last_check::read(&dir);
+        }
+    }
     std::thread::Builder::new()
         .name("updates".into())
         .spawn(move || {
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             let mut bad = Bad::new();
+            let floor = super::floor(&running, bundle.as_deref());
+            if let Some(line) = super::adopt_staged(&state, &dir, &floor) {
+                crate::journal::note(line);
+            }
             let mut last = None::<std::time::Instant>;
             loop {
                 let (due, staged) = {
@@ -207,16 +226,25 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                     let staged = staged.filter(|s| s.is_newer_than(&floor));
                     let outcome = run_check(&f, &dir, &keys, &floor, &mut bad, &ditto, staged.as_ref());
                     match &outcome {
-                        Outcome::Nothing => {}
+                        Outcome::Nothing { .. } => {}
                         Outcome::Staged(s) => crate::journal::note(format_args!("staged {} ({}) at {}", s.version, s.git, s.bundle.display())),
                         Outcome::Transient(e) => crate::journal::note(format_args!("check: transient, tried again at the next check: {e}")),
                         Outcome::Invalid(e) | Outcome::Failed(e) => crate::journal::note(format_args!("check failed: {e}")),
                         Outcome::Skipped(e) => crate::journal::note(format_args!("check: the release failed before, skipped: {e}")),
                     }
-                    let mut st = state.lock().unwrap();
-                    st.update.checking = false;
-                    if let Some(update) = record(&mut st.update, outcome) {
-                        crate::server::broadcast(&st, protocol::Event::UpdateStaged { update });
+                    let reached_now = !matches!(outcome, Outcome::Transient(_) | Outcome::Invalid(_));
+                    let reached = {
+                        let mut st = state.lock().unwrap();
+                        st.update.checking = false;
+                        if let Some(update) = record(&mut st.update, outcome) {
+                            crate::server::broadcast(&st, protocol::Event::UpdateStaged { update });
+                        }
+                        st.update.last_ok_unix
+                    };
+                    if let Some(ok) = reached.filter(|_| reached_now) {
+                        if let Err(e) = super::last_check::write(&dir, ok) {
+                            eprintln!("arkosd: cannot write last_check.json: {e}");
+                        }
                     }
                 }
                 std::thread::sleep(Duration::from_millis(250));
@@ -291,9 +319,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let staged = Version { major: 0, minor: 2, patch: 1, git: "abc1234".into() };
-        assert!(matches!(check(&s, dir.path(), &running, &mut bad, Some(&staged)), Outcome::Nothing), "already staged: nothing to do");
+        assert!(matches!(check(&s, dir.path(), &running, &mut bad, Some(&staged)), Outcome::Nothing { .. }), "already staged: nothing to do");
         let newer = Version { major: 0, minor: 2, patch: 1, git: "abc1234".into() };
-        assert!(matches!(check(&s, dir.path(), &newer, &mut bad, None), Outcome::Nothing), "running it already");
+        assert!(matches!(check(&s, dir.path(), &newer, &mut bad, None), Outcome::Nothing { .. }), "running it already");
     }
 
     #[test]
@@ -305,7 +333,7 @@ mod tests {
         assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None), Outcome::Staged(_)));
         let staged = ver(0, 3, 0);
         publish(&s, "0.2.0", "b", false);
-        assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, Some(&staged)), Outcome::Nothing), "a replayed older manifest");
+        assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, Some(&staged)), Outcome::Nothing { .. }), "a replayed older manifest");
         assert!(dir.path().join("0.3.0/Arkos IDE.app").is_dir(), "the newer staged release stays");
         assert!(!dir.path().join("0.2.0").exists());
         publish(&s, "0.4.0", "d", false);
@@ -354,7 +382,7 @@ mod tests {
         let mut u = UpdateState { last_error: Some(first.clone()), ..Default::default() };
         assert_eq!(record(&mut u, Outcome::Skipped(first.clone())), None);
         assert_eq!(u.last_error.as_deref(), Some(first.as_str()), "a skip keeps the error");
-        record(&mut u, Outcome::Nothing);
+        record(&mut u, nothing());
         assert_eq!(u.last_error, None, "a check that found nothing newer clears it");
     }
 
@@ -390,12 +418,27 @@ mod tests {
         assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None), Outcome::Transient(_)), "tried again, not skipped");
     }
 
+    fn nothing() -> Outcome {
+        Outcome::Nothing { version: "1.0.0".into(), git: "a".into(), staged: None }
+    }
+
+    #[test]
+    fn a_check_records_when_it_finished_and_what_failed_in_transport() {
+        let mut u = UpdateState::default();
+        record_at(&mut u, Outcome::Transient("offline".into()), 100);
+        assert_eq!((u.last_check_unix, u.transient_error.as_deref(), u.last_ok_unix), (Some(100), Some("offline"), None));
+        record_at(&mut u, Outcome::Nothing { version: "1.0.0".into(), git: "a".into(), staged: None }, 200);
+        assert_eq!((u.last_check_unix, u.transient_error.as_deref(), u.last_ok_unix), (Some(200), None, Some(200)));
+        record_at(&mut u, Outcome::Transient("dns".into()), 300);
+        assert_eq!((u.last_check_unix, u.last_ok_unix), (Some(300), Some(200)), "a transient failure keeps the last reach");
+    }
+
     #[test]
     fn a_check_that_reached_a_signed_manifest_marks_updates_reachable() {
         let mut u = UpdateState::default();
         record_at(&mut u, Outcome::Transient("curl: offline".into()), 100);
         assert_eq!((u.last_ok_unix, u.unreachable_for_secs(200)), (None, None), "never reached: nothing to say");
-        record_at(&mut u, Outcome::Nothing, 1_000);
+        record_at(&mut u, nothing(), 1_000);
         assert_eq!(u.last_ok_unix, Some(1_000));
         assert_eq!(u.unreachable_for_secs(5_000), Some(0), "the latest check worked");
         record_at(&mut u, Outcome::Transient("curl: offline".into()), 2_000);

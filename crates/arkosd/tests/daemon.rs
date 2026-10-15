@@ -2041,6 +2041,25 @@ fn a_staged_release_not_newer_than_a_restarted_daemon_is_deleted_and_never_offer
 }
 
 #[test]
+fn a_refused_apply_names_the_staged_version_it_deleted() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    fake_installed_bundle(home.path(), "9.9.10", "1111111");
+    // Asking for another version than the stale staged one: the journal still names what was deleted.
+    assert!(matches!(c.request(Request::ApplyUpdate { version: "1.2.3".into() }), Response::Error(_)));
+    wait_until(|| !d.path().join("updates/9.9.9").exists(), Duration::from_secs(5));
+    let text = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    assert!(text.contains("staged 9.9.9 deleted:"), "{text}");
+    assert!(!text.contains("staged 1.2.3 deleted:"), "{text}");
+}
+
+#[test]
 fn a_staged_release_not_newer_than_a_hand_installed_app_is_never_offered_or_applied() {
     // The daemon keeps running its own version; 9.9.9 is staged, then the user installs 9.9.10
     // over the app by hand. The idle window must not be offered 9.9.9, nor swap it in.

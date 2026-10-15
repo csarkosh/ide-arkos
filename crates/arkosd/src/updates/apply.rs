@@ -13,6 +13,8 @@ pub const CONNECT_GRACE: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Applied {
     pub version: String,
+    /// Written as true for daemons that read it; read by none since 2026-10-15.
+    #[serde(default)]
     pub old_kept: bool,
     pub at_unix: u64,
     /// The `ui_pid`s of the windows connected at the swap. Their reconnects after the upgrade

@@ -93,6 +93,12 @@ impl State {
 
 pub type Shared = Arc<Mutex<State>>;
 
+/// A fresh state for the unit tests.
+#[cfg(test)]
+pub fn test_state() -> Shared {
+    Arc::new(Mutex::new(State::default()))
+}
+
 use protocol::UPDATE_EVENTS_FROM;
 
 /// The status both answers share: nothing not newer than what runs or is installed is offered,
@@ -690,9 +696,10 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 Err(e) => {
                     crate::journal::note(format_args!("apply {version} refused: {e}"));
                     if let Some(folder) = forgotten.as_ref().and_then(|s| s.bundle.parent()) {
+                        let deleted = forgotten.as_ref().map(|s| s.version.as_str()).unwrap_or(&version);
                         match std::fs::remove_dir_all(folder) {
-                            Ok(()) => crate::journal::note(format_args!("staged {} deleted: {}", version, folder.display())),
-                            Err(e) => crate::journal::note(format_args!("staged {} cannot be deleted from {}: {e}", version, folder.display())),
+                            Ok(()) => crate::journal::note(format_args!("staged {} deleted: {}", deleted, folder.display())),
+                            Err(e) => crate::journal::note(format_args!("staged {} cannot be deleted from {}: {e}", deleted, folder.display())),
                         }
                     }
                     return Some(Response::Error(e));

@@ -135,6 +135,11 @@ pub(crate) mod tests {
         Manifest { format: 1, version: version.into(), git: git.into(), published: String::new(), arm64: Asset { url: format!("file://{}", zip.display()), size: std::fs::metadata(zip).unwrap().len(), sha256: crate::updates::verify::sha256_hex(zip).unwrap() }, min_protocol: 1 }
     }
 
+    /// The JSON `manifest::parse` reads, for a manifest written to disk by a test.
+    pub fn manifest_json(m: &Manifest) -> Vec<u8> {
+        serde_json::json!({"format": m.format, "version": m.version, "git": m.git, "published": m.published, "arm64": {"url": m.arm64.url, "size": m.arm64.size, "sha256": m.arm64.sha256}, "min_protocol": m.min_protocol}).to_string().into_bytes()
+    }
+
     #[test]
     fn a_zip_is_unpacked_checked_and_probed() {
         let src = tempfile::tempdir().unwrap();

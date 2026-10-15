@@ -181,6 +181,10 @@ pub fn semver(v: &version::Version) -> String {
 pub fn drop_stale_staged(state: &crate::server::Shared, dir: &Path, running: &version::Version) {
     let dropped = {
         let mut st = state.lock().unwrap();
+        // Mid-swap the staged bundle is being moved: nothing is forgotten until it is done.
+        if st.update.applying.is_some() || st.update.applied.is_some() {
+            return;
+        }
         st.update.staged.take_if(|s| poll::is_stale(s, running))
     };
     if let Some(s) = dropped {
@@ -189,6 +193,53 @@ pub fn drop_stale_staged(state: &crate::server::Shared, dir: &Path, running: &ve
     for v in stage::remove_not_newer(dir, running) {
         crate::journal::note(format_args!("staged {v} on disk is not newer than running or installed {}: deleted", semver(running)));
     }
+}
+
+pub mod last_check {
+    use std::path::Path;
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct File {
+        ok_unix: u64,
+    }
+    fn path(dir: &Path) -> std::path::PathBuf {
+        dir.join("last_check.json")
+    }
+    /// When a check last reached the manifest, from before this daemon started; None when
+    /// there is no readable file.
+    pub fn read(dir: &Path) -> Option<u64> {
+        let text = std::fs::read_to_string(path(dir)).ok()?;
+        serde_json::from_str::<File>(&text).ok().map(|f| f.ok_unix)
+    }
+    /// Written through a temporary file and a rename, like the marker.
+    pub fn write(dir: &Path, ok_unix: u64) -> std::io::Result<()> {
+        let tmp = dir.join("last_check.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&File { ok_unix })?)?;
+        std::fs::rename(&tmp, path(dir))
+    }
+}
+
+/// At poll start: a release staged before this daemon started, newer than the floor, with a
+/// sound bundle and named by the saved manifest, is staged again without a download. Returns
+/// the journal line. The saved manifest was verified when the fetch wrote it.
+pub fn adopt_staged(state: &crate::server::Shared, dir: &Path, floor: &version::Version) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("manifest.json")).ok()?;
+    let m = manifest::parse(text.as_bytes()).ok()?;
+    let v = m.version()?;
+    if !v.is_newer_than(floor) {
+        return None;
+    }
+    // Rolled back before: the poll's floor would refuse it too.
+    if apply::newest_rejected(dir).and_then(|r| version::parse_semver(&r)).is_some_and(|(a, b, c)| !v.is_newer_than(&version::Version { major: a, minor: b, patch: c, git: String::new() })) {
+        return None;
+    }
+    let bundle = dir.join(&m.version).join("Arkos IDE.app");
+    stage::check_bundle(&bundle, &m.version).ok()?;
+    let mut st = state.lock().unwrap();
+    if st.update.staged.is_some() {
+        return None;
+    }
+    st.update.staged = Some(stage::Staged { version: m.version.clone(), git: m.git.clone(), bundle });
+    Some(format!("adopted staged {} ({}) from before the restart", m.version, m.git))
 }
 
 /// Runs `cmd` with stdin null, a minimal environment and both outputs captured, killing it once
@@ -291,5 +342,86 @@ mod tests {
         let r = run_bounded(Command::new("/bin/sh").args(["-c", "/bin/sleep 5 & echo hi"]), Duration::from_millis(500));
         assert!(r.unwrap_err().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    fn dir_with_staged(version: &str, manifest_version: &str) -> (tempfile::TempDir, PathBuf) {
+        use super::stage::tests::{fake_bundle, manifest_for, manifest_json, zip_of};
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_bundle(dir.path(), version, "abcdef1");
+        let staged_dir = dir.path().join(version);
+        std::fs::create_dir_all(&staged_dir).unwrap();
+        std::fs::rename(&app, staged_dir.join("Arkos IDE.app")).unwrap();
+        let zip = dir.path().join("x.zip");
+        zip_of(&staged_dir.join("Arkos IDE.app"), &zip);
+        let m = manifest_for(&zip, manifest_version, "abcdef1");
+        std::fs::write(dir.path().join("manifest.json"), manifest_json(&m)).unwrap();
+        (dir, zip)
+    }
+
+    fn v(major: u64, minor: u64, patch: u64) -> version::Version {
+        version::Version { major, minor, patch, git: String::new() }
+    }
+
+    #[test]
+    fn the_last_reach_round_trips_through_the_file_and_a_bad_file_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(last_check::read(dir.path()), None);
+        last_check::write(dir.path(), 1234).unwrap();
+        assert_eq!(last_check::read(dir.path()), Some(1234));
+        assert!(!dir.path().join("last_check.json.tmp").exists());
+        std::fs::write(dir.path().join("last_check.json"), b"{not json").unwrap();
+        assert_eq!(last_check::read(dir.path()), None);
+    }
+
+    #[test]
+    fn a_bad_last_check_file_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("last_check.json"), b"{\"ok_unix\":\"soon\"}").unwrap();
+        assert_eq!(last_check::read(dir.path()), None);
+    }
+
+    #[test]
+    fn a_newer_staged_bundle_from_before_the_restart_is_adopted_and_a_stale_one_is_not() {
+        let (dir, _zip) = dir_with_staged("9.9.9", "9.9.9");
+        let state = crate::server::test_state();
+        let line = adopt_staged(&state, dir.path(), &v(0, 1, 0));
+        assert_eq!(line.as_deref(), Some("adopted staged 9.9.9 (abcdef1) from before the restart"));
+        let st = state.lock().unwrap();
+        assert_eq!(st.update.staged.as_ref().map(|s| (s.version.as_str(), s.git.as_str())), Some(("9.9.9", "abcdef1")));
+        drop(st);
+        // Not newer than the floor: left for drop_stale_staged, not adopted.
+        state.lock().unwrap().update.staged = None;
+        assert_eq!(adopt_staged(&state, dir.path(), &v(9, 9, 9)), None);
+    }
+
+    #[test]
+    fn a_bundle_the_manifest_does_not_name_is_not_adopted() {
+        use super::stage::tests::{manifest_for, manifest_json};
+        // The saved manifest names another version: the folder is not what it says it is.
+        let (dir, zip) = dir_with_staged("9.9.9", "9.9.8");
+        let state = crate::server::test_state();
+        assert_eq!(adopt_staged(&state, dir.path(), &v(0, 1, 0)), None);
+        assert!(state.lock().unwrap().update.staged.is_none());
+        // A version rolled back before is never adopted either.
+        let m = manifest_for(&zip, "9.9.9", "abcdef1");
+        std::fs::write(dir.path().join("manifest.json"), manifest_json(&m)).unwrap();
+        apply::reject(dir.path(), "9.9.9").unwrap();
+        assert_eq!(adopt_staged(&state, dir.path(), &v(0, 1, 0)), None);
+    }
+
+    #[test]
+    fn the_stale_drop_waits_while_an_apply_is_in_flight() {
+        let state = crate::server::test_state();
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut st = state.lock().unwrap();
+            st.update.staged = Some(stage::Staged { version: "0.1.0".into(), git: "a".into(), bundle: dir.path().join("0.1.0/Arkos IDE.app") });
+            st.update.applying = Some("0.1.0".into());
+        }
+        drop_stale_staged(&state, dir.path(), &v(0, 2, 0));
+        assert!(state.lock().unwrap().update.staged.is_some(), "nothing forgotten mid-swap");
+        state.lock().unwrap().update.applying = None;
+        drop_stale_staged(&state, dir.path(), &v(0, 2, 0));
+        assert!(state.lock().unwrap().update.staged.is_none());
     }
 }
