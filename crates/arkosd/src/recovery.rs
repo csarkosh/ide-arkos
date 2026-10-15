@@ -265,8 +265,8 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             eprintln!("arkosd: window for {}: {} is not a arkos binary owned by this user, not reopened", w.cwd.display(), exe.display());
             continue;
         }
-        match crate::watchdog::launch_ui(exe, Some(&w.cwd)) {
-            Ok(()) => {
+        match crate::watchdog::launch_ui(exe, Some(&w.cwd), "a window open before the restart") {
+            Ok(_) => {
                 state.lock().unwrap().windows.insert(w.cwd.clone(), Some(exe.clone()));
                 done.windows += 1;
             }

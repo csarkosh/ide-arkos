@@ -176,6 +176,7 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
         let _ = std::fs::remove_file(&path);
         abort(state);
         eprintln!("arkosd: upgrade to {} failed: {why}; the old daemon keeps running", exe.display());
+        crate::journal::note(format_args!("upgrade to {} failed: {why}; the old daemon keeps running", exe.display()));
         why
     };
     if !settled {
@@ -244,6 +245,7 @@ pub fn execute(state: &Shared, exe: &Path, opts: &Options) -> String {
             return format!("cannot make the listener inheritable: {e}");
         }
         eprintln!("arkosd: upgrading to {} with {} sessions, handover {}", exe.display(), h.sessions.len(), path.display());
+        crate::journal::note(format_args!("exec {} (upgrade from {}, {} sessions)", exe.display(), crate::version_string(), h.sessions.len()));
         // SAFETY: argv is NULL-terminated and every pointer in it, and exe_c, outlives the call;
         // execv returns only on failure, in which case this process continues unchanged.
         unsafe { libc::execv(exe_c.as_ptr(), argv.as_ptr()) };

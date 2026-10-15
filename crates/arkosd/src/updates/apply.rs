@@ -68,6 +68,7 @@ pub fn decide(m: &Applied, connected_since_start: bool, clock_running: bool, now
 pub fn restart_clock(u: &mut super::UpdateState, dir: &Path) {
     let Some(m) = u.applied.as_mut() else { return };
     m.at_unix = now_unix();
+    crate::journal::note(format_args!("the grace for {} starts now: a window not connected at the apply must say Hello", m.version));
     if let Err(e) = write_marker(dir, m) {
         eprintln!("arkosd: cannot rewrite the update marker for {}: {e}", m.version);
     }
@@ -127,6 +128,7 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf, grace: Duration) {
                     }
                     state.lock().unwrap().update.applied = None;
                     eprintln!("arkosd: update {} confirmed by a window", m.version);
+                    crate::journal::note(format_args!("confirm {}: a new window said Hello; the previous app removed", m.version));
                     return;
                 }
                 Decision::Rollback => {
@@ -138,8 +140,9 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf, grace: Duration) {
                             Ok(()) => {
                                 // Rejected before the marker goes: a daemon dying between the two
                                 // never stages the rolled-back version again.
-                                if let Err(e) = reject(&dir, &m.version) {
-                                    eprintln!("arkosd: cannot record {} as rejected: {e}", m.version);
+                                match reject(&dir, &m.version) {
+                                    Ok(()) => crate::journal::note(format_args!("reject {}: recorded in {}", m.version, rejected_path(&dir).display())),
+                                    Err(e) => eprintln!("arkosd: cannot record {} as rejected: {e}", m.version),
                                 }
                                 clear_marker(&dir);
                                 st.update.last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, grace.as_secs()));
@@ -153,10 +156,12 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf, grace: Duration) {
                             }
                         }
                     };
-                    eprintln!("arkosd: {}", state.lock().unwrap().update.last_error.as_deref().unwrap_or(""));
+                    let why = state.lock().unwrap().update.last_error.clone().unwrap_or_default();
+                    eprintln!("arkosd: {why}");
+                    crate::journal::note(format_args!("rollback of {}: {why}; reopening {} folders", m.version, folders.len()));
                     let exe = bundle.join("Contents/MacOS/arkos");
                     for cwd in folders {
-                        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd)) {
+                        if let Err(e) = crate::watchdog::launch_ui(&exe, Some(&cwd), "the previous app after a rollback") {
                             eprintln!("arkosd: cannot reopen the window in {}: {e}", cwd.display());
                         }
                     }
@@ -186,11 +191,13 @@ pub fn on_start(state: &Shared, bundle: Option<&Path>, dir: &Path, grace: Durati
     match marker {
         Some(m) if !super::swap::old_of(bundle).exists() => {
             eprintln!("arkosd: update marker for {} found with no previous bundle beside it; clearing it", m.version);
+            crate::journal::note(format_args!("marker for {} found at start with no .old beside {}: cleared", m.version, bundle.display()));
             clear_marker(dir);
             super::swap::cleanup_leftovers(bundle);
         }
         Some(m) => {
             eprintln!("arkosd: update marker found: {} applied, waiting {}s for a window", m.version, grace.as_secs());
+            crate::journal::note(format_args!("marker found at start: {} applied, pids at the apply {:?}; waiting {}s for a window", m.version, m.pids_at_apply, grace.as_secs()));
             {
                 let mut st = state.lock().unwrap();
                 st.update.swapped = Some(m.version.clone());

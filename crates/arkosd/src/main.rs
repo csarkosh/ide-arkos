@@ -1,4 +1,5 @@
 mod handover;
+mod journal;
 mod pty;
 mod reaper;
 mod recovery;
@@ -123,6 +124,7 @@ fn main() {
     update.extra_keys = release_keys;
     update.bundle = bundle.or(update.bundle);
     update.connect_grace = connect_grace_secs.map(Duration::from_secs).unwrap_or(update.connect_grace);
+    journal::init(&update.dir, &socket);
     if let Some(path) = resume {
         let h = match handover::read(&path) {
             Ok(h) => h,

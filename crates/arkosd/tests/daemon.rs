@@ -919,9 +919,16 @@ fn upgrade_onto_the_same_binary_keeps_sessions_the_pid_and_parenthood() {
         other => panic!("unexpected {other:?}"),
     };
     assert_eq!(parent_pid(shell_pid), d.pid(), "the shell is the daemon's child before");
+    // The journal writes only into an updates folder the poll made; polling is off here.
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
     c.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_arkosd")) });
     c.expect_disconnect(Duration::from_secs(10));
     let mut c = d.reconnect();
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    let exec = journal.find(&format!("exec {} (upgrade from arkosd ", env!("CARGO_BIN_EXE_arkosd"))).unwrap_or_else(|| panic!("{journal}"));
+    let resumed = journal.find(&format!("resumed as arkosd {} (", env!("CARGO_PKG_VERSION"))).unwrap_or_else(|| panic!("{journal}"));
+    assert!(exec < resumed, "{journal}");
+    assert!(journal[resumed..].lines().next().unwrap().contains(&format!("(pid {})", d.pid())), "{journal}");
     let listed = match c.request(Request::ListSessions) {
         Response::Sessions(list) => list.into_iter().find(|s| s.id == sid).expect("the session survived"),
         other => panic!("unexpected {other:?}"),
@@ -1624,6 +1631,9 @@ fn a_connected_window_hears_update_staged() {
             }
         }
     }
+    // The checks before the release was published found no manifest: a transport failure.
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    assert!(journal.contains("check: transient, tried again at the next check"), "{journal}");
 }
 
 #[test]
@@ -1856,6 +1866,61 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
     assert!(!d.updates_marker().exists());
     let mut c = d.connect();
     assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: Some(e), .. } if e.contains("rolled back")));
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    for step in ["marker found at start: 9.9.9", "reject 9.9.9", "rollback of 9.9.9: update 9.9.9 rolled back"] {
+        assert!(journal.contains(step), "{step:?} missing from the journal:\n{journal}");
+    }
+}
+
+#[test]
+fn the_journal_records_an_apply_from_check_to_confirm_and_the_window_log_keeps_its_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    // The relaunched "window": prints to both outputs, as a window's startup line does.
+    let bin = tempfile::tempdir().unwrap();
+    let window = bin.path().join("arkos");
+    std::fs::write(&window, "#!/bin/sh\necho \"window says hi on stdout\"\necho \"arkos starting in $(pwd -P)\" >&2\n").unwrap();
+    std::fs::set_permissions(&window, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    assert_eq!(c.request(Request::RelaunchClient { exe: window.clone(), cwd: home.path().to_path_buf() }), Response::Ok);
+    drop(c);
+    let log = d.path().join("window.log");
+    wait_until(|| std::fs::read_to_string(&log).is_ok_and(|t| t.contains("arkos starting in")), Duration::from_secs(5));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("window says hi on stdout"), "{text}");
+    let _new = d.connect_as(std::process::id() + 1);
+    wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
+    let journal = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&journal).is_ok_and(|t| t.contains("confirm 9.9.9")), Duration::from_secs(5));
+    let journal = std::fs::read_to_string(&journal).unwrap();
+    let pid = std::process::id();
+    let steps = [
+        "staged 9.9.9 (fffffff)".to_string(),
+        format!("apply 9.9.9 (fffffff) to {}", installed.display()),
+        format!("windows at the apply: pids [{pid}]"),
+        "marker written for 9.9.9".to_string(),
+        "swap ok".to_string(),
+        "the grace for 9.9.9 starts now".to_string(),
+        format!("relaunch spawned (relaunch the window asked for): {} in {}, pid ", window.display(), home.path().display()),
+        format!("pid {}, {}, protocol {PROTOCOL_VERSION}, during the pending apply of 9.9.9: confirms", pid + 1, std::env::temp_dir().display()),
+        "confirm 9.9.9".to_string(),
+    ];
+    let mut at = 0;
+    for step in &steps {
+        let found = journal[at..].find(step.as_str()).unwrap_or_else(|| panic!("{step:?} missing or out of order in the journal:\n{journal}"));
+        at += found;
+    }
+    // Every line is timestamped: `2026-10-15 08:04:12 -0400 ...`.
+    assert!(journal.lines().all(|l| l.as_bytes().get(4) == Some(&b'-') && l.as_bytes().get(19) == Some(&b' ')), "{journal}");
+    let later = d.path().join("updates/journal.log");
+    wait_until(|| std::fs::read_to_string(&later).is_ok_and(|t| t.contains("check: the manifest has 9.9.9 (fffffff), not newer than running")), Duration::from_secs(5));
 }
 
 #[test]
