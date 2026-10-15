@@ -220,11 +220,13 @@ impl Element for TerminalElement {
                 let c = if h.current { palette.find_current } else { palette.find_match };
                 window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, c.alpha(0.45)));
             }
-            if let Some(l) = &hovered {
-                let x = origin.x + px(l.start as f32 * cw);
-                let w = px((l.end - l.start) as f32 * cw);
-                let y = origin.y + px((l.row as f32 + frac) * cell.height) + lh - px(2.0);
-                let fg = rows.visible.get(l.row).and_then(|r| r.get(l.start)).map(|c| c.1.fg).unwrap_or(palette.fg);
+            // Every link wears an underline in its own colour, so it reads as a link before the
+            // pointer finds it; the hovered one also gets the pointer cursor (above).
+            for (row, start, end) in link_spans(&rows.visible) {
+                let x = origin.x + px(start as f32 * cw);
+                let w = px((end - start) as f32 * cw);
+                let y = origin.y + px((row as f32 + frac) * cell.height) + lh - px(2.0);
+                let fg = rows.visible.get(row).and_then(|r| r.get(start)).map(|c| c.1.fg).unwrap_or(palette.fg);
                 window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, px(1.0)) }, hsla(fg)));
             }
         });
@@ -234,6 +236,24 @@ impl Element for TerminalElement {
             window.request_animation_frame();
         }
     }
+}
+
+/// Every link in the visible rows, as (row, start column, end column exclusive): drawn with an
+/// underline whether or not the pointer is over it. A row with no scheme is skipped before any
+/// scan, so a screen of plain output costs a substring check per row.
+pub fn link_spans(visible: &[Vec<(char, CellStyle, CellKind)>]) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::new();
+    for (row, cells) in visible.iter().enumerate() {
+        let chars: Vec<char> = cells.iter().map(|c| c.0).collect();
+        let text: String = chars.iter().collect();
+        if !text.contains("http") {
+            continue;
+        }
+        for l in links_in_row(&chars) {
+            out.push((row, l.start, l.end));
+        }
+    }
+    out
 }
 
 /// The link under `mouse` in the visible rows painted at `frac`, if any. Only the hovered row's
@@ -257,7 +277,7 @@ pub fn hovered_link(visible: &[Vec<(char, CellStyle, CellKind)>], bounds: Bounds
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_dt, hovered_link, split_offset};
+    use super::{frame_dt, hovered_link, link_spans, split_offset};
     use crate::layout::{CellKind, CellStyle};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
@@ -280,6 +300,13 @@ mod tests {
         assert_eq!(at(45.0, 5.0, 0.0), None, "row 0 has no link");
         assert_eq!(at(45.0, 45.0, 0.5), Some((1, 4, 21)), "a half-line scroll shifts the rows down");
         assert_eq!(hovered_link(&visible, bounds, point(px(10.0), px(10.0)), cell, 0.0), None, "outside the element");
+    }
+
+    #[test]
+    fn every_visible_link_is_found_and_plain_rows_are_skipped() {
+        let visible = vec![row("plain"), row("see https://csarko.sh now"), row("http://a.io and https://b.io/x"), row("no scheme: csarko.sh")];
+        assert_eq!(link_spans(&visible), vec![(1, 4, 21), (2, 0, 11), (2, 16, 30)]);
+        assert!(link_spans(&[row("nothing"), row("")]).is_empty());
     }
 
     #[test]
