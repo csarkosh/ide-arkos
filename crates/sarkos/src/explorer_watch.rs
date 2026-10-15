@@ -1,7 +1,8 @@
 //! The sidebar's "watcher" (spec 6, ruling 1): every second, the expanded directories' and the
 //! open viewers' fingerprints are read on the background executor; a changed directory is read
 //! again, a changed file reloaded. One stat per expanded directory per second. `git status`
-//! runs a second after the last change it has not seen, and every ten seconds regardless.
+//! runs a second after the last change it has not seen, and every ten seconds regardless; the
+//! worktree list, and the expanded worktrees' status, every ten seconds.
 use crate::config_watch::fingerprint;
 use crate::Root;
 use gpui::{App, Entity};
@@ -72,6 +73,8 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
         // The window ran the first `git status` as it opened, just before this started.
         let mut last_run: Option<Instant> = Some(Instant::now());
         let mut changed_at: Option<Instant> = None;
+        // The window listed the worktrees as it opened, too.
+        let mut worktrees_run = Instant::now();
         loop {
             cx.background_executor().timer(POLL).await;
             let Ok(paths) = root.update(cx, |root, cx| root.watched_paths(cx)) else { return };
@@ -92,6 +95,19 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
             if status_due(last_run, changed_at, Instant::now()) {
                 last_run = Some(Instant::now());
                 if root.update(cx, |root, cx| root.refresh_status(cx)).is_err() {
+                    return;
+                }
+            }
+            // The worktree list, and the expanded worktrees' changes, on the slow timer: the
+            // changes are dropped (the worktrees stay expanded and keep their ease-in instant) so
+            // the list's landing loads them again.
+            if worktrees_run.elapsed() >= STATUS_EVERY {
+                worktrees_run = Instant::now();
+                let refreshed = root.update(cx, |root, cx| {
+                    root.worktrees.changes.clear();
+                    root.refresh_worktrees(cx);
+                });
+                if refreshed.is_err() {
                     return;
                 }
             }

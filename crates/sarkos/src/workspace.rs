@@ -36,6 +36,9 @@ pub struct SidebarSaved {
     pub show_ignored: bool,
     /// Expanded directories, absolute, so the tree reopens as it was.
     pub expanded: Vec<PathBuf>,
+    /// Expanded worktrees, absolute. Absent in files from before milestone 4b.
+    #[serde(default)]
+    pub worktrees_expanded: Vec<PathBuf>,
 }
 
 /// Milestone 1 wrote `{ "sessions": [id] }`: one session, no layout.
@@ -273,12 +276,15 @@ mod tests {
         let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws.clone()));
-        ws.sidebar = Some(SidebarSaved { width: 300.0, collapsed: true, show_ignored: true, expanded: vec![PathBuf::from("/p/src")] });
+        ws.sidebar = Some(SidebarSaved { width: 300.0, collapsed: true, show_ignored: true, expanded: vec![PathBuf::from("/p/src")], worktrees_expanded: vec![PathBuf::from("/p-f")] });
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
         // A milestone 3 file has no sidebar object.
         std::fs::write(&file, r#"{ "version": 2, "project": "/p", "tree": { "root": { "Leaf": { "id": 1, "tabs": [], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
         assert_eq!(load_from(&file, project).unwrap().sidebar, None);
+        // A file from before 4b has a sidebar object without the expanded worktrees.
+        std::fs::write(&file, r#"{ "version": 3, "project": "/p", "tree": { "root": { "Leaf": { "id": 1, "tabs": [], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null }, "sidebar": { "width": 250.0, "collapsed": false, "show_ignored": false, "expanded": [] } }"#).unwrap();
+        assert_eq!(load_from(&file, project).unwrap().sidebar.unwrap().worktrees_expanded, Vec::<PathBuf>::new());
     }
 
     #[test]

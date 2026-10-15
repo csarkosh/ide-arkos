@@ -37,6 +37,7 @@ mod update;
 mod viewer;
 mod viewer_element;
 mod workspace;
+mod worktrees;
 
 use futures::channel::oneshot;
 use gpui::{
@@ -160,6 +161,10 @@ pub struct Root {
     pub status_seq: u64,
     /// The `git status` run in flight, and whether another was asked for meanwhile.
     pub status_runs: explorer_watch::StatusRuns,
+    /// The worktree explorer's model: the list, the expanded worktrees and their changes.
+    pub worktrees: worktrees::Worktrees,
+    /// Bumped per `git worktree list` run; only the newest run's result is applied.
+    pub worktrees_seq: u64,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -254,9 +259,9 @@ impl Root {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
         // The folder's own sidebar when it saved one, else the config's defaults.
-        let (sidebar, explorer) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
-            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored)),
-            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, cx), explorer::Explorer::new(project.clone(), Vec::new(), false)),
+        let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
+            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
+            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
@@ -285,6 +290,8 @@ impl Root {
             context_menu: None,
             status_seq: 0,
             status_runs: explorer_watch::StatusRuns::default(),
+            worktrees,
+            worktrees_seq: 0,
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -445,7 +452,7 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs() };
+        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect() };
         let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar) };
         request_save(&self.save_queue, ws, cx);
     }
@@ -1718,6 +1725,7 @@ fn main() {
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
             root.refresh_status(cx);
+            root.refresh_worktrees(cx);
             cx.notify();
         });
         let quit_root = root.clone();

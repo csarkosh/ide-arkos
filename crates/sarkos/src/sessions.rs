@@ -301,8 +301,13 @@ impl SessionManager {
     }
 
     pub fn create(&mut self, tab: TabId, note: bool) {
+        self.create_in(tab, note, self.project.clone());
+    }
+
+    /// `create`, with the shell starting in `cwd` rather than the project (a worktree).
+    pub fn create_in(&mut self, tab: TabId, note: bool, cwd: PathBuf) {
         let id = self.transport.send(Request::CreateSession {
-            cwd: self.project.clone(),
+            cwd,
             shell: self.shell.clone(),
             env: vec![],
             nice: self.nice,
@@ -682,6 +687,14 @@ mod tests {
         let sub = here.join("sub");
         std::fs::create_dir(&sub).unwrap();
         assert!(reattachable(SessionId(7), &list, &sub.join("..")), "paths compare canonically");
+    }
+
+    #[test]
+    fn create_in_starts_the_shell_in_the_given_folder() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.create_in(7, false, PathBuf::from("/elsewhere"));
+        assert!(matches!(&rec.requests()[0], Request::CreateSession { cwd, .. } if cwd == Path::new("/elsewhere")));
     }
 
     #[test]

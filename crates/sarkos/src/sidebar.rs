@@ -381,6 +381,42 @@ impl Root {
         .detach();
     }
 
+    /// Runs `git worktree list` on the background executor. A result older than a newer run
+    /// is dropped.
+    pub fn refresh_worktrees(&mut self, cx: &mut Context<Self>) {
+        self.worktrees_seq += 1;
+        let seq = self.worktrees_seq;
+        let root = self.project.clone();
+        cx.spawn(async move |this, cx| {
+            let list = cx.background_executor().spawn(async move { crate::worktrees::list(&root) }).await;
+            let _ = this.update(cx, |root, cx| {
+                if seq == root.worktrees_seq {
+                    root.worktrees.set_list(list);
+                    root.load_pending_worktrees(cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Runs `git status` for each expanded worktree whose changes are not loaded, off the UI
+    /// thread, and applies each result as it lands.
+    pub fn load_pending_worktrees(&mut self, cx: &mut Context<Self>) {
+        for path in self.worktrees.to_load() {
+            self.worktrees.mark_loading(&path);
+            let p = path.clone();
+            cx.spawn(async move |this, cx| {
+                let changes = cx.background_executor().spawn(async move { crate::gitstatus::run_status(&p) }).await;
+                let _ = this.update(cx, |root, cx| {
+                    root.worktrees.set_changes(&path, changes);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
     /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
     /// Enter). The tab's viewer is made and loaded when the pane first shows it.
     pub fn open_viewer(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
