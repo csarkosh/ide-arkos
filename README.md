@@ -15,8 +15,8 @@ doing (a breathing glyph while it works, a warm dot when it waits on you, a mute
 shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
 each Claude Code conversation resumed. The sidebar shows git status in the tree and the
-worktrees, and the viewer marks a file's changes against HEAD. Milestone 5 (the browser pane) is
-next.
+worktrees, and the viewer marks a file's changes against HEAD. The browser pane docks a Chrome window into a pane (Accessibility
+permission needed). Milestone 6 is next.
 
 Things only a person at the screen can check, in order of value:
 
@@ -95,6 +95,12 @@ Things only a person at the screen can check, in order of value:
 - the window minimized for two minutes keeps its sessions: compare the `arkos` pid before and
   after, and look for no "relaunching" line in `~/Library/Application Support/arkos/arkosd.log`
 - `ps` after thirty seconds idle with four terminals
+- run `/Applications/Arkos IDE.app/Contents/MacOS/arkos browser-probe` once and grant access when
+  asked: it moves a Chrome window for a few seconds and prints what it saw
+- open a browser tab while Claude is working: the next Chrome window Claude opens lands in it
+- drag a Chrome window into a pane; drag its title bar out again
+- switch tabs away and back: the window hides and returns
+- revoke Accessibility in System Settings: the pane shows the permission screen within a second
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
 
@@ -179,6 +185,37 @@ cross-fades as focus moves, a section's rows fade in as it opens, and Cmd+B slid
 over 150 ms with the panes following. Something on its way out is only drawn: it takes no
 keys, focus or clicks.
 
+## Browser pane
+
+A browser tab is a placeholder in a pane with a real Chrome window sitting on top of it. Arkos
+does not render the web: it moves and sizes the Chrome window through the Accessibility API so
+that it follows the placeholder as you split, drag a handle, toggle the sidebar or move the
+window, hides it when the tab is not the active one (or arkos is minimized or hidden), and
+raises it when you click the pane.
+
+A window gets docked in one of four ways. While a Claude Code session is working, the next Chrome
+window it opens lands in a browser tab on its own. The palette's "Dock a Chrome window…" docks
+the front Chrome window into the focused pane. "New browser tab…" (Cmd+Shift+B) asks for a URL
+and opens it in a new Chrome window that docks into the tab; "New single-page browser tab…"
+does the same in Chrome's app mode (no tab strip, no address bar), as does `app_mode` in the
+config. Or drag any Chrome window by its title bar into a pane and drop it.
+
+It is released four ways: close the tab (the window stays where it is; arkos never closes it),
+the palette's "Undock Chrome window", drag the tab out of its pane, or drag the window's title bar
+more than 40 px away from the placeholder. Chrome's own tab dragging is left alone.
+
+Moving another app's window needs the Accessibility permission. Arkos asks once, when the first
+browser pane needs it; until it is granted the pane explains what is missing and links to System
+Settings. Revoking it later brings the explanation back within a second.
+
+A pane holding a browser tab shows a slim 14 px tab bar: the pane number and one dot per tab, no
+titles, since Chrome shows the page's own title. Dragging a tab still drops onto it. To get the
+vertical space back, a tip (once per run) suggests right-clicking Chrome's tab strip and choosing
+Show Tabs Vertically.
+
+Only the URL and the app-mode flag are saved. After a relaunch a browser tab waits for a window;
+arkos never tries to find the old one.
+
 ## Keyboard
 
 The VS Code map, in a terminal-friendly form.
@@ -214,6 +251,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+K then Shift+Cmd+Left | move tab left |
 | Cmd+K then Shift+Cmd+Right | move tab right |
 | Ctrl+Shift+` | new terminal tab |
+| Cmd+Shift+B | new browser tab: asks for a URL, opens it in a Chrome window docked into the tab |
 | Cmd+K | clear to start: history and screen go, the prompt line moves to the top, as in Terminal.app |
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
@@ -257,8 +295,9 @@ good settings. Sections: `font` (family, the default text preset, and the preset
 (scrollback, shell, nice), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
-whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` for a later
-milestone.
+whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` (`url`, the page a new
+browser tab opens when its prompt is left empty, and `app_mode`, which opens user URLs as a single
+page).
 
 ```toml
 [update]
