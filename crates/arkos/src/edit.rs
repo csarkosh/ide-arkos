@@ -260,10 +260,9 @@ impl Document {
     }
 
     /// Applies one edit, records its step, clears redo, and returns the caret after it.
-    fn commit(&mut self, from: Pos, to: Pos, text: &str, before: Caret, coalescable: bool, now: Instant) -> Caret {
+    fn commit(&mut self, from: Pos, to: Pos, text: &str, before: Caret, after: Caret, coalescable: bool, now: Instant) -> Caret {
         let (from, to) = self.ordered(from, to);
         let old = self.splice(from, to, text);
-        let after = Caret::at(end_of(from, text));
         self.undo.push(Step { edits: vec![(from, to, old, text.to_string())], caret_before: before, caret_after: after, coalescable });
         self.redo.clear();
         self.last_typed = coalescable.then_some(now);
@@ -301,13 +300,13 @@ impl Document {
             self.last_typed = Some(now);
             return Caret::at(end);
         }
-        self.commit(from, to, &text, caret, typed, now)
+        self.commit(from, to, &text, caret, Caret::at(end_of(from, &text)), typed, now)
     }
 
     pub fn delete_backward(&mut self, caret: Caret, unit: Unit, now: Instant) -> Caret {
         let (from, to) = self.selection(caret);
         if from != to {
-            return self.commit(from, to, "", caret, false, now);
+            return self.commit(from, to, "", caret, Caret::at(from), false, now);
         }
         let head = self.clamp(caret.head);
         let line = &self.lines[head.line];
@@ -322,36 +321,35 @@ impl Document {
                 Unit::Grapheme | Unit::LineEnd => (Pos { line: head.line, ch: grapheme_left(line, head.ch) }, head),
                 Unit::LineStart => (Pos { line: head.line, ch: 0 }, head),
                 Unit::Word => {
+                    // The macOS way: the whitespace just before the caret goes, then the run
+                    // before it, a run of word characters or, when punctuation precedes, a run of
+                    // punctuation. Whitespace in general counts, tabs included.
                     let chars: Vec<char> = line.chars().collect();
-                    let start = word_boundary_left(line, head.ch);
-                    // The word itself, not the punctuation between it and the caret; only plain
-                    // spaces go with it.
-                    let mut word_end = head.ch;
-                    while word_end > start && !is_word(chars[word_end - 1]) {
-                        word_end -= 1;
+                    let mut i = head.ch;
+                    while i > 0 && chars[i - 1].is_whitespace() {
+                        i -= 1;
                     }
-                    if chars[word_end..head.ch].iter().all(|c| c.is_whitespace()) {
-                        word_end = head.ch;
+                    if i > 0 {
+                        let word = is_word(chars[i - 1]);
+                        while i > 0 && !chars[i - 1].is_whitespace() && is_word(chars[i - 1]) == word {
+                            i -= 1;
+                        }
                     }
-                    if start == word_end {
-                        (Pos { line: head.line, ch: start }, head)
-                    } else {
-                        (Pos { line: head.line, ch: start }, Pos { line: head.line, ch: word_end })
-                    }
+                    (Pos { line: head.line, ch: i }, head)
                 }
             }
         };
         if start == end {
             return Caret::at(head);
         }
-        self.commit(start, end, "", caret, false, now);
+        self.commit(start, end, "", caret, Caret::at(start), false, now);
         Caret::at(start)
     }
 
     pub fn delete_forward(&mut self, caret: Caret, unit: Unit, now: Instant) -> Caret {
         let (from, to) = self.selection(caret);
         if from != to {
-            return self.commit(from, to, "", caret, false, now);
+            return self.commit(from, to, "", caret, Caret::at(from), false, now);
         }
         let head = self.clamp(caret.head);
         let line = &self.lines[head.line];
@@ -387,7 +385,8 @@ impl Document {
         if start == end {
             return Caret::at(head);
         }
-        self.commit(start, end, "", caret, false, now);
+        // The caret stays put, so redo must leave it there too.
+        self.commit(start, end, "", caret, Caret::at(head), false, now);
         Caret::at(head)
     }
 
@@ -399,7 +398,7 @@ impl Document {
         if from == to && text.is_empty() {
             return from;
         }
-        self.commit(from, to, &text, Caret::at(from), false, now).head
+        self.commit(from, to, &text, Caret::at(from), Caret::at(end_of(from, &text)), false, now).head
     }
 
     pub fn undo(&mut self) -> Option<Caret> {
@@ -531,8 +530,18 @@ mod tests {
         let mut d = doc("héllo wörld");
         let c = d.insert(at(0, 5), ",", t0());
         assert_eq!((d.lines()[0].as_str(), c.head), ("héllo, wörld", Pos { line: 0, ch: 6 }));
+        let c = d.delete_backward(at(0, 7), Unit::Word, t0());
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("héllowörld", 5), "the space and the punctuation run go");
         let c = d.delete_backward(c, Unit::Word, t0());
-        assert_eq!((d.lines()[0].as_str(), c.head.ch), (", wörld", 0), "a word delete takes the word, not the punctuation after it");
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("wörld", 0), "then the word");
+        let mut d = doc("a, ");
+        let c = d.delete_backward(at(0, 3), Unit::Word, t0());
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("a", 1));
+        let mut d = doc("one two");
+        let c = d.delete_forward(at(0, 3), Unit::Word, t0());
+        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("one", 3));
+        assert_eq!(d.undo().map(|c| c.head.ch), Some(3));
+        assert_eq!(d.redo().map(|c| c.head.ch), Some(3), "redo leaves the caret where the delete did");
         let mut d = doc("e\u{301}x"); // e with a combining accent, then x
         let c = d.delete_backward(at(0, 2), Unit::Grapheme, t0());
         assert_eq!((d.lines()[0].as_str(), c.head.ch), ("x", 0), "one grapheme, two scalars");
