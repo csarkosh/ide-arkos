@@ -22,6 +22,8 @@ raw-window-handle = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing"] }
 similar = "2"
+# Already in the tree through gpui and others: grapheme boundaries for the editing core.
+unicode-segmentation = "1"
 # The browser pane (spec 8): Chrome's pid, the mouse, the screens and arkos's own window. Default
 # features off: the full AppKit binding is a long compile, and only these modules are used.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSGraphics", "NSView"] }

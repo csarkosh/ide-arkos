@@ -13,6 +13,7 @@ mod dock;
 mod doctor;
 mod doctor_panel;
 mod drag;
+mod edit;
 mod empty_pane;
 mod explorer;
 mod explorer_watch;
