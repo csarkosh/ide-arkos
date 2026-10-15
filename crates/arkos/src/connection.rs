@@ -40,6 +40,45 @@ pub fn is_final(status: &str) -> bool {
     status.starts_with(ERROR_PREFIX) && status.contains("protocol version mismatch")
 }
 
+/// When to try again and when to start the daemon, for a lost connection: the window's loop and
+/// the launch chooser's link share it.
+pub struct Reconnect {
+    lost_at: Instant,
+    attempt: u32,
+    start_failures: u32,
+}
+
+impl Reconnect {
+    pub fn new(lost_at: Instant) -> Self {
+        Reconnect { lost_at, attempt: 0, start_failures: 0 }
+    }
+    pub fn next_delay(&self) -> Duration {
+        backoff(self.attempt)
+    }
+    pub fn should_start(&self) -> bool {
+        should_start_daemon(self.lost_at.elapsed(), self.start_failures)
+    }
+    /// The failed starts reached `MAX_START_FAILURES`: only connecting from here on.
+    pub fn gave_up(&self) -> bool {
+        self.start_failures == MAX_START_FAILURES
+    }
+    pub fn next_attempt(&mut self) {
+        self.attempt += 1;
+    }
+    pub fn failed_start(&mut self) {
+        self.start_failures += 1;
+    }
+}
+
+/// One connect on the background executor, starting the daemon too when `start`.
+pub async fn attempt(socket: &std::path::Path, daemon_exe: &std::path::Path, daemon_args: &[String], start: bool, cx: &AsyncApp) -> Result<(Client, UnboundedReceiver<ServerMessage>), String> {
+    let (s, d, a) = (socket.to_path_buf(), daemon_exe.to_path_buf(), daemon_args.to_vec());
+    cx.background_executor()
+        .spawn(async move { if start { Client::connect_or_start(&s, &d, &a) } else { Client::connect(&s) } })
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// Binds `first`, then keeps the window connected until it closes.
 pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_args: Vec<String>, first: (Arc<Client>, UnboundedReceiver<ServerMessage>, Vec<ServerMessage>), cx: &mut App) {
     cx.spawn(async move |cx| {
@@ -73,26 +112,20 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
                 return;
             }
             let lost_at = Instant::now();
-            let mut attempt = 0u32;
-            let mut start_failures = 0u32;
+            let mut policy = Reconnect::new(lost_at);
             let next = loop {
-                cx.background_executor().timer(backoff(attempt)).await;
-                attempt += 1;
-                let (s, d, a) = (socket.clone(), daemon_exe.clone(), daemon_args.clone());
-                let start = should_start_daemon(lost_at.elapsed(), start_failures);
-                let attempt_result = cx
-                    .background_executor()
-                    .spawn(async move { if start { Client::connect_or_start(&s, &d, &a) } else { Client::connect(&s) } })
-                    .await;
-                match attempt_result {
+                cx.background_executor().timer(policy.next_delay()).await;
+                policy.next_attempt();
+                let start = policy.should_start();
+                match attempt(&socket, &daemon_exe, &daemon_args, start, cx).await {
                     Ok(c) => break (c, start),
                     Err(e) => {
                         if start {
-                            start_failures += 1;
+                            policy.failed_start();
                         }
-                        let gave_up = start && start_failures == MAX_START_FAILURES;
+                        let gave_up = start && policy.gave_up();
                         if gave_up {
-                            eprintln!("arkos: arkosd failed to start {MAX_START_FAILURES} times in a row; only connecting from now on: {e:#}");
+                            eprintln!("arkos: arkosd failed to start {MAX_START_FAILURES} times in a row; only connecting from now on: {e}");
                         }
                         let log = client::daemon_log(&socket);
                         if root
@@ -100,7 +133,7 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
                                 if gave_up {
                                     root.status = format!("arkosd keeps exiting; see the log at {}", log.display());
                                 } else if start {
-                                    root.status = format!("arkosd is not running and could not be started: {e:#}");
+                                    root.status = format!("arkosd is not running and could not be started: {e}");
                                 }
                                 cx.notify();
                             })
@@ -271,5 +304,20 @@ mod tests {
         assert!(should_start_daemon(Duration::from_secs(60), 4));
         assert!(!should_start_daemon(Duration::from_secs(60), 5));
         assert!(!should_start_daemon(Duration::from_secs(60), 6));
+    }
+
+    #[test]
+    fn the_reconnect_policy_matches_the_window_loop() {
+        let mut r = Reconnect::new(Instant::now() - Duration::from_secs(11));
+        assert_eq!(r.next_delay(), backoff(0));
+        assert!(r.should_start(), "ten seconds lost: start the daemon");
+        r.failed_start();
+        r.failed_start();
+        r.failed_start();
+        r.failed_start();
+        r.failed_start();
+        assert!(!r.should_start(), "five failed starts: only connect");
+        r.next_attempt();
+        assert_eq!(r.next_delay(), backoff(1));
     }
 }

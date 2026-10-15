@@ -3081,11 +3081,9 @@ impl Launch {
             }
             return;
         }
-        // The chooser's Hello named this pid, so the watchdog expects heartbeats: they run until
-        // the project window's connection runs its own.
-        let (beat_client, waiting) = (client.clone(), self.clone());
-        cx.spawn(async move |cx| connection::heartbeat(beat_client, move |_| !waiting.opened.get(), cx).await).detach();
-        let link = launch_link::Link::new(client, events);
+        // The link beats the heartbeat (the chooser's Hello named this pid, so the watchdog
+        // expects it) until the project window's connection runs its own.
+        let link = launch_link::Link::new(client, events, paths::socket_path(), paths::daemon_exe(), self.daemon_args.clone());
         let attached = self.chooser.get().map(|h| h.update(cx, |chooser, window, cx| chooser.attach_link(link, window, cx)));
         // The chooser is gone (its close quits, so only a race gets here): nothing is left to
         // show.

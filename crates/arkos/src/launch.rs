@@ -3,11 +3,11 @@
 //! (`recent.rs`) with a way to show them all and the native folder picker. "Open recent..." from
 //! a running window shows the same chooser; the folder chosen there opens in a new process.
 use crate::chooser_sessions::{self, LinkEvent};
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::keymap::{self, OpenFolder};
 use crate::launch_link::Link;
 use crate::recent::{self, Recent};
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 use crate::{paths, workspace};
 use gpui::{
     div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, PathPromptOptions,
@@ -26,9 +26,9 @@ pub const TOP: usize = 5;
 const RELIST_AFTER_STOP: std::time::Duration = std::time::Duration::from_millis(1500);
 const WIDTH: f32 = 560.0;
 const HEIGHT: f32 = 460.0;
-const TEXT: f32 = 13.0;
 /// The launch chooser's footer until the daemon's connection exists.
 pub const FOOTER_CONNECTING: &str = "connecting to the daemon\u{2026}";
+pub const FOOTER_RECONNECTING: &str = "reconnecting to the daemon\u{2026}";
 
 /// Whether this launch should ask for a folder: exactly `/` is what macOS gives an app opened
 /// from the Dock, Finder or Spotlight. A terminal launch keeps its working directory.
@@ -292,10 +292,32 @@ impl Chooser {
         );
     }
 
+    /// macOS switched between light and dark: in `system` mode the chooser re-themes; a manually
+    /// chosen theme stays.
+    pub fn set_system_appearance(&mut self, dark: bool, cx: &mut Context<Self>) {
+        if self.config.appearance.mode != config::AppearanceMode::System {
+            return;
+        }
+        let name = theme::pick_name(self.config.appearance.mode, dark, &self.config.theme).to_string();
+        if name == self.theme.name {
+            return;
+        }
+        match theme::load(&name, &paths::themes_dir()) {
+            Ok(t) => {
+                self.theme = t;
+                cx.notify();
+            }
+            Err(e) => eprintln!("arkos: chooser theme: {e}"),
+        }
+    }
+
     /// The daemon's answers, through the link.
     pub fn on_link(&mut self, ev: LinkEvent, cx: &mut Context<Self>) {
         match ev {
             LinkEvent::Sessions(list) => {
+                if self.footer.as_deref() == Some(FOOTER_RECONNECTING) {
+                    self.footer = None;
+                }
                 self.live = self
                     .recents
                     .iter()
@@ -322,7 +344,7 @@ impl Chooser {
                 self.live.clear();
                 self.stopping.clear();
                 self.confirm = None;
-                self.notice = Some("the daemon connection ended; the window reconnects once a folder is open".into());
+                self.footer = Some(FOOTER_RECONNECTING.to_string());
             }
         }
         cx.notify();
@@ -539,7 +561,7 @@ impl Render for Chooser {
             .bg(bg)
             .text_color(text)
             .font_family(gpui::SharedString::from(self.config.font.family.clone()))
-            .text_size(px(TEXT))
+            .text_size(px(text_px(&self.config)))
             .child(div().px(px(10.0)).text_color(dim).child("Recent"))
             .when(self.recents.is_empty(), |d| d.child(div().px(px(10.0)).py(px(6.0)).text_color(dim).child("No recent folders")))
             .child(list)
@@ -554,6 +576,11 @@ impl Render for Chooser {
 /// line at launch, for the session counts; none from a running window, and none at launch
 /// until the connection exists (`Chooser::attach_link`): the footer says it is coming. The task
 /// gives the window's handle once it is open.
+/// The chooser's text size: the config's default preset.
+fn text_px(config: &Config) -> f32 {
+    config::resolve_preset(None, &config.font.preset, &config.font.presets).1.size
+}
+
 pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, link: Option<Link>, on_choice: OnChoice) -> Task<Option<WindowHandle<Chooser>>> {
     let file = paths::recent_file();
     // The saved sessions serve the counts, which only the launch chooser shows, link or not yet.
@@ -601,6 +628,13 @@ pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, 
                     chosen: None,
                 });
                 window.focus(&view.read(cx).focus);
+                let observed = view.clone();
+                window
+                    .observe_window_appearance(move |window, cx| {
+                        let dark = theme::is_dark(window.appearance());
+                        observed.update(cx, |chooser, cx| chooser.set_system_appearance(dark, cx));
+                    })
+                    .detach();
                 view.update(cx, |chooser, cx| chooser.start_link(cx));
                 view
             })
@@ -719,5 +753,22 @@ mod tests {
         let relaunch: Vec<_> = cmd.get_envs().filter(|(k, _)| *k == "ARKOS_RELAUNCH").collect();
         assert_eq!(relaunch, vec![(std::ffi::OsStr::new("ARKOS_RELAUNCH"), None)], "removed, not inherited");
         assert_eq!(cmd.get_args().count(), 0);
+    }
+
+    #[test]
+    fn the_chooser_picks_the_other_theme_name_when_the_appearance_flips() {
+        let cfg = Config::default();
+        let (dark, light) = (
+            theme::pick_name(config::AppearanceMode::System, true, &cfg.theme).to_string(),
+            theme::pick_name(config::AppearanceMode::System, false, &cfg.theme).to_string(),
+        );
+        assert_ne!(dark, light);
+        assert_eq!(theme::pick_name(config::AppearanceMode::Dark, false, &cfg.theme), dark, "a fixed mode ignores the appearance");
+    }
+
+    #[test]
+    fn the_chooser_text_follows_the_default_preset() {
+        let cfg = Config::default();
+        assert_eq!(text_px(&cfg), 16.0);
     }
 }
