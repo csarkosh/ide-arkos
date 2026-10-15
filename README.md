@@ -78,6 +78,16 @@ Things only a person at the screen can check, in order of value:
 - the File menu shows "New Window" and nothing else; Cmd+N or the menu opens the chooser with
   the recent folders and "Open folder..."; picking one opens it in a new window; `"open recent"
   = "cmd-shift-n"` left in config.toml binds the chooser to that key with no config error
+- open a README in Arkos: it renders; click a paragraph: it turns raw with the caret where you
+  clicked; type, wait a second: `git diff` shows the change and the tab's " •" goes; press Enter in
+  a list: the next bullet appears; tick a task checkbox: the file shows `[x]`
+- the "show raw" pill at the top right of the pane, or Cmd+Shift+M, shows the raw file and
+  back; the choice survives a relaunch; another markdown tab keeps its own mode
+- edit the file in another editor while a line is half typed: the banner offers Reload and
+  Keep mine; Cmd+S means Keep mine; with nothing unsaved the file simply reloads
+- a 5 MB markdown file opens and scrolls without stutter; typing in it keeps up; Reduce
+  Motion changes nothing here; a `.rs` file is still read-only; a file that is not UTF-8 opens
+  read-only with a banner
 - the title bar's right side shows a bell and a wrench (the doctor) and no text; with an
   update staged the bell wears a dot and its popover says "Update ready: X" with "Update now";
   after an update the bell says "Updated to X" once, gone after you open and close it; a
@@ -253,6 +263,33 @@ in as it opens, and Cmd+B slides the sidebar
 over 150 ms with the panes following. Something on its way out is only drawn: it takes no
 keys, focus or clicks.
 
+## Editing markdown
+
+A `.md` file opens as a document you can edit. Two modes: Rendered shows headings, lists, task
+lists, quotes, code blocks, links and images as they read; Raw shows the file's own text with
+Arkos's light markdown colouring (not a TextMate grammar, so a 5 MB file stays quick). The pill at
+the top right of the pane, or Cmd+Shift+M, switches between them, and each tab remembers its mode
+across a relaunch.
+
+In Rendered mode one block is active at a time. Click a paragraph, heading or list and that block
+turns into its raw text with the caret where you clicked; type and the file changes. Click
+another block, or press the arrows past the end of this one, and the active block moves. When the
+pane loses focus the active block renders again.
+
+Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
+file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
+them. A file with both kinds of line ending, or one that is not valid UTF-8, opens read-only with a banner
+saying so, since a save could not keep it as it was.
+
+If the file changes on disk while you have unsaved edits, a banner says "The file changed on disk"
+with Reload (take the disk's version) and Keep mine (your text wins and the next save overwrites
+the disk). Cmd+S means Keep mine. With nothing unsaved the file reloads on its own. A failed save
+shows its reason in a banner with Retry.
+
+Not editable yet: tables render read-only, and every other file type stays a read-only viewer.
+Images render when their path resolves, relative to the file or absolute; otherwise the alt text
+shows.
+
 ## Browser pane
 
 A browser tab is a placeholder in a pane with a real Chrome window sitting on top of it. Arkos
@@ -333,6 +370,15 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
+| Cmd+Shift+M | toggle markdown view: rendered or raw |
+| Cmd+S | save file (a markdown file also saves itself a second after you stop typing) |
+| Arrows | in a markdown file: move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select |
+| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward |
+| Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
+| Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
+| Tab, Shift+Tab | in a markdown list: indent or outdent the item |
+| Enter | in a markdown list: start the next item; on an empty item, end the list |
+| Escape | in a markdown file: leave the active block, or close find |
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
 | Cmd+N | new window: the project chooser in its own window (also the File menu's only item); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
 | Cmd+, | open config file |

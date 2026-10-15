@@ -943,7 +943,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
     let family = root.family();
-    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable) = {
+    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
@@ -954,11 +954,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         };
         // A markdown file shown read-only (`read_only` set) has no document: no pill, raw text.
         let editable = viewer::is_markdown(path) && v.doc.is_some() && v.read_only.is_none();
-        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable)
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only)
     };
     let rendered = editable && mode == ViewMode::Rendered;
     let dim = theme.chrome.text_dim.hsla();
     let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
+    let kind_is_text = matches!(kind, Kind::Text { .. });
     let body = match kind {
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, SharedString::from(chrome::UI_FONT), family.clone(), font_size, root.highlighter.clone(), cx);
@@ -980,7 +981,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 .size_full()
                 .flex()
                 .flex_col()
-                .children(plain.map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0)).child(why.banner())))
+                .children(plain.filter(|_| !has_doc).map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0)).child(why.banner())))
                 .child(div().flex_1().min_h_0().child(element))
         }
         Kind::Loading => notice("loading".into()),
@@ -988,6 +989,41 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         Kind::Binary => notice("a binary file; nothing to show".into()),
         Kind::Unreadable(e) => notice(format!("cannot read this file: {e}")),
     };
+    // The banners above a text body: the file changed under unsaved edits, a save failed, or the
+    // file is shown read-only. They share the plain-file banner's style; the buttons are text.
+    let button = |id: &'static str, label: &'static str, on_click: Box<dyn Fn(&mut viewer::Viewer, &mut Context<viewer::Viewer>)>| {
+        let v = viewer.clone();
+        div()
+            .id((id, viewer.entity_id()))
+            .text_color(theme.chrome.text.hsla())
+            .cursor_pointer()
+            .hover(|s| s.underline())
+            .child(label)
+            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
+    };
+    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0));
+    let mut banners: Vec<Div> = Vec::new();
+    if kind_is_text {
+        if conflict {
+            banners.push(
+                banner_row()
+                    .child("The file changed on disk")
+                    .child(button("viewer-conflict-reload", "Reload", Box::new(|v, cx| v.resolve_conflict(false, cx))))
+                    .child(button("viewer-conflict-keep", "Keep mine", Box::new(|v, cx| v.resolve_conflict(true, cx)))),
+            );
+        }
+        if let Some(text) = save_error {
+            banners.push(banner_row().child(text).child(button("viewer-save-retry", "Retry", Box::new(|v, cx| v.save(cx)))));
+        }
+        if let Some(why) = read_only {
+            let text = match why {
+                viewer::ReadOnlyWhy::NotUtf8 => "not UTF-8: shown read-only",
+                viewer::ReadOnlyWhy::MixedEndings => "mixed line endings: shown read-only",
+            };
+            banners.push(banner_row().child(text));
+        }
+    }
+    let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
     // The mode pill's top: where the find bar opens, below it when open.
     let pill_top = if find_open { 44.0 } else { 10.0 };
     // The inline diff's switch, at the top right where the find bar opens, below it when open; on
