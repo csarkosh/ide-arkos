@@ -27,6 +27,8 @@ const RELIST_AFTER_STOP: std::time::Duration = std::time::Duration::from_millis(
 const WIDTH: f32 = 560.0;
 const HEIGHT: f32 = 460.0;
 const TEXT: f32 = 13.0;
+/// The launch chooser's footer until the daemon's connection exists.
+pub const FOOTER_CONNECTING: &str = "connecting to the daemon\u{2026}";
 
 /// Whether this launch should ask for a folder: exactly `/` is what macOS gives an app opened
 /// from the Dock, Finder or Spotlight. A terminal launch keeps its working directory.
@@ -34,10 +36,11 @@ pub fn needs_chooser(cwd: &Path) -> bool {
     cwd == Path::new("/")
 }
 
-/// What a process opens at start. Either way it connects to the daemon first, before any window
-/// opens: a window the daemon relaunched after an update confirms it with that Hello, even while
-/// the chooser waits for a folder (the 2026-10-15 incident: a relaunch at `/` that waited
-/// silently in the chooser was rolled back).
+/// What a process opens at start. Either way it connects to the daemon at once, off the main
+/// thread and while the chooser opens, and says Hello as soon as the connection exists: a window
+/// the daemon relaunched after an update confirms it with that Hello, even while the chooser
+/// waits for a folder (the 2026-10-15 incident: a relaunch at `/` that waited silently in the
+/// chooser was rolled back).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plan {
     /// The launch chooser; the project window follows on the same connection.
@@ -46,7 +49,8 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// Always: the Hello is what tells the daemon a window came up.
+    /// Always: the Hello is what tells the daemon a window came up. The connect no longer blocks
+    /// the first window; the Hello still goes out the moment the connection exists.
     pub fn connects_first(self) -> bool {
         true
     }
@@ -168,9 +172,10 @@ pub fn spawn_window(folder: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// What the chooser does with the folder picked: at launch, open the project window here; from
-/// a running window, open it in a new process.
-pub type OnChoice = Box<dyn FnOnce(PathBuf, &mut App)>;
+/// What the chooser does with the folder picked: at launch, open the project window here on the
+/// link's connection (given with the folder); from a running window, which has no link, open it
+/// in a new process.
+pub type OnChoice = Box<dyn FnOnce(PathBuf, Option<Link>, &mut App)>;
 
 pub struct Chooser {
     recents: Vec<Recent>,
@@ -198,6 +203,13 @@ pub struct Chooser {
     stopping: HashSet<PathBuf>,
     /// A line under the list: what the daemon refused.
     notice: Option<String>,
+    /// The last line: the launch chooser's wait for the daemon.
+    footer: Option<String>,
+    /// At launch, until the link arrives: a choice waits for it, since the project window
+    /// needs the connection.
+    waiting: bool,
+    /// The folder chosen while `waiting`; it opens as the link arrives.
+    chosen: Option<PathBuf>,
 }
 
 impl Chooser {
@@ -246,6 +258,38 @@ impl Chooser {
             self.confirm = Some(folder);
         }
         cx.notify();
+    }
+
+    /// The launch chooser's connection, once it exists: the counts follow, and a folder chosen
+    /// meanwhile opens now.
+    pub fn attach_link(&mut self, link: Link, window: &mut Window, cx: &mut Context<Self>) {
+        self.waiting = false;
+        self.footer = None;
+        self.link = Some(link);
+        if let Some(folder) = self.chosen.take() {
+            // Not started: the receiver goes to the project window untouched.
+            self.choose(folder, window, cx);
+            return;
+        }
+        self.start_link(cx);
+        cx.notify();
+    }
+
+    pub fn set_footer(&mut self, text: Option<String>, cx: &mut Context<Self>) {
+        self.footer = text;
+        cx.notify();
+    }
+
+    /// The daemon's answers reach the chooser while it lives; the list is asked for now.
+    fn start_link(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = self.link.clone() else { return };
+        let weak = cx.weak_entity();
+        link.start(
+            Box::new(move |ev, cx| {
+                let _ = weak.update(cx, |chooser, cx| chooser.on_link(ev, cx));
+            }),
+            cx,
+        );
     }
 
     /// The daemon's answers, through the link.
@@ -304,6 +348,12 @@ impl Chooser {
     }
 
     fn choose(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // No connection yet: the latest choice opens once there is one.
+        if self.waiting {
+            self.chosen = Some(folder);
+            cx.notify();
+            return;
+        }
         // A kill still out would answer into the window's loop, which did not ask: a moment.
         if !self.stopping.is_empty() || self.link.as_ref().is_some_and(|l| l.kills_pending()) {
             self.notice = Some("a moment: sessions are still stopping".into());
@@ -311,9 +361,9 @@ impl Chooser {
             return;
         }
         // The link is the window's from here: the re-list timer finds none to ask.
-        self.link = None;
+        let link = self.link.take();
         if let Some(f) = self.on_choice.take() {
-            f(folder, cx);
+            f(folder, link, cx);
         }
         window.remove_window();
     }
@@ -474,6 +524,7 @@ impl Render for Chooser {
             );
         }
         let notice = self.notice.clone();
+        let footer = self.footer.clone();
         div()
             .id("chooser")
             .key_context("Chooser")
@@ -493,17 +544,21 @@ impl Render for Chooser {
             .when(self.recents.is_empty(), |d| d.child(div().px(px(10.0)).py(px(6.0)).text_color(dim).child("No recent folders")))
             .child(list)
             .children(notice.map(|n| div().flex_none().px(px(10.0)).text_color(dim).child(n)))
+            .children(footer.map(|n| div().flex_none().px(px(10.0)).text_color(dim).child(n)))
     }
 }
 
 /// Opens the chooser once the recent list is read (off the UI thread). `at_launch`: closing it
-/// with nothing chosen quits (the app's window-closed observer sees no windows left). `focus`
+/// with nothing chosen quits (the app's window-closed observer sees it gone). `focus`
 /// is whether the window takes the keyboard, as for the project window. `link` is the daemon
-/// line at launch, for the session counts; none from a running window. The task gives the
-/// window's handle once it is open.
+/// line at launch, for the session counts; none from a running window, and none at launch
+/// until the connection exists (`Chooser::attach_link`): the footer says it is coming. The task
+/// gives the window's handle once it is open.
 pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, theme: Theme, link: Option<Link>, on_choice: OnChoice) -> Task<Option<WindowHandle<Chooser>>> {
     let file = paths::recent_file();
-    let with_saved = link.is_some();
+    // The saved sessions serve the counts, which only the launch chooser shows, link or not yet.
+    let with_saved = at_launch;
+    let waiting = at_launch && link.is_none();
     cx.spawn(async move |cx| {
         let (recents, saved) = cx
             .background_executor()
@@ -541,18 +596,12 @@ pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, 
                     confirm: None,
                     stopping: HashSet::new(),
                     notice: None,
+                    footer: waiting.then(|| FOOTER_CONNECTING.to_string()),
+                    waiting,
+                    chosen: None,
                 });
                 window.focus(&view.read(cx).focus);
-                // The daemon's answers reach the chooser while it lives; the list is asked for now.
-                if let Some(link) = view.read(cx).link.clone() {
-                    let weak = view.downgrade();
-                    link.start(
-                        Box::new(move |ev, cx| {
-                            let _ = weak.update(cx, |chooser, cx| chooser.on_link(ev, cx));
-                        }),
-                        cx,
-                    );
-                }
+                view.update(cx, |chooser, cx| chooser.start_link(cx));
                 view
             })
         });
@@ -606,7 +655,7 @@ mod tests {
         for (cwd, relaunched, want) in cases {
             let plan = startup_plan(Path::new(cwd), relaunched);
             assert_eq!(plan, want, "{cwd} relaunched={relaunched}");
-            assert!(plan.connects_first(), "the chooser connects too, so a relaunch confirms at once");
+            assert!(plan.connects_first(), "the chooser connects too, off the main thread, so a relaunch confirms as soon as it can");
             assert_eq!(plan.focus(), !relaunched);
         }
         assert!(startup_plan(Path::new("/"), true).is_chooser());

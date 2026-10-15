@@ -1,8 +1,9 @@
-//! The chooser's line to the daemon while no project window exists. The process connects before
-//! any window opens (see `launch::Plan`); the link owns the connection's receiver meanwhile,
-//! lists the sessions for the chooser, stops a folder's, and hands the receiver back when a
-//! folder is chosen, with every message that was not its own (the Hello's answer among them)
-//! kept in order for the project window's connection loop.
+//! The chooser's line to the daemon while no project window exists. The process connects as the
+//! chooser opens (see `launch::Plan`), and the chooser gets the link once the connection exists
+//! (`Chooser::attach_link`). The link owns the connection's receiver from then on, lists the
+//! sessions for the chooser, stops a folder's, and hands the receiver back when a folder is
+//! chosen, with every message that was not its own (the Hello's answer among them) kept in order
+//! for the project window's connection loop.
 use crate::chooser_sessions::{LinkEvent, Tracker};
 use crate::client::Client;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
@@ -37,6 +38,11 @@ pub struct Link {
 impl Link {
     pub fn new(client: Arc<Client>, events: Receiver) -> Self {
         Self { client, tracker: Rc::default(), events: Rc::new(RefCell::new(Some(events))), running: Rc::default() }
+    }
+
+    /// The connection's client, for the project window that takes the link's place.
+    pub fn client(&self) -> Arc<Client> {
+        self.client.clone()
     }
 
     /// Reads the daemon's messages, delivering the chooser's answers to `on_event` and keeping

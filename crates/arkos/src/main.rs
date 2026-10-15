@@ -37,6 +37,7 @@ mod pulse;
 mod recent;
 mod scroll;
 mod split_view;
+mod startup;
 mod sessions;
 mod sidebar;
 mod terminal;
@@ -53,12 +54,14 @@ mod worktrees;
 use futures::channel::oneshot;
 use gpui::{
     div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
-    KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window, WindowBounds, WindowOptions,
+    KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Task, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use protocol::{Event, Request, SessionId, StagedUpdate};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use closed_stack::{Closed, ClosedStack, ClosedTab, CLOSE_GRACE, CLOSE_TICK, MAX_CLOSED};
@@ -2031,7 +2034,7 @@ impl Root {
         self.chooser_opening = true;
         // Weak: a chooser left open after this window closes keeps nothing of it alive.
         let weak = cx.entity().downgrade();
-        let open = Box::new(move |folder: PathBuf, cx: &mut App| {
+        let open = Box::new(move |folder: PathBuf, _link, cx: &mut App| {
             let _ = weak.update(cx, |root, cx| root.open_elsewhere(folder, cx));
         });
         let opening = launch::open_chooser(cx, false, true, self.config.clone(), (*self.theme).clone(), None, open);
@@ -2908,18 +2911,17 @@ fn main() {
     let plan = launch::startup_plan(&cwd, relaunched);
     let yes = |b: bool| if b { "yes" } else { "no" };
     eprintln!("{} starting in {} (relaunch: {}, chooser: {})", version_string(), cwd.display(), yes(relaunched), yes(plan.is_chooser()));
-    // Connected before any window opens, the chooser included: a window the daemon relaunched
-    // after an update confirms it with this Hello. A Dock launch has no folder yet, so its Hello
-    // names none (the daemon keeps what it had), and a second Hello names the folder once one is
-    // chosen. The chooser heartbeats meanwhile, so the watchdog leaves it alone.
+    // The connect runs off the main thread once the app runs, the chooser included: a window the
+    // daemon relaunched after an update confirms it with the Hello the connection sends at once.
+    // A Dock launch has no folder yet, so its Hello names none (the daemon keeps what it had),
+    // and a second Hello names the folder once one is chosen. The chooser heartbeats meanwhile,
+    // so the watchdog leaves it alone.
     debug_assert!(plan.connects_first());
-    let (client, events) = connect(&daemon_args);
-    let client = Arc::new(client);
     let save_queue = SharedSaveQueue::default();
 
     Application::new().run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
-        // once the window exists.
+        // and by the project window once it exists.
         cx.bind_keys(keymap::bindings_for(&config.keybindings));
         cx.set_menus(menus());
         let system_is_dark = theme::is_dark(cx.window_appearance());
@@ -2934,71 +2936,177 @@ fn main() {
                 (t, Some(banner))
             }
         };
-        let start = Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark };
-        if plan.is_chooser() {
-            // Until a folder is chosen, Quit and closing the chooser end the app; once the
-            // project window is open, its own handlers below take over. Neither says Goodbye:
-            // the chooser named no folder, so the daemon forgets none.
-            let opened = std::rc::Rc::new(std::cell::Cell::new(false));
-            // The chooser's heartbeat, until the project window's connection runs its own.
-            let waiting = opened.clone();
-            let beat_client = client.clone();
-            cx.spawn(async move |cx| connection::heartbeat(beat_client, move |_| !waiting.get(), cx).await).detach();
-            // A quit right after "Stop all" still delivers the kills: the writer gets a moment.
-            let quit_opened = opened.clone();
-            let quit_client = client.clone();
-            cx.on_action(move |_: &Quit, cx| {
-                if !quit_opened.get() {
-                    quit_client.wait_sent(Duration::from_millis(500));
-                    cx.quit();
-                }
-            });
-            let closed_opened = opened.clone();
-            let closed_client = client.clone();
-            cx.on_window_closed(move |cx| {
-                if !closed_opened.get() && cx.windows().is_empty() {
-                    closed_client.wait_sent(Duration::from_millis(500));
-                    cx.quit();
-                }
-            })
-            .detach();
-            let (config, theme) = (start.config.clone(), start.theme.clone());
-            // The chooser's line to the daemon: the session counts and "Stop all". It holds the
-            // connection's receiver until a folder is chosen, then the project window gets it.
-            let link = launch_link::Link::new(client.clone(), events);
-            let link_for_choice = link.clone();
-            launch::open_chooser(
-                cx,
-                true,
-                plan.focus(),
-                config,
-                theme,
-                Some(link),
-                Box::new(move |folder, cx| {
-                    // The project is the working directory, as for a terminal launch: the
-                    // daemon's Hello, its relaunches and the shells all start from it.
-                    if let Err(e) = std::env::set_current_dir(&folder) {
-                        eprintln!("arkos: cannot open {}: {e}", folder.display());
-                        cx.quit();
-                        return;
-                    }
-                    let project = std::env::current_dir().unwrap_or(folder);
-                    opened.set(true);
-                    // The same connection goes on: its second Hello names the project.
-                    client.hello();
-                    let finishing = link_for_choice.finish();
-                    cx.spawn(async move |cx| {
-                        let (backlog, events) = finishing.await;
-                        let _ = cx.update(|cx| open_project_window(project, (client, events, backlog), start, cx));
-                    })
-                    .detach();
-                }),
-            )
-            .detach();
+        let (look_config, look_theme) = (config.clone(), theme.clone());
+        let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark };
+        let launch = Rc::new(Launch {
+            plan,
+            cwd,
+            config: look_config,
+            theme: look_theme,
+            daemon_args,
+            start: RefCell::new(Some(start)),
+            chooser: Cell::new(None),
+            client: RefCell::new(None),
+            opened: Cell::new(false),
+            retry: RefCell::new(startup::Retry::default()),
+        });
+        // Until the project window opens, Quit ends the app (and the closes below); from then on
+        // its own handlers take over. None says Goodbye: no folder is open, so the daemon forgets
+        // none. A quit right after "Stop all" still delivers the kills: the writer gets a moment.
+        let quitting = launch.clone();
+        cx.on_action(move |_: &Quit, cx| {
+            if !quitting.opened.get() {
+                quitting.flush();
+                cx.quit();
+            }
+        });
+        // Closing the launch chooser quits, the failure window's red button too; "Try again"
+        // closes the failure window as its connect starts, which is no reason to quit.
+        let closing = launch.clone();
+        cx.on_window_closed(move |cx| {
+            let windows = cx.windows();
+            // Still opening when its handle is not known yet: open, as long as any window is.
+            let chooser_open = match closing.chooser.get() {
+                Some(h) => windows.iter().any(|w| w.window_id() == h.window_id()),
+                None => !windows.is_empty(),
+            };
+            if startup::quits_on_close(closing.opened.get(), plan.is_chooser(), windows.len(), chooser_open, closing.retry.borrow().running()) {
+                closing.flush();
+                cx.quit();
+            }
+        })
+        .detach();
+        if !plan.is_chooser() {
+            launch.connect(None, cx);
             return;
         }
-        open_project_window(cwd, (client, events, Vec::new()), start, cx);
+        let choosing = launch.clone();
+        let on_choice: launch::OnChoice = Box::new(move |folder, link, cx| {
+            // The project is the working directory, as for a terminal launch: the daemon's
+            // Hello, its relaunches and the shells all start from it.
+            if let Err(e) = std::env::set_current_dir(&folder) {
+                eprintln!("arkos: cannot open {}: {e}", folder.display());
+                cx.quit();
+                return;
+            }
+            let project = std::env::current_dir().unwrap_or(folder);
+            // The chooser holds a choice until its link arrives, so there is always one here.
+            let Some(link) = link else {
+                eprintln!("arkos: no daemon connection to open {}", project.display());
+                cx.quit();
+                return;
+            };
+            let Some(start) = choosing.start.borrow_mut().take() else { return };
+            choosing.opened.set(true);
+            // The same connection goes on: its second Hello names the project.
+            let client = link.client();
+            client.hello();
+            let finishing = link.finish();
+            cx.spawn(async move |cx| {
+                let (backlog, events) = finishing.await;
+                let _ = cx.update(|cx| open_project_window(project, (client, events, backlog), start, cx));
+            })
+            .detach();
+        });
+        // The chooser first, with no link yet: its counts and "Stop all" arrive with the
+        // connection.
+        let opening = launch::open_chooser(cx, true, plan.focus(), launch.config.clone(), launch.theme.clone(), None, on_choice);
+        launch.connect(Some(opening), cx);
     });
+}
+
+/// The start while no project window exists: the connect runs off the main thread, the launch
+/// chooser (when the plan has one) is open meanwhile, and a failed connect opens the failure
+/// window, whose "Try again" runs it again. The first connect and every retry share it.
+struct Launch {
+    plan: launch::Plan,
+    cwd: PathBuf,
+    /// The chooser's and the failure window's look; `start` has its own.
+    config: config::Config,
+    theme: theme::Theme,
+    daemon_args: Vec<String>,
+    /// Lives here while the connect runs; taken by whichever path opens the project window.
+    start: RefCell<Option<Startup>>,
+    /// The launch chooser, once it is open.
+    chooser: Cell<Option<WindowHandle<launch::Chooser>>>,
+    /// The connection once it exists, so a quit can flush what the chooser sent.
+    client: RefCell<Option<Arc<client::Client>>>,
+    /// The project window is open or opening: the start's handlers stand down.
+    opened: Cell<bool>,
+    retry: RefCell<startup::Retry>,
+}
+
+impl Launch {
+    /// Starts a connect, unless one runs. `opening` is the chooser still opening, on the first
+    /// connect: the connect is not held back for it, only its outcome.
+    fn connect(self: &Rc<Self>, opening: Option<Task<Option<WindowHandle<launch::Chooser>>>>, cx: &mut App) {
+        if !self.retry.borrow_mut().begin() {
+            return;
+        }
+        self.set_footer(Some(launch::FOOTER_CONNECTING), cx);
+        let connecting = startup::connect_in_background(self.daemon_args.clone(), cx);
+        let this = self.clone();
+        cx.spawn(async move |cx| {
+            if let Some(opening) = opening {
+                this.chooser.set(opening.await);
+            }
+            let result = connecting.await;
+            let _ = cx.update(|cx| {
+                this.retry.borrow_mut().end();
+                this.connected(result, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// A connect's outcome: the project window, or the chooser's link, or the failure window.
+    fn connected(self: &Rc<Self>, result: Result<startup::Connected, String>, cx: &mut App) {
+        let (client, events) = match result {
+            Ok(connected) => connected,
+            Err(e) => {
+                eprintln!("arkos: cannot reach arkosd (attempt {}): {e}", self.retry.borrow().attempts());
+                self.set_footer(None, cx);
+                let this = self.clone();
+                startup::open_failure_window(e, Rc::new(move |cx: &mut App| this.connect(None, cx)), &self.config, &self.theme, cx);
+                return;
+            }
+        };
+        let client = Arc::new(client);
+        *self.client.borrow_mut() = Some(client.clone());
+        if !self.plan.is_chooser() {
+            let start = self.start.borrow_mut().take();
+            if let Some(start) = start {
+                self.opened.set(true);
+                open_project_window(self.cwd.clone(), (client, events, Vec::new()), start, cx);
+            }
+            return;
+        }
+        // The chooser's Hello named this pid, so the watchdog expects heartbeats: they run until
+        // the project window's connection runs its own.
+        let (beat_client, waiting) = (client.clone(), self.clone());
+        cx.spawn(async move |cx| connection::heartbeat(beat_client, move |_| !waiting.opened.get(), cx).await).detach();
+        let link = launch_link::Link::new(client, events);
+        let attached = self.chooser.get().map(|h| h.update(cx, |chooser, window, cx| chooser.attach_link(link, window, cx)));
+        // The chooser is gone (its close quits, so only a race gets here): nothing is left to
+        // show.
+        if !matches!(attached, Some(Ok(()))) && !self.opened.get() {
+            self.flush();
+            cx.quit();
+        }
+    }
+
+    fn set_footer(&self, text: Option<&str>, cx: &mut App) {
+        if let Some(h) = self.chooser.get() {
+            let _ = h.update(cx, |chooser, _, cx| chooser.set_footer(text.map(str::to_string), cx));
+        }
+    }
+
+    /// Gives the writer a moment for what the chooser sent (a "Stop all"'s kills) before a quit.
+    fn flush(&self) {
+        if let Some(client) = self.client.borrow().as_ref() {
+            client.wait_sent(Duration::from_millis(500));
+        }
+    }
 }
 
 /// What `main` read before the app ran, for the project window.
@@ -3011,17 +3119,6 @@ struct Startup {
     theme: theme::Theme,
     theme_error: Option<String>,
     system_is_dark: bool,
-}
-
-/// Connects to the daemon, starting it when none answers. Without one there is nothing to show.
-fn connect(daemon_args: &[String]) -> (client::Client, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>) {
-    match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), daemon_args) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("arkos: cannot reach arkosd: {e:#}");
-            std::process::exit(1);
-        }
-    }
 }
 
 /// Opens the window on `project` and starts everything that serves it.
