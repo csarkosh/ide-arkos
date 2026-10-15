@@ -251,7 +251,6 @@ pub fn set_wheel_scroll_acceleration_at(path: &Path, enabled: bool) -> Result<()
 }
 
 /// Ok(Some(value)) when the key is a bool, Ok(None) when absent or the file is missing, Err("cannot read ..." or "cannot parse ...") otherwise.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn wheel_scroll_acceleration_at(path: &Path) -> Result<Option<bool>, String> {
     Ok(read_settings(path)?.and_then(|v| v.get("wheelScrollAccelerationEnabled").and_then(|b| b.as_bool())))
 }
@@ -259,7 +258,6 @@ pub fn wheel_scroll_acceleration_at(path: &Path) -> Result<Option<bool>, String>
 /// Whether every event in `hooks_json(exe)` has, in the file, a group whose commands equal ours for
 /// that event (so hooks installed from an old or moved binary count as missing, which is what an
 /// install would replace); false for a missing or unreadable file.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn hooks_installed_at(path: &Path, exe: &Path) -> bool {
     let Ok(Some(settings)) = read_settings(path) else { return false };
     let ours = hooks_json(exe);

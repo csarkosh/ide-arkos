@@ -11,6 +11,7 @@ mod connection;
 mod diff;
 mod dock;
 mod doctor;
+mod doctor_panel;
 mod drag;
 mod empty_pane;
 mod explorer;
