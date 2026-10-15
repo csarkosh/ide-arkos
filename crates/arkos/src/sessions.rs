@@ -6,6 +6,7 @@
 
 use crate::client::Client;
 use crate::terminal::Terminal;
+use crate::update_check::Answer;
 use crate::tree::{Tab, TabId, Tree};
 use gpui::{App, Entity};
 use protocol::ClaudeState;
@@ -92,7 +93,7 @@ pub enum Outcome {
     /// The daemon accepted a requested check: the window asks `status_after_check` shortly.
     CheckStarted,
     /// The answer to `status_after_check`: what the requested check left.
-    Checked { staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64> },
+    Checked(crate::update_check::Answer),
 }
 
 /// One launch step for one saved terminal tab.
@@ -286,8 +287,10 @@ impl SessionManager {
     }
 
     /// Asks what the daemon has staged after a check the user requested (`Outcome::Checked`).
-    pub fn status_after_check(&mut self) {
-        let id = self.transport.send(Request::UpdateStatus);
+    /// `detailed`: the daemon speaks `UPDATE_STATUS_DETAILED_FROM`, so the answer carries the
+    /// check's state.
+    pub fn status_after_check(&mut self, detailed: bool) {
+        let id = self.transport.send(if detailed { Request::UpdateStatusDetailed } else { Request::UpdateStatus });
         self.pending.insert(id, Pending::StatusAfterCheck);
     }
 
@@ -428,7 +431,14 @@ impl SessionManager {
         if let Response::UpdateStatus { staged, last_error, unreachable_for_secs } = &response {
             let (staged, last_error, unreachable_for_secs) = (staged.clone(), last_error.clone(), *unreachable_for_secs);
             if pending == Some(Pending::StatusAfterCheck) {
-                return Outcome::Checked { staged, last_error, unreachable_for_secs };
+                return Outcome::Checked(Answer { staged, last_error, unreachable_for_secs, checking: None, last_check_unix: None, transient_error: None });
+            }
+            return Outcome::UpdateStatus { staged, last_error, unreachable_for_secs };
+        }
+        if let Response::UpdateStatusDetailed { staged, last_error, unreachable_for_secs, checking, last_check_unix, transient_error } = &response {
+            let (staged, last_error, unreachable_for_secs) = (staged.clone(), last_error.clone(), *unreachable_for_secs);
+            if pending == Some(Pending::StatusAfterCheck) {
+                return Outcome::Checked(Answer { staged, last_error, unreachable_for_secs, checking: Some(*checking), last_check_unix: *last_check_unix, transient_error: transient_error.clone() });
             }
             return Outcome::UpdateStatus { staged, last_error, unreachable_for_secs };
         }
@@ -1121,11 +1131,24 @@ mod tests {
         m.check_for_updates();
         assert_eq!(m.handle_response(1, Response::Ok), Outcome::CheckStarted);
         // The window's timer fires a moment later and re-asks.
-        m.status_after_check();
+        m.status_after_check(false);
         assert!(matches!(rec.requests()[1], Request::UpdateStatus));
-        assert_eq!(m.handle_response(2, Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: None }), Outcome::Checked { staged: None, last_error: None, unreachable_for_secs: None });
+        assert_eq!(m.handle_response(2, Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: None }), Outcome::Checked(Answer { staged: None, last_error: None, unreachable_for_secs: None, checking: None, last_check_unix: None, transient_error: None }));
         // A plain status request still answers as before.
         m.update_status();
         assert_eq!(m.handle_response(3, Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(90_000) }), Outcome::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(90_000) });
+    }
+
+    #[test]
+    fn a_detailed_status_after_a_check_is_a_checked_outcome_with_its_state() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec.clone(), None, PathBuf::from("/p"));
+        m.status_after_check(true);
+        assert!(matches!(rec.requests()[0], Request::UpdateStatusDetailed));
+        let r = Response::UpdateStatusDetailed { staged: None, last_error: None, unreachable_for_secs: Some(0), checking: true, last_check_unix: Some(7), transient_error: Some("offline".into()) };
+        assert_eq!(m.handle_response(1, r.clone()), Outcome::Checked(Answer { staged: None, last_error: None, unreachable_for_secs: Some(0), checking: Some(true), last_check_unix: Some(7), transient_error: Some("offline".into()) }));
+        // A plain detailed status is the badge's three fields.
+        m.update_status();
+        assert_eq!(m.handle_response(2, r), Outcome::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(0) });
     }
 }

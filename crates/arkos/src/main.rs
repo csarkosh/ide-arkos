@@ -44,6 +44,7 @@ mod terminal_element;
 mod theme;
 mod tree;
 mod update;
+mod update_check;
 mod viewer;
 mod viewer_element;
 mod workspace;
@@ -265,6 +266,8 @@ pub struct Root {
     pub auto_apply_timer: bool,
     /// "updates unreachable for N days" (`update::unreachable_text`) from the last `UpdateStatus`.
     pub update_unreachable: Option<String>,
+    /// The poll behind a check the user asked for; None when none runs.
+    pub check_poll: Option<update_check::Poll>,
     /// The daemon's `last_error` last shown as a notice, so each one is shown once.
     pub update_error_noticed: Option<String>,
     /// The native folder picker is up: Cmd+O again does not open a second one.
@@ -522,6 +525,7 @@ impl Root {
             chooser: None,
             chooser_opening: false,
             update_unreachable: None,
+            check_poll: None,
             last_input: Instant::now(),
             updating: None,
             browser_rects: HashMap::new(),
@@ -2171,7 +2175,7 @@ impl Root {
 
     /// Shows the staged release in the badge when there is one, else what the launch path holds.
     pub fn refresh_update_badge(&mut self, cx: &mut Context<Self>) {
-        self.update_ready = self.staged.as_ref().map(update::status_text_for).or_else(|| self.update_ready_on_disk.clone());
+        self.update_ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref());
         cx.notify();
     }
 
@@ -2233,6 +2237,19 @@ impl Root {
         .detach();
     }
 
+    /// Asks the daemon what the requested check left, shortly: every `POLL_EVERY_MS` for a daemon
+    /// that reports the check's state, once after `CHECK_RESULT_AFTER` for a protocol 4 one.
+    fn poll_check_after(&mut self, cx: &mut Context<Self>) {
+        let detailed = self.daemon_protocol_max >= protocol::UPDATE_STATUS_DETAILED_FROM;
+        let delay = if detailed { Duration::from_millis(update_check::POLL_EVERY_MS) } else { CHECK_RESULT_AFTER };
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = root.update(cx, |root, _| root.sessions.status_after_check(detailed));
+        })
+        .detach();
+    }
+
     /// What the daemon's `UpdateStatus` says, into the badge; its `last_error` is shown once as a
     /// notice (again whenever the user asked for the check: `requested`).
     fn note_update_status(&mut self, staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64>, requested: bool, cx: &mut Context<Self>) {
@@ -2272,6 +2289,8 @@ impl Root {
             if let Event::UpdateStaged { update } = ev {
                 self.staged = Some(update.clone());
                 self.update_error = None;
+                // The manifest was reached.
+                self.update_unreachable = None;
                 self.refresh_update_badge(cx);
                 self.start_idle_timer(cx);
             }
@@ -2351,6 +2370,7 @@ impl Root {
         // the dead client: the reconnect attaches the session again.
         self.connection_generation += 1;
         self.sessions.disconnect();
+        self.check_poll = None;
         // The relaunch request went with the connection, unanswered: keep the window.
         if self.updating == Some(UpdateStage::Relaunching) {
             self.updating = None;
@@ -2396,19 +2416,30 @@ impl Root {
             }
             Outcome::UpdateStatus { staged, last_error, unreachable_for_secs } => self.note_update_status(staged, last_error, unreachable_for_secs, false, cx),
             Outcome::CheckStarted => {
-                // The check runs on the daemon's poll thread; its result is there a moment later.
-                let root = cx.entity();
-                cx.spawn(async move |_, cx| {
-                    cx.background_executor().timer(CHECK_RESULT_AFTER).await;
-                    let _ = root.update(cx, |root, _| root.sessions.status_after_check());
-                })
-                .detach();
+                self.check_poll = Some(update_check::Poll::new(recent::now_unix()));
+                self.poll_check_after(cx);
             }
-            Outcome::Checked { staged, last_error, unreachable_for_secs } => {
-                let nothing = staged.is_none() && last_error.is_none() && unreachable_for_secs.is_none_or(|s| s == 0);
-                self.note_update_status(staged, last_error, unreachable_for_secs, true, cx);
-                if nothing {
-                    self.show_notice("no update".into(), cx);
+            Outcome::Checked(answer) => {
+                self.note_update_status(answer.staged.clone(), answer.last_error.clone(), answer.unreachable_for_secs, true, cx);
+                match self.check_poll.as_mut().map(|p| p.answer(&answer)) {
+                    Some(None) => self.poll_check_after(cx),
+                    Some(Some(verdict)) => {
+                        self.check_poll = None;
+                        use update_check::Verdict;
+                        let notice = match verdict {
+                            Verdict::Ready(v) => Some(format!("update ready: {v}")),
+                            // `note_update_status` already noticed the error, as requested.
+                            Verdict::Failed(_) => None,
+                            Verdict::Unreachable(e) => Some(format!("updates unreachable: {e}")),
+                            Verdict::StillRunning => Some("the update check is still running".into()),
+                            Verdict::NotReachedYet => Some("the daemon has not reached the update server yet".into()),
+                            Verdict::NoUpdate => Some("no update".into()),
+                        };
+                        if let Some(n) = notice {
+                            self.show_notice(n, cx);
+                        }
+                    }
+                    None => {}
                 }
             }
             Outcome::Applied => {
@@ -2682,12 +2713,7 @@ impl Render for Root {
         }
         let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
         // A failed update says so until a release is staged again or "Retry update" runs.
-        let update_text = match (&self.staged, &self.update_error, &self.update_unreachable) {
-            (None, Some(_), _) => Some("update failed"),
-            // Nothing staged and nothing failed, but the daemon has not reached GitHub for a day.
-            (None, None, Some(u)) => Some(u.as_str()),
-            _ => self.update_ready.as_deref(),
-        };
+        let update_text = update_check::title_text(self.update_ready.as_deref(), self.update_error.as_deref(), self.update_unreachable.as_deref());
         let items = chrome::status_items(update_text, (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
         let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme, Some(Box::new(cx.listener(|root, _, _, cx| root.update_clicked(cx)))));
         let family = self.family();
