@@ -211,25 +211,76 @@ pub fn claude_settings_path() -> PathBuf {
     }
 }
 
-/// Merges the hook entries into Claude Code's settings file, writing `<file>.bak` first when
-/// the file exists. A file that does not parse is left untouched, with the error returned.
-pub fn install_hooks_at(path: &Path, exe: &Path) -> Result<(PathBuf, usize, usize), String> {
-    let existing = match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("cannot parse {}: {e}; fix it by hand first", path.display()))?;
-            std::fs::write(path.with_extension("json.bak"), &text).map_err(|e| format!("cannot write the backup: {e}"))?;
+/// Reads and parses Claude Code's settings file. A missing file is `Ok(None)`.
+fn read_settings(path: &Path) -> Result<Option<serde_json::Value>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("cannot parse {}: {e}; fix it by hand first", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// Reads Claude Code's settings file (a missing one is `{}`), backs it up to `settings.json.bak`
+/// when it exists, lets `edit` change the value, and writes it back pretty with a trailing
+/// newline. A file that does not parse is left untouched (no backup either) and the error returned.
+pub fn edit_settings(path: &Path, edit: impl FnOnce(serde_json::Value) -> serde_json::Value) -> Result<(), String> {
+    let existing = match read_settings(path)? {
+        Some(v) => {
+            std::fs::copy(path, path.with_extension("json.bak")).map_err(|e| format!("cannot write the backup: {e}"))?;
             v
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+        None => serde_json::json!({}),
     };
-    let (merged, added, replaced) = merge_hooks(existing, &hooks_json(exe));
+    let edited = edit(existing);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
-    let text = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())? + "\n";
-    std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    Ok((path.to_path_buf(), added, replaced))
+    let text = serde_json::to_string_pretty(&edited).map_err(|e| e.to_string())? + "\n";
+    std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6c on.
+pub fn set_wheel_scroll_acceleration_at(path: &Path, enabled: bool) -> Result<(), String> {
+    edit_settings(path, |mut v| {
+        if !v.is_object() {
+            v = serde_json::json!({});
+        }
+        v["wheelScrollAccelerationEnabled"] = serde_json::json!(enabled);
+        v
+    })
+}
+
+/// Ok(Some(value)) when the key is a bool, Ok(None) when absent or the file is missing, Err("cannot read ..." or "cannot parse ...") otherwise.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+pub fn wheel_scroll_acceleration_at(path: &Path) -> Result<Option<bool>, String> {
+    Ok(read_settings(path)?.and_then(|v| v.get("wheelScrollAccelerationEnabled").and_then(|b| b.as_bool())))
+}
+
+/// Whether every event in `hooks_json(exe)` has, in the file, a group whose commands equal ours for
+/// that event (so hooks installed from an old or moved binary count as missing, which is what an
+/// install would replace); false for a missing or unreadable file.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+pub fn hooks_installed_at(path: &Path, exe: &Path) -> bool {
+    let Ok(Some(settings)) = read_settings(path) else { return false };
+    let ours = hooks_json(exe);
+    ours["hooks"].as_object().is_some_and(|events| {
+        events.iter().all(|(event, our_groups)| {
+            let wanted: Vec<&serde_json::Value> = our_groups.as_array().into_iter().flatten().map(|g| &g["hooks"]).collect();
+            settings["hooks"][event].as_array().is_some_and(|groups| wanted.iter().all(|w| groups.iter().any(|g| g.get("hooks") == Some(*w))))
+        })
+    })
+}
+
+/// Merges the hook entries into Claude Code's settings file, writing `<file>.bak` first when
+/// the file exists. A file that does not parse is left untouched, with the error returned.
+pub fn install_hooks_at(path: &Path, exe: &Path) -> Result<(PathBuf, usize, usize), String> {
+    let mut counts = (0, 0);
+    edit_settings(path, |existing| {
+        let (merged, added, replaced) = merge_hooks(existing, &hooks_json(exe));
+        counts = (added, replaced);
+        merged
+    })?;
+    Ok((path.to_path_buf(), counts.0, counts.1))
 }
 
 pub fn install_hooks(exe: &Path) -> Result<(PathBuf, usize, usize), String> {
@@ -444,5 +495,54 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         assert!(install_hooks_at(&path, Path::new("/x/arkos")).unwrap_err().contains("cannot parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn the_scroll_key_is_set_and_everything_else_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert_eq!(wheel_scroll_acceleration_at(&path), Ok(None), "no file");
+        set_wheel_scroll_acceleration_at(&path, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\n  \"wheelScrollAccelerationEnabled\": false\n}\n");
+        assert!(!path.with_extension("json.bak").exists(), "nothing to back up the first time");
+        std::fs::write(&path, r#"{"theme":"dark","hooks":{"Stop":[{"hooks":[]}]},"wheelScrollAccelerationEnabled":true}"#).unwrap();
+        assert_eq!(wheel_scroll_acceleration_at(&path), Ok(Some(true)));
+        set_wheel_scroll_acceleration_at(&path, false).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["wheelScrollAccelerationEnabled"], false);
+        assert_eq!(v["theme"], "dark");
+        assert!(v["hooks"]["Stop"].is_array(), "other keys and nesting kept");
+        assert!(path.with_extension("json.bak").exists());
+        assert_eq!(wheel_scroll_acceleration_at(&path), Ok(Some(false)));
+    }
+
+    #[test]
+    fn an_unparseable_settings_file_is_reported_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "\u{feff}{ \"a\": 1 } // comment").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let err = set_wheel_scroll_acceleration_at(&path, false).unwrap_err();
+        assert!(err.starts_with(&format!("cannot parse {}", path.display())) && err.ends_with("; fix it by hand first"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!path.with_extension("json.bak").exists(), "no backup of a file we did not change");
+        assert!(wheel_scroll_acceleration_at(&path).is_err());
+        assert!(!hooks_installed_at(&path, Path::new("/usr/local/bin/arkos")));
+    }
+
+    #[test]
+    fn hooks_count_as_installed_only_when_every_event_has_ours_from_this_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
+        assert!(!hooks_installed_at(&path, exe), "no file");
+        install_hooks_at(&path, Path::new("/old/place/arkos")).unwrap();
+        assert!(!hooks_installed_at(&path, exe), "hooks from another binary are what an install would replace");
+        install_hooks_at(&path, exe).unwrap();
+        assert!(hooks_installed_at(&path, exe));
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["hooks"].as_object_mut().unwrap().remove("Stop");
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert!(!hooks_installed_at(&path, exe), "one event's group removed by hand");
     }
 }
