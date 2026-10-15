@@ -1432,6 +1432,15 @@ impl Root {
         }
     }
 
+    /// A click on the title bar's "update ready" badge: apply the staged release, else update from disk.
+    pub fn update_clicked(&mut self, cx: &mut Context<Self>) {
+        if self.staged.is_some() {
+            self.apply_staged(cx);
+        } else {
+            self.update_now(cx);
+        }
+    }
+
     /// The palette's "Update now": the daemon first when its binary changed, then this window.
     pub fn update_now(&mut self, cx: &mut Context<Self>) {
         if self.updating.is_some() {
@@ -1992,7 +2001,7 @@ impl Render for Root {
             _ => self.update_ready.as_deref(),
         };
         let items = chrome::status_items(update_text, (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
-        let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme);
+        let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme, Some(Box::new(cx.listener(|root, _, _, cx| root.update_clicked(cx)))));
         let family = self.family();
         let root_div = div()
             .relative()

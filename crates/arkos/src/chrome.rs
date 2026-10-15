@@ -5,7 +5,7 @@
 //! goes to the panes.
 
 use crate::theme::Theme;
-use gpui::{div, prelude::*, px, Div, FontWeight, MouseButton, MouseDownEvent, SharedString};
+use gpui::{div, prelude::*, px, App, ClickEvent, Div, FontWeight, MouseButton, MouseDownEvent, SharedString, Window};
 use std::path::Path;
 
 /// The native macOS title bar's height; the bar fills exactly that space.
@@ -32,10 +32,35 @@ pub fn status_items(update: Option<&str>, daemon: Option<&str>, waiting: usize) 
     v
 }
 
+/// Whether a status item is the clickable "update ready" badge.
+pub fn is_update_item(text: &str) -> bool {
+    text.starts_with("update ready")
+}
+
+/// A click handler for the update badge.
+pub type UpdateClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
 /// The bar. Dragging it moves the window and a double click zooms it, as the native bar did.
 /// In full screen the traffic lights are gone, so the text starts at the edge.
-pub fn title_bar(project: &Path, items: Vec<String>, fullscreen: bool, theme: &Theme) -> Div {
+/// The "update ready" item runs `on_update` when clicked.
+pub fn title_bar(project: &Path, items: Vec<String>, fullscreen: bool, theme: &Theme, on_update: Option<UpdateClick>) -> Div {
     let c = &theme.chrome;
+    let hover = c.text.hsla();
+    let mut on_update = on_update;
+    let items: Vec<gpui::AnyElement> = items
+        .into_iter()
+        .map(|text| match on_update.take_if(|_| is_update_item(&text)) {
+            Some(f) => div()
+                .id("update-ready")
+                .cursor_pointer()
+                .hover(move |s| s.text_color(hover).underline())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(f)
+                .child(text)
+                .into_any_element(),
+            None => div().child(text).into_any_element(),
+        })
+        .collect();
     div()
         .h(px(TITLE_BAR_H))
         .w_full()
@@ -77,6 +102,13 @@ mod tests {
     #[test]
     fn the_bar_says_nothing_while_all_is_well() {
         assert!(status_items(None, None, 0).is_empty());
+    }
+
+    #[test]
+    fn only_the_ready_item_is_the_update_badge() {
+        assert!(is_update_item("update ready: 0.2.0"));
+        assert!(!is_update_item("update failed"));
+        assert!(!is_update_item("2 waiting"));
     }
 
     #[test]

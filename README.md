@@ -324,6 +324,8 @@ and reads the previous handover format, so updating from the update-in-place bui
 "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
 daemon knows nothing of handovers), which ends every session.
 
+Click the badge to update at once.
+
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
 shows the error. If the window loses the daemon for ten seconds, it starts a new one and every
 tab becomes a fresh shell with the "(restarted)" note.
