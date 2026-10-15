@@ -6,6 +6,7 @@ mod ring;
 mod server;
 mod session;
 mod upgrade;
+mod updates;
 mod watchdog;
 
 use std::path::PathBuf;
