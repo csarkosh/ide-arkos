@@ -1,0 +1,24 @@
+[package]
+name = "arkos-shoot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Takes Arkos IDE's screenshots: a dev build on a demo project with real Claude Code sessions, driven through the daemon's protocol."
+
+[[bin]]
+name = "arkos-shoot"
+path = "src/main.rs"
+
+[dependencies]
+protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+toml = "0.8"
+# Bringing the shoot's window to the front: a process started from a shell opens behind the app in use.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSScreen"] }
+
+[dev-dependencies]
+tempfile.workspace = true

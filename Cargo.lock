@@ -143,6 +143,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "arkos-shoot"
+version = "0.2.18"
+dependencies = [
+ "anyhow",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "arkosd"
 version = "0.2.18"
 dependencies = [

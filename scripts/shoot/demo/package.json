@@ -1,0 +1,11 @@
+{
+  "name": "lantern",
+  "version": "0.3.1",
+  "description": "A small link shortener: one process, one JSON file, no dependencies.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

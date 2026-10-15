@@ -537,6 +537,7 @@ a dev build.
 ```bash
 cargo build --release
 ./target/release/arkos        # starts arkosd on demand, opens one terminal in the current folder
+./target/release/arkos ~/Projects/x   # the same, on that folder
 ```
 
 This runs a build from source. The released app is `/Applications/Arkos IDE.app`, installed by
@@ -580,6 +581,21 @@ new one) and ends every session, so do it when nothing important is running.
 cargo test
 sh packaging/test.sh   # a dev build bundled, a manifest signed with a throwaway key, verified
 ```
+
+## Screenshots
+
+The pictures in `docs/images/` (this README's and csarko.sh's) are taken of the real app by
+`scripts/shoot.sh`: a dev build opens a demo project (`scripts/shoot/demo`, a small link
+shortener) with the layout in `scripts/shoot/story.toml`, real Claude Code sessions get the
+prompts written there, and each shot is captured with `screencapture` once the tabs show the
+states it asks for. Nothing in them is staged afterwards; change the storyboard to change the
+pictures. The shoot runs a second arkosd of its own (`ARKOS_APP_SUPPORT` names its state
+folder, under `~/Library/Caches/arkos-shoot`), so the Arkos in use is untouched. It spends a
+few minutes of your Claude Code account, needs the Screen Recording permission for the app it
+runs from, and wants your hands off the keyboard and mouse while its window is up, with one
+exception: the first time, the browser pane asks for the Accessibility permission for the
+shoot's own copy of the app (`~/Library/Caches/arkos-shoot/app`); grant it, and the docked
+Chrome window is in the pictures from then on.
 
 ## If you get headaches
 

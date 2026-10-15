@@ -1,0 +1,71 @@
+# The storyboard for Arkos IDE's screenshots (README, csarko.sh). `scripts/shoot.sh` runs it:
+# a dev build opens the demo project below with this layout, real Claude Code sessions get the
+# prompts, and each [[shot]] is captured once the tabs are in the states it asks for.
+# Nothing here is staged after the fact: the prompts run for real, so the output differs from
+# one run to the next.
+
+[demo]
+# A copy of the fixture becomes the project, made a git repository with a worktree per name;
+# `public/` is served on the port for the browser pane.
+name = "lantern"
+fixture = "scripts/shoot/demo"
+port = 4173
+worktrees = ["rate-limit"]
+# dir = "~/Projects/lantern"   # the title bar shows the path; the default is under ~/Library/Caches
+
+# A window that would run under the Dock or the menu bar is made smaller to clear them.
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar_width = 240
+expanded = ["src"]
+
+# One [[pane]] per tab. `claude` runs Claude Code with that prompt, `run` a plain command,
+# `browser` waits for the page in a Chrome window. `cwd` names a worktree; otherwise the demo.
+[[pane]]
+name = "rate limit"
+cwd = "rate-limit"
+claude = "Add rate limiting to POST /links in src/server.js: 20 requests a minute per client address, answered 429 with a Retry-After header. Put the limiter in src/limiter.js with its own tests in test/limiter.test.js, then run npm test."
+
+[[pane]]
+name = "durations"
+claude = "Add tests for parseDuration in src/time.js to test/time.test.js: 30s, 5m, 2h, 1h30m, an empty string and junk. Run them."
+
+[[pane]]
+name = "shell"
+run = "npm test"
+
+[[pane]]
+name = "site"
+browser = "http://localhost:4173/"
+
+# The panes: `horizontal` side by side, `vertical` stacked, `ratio` the first one's share.
+[layout]
+split = "horizontal"
+ratio = 0.6
+first = { tabs = ["rate limit", "durations"] }
+second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second = { tabs = ["shell"] } }
+
+# `wait` names the Claude Code state each tab must show (working, waiting, idle); `chrome`
+# opens the browser pane's page while a session works, which is when Arkos docks it.
+[[shot]]
+name = "hero-dark"
+theme = "dark"
+wait = { "rate limit" = "working", durations = "waiting" }
+timeout_secs = 300
+chrome = true
+
+[[shot.crop]]
+name = "tabs"
+rect = [0.0, 0.0, 0.6, 0.12]
+
+[[shot.crop]]
+name = "sidebar"
+rect = [0.0, 0.0, 0.18, 0.7]
+
+[[shot]]
+name = "hero-light"
+theme = "light"
+wait = { "rate limit" = "working" }
+timeout_secs = 60

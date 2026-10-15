@@ -1,0 +1,675 @@
+//! `arkos-shoot`: Arkos IDE's screenshots, taken of the real thing. It copies a demo project,
+//! starts a second arkosd of its own (its state under `~/Library/Caches/arkos-shoot`, so the
+//! Arkos in use is untouched), opens a dev-build window on the demo with the storyboard's
+//! layout, types `claude` and a prompt into each pane, waits for the tab states the shot asks
+//! for, and captures the window with `screencapture`. `scripts/shoot.sh` builds and runs it;
+//! `scripts/shoot/story.toml` is the storyboard.
+mod daemon;
+mod story;
+
+use anyhow::{bail, Context, Result};
+use daemon::{state_name, Daemon};
+use protocol::{ClaudeState, SessionId};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+use story::{Shot, Story};
+
+const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>]
+       arkos-shoot clean";
+
+/// Where the shoot keeps everything: the daemon's state (socket, sessions, workspaces, logs),
+/// the window's config, and the demo project.
+struct Dirs {
+    cache: PathBuf,
+    state: PathBuf,
+    config_home: PathBuf,
+}
+
+impl Dirs {
+    fn new() -> Result<Dirs> {
+        let home = PathBuf::from(std::env::var("HOME").context("HOME")?);
+        let cache = home.join("Library/Caches/arkos-shoot");
+        Ok(Dirs { state: cache.join("state"), config_home: cache.join("config"), cache })
+    }
+
+    fn config_file(&self) -> PathBuf {
+        self.config_home.join("arkos/config.toml")
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.state.join("arkosd.sock")
+    }
+}
+
+struct Opts {
+    story: PathBuf,
+    out: PathBuf,
+    bin: PathBuf,
+    /// The app bundle to start through Launch Services (`open -a`, which is what lets the
+    /// window come to the front) instead of the one made from the binaries in `bin`.
+    app: Option<PathBuf>,
+}
+
+fn parse_opts(args: &[String]) -> Result<Opts> {
+    let mut opts = Opts { story: "scripts/shoot/story.toml".into(), out: "docs/images".into(), bin: "target/debug".into(), app: None };
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let value = || it.clone().next().cloned().with_context(|| format!("{a} needs a value"));
+        match a.as_str() {
+            "--story" => opts.story = value()?.into(),
+            "--out" => opts.out = value()?.into(),
+            "--bin" => opts.bin = value()?.into(),
+            "--app" => opts.app = Some(value()?.into()),
+            other => bail!("unknown argument {other}\n{USAGE}"),
+        }
+        it.next();
+    }
+    Ok(opts)
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.first().map(String::as_str) {
+        Some("run") => parse_opts(&args[1..]).and_then(run),
+        Some("clean") => Dirs::new().and_then(|d| clean(&d)),
+        _ => {
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(e) = result {
+        eprintln!("arkos-shoot: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn say(msg: &str) {
+    eprintln!("arkos-shoot: {msg}");
+}
+
+/// What the run started and must end, whatever happens on the way.
+#[derive(Default)]
+struct Running {
+    daemon: Option<Child>,
+    window_pid: Option<u32>,
+    site: Option<Child>,
+    client: Option<Daemon>,
+    sessions: Vec<SessionId>,
+    chrome_url: Option<String>,
+}
+
+fn run(opts: Opts) -> Result<()> {
+    let dirs = Dirs::new()?;
+    let story_path = opts.story.canonicalize().with_context(|| format!("story {}", opts.story.display()))?;
+    let story = Story::parse(&std::fs::read_to_string(&story_path)?)?;
+    // scripts/shoot/story.toml: the repository is two folders up.
+    let repo = story_path.parent().and_then(Path::parent).and_then(Path::parent).context("the story's repository")?.to_path_buf();
+    let bin = opts.bin.canonicalize().with_context(|| format!("binaries in {}", opts.bin.display()))?;
+    for name in ["arkos", "arkosd"] {
+        if !bin.join(name).is_file() {
+            bail!("{} is missing; build it first (scripts/shoot.sh does)", bin.join(name).display());
+        }
+    }
+    std::fs::create_dir_all(&opts.out)?;
+    let out = opts.out.canonicalize()?;
+    clean(&dirs)?;
+    std::fs::create_dir_all(&dirs.state)?;
+    std::fs::create_dir_all(dirs.config_home.join("arkos"))?;
+
+    let app = match &opts.app {
+        Some(a) => a.canonicalize().with_context(|| format!("app bundle {}", a.display()))?,
+        None => make_bundle(&repo, &bin, &dirs.cache.join("app"))?,
+    };
+    let mut running = Running::default();
+    let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, &mut running);
+    stop(&mut running, &dirs);
+    result
+}
+
+fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs, out: &Path, running: &mut Running) -> Result<()> {
+    // 1. The demo project, fresh.
+    let demo = match &story.demo.dir {
+        Some(d) => PathBuf::from(expand_home(d)),
+        None => dirs.cache.join(&story.demo.name),
+    };
+    let worktrees = prepare_demo(&repo.join(&story.demo.fixture), &demo, story, &bin.join("arkos"))?;
+    let demo = demo.canonicalize()?;
+    say(&format!("demo project at {}", demo.display()));
+
+    // 2. Its site, for the browser pane.
+    let site = demo.join(&story.demo.site);
+    if site.is_dir() {
+        running.site = Some(
+            Command::new("python3")
+                .args(["-m", "http.server", &story.demo.port.to_string(), "--bind", "127.0.0.1", "--directory"])
+                .arg(&site)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("python3 -m http.server")?,
+        );
+    }
+
+    // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
+    //    no login item and no update checks.
+    write_config(&dirs.config_file(), story, &story.shots[0].theme)?;
+
+    // 4. The shoot's own daemon.
+    let log = std::fs::File::create(dirs.state.join("arkosd.log"))?;
+    let daemon = Command::new(bin.join("arkosd"))
+        .arg("--socket")
+        .arg(dirs.socket())
+        .args(["--check-every-secs", "0"])
+        .env("ARKOS_APP_SUPPORT", &dirs.state)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        .spawn()
+        .context("start arkosd")?;
+    std::fs::write(dirs.state.join("daemon.pid"), daemon.id().to_string())?;
+    running.daemon = Some(daemon);
+    let mut client = wait_for_daemon(&dirs.socket())?;
+    say(&format!("daemon {} up", client.hello()?));
+
+    // 5. A shell per terminal pane, before the window exists, so the layout can name them.
+    let mut sessions = BTreeMap::new();
+    for pane in story.panes.iter().filter(|p| !p.is_browser()) {
+        let cwd = match &pane.cwd {
+            Some(w) => worktrees[w].clone(),
+            None => demo.clone(),
+        };
+        let id = client.create(&cwd)?;
+        running.sessions.push(id);
+        sessions.insert(pane.name.clone(), id.0);
+    }
+    running.client = Some(client);
+    let client = running.client.as_mut().expect("set above");
+
+    // 6. The workspace file the window opens with. The window centres itself on the display
+    //    (the file names no display it knows); a frame that would run under the Dock or the menu
+    //    bar is narrowed or shortened first, since the Dock draws over any window.
+    let screen = Screen::main().unwrap_or(Screen { w: 1470.0, h: 956.0, left: 0.0, top: 38.0, right: 1470.0, bottom: 956.0 });
+    let (w, h) = screen.fit_centred(story.window.width, story.window.height);
+    if (w, h) != (story.window.width, story.window.height) {
+        say(&format!("window {}x{} would run under the Dock or the menu bar; using {w}x{h}", story.window.width, story.window.height));
+    }
+    let mut frame = story::centred(w, h, screen.w, screen.h, screen.top);
+    let ws_file = story::workspace_file(&dirs.state.join("workspaces"), &demo);
+    std::fs::create_dir_all(ws_file.parent().expect("workspaces dir"))?;
+    std::fs::write(&ws_file, serde_json::to_string_pretty(&story::workspace_json(story, &demo, &sessions, &worktrees, frame))?)?;
+
+    // 7. The window, from the dev build, on the demo.
+    let window_pid = start_window(bin, app, &demo, dirs)?;
+    std::fs::write(dirs.state.join("window.pid"), window_pid.to_string())?;
+    running.window_pid = Some(window_pid);
+    // The window notes where it opened; that frame is the one to capture.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if let Some(f) = saved_frame(&ws_file) {
+            frame = f;
+            break;
+        }
+        if Instant::now() > deadline {
+            break;
+        }
+    }
+    say(&format!("window at {:?}", frame));
+    if !activate(window_pid) && app.is_none() {
+        say("could not bring the window to the front; it may be behind the app in use");
+    }
+    std::thread::sleep(Duration::from_secs(2));
+
+    // 8. Type into the panes: plain commands at once; `claude`, then (after it has drawn,
+    //    and Enter for the folder-trust question when it asks one) the prompt.
+    for pane in &story.panes {
+        if let Some(cmd) = &pane.run {
+            client.input(SessionId(sessions[&pane.name]), &format!("{cmd}\r"))?;
+        }
+    }
+    let claude: Vec<_> = story.panes.iter().filter(|p| p.claude.is_some()).collect();
+    for pane in &claude {
+        client.input(SessionId(sessions[&pane.name]), "claude\r")?;
+    }
+    if !claude.is_empty() {
+        std::thread::sleep(Duration::from_secs(6));
+        for pane in &claude {
+            client.input(SessionId(sessions[&pane.name]), "\r")?;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        for pane in &claude {
+            let id = SessionId(sessions[&pane.name]);
+            client.input(id, pane.claude.as_deref().expect("filtered"))?;
+            std::thread::sleep(Duration::from_millis(400));
+            client.input(id, "\r")?;
+            say(&format!("{}: prompt sent", pane.name));
+        }
+    }
+
+    // 9. The shots.
+    let mut theme = story.shots[0].theme.clone();
+    let mut failures = Vec::new();
+    for shot in &story.shots {
+        if shot.theme != theme {
+            write_config(&dirs.config_file(), story, &shot.theme)?;
+            theme = shot.theme.clone();
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url)?;
+        if !unmet.is_empty() {
+            say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
+            failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
+        }
+        let raw = out.join(format!("{}.raw.png", shot.name));
+        // In front for the capture: Arkos re-raises its docked Chrome window on activation.
+        activate(window_pid);
+        std::thread::sleep(Duration::from_millis(800));
+        capture(frame, &raw)?;
+        frame_image(repo, &raw, &out.join(format!("{}.png", shot.name)), shot)?;
+        say(&format!("{}: {}", shot.name, out.join(format!("{}.png", shot.name)).display()));
+    }
+    if !failures.is_empty() {
+        bail!("taken, but not as the story asked: {}", failures.join("; "));
+    }
+    Ok(())
+}
+
+/// Polls the sessions' states until the shot's are all as asked (or its timeout passes), and
+/// opens the browser pane's page in Chrome the first time a session works, which is when
+/// Arkos docks a new Chrome window. Returns what was not as asked.
+fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>) -> Result<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(shot.timeout_secs);
+    let mut settle_until = None;
+    loop {
+        let states = client.states()?;
+        let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
+        if shot.chrome && chrome_url.is_none() && states.values().any(|s| *s == ClaudeState::Working) {
+            if let Some(url) = story.panes.iter().find_map(|p| p.browser.clone()) {
+                // -g: Chrome does not come to the front, so the Arkos window keeps its place.
+                Command::new("open").args(["-g", "-na", "Google Chrome", "--args", &format!("--app={url}")]).status().context("open Chrome")?;
+                *chrome_url = Some(url);
+                settle_until = Some(Instant::now() + Duration::from_secs(4));
+                say("opened the page in Chrome for Arkos to dock");
+            }
+        }
+        let unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
+        let chrome_pending = shot.chrome && chrome_url.is_none();
+        let settling = settle_until.is_some_and(|t| Instant::now() < t);
+        if unmet.is_empty() && !chrome_pending && !settling {
+            return Ok(Vec::new());
+        }
+        if Instant::now() > deadline {
+            let mut all = unmet;
+            if chrome_pending {
+                all.push("no session worked, so Chrome was never opened".into());
+            }
+            return Ok(all);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Makes the window's process the active app. A process started from a shell opens its window
+/// behind the app in use (macOS activates only what the user, the Dock or Launch Services
+/// started), and the capture needs it in front. A few tries: the app registers with the window
+/// server a moment after it starts.
+fn activate(pid: u32) -> bool {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    const IGNORING_OTHER_APPS: NSApplicationActivationOptions = NSApplicationActivationOptions(1 << 1);
+    for _ in 0..10 {
+        if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32) {
+            if app.activateWithOptions(IGNORING_OTHER_APPS) {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    false
+}
+
+/// `screencapture` of the window's frame: points on the main display, top-left origin, the
+/// same coordinates gpui gives the window. It needs the Screen Recording permission for the
+/// app this runs in (a terminal, or Arkos itself); without it the file shows the desktop alone.
+fn capture(frame: (f64, f64, f64, f64), out: &Path) -> Result<()> {
+    let (x, y, w, h) = frame;
+    let region = format!("{},{},{},{}", x.round() as i64, y.round() as i64, w.round() as i64, h.round() as i64);
+    // "could not create image from rect" comes and goes (a window still animating in, a
+    // display waking): a few tries, a second apart.
+    for attempt in 1..=4 {
+        let status = Command::new("screencapture").args(["-x", "-R", &region]).arg(out).status().context("screencapture")?;
+        if status.success() && out.is_file() {
+            return Ok(());
+        }
+        say(&format!("screencapture of {region} failed (try {attempt})"));
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    bail!("screencapture failed for {}", out.display())
+}
+
+/// `scripts/shoot/frame.py`: the raw capture framed as a macOS window on a transparent
+/// background, plus the shot's crops.
+fn frame_image(repo: &Path, raw: &Path, out: &Path, shot: &Shot) -> Result<()> {
+    let mut cmd = Command::new("python3");
+    cmd.arg("-I").arg(repo.join("scripts/shoot/frame.py")).arg(raw).arg(out);
+    for c in &shot.crops {
+        let [x, y, w, h] = c.rect;
+        cmd.arg("--crop").arg(format!("{}:{x},{y},{w},{h}", c.name));
+    }
+    let status = cmd.status().context("frame.py")?;
+    if !status.success() {
+        bail!("frame.py failed for {}", raw.display());
+    }
+    Ok(())
+}
+
+/// The window's frame as it noted it (`WindowSaved`), once the file carries one.
+fn saved_frame(ws_file: &Path) -> Option<(f64, f64, f64, f64)> {
+    let text = std::fs::read_to_string(ws_file).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let w = v.get("window")?;
+    if w.get("display")?.as_str()? == "shoot" {
+        return None;
+    }
+    Some((w["x"].as_f64()?, w["y"].as_f64()?, w["w"].as_f64()?, w["h"].as_f64()?))
+}
+
+/// The main display in points, top-left origin: its size, and the edges of the area the menu
+/// bar and the Dock leave (AppKit's visible frame).
+#[derive(Debug, Clone, Copy)]
+struct Screen {
+    w: f64,
+    h: f64,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl Screen {
+    fn main() -> Option<Screen> {
+        use objc2_app_kit::NSScreen;
+        let mtm = objc2::MainThreadMarker::new()?;
+        let screen = NSScreen::mainScreen(mtm).or_else(|| NSScreen::screens(mtm).firstObject())?;
+        let (f, v) = (screen.frame(), screen.visibleFrame());
+        // AppKit's origin is the bottom-left corner.
+        let top = (f.origin.y + f.size.height) - (v.origin.y + v.size.height);
+        Some(Screen { w: f.size.width, h: f.size.height, left: v.origin.x - f.origin.x, top, right: v.origin.x - f.origin.x + v.size.width, bottom: top + v.size.height })
+    }
+
+    /// The largest `w` by `h` (or smaller) that, centred on the display as the window will
+    /// be, stays inside the visible area.
+    fn fit_centred(&self, w: f64, h: f64) -> (f64, f64) {
+        let side = self.left.max(self.w - self.right);
+        let max_w = (self.w - 2.0 * side).floor();
+        // Vertically the window is centred too, then pushed down from under the menu bar, so
+        // only the Dock's side (if it is at the bottom) and the menu bar together bound it.
+        let max_h = (self.h - self.top - (self.h - self.bottom)).floor();
+        (w.min(max_w).max(200.0), h.min(max_h).max(200.0))
+    }
+}
+
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+fn wait_for_daemon(socket: &Path) -> Result<Daemon> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if socket.exists() {
+            if let Ok(d) = Daemon::connect(socket) {
+                return Ok(d);
+            }
+        }
+        if Instant::now() > deadline {
+            bail!("arkosd did not come up on {}", socket.display());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The window's config for the shoot: the storyboard's text size and sidebar, the shot's
+/// theme, and nothing that reaches outside (no login item, no update checks).
+fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
+    let text = format!(
+        "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\
+         [font]\npreset = \"{preset}\"\n\n\
+         [sidebar]\nwidth = {sidebar:.1}\ncollapsed = false\n\n\
+         [appearance]\nmode = \"{theme}\"\n\n\
+         [recovery]\nstart_at_login = \"off\"\n\n\
+         [update]\nauto = false\ncheck_every_secs = 0\n",
+        preset = story.window.preset,
+        sidebar = story.window.sidebar_width,
+    );
+    std::fs::write(path, text).with_context(|| format!("write {}", path.display()))
+}
+
+/// The demo: the fixture copied and made a repository with a couple of commits, a worktree per
+/// name, and Claude Code's project settings: Arkos's hooks aimed at the dev binary (the user's
+/// own, aimed at the installed app, reach the other daemon and do nothing) and the permissions
+/// a session needs to work without asking.
+fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) -> Result<BTreeMap<String, PathBuf>> {
+    if !fixture.is_dir() {
+        bail!("fixture {} is not a folder", fixture.display());
+    }
+    if demo.exists() {
+        std::fs::remove_dir_all(demo)?;
+    }
+    copy_dir(fixture, demo)?;
+    let git = |args: &[&str]| -> Result<()> {
+        let status = Command::new("git")
+            .args(["-c", "user.name=Demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .current_dir(demo)
+            .stdout(Stdio::null())
+            .status()
+            .context("git")?;
+        if !status.success() {
+            bail!("git {} failed in {}", args.join(" "), demo.display());
+        }
+        Ok(())
+    };
+    git(&["init", "-q"])?;
+    // Two commits, so the history reads as a project's rather than an import's.
+    let site = story.demo.site.as_str();
+    git(&["add", "-A", "--", ".", &format!(":!{site}")])?;
+    git(&["commit", "-q", "-m", "Lantern: a link shortener in one process"])?;
+    git(&["add", "-A"])?;
+    git(&["commit", "-q", "-m", "Serve the landing page"])?;
+    let mut worktrees = BTreeMap::new();
+    for name in &story.demo.worktrees {
+        let dir = demo.join(".worktrees").join(name);
+        git(&["worktree", "add", "-q", "-b", name, dir.to_str().context("worktree path")?])?;
+        worktrees.insert(name.clone(), dir.canonicalize()?);
+    }
+    // Claude Code reads .claude/settings.json in the folder it runs in: the worktree has its
+    // own copy.
+    let settings = claude_settings(arkos_exe);
+    for dir in std::iter::once(demo.to_path_buf()).chain(worktrees.values().cloned()) {
+        std::fs::create_dir_all(dir.join(".claude"))?;
+        std::fs::write(dir.join(".claude/settings.json"), serde_json::to_string_pretty(&settings)?)?;
+    }
+    Ok(worktrees)
+}
+
+/// The hooks `arkos hooks install` writes (hook_cli.rs), for the dev binary, and permissions.
+fn claude_settings(arkos_exe: &Path) -> serde_json::Value {
+    let exe = arkos_exe.display().to_string().replace('\'', "'\\''");
+    let cmd = |tail: &str| serde_json::json!({ "type": "command", "command": format!("'{exe}' notify {tail}"), "timeout": 5 });
+    serde_json::json!({
+        "permissions": {
+            "allow": ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "Bash(node *)", "Bash(npm *)", "Bash(git *)", "Bash(ls *)", "Bash(cat *)", "Bash(mkdir *)"],
+            "defaultMode": "acceptEdits"
+        },
+        "hooks": {
+            "SessionStart": [{ "hooks": [cmd("--event session-start")] }],
+            "SessionEnd": [{ "hooks": [cmd("--event session-end")] }],
+            "UserPromptSubmit": [{ "hooks": [cmd("--state working")] }],
+            "PreToolUse": [{ "hooks": [cmd("--state working")] }],
+            "Notification": [{ "matcher": "permission_prompt|idle_prompt", "hooks": [cmd("--state waiting")] }],
+            "Stop": [{ "hooks": [cmd("--state waiting")] }]
+        }
+    })
+}
+
+/// The dev binaries in the release's bundle shape (`packaging/bundle.sh` without the signing
+/// and the zip), at a fixed place: Launch Services starts a bundle, and a permission granted
+/// to it (Accessibility, for the browser pane) is granted to that path.
+fn make_bundle(repo: &Path, bin: &Path, dir: &Path) -> Result<PathBuf> {
+    let app = dir.join("Arkos IDE.app");
+    let cargo = std::fs::read_to_string(repo.join("Cargo.toml")).with_context(|| format!("read {}", repo.join("Cargo.toml").display()))?;
+    let version = cargo.lines().find_map(|l| l.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"'))).context("version in Cargo.toml")?;
+    let template = repo.join("packaging/Info.plist.in");
+    let plist = std::fs::read_to_string(&template).with_context(|| format!("read {}", template.display()))?.replace("@VERSION@", version);
+    std::fs::create_dir_all(app.join("Contents/MacOS")).with_context(|| format!("create {}", app.display()))?;
+    std::fs::create_dir_all(app.join("Contents/Resources"))?;
+    std::fs::write(app.join("Contents/Info.plist"), plist)?;
+    for name in ["arkos", "arkosd"] {
+        let to = app.join("Contents/MacOS").join(name);
+        // A fresh file, not an overwrite: the running copy of a previous run may still be mapped.
+        let _ = std::fs::remove_file(&to);
+        std::fs::copy(bin.join(name), &to).with_context(|| format!("copy {name} into the bundle"))?;
+    }
+    let icon = repo.join("packaging/AppIcon.icns");
+    if icon.is_file() {
+        std::fs::copy(icon, app.join("Contents/Resources/AppIcon.icns"))?;
+    }
+    Ok(app)
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Ends what the run started: the sessions, the window, the daemon, the site, and the Chrome
+/// window Arkos docked (an Apple event to Chrome; when macOS refuses it, the window stays).
+fn stop(running: &mut Running, dirs: &Dirs) {
+    if let Some(client) = running.client.as_mut() {
+        for id in &running.sessions {
+            if let Err(e) = client.kill(*id) {
+                say(&format!("session {}: {e}", id.0));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+    if let Some(pid) = running.window_pid.take() {
+        // SIGTERM: the window quits without asking.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        let gone = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 && Instant::now() < gone {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    if let Some(mut d) = running.daemon.take() {
+        // arkosd ignores SIGTERM by design; its sessions are already gone.
+        let _ = d.kill();
+        let _ = d.wait();
+    }
+    if let Some(mut s) = running.site.take() {
+        let _ = s.kill();
+        let _ = s.wait();
+    }
+    if let Some(url) = running.chrome_url.take() {
+        let script = format!("tell application \"Google Chrome\" to close (every window whose URL of active tab starts with \"{url}\")");
+        let ok = Command::new("osascript").args(["-e", &script]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        if !ok {
+            say(&format!("could not close Chrome's {url} window; close it yourself"));
+        }
+    }
+    for f in ["daemon.pid", "window.pid"] {
+        let _ = std::fs::remove_file(dirs.state.join(f));
+    }
+}
+
+/// Starts the window on `demo` and returns its pid. Through Launch Services when there is an
+/// app bundle (`open -n -a`, with the shoot's environment and the folder as the argument:
+/// an app started that way comes to the front, one started from a shell opens behind the app
+/// in use); the bare binary otherwise.
+fn start_window(bin: &Path, app: Option<&Path>, demo: &Path, dirs: &Dirs) -> Result<u32> {
+    let log = std::fs::File::create(dirs.state.join("window.log"))?;
+    let Some(app) = app else {
+        let child = Command::new(bin.join("arkos"))
+            .current_dir(demo)
+            .env("ARKOS_APP_SUPPORT", &dirs.state)
+            .env("XDG_CONFIG_HOME", &dirs.config_home)
+            .env_remove("ARKOS_RELAUNCH")
+            .env_remove("ARKOS_SESSION_ID")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log)
+            .spawn()
+            .context("start arkos")?;
+        return Ok(child.id());
+    };
+    let exe = app.join("Contents/MacOS/arkos");
+    if !exe.is_file() {
+        bail!("{} has no arkos binary", app.display());
+    }
+    let status = Command::new("open")
+        .arg("-n")
+        .arg("--env")
+        .arg(format!("ARKOS_APP_SUPPORT={}", dirs.state.display()))
+        .arg("--env")
+        .arg(format!("XDG_CONFIG_HOME={}", dirs.config_home.display()))
+        .arg("--stderr")
+        .arg(dirs.state.join("window.log"))
+        .arg("-a")
+        .arg(app)
+        .arg("--args")
+        .arg(demo)
+        .status()
+        .context("open the app bundle")?;
+    if !status.success() {
+        bail!("open {} failed", app.display());
+    }
+    // `open` returns at once; the process shows up a moment later.
+    let pattern = exe.display().to_string();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let out = Command::new("pgrep").args(["-f", &pattern]).output().context("pgrep")?;
+        let pids: Vec<u32> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect();
+        if let Some(pid) = pids.into_iter().min() {
+            return Ok(pid);
+        }
+        if Instant::now() > deadline {
+            bail!("the window did not start from {}", app.display());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Ends a previous run's daemon and window if they are still there, and clears the state.
+fn clean(dirs: &Dirs) -> Result<()> {
+    for f in ["window.pid", "daemon.pid"] {
+        if let Ok(text) = std::fs::read_to_string(dirs.state.join(f)) {
+            if let Ok(pid) = text.trim().parse::<i32>() {
+                if pid > 1 {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    say(&format!("ended the previous run's {} ({pid})", f.trim_end_matches(".pid")));
+                }
+            }
+        }
+    }
+    if dirs.state.exists() {
+        std::fs::remove_dir_all(&dirs.state)?;
+    }
+    Ok(())
+}

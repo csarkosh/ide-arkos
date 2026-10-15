@@ -26,8 +26,18 @@ pub fn themes_dir() -> PathBuf {
 }
 
 /// `~/Library/Application Support/arkos`: the socket, the daemon's logs, `updates/`, `window.log`.
+/// `$ARKOS_APP_SUPPORT`, when set and non-empty, replaces it: a second, separate Arkos (its own
+/// daemon, sessions and workspaces) beside the one in use, which the screenshot shoot
+/// (`scripts/shoot.sh`) runs from a dev build.
 pub fn app_support() -> PathBuf {
-    home().join("Library/Application Support/arkos")
+    app_support_from(std::env::var_os("ARKOS_APP_SUPPORT").as_deref(), &home())
+}
+
+pub fn app_support_from(override_dir: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
+    match override_dir {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => home.join("Library/Application Support/arkos"),
+    }
 }
 
 /// The folders opened recently, for the launch chooser (`recent.rs`).
@@ -95,6 +105,14 @@ pub fn daemon_exe() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_support_honours_the_override_only_when_it_is_set() {
+        let home = Path::new("/Users/x");
+        assert_eq!(app_support_from(None, home), PathBuf::from("/Users/x/Library/Application Support/arkos"));
+        assert_eq!(app_support_from(Some(std::ffi::OsStr::new("")), home), PathBuf::from("/Users/x/Library/Application Support/arkos"));
+        assert_eq!(app_support_from(Some(std::ffi::OsStr::new("/tmp/shoot")), home), PathBuf::from("/tmp/shoot"));
+    }
 
     #[test]
     fn workspace_file_name_is_stable_across_builds() {

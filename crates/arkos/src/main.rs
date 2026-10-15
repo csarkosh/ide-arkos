@@ -3432,6 +3432,14 @@ fn main() {
         println!("{}", version_string());
         return;
     }
+    // `arkos <folder>`: open that folder, as `cd` there and `arkos` would. A Launch Services
+    // start (`open -a`, the screenshot shoot) has no working directory to speak of.
+    if let Some(folder) = args.get(1).filter(|a| !a.starts_with('-')) {
+        if let Err(e) = std::env::set_current_dir(folder) {
+            eprintln!("arkos: cannot open {folder}: {e}");
+            std::process::exit(2);
+        }
+    }
     // Spec 2.5: the UI thread is user-interactive so macOS schedules it ahead of the heavy work
     // Claude Code's children do.
     let qos = unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0) };
