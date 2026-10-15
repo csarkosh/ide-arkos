@@ -10,7 +10,7 @@ use crate::terminal_element::{grid_for, TerminalElement};
 use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::viewer::{self, Content};
-use crate::viewer_element::ViewerElement;
+use crate::viewer_element::{MarkColors, ViewerElement};
 use crate::Root;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
@@ -508,7 +508,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
     let family = root.family();
-    let (focus, kind, font_size) = {
+    let (focus, kind, font_size, has_changes, inline, find_open) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
@@ -517,13 +517,22 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             Content::Binary => Kind::Binary,
             Content::Unreadable(e) => Kind::Unreadable(e.clone()),
         };
-        (v.focus.clone(), kind, v.font_size)
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some())
     };
     let dim = theme.chrome.text_dim.hsla();
     let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
     let body = match kind {
         Kind::Text { plain } => {
-            let element = ViewerElement::new(viewer.clone(), family.clone(), theme.chrome.window_bg, theme.chrome.text_dim, theme.chrome.text, theme.semantic.find_match, theme.semantic.find_current);
+            let element = ViewerElement::new(
+                viewer.clone(),
+                family.clone(),
+                theme.chrome.window_bg,
+                theme.chrome.text_dim,
+                theme.chrome.text,
+                theme.semantic.find_match,
+                theme.semantic.find_current,
+                MarkColors { added: theme.tree.added, modified: theme.tree.modified, deleted: theme.tree.deleted },
+            );
             div()
                 .size_full()
                 .flex()
@@ -536,6 +545,27 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         Kind::Binary => notice("a binary file; nothing to show".into()),
         Kind::Unreadable(e) => notice(format!("cannot read this file: {e}")),
     };
+    // The inline diff's switch, at the top right where the find bar opens, below it when open.
+    let chip = has_changes.then(|| {
+        let v_chip = viewer.clone();
+        div()
+            .id(("viewer-inline-diff", viewer.entity_id()))
+            .absolute()
+            .top(px(if find_open { 44.0 } else { 6.0 }))
+            .right(px(14.0))
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(6.0))
+            .bg(theme.chrome.banner.hsla())
+            .border_1()
+            .border_color(theme.chrome.border.hsla())
+            .text_color(if inline { theme.chrome.text.hsla() } else { dim })
+            .font_family(family.clone())
+            .text_size(px(12.0))
+            .cursor_pointer()
+            .child("inline diff")
+            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_chip.update(cx, |v, cx| v.toggle_inline_diff(cx))))
+    });
     let (v_keys, v_wheel) = (viewer.clone(), viewer.clone());
     div()
         .size_full()
@@ -581,6 +611,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         }))
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
         .child(body)
+        .children(chip)
         .children(viewer::find_bar(&viewer, pane, &theme, family, cx))
 }
 

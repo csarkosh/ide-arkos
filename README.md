@@ -14,8 +14,9 @@ Session awareness and recovery after a restart: each tab shows what its Claude C
 doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the
 shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
-each Claude Code conversation resumed. Milestone 4b (worktrees, git status in the tree, diff
-gutters) is next.
+each Claude Code conversation resumed. The sidebar shows git status in the tree and the
+worktrees, and the viewer marks a file's changes against HEAD. Milestone 5 (the browser pane) is
+next.
 
 Things only a person at the screen can check, in order of value:
 
@@ -25,6 +26,9 @@ Things only a person at the screen can check, in order of value:
   `git status` runs again (watch `ps`); + creates `../proj-feat` on a new branch; Remove on a
   dirty one is refused with git's words, force removes it
 - Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
+- edit a tracked file in another app while the viewer shows it: the gutter bars appear within a
+  second; Cmd+Shift+D shows the deleted lines; `git commit` clears the bars within ten seconds; a
+  file in a worktree diffs against that worktree's HEAD
 - Cmd+B, expand `src`, click a file: a dimmed preview tab with colours and line numbers; click
   another file: the same tab shows it; double click: a second tab; edit the file in another app:
   the viewer follows within a second
@@ -147,8 +151,10 @@ The viewer is read-only: syntax colours from your theme's `[viewer]` section thr
 TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a second
 of the file changing on disk. Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
 plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
-terminals, and Cmd+= and Cmd+- resize the focused one. The diff gutters come later in milestone
-4b.
+terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repository shows its
+changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
+amber one, a deletion a red mark at the top of the line that follows; Cmd+Shift+D (or the "inline
+diff" chip) shows the deleted lines in red between the current ones.
 
 ## Keyboard
 
@@ -192,6 +198,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+B | toggle the sidebar |
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
+| Cmd+Shift+D | inline diff in the viewer |
 | Cmd+, | open config file |
 | Shift+Cmd+P | command palette |
 

@@ -2,7 +2,7 @@
 //! open viewers' fingerprints are read on the background executor; a changed directory is read
 //! again, a changed file reloaded. One stat per expanded directory per second. `git status`
 //! runs a second after the last change it has not seen, and every ten seconds regardless; the
-//! worktree list, and the expanded worktrees' status, every ten seconds.
+//! worktree list, the expanded worktrees' status and the viewers' diffs, every ten seconds.
 use crate::config_watch::fingerprint;
 use crate::Root;
 use gpui::{App, Entity};
@@ -98,14 +98,18 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
                     return;
                 }
             }
-            // The worktree list, and the expanded worktrees' changes, on the slow timer: the
-            // changes are marked stale and reloaded, their rows staying up until each lands.
+            // The worktree list, the expanded worktrees' changes and the viewers' diffs, on the
+            // slow timer: the changes are marked stale and reloaded, their rows staying up until
+            // each lands.
             if worktrees_run.elapsed() >= STATUS_EVERY {
                 worktrees_run = Instant::now();
                 let refreshed = root.update(cx, |root, cx| {
                     root.worktrees.mark_all_stale();
                     root.load_pending_worktrees(cx);
                     root.refresh_worktrees(cx);
+                    // A commit or checkout changes HEAD with the files untouched: the viewers'
+                    // diffs are computed again.
+                    root.rediff_viewers(cx);
                 });
                 if refreshed.is_err() {
                     return;

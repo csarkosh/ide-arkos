@@ -6,6 +6,7 @@ mod command_palette;
 mod config;
 mod config_watch;
 mod connection;
+mod diff;
 mod drag;
 mod empty_pane;
 mod explorer;
@@ -1140,6 +1141,11 @@ impl Root {
                 self.explorer.show_ignored = !self.explorer.show_ignored;
                 self.save(cx);
                 cx.notify();
+            }
+            ToggleInlineDiff => {
+                if let Some(v) = self.active_viewer() {
+                    v.update(cx, |v, cx| v.toggle_inline_diff(cx));
+                }
             }
         }
         let _ = window;

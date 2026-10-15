@@ -407,6 +407,7 @@ nice = 0
 # "focus file tree" = "cmd-shift-e"
 # "show ignored files" = ""
 # "focus worktrees" = "ctrl-shift-g"
+# "toggle inline diff" = "cmd-shift-d"
 # "quit" = "cmd-q"
 
 [sidebar]

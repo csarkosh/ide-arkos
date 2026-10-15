@@ -1,8 +1,11 @@
 //! A read-only viewer tab (spec 6): the file loaded once off the UI thread, classified (text,
 //! too big to highlight, binary), split into lines and highlighted; a find over the lines; a
-//! scroll position in lines; reloaded when the poll sees the file change.
+//! scroll position in lines (in display rows while the inline diff shows deleted lines);
+//! reloaded when the poll sees the file change. A file in a repository carries its diff
+//! against HEAD (`diff`), recomputed on every load and on the ten-second timer.
 
 use crate::config_watch::fingerprint;
+use crate::diff::{self, DiffMarks};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
@@ -164,6 +167,9 @@ pub struct Loaded {
     pub fingerprint: Option<(u128, u64)>,
     /// Shown without colours, under a banner saying why.
     pub plain: Option<Plain>,
+    /// The changes against HEAD; `None` outside a repository, for a file HEAD lacks, a clean
+    /// file, or one shown plain for its size.
+    pub diff: Option<DiffMarks>,
 }
 
 pub struct Viewer {
@@ -188,6 +194,10 @@ pub struct Viewer {
     pub applied: u64,
     /// Numbers every search started; only the latest one's hits land.
     pub find_seq: u64,
+    /// The changes against HEAD, from the last load or rediff; `None` when there are none.
+    pub diff: Option<DiffMarks>,
+    /// The deleted lines are shown between the current ones; the scroll is then in display rows.
+    pub inline_diff: bool,
 }
 
 impl Viewer {
@@ -208,6 +218,8 @@ impl Viewer {
             loads: 0,
             applied: 0,
             find_seq: 0,
+            diff: None,
+            inline_diff: false,
         }
     }
 
@@ -218,15 +230,53 @@ impl Viewer {
         }
     }
 
-    /// The furthest the view can scroll: the last line at the top of the viewport.
+    /// The rows the element paints: the lines, plus the deleted ones with the inline diff on.
+    pub fn row_count(&self) -> usize {
+        diff::row_count(self.line_count(), self.diff.as_ref(), self.inline_diff)
+    }
+
+    /// The furthest the view can scroll: the last row at the top of the viewport.
     pub fn max_scroll(&self) -> f32 {
-        self.line_count().saturating_sub(1) as f32
+        self.row_count().saturating_sub(1) as f32
+    }
+
+    /// The display row `line` is painted on.
+    pub fn row_of_line(&self, line: usize) -> usize {
+        match &self.diff {
+            Some(d) if self.inline_diff => diff::row_of_line(d, line),
+            _ => line,
+        }
+    }
+
+    /// Shows or hides the deleted lines between the current ones, when there are changes. The
+    /// line at the top stays at the top; a view at the very top stays there, so lines deleted
+    /// above the first one show.
+    pub fn toggle_inline_diff(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = self.diff.as_ref().filter(|d| d.has_changes()) else { return };
+        let (top, frac) = (self.scroll.current.floor().max(0.0), self.scroll.current - self.scroll.current.floor());
+        let line = if self.inline_diff { diff::line_at_row(d, &diff::display_rows(self.line_count(), d, true), top as usize) } else { top as usize };
+        self.inline_diff = !self.inline_diff;
+        let row = if self.scroll.current <= 0.0 { 0.0 } else { self.row_of_line(line) as f32 + frac };
+        self.scroll.jump_to(row.min(self.max_scroll()));
+        cx.notify();
+    }
+
+    /// A rediff landed: new marks for the same lines. Rows come and go with the inline diff on,
+    /// so the scroll is clamped again.
+    pub fn set_diff(&mut self, diff: Option<DiffMarks>, cx: &mut Context<Self>) {
+        if self.diff == diff {
+            return;
+        }
+        self.diff = diff;
+        self.scroll.clamp_max(self.max_scroll());
+        cx.notify();
     }
 
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         self.content = loaded.content;
         self.fingerprint = loaded.fingerprint;
         self.plain = loaded.plain;
+        self.diff = loaded.diff;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -333,15 +383,16 @@ impl Viewer {
     fn show_current_hit(&mut self) {
         let Some(f) = &self.find else { return };
         let Some(h) = f.hits.get(f.current) else { return };
-        let target = (h.line as f32 - (self.rows_visible as f32 / 3.0).floor()).max(0.0);
+        let target = (self.row_of_line(h.line) as f32 - (self.rows_visible as f32 / 3.0).floor()).max(0.0);
         self.scroll.target = target.min(self.max_scroll());
     }
 }
 
 /// A viewer's file, read and highlighted: call it on the background executor. `None` when the
 /// fingerprint is still `known` (nothing to reload). Over `limit`, or with a line over
-/// `MAX_LINE_BYTES`, the text is shown plain; binaries and unreadable files say so.
-pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize) -> Option<Loaded> {
+/// `MAX_LINE_BYTES`, the text is shown plain; binaries and unreadable files say so. With
+/// `with_diff`, text not shown plain for its size is diffed against its worktree's HEAD.
+pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize, with_diff: bool) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
         return None;
@@ -371,7 +422,18 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
             }
         },
     };
-    Some(Loaded { content, fingerprint, plain: why_plain })
+    let diff = match &content {
+        Content::Text { lines, .. } if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
+        _ => None,
+    };
+    Some(Loaded { content, fingerprint, plain: why_plain, diff })
+}
+
+/// The file's changes against its worktree's HEAD, or `None` when it has no base or no changes.
+/// Spawns git: background executor only.
+pub fn diff_of(path: &Path, lines: &[String]) -> Option<DiffMarks> {
+    let base = diff::base_for(path)?;
+    Some(diff::compute(&base, lines)).filter(DiffMarks::has_changes)
 }
 
 enum Capped {
@@ -533,6 +595,34 @@ impl Root {
         }
     }
 
+    /// The ten-second timer's look at HEAD: every text viewer's diff computed again against the
+    /// lines it shows, so a commit (or a checkout) moves the marks with the file untouched. A
+    /// result lands only if no load landed meanwhile; the file is not read again.
+    pub(crate) fn rediff_viewers(&mut self, cx: &mut Context<Self>) {
+        let viewers: Vec<Entity<Viewer>> = self.viewers.values().cloned().collect();
+        for viewer in viewers {
+            let (path, lines, applied) = {
+                let v = viewer.read(cx);
+                match &v.content {
+                    Content::Text { lines, .. } if v.loaded && v.plain != Some(Plain::TooBig) => (v.path.clone(), lines.clone(), v.applied),
+                    _ => continue,
+                }
+            };
+            let weak = viewer.downgrade();
+            cx.spawn(async move |_, cx| {
+                let shown = lines.clone();
+                let diff = cx.background_executor().spawn(async move { diff_of(&path, &lines) }).await;
+                let _ = weak.update(cx, |v, cx| {
+                    let same = matches!(&v.content, Content::Text { lines, .. } if Arc::ptr_eq(lines, &shown));
+                    if v.applied == applied && same {
+                        v.set_diff(diff, cx);
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
     /// One background load. With `if_changed`, a file whose fingerprint matches the loaded one
     /// is left alone (the poll's first look at a viewer's file can report a change it already shows).
     fn load(&mut self, tab: TabId, if_changed: bool, cx: &mut Context<Self>) {
@@ -546,7 +636,7 @@ impl Root {
         let limit = self.config.viewer.highlight_limit_bytes;
         let weak = viewer.downgrade();
         cx.spawn(async move |_, cx| {
-            let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit) }).await;
+            let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit, true) }).await;
             let Some(loaded) = loaded else { return };
             let _ = weak.update(cx, |v, cx| {
                 if should_apply(seq, v.applied) {
@@ -646,22 +736,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = dir.path().join("a.txt");
         std::fs::write(&text, "one\n\ttwo\n").unwrap();
-        let l = read_file(&text, None, None, 100).expect("loaded");
+        let l = read_file(&text, None, None, 100, false).expect("loaded");
         assert_eq!(l.content, Content::Text { lines: Arc::new(vec!["one".into(), "    two".into()]), spans: vec![Vec::new(), Vec::new()] });
         assert!(l.plain.is_none() && l.fingerprint.is_some());
-        assert!(read_file(&text, l.fingerprint, None, 100).is_none(), "an unchanged file is not read again");
-        let big = read_file(&text, None, None, 4).expect("loaded");
+        assert!(read_file(&text, l.fingerprint, None, 100, false).is_none(), "an unchanged file is not read again");
+        let big = read_file(&text, None, None, 4, false).expect("loaded");
         assert_eq!(big.plain, Some(Plain::TooBig), "over the limit: the text, plain, under a banner");
         assert!(matches!(big.content, Content::Text { ref lines, .. } if lines.len() == 2));
         let bin = dir.path().join("b.bin");
         std::fs::write(&bin, b"\x89PNG\0\0").unwrap();
-        assert_eq!(read_file(&bin, None, None, 100).unwrap().content, Content::Binary);
+        assert_eq!(read_file(&bin, None, None, 100, false).unwrap().content, Content::Binary);
         let huge = dir.path().join("huge.log");
         // Sparse: no disk or memory goes to the length.
         std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
-        assert_eq!(read_file(&huge, None, None, 100).unwrap().content, Content::TooLarge(MAX_PLAIN_BYTES + 1), "not read at all");
-        assert_eq!(read_file(dir.path(), None, None, 100).unwrap().content, Content::Unreadable("is a directory".into()), "a directory is never read");
-        let gone = read_file(&dir.path().join("gone"), l.fingerprint, None, 100).expect("a deleted file is a change");
+        assert_eq!(read_file(&huge, None, None, 100, false).unwrap().content, Content::TooLarge(MAX_PLAIN_BYTES + 1), "not read at all");
+        assert_eq!(read_file(dir.path(), None, None, 100, false).unwrap().content, Content::Unreadable("is a directory".into()), "a directory is never read");
+        let gone = read_file(&dir.path().join("gone"), l.fingerprint, None, 100, false).expect("a deleted file is a change");
         assert!(matches!(gone.content, Content::Unreadable(_)));
         assert_eq!(gone.fingerprint, None);
     }
@@ -672,11 +762,35 @@ mod tests {
         let path = dir.path().join("min.js");
         let long = "x".repeat(MAX_LINE_BYTES + 1);
         std::fs::write(&path, format!("short\n{long}\n")).unwrap();
-        let l = read_file(&path, None, None, 1 << 20).expect("loaded");
+        let l = read_file(&path, None, None, 1 << 20, false).expect("loaded");
         assert_eq!(l.plain, Some(Plain::LongLine), "shown plain, under its own banner");
         assert!(matches!(l.content, Content::Text { ref lines, .. } if lines.len() == 2 && lines[1] == long), "the line is kept whole; only painting cuts it");
         std::fs::write(&path, format!("short\n{}\n", "x".repeat(MAX_LINE_BYTES))).unwrap();
-        assert_eq!(read_file(&path, None, None, 1 << 20).unwrap().plain, None, "at the limit it is highlighted");
+        assert_eq!(read_file(&path, None, None, 1 << 20, false).unwrap().plain, None, "at the limit it is highlighted");
+    }
+
+    #[test]
+    fn a_load_in_a_repository_carries_the_diff_against_head_and_none_when_clean() {
+        let _lock = crate::client::fork_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let run = |args: &[&str]| assert!(crate::explorer::fixture_git(&root).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap().success(), "git {args:?}");
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "t"]);
+        let path = root.join("a.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        assert_eq!(read_file(&path, None, None, 100, true).unwrap().diff, None, "a clean file has no diff");
+        std::fs::write(&path, "one\nTWO\n").unwrap();
+        let l = read_file(&path, None, None, 100, true).unwrap();
+        let d = l.diff.expect("a changed tracked file");
+        assert_eq!(d.marks, vec![None, Some(crate::diff::Mark::Modified)]);
+        assert_eq!(d.deleted_before, vec![(2, vec!["three".to_string()])]);
+        assert_eq!(read_file(&path, None, None, 100, false).unwrap().diff, None, "not asked for");
+        assert_eq!(read_file(&path, None, None, 4, true).unwrap().diff, None, "plain for its size: no diff");
     }
 
     #[test]

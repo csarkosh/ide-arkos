@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, StartAtLogin, InstallHooks,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, Quit
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, Quit
     ]
 );
 
@@ -71,6 +71,8 @@ pub enum Command {
     ShowIgnoredFiles,
     /// Put keyboard focus in the worktree list.
     FocusWorktrees,
+    /// Show or hide the focused viewer's deleted lines between its current ones.
+    ToggleInlineDiff,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -118,6 +120,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("focus file tree", "cmd-shift-e"),
     row("show ignored files", ""),
     row("focus worktrees", "ctrl-shift-g"),
+    ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer") },
     row("quit", "cmd-q"),
 ];
 
@@ -167,6 +170,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "focus file tree" => KeyBinding::new(keys, FocusFileTree, context),
         "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
         "focus worktrees" => KeyBinding::new(keys, FocusWorktrees, context),
+        "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -326,6 +330,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "focus file tree" => Command::FocusFileTree,
         "show ignored files" => Command::ShowIgnoredFiles,
         "focus worktrees" => Command::FocusWorktrees,
+        "toggle inline diff" => Command::ToggleInlineDiff,
         _ => return None,
     })
 }
@@ -367,7 +372,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
         UpdateNow => Command::UpdateNow, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
-        FocusWorktrees => Command::FocusWorktrees,
+        FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
     )
 }
 
@@ -409,6 +414,7 @@ mod tests {
         ("cmd-shift-e", "focus file tree", "FocusFileTree"),
         ("", "show ignored files", "ShowIgnoredFiles"),
         ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
+        ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -421,6 +427,8 @@ mod tests {
         }
         assert_eq!(ACTIONS[0].name, "clear to start", "the lone cmd-k must be registered first (milestone 2a ruling 16)");
         assert_eq!(ACTIONS[0].context, Some("Terminal"));
+        let inline = ACTIONS.iter().find(|a| a.name == "toggle inline diff").unwrap();
+        assert_eq!(inline.context, Some("Viewer"), "Cmd+Shift+D acts on the focused viewer only");
     }
 
     #[test]

@@ -1,5 +1,8 @@
 //! Paints a `Viewer`'s visible lines (spec 6: virtualized, line numbers in a gutter) at a
 //! fractional line offset, like the terminal element. Only the lines in the viewport are shaped.
+//! A file with changes against HEAD gets a mark column at the gutter's left; with the inline
+//! diff on, the deleted lines are rows of their own.
+use crate::diff::{display_rows, DisplayRow, Mark};
 use crate::palette::Rgb;
 use crate::viewer::{Content, Hit, Span, Viewer};
 use gpui::{
@@ -10,6 +13,12 @@ use std::ops::Range;
 use std::time::Instant;
 
 pub const GUTTER_PAD: f32 = 8.0;
+/// The mark column at the gutter's left, there only when the viewer has a diff.
+pub const MARK_W: f32 = 6.0;
+/// An added or changed line's bar, in the mark column.
+const BAR_W: f32 = 3.0;
+/// A deletion's mark, a bar across the mark column at the top of the line that follows.
+const DELETED_H: f32 = 2.0;
 const LEFT_PAD: f32 = 8.0;
 /// The most of one line a frame shapes and paints; the rest is past any screen's right edge.
 pub const MAX_PAINT_BYTES: usize = 16 * 1024;
@@ -28,6 +37,11 @@ pub fn gutter_width(line_count: usize, cell_w: f32) -> f32 {
     digits * cell_w + GUTTER_PAD * 2.0
 }
 
+/// The gutter with the mark column added.
+pub fn gutter_width_with_marks(line_count: usize, cell_w: f32) -> f32 {
+    gutter_width(line_count, cell_w) + MARK_W
+}
+
 /// The lines to paint: from the scrolled line, `rows` of them plus one for the fraction,
 /// clamped to the file.
 pub fn visible_range(scroll: f32, rows: usize, len: usize) -> Range<usize> {
@@ -40,6 +54,13 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
+/// The diff's colours, the theme's `tree.{added, modified, deleted}`.
+pub struct MarkColors {
+    pub added: Rgb,
+    pub modified: Rgb,
+    pub deleted: Rgb,
+}
+
 pub struct ViewerElement {
     viewer: Entity<Viewer>,
     family: SharedString,
@@ -48,11 +69,12 @@ pub struct ViewerElement {
     text_fg: Rgb,
     find_match: Rgb,
     find_current: Rgb,
+    marks: MarkColors,
 }
 
 impl ViewerElement {
-    pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb) -> Self {
-        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current }
+    pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb, marks: MarkColors) -> Self {
+        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks }
     }
 
     fn run(&self, len: usize, color: Rgb, bold: bool, italic: bool) -> TextRun {
@@ -67,12 +89,23 @@ impl ViewerElement {
     }
 }
 
-/// What one frame paints, copied out of the viewer: only the visible lines and their hits.
+/// One visible display row, copied out of the viewer.
+enum Row {
+    /// A current line: its index, text, spans, mark, and whether lines were deleted just above
+    /// it (marked only with the inline diff off).
+    Line { n: usize, text: String, spans: Vec<Span>, mark: Option<Mark>, deleted_above: bool },
+    /// A deleted line, with the inline diff on.
+    Deleted(String),
+}
+
+/// What one frame paints, copied out of the viewer: only the visible rows and their hits.
 struct Frame {
-    first: usize,
     line_count: usize,
-    lines: Vec<String>,
-    spans: Vec<Vec<Span>>,
+    rows: Vec<Row>,
+    /// The viewer has a diff: the gutter holds the mark column.
+    has_diff: bool,
+    /// Lines deleted at the end of the file: marked at the top of this row (under the last line).
+    deleted_at_end: Option<usize>,
     frac: f32,
     animating: bool,
     hits: Vec<Hit>,
@@ -129,21 +162,45 @@ impl Element for ViewerElement {
                 Content::Text { lines, spans } => (lines.as_slice(), spans.as_slice()),
                 _ => (&[][..], &[][..]),
             };
-            let range = visible_range(v.scroll.current, v.rows_visible, lines.len());
-            // Hits are in reading order: the visible ones are one run of them.
+            let diff = v.diff.as_ref();
+            let inline = v.inline_diff && diff.is_some();
+            let range = visible_range(v.scroll.current, v.rows_visible, v.row_count());
+            let shown: Vec<DisplayRow> = match diff {
+                Some(d) if inline => display_rows(lines.len(), d, true)[range.clone()].to_vec(),
+                _ => range.clone().map(DisplayRow::Line).collect(),
+            };
+            let deleted_before = |i: usize| diff.is_some_and(|d| d.deleted_before.iter().any(|(before, _)| *before == i));
+            let rows: Vec<Row> = shown
+                .iter()
+                .map(|r| match *r {
+                    DisplayRow::Line(n) => Row::Line {
+                        n,
+                        text: lines[n].clone(),
+                        spans: spans.get(n).cloned().unwrap_or_default(),
+                        mark: diff.and_then(|d| d.marks.get(n).copied().flatten()),
+                        deleted_above: !inline && deleted_before(n),
+                    },
+                    DisplayRow::Deleted(k, j) => Row::Deleted(diff.and_then(|d| d.deleted_before.get(k)).and_then(|(_, l)| l.get(j)).cloned().unwrap_or_default()),
+                })
+                .collect();
+            // Without the inline diff the rows are the lines: the end mark sits under the last one.
+            let deleted_at_end = (!inline && range.end == lines.len() && deleted_before(lines.len())).then(|| lines.len() - range.start);
+            // Hits are in reading order: the visible lines' are one run of them.
+            let visible_lines = || shown.iter().filter_map(|r| if let DisplayRow::Line(n) = r { Some(*n) } else { None });
+            let (lo_line, hi_line) = (visible_lines().next().unwrap_or(0), visible_lines().last().map_or(0, |n| n + 1));
             let (hits, current) = match &v.find {
                 Some(f) => {
-                    let lo = f.hits.partition_point(|h| h.line < range.start);
-                    let hi = f.hits.partition_point(|h| h.line < range.end);
+                    let lo = f.hits.partition_point(|h| h.line < lo_line);
+                    let hi = f.hits.partition_point(|h| h.line < hi_line).max(lo);
                     (f.hits[lo..hi].to_vec(), f.hits.get(f.current).copied())
                 }
                 None => (Vec::new(), None),
             };
             Frame {
-                first: range.start,
                 line_count: lines.len(),
-                lines: lines[range.clone()].to_vec(),
-                spans: spans.get(range).map(<[Vec<Span>]>::to_vec).unwrap_or_default(),
+                rows,
+                has_diff: diff.is_some(),
+                deleted_at_end,
                 frac: v.scroll.current - v.scroll.current.floor(),
                 animating,
                 hits,
@@ -155,12 +212,42 @@ impl Element for ViewerElement {
             window.request_animation_frame();
         }
         let font_size = px(frame.font_size);
-        let gutter = gutter_width(frame.line_count, cell_w);
+        let gutter = if frame.has_diff { gutter_width_with_marks(frame.line_count, cell_w) } else { gutter_width(frame.line_count, cell_w) };
         let origin = bounds.origin;
+        let x = origin.x + px(gutter + LEFT_PAD);
+        let row_y = |r: usize| origin.y + px((r as f32 - frame.frac) * line_h);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for (i, line) in frame.lines.iter().enumerate() {
-                let n = frame.first + i;
-                let y = origin.y + px((i as f32 - frame.frac) * line_h);
+            for (r, row) in frame.rows.iter().enumerate() {
+                let y = row_y(r);
+                let (n, line, spans, mark, deleted_above) = match row {
+                    Row::Deleted(text) => {
+                        // No number; the old text in the deletion colour on a faint wash of it.
+                        let mut tint = hsla(self.marks.deleted);
+                        tint.a = 0.12;
+                        window.paint_quad(fill(Bounds { origin: point(origin.x, y), size: size(bounds.size.width, px(line_h)) }, tint));
+                        if !text.is_empty() {
+                            let (shown, cut) = paint_cut(text);
+                            let run = self.run(shown.len(), self.marks.deleted, false, false);
+                            let shaped = window.text_system().shape_line(shown.to_string().into(), font_size, &[run], None);
+                            let _ = shaped.paint(point(x, y), px(line_h), window, cx);
+                            if cut {
+                                self.paint_more(x + shaped.width, y, line_h, font_size, window, cx);
+                            }
+                        }
+                        continue;
+                    }
+                    Row::Line { n, text, spans, mark, deleted_above } => (*n, text, spans, *mark, *deleted_above),
+                };
+                if let Some(mark) = mark {
+                    let color = match mark {
+                        Mark::Added => self.marks.added,
+                        Mark::Modified => self.marks.modified,
+                    };
+                    window.paint_quad(fill(Bounds { origin: point(origin.x + px(1.0), y), size: size(px(BAR_W), px(line_h)) }, hsla(color)));
+                }
+                if deleted_above {
+                    self.paint_deleted_mark(origin.x, y, window);
+                }
                 // The line number, right-aligned in the gutter.
                 let num: SharedString = format!("{}", n + 1).into();
                 let num_w = num.len() as f32 * cell_w;
@@ -172,12 +259,11 @@ impl Element for ViewerElement {
                 }
                 let (shown, cut) = paint_cut(line);
                 // The spans cover the line; anything else (a plain file, a cut line) is one run.
-                let spans = frame.spans.get(i).filter(|s| s.last().map(|l| l.end) == Some(shown.len()));
+                let spans = Some(spans).filter(|s| s.last().map(|l| l.end) == Some(shown.len()));
                 let runs: Vec<TextRun> = match spans {
                     Some(spans) => spans.iter().map(|s| self.run(s.end - s.start, s.color, s.bold, s.italic)).collect(),
                     None => vec![self.run(shown.len(), self.text_fg, false, false)],
                 };
-                let x = origin.x + px(gutter + LEFT_PAD);
                 let shaped = window.text_system().shape_line(shown.to_string().into(), font_size, &runs, None);
                 // Find hits on this line: quads under the text, measured on the shaped line.
                 for h in frame.hits.iter().filter(|h| h.line == n && h.start < shown.len()) {
@@ -188,12 +274,26 @@ impl Element for ViewerElement {
                 }
                 let _ = shaped.paint(point(x, y), px(line_h), window, cx);
                 if cut {
-                    // A dim marker where the painted part ends.
-                    let more = window.text_system().shape_line("…".into(), font_size, &[self.run("…".len(), self.gutter_fg, false, false)], None);
-                    let _ = more.paint(point(x + shaped.width, y), px(line_h), window, cx);
+                    self.paint_more(x + shaped.width, y, line_h, font_size, window, cx);
                 }
             }
+            if let Some(r) = frame.deleted_at_end {
+                self.paint_deleted_mark(origin.x, row_y(r), window);
+            }
         });
+    }
+}
+
+impl ViewerElement {
+    /// A dim marker where the painted part of a cut line ends.
+    fn paint_more(&self, x: Pixels, y: Pixels, line_h: f32, font_size: Pixels, window: &mut Window, cx: &mut App) {
+        let more = window.text_system().shape_line("…".into(), font_size, &[self.run("…".len(), self.gutter_fg, false, false)], None);
+        let _ = more.paint(point(x, y), px(line_h), window, cx);
+    }
+
+    /// Lines were deleted here: a short bar across the mark column at the row's top edge.
+    fn paint_deleted_mark(&self, x: Pixels, y: Pixels, window: &mut Window) {
+        window.paint_quad(fill(Bounds { origin: point(x, y), size: size(px(MARK_W), px(DELETED_H)) }, hsla(self.marks.deleted)));
     }
 }
 
@@ -239,5 +339,14 @@ mod tests {
         assert_eq!(visible_range(95.5, 10, 100), 95..100, "clamped at the end");
         assert_eq!(visible_range(0.0, 10, 3), 0..3);
         assert_eq!(visible_range(0.0, 10, 0), 0..0);
+    }
+
+    #[test]
+    fn the_gutter_grows_by_the_mark_column_and_a_display_row_maps_back_to_its_line() {
+        assert_eq!(gutter_width_with_marks(99, 10.0), gutter_width(99, 10.0) + MARK_W);
+        let d = crate::diff::DiffMarks { marks: vec![None, Some(crate::diff::Mark::Added)], deleted_before: vec![(1, vec!["gone".into()])] };
+        let rows = crate::diff::display_rows(2, &d, true);
+        assert_eq!(rows, vec![crate::diff::DisplayRow::Line(0), crate::diff::DisplayRow::Deleted(0, 0), crate::diff::DisplayRow::Line(1)]);
+        assert_eq!(visible_range(0.0, 10, rows.len()), 0..3);
     }
 }
