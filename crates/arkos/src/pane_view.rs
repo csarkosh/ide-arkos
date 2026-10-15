@@ -11,7 +11,8 @@ use crate::pulse;
 use crate::sessions::Note;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
-use crate::theme::Theme;
+use crate::palette::Rgb;
+use crate::theme::{Chrome, Theme};
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId};
 use crate::viewer::{self, Content};
 use crate::viewer_element::{MarkColors, ViewerElement};
@@ -102,6 +103,12 @@ pub fn bar_height_for(active: Option<&Tab>) -> f32 {
         Some(Tab::Browser { .. }) => slim_bar_height(),
         _ => TAB_BAR_H,
     }
+}
+
+/// The slim bar's dots: the active tab in the text colour, the others dim. (`tab_active` is a
+/// background colour and all but vanishes on the bar.)
+pub fn dot_colors(c: &Chrome) -> (Rgb, Rgb) {
+    (c.text, c.text_dim)
 }
 
 /// What a browser tab's placeholder shows.
@@ -475,8 +482,9 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 }
             }));
         if slim {
-            // A dot per tab, wide enough to hit; the label rides along on a drag.
-            strip = strip.child(tab.px(px(4.0)).child(div().size(px(6.0)).rounded_full().bg(if is_active { c.tab_active } else { c.text_dim }.hsla())));
+            // A dot per tab in a 22 px square to hit; the label rides along on a drag.
+            let (lit, unlit) = dot_colors(c);
+            strip = strip.child(tab.p(px(8.0)).child(div().size(px(6.0)).rounded_full().bg(if is_active { lit } else { unlit }.hsla())));
             continue;
         }
         strip = strip.child(
@@ -801,6 +809,7 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>
     };
     let column = || div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family.clone()).text_size(px(13.0)).text_color(dim);
     let heading = |t: &'static str| div().text_color(text).text_size(px(15.0)).child(t);
+    let tip_seen = root.vertical_tabs_tip_seen;
     // Task 3 feeds the dock state through here; until then nothing docks and nothing launches.
     let screen = match browser_screen(true, None, url, false) {
         BrowserScreen::NoPermission => column()
@@ -828,7 +837,28 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>
                     .child(button("browser-dock", "Dock a Chrome window\u{2026}").on_click(cx.listener(|root, _ev: &ClickEvent, window, cx| root.run(Command::DockChromeWindow, window, cx))))
                     .child(button("browser-url", "Open a URL\u{2026}").on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.open_url_prompt(app_mode, Some(tab), cx)))),
             )
-            .child(div().pt(px(8.0)).text_size(px(12.0)).child("Tip: right-click Chrome's tab strip and choose Show Tabs Vertically to save 40 px.")),
+            .when(!tip_seen, |d| {
+                d.child(
+                    div()
+                        .pt(px(8.0))
+                        .flex()
+                        .flex_row()
+                        .gap(px(10.0))
+                        .text_size(px(12.0))
+                        .child("Tip: right-click Chrome's tab strip and choose Show Tabs Vertically to save 40 px.")
+                        .child(
+                            div()
+                                .id(ElementId::NamedInteger("browser-tip".into(), tab))
+                                .text_color(text)
+                                .cursor_pointer()
+                                .child("Got it")
+                                .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+                                    root.vertical_tabs_tip_seen = true;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            }),
         BrowserScreen::Docked => div().size_full().bg(c.window_bg.hsla()),
     };
     div()
@@ -961,6 +991,18 @@ mod tests {
         assert_eq!(bar_height_for(None), TAB_BAR_H);
         assert!(slim_bar_height() < TAB_BAR_H);
         assert_eq!(slim_bar_height(), 14.0);
+    }
+
+    #[test]
+    fn the_slim_bars_active_dot_stands_out_from_the_bar_in_both_built_in_themes() {
+        use crate::palette::contrast;
+        for name in ["navy", "navy-light"] {
+            let c = crate::theme::builtin(name).unwrap().chrome;
+            let (active, inactive) = dot_colors(&c);
+            let (a, i) = (contrast(active, c.tab_bar), contrast(inactive, c.tab_bar));
+            assert!(a >= 4.5, "{name}: the active dot is {a:.2}:1 on the bar");
+            assert!(a > i, "{name}: the active dot ({a:.2}:1) must outshine the others ({i:.2}:1)");
+        }
     }
 
     #[test]

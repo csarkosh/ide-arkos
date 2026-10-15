@@ -69,7 +69,7 @@ pub fn luminance(c: Rgb) -> f64 {
 }
 
 /// WCAG contrast ratio, 1 to 21.
-#[cfg_attr(not(test), allow(dead_code))] // Only the contrast tests here and in theme.rs read it.
+#[cfg_attr(not(test), allow(dead_code))] // Only the contrast tests here, in theme.rs and in pane_view.rs read it.
 pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     let (l1, l2) = (luminance(a), luminance(b));
     let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };

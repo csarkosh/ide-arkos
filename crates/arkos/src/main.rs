@@ -278,6 +278,9 @@ pub struct Root {
     /// holds the keys, through `url_prompt_focus`.
     pub url_prompt: Transient<pane_view::UrlPrompt>,
     pub url_prompt_focus: FocusHandle,
+    /// The Show Tabs Vertically tip was dismissed ("Got it"); Task 3 also sets it on the first
+    /// dock. Kept for this process only.
+    pub vertical_tabs_tip_seen: bool,
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
     pub window_active: bool,
     /// Where the working glyph's pulse starts; every working tab shares its phase.
@@ -465,6 +468,7 @@ impl Root {
             browser_titles: HashMap::new(),
             url_prompt: Transient::Hidden,
             url_prompt_focus: cx.focus_handle(),
+            vertical_tabs_tip_seen: false,
             window_active: true,
             pulse_epoch: Instant::now(),
             frame_now: Instant::now(),
