@@ -76,22 +76,21 @@ fn icon_segs(icon: Icon) -> Vec<Seg> {
             Move((6.87, 14.0)),
             Cubic((9.13, 14.0), (7.2, 14.8), (8.8, 14.8)),
         ],
-        // A stethoscope: two ear tubes meeting in a U, one tube on to a round chest piece at
-        // the lower right.
+        // A wrench on the diagonal: an open jaw at the top right, a rounded handle end at the
+        // bottom left. The head's arcs are two cubics each (centre 10.3, 5.3; radius 3.36).
         Icon::Doctor => vec![
-            Move((3.0, 1.2)),
-            Line((4.0, 2.0)),
-            Cubic((7.0, 9.0), (4.0, 6.0), (5.0, 9.0)),
-            Move((11.0, 1.2)),
-            Line((10.0, 2.0)),
-            Cubic((7.0, 9.0), (10.0, 6.0), (9.0, 9.0)),
-            Move((7.0, 9.0)),
-            Cubic((10.6, 11.1), (7.0, 10.8), (9.0, 11.4)),
-            Move((12.0, 10.5)),
-            Cubic((14.0, 12.5), (13.1, 10.5), (14.0, 11.4)),
-            Cubic((12.0, 14.5), (14.0, 13.6), (13.1, 14.5)),
-            Cubic((10.0, 12.5), (10.9, 14.5), (10.0, 13.6)),
-            Cubic((12.0, 10.5), (10.0, 11.4), (10.9, 10.5)),
+            Move((13.4, 4.1)),
+            Cubic((12.63, 7.72), (13.88, 5.36), (13.6, 6.78)),
+            Cubic((9.0, 8.4), (11.66, 8.66), (10.24, 8.93)),
+            Line((4.2, 13.2)),
+            Cubic((2.38, 13.22), (3.69, 13.71), (2.89, 13.73)),
+            Cubic((2.4, 11.4), (1.87, 12.71), (1.89, 11.91)),
+            Line((7.2, 6.6)),
+            Cubic((7.92, 2.92), (6.67, 5.36), (6.97, 3.87)),
+            Cubic((11.6, 2.2), (8.87, 1.97), (10.36, 1.67)),
+            Line((9.8, 4.0)),
+            Line((10.6, 5.4)),
+            Line((12.0, 6.2)),
             Close,
         ],
     }
