@@ -1611,8 +1611,41 @@ fn with_polling_off_a_check_request_fetches_nothing() {
     publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
     let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "0", "--release-key", &pk]);
     let mut c = d.connect();
-    assert_eq!(c.request(Request::CheckForUpdates), Response::Ok);
+    assert_eq!(c.request(Request::CheckForUpdates), Response::Error("update checks are off".into()));
     std::thread::sleep(Duration::from_millis(800));
     assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None });
     assert!(!d.path().join("updates").exists(), "no poll thread, so no staging folder");
+}
+
+#[test]
+fn a_protocol_3_window_never_hears_update_staged_and_keeps_its_connection() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let mut old = d.connect_raw();
+    let r = old.request(Request::Hello { protocol_version: 3, ui_pid: std::process::id(), ui_exe: None, ui_cwd: std::env::temp_dir() });
+    assert!(matches!(r, Response::Hello { .. }), "{r:?}");
+    let mut new = d.connect();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(Instant::now() < deadline, "the protocol 4 window never heard UpdateStaged");
+        if let ServerMessage::Event(Event::UpdateStaged { update }) = new.next_message() {
+            assert_eq!(update.version, "9.9.9");
+            break;
+        }
+    }
+    // Broadcast queues to every window under one lock, so anything meant for the old window is
+    // ahead of this answer.
+    let id = old.send(Request::ListSessions);
+    loop {
+        match old.next_message() {
+            ServerMessage::Event(Event::UpdateStaged { .. }) => panic!("a protocol 3 window cannot decode UpdateStaged"),
+            ServerMessage::Response { id: rid, response } if rid == id => {
+                assert!(matches!(response, Response::Sessions(_)), "{response:?}");
+                break;
+            }
+            _ => continue,
+        }
+    }
 }

@@ -93,10 +93,15 @@ impl State {
 
 pub type Shared = Arc<Mutex<State>>;
 
-/// Queues `event` for every connected client. A client whose sink is closed is skipped; its
-/// reader thread is already removing it.
+/// The first protocol whose windows decode `Event::UpdateStaged`.
+const UPDATE_EVENTS_FROM: u32 = 4;
+
+/// Queues `event` for every connected client that speaks protocol 4 or later: an older window
+/// cannot decode the variant and would drop its connection, and a client that never said Hello
+/// (protocol 0) is not a window. A client whose sink is closed is skipped; its reader thread is
+/// already removing it.
 pub fn broadcast(st: &State, event: Event) {
-    for rec in st.clients.values().filter(|r| r.connected) {
+    for rec in st.clients.values().filter(|r| r.connected && r.protocol >= UPDATE_EVENTS_FROM) {
         rec.tx.send(ServerMessage::Event(event.clone()));
     }
 }
@@ -553,8 +558,13 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             Response::UpdateStatus { staged: st.update.staged.as_ref().map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }), last_error: st.update.last_error.clone() }
         }
         Request::CheckForUpdates => {
-            state.lock().unwrap().update.check_now = true;
-            Response::Ok
+            let mut st = state.lock().unwrap();
+            if st.update.polling {
+                st.update.check_now = true;
+                Response::Ok
+            } else {
+                Response::Error("update checks are off".into())
+            }
         }
         Request::ApplyUpdate { .. } => Response::Error("not yet".into()), // Task 4
         Request::SetState { session: sid, state: claude } => match session(sid) {

@@ -81,46 +81,65 @@ pub struct UpdateState {
     pub last_error: Option<String>,
     pub checking: bool,
     pub check_now: bool,
+    /// Whether a poll thread runs (`--check-every-secs` is not zero); `CheckForUpdates` is
+    /// refused when not.
+    pub polling: bool,
 }
 
 /// Runs `cmd` with stdin null, a minimal environment and both outputs captured, killing it once
-/// `timeout` passes. Every process the updater starts goes through here.
+/// `timeout` passes. Every process the updater starts goes through here. The child leads its own
+/// process group, so a grandchild that keeps a pipe open past the child's exit (a staged binary
+/// that forks) is killed with it rather than holding this thread.
 pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> Result<Output, String> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::mpsc;
     cmd.env_clear().env("PATH", "/usr/bin:/bin");
     if let Some(home) = std::env::var_os("HOME") {
         cmd.env("HOME", home);
     }
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + timeout;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().map_err(|e| e.to_string())?;
+    let group = child.id() as libc::pid_t;
+    let timed_out = || {
+        // SAFETY: killpg only signals; the group is the child's own, made at spawn.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+        format!("timed out after {} s", timeout.as_secs())
+    };
     // Drained on their own threads, so a chatty child cannot fill a pipe and stall until killed.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut p) = pipe {
                 let _ = p.read_to_end(&mut buf);
             }
-            buf
-        })
+            let _ = tx.send(buf);
+        });
+        rx
     };
     let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
     let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
-                let _ = child.kill();
+                let e = timed_out();
                 let _ = child.wait();
-                return Err(format!("timed out after {} s", timeout.as_secs()));
+                return Err(e);
             }
             Err(e) => {
-                let _ = child.kill();
+                let _ = timed_out();
                 let _ = child.wait();
                 return Err(e.to_string());
             }
         }
     };
-    Ok(Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
+    // The child is reaped; its pipes close when every holder is gone, or the group is killed.
+    let collect = |rx: mpsc::Receiver<Vec<u8>>| rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(|_| timed_out());
+    let stdout = collect(out)?;
+    let stderr = collect(err)?;
+    Ok(Output { status, stdout, stderr })
 }
 
 #[cfg(test)]
@@ -146,5 +165,13 @@ mod tests {
         let started = Instant::now();
         assert!(run_bounded(Command::new("/bin/sleep").arg("5"), Duration::from_millis(200)).unwrap_err().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_grandchild_holding_stdout_cannot_hold_the_caller_past_the_timeout() {
+        let started = Instant::now();
+        let r = run_bounded(Command::new("/bin/sh").args(["-c", "/bin/sleep 5 & echo hi"]), Duration::from_millis(500));
+        assert!(r.unwrap_err().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 }
