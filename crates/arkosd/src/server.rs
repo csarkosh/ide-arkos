@@ -93,8 +93,14 @@ impl State {
 
 pub type Shared = Arc<Mutex<State>>;
 
-/// The first protocol whose windows decode `Event::UpdateStaged`.
-const UPDATE_EVENTS_FROM: u32 = 4;
+use protocol::UPDATE_EVENTS_FROM;
+
+/// The status both answers share: nothing not newer than what runs or is installed is offered,
+/// so no window may offer a downgrade (no badge, no idle apply).
+fn status_parts(st: &State, running: &crate::updates::version::Version) -> (Option<StagedUpdate>, Option<String>, Option<u64>) {
+    let staged = st.update.staged.as_ref().filter(|s| !crate::updates::poll::is_stale(s, running)).map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() });
+    (staged, st.update.last_error.clone(), st.update.unreachable_for_secs(crate::updates::apply::now_unix()))
+}
 
 /// Queues `event` for every connected client that speaks protocol 4 or later: an older window
 /// cannot decode the variant and would drop its connection, and a client that never said Hello
@@ -607,14 +613,35 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             // Read before the lock: it reads the installed bundle's Info.plist.
             let running = crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref());
             let st = state.lock().unwrap();
-            Response::UpdateStatus {
-                // Never a release not newer than what runs or is installed: no window may offer
-                // a downgrade (no badge, no idle apply).
-                staged: st.update.staged.as_ref().filter(|s| !crate::updates::poll::is_stale(s, &running)).map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }),
-                last_error: st.update.last_error.clone(),
-                unreachable_for_secs: st.update.unreachable_for_secs(crate::updates::apply::now_unix()),
+            let (staged, last_error, unreachable_for_secs) = status_parts(&st, &running);
+            Response::UpdateStatus { staged, last_error, unreachable_for_secs }
+        }
+        Request::UpdateStatusDetailed => {
+            let running = crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref());
+            let st = state.lock().unwrap();
+            let (staged, last_error, unreachable_for_secs) = status_parts(&st, &running);
+            Response::UpdateStatusDetailed {
+                staged,
+                last_error,
+                unreachable_for_secs,
+                checking: st.update.checking,
+                last_check_unix: st.update.last_check_unix,
+                transient_error: st.update.transient_error.clone(),
             }
         }
+        // Task 8 replaces this with the real grace; until then it detaches like `Detach`. Same
+        // lock order as the `Detach` arm: the session handle through `session(sid)` first, the
+        // state lock on its own afterwards, never the session's lock under the state's.
+        Request::DetachForGrace { session: sid, .. } => match session(sid) {
+            Some(s) => {
+                s.unsubscribe(client_id);
+                if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                    rec.attached.retain(|x| *x != sid);
+                }
+                Response::Ok
+            }
+            None => Response::Error(format!("no session {}", sid.0)),
+        },
         Request::CheckForUpdates => {
             let mut st = state.lock().unwrap();
             if st.update.polling {

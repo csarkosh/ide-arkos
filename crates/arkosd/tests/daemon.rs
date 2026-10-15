@@ -1904,7 +1904,7 @@ fn a_hello_naming_no_window_during_a_pending_apply_confirms_nothing() {
     assert!(installed.with_extension("app.old").exists(), "not confirmed");
     assert!(d.updates_marker().exists(), "still waiting for the new window");
     let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
-    assert!(journal.contains("pid none, no folder, protocol 4, during the pending apply of 9.9.9: does not confirm (no window pid)"), "{journal}");
+    assert!(journal.contains(&format!("pid none, no folder, protocol {PROTOCOL_VERSION}, during the pending apply of 9.9.9: does not confirm (no window pid)")), "{journal}");
     assert!(!journal.contains("relaunch spawned"), "its disconnect relaunches nothing: {journal}");
 }
 

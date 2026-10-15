@@ -142,6 +142,8 @@ pub struct Root {
     pub status: String,
     /// What the daemon said it runs, from a version 2 `Hello` answer. `None` for an old daemon.
     pub daemon_version: Option<String>,
+    /// The newest protocol the daemon said it speaks (0 before its `Hello` answer).
+    pub daemon_protocol_max: u32,
     /// Bumped when a connection starts and when it ends, so tasks bound to an older one (its
     /// heartbeat, a restore parsed from its replay) know to stop.
     pub connection_generation: u64,
@@ -460,6 +462,7 @@ impl Root {
             project,
             status: CONNECTING.into(),
             daemon_version: None,
+            daemon_protocol_max: 0,
             connection_generation: 0,
             reconnecting_since: None,
             reconcile_with_note,
@@ -2383,8 +2386,9 @@ impl Root {
             Outcome::None => {}
             Outcome::DaemonHello { version, protocol_max, .. } => {
                 self.daemon_version = Some(version);
+                self.daemon_protocol_max = protocol_max;
                 // An older daemon answers an unknown request with an error: ask only protocol 4.
-                if protocol_max >= 4 {
+                if protocol_max >= protocol::UPDATE_STATUS_FROM {
                     self.sessions.update_status();
                 }
                 // Another window's update may have upgraded the daemon: relaunch once idle.

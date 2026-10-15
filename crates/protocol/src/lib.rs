@@ -12,10 +12,18 @@ use std::path::PathBuf;
 /// existing structs never change shape, so a daemon can keep serving older windows: it answers
 /// a `Hello` with the range it speaks (spec update-in-place section 5). Version 3 adds the agent
 /// record, the detailed list and Goodbye for recovery after a restart. Version 4 adds the update
-/// status, check and apply requests and the staged event.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// status, check and apply requests and the staged event. Version 5 adds the detailed status
+/// (the check's state) and the grace detach.
+pub const PROTOCOL_VERSION: u32 = 5;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
+/// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
+pub const UPDATE_STATUS_FROM: u32 = 4;
+pub const UPDATE_EVENTS_FROM: u32 = 4;
+/// The first protocol with the check's state in the status answer.
+pub const UPDATE_STATUS_DETAILED_FROM: u32 = 5;
+/// The first protocol where the daemon ends a closed tab's session after its grace.
+pub const DETACH_FOR_GRACE_FROM: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub u64);
@@ -115,6 +123,11 @@ pub enum Request {
     CheckForUpdates,
     /// Swap in the staged release `version` and restart onto it.
     ApplyUpdate { version: String },
+    /// `UpdateStatus` with the check's state. A protocol 5 window sends this one.
+    UpdateStatusDetailed,
+    /// The window closed a tab: end `session` unless a window attaches it within `secs`.
+    /// Answered `Ok` at once; a second request restarts the grace.
+    DetachForGrace { session: SessionId, secs: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +151,17 @@ pub enum Response {
     /// seconds since the last one that did when the latest check failed in transport (offline, a
     /// blocked GitHub), else `Some(0)`. A network that blocks updates shows this way.
     UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64> },
+    UpdateStatusDetailed {
+        staged: Option<StagedUpdate>,
+        last_error: Option<String>,
+        unreachable_for_secs: Option<u64>,
+        /// A check is running now (asked for, or on the timer).
+        checking: bool,
+        /// When the last check finished, whatever it found; None before the first.
+        last_check_unix: Option<u64>,
+        /// The last check's transport failure, None once a check reaches the manifest again.
+        transient_error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,10 +183,14 @@ pub enum ServerMessage {
 mod tests {
     use super::*;
 
+    fn first_byte<T: serde::Serialize>(v: &T) -> u8 {
+        postcard::to_allocvec(v).unwrap()[0]
+    }
+
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -187,5 +215,15 @@ mod tests {
         let status = Response::UpdateStatus { staged: None, last_error: Some("e".into()), unreachable_for_secs: Some(90_000) };
         assert_eq!(postcard::from_bytes::<Response>(&postcard::to_allocvec(&status).unwrap()).unwrap(), status);
         assert_eq!(postcard::to_allocvec(&Event::UpdateStaged { update: staged }).unwrap()[0], 3);
+        assert_eq!(first_byte(&Request::UpdateStatusDetailed), 19);
+        assert_eq!(first_byte(&Request::DetachForGrace { session: SessionId(1), secs: 60 }), 20);
+        let detailed = Response::UpdateStatusDetailed { staged: None, last_error: None, unreachable_for_secs: Some(0), checking: true, last_check_unix: Some(7), transient_error: Some("offline".into()) };
+        assert_eq!(first_byte(&detailed), 8);
+        let bytes = postcard::to_allocvec(&detailed).unwrap();
+        assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), detailed);
+        // An old-shape frame still decodes: the detailed variant is new, the old one untouched.
+        let old = Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: None };
+        assert_eq!(postcard::from_bytes::<Response>(&postcard::to_allocvec(&old).unwrap()).unwrap(), old);
+        assert_eq!((UPDATE_STATUS_FROM, UPDATE_EVENTS_FROM, UPDATE_STATUS_DETAILED_FROM, DETACH_FOR_GRACE_FROM), (4, 4, 5, 5));
     }
 }

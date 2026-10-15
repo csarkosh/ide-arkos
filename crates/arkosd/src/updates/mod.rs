@@ -144,6 +144,10 @@ pub struct UpdateState {
     /// The last version this process swapped in or found applied: the poll treats it like a
     /// staged one, so an applied or rolled-back release is not fetched and staged again.
     pub swapped: Option<String>,
+    /// When the last check finished, whatever it found; None before the first.
+    pub last_check_unix: Option<u64>,
+    /// The last check's transport failure, None once a check reaches the manifest again.
+    pub transient_error: Option<String>,
 }
 
 impl UpdateState {
