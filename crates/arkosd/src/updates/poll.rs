@@ -176,17 +176,21 @@ impl Collapse {
         Some(out)
     }
 
-    /// The held first line of a new outcome, else the count so far (for a handover or exit).
+    /// The held first line of a new outcome, nothing else: what the poll thread writes after `note`.
+    pub fn take_pending(&mut self) -> Option<String> {
+        self.pending.take()
+    }
+
+    /// The count so far, else any held line (for a handover or exit). Restarts the count from now.
     pub fn flush(&mut self) -> Option<String> {
-        if let Some(p) = self.pending.take() {
-            return Some(p);
-        }
         if self.repeats > 0 {
             let out = self.current.as_ref()?.count_line(self.repeats, &self.since_wall);
             self.repeats = 0;
+            self.since = Some(std::time::Instant::now());
+            self.since_wall = crate::journal::clock_hhmm();
             return Some(out);
         }
-        None
+        self.pending.take()
     }
 }
 
@@ -318,7 +322,7 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                     };
                     if let Some(r) = repeat {
                         let mut st = state.lock().unwrap();
-                        let lines = [st.update.collapse.note(r, std::time::Instant::now(), &crate::journal::clock_hhmm()), st.update.collapse.flush()];
+                        let lines = [st.update.collapse.note(r, std::time::Instant::now(), &crate::journal::clock_hhmm()), st.update.collapse.take_pending()];
                         drop(st);
                         for l in lines.into_iter().flatten() {
                             crate::journal::note(l);
@@ -375,17 +379,27 @@ mod tests {
         let flushed = c.note(transient.clone(), t0 + Duration::from_secs(900), "10:15").unwrap();
         assert_eq!(flushed, "check: 2 more checks since 10:00 found 1.2.3 (abc1234), still not newer than 1.2.3");
         // The new outcome's first line is held until the flush that follows.
-        assert_eq!(c.flush(), Some("check: transient, tried again at the next check: dns".into()));
+        assert_eq!(c.take_pending(), Some("check: transient, tried again at the next check: dns".into()));
         assert_eq!(c.note(transient.clone(), t0 + Duration::from_secs(1200), "10:20"), None);
         // A day of repeats writes a count without a change.
         let daily = c.note(transient.clone(), t0 + Duration::from_secs(1200 + 86_400), "10:20").unwrap();
         assert_eq!(daily, "check: transient, 2 more times since 10:15: dns");
-        assert_eq!(c.flush(), None);
+        assert_eq!(c.take_pending(), None);
         // The daemon's handover flushes what is counted so far.
         c.note(transient.clone(), t0 + Duration::from_secs(1500 + 86_400), "10:25");
         assert_eq!(c.flush(), Some("check: transient, 1 more times since 10:20: dns".into()));
+        // The poll thread's sequence (note, then take_pending) writes nothing on repeats; only the
+        // handover's flush writes one count.
+        let mut c = Collapse::default();
+        assert!(c.note(nothing.clone(), t0, "10:00").is_some());
+        assert_eq!(c.take_pending(), None);
+        for k in 1..=3u64 {
+            assert_eq!(c.note(nothing.clone(), t0 + Duration::from_secs(300 * k), "10:05"), None);
+            assert_eq!(c.take_pending(), None);
+        }
+        assert_eq!(c.flush(), Some("check: 3 more checks since 10:00 found 1.2.3 (abc1234), still not newer than 1.2.3".into()));
+        assert_eq!(c.flush(), None);
     }
-
 
     struct Site {
         _dir: tempfile::TempDir,

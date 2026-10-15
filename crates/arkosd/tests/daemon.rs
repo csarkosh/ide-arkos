@@ -817,7 +817,7 @@ fn hello_with_a_foreign_ui_exe_is_not_relaunched() {
         ui_exe: Some(script.clone()),
         ui_cwd: dir.path().to_path_buf(),
     });
-    std::thread::sleep(Duration::from_millis(3500));
+    std::thread::sleep(Duration::from_millis(2500));
     assert!(fake_ui.try_wait().unwrap().is_some(), "silent UI was not killed");
     assert!(!marker.exists(), "a binary not named arkos was relaunched");
     let _ = fake_ui.wait();
@@ -2123,7 +2123,7 @@ fn the_collapsed_count_is_journaled_at_the_handover() {
     let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
     let journal_path = d.path().join("updates/journal.log");
     wait_until(|| std::fs::read_to_string(&journal_path).is_ok_and(|t| t.contains("check: the manifest has 9.9.9 (fffffff), not newer than running")), Duration::from_secs(10));
-    // Three checks: the first is written, the next two are counted.
+    // The first check is written, the next two or three are counted.
     std::thread::sleep(Duration::from_millis(3500));
     let check = Command::new(env!("CARGO_BIN_EXE_arkosd")).arg("--check-handover").output().unwrap();
     let formats = Command::new(env!("CARGO_BIN_EXE_arkosd")).arg("--handover-formats").output().unwrap();
@@ -2135,8 +2135,10 @@ fn the_collapsed_count_is_journaled_at_the_handover() {
     let mut c = d.connect();
     assert!(matches!(c.request(Request::Upgrade { exe }), Response::Error(e) if e.contains("execv failed")));
     let journal = std::fs::read_to_string(&journal_path).unwrap();
-    let count = journal.find(" more checks since ").unwrap_or_else(|| panic!("no count line:\n{journal}"));
     let exec = journal.find("exec ").unwrap_or_else(|| panic!("no exec line:\n{journal}"));
-    assert!(count < exec, "the count comes before the handover:\n{journal}");
+    let before = &journal[..exec];
+    assert_eq!(before.matches("check: the manifest has").count(), 1, "one first line, the rest counted:\n{journal}");
+    let count = before.find("check: 2 more checks since ").or_else(|| before.find("check: 3 more checks since ")).unwrap_or_else(|| panic!("no count line before the handover:\n{journal}"));
+    assert!(count < exec);
     assert!(journal.contains("found 9.9.9 (fffffff), still not newer than 9.9.9"), "{journal}");
 }
