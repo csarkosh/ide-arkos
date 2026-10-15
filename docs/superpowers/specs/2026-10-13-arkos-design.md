@@ -353,7 +353,7 @@ preference with its evidence status, never as a health feature:
 | Warm tint, blue-light mode | **None shipped** | Blue-light filtering fails a double-masked RCT and a Cochrane review; software warm tints have no eye-strain trial, and the warmest setting was worst in the one lab study. |
 | Refresh rate | Nothing claimed | No evidence for static text. |
 | Break reminder | **On by default: a quiet status-bar nudge after 60 minutes of activity suggesting a 5-minute break**, user-adjustable to 30 on, 5 off, or off. Never a modal, never a 20-second pop-up | Hourly 5-minute breaks have field-trial support; the 20-20-20 rule's 20-second glances were null in their only controlled test. |
-| Motion | The working pulse, the focus glow's breath (six seconds, 70 to 100 percent of a 0.3 alpha, 4 px at rest; added 2026-10-15) and the empty-state animation are slow, low-contrast, and honour Reduce Motion | Flicker and high-contrast modulation are the environmental factors with headache evidence; the UI must not add any. |
+| Motion | The working pulse, the focus glow's breath (six seconds, 70 to 100 percent of a 0.45 alpha, brightened at the user's request, 4 px at rest; added 2026-10-15) and the empty-state animation are slow, low-contrast, and honour Reduce Motion | Flicker and high-contrast modulation are the environmental factors with headache evidence; the UI must not add any. |
 | Font family | Menlo by default, a one-line config change | No controlled study exists for any named coding font. The one monospaced face in Wilkins' 20-font analysis was the least striped, which is encouraging but unnamed. Judge Menlo against taller-x-height faces by eye. |
 
 The config file's generated comments carry a short, non-diagnostic note: if headaches persist,

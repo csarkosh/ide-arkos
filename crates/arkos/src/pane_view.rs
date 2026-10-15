@@ -27,11 +27,11 @@ pub const TAB_BAR_H: f32 = 28.0;
 /// How far the focused pane's glow reaches in from each edge, at rest.
 pub const GLOW_W: f32 = 4.0;
 /// The glow's opacity at the edge, at the peak of its breath; it fades to nothing by its reach.
-pub const GLOW_ALPHA: f32 = 0.3;
+pub const GLOW_ALPHA: f32 = 0.45;
 /// The breath (`pulse::glow`): at rest the glow keeps this share of its opacity, and at the peak
 /// it gains this much lightness and this share of its reach, so it reads as light at the edge.
 const GLOW_BREATH_FLOOR: f32 = 0.7;
-const GLOW_BREATH_LIGHT: f32 = 0.12;
+const GLOW_BREATH_LIGHT: f32 = 0.2;
 const GLOW_BREATH_REACH: f32 = 0.25;
 
 /// The glow's reach for a pane `w` by `h` at `breath` (0 at rest, 1 at the peak): `GLOW_W` plus
