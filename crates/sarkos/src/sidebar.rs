@@ -479,6 +479,28 @@ pub enum Stage {
     Confirm,
 }
 
+/// The repository's filter drivers as the create prompt knows them. Only `Known` creates.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Drivers {
+    /// The read has not landed.
+    #[default]
+    Unknown,
+    /// The drivers the repository's own config sets; empty when none.
+    Known(Vec<String>),
+    /// The config could not be read, or names a driver `read_filter_args` refuses.
+    Refused,
+}
+
+impl Drivers {
+    /// From `explorer::filter_drivers`.
+    pub fn from_read(read: Option<Vec<String>>) -> Self {
+        read.map_or(Drivers::Refused, Drivers::Known)
+    }
+}
+
+pub const CHECKING_FILTERS: &str = "checking the repository's filter config\u{2026}";
+pub const REFUSED_FILTERS: &str = "cannot create: unusual filter config";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptStep {
     Stay,
@@ -498,21 +520,26 @@ pub struct Prompt {
     pub creating: bool,
     /// The filter drivers the confirmation names.
     pub drivers: Vec<String>,
+    /// Enter on the path came before the drivers were read: said, and nothing created.
+    pub checking: bool,
 }
 
 impl Prompt {
     pub fn new() -> Self {
-        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None, creating: false, drivers: Vec::new() }
+        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None, creating: false, drivers: Vec::new(), checking: false }
     }
 
-    /// A key, with `drivers` the repository's filter drivers (empty when none, or not read yet:
-    /// the read takes milliseconds).
-    pub fn key(&mut self, ks: &Keystroke, root: &Path, drivers: &[String]) -> PromptStep {
+    /// A key, with `drivers` the repository's filter drivers as known now. Fails closed: Enter on
+    /// the path creates only with `Drivers::Known`, at once when empty, after a confirmation
+    /// naming them otherwise; while the read is out it says so (Enter again once it lands, in
+    /// milliseconds), and a refused config never creates.
+    pub fn key(&mut self, ks: &Keystroke, root: &Path, drivers: &Drivers) -> PromptStep {
         if self.creating {
             // Escape closes the prompt; the running git finishes on its own and the list's
             // refresh shows what it did.
             return if ks.key == "escape" { PromptStep::Cancel } else { PromptStep::Stay };
         }
+        self.checking = false;
         let edit = match self.stage {
             Stage::Branch => &mut self.branch,
             Stage::Path => &mut self.path,
@@ -549,13 +576,25 @@ impl Prompt {
                     }
                     let path = PathBuf::from(p);
                     self.error = None;
-                    if !drivers.is_empty() {
-                        self.drivers = drivers.to_vec();
-                        self.stage = Stage::Confirm;
-                        return PromptStep::Stay;
+                    match drivers {
+                        Drivers::Unknown => {
+                            self.checking = true;
+                            PromptStep::Stay
+                        }
+                        Drivers::Refused => {
+                            self.error = Some(REFUSED_FILTERS.into());
+                            PromptStep::Stay
+                        }
+                        Drivers::Known(names) if !names.is_empty() => {
+                            self.drivers = names.clone();
+                            self.stage = Stage::Confirm;
+                            PromptStep::Stay
+                        }
+                        Drivers::Known(_) => {
+                            self.creating = true;
+                            PromptStep::Create { branch: self.branch.text.trim().to_string(), path }
+                        }
                     }
-                    self.creating = true;
-                    PromptStep::Create { branch: self.branch.text.trim().to_string(), path }
                 }
                 // Its keys were answered above.
                 Stage::Confirm => PromptStep::Stay,
@@ -575,9 +614,16 @@ impl Prompt {
         }
     }
 
-    /// The confirmation's line, at that stage until git starts.
-    pub fn confirm_text(&self) -> Option<String> {
-        (self.stage == Stage::Confirm && !self.creating).then(|| format!("creating runs this repository's filter driver(s): {}. Enter again to continue", self.drivers.join(", ")))
+    /// The dim line under the fields: the filter config is being read, or the confirmation
+    /// naming the drivers, until git starts.
+    pub fn note(&self) -> Option<String> {
+        if self.creating {
+            None
+        } else if self.checking {
+            Some(CHECKING_FILTERS.to_string())
+        } else {
+            (self.stage == Stage::Confirm).then(|| format!("creating runs this repository's filter driver(s): {}. Enter again to continue", self.drivers.join(", ")))
+        }
     }
 }
 
@@ -631,7 +677,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Opti
             )
             .child(row(label("branch"), field(&p.branch, "feature/name", p.stage == Stage::Branch)))
             .when(p.stage != Stage::Branch, |d| d.child(row(label("path"), field(&p.path, "", p.stage == Stage::Path))))
-            .when_some(p.confirm_text(), |d, t| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child(t)))
+            .when_some(p.note(), |d, t| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child(t)))
             .when(p.creating, |d| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child("creating\u{2026}")))
             .when_some(p.error.clone().filter(|_| !p.creating), |d, e| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.tree.deleted.hsla()).child(e))),
     )
@@ -960,14 +1006,17 @@ impl Root {
         cx.notify();
     }
 
-    /// Reads the repository's filter drivers for the create prompt's confirmation, off the UI
-    /// thread. `None` until the read lands.
+    /// Reads the repository's filter drivers for the create prompt, off the UI thread.
+    /// `Drivers::Unknown` until the read lands.
     pub fn read_prompt_drivers(&mut self, cx: &mut Context<Self>) {
-        self.wt_prompt_drivers = None;
+        self.wt_prompt_drivers = Drivers::Unknown;
         let root = self.project.clone();
         cx.spawn(async move |this, cx| {
-            let drivers = cx.background_executor().spawn(async move { explorer::filter_drivers(&root) }).await;
-            let _ = this.update(cx, |root, _cx| root.wt_prompt_drivers = Some(drivers));
+            let read = cx.background_executor().spawn(async move { explorer::filter_drivers(&root) }).await;
+            let _ = this.update(cx, |root, cx| {
+                root.wt_prompt_drivers = Drivers::from_read(read);
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -1028,7 +1077,7 @@ impl Root {
     /// change pinned, Space previews it, Left collapses, Escape returns to the pane; with the
     /// prompt open, the keys go to it (Cmd+V pastes).
     pub fn wt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
-        let drivers = self.wt_prompt_drivers.clone().unwrap_or_default();
+        let drivers = self.wt_prompt_drivers.clone();
         if let Some(p) = &mut self.wt_prompt {
             if ks.modifiers.platform && ks.key == "v" {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -1247,32 +1296,33 @@ mod tests {
         use gpui::Keystroke;
         let key = |k: &str| Keystroke::parse(k).unwrap();
         let root = std::path::Path::new("/Users/me/proj");
+        let none = Drivers::Known(vec![]);
         let mut p = Prompt::new();
         assert_eq!(p.stage, Stage::Branch);
-        assert_eq!(p.key(&key("enter"), root, &[]), PromptStep::Stay, "an empty branch does not advance");
+        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay, "an empty branch does not advance");
         assert!(p.error.is_some());
         // "c->c" is gpui's test syntax for a key that types its character.
         for c in "feat/x".chars() {
-            p.key(&key(&format!("{c}->{c}")), root, &[]);
+            p.key(&key(&format!("{c}->{c}")), root, &none);
         }
         assert_eq!(p.branch.text, "feat/x");
-        assert_eq!(p.key(&key("enter"), root, &[]), PromptStep::Stay);
+        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay);
         assert_eq!(p.stage, Stage::Path);
         assert!(p.error.is_none(), "a good branch clears the error");
         assert_eq!(p.path.text, "/Users/me/proj-feat-x", "the default path is filled in");
-        assert_eq!(p.key(&key("enter"), root, &[]), PromptStep::Create { branch: "feat/x".into(), path: "/Users/me/proj-feat-x".into() });
+        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Create { branch: "feat/x".into(), path: "/Users/me/proj-feat-x".into() });
         assert!(p.creating);
-        assert_eq!(p.key(&key("enter"), root, &[]), PromptStep::Stay, "a second Enter while git works runs nothing");
-        assert_eq!(p.key(&key("z->z"), root, &[]), PromptStep::Stay);
+        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay, "a second Enter while git works runs nothing");
+        assert_eq!(p.key(&key("z->z"), root, &none), PromptStep::Stay);
         assert_eq!(p.path.text, "/Users/me/proj-feat-x", "and types nothing");
         assert!(p.creating);
-        assert_eq!(p.key(&key("escape"), root, &[]), PromptStep::Cancel, "Escape still closes it");
+        assert_eq!(p.key(&key("escape"), root, &none), PromptStep::Cancel, "Escape still closes it");
         let mut q = Prompt::new();
-        assert_eq!(q.key(&key("escape"), root, &[]), PromptStep::Cancel);
+        assert_eq!(q.key(&key("escape"), root, &none), PromptStep::Cancel);
         for c in "a b".chars() {
-            q.key(&key(&format!("{c}->{c}")), root, &[]);
+            q.key(&key(&format!("{c}->{c}")), root, &none);
         }
-        assert_eq!(q.key(&key("enter"), root, &[]), PromptStep::Stay, "a space is not a branch name");
+        assert_eq!(q.key(&key("enter"), root, &none), PromptStep::Stay, "a space is not a branch name");
         assert_eq!((q.stage, q.error.is_some()), (Stage::Branch, true));
     }
 
@@ -1281,36 +1331,70 @@ mod tests {
         use gpui::Keystroke;
         let key = |k: &str| Keystroke::parse(k).unwrap();
         let root = std::path::Path::new("/Users/me/proj");
-        let lfs = ["lfs".to_string()];
+        let lfs = Drivers::Known(vec!["lfs".to_string()]);
         let to_path = |p: &mut Prompt| {
             for c in "feat".chars() {
-                p.key(&key(&format!("{c}->{c}")), root, &lfs);
+                p.key(&key(&format!("{c}->{c}")), root, &Drivers::Unknown);
             }
-            assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Stay);
+            assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay);
             assert_eq!(p.stage, Stage::Path);
-            assert_eq!(p.confirm_text(), None);
+            assert_eq!(p.note(), None);
         };
         let mut p = Prompt::new();
         to_path(&mut p);
         assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Stay, "the first Enter on the path names the drivers");
         assert_eq!(p.stage, Stage::Confirm);
         assert!(!p.creating);
-        assert_eq!(p.confirm_text().as_deref(), Some("creating runs this repository's filter driver(s): lfs. Enter again to continue"));
+        assert_eq!(p.note().as_deref(), Some("creating runs this repository's filter driver(s): lfs. Enter again to continue"));
         assert_eq!(p.key(&key("z->z"), root, &lfs), PromptStep::Stay, "a key is not a confirmation");
         assert_eq!(p.path.text, "/Users/me/proj-feat", "and types nothing");
         assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
         assert!(p.creating);
-        assert_eq!(p.confirm_text(), None, "git is running: the line gives way to \"creating\"");
+        assert_eq!(p.note(), None, "git is running: the line gives way to \"creating\"");
         // Escape at the confirmation cancels.
         let mut q = Prompt::new();
         to_path(&mut q);
-        q.key(&key("enter"), root, &["lfs".to_string(), "x".to_string()]);
-        assert_eq!(q.confirm_text().as_deref(), Some("creating runs this repository's filter driver(s): lfs, x. Enter again to continue"));
+        q.key(&key("enter"), root, &Drivers::Known(vec!["lfs".to_string(), "x".to_string()]));
+        assert_eq!(q.note().as_deref(), Some("creating runs this repository's filter driver(s): lfs, x. Enter again to continue"));
         assert_eq!(q.key(&key("escape"), root, &lfs), PromptStep::Cancel);
         // No drivers: one Enter creates, as before.
         let mut r = Prompt::new();
         to_path(&mut r);
-        assert_eq!(r.key(&key("enter"), root, &[]), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
+        assert_eq!(r.key(&key("enter"), root, &Drivers::Known(vec![])), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
+    }
+
+    #[test]
+    fn the_prompt_creates_nothing_until_the_filter_config_is_known_and_never_when_refused() {
+        use gpui::Keystroke;
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let root = std::path::Path::new("/Users/me/proj");
+        let mut p = Prompt::new();
+        for c in "feat".chars() {
+            p.key(&key(&format!("{c}->{c}")), root, &Drivers::Unknown);
+        }
+        p.key(&key("enter"), root, &Drivers::Unknown);
+        // The read has not landed: said, and nothing created.
+        assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay);
+        assert_eq!((p.stage, p.creating), (Stage::Path, false));
+        assert_eq!(p.note().as_deref(), Some(CHECKING_FILTERS));
+        assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay, "still not known: still nothing");
+        // It landed, with none: the next Enter creates.
+        assert_eq!(p.key(&key("enter"), root, &Drivers::Known(vec![])), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
+        // Refused: never creates, however often Enter comes.
+        let mut q = Prompt::new();
+        for c in "feat".chars() {
+            q.key(&key(&format!("{c}->{c}")), root, &Drivers::Refused);
+        }
+        q.key(&key("enter"), root, &Drivers::Refused);
+        for _ in 0..3 {
+            assert_eq!(q.key(&key("enter"), root, &Drivers::Refused), PromptStep::Stay);
+            assert_eq!(q.error.as_deref(), Some(REFUSED_FILTERS));
+            assert!(!q.creating);
+            assert_ne!(q.stage, Stage::Confirm);
+        }
+        assert_eq!(q.note(), None);
+        assert_eq!(Drivers::from_read(None), Drivers::Refused, "an unreadable or unusual config");
+        assert_eq!(Drivers::from_read(Some(vec![])), Drivers::Known(vec![]));
     }
 
     #[test]
@@ -1320,12 +1404,12 @@ mod tests {
         let mut p = Prompt::new();
         p.paste("feat/\r\nx\n");
         assert_eq!((p.branch.text.as_str(), p.branch.cursor), ("feat/x", 6));
-        p.key(&Keystroke::parse("enter").unwrap(), root, &["lfs".to_string()]);
+        p.key(&Keystroke::parse("enter").unwrap(), root, &Drivers::Known(vec!["lfs".to_string()]));
         p.path.clear();
         p.paste("/tmp/wt\n");
         assert_eq!(p.path.text, "/tmp/wt");
         assert_eq!(p.branch.text, "feat/x", "the path stage pastes into the path");
-        p.key(&Keystroke::parse("enter").unwrap(), root, &["lfs".to_string()]);
+        p.key(&Keystroke::parse("enter").unwrap(), root, &Drivers::Known(vec!["lfs".to_string()]));
         assert_eq!(p.stage, Stage::Confirm);
         p.paste("more");
         assert_eq!(p.path.text, "/tmp/wt", "nothing is pasted at the confirmation");

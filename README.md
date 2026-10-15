@@ -145,9 +145,10 @@ Open terminal here, Remove worktree (refused while it has changes), Remove workt
 "+" on the header creates one: a branch name, then the path (prefilled beside the project);
 an existing branch is checked out, a new one created. If the repository's own config sets
 filter drivers (`git lfs install --local`, for one), creating a worktree names them and asks for
-a second Enter, since the checkout runs them. The main checkout is first and cannot be removed.
-Ctrl+Shift+G puts the keyboard in the list. The tree's rows carry git status in the theme's
-pastels (added, modified, untracked) and a folder with changes inside carries a dot.
+a second Enter, since the checkout runs them; a filter config with a driver name it cannot read
+safely creates nothing. The main checkout is first and cannot be removed. Ctrl+Shift+G puts the
+keyboard in the list. The tree's rows carry git status in the theme's pastels (added, modified,
+untracked) and a folder with changes inside carries a dot.
 
 The viewer is read-only: syntax colours from your theme's `[viewer]` section through syntect's
 TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a second

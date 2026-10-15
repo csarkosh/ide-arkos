@@ -172,8 +172,8 @@ pub struct Root {
     /// The create prompt under the Worktrees header while it is open; it holds the keys while
     /// `wt_focused`.
     pub wt_prompt: Option<sidebar::Prompt>,
-    /// The repository's filter drivers, read as the prompt opens; `None` until the read lands.
-    pub wt_prompt_drivers: Option<Vec<String>>,
+    /// The repository's filter drivers, read as the prompt opens; `Unknown` until the read lands.
+    pub wt_prompt_drivers: sidebar::Drivers,
     /// A worktree row's right-click menu while it is open: the worktree and the click.
     pub wt_menu: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
     /// The Worktrees section's focus handle, and the create prompt's.
@@ -314,7 +314,7 @@ impl Root {
             worktrees_seq: 0,
             wt_focused: false,
             wt_prompt: None,
-            wt_prompt_drivers: None,
+            wt_prompt_drivers: sidebar::Drivers::Unknown,
             wt_menu: None,
             wt_focus: cx.focus_handle(),
             wt_prompt_focus: cx.focus_handle(),

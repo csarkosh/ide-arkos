@@ -115,28 +115,35 @@ fn read_filter_config(root: &Path) -> Option<Vec<u8>> {
 /// The drivers in `git config --show-scope --null --get-regexp '^filter\.'` output (records
 /// `scope\0key\nvalue\0`) that the repository's own config sets: scope `local` (with what it
 /// includes) or `worktree`. The user's global and system config (a git-lfs install) is theirs.
-fn repository_filter_drivers(out: &[u8]) -> BTreeSet<String> {
-    let mut own = Vec::new();
+/// `None` when any driver, in any scope, has a name `filter_driver_names` refuses.
+fn repository_filter_drivers(out: &[u8]) -> Option<BTreeSet<String>> {
+    let (mut all, mut own) = (Vec::new(), Vec::new());
     let mut fields = out.split(|b| *b == 0);
     while let (Some(scope), Some(rec)) = (fields.next(), fields.next()) {
+        all.extend_from_slice(rec);
+        all.push(0);
         if scope == b"local" || scope == b"worktree" {
             own.extend_from_slice(rec);
             own.push(0);
         }
     }
-    named_filter_drivers(&own)
+    filter_driver_names(&all)?;
+    Some(named_filter_drivers(&own))
 }
 
-/// The filter drivers the repository's own config sets, every one by name (unusual names
-/// included), for the create prompt to name before `git worktree add` runs them. Empty when
-/// there are none or git cannot read the config. One `git config` read: background executor
-/// only.
-pub fn filter_drivers(root: &Path) -> Vec<String> {
+/// The filter drivers the repository's own config sets, for the create prompt to name before
+/// `git worktree add` runs them; empty when there are none. `None` when git cannot read the
+/// config or a driver's name is one `read_filter_args` refuses: the prompt then creates nothing.
+/// One `git config` read: background executor only.
+pub fn filter_drivers(root: &Path) -> Option<Vec<String>> {
     use std::process::Stdio;
-    let Ok(out) = git(root).args(["config", "--show-scope", "--null", "--get-regexp", r"^filter\."]).stdin(Stdio::null()).stderr(Stdio::null()).output() else {
-        return Vec::new();
-    };
-    repository_filter_drivers(&out.stdout).into_iter().collect()
+    let out = git(root).args(["config", "--show-scope", "--null", "--get-regexp", r"^filter\."]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    // Exit 1: no filter configured.
+    match out.status.code() {
+        Some(0) => repository_filter_drivers(&out.stdout).map(|names| names.into_iter().collect()),
+        Some(1) => Some(Vec::new()),
+        _ => None,
+    }
 }
 
 /// Why a read-only git query gave nothing.
@@ -527,9 +534,10 @@ mod tests {
         assert_eq!(all, ["a=b", "lfs"]);
         // Only the repository's own: a global git-lfs install is the user's.
         let scoped = b"global\0filter.lfs.clean\ngit-lfs clean -- %f\0system\0filter.sys.clean\nx\0local\0filter.x.clean\ncat\0worktree\0filter.w.smudge\na\nb\0command\0filter.c.clean\nx\0";
-        let own: Vec<String> = repository_filter_drivers(scoped).into_iter().collect();
+        let own: Vec<String> = repository_filter_drivers(scoped).expect("usual names").into_iter().collect();
         assert_eq!(own, ["w", "x"]);
-        assert!(repository_filter_drivers(b"").is_empty());
+        assert_eq!(repository_filter_drivers(b""), Some(BTreeSet::new()));
+        assert_eq!(repository_filter_drivers(b"global\0filter.a=b.clean\ncat\0local\0filter.x.clean\ncat\0"), None, "an unusual name anywhere refuses");
         for unusual in [&b"filter.a=b.clean\ncat\0"[..], b"filter.a b.clean\ncat\0", b"filter..clean\ncat\0", b"filter.\"q\".clean\ncat\0", "filter.\u{e9}.clean\ncat\0".as_bytes()] {
             assert_eq!(filter_driver_names(unusual), None, "{:?}: an override git might read differently", String::from_utf8_lossy(unusual));
         }
@@ -541,10 +549,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| assert!(fixture_git(dir.path()).args(args).stdout(std::process::Stdio::null()).status().unwrap().success(), "git {args:?}");
         git(&["init", "-q"]);
-        assert_eq!(filter_drivers(dir.path()), Vec::<String>::new(), "none of its own, whatever the user's global config holds");
+        assert_eq!(filter_drivers(dir.path()), Some(vec![]), "none of its own, whatever the user's global config holds");
         git(&["config", "filter.x.clean", "cat"]);
         git(&["config", "filter.lfs.smudge", "git-lfs smudge -- %f"]);
-        assert_eq!(filter_drivers(dir.path()), ["lfs", "x"]);
+        assert_eq!(filter_drivers(dir.path()), Some(vec!["lfs".to_string(), "x".to_string()]));
+        git(&["config", "filter.a=b.clean", "cat"]);
+        assert_eq!(filter_drivers(dir.path()), None, "refused: the prompt creates nothing");
     }
 
     #[test]
