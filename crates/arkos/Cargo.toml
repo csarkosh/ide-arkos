@@ -22,6 +22,8 @@ raw-window-handle = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing"] }
 similar = "2"
+# Markdown parsing for the editor's block layer (md_blocks).
+pulldown-cmark.workspace = true
 # Already in the tree through gpui and others: grapheme boundaries for the editing core.
 unicode-segmentation = "1"
 # The browser pane (spec 8): Chrome's pid, the mouse, the screens and arkos's own window. Default
