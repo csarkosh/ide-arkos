@@ -74,6 +74,36 @@ pub fn connect_in_background(daemon_args: Vec<String>, cx: &mut App) -> Task<Res
         .spawn(async move { Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args).map_err(|e| format!("{e:#}")) })
 }
 
+/// Reads the version the last launch recorded in `file`, records `current`, and says whether
+/// this launch is an update: the recorded version was older. A missing or unreadable file, the
+/// same version, or a newer one (a downgrade) gives None. The write goes through a temp file
+/// and a rename, as the workspace file does, so a crash leaves the old record, not a torn one.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
+pub fn updated_from(file: &Path, current: &str) -> Option<String> {
+    let previous = std::fs::read_to_string(file).ok().and_then(|s| parse_version(s.trim()));
+    let now = parse_version(current);
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = file.with_extension("tmp");
+    if std::fs::write(&tmp, format!("{current}\n")).and_then(|_| std::fs::rename(&tmp, file)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    match (previous, now) {
+        (Some(p), Some(n)) if p < n => Some(current.to_string()),
+        _ => None,
+    }
+}
+
+/// "major.minor.patch" as a tuple; anything else is None.
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let mut it = s.split('.').map(|p| p.parse::<u64>().ok());
+    match (it.next()?, it.next()?, it.next()?, it.next()) {
+        (Some(a), Some(b), Some(c), None) => Some((a, b, c)),
+        _ => None,
+    }
+}
+
 /// The window a failed connect opens: the error, the daemon's log, and Open the log, Try again
 /// and Quit. `retry` runs the connect again; this window closes as it starts. Closing the window
 /// any other way quits, as Quit and Escape do: without a daemon there is nothing to show.
@@ -209,5 +239,29 @@ mod tests {
         let (title, body) = failure_lines("started /x/arkosd but it never accepted a connection", Path::new("/l/arkosd.log"));
         assert_eq!(title, "Arkos cannot reach its daemon");
         assert!(body.contains("/l/arkosd.log") && body.starts_with("started /x/arkosd"));
+    }
+
+    #[test]
+    fn an_older_recorded_version_means_this_launch_is_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("deep").join("last_version");
+        assert_eq!(updated_from(&file, "0.2.14"), None, "no file: nothing to say");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "0.2.14\n", "and the file is written, parent created");
+        assert_eq!(updated_from(&file, "0.2.14"), None, "same version: nothing");
+        assert_eq!(updated_from(&file, "0.2.15"), Some("0.2.15".to_string()));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "0.2.15\n");
+        assert_eq!(updated_from(&file, "0.10.0"), Some("0.10.0".to_string()), "semver, not string order");
+    }
+
+    #[test]
+    fn a_downgrade_gives_no_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("last_version");
+        std::fs::write(&file, "0.3.0\n").unwrap();
+        assert_eq!(updated_from(&file, "0.2.14"), None);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "0.2.14\n", "the running version is recorded anyway");
+        std::fs::write(&file, "garbage").unwrap();
+        assert_eq!(updated_from(&file, "0.2.14"), None, "an unreadable version is no version");
+        assert!(!dir.path().join("last_version.tmp").exists(), "no temp file left behind");
     }
 }

@@ -35,6 +35,12 @@ pub fn recent_file() -> PathBuf {
     app_support().join("recent.json")
 }
 
+/// The version the last launch ran, so a relaunch can say "Updated to X" (notices.rs).
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
+pub fn last_version_file() -> PathBuf {
+    app_support().join("last_version")
+}
+
 pub fn socket_path() -> PathBuf {
     app_support().join("arkosd.sock")
 }
@@ -122,5 +128,10 @@ mod tests {
         assert_eq!(config_dir_from(Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/arkos"));
         assert!(config_file().ends_with("arkos/config.toml"));
         assert!(themes_dir().ends_with("arkos/themes"));
+    }
+
+    #[test]
+    fn last_version_lives_in_app_support() {
+        assert!(last_version_file().ends_with("arkos/last_version"));
     }
 }
