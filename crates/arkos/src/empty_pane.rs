@@ -1,6 +1,6 @@
 //! The friendly empty pane (spec 4): a greeting, the bindings you want next, and a slow,
-//! low-contrast ambient animation that plays on appearance and on hover, then settles so an idle
-//! empty pane costs no frames.
+//! low-contrast ambient animation: three dots that keep drifting along slow arcs for as long as
+//! the pane is shown (the user asked for them never to stop). Reduce Motion holds them still.
 
 use crate::motion::reduce_motion;
 use crate::theme::Theme;
@@ -9,7 +9,8 @@ use crate::Root;
 use gpui::{div, prelude::*, px, Context, Div, FocusHandle, Window};
 use std::time::Instant;
 
-pub const ANIM_SECS: f32 = 6.0;
+/// How far each dot wanders from its rest position, as a fraction of the pane.
+pub const DRIFT: f32 = 0.06;
 
 /// The four things a person wants next from an empty pane.
 pub const BINDINGS: &[(&str, &str)] = &[
@@ -24,29 +25,27 @@ pub fn hints(last_pane: bool) -> Vec<(&'static str, &'static str)> {
     BINDINGS.iter().copied().filter(|(keys, _)| !(last_pane && *keys == "Cmd+W")).collect()
 }
 
-/// Three dots that drift along slow arcs and ease into their rest positions by `ANIM_SECS`.
-/// The curves are time-based, so a dropped frame changes nothing about where they end.
-pub fn dot_positions(elapsed: f32, w: f32, h: f32) -> [(f32, f32); 3] {
-    let t = (elapsed / ANIM_SECS).clamp(0.0, 1.0);
-    // Ease-out: fast at first, settling smoothly.
-    let e = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+/// Three dots drifting along slow arcs around their rest positions: periods of ten to twenty
+/// seconds, so the motion reads as ambient rather than busy. `None` puts them at rest (Reduce
+/// Motion). Time-based, so a dropped frame changes nothing about where they are.
+pub fn dot_positions(elapsed: Option<f32>, w: f32, h: f32) -> [(f32, f32); 3] {
     let rest = [(0.3, 0.35), (0.5, 0.3), (0.7, 0.35)];
     let mut out = [(0.0, 0.0); 3];
     for (i, (rx, ry)) in rest.iter().enumerate() {
         let phase = i as f32 * 2.1;
-        let drift = (1.0 - e) * 0.08;
-        let x = rx + drift * (t * 3.0 + phase).sin();
-        let y = ry + drift * (t * 2.0 + phase).cos();
-        out[i] = ((x * w * 100.0).round() / 100.0, (y * h * 100.0).round() / 100.0);
+        let (dx, dy) = match elapsed {
+            Some(t) => ((t * 0.5 + phase).sin() * DRIFT, (t * 0.35 + phase).cos() * DRIFT),
+            None => (0.0, 0.0),
+        };
+        out[i] = (((rx + dx) * w * 100.0).round() / 100.0, ((ry + dy) * h * 100.0).round() / 100.0);
     }
     out
 }
 
-pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle, theme: &Theme, window: &mut Window, cx: &mut Context<Root>) -> Div {
+pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle, theme: &Theme, window: &mut Window, _cx: &mut Context<Root>) -> Div {
     let started = *root.empty_anim.entry(pane).or_insert_with(Instant::now);
-    let elapsed = if reduce_motion() { ANIM_SECS } else { started.elapsed().as_secs_f32() };
-    let animating = elapsed < ANIM_SECS;
-    if animating {
+    let elapsed = (!reduce_motion()).then(|| started.elapsed().as_secs_f32());
+    if elapsed.is_some() {
         window.request_animation_frame();
     }
     let dots = dot_positions(elapsed, w, h);
@@ -56,12 +55,7 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
         .size_full()
         .relative()
         .track_focus(&focus)
-        .on_hover(cx.listener(move |root, hovered: &bool, _window, cx| {
-            if *hovered && !reduce_motion() {
-                root.empty_anim.insert(pane, Instant::now());
-                cx.notify();
-            }
-        }));
+;
     for (i, (x, y)) in dots.iter().enumerate() {
         let size = 18.0 + 4.0 * i as f32;
         view = view.child(div().absolute().left(px(x - size / 2.0)).top(px(y - size / 2.0)).size(px(size)).rounded_full().bg(theme.semantic.working.alpha(0.2)));
@@ -98,15 +92,17 @@ mod tests {
     }
 
     #[test]
-    fn dots_move_then_settle() {
-        let a = dot_positions(0.0, 400.0, 300.0);
-        let b = dot_positions(1.5, 400.0, 300.0);
-        assert_ne!(a, b, "the animation moves");
-        let end = dot_positions(ANIM_SECS, 400.0, 300.0);
-        let later = dot_positions(ANIM_SECS + 10.0, 400.0, 300.0);
-        assert_eq!(end, later, "after ANIM_SECS the frame is static");
-        for (x, y) in end {
-            assert!((0.0..=400.0).contains(&x) && (0.0..=300.0).contains(&y));
+    fn dots_keep_drifting_and_hold_still_under_reduce_motion() {
+        let at = |t: f32| dot_positions(Some(t), 400.0, 300.0);
+        assert_ne!(at(0.0), at(1.5), "the dots move");
+        assert_ne!(at(20.0), at(40.0), "and keep moving long after appearance");
+        for t in [0.0, 7.0, 33.0, 600.0] {
+            for (i, (x, y)) in at(t).iter().enumerate() {
+                let (rx, ry) = [(0.3, 0.35), (0.5, 0.3), (0.7, 0.35)][i];
+                assert!((x - rx * 400.0).abs() <= DRIFT * 400.0 + 0.01 && (y - ry * 300.0).abs() <= DRIFT * 300.0 + 0.01, "each dot stays near its rest spot at t={t}");
+            }
         }
+        let rest = dot_positions(None, 400.0, 300.0);
+        assert_eq!(rest, [(120.0, 105.0), (200.0, 90.0), (280.0, 105.0)], "Reduce Motion: the rest positions, at any time");
     }
 }

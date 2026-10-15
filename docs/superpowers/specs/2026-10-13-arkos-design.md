@@ -173,9 +173,9 @@ and place the tab in the new pane on that side). VS Code's gesture exactly.
 **Empty state.** A pane closes with its last tab (Cmd+W, the tab's close button, "close all in
 pane", or its last tab dragged into another pane), its space going to its neighbour. The last pane
 in the workspace never closes: it shows a friendly screen instead: a short greeting, the three or
-four bindings you'd want next, and a small ambient animation that plays on appearance and on
-hover, then settles to a static frame (an idle empty pane costs no frames). It honours the
-system Reduce Motion setting. A folder opened with no saved layout starts on that screen rather
+four bindings you'd want next, and a small ambient animation: three dots that keep drifting
+slowly for as long as the pane is shown (changed 2026-10-15 from "settle after six seconds" at
+the user's request). It honours the system Reduce Motion setting, which holds them still. A folder opened with no saved layout starts on that screen rather
 than on a shell nobody asked for (revised 2026-10-14; before, an emptied pane stayed open and a
 new folder started one shell).
 
