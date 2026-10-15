@@ -143,6 +143,7 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
         eprintln!("arkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
     }
     crate::updates::apply::on_start(&state, opts.update.bundle.as_deref(), &opts.update.dir, opts.update.connect_grace);
+    crate::updates::drop_stale_staged(&state, &opts.update.dir, &opts.update.running());
     serve(listener, state, opts)
 }
 
@@ -196,6 +197,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
     crate::journal::note(format_args!("resumed as {} (pid {}) from a handover written by {}, {} sessions", crate::version_string(), std::process::id(), h.written_by, st.sessions.len()));
     let state = Arc::new(Mutex::new(st));
     crate::updates::apply::on_start(&state, opts.update.bundle.as_deref(), &opts.update.dir, opts.update.connect_grace);
+    crate::updates::drop_stale_staged(&state, &opts.update.dir, &opts.update.running());
     serve(listener, state, opts)
 }
 
@@ -207,7 +209,7 @@ fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     if !u.check_every.is_zero() {
         let keys = protocol::release_key::RELEASE_PUBLIC_KEYS.iter().map(|k| k.to_string()).chain(u.extra_keys.iter().cloned()).collect();
         let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone() };
-        crate::updates::poll::start(state.clone(), fetcher, u.dir.clone(), keys, u.check_every, u.ditto.clone());
+        crate::updates::poll::start(state.clone(), fetcher, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running());
     }
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     let dir = crate::recovery::sessions_dir(&opts.socket);
@@ -603,8 +605,10 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         }
         Request::UpdateStatus => {
             let st = state.lock().unwrap();
+            let running = opts.update.running();
             Response::UpdateStatus {
-                staged: st.update.staged.as_ref().map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }),
+                // Never a release not newer than what runs: no window may offer a downgrade.
+                staged: st.update.staged.as_ref().filter(|s| !crate::updates::poll::is_stale(s, &running)).map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }),
                 last_error: st.update.last_error.clone(),
                 unreachable_for_secs: st.update.unreachable_for_secs(crate::updates::apply::now_unix()),
             }
@@ -622,6 +626,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             use crate::updates::apply;
             // Checked and claimed under one lock, as `upgrade::begin` does: a second request
             // arriving while this one swaps is refused, so two cannot race the renames.
+            let running = opts.update.running();
             let claimed = {
                 let mut st = state.lock().unwrap();
                 let pids: Vec<u32> = st.clients.values().filter(|c| c.connected).filter_map(|c| c.ui_pid).collect();
@@ -632,6 +637,15 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                     // that another one is applying (not "nothing staged", which reads as a failure).
                     _ if waiting.is_some() => Err(format!("update {} is still waiting for a window", waiting.unwrap_or_default())),
                     (None, _) => Err("nothing staged".to_string()),
+                    // The app was updated past it (by hand, then an in-place exec): applying it
+                    // would be a downgrade. Forgotten and deleted.
+                    (Some(s), _) if crate::updates::poll::is_stale(&s, &running) => {
+                        st.update.staged = None;
+                        if let Some(folder) = s.bundle.parent() {
+                            let _ = std::fs::remove_dir_all(folder);
+                        }
+                        Err(format!("staged {} is not newer than running {}.{}.{}", s.version, running.major, running.minor, running.patch))
+                    }
                     (Some(s), _) if s.version != version => Err(format!("staged {} is not {version}", s.version)),
                     (Some(_), None) => Err("not running from an app bundle".into()),
                     (Some(s), Some(bundle)) => {

@@ -76,6 +76,24 @@ pub fn clean_except(dir: &Path, keep: Option<&Path>) {
     }
 }
 
+/// Removes every version folder in `dir` whose name is a version not newer than `running`;
+/// returns the versions removed. Folders whose name is no version, and files, stay.
+pub fn remove_not_newer(dir: &Path, running: &super::version::Version) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut removed = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
+        let Some((major, minor, patch)) = super::version::parse_semver(&name) else { continue };
+        let v = super::version::Version { major, minor, patch, git: String::new() };
+        if p.is_dir() && !v.is_newer_than(running) && std::fs::remove_dir_all(&p).is_ok() {
+            removed.push(name);
+        }
+    }
+    removed.sort();
+    removed
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -143,5 +161,17 @@ pub(crate) mod tests {
         assert!(dir.path().join("manifest.json").exists(), "files at the top stay");
         clean_except(dir.path(), None);
         assert!(!dir.path().join("0.2.1").exists());
+    }
+
+    #[test]
+    fn remove_not_newer_keeps_newer_versions_and_everything_else() {
+        let dir = tempfile::tempdir().unwrap();
+        for d in ["0.2.5", "0.2.6", "0.2.7", "scratch"] {
+            std::fs::create_dir_all(dir.path().join(d)).unwrap();
+        }
+        std::fs::write(dir.path().join("0.1.0"), b"a file").unwrap();
+        let running = super::super::version::Version { major: 0, minor: 2, patch: 6, git: "x".into() };
+        assert_eq!(remove_not_newer(dir.path(), &running), ["0.2.5", "0.2.6"]);
+        assert!(dir.path().join("0.2.7").is_dir() && dir.path().join("scratch").is_dir() && dir.path().join("0.1.0").is_file());
     }
 }

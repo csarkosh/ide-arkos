@@ -39,6 +39,9 @@ pub struct UpdateOptions {
     /// How long the new window has to connect after its relaunch (`apply::CONNECT_GRACE`; test
     /// only `--connect-grace-secs`).
     pub connect_grace: Duration,
+    /// Test only (`--running-version`): the semver the updater compares releases against instead
+    /// of this binary's own, so a test can restart the daemon as a newer version.
+    pub running_version: Option<String>,
 }
 
 impl UpdateOptions {
@@ -52,6 +55,16 @@ impl UpdateOptions {
             extra_keys: Vec::new(),
             bundle: std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)),
             connect_grace: apply::CONNECT_GRACE,
+            running_version: None,
+        }
+    }
+
+    /// The version every comparison treats as running: this binary's, unless a test said otherwise.
+    pub fn running(&self) -> version::Version {
+        let ours = version::parse_version_string(&crate::version_string()).expect("our own version string parses");
+        match self.running_version.as_deref().and_then(version::parse_semver) {
+            Some((major, minor, patch)) => version::Version { major, minor, patch, git: ours.git },
+            None => ours,
         }
     }
 
@@ -85,6 +98,9 @@ impl UpdateOptions {
         }
         if self.connect_grace != d.connect_grace {
             out.extend(["--connect-grace-secs".into(), self.connect_grace.as_secs().to_string()]);
+        }
+        if let Some(v) = &self.running_version {
+            out.extend(["--running-version".into(), v.clone()]);
         }
         out
     }
@@ -136,6 +152,22 @@ impl UpdateState {
     pub fn unreachable_for_secs(&self, now_unix: u64) -> Option<u64> {
         let ok = self.last_ok_unix?;
         Some(if self.last_check_transient { now_unix.saturating_sub(ok) } else { 0 })
+    }
+}
+
+/// At every daemon start, the fresh one and the one an in-place exec resumes: a staged release
+/// that is not newer than what runs now (the app was updated by hand past it) is deleted from
+/// disk and forgotten, so no window is offered it and none can apply a downgrade.
+pub fn drop_stale_staged(state: &crate::server::Shared, dir: &Path, running: &version::Version) {
+    let dropped = {
+        let mut st = state.lock().unwrap();
+        st.update.staged.take_if(|s| poll::is_stale(s, running))
+    };
+    if let Some(s) = dropped {
+        crate::journal::note(format_args!("staged {} ({}) is not newer than running {}.{}.{}: dropped", s.version, s.git, running.major, running.minor, running.patch));
+    }
+    for v in stage::remove_not_newer(dir, running) {
+        crate::journal::note(format_args!("start: staged {v} on disk is not newer than running {}.{}.{}: removed", running.major, running.minor, running.patch));
     }
 }
 
@@ -207,6 +239,9 @@ mod tests {
         assert!(d.args(socket).is_empty(), "a release's daemon passes none, so an older one can resume");
         let o = UpdateOptions { check_every: Duration::ZERO, extra_keys: vec!["k".into()], connect_grace: Duration::from_secs(2), ..d };
         assert_eq!(o.args(socket), ["--check-every-secs", "0", "--release-key", "k", "--connect-grace-secs", "2"]);
+        let o = UpdateOptions { running_version: Some("9.9.9".into()), ..UpdateOptions::defaults(socket) };
+        assert_eq!(o.args(socket), ["--running-version", "9.9.9"], "a test's running version survives the exec");
+        assert_eq!((o.running().major, o.running().minor, o.running().patch), (9, 9, 9));
     }
 
     #[test]

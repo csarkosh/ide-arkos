@@ -2006,3 +2006,33 @@ fn a_rejected_version_is_not_staged_again_by_a_later_daemon() {
     assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(0) }, "the manifest was reached");
     assert!(!d.path().join("updates/9.9.9").exists());
 }
+
+#[test]
+fn a_staged_release_not_newer_than_a_restarted_daemon_is_deleted_and_never_offered() {
+    // A daemon stages 9.9.9; the app is then updated past it by hand, and the daemon comes back
+    // as 9.9.10 (`--running-version`, the test's stand-in for a newer binary).
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let url = format!("file://{}/", site.path().display());
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &url, "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap()]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    drop(c);
+    let dir = d.sigterm();
+    assert!(dir.path().join("updates/9.9.9/Arkos IDE.app").is_dir(), "staged on disk before the restart");
+    let d = Daemon::start_in(dir, &["--update-url", &url, "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--running-version", "9.9.10"]);
+    let mut c = d.connect();
+    // Requests are served only after the start's cleanup.
+    assert!(!d.path().join("updates/9.9.9").exists(), "removed at the start");
+    let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
+    assert!(journal.contains("start: staged 9.9.9 on disk is not newer than running 9.9.10: removed"), "{journal}");
+    // A few checks run; each finds the manifest's 9.9.9 not newer than 9.9.10.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, .. }));
+    assert!(matches!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error(_)));
+    assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("0.0.1"), "nothing swapped");
+    assert!(!d.updates_marker().exists());
+}

@@ -151,6 +151,12 @@ pub fn record_at(u: &mut UpdateState, outcome: Outcome, now_unix: u64) -> Option
     }
 }
 
+/// Whether a staged release must never be offered or applied: its version is not newer than
+/// what runs (or does not parse).
+pub fn is_stale(staged: &Staged, running: &Version) -> bool {
+    staged_version(staged).is_none_or(|v| !v.is_newer_than(running))
+}
+
 /// The staged release's version, for the comparison.
 fn staged_version(s: &Staged) -> Option<Version> {
     let (major, minor, patch) = super::version::parse_semver(&s.version)?;
@@ -172,12 +178,11 @@ fn newest(a: Option<Version>, b: Option<Version>) -> Option<Version> {
 
 /// The poll thread: every `every`, or sooner when a window asked (`check_now`). The state lock
 /// is never held across a check.
-pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf) {
+pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf, running: Version) {
     state.lock().unwrap().update.polling = true;
     std::thread::Builder::new()
         .name("updates".into())
         .spawn(move || {
-            let running = super::version::parse_version_string(&crate::version_string()).expect("our own version string parses");
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             let mut bad = Bad::new();
             let mut last = None::<std::time::Instant>;
@@ -400,6 +405,17 @@ mod tests {
         let s = crate::updates::stage::Staged { version: "0.2.1".into(), git: "g".into(), bundle: PathBuf::from("/x") };
         record_at(&mut u, Outcome::Staged(s), 6_000);
         assert_eq!((u.last_ok_unix, u.unreachable_for_secs(7_000)), (Some(6_000), Some(0)));
+    }
+
+    #[test]
+    fn a_staged_release_not_newer_than_running_is_stale() {
+        let s = |v: &str| Staged { version: v.into(), git: "g".into(), bundle: PathBuf::from("/x") };
+        let running = ver(0, 2, 6);
+        assert!(is_stale(&s("0.2.5"), &running), "older: a downgrade");
+        assert!(is_stale(&s("0.2.6"), &running), "the same version");
+        assert!(!is_stale(&s("0.2.7"), &running));
+        assert!(!is_stale(&s("1.0.0"), &running));
+        assert!(is_stale(&s("garbage"), &running), "unreadable: never applied");
     }
 
     #[test]

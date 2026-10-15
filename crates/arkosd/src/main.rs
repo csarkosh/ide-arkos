@@ -48,6 +48,7 @@ fn main() {
     let mut release_keys = Vec::new();
     let mut bundle = None;
     let mut connect_grace_secs = None;
+    let mut running_version = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -109,6 +110,12 @@ fn main() {
             "--connect-grace-secs" => {
                 connect_grace_secs = Some(args.next().and_then(|v| v.parse::<u64>().ok()).expect("--connect-grace-secs needs a number"))
             }
+            // Test only: the version releases are compared against instead of this binary's.
+            "--running-version" => {
+                let v = args.next().expect("--running-version needs a version");
+                assert!(updates::version::parse_semver(&v).is_some(), "--running-version needs <major>.<minor>.<patch>");
+                running_version = Some(v)
+            }
             other => {
                 eprintln!("arkosd: unknown argument {other}");
                 std::process::exit(2);
@@ -124,6 +131,7 @@ fn main() {
     update.extra_keys = release_keys;
     update.bundle = bundle.or(update.bundle);
     update.connect_grace = connect_grace_secs.map(Duration::from_secs).unwrap_or(update.connect_grace);
+    update.running_version = running_version;
     journal::init(&update.dir, &socket);
     if let Some(path) = resume {
         let h = match handover::read(&path) {
