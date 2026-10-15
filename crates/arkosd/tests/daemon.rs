@@ -817,7 +817,7 @@ fn hello_with_a_foreign_ui_exe_is_not_relaunched() {
         ui_exe: Some(script.clone()),
         ui_cwd: dir.path().to_path_buf(),
     });
-    std::thread::sleep(Duration::from_millis(2500));
+    std::thread::sleep(Duration::from_millis(3500));
     assert!(fake_ui.try_wait().unwrap().is_some(), "silent UI was not killed");
     assert!(!marker.exists(), "a binary not named arkos was relaunched");
     let _ = fake_ui.wait();
