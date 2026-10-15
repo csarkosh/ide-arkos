@@ -131,7 +131,8 @@ pub fn chrome_open_args(url: Option<&str>, app_mode: bool) -> Vec<String> {
     let mut args: Vec<String> = ["-na", "Google Chrome", "--args"].iter().map(|s| s.to_string()).collect();
     match (url, app_mode) {
         (Some(u), true) => args.push(format!("--app={u}")),
-        (Some(u), false) => args.extend(["--new-window".to_string(), u.to_string()]),
+        // `--` ends Chrome's switches: a typed URL starting with `--` stays a URL.
+        (Some(u), false) => args.extend(["--new-window".to_string(), "--".to_string(), u.to_string()]),
         (None, _) => args.push("--new-window".to_string()),
     }
     args
@@ -995,7 +996,8 @@ mod tests {
 
     #[test]
     fn chrome_opens_a_normal_window_or_a_single_page() {
-        assert_eq!(chrome_open_args(Some("https://example.com"), false), ["-na", "Google Chrome", "--args", "--new-window", "https://example.com"]);
+        assert_eq!(chrome_open_args(Some("https://example.com"), false), ["-na", "Google Chrome", "--args", "--new-window", "--", "https://example.com"]);
+        assert_eq!(chrome_open_args(Some("--remote-debugging-port=9222"), false), ["-na", "Google Chrome", "--args", "--new-window", "--", "--remote-debugging-port=9222"], "never a switch");
         assert_eq!(chrome_open_args(Some("https://example.com"), true), ["-na", "Google Chrome", "--args", "--app=https://example.com"]);
         assert_eq!(chrome_open_args(None, true), ["-na", "Google Chrome", "--args", "--new-window"], "no page for app mode: a blank window");
     }

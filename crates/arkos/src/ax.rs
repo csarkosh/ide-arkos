@@ -32,6 +32,8 @@ extern "C" {
     // `Boolean` is an `unsigned char`: read as `u8`, compared with zero.
     fn AXIsProcessTrustedWithOptions(options: *const CFDictionary) -> u8;
     fn AXUIElementCreateApplication(pid: i32) -> *mut CFType;
+    fn AXUIElementCreateSystemWide() -> *mut CFType;
+    fn AXUIElementSetMessagingTimeout(element: *const CFType, seconds: f32) -> AXError;
     fn AXUIElementCopyAttributeValue(element: *const CFType, attribute: *const CFString, value: *mut *mut CFType) -> AXError;
     fn AXUIElementSetAttributeValue(element: *const CFType, attribute: *const CFString, value: *const CFType) -> AXError;
     fn AXUIElementPerformAction(element: *const CFType, action: *const CFString) -> AXError;
@@ -181,6 +183,14 @@ pub struct RealAx {
 
 impl RealAx {
     pub fn new() -> RealAx {
+        // Every AX call blocks the UI thread until Chrome answers, 6 s by default when Chrome
+        // hangs. A quarter second at most, set on the system-wide element (the global default):
+        // a call that times out fails, and the engine takes a failed read as nothing changed.
+        // SAFETY: a Create function; `owned` takes its one retain and releases it after the call.
+        if let Some(system) = owned(unsafe { AXUIElementCreateSystemWide() }) {
+            // SAFETY: `system` is a live AXUIElementRef for the duration of the call.
+            unsafe { AXUIElementSetMessagingTimeout(&*system, 0.25) };
+        }
         RealAx::default()
     }
 

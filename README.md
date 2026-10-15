@@ -194,15 +194,16 @@ window, hides it when the tab is not the active one (or arkos is minimized or hi
 raises it when you click the pane.
 
 A window gets docked in one of four ways. While a Claude Code session is working, the next Chrome
-window it opens lands in a browser tab on its own. The palette's "Dock a Chrome window…" docks
-the front Chrome window into the focused pane. "New browser tab…" (Cmd+Shift+B) asks for a URL
+window it opens lands in a browser tab on its own. The palette's "Dock a Chrome window…" lists
+Chrome's windows and docks the one you pick into the focused pane. "New browser tab…" (Cmd+Shift+B) asks for a URL
 and opens it in a new Chrome window that docks into the tab; "New single-page browser tab…"
 does the same in Chrome's app mode (no tab strip, no address bar), as does `app_mode` in the
 config. Or drag any Chrome window by its title bar into a pane and drop it.
 
 It is released four ways: close the tab (the window stays where it is; arkos never closes it),
-the palette's "Undock Chrome window", drag the tab out of its pane, or drag the window's title bar
-more than 40 px away from the placeholder. Chrome's own tab dragging is left alone.
+the palette's "Undock Chrome window", drag the tab out of the arkos window and drop it there, or
+drag the window's title bar more than 40 px away from the placeholder. Dropping the tab in
+another pane moves it, still docked. Chrome's own tab dragging is left alone.
 
 Moving another app's window needs the Accessibility permission. Arkos asks once, when the first
 browser pane needs it; until it is granted the pane explains what is missing and links to System
@@ -214,7 +215,9 @@ vertical space back, a tip (once per run) suggests right-clicking Chrome's tab s
 Show Tabs Vertically.
 
 Only the URL and the app-mode flag are saved. After a relaunch a browser tab waits for a window;
-arkos never tries to find the old one.
+arkos never tries to find the old one. A hidden tab's window waits off-screen, and quitting puts
+it back; after a crash or a kill it stays there, and Chrome's Window > Zoom (or quitting and
+reopening Chrome) brings it back on screen.
 
 ## Keyboard
 

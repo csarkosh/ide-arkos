@@ -154,15 +154,30 @@ pub fn browser_label(title: Option<&str>, url: Option<&str>) -> String {
     }
 }
 
-/// A URL as typed, with `https://` added when it has no scheme. `localhost:3000` has none: a
-/// scheme is only what comes before `://`, or one of the few Chrome opens without it.
+/// A URL as typed, with a scheme added when it has none: `http://` for this machine (a dev
+/// server rarely has TLS), `https://` otherwise. `localhost:3000` has none: a scheme is only
+/// what comes before `://`, or one of the few Chrome opens without it.
 fn with_scheme(url: &str) -> String {
     let bare = ["about:", "chrome:", "data:", "file:"];
     if url.contains("://") || bare.iter().any(|s| url.starts_with(s)) {
         url.to_string()
+    } else if is_local_host(url) {
+        format!("http://{url}")
     } else {
         format!("https://{url}")
     }
+}
+
+/// Whether a scheme-less URL's host is this machine: `localhost`, `*.localhost`, `127.0.0.1`
+/// or `[::1]`. The host runs up to the first `/`, its `:port` stripped (brackets kept for IPv6).
+fn is_local_host(url: &str) -> bool {
+    let authority = url.split('/').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().map(|h| format!("[{h}]")).unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or("").to_string(),
+    };
+    let host = host.to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1" || host == "[::1]"
 }
 
 /// What the URL prompt opens: what was typed, else `[browser] url`; `None` (both empty) is a
@@ -1026,7 +1041,12 @@ mod tests {
     #[test]
     fn the_url_prompt_adds_https_and_falls_back_to_the_configured_url() {
         assert_eq!(prompt_url("example.com", ""), Some("https://example.com".into()));
-        assert_eq!(prompt_url("  localhost:3000/x ", ""), Some("https://localhost:3000/x".into()), "a port is not a scheme");
+        assert_eq!(prompt_url("  localhost:3000/x ", ""), Some("http://localhost:3000/x".into()), "a port is not a scheme");
+        assert_eq!(prompt_url("localhost:3000", ""), Some("http://localhost:3000".into()), "this machine: http");
+        assert_eq!(prompt_url("127.0.0.1:8080/x", ""), Some("http://127.0.0.1:8080/x".into()));
+        assert_eq!(prompt_url("[::1]:3000", ""), Some("http://[::1]:3000".into()));
+        assert_eq!(prompt_url("app.localhost", ""), Some("http://app.localhost".into()));
+        assert_eq!(prompt_url("localhost.example.com", ""), Some("https://localhost.example.com".into()), "only the host itself counts");
         assert_eq!(prompt_url("http://localhost:3000", ""), Some("http://localhost:3000".into()));
         assert_eq!(prompt_url("about:blank", ""), Some("about:blank".into()));
         assert_eq!(prompt_url("chrome://settings", ""), Some("chrome://settings".into()));
