@@ -121,9 +121,22 @@ pub struct UpdateState {
     /// The version an `ApplyUpdate` is swapping in right now: a second request is refused until
     /// the swap finished or failed, so two cannot race the renames.
     pub applying: Option<String>,
+    /// When a check last reached a manifest whose signature verified (whatever it found).
+    pub last_ok_unix: Option<u64>,
+    /// Whether the latest check failed in transport (`poll::Outcome::Transient`).
+    pub last_check_transient: bool,
     /// The last version this process swapped in or found applied: the poll treats it like a
     /// staged one, so an applied or rolled-back release is not fetched and staged again.
     pub swapped: Option<String>,
+}
+
+impl UpdateState {
+    /// `Response::UpdateStatus`'s `unreachable_for_secs` at `now_unix`: None before the first
+    /// verified manifest, the time since it when the latest check failed in transport, else 0.
+    pub fn unreachable_for_secs(&self, now_unix: u64) -> Option<u64> {
+        let ok = self.last_ok_unix?;
+        Some(if self.last_check_transient { now_unix.saturating_sub(ok) } else { 0 })
+    }
 }
 
 /// Runs `cmd` with stdin null, a minimal environment and both outputs captured, killing it once

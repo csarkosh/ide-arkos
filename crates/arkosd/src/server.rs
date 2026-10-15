@@ -572,7 +572,11 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         }
         Request::UpdateStatus => {
             let st = state.lock().unwrap();
-            Response::UpdateStatus { staged: st.update.staged.as_ref().map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }), last_error: st.update.last_error.clone() }
+            Response::UpdateStatus {
+                staged: st.update.staged.as_ref().map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }),
+                last_error: st.update.last_error.clone(),
+                unreachable_for_secs: st.update.unreachable_for_secs(crate::updates::apply::now_unix()),
+            }
         }
         Request::CheckForUpdates => {
             let mut st = state.lock().unwrap();

@@ -1563,7 +1563,7 @@ fn a_staged_update_is_announced_and_listed() {
     let staged = loop {
         match c.request(Request::UpdateStatus) {
             Response::UpdateStatus { staged: Some(s), .. } => break s,
-            Response::UpdateStatus { staged: None, last_error } => {
+            Response::UpdateStatus { staged: None, last_error, .. } => {
                 assert!(last_error.is_none(), "{last_error:?}");
                 assert!(Instant::now() < deadline, "never staged");
                 std::thread::sleep(Duration::from_millis(100));
@@ -1613,7 +1613,7 @@ fn with_polling_off_a_check_request_fetches_nothing() {
     let mut c = d.connect();
     assert_eq!(c.request(Request::CheckForUpdates), Response::Error("update checks are off".into()));
     std::thread::sleep(Duration::from_millis(800));
-    assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None });
+    assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: None });
     assert!(!d.path().join("updates").exists(), "no poll thread, so no staging folder");
 }
 
@@ -1802,7 +1802,7 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
     assert!(!home.path().join("launches").exists(), "no project folder was remembered, so no window is launched");
     assert!(!d.updates_marker().exists());
     let mut c = d.connect();
-    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: Some(e) } if e.contains("rolled back")));
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: Some(e), .. } if e.contains("rolled back")));
 }
 
 #[test]
@@ -1849,6 +1849,6 @@ fn a_rejected_version_is_not_staged_again_by_a_later_daemon() {
     let mut c = d.connect();
     // A few checks run in this time; each finds nothing newer than the rejected 9.9.9.
     std::thread::sleep(Duration::from_millis(2500));
-    assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None });
+    assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(0) }, "the manifest was reached");
     assert!(!d.path().join("updates/9.9.9").exists());
 }

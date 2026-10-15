@@ -250,6 +250,8 @@ pub struct Root {
     pub update_error: Option<String>,
     /// The idle timer that applies a staged update is running (`start_idle_timer`).
     pub auto_apply_timer: bool,
+    /// "updates unreachable for N days" (`update::unreachable_text`) from the last `UpdateStatus`.
+    pub update_unreachable: Option<String>,
     /// The daemon's `last_error` last shown as a notice, so each one is shown once.
     pub update_error_noticed: Option<String>,
     /// The last key, pointer move or click in this window: a staged update applies only once the
@@ -412,6 +414,7 @@ impl Root {
             update_error: None,
             auto_apply_timer: false,
             update_error_noticed: None,
+            update_unreachable: None,
             last_input: Instant::now(),
             updating: None,
             window_active: true,
@@ -1439,7 +1442,9 @@ impl Root {
 
     /// What the daemon's `UpdateStatus` says, into the badge; its `last_error` is shown once as a
     /// notice (again whenever the user asked for the check: `requested`).
-    fn note_update_status(&mut self, staged: Option<StagedUpdate>, last_error: Option<String>, requested: bool, cx: &mut Context<Self>) {
+    fn note_update_status(&mut self, staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64>, requested: bool, cx: &mut Context<Self>) {
+        // Replaced by every status: the next one after a successful check clears it.
+        self.update_unreachable = update::unreachable_text(unreachable_for_secs);
         // A failed attempt is not retried by itself: "Retry update" does that.
         let apply = staged.is_some() && last_error.is_none();
         if let Some(e) = &last_error {
@@ -1594,7 +1599,7 @@ impl Root {
                 // Another window's update may have upgraded the daemon: relaunch once idle.
                 self.start_idle_timer(cx);
             }
-            Outcome::UpdateStatus { staged, last_error } => self.note_update_status(staged, last_error, false, cx),
+            Outcome::UpdateStatus { staged, last_error, unreachable_for_secs } => self.note_update_status(staged, last_error, unreachable_for_secs, false, cx),
             Outcome::CheckStarted => {
                 // The check runs on the daemon's poll thread; its result is there a moment later.
                 let root = cx.entity();
@@ -1604,9 +1609,9 @@ impl Root {
                 })
                 .detach();
             }
-            Outcome::Checked { staged, last_error } => {
-                let nothing = staged.is_none() && last_error.is_none();
-                self.note_update_status(staged, last_error, true, cx);
+            Outcome::Checked { staged, last_error, unreachable_for_secs } => {
+                let nothing = staged.is_none() && last_error.is_none() && unreachable_for_secs.is_none_or(|s| s == 0);
+                self.note_update_status(staged, last_error, unreachable_for_secs, true, cx);
                 if nothing {
                     self.show_notice("no update".into(), cx);
                 }
@@ -1880,7 +1885,12 @@ impl Render for Root {
         }
         let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
         // A failed update says so until a release is staged again or "Retry update" runs.
-        let update_text = if self.staged.is_none() && self.update_error.is_some() { Some("update failed") } else { self.update_ready.as_deref() };
+        let update_text = match (&self.staged, &self.update_error, &self.update_unreachable) {
+            (None, Some(_), _) => Some("update failed"),
+            // Nothing staged and nothing failed, but the daemon has not reached GitHub for a day.
+            (None, None, Some(u)) => Some(u.as_str()),
+            _ => self.update_ready.as_deref(),
+        };
         let items = chrome::status_items(update_text, (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
         let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme);
         let family = self.family();

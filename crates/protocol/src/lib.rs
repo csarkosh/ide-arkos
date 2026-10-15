@@ -134,7 +134,10 @@ pub enum Response {
     /// The answer to a version 2 `Hello`: what runs and what it speaks.
     Hello { daemon_version: String, protocol_min: u32, protocol_max: u32 },
     SessionsDetailed(Vec<SessionDetail>),
-    UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String> },
+    /// `unreachable_for_secs`: None until a check first reached a signed manifest; then the
+    /// seconds since the last one that did when the latest check failed in transport (offline, a
+    /// blocked GitHub), else `Some(0)`. A network that blocks updates shows this way.
+    UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +183,9 @@ mod tests {
         assert_eq!(postcard::to_allocvec(&Request::CheckForUpdates).unwrap()[0], 17);
         assert_eq!(postcard::to_allocvec(&Request::ApplyUpdate { version: "0.2.1".into() }).unwrap()[0], 18);
         let staged = StagedUpdate { version: "0.2.1".into(), git: "a1b2c3d".into() };
-        assert_eq!(postcard::to_allocvec(&Response::UpdateStatus { staged: Some(staged.clone()), last_error: None }).unwrap()[0], 7);
+        assert_eq!(postcard::to_allocvec(&Response::UpdateStatus { staged: Some(staged.clone()), last_error: None, unreachable_for_secs: Some(90_000) }).unwrap()[0], 7);
+        let status = Response::UpdateStatus { staged: None, last_error: Some("e".into()), unreachable_for_secs: Some(90_000) };
+        assert_eq!(postcard::from_bytes::<Response>(&postcard::to_allocvec(&status).unwrap()).unwrap(), status);
         assert_eq!(postcard::to_allocvec(&Event::UpdateStaged { update: staged }).unwrap()[0], 3);
     }
 }

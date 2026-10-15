@@ -290,7 +290,9 @@ and verifies a newer build, and the window applies it once you have been idle fo
 still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for
 updates" in the palette asks now, and says "no update" when nothing newer is out.
 
-A check that cannot reach GitHub (offline, a captive portal) is retried quietly at the next one.
+A check that cannot reach GitHub (offline, a captive portal) is retried quietly at the next one;
+when none has reached the signed manifest for over a day, the title bar says "updates
+unreachable for N days" until one does.
 When the daemon's last check or update failed for a reason that is the release's (a bad
 signature, a download that does not match its manifest) or the swap's, the title bar shows the
 reason once as a notice, the badge says "update failed", and the palette offers "Retry update".

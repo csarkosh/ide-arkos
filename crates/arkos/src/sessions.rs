@@ -82,7 +82,7 @@ pub enum Outcome {
     /// The daemon will not relaunch the window, which therefore stays.
     RelaunchRefused(String),
     /// What the daemon has staged and why its last update attempt failed, when it did.
-    UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String> },
+    UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64> },
     /// The staged bundle is in place: the window runs "Update now" to finish.
     Applied,
     /// The daemon could not apply the staged update; nothing changed.
@@ -92,7 +92,7 @@ pub enum Outcome {
     /// The daemon accepted a requested check: the window asks `status_after_check` shortly.
     CheckStarted,
     /// The answer to `status_after_check`: what the requested check left.
-    Checked { staged: Option<StagedUpdate>, last_error: Option<String> },
+    Checked { staged: Option<StagedUpdate>, last_error: Option<String>, unreachable_for_secs: Option<u64> },
 }
 
 /// One launch step for one saved terminal tab.
@@ -425,11 +425,12 @@ impl SessionManager {
         if let Response::Hello { daemon_version, protocol_min, protocol_max } = &response {
             return Outcome::DaemonHello { version: daemon_version.clone(), protocol_min: *protocol_min, protocol_max: *protocol_max };
         }
-        if let Response::UpdateStatus { staged, last_error } = &response {
+        if let Response::UpdateStatus { staged, last_error, unreachable_for_secs } = &response {
+            let (staged, last_error, unreachable_for_secs) = (staged.clone(), last_error.clone(), *unreachable_for_secs);
             if pending == Some(Pending::StatusAfterCheck) {
-                return Outcome::Checked { staged: staged.clone(), last_error: last_error.clone() };
+                return Outcome::Checked { staged, last_error, unreachable_for_secs };
             }
-            return Outcome::UpdateStatus { staged: staged.clone(), last_error: last_error.clone() };
+            return Outcome::UpdateStatus { staged, last_error, unreachable_for_secs };
         }
         if let Response::Error(e) = &response {
             match pending {
@@ -1091,7 +1092,7 @@ mod tests {
         m.update_status();
         assert!(matches!(rec.requests()[0], Request::UpdateStatus));
         let staged = StagedUpdate { version: "0.2.1".into(), git: "abc".into() };
-        assert_eq!(m.handle_response(1, Response::UpdateStatus { staged: Some(staged.clone()), last_error: None }), Outcome::UpdateStatus { staged: Some(staged.clone()), last_error: None });
+        assert_eq!(m.handle_response(1, Response::UpdateStatus { staged: Some(staged.clone()), last_error: None, unreachable_for_secs: Some(0) }), Outcome::UpdateStatus { staged: Some(staged.clone()), last_error: None, unreachable_for_secs: Some(0) });
         m.check_for_updates();
         assert!(matches!(rec.requests()[1], Request::CheckForUpdates));
         assert_eq!(m.handle_response(2, Response::Ok), Outcome::CheckStarted);
@@ -1121,9 +1122,9 @@ mod tests {
         // The window's timer fires a moment later and re-asks.
         m.status_after_check();
         assert!(matches!(rec.requests()[1], Request::UpdateStatus));
-        assert_eq!(m.handle_response(2, Response::UpdateStatus { staged: None, last_error: None }), Outcome::Checked { staged: None, last_error: None });
+        assert_eq!(m.handle_response(2, Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: None }), Outcome::Checked { staged: None, last_error: None, unreachable_for_secs: None });
         // A plain status request still answers as before.
         m.update_status();
-        assert_eq!(m.handle_response(3, Response::UpdateStatus { staged: None, last_error: None }), Outcome::UpdateStatus { staged: None, last_error: None });
+        assert_eq!(m.handle_response(3, Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(90_000) }), Outcome::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: Some(90_000) });
     }
 }

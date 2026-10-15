@@ -56,6 +56,17 @@ pub fn other_build(a: &str, b: &str) -> bool {
     build(a) != build(b)
 }
 
+/// How long the daemon may go without reaching the release manifest before the title bar says so.
+const UNREACHABLE_AFTER_SECS: u64 = 24 * 60 * 60;
+
+/// "updates unreachable for 3 days" once the daemon's checks have failed in transport for over a
+/// day (a network that blocks GitHub would otherwise freeze updates unnoticed).
+pub fn unreachable_text(secs: Option<u64>) -> Option<String> {
+    let secs = secs.filter(|s| *s > UNREACHABLE_AFTER_SECS)?;
+    let days = secs / UNREACHABLE_AFTER_SECS;
+    Some(format!("updates unreachable for {days} day{}", if days == 1 { "" } else { "s" }))
+}
+
 /// "update ready: 0.2.0 (def5678)": the installed string without the binary's name.
 pub fn status_text(installed: &str) -> String {
     let version = installed.trim().split_once(' ').map(|(_, v)| v).unwrap_or(installed.trim());
@@ -109,6 +120,16 @@ mod tests {
         assert_eq!(status_text("garbage"), "update ready: garbage");
         assert!(!other_build("arkosd 0.1.0 (abc1234)", "arkos 0.1.0 (abc1234)"), "the daemon and the window of one build");
         assert!(other_build("arkosd 0.2.0 (def5678)", "arkos 0.1.0 (abc1234)"));
+    }
+
+    #[test]
+    fn a_day_without_reaching_the_manifest_says_so_in_whole_days() {
+        let h = 60 * 60;
+        assert_eq!(unreachable_text(None), None);
+        assert_eq!(unreachable_text(Some(0)), None);
+        assert_eq!(unreachable_text(Some(23 * h)), None);
+        assert_eq!(unreachable_text(Some(25 * h)).as_deref(), Some("updates unreachable for 1 day"));
+        assert_eq!(unreachable_text(Some(3 * 24 * h + 5)).as_deref(), Some("updates unreachable for 3 days"));
         assert_eq!(sibling_daemon(std::path::Path::new("/opt/homebrew/bin/arkos")), std::path::PathBuf::from("/opt/homebrew/bin/arkosd"));
         assert_eq!(status_text_for(&StagedUpdate { version: "0.2.1".into(), git: "abc".into() }), "update ready: 0.2.1");
     }

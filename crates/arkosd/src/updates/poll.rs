@@ -17,7 +17,11 @@ pub enum Outcome {
     /// The manifest or the zip could not be fetched (offline, a captive portal, a timeout): logged
     /// and tried again at the next check, never reported to the windows.
     Transient(String),
-    /// The release itself is wrong (signature, size, sha256) or staging failed: reported.
+    /// The manifest's signature does not verify (or the updates folder cannot be made): reported,
+    /// and no manifest was reached.
+    Invalid(String),
+    /// The signed manifest was read, but the release is wrong (size, sha256) or staging failed:
+    /// reported.
     Failed(String),
     /// The manifest names a release that already failed; the text is that failure's.
     Skipped(String),
@@ -50,14 +54,14 @@ enum Failure {
 /// marks it bad; a transport failure is retried at the next check.
 pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad: &mut Bad, ditto: &Path, staged: Option<&Version>) -> Outcome {
     if let Err(e) = private_dir(dir) {
-        return Outcome::Failed(format!("updates dir: {e}"));
+        return Outcome::Invalid(format!("updates dir: {e}"));
     }
     let (bytes, sig) = match f.fetch_manifest(dir) {
         Ok(x) => x,
         Err(e) => return Outcome::Transient(e),
     };
     if let Err(e) = verify::verify_manifest(&bytes, &sig, keys) {
-        return Outcome::Failed(e);
+        return Outcome::Invalid(e);
     }
     let m = match manifest::parse(&bytes) {
         Ok(m) => m,
@@ -108,6 +112,16 @@ pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad:
 /// skipped bad release keeps its original failure reported, and a transport failure leaves it as
 /// it was (a wifi drop is not news).
 pub fn record(u: &mut UpdateState, outcome: Outcome) -> Option<protocol::StagedUpdate> {
+    record_at(u, outcome, super::apply::now_unix())
+}
+
+/// `record` at `now_unix`. Every outcome but a transport failure and a bad signature reached a
+/// verified manifest, which is what `last_ok_unix` counts.
+pub fn record_at(u: &mut UpdateState, outcome: Outcome, now_unix: u64) -> Option<protocol::StagedUpdate> {
+    u.last_check_transient = matches!(outcome, Outcome::Transient(_));
+    if !matches!(outcome, Outcome::Transient(_) | Outcome::Invalid(_)) {
+        u.last_ok_unix = Some(now_unix);
+    }
     match outcome {
         Outcome::Nothing => {
             u.last_error = None;
@@ -123,7 +137,7 @@ pub fn record(u: &mut UpdateState, outcome: Outcome) -> Option<protocol::StagedU
             eprintln!("arkosd: update check: {e} (tried again at the next check)");
             None
         }
-        Outcome::Failed(e) => {
+        Outcome::Failed(e) | Outcome::Invalid(e) => {
             eprintln!("arkosd: update check: {e}");
             u.last_error = Some(e);
             None
@@ -290,7 +304,7 @@ mod tests {
         let running = Version { major: 0, minor: 1, patch: 0, git: "x".into() };
         let mut bad = Bad::new();
         match run_check(&fetcher(&s), dir.path(), &[&other_pk], &running, &mut bad, Path::new("/usr/bin/ditto"), None) {
-            Outcome::Failed(e) => assert!(e.contains("signature"), "{e}"),
+            Outcome::Invalid(e) => assert!(e.contains("signature"), "{e}"),
             other => panic!("{other:?}"),
         }
         assert!(bad.is_empty());
@@ -355,6 +369,28 @@ mod tests {
         record(&mut u, Outcome::Transient("curl: offline".into()));
         assert_eq!(u.last_error.as_deref(), Some("signature"), "and leaves an earlier error as it was");
         assert!(matches!(check(&s, dir.path(), &ver(0, 1, 0), &mut bad, None), Outcome::Transient(_)), "tried again, not skipped");
+    }
+
+    #[test]
+    fn a_check_that_reached_a_signed_manifest_marks_updates_reachable() {
+        let mut u = UpdateState::default();
+        record_at(&mut u, Outcome::Transient("curl: offline".into()), 100);
+        assert_eq!((u.last_ok_unix, u.unreachable_for_secs(200)), (None, None), "never reached: nothing to say");
+        record_at(&mut u, Outcome::Nothing, 1_000);
+        assert_eq!(u.last_ok_unix, Some(1_000));
+        assert_eq!(u.unreachable_for_secs(5_000), Some(0), "the latest check worked");
+        record_at(&mut u, Outcome::Transient("curl: offline".into()), 2_000);
+        assert_eq!(u.last_ok_unix, Some(1_000), "a transport failure reached nothing");
+        assert_eq!(u.unreachable_for_secs(91_000), Some(90_000));
+        record_at(&mut u, Outcome::Invalid("signature".into()), 3_000);
+        assert_eq!(u.last_ok_unix, Some(1_000), "an unverified manifest is not a reached one");
+        record_at(&mut u, Outcome::Failed("sha256".into()), 4_000);
+        assert_eq!(u.last_ok_unix, Some(4_000), "the manifest verified; the zip was wrong");
+        record_at(&mut u, Outcome::Skipped("sha256".into()), 5_000);
+        assert_eq!(u.last_ok_unix, Some(5_000));
+        let s = crate::updates::stage::Staged { version: "0.2.1".into(), git: "g".into(), bundle: PathBuf::from("/x") };
+        record_at(&mut u, Outcome::Staged(s), 6_000);
+        assert_eq!((u.last_ok_unix, u.unreachable_for_secs(7_000)), (Some(6_000), Some(0)));
     }
 
     #[test]
