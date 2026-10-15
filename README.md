@@ -12,7 +12,7 @@ Written in Rust with GPUI. The design is in
 
 Session awareness and recovery after a restart: each tab shows what its Claude Code session is
 doing (a breathing glyph while it works, a warm dot when it waits on you, a muted title when the
-shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
+shell ended), the tab marks show which sessions wait, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
 each Claude Code conversation resumed. The sidebar shows git status in the tree and the
 worktrees, and the viewer marks a file's changes against HEAD. The browser pane docks a Chrome
@@ -51,8 +51,7 @@ Things only a person at the screen can check, in order of value:
 - Shift+Cmd+E, Down, Right, Down, Enter: a file opens from the keyboard
 - right click a file, Copy relative path, paste into a terminal
 - "Install Claude Code hooks", then `claude` in a tab: the glyph breathes while it works, a dot
-  appears when it stops, the title bar's right side says "1 waiting", clicking the tab clears
-  both; with Reduce Motion on, the glyph holds still
+  appears when it stops, clicking the tab clears it; with Reduce Motion on, the glyph holds still
 - "Start at login" with four tabs open, then `kill -9 $(pgrep -x arkos)` to end the window
   without a goodbye (not Cmd+Q, which says goodbye so nothing reopens; a window left open would
   make a second one), then `pkill -TERM arkosd`: the log shows "SIGTERM: writing every session's
@@ -63,18 +62,29 @@ Things only a person at the screen can check, in order of value:
 - Cmd+Q a window, then the restart: that project does not reopen
 - `start_at_login = "off"` in the config: the plist is gone within a second; `"on"`: it is back
 - with four `claude` sessions running, `cargo build --release` a change into place, wait for
-  "update ready" in the title bar (or relaunch), run "Update now" from the palette: the window
+  "Update ready" on the bell (or relaunch), run "Update now" from the palette: the window
   reappears with every tab, every history and every agent still running; `arkosd`'s pid in
   `ps` is unchanged and its log shows "upgrading to" and "resumed N sessions" under a second apart
-- `pkill -x arkosd` with the window open: tabs say "reconnecting", the title bar too; after ten
+- `pkill -x arkosd` with the window open: tabs say "reconnecting", and the bell says
+  "arkosd reconnecting"; after ten
   seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
   "(restarted)"
 - "Update now" when nothing changed relaunches the window and every tab comes back attached
-- push, `gh workflow run release -f version=X`, wait for the run, see "update ready: X" in the
-  title bar within five minutes, stop typing for thirty seconds: the window relaunches with every
+- push, `gh workflow run release -f version=X`, wait for the run, see "Update ready: X" in the
+  bell within five minutes, stop typing for thirty seconds: the window relaunches with every
   shell and tab where it was; `arkos --version` in a tab prints X
-- `[update] auto = false`: the badge stays and "Update now" applies it
+- `[update] auto = false`: the bell's dot stays and "Update now" applies it
 - a relaunched window opens without taking focus from the app in use (verify by eye)
+- the title bar's right side shows a bell and a circled plus (the doctor) and no text; with an
+  update staged the bell wears a dot and its popover says "Update ready: X" with "Update now";
+  after an update the bell says "Updated to X" once, gone after you open and close it; a
+  daemon drop shows "arkosd reconnecting" there and the row goes when it is back
+- with `wheelScrollAccelerationEnabled` absent from `~/.claude/settings.json` the doctor wears a
+  dot; "Apply" writes the key and a `settings.json.bak`; a restarted `claude` scrolls smoothly
+  in a fullscreen conversation; the doctor's Start at login and title hook rows match the
+  palette's commands; "Copy report" puts `arkos doctor`'s text on the clipboard
+- Escape, a click outside, the icon again, or switching to another app closes a popover; opening
+  one closes the other; Reduce Motion shows them without the lift
 - move the window to a second display and resize it, then "Update now" (or quit and open the
   folder again): the window comes back on that display, the same size, in the same place; with
   that display unplugged it opens centered on the main display at that size (macOS puts a new
@@ -159,8 +169,9 @@ Things only a person at the screen can check, in order of value:
 ## Session awareness
 
 Claude Code tells the IDE what it is doing through its hooks. Run "Install Claude Code hooks"
-from the command palette (or `arkos hooks install`), which merges six entries into
-`~/.claude/settings.json` after writing a `.bak`, then start or restart `claude` in a tab:
+from the command palette (or `arkos hooks install`), or the doctor's "Claude Code title hook"
+row, which merges six entries into `~/.claude/settings.json` after writing a `.bak`, then start
+or restart `claude` in a tab:
 
 | Claude Code event | The tab |
 |---|---|
@@ -389,8 +400,8 @@ page).
 # The daemon checks the release manifest every check_every_secs and downloads a newer, signed
 # build in the background. With auto = true the window applies it once you have been idle for
 # idle_after_secs (no typing, nothing open): the daemon swaps in place and the window relaunches
-# with every shell still there. auto = false keeps the "update ready" badge and the palette's
-# "Update now" instead.
+# with every shell still there. auto = false keeps the bell's dot, "Update ready" and the
+# palette's "Update now" instead.
 auto = true
 check_every_secs = 300
 idle_after_secs = 30
@@ -399,6 +410,10 @@ idle_after_secs = 30
 `check_every_secs` is the daemon's: it reaches a running daemon only when the window starts it or
 the login item is reinstalled ("Start at login" in the palette); a daemon already running keeps
 the interval it started with. `auto` and `idle_after_secs` apply at once.
+
+Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
+`wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the circled
+plus at the right of the title bar) sets it for you.
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
@@ -423,10 +438,10 @@ refuses a quarantined ad-hoc app. The daemon's own updates never carry the attri
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
 and verifies a newer build, and the window applies it once you have been idle for thirty seconds
 (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
-still there. `[update] auto = false` keeps the badge and "Update now" instead.
+still there. `[update] auto = false` keeps the bell's dot and "Update now" instead.
 
 "Check for updates" in the palette asks now and waits for that check (up to 30 seconds) before
-saying one thing: "update ready: X" when it found a release (the badge appears too), "update
+saying one thing: "update ready: X" when it found a release (the bell gets its dot too), "update
 check failed: …" when the release itself was bad, "updates unreachable: …" with the daemon's
 words when GitHub could not be reached, "the update check is still running" when 30 seconds were
 not enough, and "no update" only when the check reached the manifest and found nothing newer.
@@ -435,14 +450,14 @@ three seconds, and says "the daemon has not reached the update server yet" when 
 
 A release downloaded and staged before a daemon restart is kept: the restarted daemon adopts the
 staged bundle (the journal says "adopted staged X from before the restart") instead of
-downloading it again, and the badge stays.
+downloading it again, and the bell's dot stays.
 
 A check that cannot reach GitHub (offline, a captive portal) is retried quietly at the next one;
-when none has reached the signed manifest for over a day, the title bar says "updates
-unreachable for N days" until one does.
+when none has reached the signed manifest for over a day, the bell's popover says
+"updates unreachable for N days" until one does.
 When the daemon's last check or update failed for a reason that is the release's (a bad
-signature, a download that does not match its manifest) or the swap's, the title bar shows the
-reason once as a notice, the badge says "update failed", and the palette offers "Retry update".
+signature, a download that does not match its manifest) or the swap's, the bell shows the
+reason once as a notice, its popover says "update failed", and the palette offers "Retry update".
 If the new window does not come up within 20 seconds of its relaunch, or the daemon's own
 upgrade onto the new build fails (the journal says "the upgrade onto X failed: …; the grace for
 X starts now"), the daemon puts the previous app back 20 seconds later, reopens your windows,
@@ -451,7 +466,7 @@ and records the version in
 release still is). To try a rejected version again, delete that file.
 
 Sessions live in `arkosd`, so updating never ends one. After `cargo build --release` into the
-binaries you run (a build from source), the title bar shows "update ready" within
+binaries you run (a build from source), the bell gets its dot and "Update ready" within
 five minutes (or at the next launch), and the palette's "Update now" does the rest: if the
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
 process (same pid, the shells stay its children) and the window reconnects; then the window
@@ -462,7 +477,7 @@ update-in-place build is an ordinary "Update now". Upgrading from milestone 2b i
 update that needs `pkill -x arkosd` (the old daemon knows nothing of handovers), which ends
 every session.
 
-Click the badge to update at once.
+Click the bell, then "Update now", to update at once.
 
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
 shows the error. If the window loses the daemon for ten seconds, it starts a new one and every
