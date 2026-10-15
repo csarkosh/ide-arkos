@@ -302,7 +302,9 @@ Notes:
 - A program that turns on the kitty keyboard protocol (Claude Code does) gets its
   "disambiguate" encoding: Esc as `ESC [ 27 u`, and a modified Enter, Tab, Backspace or Space, a
   key with Option, or Ctrl+Shift with a key as `ESC [ code ; mods u`, so Shift+Enter is a newline
-  there. Everywhere else those keys keep their usual bytes: Shift+Enter in a shell is Enter.
+  there. Ctrl+letter keeps its control byte even then, so Ctrl+I, Ctrl+M and Ctrl+[ stay Tab,
+  Enter and Esc. Everywhere else those keys keep their usual bytes: Shift+Enter in a shell is
+  Enter. A program killed on the alternate screen can leave the protocol on; `reset` clears it.
 - Drag across terminal text to select it (double click a word, triple click a line); Cmd+C
   copies it and a click clears it. A program that asks for mouse reports, such as Claude Code's
   fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and its

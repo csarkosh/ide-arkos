@@ -50,21 +50,23 @@ pub fn keystroke_to_bytes(k: &Keystroke, mode: KeyMode) -> Option<Vec<u8>> {
     }
     if mode.kitty {
         // The keys whose legacy bytes a program cannot tell apart: Esc from an escape sequence,
-        // a modified Enter, Tab, Backspace or Space from the plain key. Ctrl+letter keeps its
-        // control byte, which every program reads either way.
+        // a modified Enter, Tab, Backspace or Space from the plain key. Shift+Space is text and
+        // stays a space. Ctrl+letter keeps its control byte, which every program reads either
+        // way (so Ctrl+I, Ctrl+M and Ctrl+[ stay Tab, Enter and Esc, as in a legacy terminal).
         let code = match key {
             "escape" => Some(27),
             "enter" if mods > 1 => Some(13),
             "tab" if mods > 1 => Some(9),
             "backspace" if mods > 1 => Some(127),
-            "space" if mods > 1 => Some(32),
+            "space" if m.control || m.alt => Some(32),
             _ => None,
         };
         if let Some(code) = code {
             return csi_u(code, mods);
         }
-        // A character with Alt, or with Ctrl and Shift, has no legacy byte at all.
-        if key.chars().count() == 1 && (m.alt || (m.control && m.shift)) {
+        // A character with Option as Meta, or with Ctrl and Shift, has no legacy byte at all.
+        // Option composing a character is text, handled below.
+        if key.chars().count() == 1 && ((m.alt && mode.option_as_meta) || (m.control && m.shift)) {
             return csi_u(key.chars().next()? as u32, mods);
         }
     }
@@ -109,6 +111,10 @@ pub fn keystroke_to_bytes(k: &Keystroke, mode: KeyMode) -> Option<Vec<u8>> {
                     '?' => 0x7f,
                     _ => return None,
                 };
+                // Ctrl+Option+key: Meta on the control byte, as xterm's metaSendsEscape.
+                if m.alt && mode.option_as_meta {
+                    return Some(vec![0x1b, code]);
+                }
                 return Some(vec![code]);
             }
             // Option as Meta: ESC plus the key the layout gives without Option; Shift keeps
@@ -199,8 +205,14 @@ mod tests {
         assert_eq!(keystroke_to_bytes(&ks("tab", None, shift()), kitty()), Some(b"\x1b[9;2u".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("backspace", None, ctrl()), kitty()), Some(b"\x1b[127;5u".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("space", None, ctrl()), kitty()), Some(b"\x1b[32;5u".to_vec()));
+        assert_eq!(keystroke_to_bytes(&ks("backspace", None, alt()), kitty()), Some(b"\x1b[127;3u".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("p", Some("π"), alt()), kitty()), Some(b"\x1b[112;3u".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("a", None, ctrl_shift()), kitty()), Some(b"\x1b[97;6u".to_vec()));
+        // Shift+Space is text, so it stays a space: Shift is often still held after a capital.
+        assert_eq!(keystroke_to_bytes(&ks("space", Some(" "), shift()), kitty()), Some(b" ".to_vec()));
+        // With Option composing, Option+S is still the character, kitty or not.
+        let compose_kitty = KeyMode { kitty: true, ..compose() };
+        assert_eq!(keystroke_to_bytes(&ks("s", Some("ß"), alt()), compose_kitty), Some("ß".as_bytes().to_vec()));
         // The plain keys and Ctrl+letter keep their legacy bytes.
         assert_eq!(keystroke_to_bytes(&ks("enter", None, none()), kitty()), Some(b"\r".to_vec()));
         assert_eq!(keystroke_to_bytes(&ks("tab", None, none()), kitty()), Some(b"\t".to_vec()));
@@ -222,6 +234,10 @@ mod tests {
         assert_eq!(keystroke_to_bytes(&ks("c", None, ctrl()), meta()), Some(vec![0x03]));
         assert_eq!(keystroke_to_bytes(&ks("d", None, ctrl()), meta()), Some(vec![0x04]));
         assert_eq!(keystroke_to_bytes(&ks("[", None, ctrl()), meta()), Some(vec![0x1b]));
+        // Ctrl+Option+C is Meta on the control byte; composing drops the Meta.
+        let ctrl_alt = Modifiers { control: true, alt: true, ..Modifiers::default() };
+        assert_eq!(keystroke_to_bytes(&ks("c", None, ctrl_alt), meta()), Some(vec![0x1b, 0x03]));
+        assert_eq!(keystroke_to_bytes(&ks("c", None, ctrl_alt), compose()), Some(vec![0x03]));
     }
 
     #[test]

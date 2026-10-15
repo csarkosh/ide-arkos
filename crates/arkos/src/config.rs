@@ -581,6 +581,14 @@ mod tests {
     }
 
     #[test]
+    fn a_config_from_before_option_as_meta_keeps_meta_on() {
+        let cfg: Config = toml::from_str("[terminal]\nscrollback = 10\n").unwrap();
+        assert!(cfg.terminal.option_as_meta);
+        let off: Config = toml::from_str("[terminal]\noption_as_meta = false\n").unwrap();
+        assert!(!off.terminal.option_as_meta);
+    }
+
+    #[test]
     fn the_default_file_parses_to_the_defaults() {
         let cfg = parse(DEFAULT_CONFIG).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(cfg, Config::default());

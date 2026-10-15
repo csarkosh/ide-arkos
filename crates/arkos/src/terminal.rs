@@ -846,18 +846,19 @@ mod tests {
         let mut t = TerminalCore::new(20, 5, 100);
         assert!(!t.key_mode(true).kitty);
         assert!(t.key_mode(true).option_as_meta && !t.key_mode(false).option_as_meta);
-        // The set form Claude Code uses, then the push and pop forms.
+        // The set form, then the push form Claude Code uses (flags 5: disambiguate and
+        // alternate keys) and the pop.
         t.apply_output(b"\x1b[=1;1u");
         assert!(t.key_mode(true).kitty);
         t.apply_output(b"\x1b[=u");
         assert!(!t.key_mode(true).kitty, "an empty set clears the flags");
-        t.apply_output(b"\x1b[>1u");
+        t.apply_output(b"\x1b[>5u");
         assert!(t.key_mode(true).kitty);
         t.apply_output(b"\x1b[<u");
         assert!(!t.key_mode(true).kitty);
-        // Flags set on the alternate screen leave with it, so a crashed program cannot leave
-        // the shell's Esc encoded.
-        t.apply_output(b"\x1b[?1049h\x1b[=1;1u");
+        // Flags pushed on the alternate screen leave with it, so a program that exits cleanly
+        // leaves the shell's Esc alone (one that is killed does not; `reset` clears both).
+        t.apply_output(b"\x1b[?1049h\x1b[>1u");
         assert!(t.key_mode(true).kitty);
         t.apply_output(b"\x1b[?1049l");
         assert!(!t.key_mode(true).kitty);
