@@ -53,7 +53,7 @@ mod worktrees;
 
 use futures::channel::oneshot;
 use gpui::{
-    div, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
+    div, point, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
     KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Task, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use protocol::{Event, Request, SessionId, StagedUpdate};
@@ -746,11 +746,11 @@ impl Root {
     /// Remembers where the window is, whenever that changes, so a relaunch opens it there. A
     /// full-screen or minimized window is no place to come back to and is not noted.
     fn note_window_placement(&mut self, window: &Window, cx: &mut App) {
-        let Some(ns) = self.ns_window.as_ref() else { return };
-        if window.is_fullscreen() || ax::screen::window_hidden(ns) {
+        if window.is_fullscreen() || self.ns_window.as_ref().is_some_and(|ns| ax::screen::window_hidden(ns)) {
             return;
         }
-        let Some((x, y, w, h)) = ax::screen::placement(ns) else { return };
+        let b = window.bounds();
+        let (x, y, w, h) = (f64::from(f32::from(b.origin.x)), f64::from(f32::from(b.origin.y)), f64::from(f32::from(b.size.width)), f64::from(f32::from(b.size.height)));
         if self.window_saved.as_ref().is_some_and(|s| (s.x, s.y, s.w, s.h) == (x, y, w, h)) {
             return;
         }
@@ -913,6 +913,7 @@ impl Root {
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
+        self.tab_widths.remove(&id);
         if let Tab::Terminal { session, cwd } = tab {
             if session != SessionId(0) {
                 let ended = self.sessions.terminals.get(&session).map(|t| !t.read(cx).alive).unwrap_or(false);
@@ -1154,30 +1155,46 @@ impl Root {
         }
     }
 
-    /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
-    /// still lands the right one, and one whose tab closed does nothing. The source pane closes
-    /// only when the drag emptied it, and never when it is the last pane (spec 4).
     /// The first move of a tab dragged within its own bar starts the reorder slide: its slot
-    /// closes and a gap its width follows the insertion point. A drag from another pane keeps
-    /// the plain insertion marker.
+    /// closes and a gap its width follows the insertion point. A drag from another pane has no
+    /// slide; its tabs stay put until the drop.
     pub fn begin_reorder(&mut self, pane: PaneId, d: &drag::TabDrag) {
-        if d.pane != pane || self.reorder.as_ref().is_some_and(|r| r.tab == d.tab) {
+        if d.pane != pane || self.reorder.as_ref().is_some_and(|r| r.tab == d.tab && !r.ended()) {
             return;
         }
         let width = self.tab_widths.get(&d.tab).copied().unwrap_or(80.0);
         self.reorder = Some(pane_view::Reorder::start(pane, d.tab, width, Instant::now()));
     }
 
+    /// The slot a tab dragged along its own bar would land in, from the pointer's place in the
+    /// bar (`bounds` is the strip's, scrolled by the bar's handle). The tabs' recorded widths
+    /// decide, not what is under the pointer: the gap itself moves the tabs.
+    pub fn reorder_slot_for(&self, pane: PaneId, tab: TabId, bounds: Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> usize {
+        let Some(p) = self.tree.pane(pane) else { return usize::MAX };
+        let Some(idx) = p.ids.iter().position(|i| *i == tab) else { return usize::MAX };
+        let widths: Vec<f32> = p.ids.iter().map(|id| self.tab_widths.get(id).copied().unwrap_or(80.0)).collect();
+        let scrolled = self.bar_scroll.get(&pane).map_or(0.0, |h| f32::from(h.offset().x));
+        let x = f32::from(pos.x - bounds.origin.x) - scrolled;
+        let current = self.reorder.as_ref().filter(|r| r.pane == pane && r.tab == tab).and_then(|r| r.at());
+        pane_view::reorder_slot(&widths, idx, current, x)
+    }
+
+    /// Lands a dragged tab. The tab is found by id, so a drag that outlived a move of its tab
+    /// still lands the right one, and one whose tab closed does nothing. The source pane closes
+    /// only when the drag emptied it, and never when it is the last pane (spec 4).
     pub fn drop_tab(&mut self, d: &drag::TabDrag, target: drag::DropTarget, cx: &mut Context<Self>) {
         self.drop_target = None;
         self.tab_drag_browser = None;
-        // The tab lands in the gap the reorder opened, which was its own width: nothing to slide.
-        self.reorder = None;
         if self.tree.locate(d.tab).is_some() {
             self.preview_tab = after_drop(self.preview_tab, d.tab);
         }
         if self.place_tab(d.tab, target) {
+            // The tab lands in the gap the reorder opened, which was its own width: nothing to slide.
+            self.reorder = None;
             self.save(cx);
+        } else if let Some(r) = self.reorder.as_mut() {
+            // Nowhere to land: the gap closes and the slot opens again.
+            r.end(Instant::now());
         }
         cx.notify();
     }
@@ -1276,13 +1293,14 @@ impl Root {
         cx.notify();
     }
 
-    /// A key typed while the URL prompt has focus: edits the field (Cmd+V pastes), opens the URL
-    /// on Enter (an empty field opens `[browser] url`), closes on Escape. Closing hands the keys
-    /// back to the pane.
     /// Double-click on a tab's title: the title becomes an editor holding the current name (or
-    /// nothing, when the tab still shows its automatic title).
+    /// nothing, when the tab still shows its automatic title). A slim bar (a browser tab in
+    /// front) shows no titles, so there is nothing to edit there.
     pub fn begin_tab_rename(&mut self, pane: PaneId, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tree.tab_id(pane, idx) else { return };
+        if self.tree.pane(pane).is_some_and(|p| matches!(p.tabs.get(p.active), Some(Tab::Browser { .. }))) {
+            return;
+        }
         let mut edit = crate::line_edit::LineEdit::new();
         edit.set(self.tree.tab_name(tab).unwrap_or_default());
         self.tab_rename = Some(pane_view::TabRename { pane, tab, edit });
@@ -1315,11 +1333,18 @@ impl Root {
     /// one gives the tab its automatic title back.
     pub fn commit_tab_rename(&mut self, cx: &mut Context<Self>) {
         let Some(r) = self.tab_rename.take() else { return };
+        if self.tree.locate(r.tab).is_none() {
+            cx.notify();
+            return;
+        }
         self.tree.set_tab_name(r.tab, Some(r.edit.text.clone()));
         self.save(cx);
         cx.notify();
     }
 
+    /// A key typed while the URL prompt has focus: edits the field (Cmd+V pastes), opens the URL
+    /// on Enter (an empty field opens `[browser] url`), closes on Escape. Closing hands the keys
+    /// back to the pane.
     pub fn url_prompt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         let configured = self.config.browser.url.clone();
         let Some(p) = self.url_prompt.value_mut() else { return };
@@ -2788,6 +2813,8 @@ impl Render for Root {
             Some(f)
         } else if self.url_prompt.value().is_some() {
             Some(self.url_prompt_focus.clone())
+        } else if self.tab_rename.is_some() {
+            Some(self.tab_rename_focus.clone())
         } else if self.wt_focused && self.wt_prompt.value().is_some() {
             Some(self.wt_prompt_focus.clone())
         } else if self.wt_focused {
@@ -2850,13 +2877,15 @@ impl Render for Root {
                     cx.notify();
                     return;
                 }
-                if root.drop_target.is_some() && ev.pressed_button != Some(MouseButton::Left) {
+                if ev.pressed_button != Some(MouseButton::Left) {
                     // A tab drag released outside the window, where no mouse-up reaches us.
-                    root.drop_target = None;
-                    if let Some(r) = root.reorder.as_mut() {
-                        r.end(Instant::now());
+                    if root.drop_target.take().is_some() {
+                        cx.notify();
                     }
-                    cx.notify();
+                    if let Some(r) = root.reorder.as_mut().filter(|r| !r.ended()) {
+                        r.end(Instant::now());
+                        cx.notify();
+                    }
                 }
                 if root.resizing.is_some() && ev.pressed_button != Some(MouseButton::Left) {
                     // Released outside the window, where no mouse-up reaches us: end the drag.
@@ -3228,18 +3257,27 @@ struct Startup {
     system_is_dark: bool,
 }
 
-/// Opens the window on `project` and starts everything that serves it.
-/// Where the project window opens: on the saved display at the saved size when that display is
-/// attached (`true`: its exact place follows once the window exists), else that size centered
-/// on the main display; 1200 by 800 centered with nothing saved.
-fn open_bounds(saved: Option<&workspace::WindowSaved>, cx: &App) -> (Option<gpui::DisplayId>, Bounds<gpui::Pixels>, bool) {
+/// Where the project window opens: where it was, on its display, when that display is attached;
+/// else centered on the main display at its size. Either way it is kept within the display (it
+/// may be a smaller one now). 1200 by 800 centered with nothing saved.
+fn open_bounds(saved: Option<&workspace::WindowSaved>, cx: &App) -> (Option<gpui::DisplayId>, Bounds<gpui::Pixels>) {
     let Some(s) = saved.filter(|s| s.w.is_finite() && s.h.is_finite() && s.w >= 200.0 && s.h >= 200.0) else {
-        return (None, Bounds::centered(None, size(px(1200.), px(800.)), cx), false);
+        return (None, Bounds::centered(None, size(px(1200.), px(800.)), cx));
     };
-    let display = cx.displays().into_iter().find(|d| d.uuid().ok().is_some_and(|u| u.to_string() == s.display)).map(|d| d.id());
-    (display, Bounds::centered(display, size(px(s.w as f32), px(s.h as f32)), cx), display.is_some())
+    let found = cx.displays().into_iter().find(|d| d.uuid().ok().is_some_and(|u| u.to_string() == s.display));
+    let display = found.as_ref().map(|d| d.id());
+    let Some(screen) = found.or_else(|| cx.primary_display()).map(|d| d.bounds().size) else {
+        return (None, Bounds::centered(None, size(px(s.w as f32), px(s.h as f32)), cx));
+    };
+    let (dw, dh) = (f64::from(f32::from(screen.width)), f64::from(f32::from(screen.height)));
+    let (x, y, w, h) = match display {
+        Some(_) => workspace::fit_window(s.x, s.y, s.w, s.h, dw, dh),
+        None => workspace::fit_window((dw - s.w) / 2.0, (dh - s.h) / 2.0, s.w, s.h, dw, dh),
+    };
+    (display, Bounds::new(point(px(x as f32), px(y as f32)), size(px(w as f32), px(h as f32))))
 }
 
+/// Opens the window on `project` and starts everything that serves it.
 fn open_project_window(
     project: PathBuf,
     // The connection, and what the launch chooser read from it before the window existed.
@@ -3262,10 +3300,8 @@ fn open_project_window(
         .detach();
     {
         // The window comes back where it was: on its display when that is still attached, at
-        // its size; its exact place follows once the window exists (`ax::screen::place`).
-        let saved_window = saved.as_ref().and_then(|s| s.window.clone());
-        let (display_id, bounds, place) = open_bounds(saved_window.as_ref(), cx);
-        let place = place.then_some(saved_window).flatten();
+        // its size and place.
+        let (display_id, bounds) = open_bounds(saved.as_ref().and_then(|s| s.window.as_ref()), cx);
         let client_for_view = client.clone();
         let view_queue = save_queue.clone();
         let view_project = project.clone();
@@ -3298,9 +3334,6 @@ fn open_project_window(
                         .detach();
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
                         root.ns_window = ax::screen::ns_window_of(window);
-                        if let (Some(ns), Some(w)) = (root.ns_window.as_ref(), place.as_ref()) {
-                            ax::screen::place(ns, w.x, w.y, w.w, w.h);
-                        }
                         root.save_queue = view_queue;
                         root.build_highlighter(cx);
                         root

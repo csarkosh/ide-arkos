@@ -292,6 +292,41 @@ impl Reorder {
     pub fn done(&self, now: std::time::Instant) -> bool {
         self.ending && !self.animating(now)
     }
+
+    /// Whether a cancel has ended it (its slides may still be playing).
+    pub fn ended(&self) -> bool {
+        self.ending
+    }
+
+    /// The slot the gap sits before, in the bar with the dragged tab still in it.
+    pub fn at(&self) -> Option<usize> {
+        self.at
+    }
+}
+
+/// The slot a tab dragged along its own bar lands in, from the pointer's `x` in the bar's
+/// content: `widths` are every tab's in bar order, `dragged` the tab's index, `current` the slot
+/// the gap sits before now. The other tabs are laid out as they are drawn (the gap, the dragged
+/// tab's width, at `current`), and the slot is the first whose tab's midpoint lies past `x`,
+/// so a pointer resting in the gap keeps it where it is. Slots count the dragged tab's own
+/// position, as `Tree::move_tab` does; `dragged` means it stays.
+pub fn reorder_slot(widths: &[f32], dragged: usize, current: Option<usize>, x: f32) -> usize {
+    let gap = widths.get(dragged).copied().unwrap_or(0.0);
+    let others: Vec<f32> = widths.iter().enumerate().filter(|(i, _)| *i != dragged).map(|(_, w)| *w).collect();
+    let gap_at = current.map(|c| if c > dragged { c - 1 } else { c }.min(others.len()));
+    let mut pos = 0.0;
+    let mut slot = others.len();
+    for (i, w) in others.iter().enumerate() {
+        if gap_at == Some(i) {
+            pos += gap;
+        }
+        if x < pos + w / 2.0 {
+            slot = i;
+            break;
+        }
+        pos += w;
+    }
+    if slot <= dragged { slot } else { slot + 1 }
 }
 
 /// A tab the user is renaming in place (double-click on its title): the editor shows where the
@@ -546,8 +581,14 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
             if ev.bounds.contains(&ev.event.position) {
-                root.begin_reorder(pane, ev.drag(cx));
-                root.drop_target = Some(drag::DropTarget::TabBar { pane, at: usize::MAX });
+                let (from, tab) = { let d = ev.drag(cx); (d.pane, d.tab) };
+                let at = if from == pane {
+                    root.begin_reorder(pane, ev.drag(cx));
+                    root.reorder_slot_for(pane, tab, ev.bounds, ev.event.position)
+                } else {
+                    usize::MAX
+                };
+                root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
                 cx.notify();
             }
         }))
@@ -630,8 +671,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
             })
             .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
-                if ev.bounds.contains(&ev.event.position) {
-                    root.begin_reorder(pane, ev.drag(cx));
+                // A tab from this bar is placed by the bar itself (the gap moves the tabs).
+                if ev.bounds.contains(&ev.event.position) && ev.drag(cx).pane != pane {
                     let at = drag::insert_index(ev.bounds, ev.event.position, idx);
                     root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
                     cx.notify();
@@ -642,7 +683,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 {
                     let weak = cx.weak_entity();
                     move |bounds, _window, cx| {
-                        if let Some(id) = tab_id_for_width {
+                        // Not while collapsed: the width on record is the tab's own.
+                        if let Some(id) = tab_id_for_width.filter(|_| slot_width.is_none()) {
                             let _ = weak.update(cx, |root, _| {
                                 root.tab_widths.insert(id, f32::from(bounds.size.width));
                             });
@@ -656,15 +698,17 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             .left_0()
             .size_full())
             .when_some(slot_width, |el, w| el.flex_none().w(px(w)).overflow_hidden());
+        // The collapsed slot has no padding either: padding would hold it open.
+        let (pad_x, pad_all) = if slot_width.is_some() { (px(0.0), px(0.0)) } else { (px(10.0), px(8.0)) };
         if slim {
             // A dot per tab in a 22 px square to hit; the label rides along on a drag.
             let (lit, unlit) = dot_colors(c);
-            strip = strip.child(tab.p(px(8.0)).child(div().size(px(6.0)).rounded_full().bg(if is_active { lit } else { unlit }.hsla())));
+            strip = strip.child(tab.p(pad_all).child(div().size(px(6.0)).rounded_full().bg(if is_active { lit } else { unlit }.hsla())));
             continue;
         }
         strip = strip.child(
-            tab.px(px(10.0))
-                .gap(px(6.0))
+            tab.px(pad_x)
+                .gap(if slot_width.is_some() { px(0.0) } else { px(6.0) })
                 .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
                 .text_color(text)
                 .when_some(glyph, |el, g| el.child(g))
@@ -673,6 +717,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                         .key_context("TabRename")
                         .track_focus(&rename_focus)
                         .w(px(150.0))
+                        .overflow_hidden()
                         .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
                         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tab_rename_key(&ev.keystroke, cx)))
                         .child(line_edit::render(&edit, "name", &theme, family.clone(), 12.0))
@@ -1199,6 +1244,27 @@ mod tests {
         assert!(r.animating(t0 + Duration::from_millis(40)));
         assert_eq!(r.gap_before(2, t0 + Duration::from_secs(1)), 80.0);
         assert!(!r.animating(t0 + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn the_reorder_slot_follows_the_pointer_and_rests_in_the_gap() {
+        let w = [100.0, 100.0, 100.0];
+        // The first tab dragged right: past the middle of the next tab, it lands after it.
+        assert_eq!(reorder_slot(&w, 0, None, 30.0), 0, "over its own place");
+        assert_eq!(reorder_slot(&w, 0, None, 149.0), 2, "past the midpoint of the second tab");
+        assert_eq!(reorder_slot(&w, 0, Some(2), 149.0), 2, "resting in the gap the slot opened");
+        assert_eq!(reorder_slot(&w, 0, Some(2), 260.0), 3, "on to the end");
+        assert_eq!(reorder_slot(&w, 0, Some(3), 260.0), 3);
+        assert_eq!(reorder_slot(&w, 0, Some(3), 140.0), 2, "and back");
+        // The middle tab dragged left and right.
+        assert_eq!(reorder_slot(&w, 1, None, 30.0), 0);
+        assert_eq!(reorder_slot(&w, 1, Some(0), 30.0), 0, "the gap now covers it");
+        assert_eq!(reorder_slot(&w, 1, Some(0), 160.0), 1, "over the first tab's new place: stays");
+        assert_eq!(reorder_slot(&w, 1, None, 250.0), 3);
+        assert_eq!(reorder_slot(&w, 1, Some(3), 250.0), 3, "in the gap after the last tab");
+        // Uneven widths.
+        assert_eq!(reorder_slot(&[60.0, 200.0, 40.0], 2, None, 170.0), 2, "left of the wide tab's midpoint: stays before it");
+        assert_eq!(reorder_slot(&[60.0, 200.0, 40.0], 2, None, 150.0), 1, "past it: before the wide tab");
     }
 
     #[test]

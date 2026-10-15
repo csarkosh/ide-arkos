@@ -31,8 +31,8 @@ pub struct Workspace {
     pub window: Option<WindowSaved>,
 }
 
-/// The project window's place: its display and its frame on it, AppKit terms (`x`, `y` are the
-/// frame's bottom-left corner from the display's own, points, y up).
+/// The project window's place: its display and its frame on it, in points, `x` and `y` being
+/// the frame's top-left corner from the display's top-left (gpui's window bounds).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowSaved {
     /// The display's stable id (a UUID), the same across reboots and replugging.
@@ -41,6 +41,14 @@ pub struct WindowSaved {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+}
+
+/// A `w` by `h` frame at (`x`, `y`) kept within a `dw` by `dh` display (top-left origin): no
+/// larger than the display, and moved in so no edge lies outside it. macOS keeps the title bar
+/// under the menu bar on its own.
+pub fn fit_window(x: f64, y: f64, w: f64, h: f64, dw: f64, dh: f64) -> (f64, f64, f64, f64) {
+    let (w, h) = (w.min(dw), h.min(dh));
+    (x.clamp(0.0, dw - w), y.clamp(0.0, dh - h), w, h)
 }
 
 /// The sidebar as the user left it for this folder (spec 4: "sidebar width and collapsed
@@ -309,6 +317,14 @@ mod tests {
         let a = t.focused;
         t.split(a, Side::Right, Tab::Terminal { session: SessionId(2), cwd: None });
         t
+    }
+
+    #[test]
+    fn a_restored_window_stays_within_its_display() {
+        assert_eq!(fit_window(100.0, 80.0, 1200.0, 800.0, 1800.0, 1125.0), (100.0, 80.0, 1200.0, 800.0), "fits where it was");
+        assert_eq!(fit_window(-40.0, -10.0, 1200.0, 800.0, 1800.0, 1125.0), (0.0, 0.0, 1200.0, 800.0), "pulled onto the display");
+        assert_eq!(fit_window(900.0, 900.0, 1200.0, 800.0, 1800.0, 1125.0), (600.0, 325.0, 1200.0, 800.0), "pulled back from the far corner");
+        assert_eq!(fit_window(100.0, 80.0, 2400.0, 1500.0, 1440.0, 900.0), (0.0, 0.0, 1440.0, 900.0), "a window from a bigger display fills this one");
     }
 
     #[test]

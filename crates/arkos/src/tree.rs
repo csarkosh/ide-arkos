@@ -923,8 +923,10 @@ mod tests {
         assert_eq!(t.tab_name(id), None);
         assert!(t.names.is_empty());
         // A file from before names has none.
-        let old: Tree = serde_json::from_str(&json.replace(",\"names\":[[", ",\"names_was\":[[")).unwrap_or_else(|_| Tree::new(Tab::Terminal { session: SessionId(9), cwd: None }));
-        let _ = old;
+        let plain = serde_json::to_string(&Tree::new(Tab::Terminal { session: SessionId(9), cwd: None })).unwrap();
+        assert!(plain.contains(",\"names\":[]"));
+        let old: Tree = serde_json::from_str(&plain.replace(",\"names\":[]", "")).unwrap();
+        assert!(old.names.is_empty());
     }
 
     #[test]

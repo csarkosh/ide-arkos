@@ -239,8 +239,8 @@ impl Element for TerminalElement {
 }
 
 /// Every link in the visible rows, as (row, start column, end column exclusive): drawn with an
-/// underline whether or not the pointer is over it. A row with no scheme is skipped before any
-/// scan, so a screen of plain output costs a substring check per row.
+/// underline whether or not the pointer is over it. A row without "http" in it is skipped before
+/// the link scan, so most rows cost one pass over their characters.
 pub fn link_spans(visible: &[Vec<(char, CellStyle, CellKind)>]) -> Vec<(usize, usize, usize)> {
     let mut out = Vec::new();
     for (row, cells) in visible.iter().enumerate() {

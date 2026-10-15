@@ -392,48 +392,6 @@ pub mod screen {
         window.isMiniaturized() || !window.isVisible()
     }
 
-    /// The window's frame on its display: the bottom-left corner from the display's own, and
-    /// the size, in points. None while the window is on no display.
-    pub fn placement(window: &NSWindow) -> Option<(f64, f64, f64, f64)> {
-        let screen = window.screen()?.frame();
-        let f = window.frame();
-        Some((f.origin.x - screen.origin.x, f.origin.y - screen.origin.y, f.size.width, f.size.height))
-    }
-
-    /// Puts the window's frame at `(x, y)` from its display's bottom-left corner, `w` by `h`,
-    /// kept within the display's visible area (menu bar and Dock excluded) in case the display
-    /// is not the size it was.
-    pub fn place(window: &NSWindow, x: f64, y: f64, w: f64, h: f64) {
-        let Some(screen) = window.screen() else { return };
-        let (sf, vf) = (screen.frame(), screen.visibleFrame());
-        let visible = Rect { x: vf.origin.x, y: vf.origin.y, w: vf.size.width, h: vf.size.height };
-        let (ox, oy) = clamp_origin(sf.origin.x + x, sf.origin.y + y, w, h, visible);
-        let frame = objc2_core_foundation::CGRect { origin: objc2_core_foundation::CGPoint { x: ox, y: oy }, size: objc2_core_foundation::CGSize { width: w, height: h } };
-        window.setFrame_display(frame, false);
-    }
-
-    /// The origin that keeps a `w` by `h` frame inside `visible` (y up). A frame too wide
-    /// starts at the left edge; one too tall keeps its top (the title bar) in view.
-    pub fn clamp_origin(x: f64, y: f64, w: f64, h: f64, visible: Rect) -> (f64, f64) {
-        let x = if w >= visible.w { visible.x } else { x.clamp(visible.x, visible.x + visible.w - w) };
-        let y = if h >= visible.h { visible.y + visible.h - h } else { y.clamp(visible.y, visible.y + visible.h - h) };
-        (x, y)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn a_restored_frame_stays_within_the_visible_area() {
-            let visible = Rect { x: 0.0, y: 70.0, w: 1800.0, h: 1055.0 };
-            assert_eq!(clamp_origin(100.0, 200.0, 1200.0, 800.0, visible), (100.0, 200.0), "fits where it was");
-            assert_eq!(clamp_origin(-50.0, 10.0, 1200.0, 800.0, visible), (0.0, 70.0), "pulled onto the area");
-            assert_eq!(clamp_origin(900.0, 900.0, 1200.0, 800.0, visible), (600.0, 325.0), "pulled back from the far corner");
-            assert_eq!(clamp_origin(100.0, 200.0, 2400.0, 1600.0, visible), (0.0, -475.0), "too big: left edge and top kept");
-        }
-    }
-
     /// The `NSWindow` behind a gpui window, from its AppKit window handle (the content view).
     pub fn ns_window_of(window: &impl raw_window_handle::HasWindowHandle) -> Option<Retained<NSWindow>> {
         let handle = window.window_handle().ok()?;

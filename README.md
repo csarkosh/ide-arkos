@@ -123,12 +123,13 @@ Things only a person at the screen can check, in order of value:
   folder; Escape quits; Cmd+O from a window opens a second window
 - with three tabs in a pane, drag the first slowly to the right: its slot closes, the others
   slide left, and a gap its width glides along as the pointer crosses each tab; drop: the tab
-  lands in the gap with no jump; drag again and press Escape or release over the sidebar: the
-  gap closes and the slot opens again; Reduce Motion: the same without the glide
+  lands in the gap with no jump; drag again and release over the sidebar: the gap closes and
+  the slot opens again; Reduce Motion: the same without the glide
 - double-click a tab's title, type a name, Enter: the tab shows it; `claude` retitles its own
   window and the name stays; relaunch (Update now): the name is back; close the tab and
-  Shift+Cmd+T: the automatic title is back; a link in terminal output is underlined before the
-  pointer reaches it
+  Shift+Cmd+T: the automatic title is back
+- a link in terminal output is underlined before the pointer reaches it; two links on one line
+  are each underlined
 - with two panes side by side, the separator between them is a hairline and the focused pane's
   glow looks the same on its separator side as on its others; hover the separator: a wider
   stripe fades in and the panes do not move; drag it; move away: it fades out
@@ -358,7 +359,7 @@ Notes:
   reports (`less`, for one) the wheel sends arrow keys (xterm's alternate scroll, `?1007`, on by
   default), and Shift+wheel always scrolls Arkos's own history.
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
-  or quote) is underlined under the pointer, and Cmd+click opens it in your browser, as in
+  or quote) is underlined, and Cmd+click opens it in your browser, as in
   Terminal.app. A plain click does nothing to it.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
