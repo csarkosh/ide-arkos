@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "arkos"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "arkosd"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -4154,7 +4154,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "postcard",
  "serde",
@@ -4600,7 +4600,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "release-tool"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "base64",
  "ed25519-compact",
