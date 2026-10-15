@@ -2456,7 +2456,7 @@ impl Root {
                 }
             }
             OpenFolder => self.pick_folder(cx),
-            OpenRecent => self.open_recent(cx),
+            NewWindow => self.new_window(cx),
             NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
             NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
             DockChromeWindow => self.open_dock_list(cx),
@@ -2502,9 +2502,10 @@ impl Root {
         .detach();
     }
 
-    /// The chooser; the folder chosen opens in a new window. One at a time: asking again brings
-    /// the open one forward.
-    fn open_recent(&mut self, cx: &mut Context<Self>) {
+    /// "New Window" (the File menu, Cmd+N): the chooser in its own window, with the recent folders
+    /// and the native picker; the folder chosen opens in a new window. One at a time: asking again
+    /// brings the open one forward.
+    fn new_window(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.chooser {
             if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
                 return;
@@ -3386,7 +3387,8 @@ fn menus() -> Vec<Menu> {
         Menu { name: "Arkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] },
         Menu {
             name: "File".into(),
-            items: vec![MenuItem::action("Open Folder\u{2026}", keymap::OpenFolder), MenuItem::action("Open Recent\u{2026}", keymap::OpenRecent)],
+            // One item: the chooser offers the recent folders and the native picker both.
+            items: vec![MenuItem::action("New Window", keymap::NewWindow)],
         },
     ]
 }

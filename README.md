@@ -75,6 +75,9 @@ Things only a person at the screen can check, in order of value:
   shell and tab where it was; `arkos --version` in a tab prints X
 - `[update] auto = false`: the bell's dot stays and "Update now" applies it
 - a relaunched window opens without taking focus from the app in use (verify by eye)
+- the File menu shows "New Window" and nothing else; Cmd+N or the menu opens the chooser with
+  the recent folders and "Open folder..."; picking one opens it in a new window; `"open recent"
+  = "cmd-shift-n"` left in config.toml binds the chooser to that key with no config error
 - the title bar's right side shows a bell and a circled plus (the doctor) and no text; with an
   update staged the bell wears a dot and its popover says "Update ready: X" with "Update now";
   after an update the bell says "Updated to X" once, gone after you open and close it; a
@@ -331,7 +334,7 @@ The VS Code map, in a terminal-friendly form.
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
-| palette | open recent…: the project chooser; the folder opens in a new window |
+| Cmd+N | new window: the project chooser in its own window (also the File menu's only item); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
 | Cmd+, | open config file |
 | Shift+Cmd+P | command palette |
 

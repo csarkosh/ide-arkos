@@ -57,7 +57,7 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
         // The two that ask for a folder end in an ellipsis, as macOS writes a command that asks more.
         let label = match command {
             Command::InstallHooks => "Install Claude Code hooks".to_string(),
-            Command::OpenFolder | Command::OpenRecent | Command::NewBrowserTab | Command::NewBrowserTabSinglePage => format!("{}\u{2026}", keymap::label(a.name)),
+            Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage => format!("{}\u{2026}", keymap::label(a.name)),
             Command::DockChromeWindow => "Dock a Chrome window\u{2026}".to_string(),
             Command::UndockChromeWindow => "Undock Chrome window".to_string(),
             _ => keymap::label(a.name),
@@ -283,8 +283,8 @@ mod tests {
         assert_eq!((tree.detail.as_str(), &tree.command), ("Shift+Cmd+E", &Command::FocusFileTree));
         let open = items.iter().find(|i| i.label == "Open folder\u{2026}").unwrap();
         assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
-        let recent = items.iter().find(|i| i.label == "Open recent\u{2026}").unwrap();
-        assert_eq!((recent.detail.as_str(), &recent.command), ("", &Command::OpenRecent));
+        let window = items.iter().find(|i| i.label == "New window").unwrap();
+        assert_eq!((window.detail.as_str(), &window.command), ("Cmd+N", &Command::NewWindow));
         let browser = items.iter().find(|i| i.label == "New browser tab\u{2026}").unwrap();
         assert_eq!((browser.detail.as_str(), &browser.command), ("Shift+Cmd+B", &Command::NewBrowserTab));
         assert_eq!(items.iter().find(|i| i.label == "New single-page browser tab\u{2026}").unwrap().command, Command::NewBrowserTabSinglePage);

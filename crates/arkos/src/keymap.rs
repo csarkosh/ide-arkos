@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, OpenRecent,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
 );
@@ -84,8 +84,9 @@ pub enum Command {
     ToggleInlineDiff,
     /// Pick a folder with the native picker and open it in a new window.
     OpenFolder,
-    /// Show the project chooser; the folder chosen opens in a new window.
-    OpenRecent,
+    /// Show the project chooser in its own window (the File menu's "New Window"); the folder
+    /// chosen opens in a new window.
+    NewWindow,
     /// Ask for a URL and open a browser tab for it in the focused pane.
     NewBrowserTab,
     /// `NewBrowserTab` with the window opened as a single page (Chrome's app mode).
@@ -149,7 +150,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("focus worktrees", "ctrl-shift-g"),
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer") },
     row("open folder", "cmd-o"),
-    row("open recent", ""),
+    row("new window", "cmd-n"),
     row("new browser tab", "cmd-shift-b"),
     row("new single-page browser tab", ""),
     row("dock a chrome window", ""),
@@ -237,7 +238,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "focus worktrees" => KeyBinding::new(keys, FocusWorktrees, context),
         "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
         "open folder" => KeyBinding::new(keys, OpenFolder, context),
-        "open recent" => KeyBinding::new(keys, OpenRecent, context),
+        "new window" => KeyBinding::new(keys, NewWindow, context),
         "new browser tab" => KeyBinding::new(keys, NewBrowserTab, context),
         "new single-page browser tab" => KeyBinding::new(keys, NewBrowserTabSinglePage, context),
         "dock a chrome window" => KeyBinding::new(keys, DockChromeWindow, context),
@@ -263,11 +264,22 @@ fn keystroke_error(keys: &str) -> Option<String> {
     None
 }
 
+/// Names an action used to go by, still accepted in `[keybindings]` so a config file written
+/// before the rename keeps working: the old name and the one it means now.
+const ALIASES: &[(&str, &str)] = &[("open recent", "new window")];
+
+/// The current name of an action, from either its name or an old one.
+pub fn canonical(name: &str) -> &str {
+    ALIASES.iter().find(|(old, _)| *old == name).map_or(name, |(_, new)| *new)
+}
+
 /// Every problem with an override table, in table order: an action name that is not in
-/// `ACTIONS`, or keystrokes gpui cannot parse. Empty when the table is fine.
+/// `ACTIONS` (under its current or an old name), or keystrokes gpui cannot parse. Empty when
+/// the table is fine.
 pub fn validate(overrides: &BTreeMap<String, String>) -> Vec<String> {
     let mut errors = Vec::new();
     for (name, keys) in overrides {
+        let name = canonical(name);
         if !ACTIONS.iter().any(|a| a.name == name) {
             errors.push(format!("unknown action \"{name}\" in [keybindings]"));
             continue;
@@ -283,7 +295,9 @@ pub fn validate(overrides: &BTreeMap<String, String>) -> Vec<String> {
 /// `None` for an unknown action or one overridden to the empty string.
 pub fn keys_for(name: &str, overrides: &BTreeMap<String, String>) -> Option<String> {
     let spec = ACTIONS.iter().find(|a| a.name == name)?;
-    let keys = overrides.get(name).map(String::as_str).unwrap_or(spec.keys);
+    // An override under the action's old name counts too.
+    let aliased = || ALIASES.iter().filter(|(_, new)| *new == name).find_map(|(old, _)| overrides.get(*old));
+    let keys = overrides.get(name).or_else(aliased).map(String::as_str).unwrap_or(spec.keys);
     if keys.trim().is_empty() {
         None
     } else {
@@ -409,7 +423,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "focus worktrees" => Command::FocusWorktrees,
         "toggle inline diff" => Command::ToggleInlineDiff,
         "open folder" => Command::OpenFolder,
-        "open recent" => Command::OpenRecent,
+        "new window" => Command::NewWindow,
         "new browser tab" => Command::NewBrowserTab,
         "new single-page browser tab" => Command::NewBrowserTabSinglePage,
         "dock a chrome window" => Command::DockChromeWindow,
@@ -456,7 +470,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
-        OpenFolder => Command::OpenFolder, OpenRecent => Command::OpenRecent,
+        OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
         NewBrowserTab => Command::NewBrowserTab, NewBrowserTabSinglePage => Command::NewBrowserTabSinglePage,
         DockChromeWindow => Command::DockChromeWindow, UndockChromeWindow => Command::UndockChromeWindow,
     )
@@ -506,13 +520,26 @@ mod tests {
         ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
         ("cmd-o", "open folder", "OpenFolder"),
-        ("", "open recent", "OpenRecent"),
+        ("cmd-n", "new window", "NewWindow"),
         ("cmd-shift-b", "new browser tab", "NewBrowserTab"),
         ("", "new single-page browser tab", "NewBrowserTabSinglePage"),
         ("", "dock a chrome window", "DockChromeWindow"),
         ("", "undock chrome window", "UndockChromeWindow"),
         ("cmd-q", "quit", "Quit"),
     ];
+
+    #[test]
+    fn an_old_action_name_in_the_config_still_binds_the_renamed_action() {
+        let mut o = BTreeMap::new();
+        o.insert("open recent".to_string(), "cmd-shift-n".to_string());
+        assert!(validate(&o).is_empty(), "the old name is not an unknown action");
+        assert_eq!(canonical("open recent"), "new window");
+        assert_eq!(canonical("new window"), "new window");
+        assert_eq!(keys_for("new window", &o), Some("cmd-shift-n".to_string()));
+        assert_eq!(keys_for("new window", &BTreeMap::new()), Some("cmd-n".to_string()));
+        o.insert("new window".to_string(), "".to_string());
+        assert_eq!(keys_for("new window", &o), None, "the current name wins over the old one");
+    }
 
     #[test]
     fn the_table_is_the_spec_table() {
@@ -557,7 +584,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 13, "an empty string unbinds, and update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 12, "an empty string unbinds, and update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -566,7 +593,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 12, "only update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 11, "only update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
         assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
