@@ -8,6 +8,7 @@ mod config;
 mod config_watch;
 mod connection;
 mod diff;
+mod dock;
 mod drag;
 mod empty_pane;
 mod explorer;
@@ -274,6 +275,21 @@ pub struct Root {
     pub browser_rects: HashMap<TabId, (Bounds<gpui::Pixels>, Instant)>,
     /// Each docked browser tab's window title, its tab label; empty until something docks.
     pub browser_titles: HashMap<TabId, String>,
+    /// The Accessibility API, through which Chrome windows are docked (spec 8). UI thread only:
+    /// called from the dock tick and from event handlers, never from render.
+    pub ax: std::rc::Rc<dyn ax::Ax>,
+    /// Each browser tab's dock state; runtime only, never saved.
+    pub docks: dock::Docks,
+    /// The dock tick's loop is running (`start_dock_timer`); one at a time.
+    pub dock_timer: bool,
+    /// Chrome's windows and titles, read at most once a second by the tick while a browser tab
+    /// exists, and again when the dock list opens.
+    pub chrome_windows: Vec<(ax::AxWindow, String)>,
+    pub chrome_windows_at: Option<Instant>,
+    /// The windows the palette's dock list offers, by row (`Command::DockChromeWindowAt`).
+    pub dock_choices: Vec<ax::AxWindow>,
+    /// macOS was asked for Accessibility access in this process; it is asked once.
+    pub ax_prompted: bool,
     /// The URL prompt ("New browser tab") while it is open, and while it fades out. While open it
     /// holds the keys, through `url_prompt_focus`.
     pub url_prompt: Transient<pane_view::UrlPrompt>,
@@ -302,8 +318,24 @@ fn shell_folder(cwd: Option<PathBuf>) -> Option<PathBuf> {
     cwd.filter(|d| d.is_dir())
 }
 
-/// What the docking commands say until docking lands.
-const DOCKING_LATER: &str = "docking arrives with the next release";
+/// Opens a Chrome window for a browser tab (`dock::chrome_open_args`), on the background
+/// executor; arkos never waits for Chrome, and what `open` says goes to the log.
+fn launch_chrome(url: Option<&str>, app_mode: bool, cx: &mut App) {
+    let args = dock::chrome_open_args(url, app_mode);
+    cx.background_executor()
+        .spawn(async move {
+            let status = std::process::Command::new("/usr/bin/open").args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            match status {
+                Ok(s) if s.success() => {}
+                Ok(s) => eprintln!("arkos: opening a Chrome window failed ({s}); is Google Chrome installed?"),
+                Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
+            }
+        })
+        .detach();
+}
+
+/// What docking says when Accessibility access is missing.
+const DOCKING_NEEDS_ACCESS: &str = "docking a Chrome window needs Accessibility access: allow Arkos IDE in System Settings > Privacy & Security > Accessibility";
 
 /// How often the idle timer asks whether a staged update may apply itself.
 const IDLE_TICK: Duration = Duration::from_secs(1);
@@ -466,6 +498,13 @@ impl Root {
             updating: None,
             browser_rects: HashMap::new(),
             browser_titles: HashMap::new(),
+            ax: std::rc::Rc::new(ax::RealAx::new()),
+            docks: dock::Docks::default(),
+            dock_timer: false,
+            chrome_windows: Vec::new(),
+            chrome_windows_at: None,
+            dock_choices: Vec::new(),
+            ax_prompted: false,
             url_prompt: Transient::Hidden,
             url_prompt_focus: cx.focus_handle(),
             vertical_tabs_tip_seen: false,
@@ -822,9 +861,8 @@ impl Root {
             let closed = match tab {
                 Tab::Viewer { path } => Closed::Viewer(path),
                 Tab::Browser { url, app_mode } => {
-                    // Task 3 releases the docked window here; arkos never closes it.
-                    self.browser_rects.remove(&id);
-                    self.browser_titles.remove(&id);
+                    // Its window is released where it was last shown; arkos never closes it.
+                    self.release_browser_tab(id, cx);
                     Closed::Browser { url, app_mode }
                 }
                 Tab::Terminal { .. } => unreachable!("handled above"),
@@ -1091,13 +1129,30 @@ impl Root {
     }
 
     /// A browser tab in `pane` (the focused pane when that one is gone) that opens `url` (`None`:
-    /// a blank window), active and focused. It waits for a Chrome window.
+    /// a blank window), active and focused. Chrome opens a window for it, which docks.
     pub fn new_browser_tab(&mut self, pane: PaneId, url: Option<String>, app_mode: bool, cx: &mut Context<Self>) {
+        self.add_browser_tab(pane, url, app_mode, true, cx);
+    }
+
+    /// `new_browser_tab`; with `launch` false nothing opens and the tab waits for a window.
+    fn add_browser_tab(&mut self, pane: PaneId, url: Option<String>, app_mode: bool, launch: bool, cx: &mut Context<Self>) -> Option<TabId> {
         let pane = if self.tree.pane(pane).is_some() { pane } else { self.tree.focused };
-        let idx = self.tree.add_tab(pane, Tab::Browser { url, app_mode });
+        let idx = self.tree.add_tab(pane, Tab::Browser { url: url.clone(), app_mode });
         self.tree.focus(pane);
+        let id = self.tree.tab_id(pane, idx);
+        if let Some(id) = id {
+            self.docks.add(id, launch, Instant::now());
+            self.ask_for_access_once();
+            // A tick now, before Chrome is asked: the windows already open are known as old,
+            // and the one launched for this tab is new however soon it appears.
+            self.dock_tick(cx);
+            if launch {
+                launch_chrome(url.as_deref(), app_mode, cx);
+            }
+        }
         // Saves, and scrolls the new tab into view.
         self.activate_tab(pane, idx, cx);
+        id
     }
 
     /// Opens the URL prompt over the focused pane. `target` is the waiting browser tab to point
@@ -1134,8 +1189,15 @@ impl Root {
                 self.url_prompt.hide(Instant::now());
                 match target.and_then(|t| self.tree.locate(t)) {
                     Some((pane, idx)) => {
-                        self.tree.replace_tab(pane, idx, Tab::Browser { url, app_mode });
+                        self.tree.replace_tab(pane, idx, Tab::Browser { url: url.clone(), app_mode });
                         self.tree.focus(pane);
+                        if let Some(tab) = target.filter(|t| self.docks.docked_window(*t).is_none()) {
+                            // The waiting tab docks the window launched for it (ticked first, as
+                            // in `add_browser_tab`).
+                            self.docks.add(tab, true, Instant::now());
+                            self.dock_tick(cx);
+                            launch_chrome(url.as_deref(), app_mode, cx);
+                        }
                         self.activate_tab(pane, idx, cx);
                     }
                     None => self.new_browser_tab(self.tree.focused, url, app_mode, cx),
@@ -1150,12 +1212,309 @@ impl Root {
         self.browser_rects.insert(tab, (bounds, self.frame_now));
     }
 
-    /// A click in a browser tab's placeholder. Task 3 raises the docked window; nothing yet.
-    pub fn browser_clicked(&mut self, _tab: TabId, _cx: &mut Context<Self>) {}
+    /// A click in a browser tab's placeholder (arkos covers its docked window): the window comes
+    /// back up and takes the keys.
+    pub fn browser_clicked(&mut self, tab: TabId, _cx: &mut Context<Self>) {
+        if let Some(win) = self.docks.docked_window(tab).cloned() {
+            let r = self.ax.focus(&win);
+            self.ax_result(r);
+        }
+    }
 
-    /// "Grant access" on the permission screen. Task 3 asks macOS; a notice until then.
+    /// "Grant access" on the permission screen: macOS asks (its own dialog), then a tick reads
+    /// the answer.
     pub fn request_accessibility(&mut self, cx: &mut Context<Self>) {
-        self.show_notice(DOCKING_LATER.into(), cx);
+        self.ax_prompted = true;
+        if !self.ax.trusted(true) {
+            self.show_notice(DOCKING_NEEDS_ACCESS.into(), cx);
+        }
+        self.dock_tick(cx);
+    }
+
+    /// The first browser tab of the process asks macOS for Accessibility access (spec 8); later
+    /// ones leave it to the permission screen's "Grant access".
+    fn ask_for_access_once(&mut self) {
+        if !self.ax_prompted {
+            self.ax_prompted = true;
+            self.ax.trusted(true);
+        }
+    }
+
+    /// An AX write's result: refused for want of trust, the next tick re-reads the permission.
+    /// A window gone is left to the next tick, which sees it missing.
+    fn ax_result(&mut self, r: Result<(), ax::AxError>) {
+        if r == Err(ax::AxError::NotTrusted) {
+            self.docks.distrust();
+        }
+    }
+
+    /// The browser tabs in reading order.
+    fn browser_tabs(&self) -> Vec<TabId> {
+        self.tree.tabs().into_iter().filter(|(_, _, t)| matches!(t, Tab::Browser { .. })).filter_map(|(p, i, _)| self.tree.tab_id(p, i)).collect()
+    }
+
+    /// Keeps `docks` to the tree's browser tabs, whatever added or removed them (a restored
+    /// workspace, a pane closed with its tabs): a new one waits, a gone one releases its window.
+    /// Starts the tick when a tab needs it.
+    fn sync_docks(&mut self, cx: &mut Context<Self>) {
+        let tabs = self.browser_tabs();
+        let gone: Vec<TabId> = self.docks.tabs.keys().filter(|t| !tabs.contains(t)).copied().collect();
+        for tab in gone {
+            self.release_browser_tab(tab, cx);
+        }
+        let now = Instant::now();
+        for tab in tabs {
+            if !self.docks.tabs.contains_key(&tab) {
+                self.docks.add(tab, false, now);
+            }
+        }
+        self.start_dock_timer(cx);
+    }
+
+    /// A browser tab is going: its window, if docked, is left where it was last shown (a hidden
+    /// one comes back from off-screen), and everything kept for the tab is dropped.
+    fn release_browser_tab(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let leave_at = self.docks.last_shown(tab);
+        let win = self.docks.remove(tab);
+        self.browser_rects.remove(&tab);
+        self.browser_titles.remove(&tab);
+        if win.is_some() {
+            self.apply_actions(vec![dock::Action::Undock { tab, win, leave_at }], cx);
+        }
+    }
+
+    /// Ticks the docking engine at its cadence (`Docks::cadence`): 1 Hz while tabs wait, 20 Hz
+    /// while a window is docked or the mouse is down; it stops with the last browser tab and
+    /// `sync_docks` or a new tab starts it again. One loop at a time.
+    pub fn start_dock_timer(&mut self, cx: &mut Context<Self>) {
+        if self.dock_timer || self.docks.tabs.is_empty() {
+            return;
+        }
+        self.dock_timer = true;
+        cx.spawn(async move |root, cx| loop {
+            let wait = root.update(cx, |root, _| {
+                let wait = root.docks.cadence(root.ax.mouse_down());
+                if wait.is_none() {
+                    root.dock_timer = false;
+                }
+                wait
+            });
+            let Ok(Some(wait)) = wait else { break };
+            cx.background_executor().timer(wait).await;
+            if root.update(cx, |root, cx| root.dock_tick(cx)).is_err() {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// One docking step on the UI thread: reads Chrome's windows and the placeholders, lets the
+    /// engine decide, applies what it decided.
+    pub fn dock_tick(&mut self, cx: &mut Context<Self>) {
+        self.sync_docks(cx);
+        if self.docks.tabs.is_empty() {
+            self.chrome_windows.clear();
+            self.chrome_windows_at = None;
+            return;
+        }
+        let snapshot = self.dock_snapshot(Instant::now());
+        let actions = self.docks.tick(&snapshot);
+        self.apply_actions(actions, cx);
+        // A window the palette took from another tab leaves that tab's title behind.
+        let before = self.browser_titles.len();
+        let docks = &self.docks;
+        self.browser_titles.retain(|t, _| docks.docked_window(*t).is_some());
+        if self.browser_titles.len() != before {
+            cx.notify();
+        }
+    }
+
+    /// What the tick reads: the permission, Chrome's window list, and the frame and title of the
+    /// docked windows only (every title once a second, for the dock list); the placeholders
+    /// drawn in the last frame, in global coordinates; the arkos window's state.
+    fn dock_snapshot(&mut self, now: Instant) -> dock::Snapshot {
+        let ax = self.ax.clone();
+        let trusted = ax.trusted(false);
+        let all = if trusted { ax.chrome_pid().map(|pid| ax.windows(pid)).unwrap_or_default() } else { Vec::new() };
+        let docked: Vec<ax::AxWindow> = self.docks.tabs.keys().filter_map(|t| self.docks.docked_window(*t).cloned()).collect();
+        let refresh_list = self.chrome_windows_at.is_none_or(|t| now.saturating_duration_since(t) >= dock::WAIT_POLL);
+        let (mut windows, mut titles, mut list) = (Vec::new(), Vec::new(), Vec::new());
+        for w in all {
+            let is_docked = docked.contains(&w);
+            let frame = if is_docked { ax.frame(&w) } else { None };
+            if is_docked || refresh_list {
+                let title = ax.title(&w).unwrap_or_default();
+                if is_docked {
+                    titles.push((w.clone(), title.clone()));
+                }
+                if refresh_list {
+                    list.push((w.clone(), title));
+                }
+            }
+            windows.push((w, frame, false));
+        }
+        if refresh_list {
+            self.chrome_windows = list;
+            self.chrome_windows_at = Some(now);
+        }
+        let arkos = ax::screen::arkos_window().map(|w| (ax::screen::content_rect_in_screen(&w), ax::screen::window_hidden(&w)));
+        let placeholders = self
+            .browser_tabs()
+            .into_iter()
+            .map(|tab| {
+                // Drawn in the last frame: its tab is the active one in a pane on screen.
+                let rect = self.browser_rects.get(&tab).filter(|(_, at)| *at == self.frame_now).zip(arkos.as_ref()).map(|((b, _), (content, _))| ax::Rect {
+                    x: content.x + f64::from(f32::from(b.origin.x)),
+                    y: content.y + f64::from(f32::from(b.origin.y)),
+                    w: f64::from(f32::from(b.size.width)),
+                    h: f64::from(f32::from(b.size.height)),
+                });
+                (tab, rect)
+            })
+            .collect();
+        dock::Snapshot {
+            trusted,
+            windows,
+            titles,
+            placeholders,
+            any_working: self.sessions.any_working(&self.tree),
+            mouse_down: ax.mouse_down(),
+            window_active: self.window_active,
+            window_hidden: arkos.is_some_and(|(_, hidden)| hidden),
+            screens_right: ax::screen::screens_right(),
+            now,
+        }
+    }
+
+    /// Carries out the engine's decisions through `ax`. A window that docked or came back on
+    /// screen is raised once it is in place, so it shows above arkos.
+    fn apply_actions(&mut self, actions: Vec<dock::Action>, cx: &mut Context<Self>) {
+        use dock::Action;
+        let ax = self.ax.clone();
+        let mut raise: Vec<ax::AxWindow> = Vec::new();
+        let mut notify = false;
+        for action in actions {
+            match action {
+                Action::Dock { win, .. } => {
+                    self.vertical_tabs_tip_seen = true;
+                    raise.push(win);
+                    notify = true;
+                }
+                Action::Move { win, rect } | Action::Hide { win, to: rect } => {
+                    let r = ax.set_frame(&win, rect);
+                    self.ax_result(r);
+                }
+                Action::Show { win, rect } => {
+                    let r = ax.set_frame(&win, rect);
+                    self.ax_result(r);
+                    raise.push(win);
+                }
+                Action::Raise(win) => raise.push(win),
+                Action::Undock { tab, win, leave_at } => {
+                    if let (Some(win), Some(rect)) = (win, leave_at) {
+                        let r = ax.set_frame(&win, rect);
+                        self.ax_result(r);
+                    }
+                    self.browser_titles.remove(&tab);
+                    notify = true;
+                }
+                Action::Title { tab, title } => {
+                    self.browser_titles.insert(tab, title);
+                    notify = true;
+                }
+                Action::Permission(granted) => {
+                    if !granted {
+                        self.browser_titles.clear();
+                    }
+                    notify = true;
+                }
+            }
+        }
+        let mut raised: Vec<ax::AxWindow> = Vec::new();
+        for win in raise {
+            if !raised.contains(&win) {
+                let r = ax.raise(&win);
+                self.ax_result(r);
+                raised.push(win);
+            }
+        }
+        if notify {
+            cx.notify();
+        }
+    }
+
+    /// Chrome's windows with their titles, read now (an event handler).
+    fn read_chrome_windows(&mut self) {
+        let ax = self.ax.clone();
+        let all = ax.chrome_pid().map(|pid| ax.windows(pid)).unwrap_or_default();
+        self.chrome_windows = all.into_iter().map(|w| { let t = ax.title(&w).unwrap_or_default(); (w, t) }).collect();
+        self.chrome_windows_at = Some(Instant::now());
+    }
+
+    /// "Dock a Chrome window": the palette lists Chrome's windows not docked yet; the one picked
+    /// docks (`DockChromeWindowAt`).
+    fn open_dock_list(&mut self, cx: &mut Context<Self>) {
+        self.ask_for_access_once();
+        if !self.ax.trusted(false) {
+            self.show_notice(DOCKING_NEEDS_ACCESS.into(), cx);
+            return;
+        }
+        self.read_chrome_windows();
+        let docks = &self.docks;
+        let free: Vec<(ax::AxWindow, String)> = self.chrome_windows.iter().filter(|(w, _)| !docks.tabs.keys().any(|t| docks.docked_window(*t) == Some(w))).cloned().collect();
+        if free.is_empty() {
+            self.show_notice("no Chrome window to dock: open one in Chrome first".into(), cx);
+            return;
+        }
+        let items = free
+            .iter()
+            .enumerate()
+            .map(|(i, (_, title))| command_palette::Item {
+                label: if title.is_empty() { "Untitled Chrome window".to_string() } else { title.clone() },
+                detail: "Chrome window".to_string(),
+                command: keymap::Command::DockChromeWindowAt(i),
+            })
+            .collect();
+        self.dock_choices = free.into_iter().map(|(w, _)| w).collect();
+        self.palette.show(command_palette::Palette::list(items, "pick a Chrome window to dock", cx.focus_handle()), Instant::now());
+        cx.notify();
+    }
+
+    /// The tab a picked window docks into: the focused pane's active browser tab, else the first
+    /// waiting browser tab in reading order, else a new browser tab in the focused pane.
+    fn dock_target(&mut self, cx: &mut Context<Self>) -> Option<TabId> {
+        let focused = self.tree.focused;
+        let active = self.tree.pane(focused).and_then(|p| match p.tabs.get(p.active) {
+            Some(Tab::Browser { .. }) => self.tree.tab_id(focused, p.active),
+            _ => None,
+        });
+        let waiting = self.docks.waiting_tabs();
+        active.or_else(|| self.browser_tabs().into_iter().find(|t| waiting.contains(t))).or_else(|| self.add_browser_tab(focused, None, false, false, cx))
+    }
+
+    /// Docks `win` into `tab` and puts it in place at once. A window `tab` had is left where it is.
+    pub fn dock_window_into(&mut self, tab: TabId, win: ax::AxWindow, cx: &mut Context<Self>) {
+        if let Some((pane, idx)) = self.tree.locate(tab) {
+            self.activate_tab(pane, idx, cx);
+        }
+        self.docks.dock_by_choice(tab, win.clone());
+        self.vertical_tabs_tip_seen = true;
+        self.start_dock_timer(cx);
+        // The placeholder is drawn in the next frame; the tick that follows moves the window.
+        // Raised now, it is above arkos when it lands.
+        let r = self.ax.raise(&win);
+        self.ax_result(r);
+        cx.notify();
+    }
+
+    /// "Undock Chrome window": the tab stays, waiting; its window stays where it is.
+    pub fn undock_tab(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let leave_at = self.docks.last_shown(tab);
+        let Some(win) = self.docks.undock(tab) else {
+            self.show_notice("this tab has no docked Chrome window".into(), cx);
+            return;
+        };
+        self.apply_actions(vec![dock::Action::Undock { tab, win: Some(win), leave_at }], cx);
     }
 
     /// Splits the focused pane and starts a fresh shell in the new one.
@@ -1260,7 +1619,10 @@ impl Root {
                         self.tree.focus(pane);
                         self.open_viewer(&path, true, cx);
                     }
-                    Closed::Browser { url, app_mode } => self.new_browser_tab(pane, url, app_mode, cx),
+                    // Its old window may still be open: the tab waits rather than launch another.
+                    Closed::Browser { url, app_mode } => {
+                        self.add_browser_tab(pane, url, app_mode, false, cx);
+                    }
                     Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
                     Closed::Session(session, cwd) => {
                         eprintln!("arkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
@@ -1413,8 +1775,20 @@ impl Root {
             OpenRecent => self.open_recent(cx),
             NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
             NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
-            // Registered now so the keymap and the palette are complete; Task 3 docks.
-            DockChromeWindow | UndockChromeWindow => self.show_notice(DOCKING_LATER.into(), cx),
+            DockChromeWindow => self.open_dock_list(cx),
+            DockChromeWindowAt(i) => {
+                let Some(win) = self.dock_choices.get(i).cloned() else { return };
+                if let Some(tab) = self.dock_target(cx) {
+                    self.dock_window_into(tab, win, cx);
+                }
+            }
+            UndockChromeWindow => {
+                let p = self.tree.pane(focused);
+                match p.and_then(|p| self.tree.tab_id(focused, p.active)).filter(|t| self.docks.docked_window(*t).is_some()) {
+                    Some(tab) => self.undock_tab(tab, cx),
+                    None => self.show_notice("the focused tab has no docked Chrome window".into(), cx),
+                }
+            }
         }
         let _ = window;
     }
@@ -2403,7 +2777,7 @@ fn open_project_window(
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     // The window draws its own bar in the title bar's space (chrome.rs); the
                     // traffic lights stay where macOS puts them.
-                    titlebar: Some(gpui::TitlebarOptions { title: Some("Arkos IDE".into()), appears_transparent: true, traffic_light_position: None }),
+                    titlebar: Some(gpui::TitlebarOptions { title: Some(ax::screen::WINDOW_TITLE.into()), appears_transparent: true, traffic_light_position: None }),
                     // One minimum pane with its border, tab bar and the window's bar.
                     window_min_size: Some(size(px(tree::MIN_PANE_W + 8.0), px(tree::MIN_PANE_H + pane_view::TAB_BAR_H + chrome::TITLE_BAR_H))),
                     // A window the daemon relaunched (an update, the watchdog) does not take the
@@ -2413,6 +2787,14 @@ fn open_project_window(
                 },
                 move |window, cx| {
                     let view = cx.new(|cx| {
+                        // Activating arkos covers the docked windows: the tick re-raises them at
+                        // once (spec 8's accepted flash). Deactivating is ticked too, so the
+                        // next activation is seen as one.
+                        cx.observe_window_activation(window, |root: &mut Root, window, cx| {
+                            root.window_active = window.is_window_active();
+                            root.dock_tick(cx);
+                        })
+                        .detach();
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
                         root.save_queue = view_queue;
                         root.build_highlighter(cx);
@@ -2443,6 +2825,8 @@ fn open_project_window(
             root.load_pending_dirs(cx);
             root.refresh_status(cx);
             root.refresh_worktrees(cx);
+            // A restored workspace's browser tabs wait for windows; no prompt until one is made.
+            root.sync_docks(cx);
             cx.notify();
         });
         let quit_root = root.clone();

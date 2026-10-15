@@ -86,8 +86,10 @@ pub enum Command {
     NewBrowserTab,
     /// `NewBrowserTab` with the window opened as a single page (Chrome's app mode).
     NewBrowserTabSinglePage,
-    /// Dock a Chrome window into a browser tab (the next release; a notice until then).
+    /// List Chrome's windows in the palette, to dock one into a browser tab.
     DockChromeWindow,
+    /// Dock the dock list's row: `Root.dock_choices[i]` (the palette runs it).
+    DockChromeWindowAt(usize),
     /// Release the focused browser tab's Chrome window; the tab stays, waiting.
     UndockChromeWindow,
 }

@@ -3,6 +3,7 @@
 //! state), and the URL prompt over the focused pane.
 
 use crate::drag;
+use crate::dock::DockState;
 use crate::find;
 use crate::keymap::Command;
 use crate::line_edit::{self, Edit, LineEdit};
@@ -810,8 +811,11 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>
     let column = || div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family.clone()).text_size(px(13.0)).text_color(dim);
     let heading = |t: &'static str| div().text_color(text).text_size(px(15.0)).child(t);
     let tip_seen = root.vertical_tabs_tip_seen;
-    // Task 3 feeds the dock state through here; until then nothing docks and nothing launches.
-    let screen = match browser_screen(true, None, url, false) {
+    let state = root.docks.tabs.get(&tab);
+    let trusted = root.docks.trusted() && !matches!(state, Some(DockState::NoPermission));
+    let docked = matches!(state, Some(DockState::Docked { .. })).then_some(());
+    let launched = matches!(state, Some(DockState::Waiting { launched_at: Some(_), .. }));
+    let screen = match browser_screen(trusted, docked, url, launched) {
         BrowserScreen::NoPermission => column()
             .child(heading("Docking a Chrome window needs Accessibility access"))
             .child(div().child("arkos positions the window over this pane; it never reads its contents."))

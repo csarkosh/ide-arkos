@@ -2,7 +2,7 @@
 //! Chrome application's windows, their frames, moving and raising them. Behind a trait so the
 //! docking engine is tested with a fake; nothing in `cargo test` touches the real API.
 
-use objc2_app_kit::{NSEvent, NSRunningApplication};
+use objc2_app_kit::{NSApplicationActivationOptions, NSEvent, NSRunningApplication};
 use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGSize};
 use objc2_foundation::ns_string;
 #[cfg(test)]
@@ -29,13 +29,14 @@ const AX_NO_VALUE: AXError = -25212;
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     static kAXTrustedCheckOptionPrompt: *const CFString;
-    fn AXIsProcessTrustedWithOptions(options: *const CFDictionary) -> bool;
+    // `Boolean` is an `unsigned char`: read as `u8`, compared with zero.
+    fn AXIsProcessTrustedWithOptions(options: *const CFDictionary) -> u8;
     fn AXUIElementCreateApplication(pid: i32) -> *mut CFType;
     fn AXUIElementCopyAttributeValue(element: *const CFType, attribute: *const CFString, value: *mut *mut CFType) -> AXError;
     fn AXUIElementSetAttributeValue(element: *const CFType, attribute: *const CFString, value: *const CFType) -> AXError;
     fn AXUIElementPerformAction(element: *const CFType, action: *const CFString) -> AXError;
     fn AXValueCreate(kind: u32, value: *const c_void) -> *mut CFType;
-    fn AXValueGetValue(value: *const CFType, kind: u32, out: *mut c_void) -> bool;
+    fn AXValueGetValue(value: *const CFType, kind: u32, out: *mut c_void) -> u8;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,12 +47,12 @@ pub struct Rect {
     pub h: f64,
 }
 
-/// How far right of the primary display a hidden window is parked (ruling 1).
-const OFFSCREEN_GAP: f64 = 64.0;
+/// How far right of the rightmost display a hidden window is parked (ruling 1).
+pub const OFFSCREEN_GAP: f64 = 64.0;
 
-#[allow(dead_code)] // used from Task 3
 impl Rect {
     /// Half-open: the left and top edges are inside, the right and bottom ones are not.
+    #[allow(dead_code)] // used from Task 4 (drag in)
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
     }
@@ -66,9 +67,10 @@ impl Rect {
         left.max(top).max(right).max(bottom)
     }
 
-    /// The same rectangle parked right of the primary display (ruling 1), keeping its y and size.
-    pub fn offscreen(&self, primary_w: f64) -> Rect {
-        Rect { x: primary_w + OFFSCREEN_GAP, ..*self }
+    /// The same rectangle parked right of every display (ruling 1), keeping its y and size.
+    /// `screens_right` is the right edge of the union of the displays.
+    pub fn offscreen(&self, screens_right: f64) -> Rect {
+        Rect { x: screens_right + OFFSCREEN_GAP, ..*self }
     }
 }
 
@@ -106,7 +108,6 @@ enum Element {
     Fake(usize),
 }
 
-#[allow(dead_code)] // used from Task 3
 impl AxWindow {
     /// A number for logs: the element's address, or the fake's counter.
     pub fn id(&self) -> usize {
@@ -151,7 +152,6 @@ impl std::fmt::Debug for AxWindow {
 }
 
 /// The Accessibility calls docking makes. UI thread only; every call returns at once.
-#[allow(dead_code)] // used from Task 3
 pub trait Ax {
     /// Whether this process may use the API; `prompt` shows the system's request once.
     fn trusted(&self, prompt: bool) -> bool;
@@ -161,10 +161,13 @@ pub trait Ax {
     fn frame(&self, w: &AxWindow) -> Option<Rect>;
     fn set_frame(&self, w: &AxWindow, r: Rect) -> Result<(), AxError>;
     fn raise(&self, w: &AxWindow) -> Result<(), AxError>;
+    /// Raises the window and makes Chrome the active app, so the window takes the keys.
+    fn focus(&self, w: &AxWindow) -> Result<(), AxError>;
     fn title(&self, w: &AxWindow) -> Option<String>;
     fn minimized(&self, w: &AxWindow) -> bool;
     fn mouse_down(&self) -> bool;
     /// Global, top-left origin.
+    #[allow(dead_code)] // used from Task 4 (drag in)
     fn mouse_location(&self) -> (f64, f64);
 }
 
@@ -176,7 +179,6 @@ pub struct RealAx {
     second_size_writes: std::cell::Cell<u32>,
 }
 
-#[allow(dead_code)] // used from Task 3
 impl RealAx {
     pub fn new() -> RealAx {
         RealAx::default()
@@ -219,8 +221,8 @@ fn ax_value<T: Copy>(kind: u32, value: &T) -> Option<CFRetained<CFType>> {
 fn read_value<T: Copy + Default>(element: &CFType, name: &str, kind: u32) -> Option<T> {
     let value = copy_attribute(element, name).ok()?;
     let mut out = T::default();
-    // SAFETY: `out` is the struct `kind` names; the call fails (false) when the value is another kind.
-    unsafe { AXValueGetValue(&*value, kind, &mut out as *mut T as *mut c_void) }.then_some(out)
+    // SAFETY: `out` is the struct `kind` names; the call fails (zero) when the value is another kind.
+    (unsafe { AXValueGetValue(&*value, kind, &mut out as *mut T as *mut c_void) } != 0).then_some(out)
 }
 
 fn read_size(element: &CFType) -> Option<CGSize> {
@@ -248,7 +250,7 @@ impl Ax for RealAx {
         let options = CFDictionary::<CFString, CFBoolean>::from_slices(&[key], &[CFBoolean::new(prompt)]);
         let options: &CFDictionary = (*options).as_ref();
         // SAFETY: a valid dictionary with the one documented key.
-        unsafe { AXIsProcessTrustedWithOptions(options) }
+        unsafe { AXIsProcessTrustedWithOptions(options) != 0 }
     }
 
     fn chrome_pid(&self) -> Option<i32> {
@@ -300,6 +302,16 @@ impl Ax for RealAx {
         AxError::from_code(unsafe { AXUIElementPerformAction(element, &*action) })
     }
 
+    fn focus(&self, w: &AxWindow) -> Result<(), AxError> {
+        self.raise(w)?;
+        // Without "all windows": only the raised window (now Chrome's main one) comes forward.
+        let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(ns_string!("com.google.Chrome"));
+        if let Some(app) = apps.firstObject() {
+            app.activateWithOptions(NSApplicationActivationOptions(0));
+        }
+        Ok(())
+    }
+
     fn title(&self, w: &AxWindow) -> Option<String> {
         let value = copy_attribute(w.element()?, "AXTitle").ok()?;
         value.downcast_ref::<CFString>().map(|s| s.to_string())
@@ -324,8 +336,7 @@ impl Ax for RealAx {
 }
 
 /// Screen geometry from AppKit (ruling 3): global rectangles with a top-left origin, the
-/// coordinate space AX positions use.
-#[allow(dead_code)] // used from Task 3
+/// coordinate space AX positions use. Main thread only: off it every answer is the empty one.
 pub mod screen {
     use super::Rect;
     use objc2::rc::Retained;
@@ -352,12 +363,33 @@ pub mod screen {
         Some(Rect { x: f.origin.x, y: f.origin.y, w: f.size.width, h: f.size.height })
     }
 
-    /// The arkos window: the main or key window, or the first one (one window per process).
+    /// The right edge of the union of every display, in points (x is the same in AppKit and AX
+    /// terms): a window parked past it shows on no display.
+    pub fn screens_right() -> f64 {
+        let Some(mtm) = MainThreadMarker::new() else { return 0.0 };
+        NSScreen::screens(mtm).iter().map(|s| { let f = s.frame(); f.origin.x + f.size.width }).fold(0.0, f64::max)
+    }
+
+    /// The window is minimized to the Dock or hidden (Cmd+H, or not on screen at all).
+    pub fn window_hidden(window: &NSWindow) -> bool {
+        window.isMiniaturized() || !window.isVisible()
+    }
+
+    /// The project window's title; the process's other windows (the "Open recent..." chooser, a
+    /// folder picker) have their own.
+    pub const WINDOW_TITLE: &str = "Arkos IDE";
+
+    /// The arkos project window: the one titled `WINDOW_TITLE`, else the main or key window, else
+    /// the first one.
     pub fn arkos_window() -> Option<Retained<NSWindow>> {
         let mtm = MainThreadMarker::new()?;
         let windows = NSApplication::sharedApplication(mtm).windows();
         let all: Vec<_> = windows.iter().collect();
-        all.iter().find(|w| w.isMainWindow() || w.isKeyWindow()).or(all.first()).cloned()
+        all.iter()
+            .find(|w| w.title().to_string() == WINDOW_TITLE)
+            .or_else(|| all.iter().find(|w| w.isMainWindow() || w.isKeyWindow()))
+            .or(all.first())
+            .cloned()
     }
 
     /// The window's content view in global, top-left coordinates. A gpui element's bounds
@@ -392,8 +424,10 @@ pub struct FakeWindow {
     pub minimized: bool,
 }
 
+/// Calls that reach the API are recorded, failed ones too (`Gone`: the real call was made and
+/// answered so); a call refused for want of trust is not, since the engine stops calling once the
+/// permission is gone. `title` and `minimized` answer like reads without trust: nothing.
 #[cfg(test)]
-#[allow(dead_code)] // used from Task 3
 impl FakeAx {
     /// Chrome runs as pid 4242, with no windows yet.
     pub fn new(trusted: bool) -> FakeAx {
@@ -421,6 +455,25 @@ impl FakeAx {
         self.windows.borrow_mut().retain(|f| f.window != *w);
     }
 
+    pub fn set_trusted(&self, trusted: bool) {
+        self.trusted.set(trusted);
+    }
+
+    pub fn set_mouse_down(&self, down: bool) {
+        self.mouse_down.set(down);
+    }
+
+    /// Where the pointer is, global top-left coordinates.
+    #[allow(dead_code)] // used from Task 4 (drag in)
+    pub fn set_mouse(&self, x: f64, y: f64) {
+        self.mouse.set((x, y));
+    }
+
+    /// The window's active Chrome tab changes.
+    pub fn set_title(&self, w: &AxWindow, title: &str) {
+        self.with(w, |f| f.title = title.to_string());
+    }
+
     /// The user moves or resizes the window: not recorded as a call.
     pub fn set_frame_outside(&self, w: &AxWindow, r: Rect) {
         if let Some(f) = self.windows.borrow_mut().iter_mut().find(|f| f.window == *w) {
@@ -428,7 +481,8 @@ impl FakeAx {
         }
     }
 
-    /// Every mutating call so far: `"set_frame <id> <x>,<y> <w>x<h>"` or `"raise <id>"`.
+    /// Every mutating call so far: `"set_frame <id> <x>,<y> <w>x<h>"`, `"raise <id>"` or `"focus <id>"`.
+    #[allow(dead_code)] // the engine is pure; Task 4's tests read the calls
     pub fn calls(&self) -> Vec<String> {
         self.calls.borrow().clone()
     }
@@ -473,11 +527,17 @@ impl Ax for FakeAx {
     fn raise(&self, w: &AxWindow) -> Result<(), AxError> {
         self.mutate(w, format!("raise {}", w.id()), |_| {})
     }
+    fn focus(&self, w: &AxWindow) -> Result<(), AxError> {
+        self.mutate(w, format!("focus {}", w.id()), |_| {})
+    }
     fn title(&self, w: &AxWindow) -> Option<String> {
+        if !self.trusted.get() {
+            return None;
+        }
         self.with(w, |f| f.title.clone())
     }
     fn minimized(&self, w: &AxWindow) -> bool {
-        self.with(w, |f| f.minimized).unwrap_or(false)
+        self.trusted.get() && self.with(w, |f| f.minimized).unwrap_or(false)
     }
     fn mouse_down(&self) -> bool {
         self.mouse_down.get()
@@ -530,6 +590,7 @@ pub mod probe {
         println!("accessibility trusted: {trusted}");
         if !trusted {
             println!("grant access in System Settings > Privacy & Security > Accessibility, then run this again");
+            println!("run from a terminal, the grant goes to that terminal app, not Arkos IDE; the Arkos IDE app gets its own prompt from its first browser tab");
             return 0;
         }
         let primary = screen::primary_frame();
@@ -566,16 +627,19 @@ pub mod probe {
         println!("raised: {raised:?}");
         let above = ask("is the Chrome window now above this terminal?");
 
-        let parked = target.offscreen(primary.map_or(0.0, |p| p.w));
+        println!("watch every display: the window goes off-screen for {} seconds", PAUSE.as_secs() * 2);
+        let parked = target.offscreen(screen::screens_right());
         let hidden = ax.set_frame(window, parked);
         std::thread::sleep(PAUSE);
         let parked_at = ax.frame(window);
+        std::thread::sleep(PAUSE);
         println!("moved off-screen to {}: {:?}, reads back {}", show(Some(parked)), hidden, show(parked_at));
-        let vanished = ask("did the Chrome window vanish from every display?");
 
+        // Back first, so the window is not left lost while the question waits for an answer.
         let restored = ax.set_frame(window, original);
         let back = ax.frame(window);
         println!("restored to {}: {:?}, reads back {}", show(Some(original)), restored, show(back));
+        let vanished = ask("while it was off-screen, had the Chrome window vanished from every display?");
 
         println!("probe done");
         println!("summary:");
