@@ -2164,10 +2164,17 @@ fn main() {
     // Used only when this window starts the daemon; a running one keeps its own settings.
     let daemon_args = daemon_args(&config);
     let cwd = std::env::current_dir().expect("cwd");
-    // A Dock launch has no folder yet: the chooser asks first, and the daemon hears from this
-    // window only once one is chosen, so its Hello carries the project's folder and no watchdog
-    // counts heartbeats while the chooser waits.
-    let connection = if launch::needs_chooser(&cwd) { None } else { Some(connect(&daemon_args)) };
+    let relaunched = !should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref());
+    let plan = launch::startup_plan(&cwd, relaunched);
+    let yes = |b: bool| if b { "yes" } else { "no" };
+    eprintln!("{} starting in {} (relaunch: {}, chooser: {})", version_string(), cwd.display(), yes(relaunched), yes(plan.is_chooser()));
+    // Connected before any window opens, the chooser included: a window the daemon relaunched
+    // after an update confirms it with this Hello. A Dock launch has no folder yet, so its Hello
+    // names none (the daemon keeps what it had), and a second Hello names the folder once one is
+    // chosen. The chooser heartbeats meanwhile, so the watchdog leaves it alone.
+    debug_assert!(plan.connects_first());
+    let (client, events) = connect(&daemon_args);
+    let client = Arc::new(client);
     let save_queue = SharedSaveQueue::default();
 
     Application::new().run(move |cx: &mut App| {
@@ -2188,10 +2195,15 @@ fn main() {
             }
         };
         let start = Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark };
-        let Some(connection) = connection else {
+        if plan.is_chooser() {
             // Until a folder is chosen, Quit and closing the chooser end the app; once the
-            // project window is open, its own handlers below take over.
+            // project window is open, its own handlers below take over. Neither says Goodbye:
+            // the chooser named no folder, so the daemon forgets none.
             let opened = std::rc::Rc::new(std::cell::Cell::new(false));
+            // The chooser's heartbeat, until the project window's connection runs its own.
+            let waiting = opened.clone();
+            let beat_client = client.clone();
+            cx.spawn(async move |cx| connection::heartbeat(beat_client, move |_| !waiting.get(), cx).await).detach();
             let quit_opened = opened.clone();
             cx.on_action(move |_: &Quit, cx| {
                 if !quit_opened.get() {
@@ -2206,11 +2218,10 @@ fn main() {
             })
             .detach();
             let (config, theme) = (start.config.clone(), start.theme.clone());
-            let focus = should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref());
             launch::open_chooser(
                 cx,
                 true,
-                focus,
+                plan.focus(),
                 config,
                 theme,
                 Box::new(move |folder, cx| {
@@ -2223,14 +2234,15 @@ fn main() {
                     }
                     let project = std::env::current_dir().unwrap_or(folder);
                     opened.set(true);
-                    let connection = connect(&start.daemon_args);
-                    open_project_window(project, connection, start, cx);
+                    // The same connection goes on: its second Hello names the project.
+                    client.hello();
+                    open_project_window(project, (client, events), start, cx);
                 }),
             )
             .detach();
             return;
-        };
-        open_project_window(cwd, connection, start, cx);
+        }
+        open_project_window(cwd, (client, events), start, cx);
     });
 }
 
@@ -2260,12 +2272,11 @@ fn connect(daemon_args: &[String]) -> (client::Client, futures::channel::mpsc::U
 /// Opens the window on `project` and starts everything that serves it.
 fn open_project_window(
     project: PathBuf,
-    (client, events): (client::Client, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>),
+    (client, events): (Arc<client::Client>, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>),
     start: Startup,
     cx: &mut App,
 ) {
     let Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark } = start;
-    let client = Arc::new(client);
     // Synchronous on purpose: one small file read, done before the window opens, so it cannot
     // stall painting or input. Saves happen on the background executor.
     let saved = workspace::load(&project);

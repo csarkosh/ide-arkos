@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Event, Request, ServerMessage, PROTOCOL_VERSION};
+use protocol::{ClientMessage, Event, Request, Response, ServerMessage, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -95,9 +95,17 @@ impl Client {
             .spawn(move || {
                 let mut r = BufReader::new(reader_stream);
                 let (lock, cvar) = &*unread_for_reader;
+                let mut greeted = false;
                 let reason = loop {
                     match read_frame::<_, ServerMessage>(&mut r) {
                         Ok(Some(msg)) => {
+                            // One line per connection, for window.log.
+                            if let ServerMessage::Response { response: Response::Hello { daemon_version, .. }, .. } = &msg {
+                                if !greeted {
+                                    greeted = true;
+                                    eprintln!("arkos: connected to {daemon_version}");
+                                }
+                            }
                             let output = match &msg {
                                 ServerMessage::Event(Event::Output { bytes, .. }) => bytes.len(),
                                 _ => 0,
@@ -129,13 +137,20 @@ impl Client {
             })
             .context("spawn reader")?;
         let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream };
-        client.send(Request::Hello {
+        client.hello();
+        Ok((client, ev_rx))
+    }
+
+    /// Says Hello with this process's pid, binary and folder: at connect, and again on the same
+    /// connection once the launch chooser's folder is the working directory, so the daemon
+    /// replaces the empty folder the first one named.
+    pub fn hello(&self) -> u32 {
+        self.send(Request::Hello {
             protocol_version: PROTOCOL_VERSION,
             ui_pid: std::process::id(),
             ui_exe: std::env::current_exe().ok(),
-            ui_cwd: std::env::current_dir().unwrap_or_default(),
-        });
-        Ok((client, ev_rx))
+            ui_cwd: crate::launch::hello_cwd(&std::env::current_dir().unwrap_or_default()),
+        })
     }
 
     /// Queues a request. Returns its id so the response can be matched.
