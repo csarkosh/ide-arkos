@@ -47,6 +47,9 @@ pub enum Pending {
     Create { tab: TabId, note: bool },
     Attach { session: SessionId, tab: TabId, note: bool },
     Kill { session: SessionId },
+    /// A closed tab's session handed to the daemon's grace (protocol 5): its `Ok` means the
+    /// daemon ends the session if nobody reopens it.
+    Grace { session: SessionId },
     /// The daemon replacing itself; answered only on failure (success ends the connection).
     Upgrade,
     /// The daemon starting the installed window once this one disconnects.
@@ -71,6 +74,9 @@ pub enum Outcome {
     Created { tab: TabId, session: SessionId, note: bool },
     Attached { session: SessionId, tab: TabId, replay: Vec<u8>, alive: bool, note: bool },
     Killed { session: SessionId },
+    /// The daemon keeps the closed tab's minute for `session` and ends it after: the window no
+    /// longer kills it when the minute runs out.
+    GraceKept { session: SessionId },
     /// The daemon could not attach `session` for `tab`; the window gives the tab a fresh shell.
     AttachFailed { session: SessionId, tab: TabId, error: String },
     Error(String),
@@ -397,6 +403,20 @@ impl SessionManager {
     /// Stops receiving a session's output and drops its terminal. The daemon keeps the session.
     pub fn detach(&mut self, session: SessionId) {
         self.transport.send(Request::Detach { session });
+        self.forget(session);
+    }
+
+    /// `detach` for a closed tab, to a protocol 5 daemon: it ends the session after `secs`
+    /// unless a window attaches it first, so a window that crashes in the minute orphans
+    /// nothing. Its `Ok` is `Outcome::GraceKept`; a refusal leaves the window's own timer.
+    pub fn detach_for_grace(&mut self, session: SessionId, secs: u32) {
+        let id = self.transport.send(Request::DetachForGrace { session, secs });
+        self.pending.insert(id, Pending::Grace { session });
+        self.forget(session);
+    }
+
+    /// What the window held for a session it no longer shows.
+    fn forget(&mut self, session: SessionId) {
         self.terminals.remove(&session);
         self.notes.remove(&session);
         // No tab shows it now and no `State` event reaches it: a reopen starts from idle rather
@@ -460,6 +480,11 @@ impl SessionManager {
                     eprintln!("arkos: session {} was already gone when killed", session.0);
                     return Outcome::Killed { session };
                 }
+                Some(Pending::Grace { session }) if e.starts_with(UPGRADE_BUSY) => {
+                    // The daemon will not time it now; the window's own minute still ends it.
+                    eprintln!("arkos: grace for session {} refused during an upgrade; the window ends it after the minute", session.0);
+                    return Outcome::None;
+                }
                 Some(Pending::Kill { session }) if e.starts_with(UPGRADE_BUSY) => {
                     // Refused, not failed: dropped here, the shell would live on unseen.
                     eprintln!("arkos: kill of session {} refused during an upgrade; sending it again", session.0);
@@ -481,6 +506,7 @@ impl SessionManager {
                 Outcome::Attached { session, tab, replay, alive, note }
             }
             (Some(Pending::Kill { session }), Response::Ok) => Outcome::Killed { session },
+            (Some(Pending::Grace { session }), Response::Ok) => Outcome::GraceKept { session },
             (Some(Pending::Relaunch), Response::Ok) => Outcome::RelaunchAccepted,
             (Some(Pending::Apply), Response::Ok) => Outcome::Applied,
             (Some(Pending::Check), Response::Ok) => Outcome::CheckStarted,
@@ -941,6 +967,22 @@ mod tests {
         assert_eq!(grouped[0].0, SessionId(2));
         assert_eq!(t, before);
         assert_eq!(t.focused, a);
+    }
+
+    #[test]
+    fn a_grace_detach_is_confirmed_by_its_ok_and_a_refusal_leaves_the_window_s_own_minute() {
+        let r = Recorder::new();
+        let mut m = SessionManager::new(r.clone(), None, PathBuf::from("/p"));
+        m.note_events(&[Event::State { session: SessionId(9), state: ClaudeState::Working }]);
+        m.detach_for_grace(SessionId(9), 60);
+        assert_eq!(r.requests(), vec![Request::DetachForGrace { session: SessionId(9), secs: 60 }]);
+        assert_eq!(m.states.get(&SessionId(9)), None, "dropped like a plain detach");
+        assert_eq!(m.handle_response(1, Response::Ok), Outcome::GraceKept { session: SessionId(9) });
+        m.detach_for_grace(SessionId(10), 60);
+        let busy = "an upgrade is in progress; retry in a moment";
+        assert_eq!(m.handle_response(2, Response::Error(busy.into())), Outcome::None, "refused during an upgrade: no banner, the window's own minute applies");
+        m.detach_for_grace(SessionId(11), 60);
+        assert_eq!(m.handle_response(3, Response::Error("x".into())), Outcome::Error("x".into()), "other errors surface");
     }
 
     #[test]

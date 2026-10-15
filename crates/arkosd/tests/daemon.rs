@@ -889,7 +889,7 @@ fn version_and_check_handover_flags() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "handover 1", "exactly what the current main's daemon expects");
     let out = Command::new(env!("CARGO_BIN_EXE_arkosd")).arg("--handover-formats").output().unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1 2");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1 3");
 }
 
 /// A fake `arkosd` at `dir/arkosd` whose body is `script`, for the validation paths.
@@ -1042,7 +1042,7 @@ fn upgrade_onto_a_binary_that_reads_only_format_1_is_refused() {
     let exe = fake_arkosd(dir.path(), "case \"$1\" in\n--check-handover) echo 'handover 1' ;;\n*) exit 2 ;;\nesac");
     let mut c = d.connect();
     match c.request(Request::Upgrade { exe }) {
-        Response::Error(e) => assert!(e.contains("handover format 2"), "{e}"),
+        Response::Error(e) => assert!(e.contains("handover format 3"), "{e}"),
         other => panic!("unexpected {other:?}"),
     }
     let sid = c.create("/bin/sh");
@@ -2141,4 +2141,151 @@ fn the_collapsed_count_is_journaled_at_the_handover() {
     let count = before.find("check: 2 more checks since ").or_else(|| before.find("check: 3 more checks since ")).unwrap_or_else(|| panic!("no count line before the handover:\n{journal}"));
     assert!(count < exec);
     assert!(journal.contains("found 9.9.9 (fffffff), still not newer than 9.9.9"), "{journal}");
+}
+
+fn alive(c: &mut Conn, sid: SessionId) -> bool {
+    match c.request(Request::ListSessions) {
+        Response::Sessions(list) => list.iter().any(|s| s.id == sid && s.alive),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// The journal line the reaper writes for a closed tab nobody reopened.
+fn not_reopened(sid: SessionId, secs: u32) -> String {
+    format!("session {} in {}: not reopened within {secs} s, ended", sid.0, std::env::temp_dir().display())
+}
+
+fn journal(d: &Daemon) -> String {
+    std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap_or_default()
+}
+
+#[test]
+fn a_detached_for_grace_session_ends_after_its_grace() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    // The journal writes only into an updates folder the poll made; polling is off here.
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    assert_eq!(c.request(Request::DetachForGrace { session: sid, secs: 1 }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(alive(&mut c, sid), "still within its grace");
+    assert!(!journal(&d).contains(&not_reopened(sid, 1)));
+    // A shell that ignores the SIGHUP gets the SIGKILL a second later, as after `Kill`.
+    wait_until(|| !alive(&mut c, sid), Duration::from_secs(3));
+    let text = journal(&d);
+    assert!(text.contains(&not_reopened(sid, 1)), "{text}");
+}
+
+#[test]
+fn a_grace_is_cancelled_by_any_attach() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
+    let mut a = d.connect();
+    let mut b = d.connect();
+    let sid = a.create("/bin/sh");
+    a.attach(sid);
+    assert_eq!(a.request(Request::DetachForGrace { session: sid, secs: 1 }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(400));
+    b.attach(sid);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(alive(&mut b, sid), "another window's attach cancels the grace");
+    // A detach after that is a plain detach: nothing ends the session.
+    assert_eq!(b.request(Request::Detach { session: sid }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(alive(&mut b, sid));
+    assert!(!journal(&d).contains(&not_reopened(sid, 1)), "never ended, not even with a SIGHUP the shell ignored");
+}
+
+#[test]
+fn a_second_grace_request_restarts_the_clock() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    let first = Instant::now();
+    assert_eq!(c.request(Request::DetachForGrace { session: sid, secs: 1 }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(c.request(Request::DetachForGrace { session: sid, secs: 1 }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(700));
+    // The line is written when the session is ended, a SIGKILL's second before it is gone.
+    assert!(!journal(&d).contains(&not_reopened(sid, 1)), "1.4 s after the first: the second restarted the clock");
+    assert!(alive(&mut c, sid));
+    wait_until(|| journal(&d).contains(&not_reopened(sid, 1)), Duration::from_millis(1000));
+    assert!(first.elapsed() >= Duration::from_millis(1700), "ended at the second request's deadline, not the first's");
+    wait_until(|| !alive(&mut c, sid), Duration::from_secs(2));
+}
+
+#[test]
+fn a_grace_is_not_kept_while_another_window_is_attached() {
+    // A window that closes its tab while another still shows the session leaves it in use; the
+    // other window's later plain detach (a quit on purpose) must not end it.
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
+    let mut a = d.connect();
+    let mut b = d.connect();
+    let sid = a.create("/bin/sh");
+    a.attach(sid);
+    b.attach(sid);
+    assert_eq!(a.request(Request::DetachForGrace { session: sid, secs: 1 }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(1300));
+    assert!(alive(&mut b, sid), "still attached by the other window");
+    assert_eq!(b.request(Request::Detach { session: sid }), Response::Ok);
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(alive(&mut b, sid), "the grace was never kept, so nothing ends it now");
+    assert!(!journal(&d).contains(&not_reopened(sid, 1)));
+}
+
+#[test]
+fn a_grace_for_an_ended_or_unknown_session_is_ok_and_a_zero_grace_is_refused() {
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    assert!(matches!(c.request(Request::DetachForGrace { session: sid, secs: 0 }), Response::Error(e) if e.contains("use Kill")));
+    assert!(alive(&mut c, sid), "a refused request changes nothing");
+    c.send(Request::Input { session: sid, bytes: b"exit\n".to_vec() });
+    wait_for_exit(&mut c, sid, Duration::from_secs(3));
+    // A closed tab whose shell already ended: nothing to keep, and nothing for the window to show.
+    assert_eq!(c.request(Request::DetachForGrace { session: sid, secs: 60 }), Response::Ok);
+    assert_eq!(c.request(Request::DetachForGrace { session: SessionId(9999), secs: 60 }), Response::Ok);
+}
+
+#[test]
+fn a_grace_survives_the_handover_and_the_manifest() {
+    // The handover: the resumed image ends the session on the old image's deadline.
+    let d = Daemon::start(&["--reaper-millis", "100"]);
+    std::fs::create_dir_all(d.path().join("updates")).unwrap();
+    let mut c = d.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    let asked = Instant::now();
+    assert_eq!(c.request(Request::DetachForGrace { session: sid, secs: 2 }), Response::Ok);
+    c.send(Request::Upgrade { exe: PathBuf::from(env!("CARGO_BIN_EXE_arkosd")) });
+    c.expect_disconnect(Duration::from_secs(10));
+    let mut c = d.reconnect();
+    assert!(asked.elapsed() < Duration::from_millis(1800), "the swap took too long for this test to mean anything");
+    assert!(alive(&mut c, sid), "the session crossed the swap within its grace");
+    wait_until(|| !alive(&mut c, sid), Duration::from_secs(4));
+    // The deadline, then at most a reaper pass and the SIGKILL a second after a SIGHUP the
+    // shell ignores. `adopt`'s unit test pins the deadline itself to the old image's.
+    assert!(asked.elapsed() < Duration::from_millis(3600), "ended on the old image's deadline, {:?} after the request", asked.elapsed());
+    let text = journal(&d);
+    assert!(text.contains(&not_reopened(sid, 2)), "{text}");
+
+    // The manifest: a restart in the minute recovers the session with what was left of it.
+    let a = Daemon::start(&["--reaper-millis", "100"]);
+    std::fs::create_dir_all(a.path().join("updates")).unwrap();
+    let mut c = a.connect();
+    let sid = c.create("/bin/sh");
+    c.attach(sid);
+    assert_eq!(c.request(Request::DetachForGrace { session: sid, secs: 2 }), Response::Ok);
+    let dir = a.sigterm();
+    let b = Daemon::start_in(dir, &["--recover", "--reaper-millis", "100"]);
+    let mut c = b.connect();
+    assert!(alive(&mut c, sid), "recovered within its grace");
+    wait_until(|| !alive(&mut c, sid), Duration::from_secs(5));
+    let text = journal(&b);
+    assert!(text.contains(&not_reopened(sid, 2)), "the requested length, not what was left of it: {text}");
 }

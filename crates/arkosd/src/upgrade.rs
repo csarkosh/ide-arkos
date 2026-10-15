@@ -273,22 +273,23 @@ mod tests {
 
     #[test]
     fn a_check_answer_naming_our_format_is_accepted_on_its_own() {
-        assert_eq!(handover::FORMAT, 2);
-        assert!(check_answer_is_ours("handover 2\n"));
+        assert_eq!(handover::FORMAT, 3);
+        assert!(check_answer_is_ours("handover 3\n"));
         assert!(!check_answer_is_ours("handover 1"), "may read only 1 (the current main): ask for its formats");
-        assert!(!check_answer_is_ours("handover 3"), "a binary that dropped our format cannot resume our file");
+        assert!(!check_answer_is_ours("handover 4"), "a binary that dropped our format cannot resume our file");
         assert!(!check_answer_is_ours("handover"));
         assert!(!check_answer_is_ours(""));
     }
 
     #[test]
     fn a_candidate_is_accepted_when_its_formats_cover_ours() {
-        assert_eq!(handover::FORMAT, 2);
-        assert!(formats_cover("1 2"));
-        assert!(formats_cover("1 3\n"));
-        assert!(formats_cover("2 2"));
+        assert_eq!(handover::FORMAT, 3);
+        assert!(formats_cover("1 3"));
+        assert!(formats_cover("1 4\n"));
+        assert!(formats_cover("3 3"));
+        assert!(!formats_cover("1 2"), "reads up to format 2 only: 0.2.12");
         assert!(!formats_cover("1 1"), "reads only format 1: the current main");
-        assert!(!formats_cover("3 4"), "dropped our format");
+        assert!(!formats_cover("4 5"), "dropped our format");
         assert!(!formats_cover("1 2 3"));
         assert!(!formats_cover("garbage"));
         assert!(!formats_cover(""));

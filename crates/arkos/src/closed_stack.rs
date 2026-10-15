@@ -1,6 +1,8 @@
 //! Closed tabs, for Cmd+Shift+T (spec 4). Closing a terminal tab detaches its session at once
 //! but kills it only after `CLOSE_GRACE`, so reopening within the grace brings back the same
-//! shell with its history. A closed viewer or browser tab has nothing to end and reopens
+//! shell with its history. A protocol 5 daemon keeps that minute itself (milestone 6a spec,
+//! section 14), so a window that crashes in it orphans nothing; the window then only forgets
+//! the tab when the minute is up. A closed viewer or browser tab has nothing to end and reopens
 //! whenever it is popped. Pure bookkeeping; the window sends the requests.
 
 use crate::tree::PaneId;
@@ -32,6 +34,10 @@ pub struct ClosedTab {
     /// The pane it was closed from, where it reopens if that pane still exists.
     pub pane: PaneId,
     pub closed_at: Instant,
+    /// The daemon accepted the grace and ends the session itself: `expired` does not return it
+    /// for a kill (a window that outlives the minute must not end a session another window
+    /// reopened). Quitting still kills it at once.
+    pub daemon_timed: bool,
 }
 
 impl ClosedTab {
@@ -67,11 +73,19 @@ impl ClosedStack {
         self.entries.pop()
     }
 
-    /// Removes and returns every session whose grace has run out, to kill. Viewers stay.
+    /// Removes every session whose grace has run out and returns those the window must kill:
+    /// the ones the daemon does not time. Viewers stay.
     pub fn expired(&mut self, now: Instant) -> Vec<SessionId> {
         let (gone, kept): (Vec<ClosedTab>, Vec<ClosedTab>) = std::mem::take(&mut self.entries).into_iter().partition(|e| e.session().is_some() && !e.in_grace(now));
         self.entries = kept;
-        gone.into_iter().filter_map(|e| e.session()).collect()
+        gone.into_iter().filter(|e| !e.daemon_timed).filter_map(|e| e.session()).collect()
+    }
+
+    /// The daemon accepted `session`'s grace (`Outcome::GraceKept`).
+    pub fn mark_daemon_timed(&mut self, session: SessionId) {
+        for e in self.entries.iter_mut().filter(|e| e.session() == Some(session)) {
+            e.daemon_timed = true;
+        }
     }
 
     /// Empties the stack and returns every session, for quitting: nothing could reopen them
@@ -95,11 +109,11 @@ mod tests {
     use super::*;
 
     fn closed(session: u64, pane: PaneId, at: Instant) -> ClosedTab {
-        ClosedTab { closed: Closed::Session(SessionId(session), None), pane, closed_at: at }
+        ClosedTab { closed: Closed::Session(SessionId(session), None), pane, closed_at: at, daemon_timed: false }
     }
 
     fn viewer(path: &str, pane: PaneId, at: Instant) -> ClosedTab {
-        ClosedTab { closed: Closed::Viewer(PathBuf::from(path)), pane, closed_at: at }
+        ClosedTab { closed: Closed::Viewer(PathBuf::from(path)), pane, closed_at: at, daemon_timed: false }
     }
 
     #[test]
@@ -123,7 +137,7 @@ mod tests {
     fn a_closed_browser_pops_as_a_browser_like_a_viewer() {
         let t0 = Instant::now();
         let mut s = ClosedStack::default();
-        let browser = |url: Option<&str>, app_mode| ClosedTab { closed: Closed::Browser { url: url.map(String::from), app_mode }, pane: 3, closed_at: t0 };
+        let browser = |url: Option<&str>, app_mode| ClosedTab { closed: Closed::Browser { url: url.map(String::from), app_mode }, pane: 3, closed_at: t0, daemon_timed: false };
         assert!(s.push(closed(1, 4, t0)).is_empty());
         assert!(s.push(browser(Some("https://example.com"), true)).is_empty());
         assert_eq!(s.expired(t0 + CLOSE_GRACE * 10), vec![SessionId(1)]);
@@ -197,5 +211,20 @@ mod tests {
         assert!(!s.contains(SessionId(0)) && s.contains(SessionId(100)));
         assert_eq!(s.drain_all().len(), MAX_CLOSED);
         assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn a_tab_the_daemon_times_leaves_the_stack_after_the_grace_without_a_kill() {
+        let t0 = Instant::now();
+        let mut s = ClosedStack::default();
+        s.push(closed(1, 4, t0));
+        s.push(closed(2, 4, t0));
+        s.mark_daemon_timed(SessionId(1));
+        assert!(s.expired(t0 + Duration::from_secs(59)).is_empty());
+        assert_eq!(s.expired(t0 + CLOSE_GRACE), vec![SessionId(2)], "the daemon ends 1 itself");
+        assert_eq!(s.len(), 0, "neither reopens after the grace");
+        s.push(closed(3, 4, t0));
+        s.mark_daemon_timed(SessionId(3));
+        assert_eq!(s.drain_all(), vec![SessionId(3)], "quitting still ends it at once");
     }
 }

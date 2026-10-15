@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 /// The oldest format `read` still decodes. `--check-handover` prints this, `--handover-formats`
 /// prints it with FORMAT. A daemon accepts a candidate that answers exactly `handover <FORMAT>`
 /// to `--check-handover`, or whose `--handover-formats` range covers FORMAT.
@@ -45,6 +45,11 @@ pub struct SessionRecord {
     pub agent: Option<AgentRecord>,
     /// Recreated by `--recover` after a restart.
     pub recovered: bool,
+    /// What is left of a closed tab's grace, so the new image ends the session on the old
+    /// image's deadline (format 3).
+    pub grace_left_ms: Option<u64>,
+    /// The grace's length as asked for, for the journal line (format 3).
+    pub grace_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -68,6 +73,98 @@ pub struct Handover {
     /// the swap still knows them.
     pub windows: Vec<(PathBuf, Option<PathBuf>)>,
     pub sessions: Vec<SessionRecord>,
+}
+
+/// Format 2, as 0.2.12 writes it. Never edited: a format 2 file must decode with this exact
+/// shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SessionRecordV2 {
+    pub id: u64,
+    pub cwd: PathBuf,
+    pub pid: i32,
+    pub alive: bool,
+    pub exit_code: Option<i32>,
+    pub exited_ago_ms: Option<u64>,
+    pub claude: ClaudeState,
+    pub last_activity_unix_ms: u64,
+    pub master_fd: i32,
+    pub rows: u16,
+    pub cols: u16,
+    pub kill_requested: bool,
+    pub replay: Vec<u8>,
+    pub shell: String,
+    pub nice: i32,
+    pub env: Vec<(String, String)>,
+    pub agent: Option<AgentRecord>,
+    pub recovered: bool,
+}
+
+/// Format 2, as 0.2.12 writes it. Never edited: a format 2 file must decode with this exact
+/// shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct HandoverV2 {
+    pub format: u32,
+    pub written_by: String,
+    pub listener_fd: i32,
+    pub replay_capacity: usize,
+    pub watchdog_secs: u64,
+    pub reaper_millis: u64,
+    pub dead_session_secs: u64,
+    pub client_pending_cap: usize,
+    pub high_water: usize,
+    pub low_water: usize,
+    pub stall_secs: u64,
+    pub flush_quiet_millis: u64,
+    pub next_session: u64,
+    pub windows: Vec<(PathBuf, Option<PathBuf>)>,
+    pub sessions: Vec<SessionRecordV2>,
+}
+
+impl From<HandoverV2> for Handover {
+    fn from(v: HandoverV2) -> Self {
+        Handover {
+            format: FORMAT,
+            written_by: v.written_by,
+            listener_fd: v.listener_fd,
+            replay_capacity: v.replay_capacity,
+            watchdog_secs: v.watchdog_secs,
+            reaper_millis: v.reaper_millis,
+            dead_session_secs: v.dead_session_secs,
+            client_pending_cap: v.client_pending_cap,
+            high_water: v.high_water,
+            low_water: v.low_water,
+            stall_secs: v.stall_secs,
+            flush_quiet_millis: v.flush_quiet_millis,
+            next_session: v.next_session,
+            windows: v.windows,
+            sessions: v
+                .sessions
+                .into_iter()
+                .map(|s| SessionRecord {
+                    id: s.id,
+                    cwd: s.cwd,
+                    pid: s.pid,
+                    alive: s.alive,
+                    exit_code: s.exit_code,
+                    exited_ago_ms: s.exited_ago_ms,
+                    claude: s.claude,
+                    last_activity_unix_ms: s.last_activity_unix_ms,
+                    master_fd: s.master_fd,
+                    rows: s.rows,
+                    cols: s.cols,
+                    kill_requested: s.kill_requested,
+                    replay: s.replay,
+                    shell: s.shell,
+                    nice: s.nice,
+                    env: s.env,
+                    agent: s.agent,
+                    recovered: s.recovered,
+                    grace_left_ms: None,
+                    grace_secs: None,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Format 1, as the current main writes it. Never edited: a format 1 file must decode with this
@@ -147,6 +244,8 @@ impl From<HandoverV1> for Handover {
                     env: Vec::new(),
                     agent: None,
                     recovered: false,
+                    grace_left_ms: None,
+                    grace_secs: None,
                 })
                 .collect(),
         }
@@ -187,6 +286,7 @@ pub fn read(path: &Path) -> Result<Handover, String> {
     let (format, _) = postcard::take_from_bytes::<u32>(body).map_err(decode_err)?;
     match format {
         FORMAT => postcard::from_bytes(body).map_err(decode_err),
+        2 => postcard::from_bytes::<HandoverV2>(body).map(Handover::from).map_err(decode_err),
         1 => {
             // Raising OLDEST_READ past 1 must remove this arm and the V1 structs with it.
             const _: () = assert!(OLDEST_READ == 1);
@@ -280,6 +380,8 @@ mod tests {
                 env: vec![],
                 agent: None,
                 recovered: false,
+                grace_left_ms: Some(41_500),
+                grace_secs: Some(60),
             }],
         }
     }
@@ -391,10 +493,11 @@ mod tests {
         assert!(s.env.is_empty());
         assert_eq!(s.agent, None);
         assert!(!s.recovered);
+        assert_eq!((s.grace_left_ms, s.grace_secs), (None, None));
     }
 
     #[test]
-    fn a_format_2_file_round_trips_with_the_new_fields() {
+    fn a_format_3_file_round_trips_with_the_new_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("h.bin");
         let agent = protocol::AgentRecord { kind: "claude".into(), id: "a1".into(), resume: vec!["claude".into(), "--resume".into(), "a1".into()] };
@@ -432,10 +535,70 @@ mod tests {
                 env: vec![("A".into(), "B".into())],
                 agent: Some(agent),
                 recovered: true,
+                grace_left_ms: None,
+                grace_secs: None,
             }],
         };
         write(&path, &h).unwrap();
         assert_eq!(read(&path).unwrap(), h);
+    }
+
+    /// A file written by 0.2.12 (format 2) resumes under this daemon: "Update now" from that
+    /// build must work, with no grace on any session.
+    #[test]
+    fn a_format_2_file_is_read_with_no_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.bin");
+        let live = sample();
+        let s = &live.sessions[0];
+        let v2 = HandoverV2 {
+            format: 2,
+            written_by: "arkosd 0.2.12 (old)".into(),
+            listener_fd: live.listener_fd,
+            replay_capacity: live.replay_capacity,
+            watchdog_secs: live.watchdog_secs,
+            reaper_millis: live.reaper_millis,
+            dead_session_secs: live.dead_session_secs,
+            client_pending_cap: live.client_pending_cap,
+            high_water: live.high_water,
+            low_water: live.low_water,
+            stall_secs: live.stall_secs,
+            flush_quiet_millis: 250,
+            next_session: live.next_session,
+            windows: live.windows.clone(),
+            sessions: vec![SessionRecordV2 {
+                id: s.id,
+                cwd: s.cwd.clone(),
+                pid: s.pid,
+                alive: s.alive,
+                exit_code: s.exit_code,
+                exited_ago_ms: s.exited_ago_ms,
+                claude: s.claude,
+                last_activity_unix_ms: s.last_activity_unix_ms,
+                master_fd: s.master_fd,
+                rows: s.rows,
+                cols: s.cols,
+                kill_requested: s.kill_requested,
+                replay: s.replay.clone(),
+                shell: s.shell.clone(),
+                nice: 3,
+                env: vec![("A".into(), "B".into())],
+                agent: None,
+                recovered: true,
+            }],
+        };
+        let body = postcard::to_allocvec(&v2).unwrap();
+        atomic_write(&path, &[MAGIC.as_slice(), &body].concat()).unwrap();
+        let h = read(&path).unwrap();
+        assert_eq!(h.format, FORMAT);
+        assert_eq!(h.written_by, "arkosd 0.2.12 (old)");
+        assert_eq!(h.flush_quiet_millis, 250);
+        assert_eq!(h.windows, live.windows);
+        let r = &h.sessions[0];
+        assert_eq!((r.id, r.pid, r.master_fd, r.nice, r.recovered), (7, 4242, 9, 3, true));
+        assert_eq!(r.env, vec![("A".to_string(), "B".to_string())]);
+        assert_eq!(r.replay, b"hello\r\n");
+        assert_eq!((r.grace_left_ms, r.grace_secs), (None, None));
     }
 
     #[test]

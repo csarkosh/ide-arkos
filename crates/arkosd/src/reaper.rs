@@ -1,6 +1,7 @@
-//! Notices shells that exited while something still holds their PTY open, and forgets dead
-//! sessions once nobody is attached and the grace period has passed (spec 2.1: the daemon keeps
-//! sessions for reattach, not forever).
+//! Notices shells that exited while something still holds their PTY open, ends closed tabs'
+//! sessions nobody reopened within their grace, and forgets dead sessions once nobody is
+//! attached and the TTL has passed (spec 2.1: the daemon keeps sessions for reattach, not
+//! forever).
 use crate::server::Shared;
 use std::time::Duration;
 
@@ -29,6 +30,22 @@ fn scan(state: &Shared, ttl: Duration) {
         s.poll_exit();
         s.escalate_kill();
     }
+    // A closed tab nobody reopened (milestone 6a spec, section 14): ended the way `Kill` ends
+    // a session, so the escalation to SIGKILL follows a second later from `escalate_kill`.
+    for s in &sessions {
+        if !s.grace_due() {
+            continue;
+        }
+        if !s.has_subscribers() && s.info().alive {
+            let secs = s.grace_secs().unwrap_or(0);
+            crate::journal::note(format_args!("session {} in {}: not reopened within {secs} s, ended", s.id.0, s.cwd().display()));
+            if let Err(e) = s.kill() {
+                eprintln!("arkosd: session {}: cannot end it after its grace: {e:#}", s.id.0);
+            }
+        }
+        // Once: a shell that ended by itself, or one a window shows again, has nothing to end.
+        s.clear_grace();
+    }
     let mut dead = Vec::new();
     for s in &sessions {
         if let Some(at) = s.exited_at() {
@@ -49,5 +66,62 @@ fn scan(state: &Shared, ttl: Duration) {
             st.manifest_dirty = true;
             eprintln!("arkosd: session {} reaped {}s after it ended", id.0, ttl.as_secs());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::State;
+    use crate::session::{Backpressure, ClientSink, Session, SpawnSpec};
+    use protocol::SessionId;
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    fn session(id: u64) -> Arc<Session> {
+        let spec = SpawnSpec {
+            id: SessionId(id),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 64,
+            backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
+        };
+        // No reader: the scan's `poll_exit` is what records the exit.
+        Session::spawn_for_test(spec, false).unwrap()
+    }
+
+    #[test]
+    fn a_session_past_its_grace_is_ended_and_one_attached_or_within_it_is_not() {
+        let (due, within, attached) = (session(31), session(32), session(33));
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().sessions.extend([(due.id, due.clone()), (within.id, within.clone()), (attached.id, attached.clone())]);
+        due.set_grace(1);
+        within.set_grace(60);
+        attached.set_grace(1);
+        let (a, _b) = UnixStream::pair().unwrap();
+        attached.subscribe(1, ClientSink::new(1, a, 1 << 20), 1);
+        std::thread::sleep(Duration::from_millis(1050));
+        scan(&state, Duration::from_secs(600));
+        assert_eq!(due.grace_secs(), None, "ended once, not again every pass");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while due.info().alive {
+            assert!(Instant::now() < deadline, "the session past its grace was never ended");
+            scan(&state, Duration::from_secs(600));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(within.info().alive, "still within its grace");
+        assert!(attached.info().alive, "a window shows it");
+        assert_eq!(within.grace_secs(), Some(60));
+        assert!(state.lock().unwrap().sessions.contains_key(&due.id), "an ended session stays listed for the usual TTL");
+        let _ = within.kill();
+        let _ = attached.kill();
     }
 }

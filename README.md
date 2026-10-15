@@ -16,7 +16,10 @@ shell ended), the title bar counts the sessions waiting, and with "Start at logi
 brings every session back on its own: the same folders, the history on screen under a divider, and
 each Claude Code conversation resumed. The sidebar shows git status in the tree and the
 worktrees, and the viewer marks a file's changes against HEAD. The browser pane docks a Chrome
-window into a pane (Accessibility permission needed). Milestone 6 is next.
+window into a pane (Accessibility permission needed). Milestone 6a made the update path and the
+launcher trustworthy: "Check for updates" waits for the check and says what it found, the chooser
+opens before the daemon answers and reconnects, and a closed tab's minute is kept by the daemon.
+Milestones 6b and 6c are next.
 
 Things only a person at the screen can check, in order of value:
 
@@ -121,6 +124,20 @@ Things only a person at the screen can check, in order of value:
   slowly; click another pane: the glow cross-fades; Reduce Motion in System Settings: it rests;
   `ps` with four idle terminals and the window in front: the breath's ten repaints a second
   cost a few percent of one core, and none once another app is in front
+- `pkill -x arkosd`, then open from the Dock: the chooser is up at once with "connecting to the
+  daemon…" under the list, and the session counts arrive a moment later; `pkill -x arkosd` again
+  with the chooser open: the footer says "reconnecting to the daemon…" and the counts come back
+  with the next daemon
+- `pkill -x arkosd`, move `/Applications/Arkos IDE.app/Contents/MacOS/arkosd` aside, open from
+  the Dock: "Arkos cannot reach its daemon" with the error; "Open the log" opens `arkosd.log`;
+  move the binary back and press "Try again": the chooser fills in and choosing a folder opens it
+- the same broken daemon path, but choose a folder in the chooser before the failure window
+  appears: the choice is kept behind it, and "Try again" with the binary back opens that folder
+- with the Wi-Fi off, "Check for updates" from the palette: after a few seconds the notice says
+  "updates unreachable: " with the daemon's words, not "no update"
+- close a terminal tab, `kill -9 $(pgrep -x arkos)` at once, wait a little over a minute: `ps`
+  shows the tab's shell gone, and the update journal says "session N in F: not reopened within
+  60 s, ended"; a tab closed and reopened with Shift+Cmd+T within the minute keeps its shell
 - open from the Dock with Claude running in two tabs of a project: its row says "2 sessions";
   Stop all, then Confirm: the row says "stopping…" and the count goes; `ps` shows the shells
   gone; a folder with no sessions shows nothing on the right; Delete on a selected row arms it
@@ -303,7 +320,10 @@ Notes:
 - Cmd+W (and the tab's ×, and Cmd+K then W) keeps a closed terminal's shell alive for a
   minute: Shift+Cmd+T within that minute brings the same shell back, history and all, in the
   pane it was closed from. After the minute the shell ends, and Shift+Cmd+T opens a new one.
-  Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
+  The daemon keeps that minute, so a window that crashes or is killed within it still has the
+  shell ended on time (the update journal says "not reopened within 60 s, ended"), and an update
+  or a restart in the minute keeps the deadline; any window that attaches the session first
+  cancels it. Quitting ends every closed tab's shell at once. A tab whose shell has already ended is not
   kept for Shift+Cmd+T, since nothing is left to end or bring back. A closed viewer tab comes
   back too, pinned, in the pane it was closed from.
 - Option is Meta, as with Terminal.app's "Use Option as Meta Key": Option+a key sends ESC plus
@@ -384,8 +404,19 @@ refuses a quarantined ad-hoc app. The daemon's own updates never carry the attri
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
 and verifies a newer build, and the window applies it once you have been idle for thirty seconds
 (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
-still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for
-updates" in the palette asks now, and says "no update" when nothing newer is out.
+still there. `[update] auto = false` keeps the badge and "Update now" instead.
+
+"Check for updates" in the palette asks now and waits for that check (up to 30 seconds) before
+saying one thing: "update ready: X" when it found a release (the badge appears too), "update
+check failed: …" when the release itself was bad, "updates unreachable: …" with the daemon's
+words when GitHub could not be reached, "the update check is still running" when 30 seconds were
+not enough, and "no update" only when the check reached the manifest and found nothing newer.
+"Retry update" says its outcome the same way. A daemon from before protocol 5 is asked once after
+three seconds, and says "the daemon has not reached the update server yet" when it never has.
+
+A release downloaded and staged before a daemon restart is kept: the restarted daemon adopts the
+staged bundle (the journal says "adopted staged X from before the restart") instead of
+downloading it again, and the badge stays.
 
 A check that cannot reach GitHub (offline, a captive portal) is retried quietly at the next one;
 when none has reached the signed manifest for over a day, the title bar says "updates
@@ -393,8 +424,10 @@ unreachable for N days" until one does.
 When the daemon's last check or update failed for a reason that is the release's (a bad
 signature, a download that does not match its manifest) or the swap's, the title bar shows the
 reason once as a notice, the badge says "update failed", and the palette offers "Retry update".
-If the new window does not come up within 20 seconds of its relaunch, the daemon puts the
-previous app back, reopens your windows, and records the version in
+If the new window does not come up within 20 seconds of its relaunch, or the daemon's own
+upgrade onto the new build fails (the journal says "the upgrade onto X failed: …; the grace for
+X starts now"), the daemon puts the previous app back 20 seconds later, reopens your windows,
+and records the version in
 `~/Library/Application Support/arkos/updates/rejected` so it is never downloaded again (a newer
 release still is). To try a rejected version again, delete that file.
 
@@ -404,9 +437,9 @@ five minutes (or at the next launch), and the palette's "Update now" does the re
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
 process (same pid, the shells stay its children) and the window reconnects; then the window
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
-history. The daemon and window speak protocol 4; the daemon still serves protocol 1 to 3 windows,
-and reads the previous handover format, so updating from the update-in-place build is an ordinary
-"Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
+history. The daemon and window speak protocol 5; the daemon still serves protocol 1 to 4 windows,
+and reads the previous handover formats and recovery manifest, so updating from 0.2.12 or the
+update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
 daemon knows nothing of handovers), which ends every session.
 
 Click the badge to update at once.
@@ -428,7 +461,11 @@ marker and the rejected versions, the last lines of the daemon's update journal 
 `window.log`, and any crash reports from the last day. The journal,
 `~/Library/Application Support/arkos/updates/journal.log`, has one timestamped line per step of
 each check, apply, relaunch, confirmation and rollback, including every Hello the daemon heard
-while it waited for the new window. `~/Library/Application Support/arkos/window.log` keeps the
+while it waited for the new window. A check that finds the same thing as the one before is
+counted rather than written again: "check: N more checks since HH:MM found X, still not newer
+than Y" when the outcome changes, at an update or exit, and once a day (failed checks the same
+way, "check: transient, N more times since HH:MM: …"), so the journal holds weeks.
+`~/Library/Application Support/arkos/window.log` keeps the
 output of every window the daemon launched. Both are what to attach to a bug report; both name
 the folders your windows had open, so look them over first.
 
@@ -470,7 +507,15 @@ assembles it.
 
 Opening from the Dock (or Finder, or Spotlight) asks which folder to open: a small chooser lists
 the five most recent folders, newest first, with "Show all" for the rest and "Open another
-folder…" for the native picker. Up, Down and Enter choose; Escape quits. Each folder's row ends
+folder…" for the native picker. Up, Down and Enter choose; Escape quits. The chooser opens at
+once, before the daemon answers: until it does, the footer says "connecting to the daemon…" and
+the session counts are missing, and a folder chosen meanwhile opens as soon as the connection is
+there. If the daemon goes away while the chooser is open, it reconnects as a window does (the
+footer says "reconnecting to the daemon…", and after ten seconds a new daemon is started). When
+no daemon can be reached or started, a small window says "Arkos cannot reach its daemon" with
+the error, and offers "Open the log" (`arkosd.log`), "Try again" and "Quit"; Escape quits. A
+window relaunched after an update shows the same window if its connect fails. The chooser's text
+follows the config's preset size and the system appearance. Each folder's row ends
 with how many of its sessions the daemon is running (a tab closed within its minute and a
 worktree tab both count) and "Stop all": one click, or Delete on the selected row, arms it as
 "Stop N sessions? Confirm"; a second ends every one of them (a window open on that folder sees

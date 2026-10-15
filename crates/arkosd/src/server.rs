@@ -569,11 +569,17 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         }
         Request::Attach { session: sid } => match session(sid) {
             Some(s) => {
+                let had_grace = s.grace_secs().is_some();
                 s.subscribe(client_id, tx.clone(), id);
-                if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                let mut st = state.lock().unwrap();
+                if let Some(rec) = st.clients.get_mut(&client_id) {
                     if !rec.attached.contains(&sid) {
                         rec.attached.push(sid);
                     }
+                }
+                // The attach cleared a closed tab's grace: the manifest must not keep it.
+                if had_grace {
+                    st.manifest_dirty = true;
                 }
                 return None;
             }
@@ -644,19 +650,29 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 transient_error: st.update.transient_error.clone(),
             }
         }
-        // Task 8 replaces this with the real grace; until then it detaches like `Detach`. Same
-        // lock order as the `Detach` arm: the session handle through `session(sid)` first, the
-        // state lock on its own afterwards, never the session's lock under the state's.
-        Request::DetachForGrace { session: sid, .. } => match session(sid) {
-            Some(s) => {
+        Request::DetachForGrace { secs: 0, .. } => Response::Error("a grace of zero: use Kill".into()),
+        // The handover's snapshot may already be taken: a grace set now would not cross the exec,
+        // and the session would outlive its closed tab. The window keeps its own timer instead.
+        Request::DetachForGrace { .. } if state.lock().unwrap().upgrading => Response::Error(UPGRADE_IN_PROGRESS.into()),
+        // A closed tab (milestone 6a spec, section 14): detached like `Detach`, then ended by the
+        // reaper after `secs` unless a window attaches it first. Same lock order as `Detach`: the
+        // session handle through `session(sid)` first, the state lock on its own afterwards. A
+        // session that already ended, or is gone, answers `Ok` like `Detach` does: the tab is
+        // closed either way, and an error would put a banner in the window for nothing.
+        Request::DetachForGrace { session: sid, secs } => {
+            if let Some(s) = session(sid) {
                 s.unsubscribe(client_id);
-                if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
-                    rec.attached.retain(|x| *x != sid);
+                if s.info().alive {
+                    s.set_grace(secs);
+                    // The manifest records the grace, so a restart in the minute keeps it.
+                    state.lock().unwrap().manifest_dirty = true;
                 }
-                Response::Ok
             }
-            None => Response::Error(format!("no session {}", sid.0)),
-        },
+            if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                rec.attached.retain(|x| *x != sid);
+            }
+            Response::Ok
+        }
         Request::CheckForUpdates => {
             let mut st = state.lock().unwrap();
             if st.update.polling {

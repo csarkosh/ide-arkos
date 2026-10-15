@@ -331,6 +331,11 @@ struct SessionState {
     /// When output first arrived after the last flush to disk; `None` while the file is up to date.
     dirty_since: Option<Instant>,
     last_output: Instant,
+    /// A closed tab's grace (milestone 6a spec, section 14): the reaper ends the session at this
+    /// instant unless a window attaches it first. Cleared by any `subscribe`.
+    grace_deadline: Option<Instant>,
+    /// The grace's length as asked for, kept beside the deadline for the journal line.
+    grace_secs: Option<u32>,
 }
 
 fn now_ms() -> u64 {
@@ -384,6 +389,8 @@ impl Session {
                 claude: ClaudeState::Idle,
                 dirty_since: (!spec.seed.is_empty()).then(Instant::now),
                 last_output: Instant::now(),
+                grace_deadline: None,
+                grace_secs: None,
             }),
             backpressure: spec.backpressure,
             ending: AtomicBool::new(false),
@@ -651,7 +658,51 @@ impl Session {
         let response = Response::Attached { replay: st.replay.snapshot(), alive: st.alive };
         if tx.send(ServerMessage::Response { id, response }) {
             st.subscribers.insert(client, tx);
+            // A window shows it again: a closed tab's grace no longer applies.
+            st.grace_deadline = None;
+            st.grace_secs = None;
         }
+    }
+
+    /// Starts a closed tab's grace of `secs`: the reaper ends the session then unless a window
+    /// attaches it first. A second call restarts the clock. Kept only while no client is
+    /// attached: a session another window still shows is in use, and that window's later plain
+    /// detach (a quit on purpose) must not end it. Checked under the lock `subscribe` takes, so
+    /// an attach is never lost between the two.
+    pub fn set_grace(&self, secs: u32) {
+        self.set_grace_left(Duration::from_secs(secs as u64), secs);
+    }
+
+    /// A grace with `left` of its `secs` still to run: what a handover or a recovery carries.
+    pub fn set_grace_left(&self, left: Duration, secs: u32) {
+        let mut st = self.state.lock().unwrap();
+        if !st.subscribers.is_empty() {
+            st.grace_deadline = None;
+            st.grace_secs = None;
+            return;
+        }
+        st.grace_deadline = Some(Instant::now() + left);
+        st.grace_secs = Some(secs);
+    }
+
+    /// How much of the grace is left, zero once past; None without one.
+    pub fn grace_left(&self) -> Option<Duration> {
+        self.state_even_poisoned().grace_deadline.map(|d| d.saturating_duration_since(Instant::now()))
+    }
+
+    /// The grace's length as asked for.
+    pub fn grace_secs(&self) -> Option<u32> {
+        self.state_even_poisoned().grace_secs
+    }
+
+    pub fn grace_due(&self) -> bool {
+        self.state.lock().unwrap().grace_deadline.is_some_and(|d| d <= Instant::now())
+    }
+
+    pub fn clear_grace(&self) {
+        let mut st = self.state.lock().unwrap();
+        st.grace_deadline = None;
+        st.grace_secs = None;
     }
 
     pub fn unsubscribe(&self, client: ClientId) {
@@ -687,6 +738,8 @@ impl Session {
             env: self.env.clone(),
             agent,
             recovered: self.recovered.load(Ordering::Relaxed),
+            grace_left_ms: st.grace_deadline.map(|d| d.saturating_duration_since(Instant::now()).as_millis() as u64),
+            grace_secs: st.grace_secs,
         }
     }
 
@@ -725,6 +778,8 @@ impl Session {
                 // The new image rewrites the file once.
                 dirty_since: Some(Instant::now()),
                 last_output: Instant::now(),
+                grace_deadline: None,
+                grace_secs: None,
             }),
             backpressure,
             // A pending kill drains to EOF without pausing, as it did in the old image; so does a
@@ -739,6 +794,11 @@ impl Session {
             agent: Mutex::new(record.agent.clone()),
             recovered: AtomicBool::new(record.recovered),
         });
+        if let Some(ms) = record.grace_left_ms {
+            // The old image's deadline, from now: the swap does not restart a closed tab's minute.
+            let left = Duration::from_millis(ms);
+            session.set_grace_left(left, record.grace_secs.unwrap_or_else(|| left.as_secs().max(1) as u32));
+        }
         if record.alive {
             // The reader reports EOF later; a shell gone during the swap is recorded now.
             session.poll_exit();
@@ -1022,6 +1082,8 @@ mod tests {
             env: vec![],
             agent: None,
             recovered: false,
+            grace_left_ms: None,
+            grace_secs: None,
         };
         let s = Session::adopt(&rec, master, 4, Backpressure::default());
         assert!(!s.info().alive);
@@ -1059,6 +1121,8 @@ mod tests {
             env: vec![],
             agent: None,
             recovered: false,
+            grace_left_ms: None,
+            grace_secs: None,
         };
         let s = Session::adopt(&rec, master, 1 << 20, Backpressure::default());
         // A background job that outlived the shell still holds the slave and writes far more
@@ -1202,6 +1266,81 @@ mod tests {
         };
         let s = Session::spawn_for_test(spec, false).unwrap();
         assert!(s.flush_due(Duration::ZERO, Duration::from_secs(60)));
+        let _ = s.kill();
+    }
+
+    fn plain(id: u64) -> Arc<Session> {
+        let spec = SpawnSpec {
+            id: SessionId(id),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 80,
+            replay_capacity: 64,
+            backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
+        };
+        Session::spawn_for_test(spec, false).unwrap()
+    }
+
+    #[test]
+    fn a_grace_falls_due_after_its_length_and_a_subscribe_clears_it() {
+        let s = plain(21);
+        assert_eq!((s.grace_left(), s.grace_secs(), s.grace_due()), (None, None, false));
+        s.set_grace(1);
+        assert_eq!(s.grace_secs(), Some(1));
+        let left = s.grace_left().unwrap();
+        assert!(left <= Duration::from_secs(1) && left > Duration::from_millis(900), "{left:?}");
+        assert!(!s.grace_due());
+        std::thread::sleep(Duration::from_millis(1050));
+        assert!(s.grace_due());
+        assert_eq!(s.grace_left(), Some(Duration::ZERO), "zero once past, never negative");
+        let (a, _b) = UnixStream::pair().unwrap();
+        s.subscribe(1, ClientSink::new(1, a, 1 << 20), 1);
+        assert_eq!((s.grace_left(), s.grace_secs(), s.grace_due()), (None, None, false), "any attach cancels it");
+        s.unsubscribe(1);
+        s.set_grace(5);
+        s.clear_grace();
+        assert_eq!((s.grace_left(), s.grace_secs()), (None, None));
+        let _ = s.kill();
+    }
+
+    #[test]
+    fn a_grace_is_not_kept_while_another_client_is_attached() {
+        let s = plain(22);
+        let (a, _b) = UnixStream::pair().unwrap();
+        s.subscribe(1, ClientSink::new(1, a, 1 << 20), 1);
+        s.set_grace(1);
+        assert_eq!(s.grace_left(), None, "still shown elsewhere: the session is in use");
+        let _ = s.kill();
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_grace_and_adopt_restores_it() {
+        let s = plain(23);
+        assert_eq!((s.snapshot().grace_left_ms, s.snapshot().grace_secs), (None, None));
+        s.set_grace(60);
+        let rec = s.snapshot();
+        assert_eq!(rec.grace_secs, Some(60));
+        assert!(rec.grace_left_ms.is_some_and(|ms| ms <= 60_000 && ms > 59_000), "{rec:?}");
+        let (master, _slave) = Pty::open(24, 80).unwrap();
+        let dead = crate::handover::SessionRecord {
+            alive: false,
+            exit_code: Some(0),
+            pid: i32::MAX,
+            master_fd: master.raw_fd(),
+            grace_left_ms: Some(1500),
+            grace_secs: Some(60),
+            ..rec.clone()
+        };
+        let adopted = Session::adopt(&dead, master, 64, Backpressure::default());
+        assert_eq!(adopted.grace_secs(), Some(60), "the journal line names the length asked for");
+        let left = adopted.grace_left().unwrap();
+        assert!(left <= Duration::from_millis(1500) && left > Duration::from_millis(1000), "the deadline, not a fresh minute: {left:?}");
         let _ = s.kill();
     }
 }

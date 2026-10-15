@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const MANIFEST_FORMAT: u32 = 1;
+pub const MANIFEST_FORMAT: u32 = 2;
 const MANIFEST_MAGIC: [u8; 4] = *b"SKMF";
 /// A session printing without pause is still written this often.
 pub const MAX_WAIT: Duration = Duration::from_secs(15);
@@ -46,6 +46,45 @@ pub struct ManifestSession {
     pub agent: Option<AgentRecord>,
     pub rows: u16,
     pub cols: u16,
+    /// What is left of a closed tab's grace, rounded up, so a restart in the minute still ends
+    /// the session on time (format 2).
+    pub grace_left_secs: Option<u32>,
+    /// The grace's length as asked for, for the journal line (format 2).
+    pub grace_secs: Option<u32>,
+}
+
+/// Format 1, as 0.2.12 writes it. Never edited: a format 1 manifest must decode with this
+/// exact shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ManifestSessionV1 {
+    pub id: u64,
+    pub cwd: PathBuf,
+    pub shell: String,
+    pub nice: i32,
+    pub env: Vec<(String, String)>,
+    pub agent: Option<AgentRecord>,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// Format 1, as 0.2.12 writes it. Never edited.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ManifestV1 {
+    pub format: u32,
+    pub written_by: String,
+    pub sessions: Vec<ManifestSessionV1>,
+    pub windows: Vec<ManifestWindow>,
+}
+
+impl From<ManifestV1> for Manifest {
+    fn from(v: ManifestV1) -> Self {
+        let sessions = v
+            .sessions
+            .into_iter()
+            .map(|s| ManifestSession { id: s.id, cwd: s.cwd, shell: s.shell, nice: s.nice, env: s.env, agent: s.agent, rows: s.rows, cols: s.cols, grace_left_secs: None, grace_secs: None })
+            .collect();
+        Manifest { format: MANIFEST_FORMAT, written_by: v.written_by, sessions, windows: v.windows }
+    }
 }
 
 /// A project folder with a window open, and the binary that window runs.
@@ -78,7 +117,9 @@ pub fn manifest_of(st: &State) -> Manifest {
         .filter(|s| s.info().alive)
         .map(|s| {
             let (rows, cols) = s.size();
-            ManifestSession { id: s.id.0, cwd: s.cwd().to_path_buf(), shell: s.shell().to_string(), nice: s.nice(), env: s.env().to_vec(), agent: s.agent(), rows, cols }
+            // Rounded up: a restart never ends a session before its deadline.
+            let grace_left_secs = s.grace_left().map(|d| d.as_millis().div_ceil(1000).min(u32::MAX as u128) as u32);
+            ManifestSession { id: s.id.0, cwd: s.cwd().to_path_buf(), shell: s.shell().to_string(), nice: s.nice(), env: s.env().to_vec(), agent: s.agent(), rows, cols, grace_left_secs, grace_secs: s.grace_secs() }
         })
         .collect();
     sessions.sort_by_key(|s| s.id);
@@ -116,11 +157,13 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>, String> {
     let body = &bytes[MANIFEST_MAGIC.len()..];
     let decode_err = |e: postcard::Error| format!("cannot decode {}: {e}", path.display());
     let (format, _) = postcard::take_from_bytes::<u32>(body).map_err(decode_err)?;
-    if format != MANIFEST_FORMAT {
+    match format {
+        MANIFEST_FORMAT => postcard::from_bytes(body).map(Some).map_err(decode_err),
+        // Written by 0.2.12, before a restart that brought this daemon.
+        1 => postcard::from_bytes::<ManifestV1>(body).map(|m| Some(Manifest::from(m))).map_err(decode_err),
         // Garbage after the magic reads as some other format too, so this is a decode error.
-        return Err(format!("cannot decode {}: manifest format {format} is not the {MANIFEST_FORMAT} this arkosd reads", path.display()));
+        _ => Err(format!("cannot decode {}: manifest format {format} is not one this arkosd reads (1 to {MANIFEST_FORMAT})", path.display())),
     }
-    postcard::from_bytes(body).map(Some).map_err(decode_err)
 }
 
 /// Dim "── resumed after restart ──" between the old history and the new shell. Written into
@@ -218,6 +261,11 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
         };
         match spawn_recovered(spec, Session::spawn) {
             Ok(s) => {
+                if let Some(left) = m.grace_left_secs {
+                    // A closed tab's minute that the restart interrupted: what was left of it runs
+                    // from now, so the session still ends rather than living on unseen.
+                    s.set_grace_left(Duration::from_secs(left as u64), m.grace_secs.unwrap_or(left));
+                }
                 if let Some(agent) = &m.agent {
                     if !typeable(&agent.resume) {
                         eprintln!("arkosd: session {}: the resume command has a control character, not typed", m.id);
@@ -591,6 +639,8 @@ mod tests {
                 agent: Some(protocol::AgentRecord { kind: "claude".into(), id: "a".into(), resume: vec!["claude".into(), "--resume".into(), "a".into()] }),
                 rows: 24,
                 cols: 80,
+                grace_left_secs: Some(42),
+                grace_secs: Some(60),
             }],
             windows: vec![ManifestWindow { cwd: "/p".into(), exe: Some("/opt/homebrew/bin/arkos".into()) }],
         };
@@ -680,5 +730,46 @@ mod tests {
         assert!(!state.lock().unwrap().manifest_dirty);
         f.tick(&state, Duration::from_secs(60), false);
         assert!(read_manifest(&f.dir).unwrap().unwrap().sessions.is_empty(), "the dead session left the manifest");
+    }
+
+    /// A manifest written by 0.2.12 (format 1) still recovers after the restart that brings
+    /// this daemon, with no grace on any session.
+    #[test]
+    fn a_format_1_manifest_is_read_with_no_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let v1 = ManifestV1 {
+            format: 1,
+            written_by: "arkosd 0.2.12 (old)".into(),
+            sessions: vec![ManifestSessionV1 { id: 9, cwd: "/p".into(), shell: "/bin/zsh".into(), nice: 2, env: vec![("A".into(), "B".into())], agent: None, rows: 30, cols: 100 }],
+            windows: vec![ManifestWindow { cwd: "/p".into(), exe: None }],
+        };
+        ensure_dir(dir.path()).unwrap();
+        let body = postcard::to_allocvec(&v1).unwrap();
+        crate::handover::atomic_write(&manifest_path(dir.path()), &[MANIFEST_MAGIC.as_slice(), &body].concat()).unwrap();
+        let m = read_manifest(dir.path()).unwrap().unwrap();
+        assert_eq!(m.format, MANIFEST_FORMAT);
+        assert_eq!(m.written_by, "arkosd 0.2.12 (old)");
+        assert_eq!(m.windows, v1.windows);
+        let s = &m.sessions[0];
+        assert_eq!((s.id, s.shell.as_str(), s.nice, s.rows, s.cols), (9, "/bin/zsh", 2, 30, 100));
+        assert_eq!(s.env, vec![("A".to_string(), "B".to_string())]);
+        assert_eq!((s.grace_left_secs, s.grace_secs), (None, None));
+        let body = postcard::to_allocvec(&(MANIFEST_FORMAT + 1)).unwrap();
+        std::fs::write(manifest_path(dir.path()), [MANIFEST_MAGIC.as_slice(), &body].concat()).unwrap();
+        assert!(read_manifest(dir.path()).unwrap_err().contains(&format!("format {}", MANIFEST_FORMAT + 1)));
+    }
+
+    #[test]
+    fn the_manifest_carries_what_is_left_of_a_grace_rounded_up() {
+        let (closed, open) = (seeded(6, b""), seeded(7, b""));
+        let state: Shared = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().sessions.extend([(closed.id, closed.clone()), (open.id, open.clone())]);
+        closed.set_grace(60);
+        let m = manifest_of(&state.lock().unwrap());
+        let by_id = |id: u64| m.sessions.iter().find(|s| s.id == id).unwrap().clone();
+        assert_eq!((by_id(6).grace_left_secs, by_id(6).grace_secs), (Some(60), Some(60)), "59.99 s left is written as 60");
+        assert_eq!((by_id(7).grace_left_secs, by_id(7).grace_secs), (None, None));
+        let _ = closed.kill();
+        let _ = open.kill();
     }
 }

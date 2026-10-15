@@ -867,9 +867,11 @@ impl Root {
         }
     }
 
-    /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and killed
-    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back. A session whose
-    /// shell has ended is killed at once and never enters the closed stack.
+    /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and ended
+    /// only after `CLOSE_GRACE`, so Cmd+Shift+T can bring the same shell back: by the daemon when
+    /// it speaks protocol 5 (a window that crashes in the minute orphans nothing), else by this
+    /// window. A session whose shell has ended is killed at once and never enters the closed
+    /// stack.
     pub fn close_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         let Some(id) = self.tree.tab_id(pane, idx) else { return };
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
@@ -892,8 +894,14 @@ impl Root {
                 if self.sessions.is_restoring(session) {
                     self.sessions.abort_restore(session, id);
                 }
-                self.sessions.detach(session);
-                for old in self.closed.push(ClosedTab { closed: Closed::Session(session, cwd), pane, closed_at: Instant::now() }) {
+                if self.daemon_protocol_max >= protocol::DETACH_FOR_GRACE_FROM {
+                    // Marked daemon-timed when the daemon's `Ok` arrives (`Outcome::GraceKept`);
+                    // until then, or if it refuses, the window's own minute applies.
+                    self.sessions.detach_for_grace(session, CLOSE_GRACE.as_secs() as u32);
+                } else {
+                    self.sessions.detach(session);
+                }
+                for old in self.closed.push(ClosedTab { closed: Closed::Session(session, cwd), pane, closed_at: Instant::now(), daemon_timed: false }) {
                     eprintln!("arkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                     self.sessions.kill(old);
                 }
@@ -910,7 +918,7 @@ impl Root {
                 }
                 Tab::Terminal { .. } => unreachable!("handled above"),
             };
-            for old in self.closed.push(ClosedTab { closed, pane, closed_at: Instant::now() }) {
+            for old in self.closed.push(ClosedTab { closed, pane, closed_at: Instant::now(), daemon_timed: false }) {
                 eprintln!("arkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                 self.sessions.kill(old);
             }
@@ -1004,7 +1012,8 @@ impl Root {
         }
     }
 
-    /// Kills the sessions of closed tabs whose grace has run out.
+    /// Kills the sessions of closed tabs whose grace has run out, except those the daemon ends
+    /// itself; those just leave the stack.
     pub fn expire_closed(&mut self, now: Instant) {
         for session in self.closed.expired(now) {
             eprintln!("arkos: session {} was not reopened within {}s, ending it", session.0, CLOSE_GRACE.as_secs());
@@ -2525,6 +2534,7 @@ impl Root {
                 .detach();
             }
             Outcome::Killed { .. } => {}
+            Outcome::GraceKept { session } => self.closed.mark_daemon_timed(session),
             Outcome::AttachFailed { session, tab, error } => {
                 self.restart_tab(tab, session, &format!("arkosd could not attach it: {error}"), cx);
             }
