@@ -1386,8 +1386,18 @@ impl Root {
         launch_agent::plist(&paths::daemon_exe(), &daemon_args(&self.config), &client::daemon_log(&paths::socket_path()))
     }
 
-    /// Installs or removes the login item off the UI thread and says what happened.
-    fn set_start_at_login(&mut self, on: bool, cx: &mut Context<Self>) {
+    /// Installs or removes the login item off the UI thread and says what happened. Only the
+    /// app in `/Applications` (or `~/Applications`) writes it: a copy run from anywhere else
+    /// leaves the file as it is, and says so when the user asked (`asked`).
+    fn set_start_at_login(&mut self, on: bool, asked: bool, cx: &mut Context<Self>) {
+        if on && !launch_agent::may_install_here() {
+            if asked {
+                self.show_notice("Start at login needs the app in /Applications".into(), cx);
+            } else {
+                eprintln!("arkos: not running from /Applications: the login item is left as it is");
+            }
+            return;
+        }
         let path = launch_agent::agent_path();
         let contents = self.agent_plist();
         let root = cx.entity();
@@ -1414,7 +1424,7 @@ impl Root {
         match self.config.recovery.start_at_login {
             config::StartAtLogin::Ask => {
                 let on = !launch_agent::installed(&launch_agent::agent_path());
-                self.set_start_at_login(on, cx);
+                self.set_start_at_login(on, true, cx);
             }
             _ => self.open_config(cx),
         }
@@ -1425,7 +1435,7 @@ impl Root {
     pub fn apply_recovery(&mut self, at_launch: bool, cx: &mut Context<Self>) {
         let installed = launch_agent::installed(&launch_agent::agent_path());
         match launch_agent::desired(self.config.recovery.start_at_login, installed) {
-            Some(on) => self.set_start_at_login(on, cx),
+            Some(on) => self.set_start_at_login(on, false, cx),
             None if at_launch && !installed => {
                 self.show_notice("sessions can come back after a restart: run \"Start at login\" from the command palette (Cmd+Shift+P)".into(), cx)
             }

@@ -45,6 +45,27 @@ pub fn plist(daemon_exe: &Path, daemon_args: &[String], log: &Path) -> String {
     )
 }
 
+/// Whether a window running from `bundle` may write the login item: only the installed app,
+/// `/Applications/Arkos IDE.app` or `~/Applications/Arkos IDE.app`, exactly. A copy run from a
+/// scratch folder, or from the update's `Arkos IDE.app.new` staging name, must never be what
+/// launchd runs at the next login.
+pub fn may_install(bundle: &Path, home: &Path) -> bool {
+    const APP: &str = "Arkos IDE.app";
+    bundle == Path::new("/Applications").join(APP) || bundle == home.join("Applications").join(APP)
+}
+
+/// The bundle this window runs from (`<bundle>/Contents/MacOS/arkos`), as launched.
+pub fn running_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.parent()?.to_path_buf())
+}
+
+/// `may_install` for this process.
+pub fn may_install_here() -> bool {
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME is set"));
+    running_bundle().is_some_and(|b| may_install(&b, &home))
+}
+
 pub fn installed(path: &Path) -> bool {
     path.is_file()
 }
@@ -204,6 +225,17 @@ mod tests {
         assert_eq!(remove(&p), Ok(true));
         assert!(!p.exists());
         assert_eq!(remove(&p), Ok(false), "a missing file is fine");
+    }
+
+    #[test]
+    fn only_the_installed_app_may_write_the_login_item() {
+        let home = Path::new("/Users/me");
+        assert!(may_install(Path::new("/Applications/Arkos IDE.app"), home));
+        assert!(may_install(Path::new("/Users/me/Applications/Arkos IDE.app"), home));
+        assert!(!may_install(Path::new("/Users/me/scratch/Arkos IDE.app"), home), "a copy run from a scratch folder");
+        assert!(!may_install(Path::new("/Applications/Arkos IDE.app.new"), home), "the update's staging name");
+        assert!(!may_install(Path::new("/Applications/Arkos IDE.app.new/Contents/MacOS/Arkos IDE.app"), home));
+        assert!(!may_install(Path::new("/Users/other/Applications/Arkos IDE.app"), home), "another user's");
     }
 
     #[test]
