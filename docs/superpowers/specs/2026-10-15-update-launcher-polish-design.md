@@ -1,6 +1,6 @@
 # Arkos IDE: update and launcher polish (milestone 6a)
 
-Date: 2026-10-15. Status: written from the rulings Cyrus gave in chat; awaiting their review.
+Date: 2026-10-15. Status: approved by Cyrus on 2026-10-15 with the two rulings in section 17.
 Builds on the auto-update design (`2026-10-14-auto-update-design.md`), the update-in-place design
 (`2026-10-14-update-in-place-design.md`) and the launcher and incident work of 2026-10-15. Every
 item here was deferred from one of those and confirmed still present at `39d4b89` (0.2.10).
@@ -261,11 +261,9 @@ window. The Status checklist gains rows for: the chooser opening with the daemon
 broken daemon path; "Check for updates" offline saying unreachable; a closed tab ending after a
 minute with the window killed in between (`kill -9` the window, wait, `ps`).
 
-## 17. Open questions for review
+## 17. Rulings at review (Cyrus, 2026-10-15)
 
-1. Section 14 replaces the ten-minute rule. If you would rather have both (the grace in the
-   daemon and a longer cap for sessions no window ever names), say so; the cap would need the
-   daemon to know each window's layout, which it does not today.
-2. Section 8 opens the chooser before the connection exists. The alternative is to keep the
-   chooser waiting for the connect (never more than three seconds) and only add the failure
-   window; simpler, and the chooser's counts would always be there when it appears.
+1. The close grace in the daemon (section 14) is the whole orphan rule: no ten-minute cap.
+   Sessions a window leaves running on purpose are never ended by the daemon.
+2. The chooser opens before the connection exists (section 8 as written); its counts arrive
+   when the connection does.
