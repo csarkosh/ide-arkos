@@ -30,6 +30,7 @@ mod layout;
 mod line_edit;
 mod motion;
 mod mouse;
+mod notices;
 mod palette;
 mod pane_view;
 mod paths;
