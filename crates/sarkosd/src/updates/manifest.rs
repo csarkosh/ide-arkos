@@ -77,6 +77,7 @@ mod tests {
         assert!(!m.version().unwrap().is_newer_than(&running), "the same build");
         let older = parse(SAMPLE.replace("0.2.1\"", "0.2.0\"").as_bytes()).unwrap();
         assert!(!older.version().unwrap().is_newer_than(&running), "a mistaken re-publish of an old version changes nothing");
+        assert!(!parse(SAMPLE.replace("a1b2c3d", "ffffff0").as_bytes()).unwrap().version().unwrap().is_newer_than(&running), "a re-release of the same version is not an update: bump the patch");
         let newer = parse(SAMPLE.replace("0.2.1\"", "0.2.2\"").as_bytes()).unwrap();
         assert!(newer.version().unwrap().is_newer_than(&running));
     }

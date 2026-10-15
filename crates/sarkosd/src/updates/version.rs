@@ -1,7 +1,7 @@
 //! Version strings as both binaries print them (`sarkosd 0.1.0 (abc1234)`) and as the manifest
-//! carries them, with the ordering the updater uses: semver first, then the git hash as a
-//! tie-break (a re-release of the same version with a new hash is an update; the same hash is
-//! not).
+//! carries them, with the ordering the updater uses: only a strictly greater semver is newer.
+//! The git hash is informational and never decides, so a replayed older signed manifest cannot
+//! roll the app back (a re-release must bump the patch).
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
@@ -37,9 +37,7 @@ pub fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
 impl Version {
     #[allow(dead_code)] // used from Task 3
     pub fn is_newer_than(&self, running: &Version) -> bool {
-        let mine = (self.major, self.minor, self.patch);
-        let theirs = (running.major, running.minor, running.patch);
-        mine > theirs || (mine == theirs && !self.git.eq_ignore_ascii_case(&running.git))
+        (self.major, self.minor, self.patch) > (running.major, running.minor, running.patch)
     }
 }
 
@@ -61,7 +59,7 @@ mod tests {
         assert!(v("0.1.1", "abc1234").is_newer_than(&running));
         assert!(v("1.0.0", "abc1234").is_newer_than(&running), "major beats minor and patch");
         assert!(!v("0.0.9", "zzzzzzz").is_newer_than(&running), "older semver, whatever the hash");
-        assert!(v("0.1.0", "def5678").is_newer_than(&running), "same version, another hash: a re-release");
+        assert!(!v("0.1.0", "def5678").is_newer_than(&running), "same version, another hash: not an update");
         assert!(!v("0.1.0", "abc1234").is_newer_than(&running), "the same build");
         assert!(!v("0.1.0", "ABC1234").is_newer_than(&running), "hashes compare case-insensitively");
     }
