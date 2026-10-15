@@ -1,14 +1,32 @@
 //! The sidebar's "watcher" (spec 6, ruling 1): every second, the expanded directories' and the
 //! open viewers' fingerprints are read on the background executor; a changed directory is read
-//! again, a changed file reloaded. One stat per expanded directory per second.
+//! again, a changed file reloaded. One stat per expanded directory per second. `git status`
+//! runs a second after the last change it has not seen, and every ten seconds regardless.
 use crate::config_watch::fingerprint;
 use crate::Root;
 use gpui::{App, Entity};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const POLL: Duration = Duration::from_secs(1);
+pub const STATUS_EVERY: Duration = Duration::from_secs(10);
+const STATUS_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// Whether to run `git status` now: never run yet, a change seen at least a second ago and not
+/// yet reflected, or ten seconds since the last run.
+pub fn status_due(last_run: Option<Instant>, changed_at: Option<Instant>, now: Instant) -> bool {
+    match (last_run, changed_at) {
+        (None, _) => true,
+        (Some(run), Some(changed)) if changed > run => now.duration_since(changed) >= STATUS_DEBOUNCE,
+        (Some(run), _) => now.duration_since(run) >= STATUS_EVERY,
+    }
+}
+
+/// Whether a `git status` result belongs to the newest run the window started.
+pub fn status_result_applies(seq: u64, current: u64) -> bool {
+    seq == current
+}
 
 /// The paths whose fingerprint changed since `last`. A path not in `last` is a baseline.
 pub fn changed(last: &HashMap<PathBuf, Option<(u128, u64)>>, now: &HashMap<PathBuf, Option<(u128, u64)>>) -> Vec<PathBuf> {
@@ -18,6 +36,9 @@ pub fn changed(last: &HashMap<PathBuf, Option<(u128, u64)>>, now: &HashMap<PathB
 pub fn start(root: Entity<Root>, cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last: HashMap<PathBuf, Option<(u128, u64)>> = HashMap::new();
+        // The window ran the first `git status` as it opened, just before this started.
+        let mut last_run: Option<Instant> = Some(Instant::now());
+        let mut changed_at: Option<Instant> = None;
         loop {
             cx.background_executor().timer(POLL).await;
             let Ok(paths) = root.update(cx, |root, cx| root.watched_paths(cx)) else { return };
@@ -29,11 +50,17 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
             // Merged, not replaced: a directory collapsed while it changed keeps its old
             // fingerprint, so expanding it again reads it again rather than showing stale rows.
             last.extend(now);
-            if changed.is_empty() {
-                continue;
+            if !changed.is_empty() {
+                changed_at = Some(Instant::now());
+                if root.update(cx, |root, cx| root.paths_changed(&changed, cx)).is_err() {
+                    return;
+                }
             }
-            if root.update(cx, |root, cx| root.paths_changed(&changed, cx)).is_err() {
-                return;
+            if status_due(last_run, changed_at, Instant::now()) {
+                last_run = Some(Instant::now());
+                if root.update(cx, |root, cx| root.refresh_status(cx)).is_err() {
+                    return;
+                }
             }
         }
     })
@@ -59,5 +86,24 @@ mod tests {
         let mut c = changed(&last, &now);
         c.sort();
         assert_eq!(c, [PathBuf::from("/b"), PathBuf::from("/deleted")], "a new path is a baseline, not a change; a deleted one is a change");
+    }
+
+    #[test]
+    fn the_status_refresh_is_due_a_second_after_a_change_or_every_ten_seconds() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        assert!(!status_due(Some(t0), None, t0 + Duration::from_millis(500)), "no change, not ten seconds yet");
+        assert!(status_due(Some(t0), Some(t0 + Duration::from_millis(200)), t0 + Duration::from_millis(1300)), "a change over a second ago");
+        assert!(!status_due(Some(t0), Some(t0 + Duration::from_millis(900)), t0 + Duration::from_millis(1300)), "a change under a second ago waits");
+        assert!(status_due(Some(t0), None, t0 + STATUS_EVERY + Duration::from_millis(1)), "the slow timer");
+        assert!(status_due(None, None, t0), "never run: run now");
+    }
+
+    #[test]
+    fn a_stale_status_result_is_dropped() {
+        // The window bumps `status_seq` per run and applies a result only when it is the newest.
+        assert!(status_result_applies(3, 3));
+        assert!(!status_result_applies(2, 3), "an older run landing after a newer one started");
+        assert!(!status_result_applies(4, 3), "a run the window does not know is ignored too");
     }
 }

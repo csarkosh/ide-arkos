@@ -11,6 +11,7 @@ mod empty_pane;
 mod explorer;
 mod explorer_watch;
 mod find;
+mod gitstatus;
 mod highlight;
 mod hook_cli;
 mod keys;
@@ -155,6 +156,8 @@ pub struct Root {
     pub preview_tab: Option<TabId>,
     /// The file tree's right-click menu while it is open.
     pub context_menu: Option<sidebar::ContextMenu>,
+    /// Bumped per `git status` run; only the newest run's result is applied.
+    pub status_seq: u64,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -278,6 +281,7 @@ impl Root {
             explorer,
             preview_tab: None,
             context_menu: None,
+            status_seq: 0,
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -1710,6 +1714,7 @@ fn main() {
             root.theme_error = theme_error;
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
+            root.refresh_status(cx);
             cx.notify();
         });
         let quit_root = root.clone();

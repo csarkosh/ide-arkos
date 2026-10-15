@@ -3,7 +3,9 @@
 //! workspace; the config's `[sidebar]` gives a new folder its defaults.
 
 use crate::explorer;
+use crate::gitstatus::Status;
 use crate::keymap;
+use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::sidebar;
 use crate::tree::{PaneId, Tab, TabId, Tree};
@@ -148,6 +150,22 @@ fn hash_of(path: &Path) -> u64 {
     crate::paths::fnv1a(path.as_os_str().as_encoded_bytes())
 }
 
+/// A row's text colour: an ignored entry stays ignored (one inside an untracked directory
+/// included), else its git status (a conflict reads as deleted), else plain text.
+pub fn row_color(status: Option<Status>, ignored: bool, theme: &Theme) -> Rgb {
+    let t = &theme.tree;
+    if ignored {
+        return t.ignored;
+    }
+    match status {
+        Some(Status::Added) => t.added,
+        Some(Status::Modified) => t.modified,
+        Some(Status::Deleted | Status::Conflicted) => t.deleted,
+        Some(Status::Untracked) => t.untracked,
+        None => theme.chrome.text,
+    }
+}
+
 /// The Explorer's rows: a virtualized list of the visible entries, only the rows on screen
 /// built each frame. A click on a directory toggles it; on a file it previews (a double click
 /// pins); a right click opens the menu; a file drags out to a terminal.
@@ -156,7 +174,8 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
     let selected = root.explorer.selected.clone();
     let weak = cx.weak_entity();
     let family = root.family();
-    let (selected_bg, hover_bg, ignored, text, dim) = (theme.chrome.tab_active.hsla(), theme.chrome.tab_inactive.hsla(), theme.tree.ignored.hsla(), theme.chrome.text.hsla(), theme.chrome.text_dim.hsla());
+    let (selected_bg, hover_bg, dim, dot) = (theme.chrome.tab_active.hsla(), theme.chrome.tab_inactive.hsla(), theme.chrome.text_dim.hsla(), theme.tree.modified.hsla());
+    let theme = theme.clone();
     let (drag_bg, drag_fg) = (theme.chrome.banner, theme.chrome.text);
     let count = rows.len();
     uniform_list("explorer-rows", count, move |range, _window, _cx| {
@@ -189,7 +208,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                     .gap(px(6.0))
                     .when(is_selected, |d| d.bg(selected_bg))
                     .hover(|s| s.bg(hover_bg))
-                    .text_color(if row.ignored { ignored } else { text })
+                    .text_color(row_color(row.status, row.ignored, &theme).hsla())
                     .cursor_pointer()
                     .on_click(move |ev: &ClickEvent, _window, cx| {
                         let _ = w_click.update(cx, |root, cx| {
@@ -218,6 +237,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                     })
                     .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
                     .child(div().min_w_0().truncate().child(row.name.clone()))
+                    .when(row.dirty, |d| d.child(div().flex_none().size(px(6.0)).rounded_full().bg(dot)))
             })
             .collect::<Vec<_>>()
     })
@@ -334,6 +354,24 @@ impl Root {
             })
             .detach();
         }
+    }
+
+    /// Runs `git status` for the project on the background executor; a result older than a
+    /// newer run is dropped.
+    pub fn refresh_status(&mut self, cx: &mut Context<Self>) {
+        self.status_seq += 1;
+        let seq = self.status_seq;
+        let root = self.project.clone();
+        cx.spawn(async move |this, cx| {
+            let entries = cx.background_executor().spawn(async move { crate::gitstatus::run_status(&root) }).await;
+            let _ = this.update(cx, |root, cx| {
+                if crate::explorer_watch::status_result_applies(seq, root.status_seq) {
+                    root.explorer.set_status(entries);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
@@ -484,6 +522,21 @@ mod tests {
         assert_eq!(items[1].1, MenuAction::CopyText("/p/src/a.rs".into()));
         assert_eq!(items[2].1, MenuAction::CopyText("src/a.rs".into()));
         assert_eq!(context_menu_items(Path::new("/elsewhere/f"), Path::new("/p"))[2].1, MenuAction::CopyText("/elsewhere/f".into()), "outside the project the full path");
+    }
+
+    #[test]
+    fn a_row_is_coloured_ignored_first_then_by_its_git_status_then_plain() {
+        use crate::gitstatus::Status;
+        let theme = crate::theme::builtin("navy").unwrap();
+        let t = &theme.tree;
+        assert_eq!(row_color(Some(Status::Added), false, &theme), t.added);
+        assert_eq!(row_color(Some(Status::Modified), false, &theme), t.modified);
+        assert_eq!(row_color(Some(Status::Deleted), false, &theme), t.deleted);
+        assert_eq!(row_color(Some(Status::Untracked), false, &theme), t.untracked);
+        assert_eq!(row_color(Some(Status::Conflicted), false, &theme), t.deleted, "a conflict reads as deleted");
+        assert_eq!(row_color(None, true, &theme), t.ignored);
+        assert_eq!(row_color(Some(Status::Untracked), true, &theme), t.ignored, "an ignored file inside an untracked directory is ignored");
+        assert_eq!(row_color(None, false, &theme), theme.chrome.text);
     }
 
     #[test]

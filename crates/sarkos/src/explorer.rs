@@ -3,6 +3,7 @@
 //! apart from `list_dir`, `mark_ignored` and `read_dir_entries`, which the window runs on the
 //! background executor.
 
+use crate::gitstatus::Status;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,10 @@ pub struct Row {
     pub ignored: bool,
     /// Expanded, children not read yet.
     pub loading: bool,
+    /// Its git status, or that of the untracked directory it is in.
+    pub status: Option<Status>,
+    /// A directory with a change somewhere inside: it carries a dot.
+    pub dirty: bool,
 }
 
 /// A directory's entries: directories first, then files, each group case-insensitively by
@@ -117,6 +122,12 @@ pub struct Explorer {
     stale: HashSet<PathBuf>,
     pub show_ignored: bool,
     pub selected: Option<PathBuf>,
+    /// The last `git status`, by absolute path.
+    status: HashMap<PathBuf, Status>,
+    /// The directories with a change inside.
+    dirty: HashSet<PathBuf>,
+    /// The last `git status` found no repository.
+    pub not_git: bool,
 }
 
 impl Explorer {
@@ -124,7 +135,18 @@ impl Explorer {
     /// itself, which is implicit) is dropped rather than read and polled for nothing.
     pub fn new(root: PathBuf, expanded: Vec<PathBuf>, show_ignored: bool) -> Self {
         let expanded = expanded.into_iter().filter(|d| d != &root && d.starts_with(&root)).collect();
-        Explorer { root, expanded, loaded: HashMap::new(), loading: HashSet::new(), stale: HashSet::new(), show_ignored, selected: None }
+        Explorer {
+            root,
+            expanded,
+            loaded: HashMap::new(),
+            loading: HashSet::new(),
+            stale: HashSet::new(),
+            show_ignored,
+            selected: None,
+            status: HashMap::new(),
+            dirty: HashSet::new(),
+            not_git: false,
+        }
     }
 
     /// Expanded directories whose children are not loaded, or stale, and not being loaded; the
@@ -187,6 +209,45 @@ impl Explorer {
         self.expanded.iter().cloned().collect()
     }
 
+    /// The repository's changes, or `None` outside a repository.
+    pub fn set_status(&mut self, entries: Option<Vec<(PathBuf, Status)>>) {
+        match entries {
+            None => {
+                self.not_git = true;
+                self.status.clear();
+                self.dirty.clear();
+            }
+            Some(entries) => {
+                self.not_git = false;
+                self.dirty = crate::gitstatus::dirty_dirs(&self.root, &entries);
+                self.status = entries.into_iter().map(|(rel, s)| (self.root.join(rel), s)).collect();
+            }
+        }
+    }
+
+    /// A path's own status, else the status of the nearest untracked ancestor (a file inside an
+    /// untracked directory is untracked).
+    pub fn status_of(&self, path: &Path) -> Option<Status> {
+        if let Some(s) = self.status.get(path) {
+            return Some(*s);
+        }
+        let mut p = path.parent();
+        while let Some(parent) = p {
+            if parent == self.root {
+                break;
+            }
+            if self.status.get(parent) == Some(&Status::Untracked) {
+                return Some(Status::Untracked);
+            }
+            p = parent.parent();
+        }
+        None
+    }
+
+    pub fn is_dirty_dir(&self, path: &Path) -> bool {
+        self.dirty.contains(path)
+    }
+
     pub fn rows(&self) -> Vec<Row> {
         let mut out = Vec::new();
         self.push_rows(&self.root, 0, &mut out);
@@ -201,7 +262,9 @@ impl Explorer {
             }
             let expanded = e.is_dir && self.expanded.contains(&e.path);
             let loading = expanded && !self.loaded.contains_key(&e.path);
-            out.push(Row { path: e.path.clone(), name: e.name.clone(), depth, is_dir: e.is_dir, expanded, ignored: e.ignored, loading });
+            let status = self.status_of(&e.path);
+            let dirty = e.is_dir && self.is_dirty_dir(&e.path);
+            out.push(Row { path: e.path.clone(), name: e.name.clone(), depth, is_dir: e.is_dir, expanded, ignored: e.ignored, loading, status, dirty });
             if expanded {
                 self.push_rows(&e.path, depth + 1, out);
             }
@@ -482,5 +545,31 @@ mod tests {
         let ex = Explorer::new(root.clone(), vec![PathBuf::from("/elsewhere"), PathBuf::from("/p"), PathBuf::from("/p/src"), PathBuf::from("/pp")], false);
         assert_eq!(ex.expanded_dirs(), vec![PathBuf::from("/p/src")], "only directories under the root, not the root itself");
         assert_eq!(ex.dirs_to_load(), vec![root, PathBuf::from("/p/src")]);
+    }
+
+    #[test]
+    fn rows_carry_their_status_and_folders_with_changes_a_dot() {
+        use crate::gitstatus::Status;
+        let dir = project();
+        let root = dir.path().to_path_buf();
+        let mut ex = Explorer::new(root.clone(), vec![root.join("src")], false);
+        ex.set_loaded(&root, list_dir(&root).unwrap());
+        ex.set_loaded(&root.join("src"), list_dir(&root.join("src")).unwrap());
+        ex.set_status(Some(vec![(PathBuf::from("src/main.rs"), Status::Modified), (PathBuf::from("a.txt"), Status::Untracked)]));
+        assert!(!ex.not_git);
+        let rows = ex.rows();
+        let row = |name: &str| rows.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(row("main.rs").status, Some(Status::Modified));
+        assert_eq!(row("a.txt").status, Some(Status::Untracked));
+        assert_eq!(row("B.txt").status, None);
+        assert!(row("src").dirty, "a folder with a change inside carries the dot");
+        assert!(!row("deep").dirty);
+        assert_eq!(ex.status_of(&root.join("src/main.rs")), Some(Status::Modified));
+        // A file inside an untracked directory inherits untracked.
+        ex.set_status(Some(vec![(PathBuf::from("src"), Status::Untracked)]));
+        assert_eq!(ex.rows().iter().find(|r| r.name == "main.rs").unwrap().status, Some(Status::Untracked));
+        ex.set_status(None);
+        assert!(ex.not_git);
+        assert!(ex.rows().iter().all(|r| r.status.is_none() && !r.dirty));
     }
 }
