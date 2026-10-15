@@ -281,7 +281,15 @@ otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) a
 ## Updating
 
 The IDE is installed as `/Applications/Arkos IDE.app` through the Homebrew cask (its text is in
-`homebrew/arkos-ide.rb`), which holds both `arkos` and `arkosd`. The cask says `auto_updates`, so
+`homebrew/arkos-ide.rb`, published in `csarkosh/homebrew-tap`), which holds both `arkos` and `arkosd`:
+
+```
+brew install --cask csarkosh/tap/arkos-ide
+xattr -dr com.apple.quarantine "/Applications/Arkos IDE.app"
+```
+
+The second line is needed until the app is notarized: the bundle is ad-hoc signed, and Gatekeeper
+refuses a quarantined ad-hoc app. The daemon's own updates never carry the attribute. The cask says `auto_updates`, so
 `brew upgrade` leaves the app alone and the IDE updates itself.
 
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
