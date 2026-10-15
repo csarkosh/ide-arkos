@@ -1,6 +1,6 @@
 #!/bin/sh
 # Makes a release key pair and prints what goes where. Run once; keep the secret in the GitHub
-# Actions secret SARKOS_RELEASE_KEY and your password manager, the public key in
+# Actions secret ARKOS_RELEASE_KEY and your password manager, the public key in
 # crates/protocol/src/release_key.rs.
 set -eu
 cd "$(dirname "$0")/.."

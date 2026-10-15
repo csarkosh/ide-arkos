@@ -1,4 +1,4 @@
-# Sarkos IDE
+# Arkos IDE
 
 A terminal layout manager for running many Claude Code sessions side by side: a grid of
 terminal panes with tabs, a docked Chrome pane, a file tree and git worktree explorer, in a
@@ -6,7 +6,7 @@ window that stays light on memory, scrolls smoothly, and keeps every session ali
 separate daemon so a frozen UI never loses work.
 
 Written in Rust with GPUI. The design is in
-[docs/superpowers/specs/2026-10-13-sarkos-design.md](docs/superpowers/specs/2026-10-13-sarkos-design.md).
+[docs/superpowers/specs/2026-10-13-arkos-design.md](docs/superpowers/specs/2026-10-13-arkos-design.md).
 
 ## Status
 
@@ -39,10 +39,10 @@ Things only a person at the screen can check, in order of value:
 - "Install Claude Code hooks", then `claude` in a tab: the glyph breathes while it works, a dot
   appears when it stops, the title bar's right side says "1 waiting", clicking the tab clears
   both; with Reduce Motion on, the glyph holds still
-- "Start at login" with four tabs open, then `kill -9 $(pgrep -x sarkos)` to end the window
+- "Start at login" with four tabs open, then `kill -9 $(pgrep -x arkos)` to end the window
   without a goodbye (not Cmd+Q, which says goodbye so nothing reopens; a window left open would
-  make a second one), then `pkill -TERM sarkosd`: the log shows "SIGTERM: writing every session's
-  history"; `launchctl kickstart gui/$(id -u)/sh.csarko.sarkosd` (what login does) brings one
+  make a second one), then `pkill -TERM arkosd`: the log shows "SIGTERM: writing every session's
+  history"; `launchctl kickstart gui/$(id -u)/sh.csarko.arkosd` (what login does) brings one
   window back with every tab's history under the divider and `claude --resume` typed into the
   ones that ran Claude; the tabs say "(resumed after restart)"
 - a real restart with the same four tabs: the window is back after login with the same result
@@ -50,13 +50,13 @@ Things only a person at the screen can check, in order of value:
 - `start_at_login = "off"` in the config: the plist is gone within a second; `"on"`: it is back
 - with four `claude` sessions running, `cargo build --release` a change into place, wait for
   "update ready" in the title bar (or relaunch), run "Update now" from the palette: the window
-  reappears with every tab, every history and every agent still running; `sarkosd`'s pid in
+  reappears with every tab, every history and every agent still running; `arkosd`'s pid in
   `ps` is unchanged and its log shows "upgrading to" and "resumed N sessions" under a second apart
-- `pkill -x sarkosd` with the window open: tabs say "reconnecting", the title bar too; after ten
+- `pkill -x arkosd` with the window open: tabs say "reconnecting", the title bar too; after ten
   seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
   "(restarted)"
 - "Update now" when nothing changed relaunches the window and every tab comes back attached
-- editing `~/.config/sarkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
+- editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
 - System Settings > Appearance: Light switches to Navy Light and back, history included
@@ -65,7 +65,7 @@ Things only a person at the screen can check, in order of value:
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
 - "Theme: navy-light" in the palette, then a config reload: the config's theme wins
-- "Extract built-in themes", then editing `~/.config/sarkos/themes/navy.toml`'s `window_bg` and
+- "Extract built-in themes", then editing `~/.config/arkos/themes/navy.toml`'s `window_bg` and
   reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
 - `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
 - Cmd+F in a pane with history: typing highlights every match and jumps to the newest; Enter
@@ -87,14 +87,14 @@ Things only a person at the screen can check, in order of value:
 - Cmd+K alone clearing history and screen with the prompt line left at the top, while the Cmd+K chords still work
 - the empty pane's animation holding still after turning on Reduce Motion and saving the config
 - after `kill -9`: the layout, every session, replayed history, the text preset, and typing
-- the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
-  after, and look for no "relaunching" line in `~/Library/Application Support/sarkos/sarkosd.log`
+- the window minimized for two minutes keeps its sessions: compare the `arkos` pid before and
+  after, and look for no "relaunching" line in `~/Library/Application Support/arkos/arkosd.log`
 - `ps` after thirty seconds idle with four terminals
 
 ## Session awareness
 
 Claude Code tells the IDE what it is doing through its hooks. Run "Install Claude Code hooks"
-from the command palette (or `sarkos hooks install`), which merges six entries into
+from the command palette (or `arkos hooks install`), which merges six entries into
 `~/.claude/settings.json` after writing a `.bak`, then start or restart `claude` in a tab:
 
 | Claude Code event | The tab |
@@ -105,20 +105,20 @@ from the command palette (or `sarkos hooks install`), which merges six entries i
 | the shell exits | a muted title, with the exit code |
 
 A terminal bell marks a tab waiting too, so a `claude` set to ring the bell works without hooks.
-`sarkos notify` is the hook side: it reads `SARKOS_SESSION_ID`, which every shell the daemon
-starts carries, and exits 0 whatever happens, so a `claude` run outside Sarkos IDE is unaffected.
-`sarkos hooks print` prints the entries for a hand paste. The entries name this binary by its
+`arkos notify` is the hook side: it reads `ARKOS_SESSION_ID`, which every shell the daemon
+starts carries, and exits 0 whatever happens, so a `claude` run outside Arkos IDE is unaffected.
+`arkos hooks print` prints the entries for a hand paste. The entries name this binary by its
 launch path; after moving it, install again. A Claude Code killed by a shutdown (its SessionEnd
 hook says `other`) keeps its record, so the recovery after the restart resumes it.
 
 ## After a restart
 
 A shutdown or restart ends every process; what becomes automatic is the recovery. The daemon
-writes each session's history to `~/Library/Application Support/sarkos/sessions/<id>.replay`
+writes each session's history to `~/Library/Application Support/arkos/sessions/<id>.replay`
 a couple of seconds after output stops (in full on SIGTERM, which a clean shutdown sends) and a
 manifest of the sessions (folder, shell, the Claude Code session id from its SessionStart hook)
 and of the project folders with a window open. "Start at login" from the palette installs
-`~/Library/LaunchAgents/sh.csarko.sarkosd.plist`, which runs `sarkosd --recover` once at login:
+`~/Library/LaunchAgents/sh.csarko.arkosd.plist`, which runs `arkosd --recover` once at login:
 it recreates each shell in its folder (the home folder when that is gone) with the old output
 under a dim "resumed after restart" line, types `claude --resume <id>` into the shells that had
 a Claude Code session, and opens a window for each project that had one; each tab says
@@ -241,7 +241,7 @@ Notes:
 
 ## Config
 
-`~/.config/sarkos/config.toml` (or `$XDG_CONFIG_HOME/sarkos/config.toml`) is written with
+`~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with
 commented defaults on first run and opened by Cmd+, in your text editor. It is watched: a saved
 edit applies within a second. A bad edit shows a banner with the line number and keeps the last
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
@@ -251,7 +251,7 @@ the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `sidebar` (its
 whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` for a later
 milestone.
 
-Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
+Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
 from the palette lasts until the config reloads or the app relaunches; the config file decides
 otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
@@ -259,7 +259,7 @@ otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) a
 
 ## Updating
 
-Sessions live in `sarkosd`, so updating never ends one. After `brew upgrade sarkos`, or
+Sessions live in `arkosd`, so updating never ends one. After `brew upgrade arkos`, or
 `cargo build --release` into the binaries you run, the title bar shows "update ready" within
 five minutes (or at the next launch), and the palette's "Update now" does the rest: if the
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
@@ -267,7 +267,7 @@ process (same pid, the shells stay its children) and the window reconnects; then
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
 history. The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows,
 and reads the previous handover format, so updating from the update-in-place build is an ordinary
-"Update now". Upgrading from milestone 2b is the one update that needs `pkill -x sarkosd` (the old
+"Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
 daemon knows nothing of handovers), which ends every session.
 
 If the new daemon fails its check or the exec fails, the old daemon keeps running and the window
@@ -276,24 +276,24 @@ tab becomes a fresh shell with the "(restarted)" note.
 
 A window newer than its daemon (one started from a new build while an older daemon still runs)
 is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
-one-time path above: `pkill -x sarkosd`, which ends every session, and open the window again.
+one-time path above: `pkill -x arkosd`, which ends every session, and open the window again.
 
 ## Build and run
 
 ```bash
 cargo build --release
-./target/release/sarkos        # starts sarkosd on demand, opens one terminal in the current folder
+./target/release/arkos        # starts arkosd on demand, opens one terminal in the current folder
 ```
 
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
-`~/Library/Application Support/sarkos/sarkosd.log`. A window newer than the daemon is refused
-with a banner and stops reconnecting; `pkill -x sarkosd` and a relaunch fix it (see Updating). A
-window older than the daemon keeps working. `pkill -x sarkosd` stops the daemon and ends every
+`~/Library/Application Support/arkos/arkosd.log`. A window newer than the daemon is refused
+with a banner and stops reconnecting; `pkill -x arkosd` and a relaunch fix it (see Updating). A
+window older than the daemon keeps working. `pkill -x arkosd` stops the daemon and ends every
 session.
 
 Upgrading from milestone 1: the window finds milestone 1's saved session and moves it to the
 new workspace format on first launch. A daemon started by milestone 1 keeps running without
-this milestone's lifecycle fixes, though; `pkill -x sarkosd` restarts it (the window starts a
+this milestone's lifecycle fixes, though; `pkill -x arkosd` restarts it (the window starts a
 new one) and ends every session, so do it when nothing important is running.
 
 ## Tests

@@ -1,21 +1,21 @@
-# sarkos Milestone 1: Daemon plus one terminal. Implementation Plan
+# arkos Milestone 1: Daemon plus one terminal. Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A `sarkosd` daemon that owns pseudo-terminals and survives the UI, plus a `sarkos` GPUI window showing one terminal with smooth fractional scrolling, that reattaches to its session with scrollback intact after the UI is killed.
+**Goal:** A `arkosd` daemon that owns pseudo-terminals and survives the UI, plus a `arkos` GPUI window showing one terminal with smooth fractional scrolling, that reattaches to its session with scrollback intact after the UI is killed.
 
 **Architecture:** Two binaries in one Cargo workspace share a `protocol` crate (postcard-encoded, length-prefixed frames over a Unix socket). The daemon uses plain std threads: one reader per PTY, one reader and one writer per client, a watchdog thread. The UI keeps an `alacritty_terminal` grid per terminal in the GPUI process, fed from a socket reader thread through a `futures` channel, and paints visible rows with a custom GPUI `Element` at a fractional line offset driven by a time-based scroll animator.
 
 **Tech Stack:** Rust stable (edition 2021), gpui 0.2.2 (exact pin), alacritty_terminal 0.26, portable-pty 0.9, postcard 1.1 + serde, futures 0.3, libc 0.2, anyhow 1. Dev: tempfile 3.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-sarkos-design.md` (sections 2, 3, 7.1, 9, 10, 11 milestone 1, 12).
+**Spec:** `docs/superpowers/specs/2026-10-13-arkos-design.md` (sections 2, 3, 7.1, 9, 10, 11 milestone 1, 12).
 
 ## Global Constraints
 
 - macOS only, Apple Silicon. No Linux or Windows code paths.
 - `gpui = "=0.2.2"` pinned exactly (spec 1.3: pre-1.0 API churn). Never bump inside this plan.
-- Socket path: `~/Library/Application Support/sarkos/sarkosd.sock` (spec 2.1). Workspace files: `~/Library/Application Support/sarkos/workspaces/<hash-of-project-path>.json` (spec 4).
-- Env var the daemon sets in every shell: `SARKOS_SESSION_ID` (spec 2.3).
+- Socket path: `~/Library/Application Support/arkos/arkosd.sock` (spec 2.1). Workspace files: `~/Library/Application Support/arkos/workspaces/<hash-of-project-path>.json` (spec 4).
+- Env var the daemon sets in every shell: `ARKOS_SESSION_ID` (spec 2.3).
 - Replay buffer default 16 MB per session (spec 2.1). Scrollback default 20,000 lines (spec 3).
 - Watchdog: heartbeat every 1 s from the UI main thread; daemon relaunches the UI after 30 s without one while the process is alive (spec 2.4).
 - Text defaults: Menlo at 16 px, line height 1.5 (spec 3, 7.1). Background `#11161f`, foreground `#d6dae0` (spec 7.1).
@@ -47,7 +47,7 @@ ide-sarkos/
       Cargo.toml
       src/lib.rs                   SessionId, ClaudeState, SessionInfo, Request, Response, Event, ClientMessage, ServerMessage
       src/codec.rs                 write_frame / read_frame (u32 BE length + postcard)
-    sarkosd/
+    arkosd/
       Cargo.toml
       src/main.rs                  CLI flags, paths, start server
       src/ring.rs                  RingBuffer: bounded byte ring (replay buffer)
@@ -55,7 +55,7 @@ ide-sarkos/
       src/server.rs                Unix socket accept loop, per-client reader/writer threads, dispatch
       src/watchdog.rs              heartbeat tracking, kill and relaunch
       tests/daemon.rs              integration tests against the real binary
-    sarkos/
+    arkos/
       Cargo.toml
       src/main.rs                  QoS, daemon autostart, GPUI Application, window, Root view
       src/paths.rs                 socket and workspace paths (shared logic with the daemon kept tiny by duplication)
@@ -69,17 +69,17 @@ ide-sarkos/
       src/workspace.rs             load/save the session id for the current folder
 ```
 
-Responsibilities are one per file. `protocol` has no IO beyond the codec. `sarkosd` never parses escape sequences. `sarkos` never spawns a PTY.
+Responsibilities are one per file. `protocol` has no IO beyond the codec. `arkosd` never parses escape sequences. `arkos` never spawns a PTY.
 
 ---
 
 ### Task 1: Toolchain and workspace scaffold
 
 **Files:**
-- Create: `rust-toolchain.toml`, `Cargo.toml`, `.gitignore`, `crates/protocol/Cargo.toml`, `crates/protocol/src/lib.rs`, `crates/sarkosd/Cargo.toml`, `crates/sarkosd/src/main.rs`, `crates/sarkos/Cargo.toml`, `crates/sarkos/src/main.rs`
+- Create: `rust-toolchain.toml`, `Cargo.toml`, `.gitignore`, `crates/protocol/Cargo.toml`, `crates/protocol/src/lib.rs`, `crates/arkosd/Cargo.toml`, `crates/arkosd/src/main.rs`, `crates/arkos/Cargo.toml`, `crates/arkos/src/main.rs`
 
 **Interfaces:**
-- Produces: a workspace where `cargo build` succeeds and `cargo run -p sarkosd -- --version` prints `sarkosd 0.1.0`.
+- Produces: a workspace where `cargo build` succeeds and `cargo run -p arkosd -- --version` prints `arkosd 0.1.0`.
 
 - [ ] **Step 1: Install the Rust toolchain if `cargo` is missing**
 
@@ -138,7 +138,7 @@ postcard.workspace = true
 
 `crates/protocol/src/lib.rs`:
 ```rust
-//! Messages and framing shared by sarkosd and sarkos.
+//! Messages and framing shared by arkosd and arkos.
 pub mod codec;
 ```
 
@@ -147,10 +147,10 @@ pub mod codec;
 //! Filled in by Task 2.
 ```
 
-`crates/sarkosd/Cargo.toml`:
+`crates/arkosd/Cargo.toml`:
 ```toml
 [package]
-name = "sarkosd"
+name = "arkosd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -167,23 +167,23 @@ portable-pty = "0.9"
 tempfile.workspace = true
 ```
 
-`crates/sarkosd/src/main.rs`:
+`crates/arkosd/src/main.rs`:
 ```rust
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") {
-        println!("sarkosd {}", env!("CARGO_PKG_VERSION"));
+        println!("arkosd {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    eprintln!("sarkosd: not implemented yet");
+    eprintln!("arkosd: not implemented yet");
     std::process::exit(2);
 }
 ```
 
-`crates/sarkos/Cargo.toml`:
+`crates/arkos/Cargo.toml`:
 ```toml
 [package]
-name = "sarkos"
+name = "arkos"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -203,15 +203,15 @@ serde_json = "1"
 tempfile.workspace = true
 ```
 
-`crates/sarkos/src/main.rs`:
+`crates/arkos/src/main.rs`:
 ```rust
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") {
-        println!("sarkos {}", env!("CARGO_PKG_VERSION"));
+        println!("arkos {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    eprintln!("sarkos: not implemented yet");
+    eprintln!("arkos: not implemented yet");
     std::process::exit(2);
 }
 ```
@@ -223,18 +223,18 @@ Expected: `Finished` with no errors. The first build compiles gpui and takes sev
 
 - [ ] **Step 4: Check the version flags**
 
-Run: `cargo run -q -p sarkosd -- --version && cargo run -q -p sarkos -- --version`
+Run: `cargo run -q -p arkosd -- --version && cargo run -q -p arkos -- --version`
 Expected:
 ```
-sarkosd 0.1.0
-sarkos 0.1.0
+arkosd 0.1.0
+arkos 0.1.0
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add rust-toolchain.toml Cargo.toml Cargo.lock .gitignore crates
-git commit -m "Scaffold the workspace: protocol, sarkosd, sarkos"
+git commit -m "Scaffold the workspace: protocol, arkosd, arkos"
 ```
 
 ---
@@ -319,7 +319,7 @@ Expected: compile error, `write_frame` and the message types are not defined.
 
 Replace `crates/protocol/src/lib.rs`:
 ```rust
-//! Messages and framing shared by sarkosd and sarkos.
+//! Messages and framing shared by arkosd and arkos.
 //!
 //! Every request from the UI carries an id; the daemon answers with a `ServerMessage::Response`
 //! bearing the same id, and pushes `ServerMessage::Event`s on its own schedule.
@@ -462,9 +462,9 @@ git commit -m "protocol: message types and length-prefixed postcard framing"
 This task is larger than the others because the daemon only becomes testable once a socket, a session and the dispatch exist together. It is still one deliverable: a daemon binary a test can talk to.
 
 **Files:**
-- Create: `crates/sarkosd/src/ring.rs`, `crates/sarkosd/src/session.rs`, `crates/sarkosd/src/server.rs`
-- Modify: `crates/sarkosd/src/main.rs`
-- Test: `crates/sarkosd/src/ring.rs` (unit), `crates/sarkosd/tests/daemon.rs` (integration)
+- Create: `crates/arkosd/src/ring.rs`, `crates/arkosd/src/session.rs`, `crates/arkosd/src/server.rs`
+- Modify: `crates/arkosd/src/main.rs`
+- Test: `crates/arkosd/src/ring.rs` (unit), `crates/arkosd/tests/daemon.rs` (integration)
 
 **Interfaces:**
 - Consumes: everything in `protocol`.
@@ -473,11 +473,11 @@ This task is larger than the others because the daemon only becomes testable onc
   - `session::Session::spawn(SpawnSpec) -> anyhow::Result<Arc<Session>>` with `SpawnSpec { id, cwd, shell: Option<String>, env, nice, rows, cols, replay_capacity }`
   - `session::Session::{write(&[u8]), resize(rows, cols), kill(), info() -> SessionInfo, subscribe(ClientId, Sender<ServerMessage>) -> Vec<u8> (replay), unsubscribe(ClientId)}`
   - `server::run(socket: &Path, opts: Options) -> anyhow::Result<()>` with `Options { replay_capacity: usize, watchdog: Duration }`
-  - CLI: `sarkosd --socket <path> --replay-bytes <n> --watchdog-secs <n>`; defaults are the spec's. `--watchdog-secs 0` disables the watchdog (Task 4 implements it; this task only stores the value).
+  - CLI: `arkosd --socket <path> --replay-bytes <n> --watchdog-secs <n>`; defaults are the spec's. `--watchdog-secs 0` disables the watchdog (Task 4 implements it; this task only stores the value).
 
 - [ ] **Step 1: Write the failing ring buffer tests**
 
-Create `crates/sarkosd/src/ring.rs`:
+Create `crates/arkosd/src/ring.rs`:
 ```rust
 //! A bounded byte ring: the replay buffer for one session (spec 2.1). Pushing past capacity drops
 //! the oldest bytes. `snapshot` returns the bytes oldest first.
@@ -532,7 +532,7 @@ mod tests {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Add `mod ring;` to `crates/sarkosd/src/main.rs` (above `fn main`). Run: `cargo test -p sarkosd ring 2>&1 | tail -5`
+Add `mod ring;` to `crates/arkosd/src/main.rs` (above `fn main`). Run: `cargo test -p arkosd ring 2>&1 | tail -5`
 Expected: compile error, `RingBuffer::new` not found.
 
 - [ ] **Step 3: Implement the ring**
@@ -574,14 +574,14 @@ impl RingBuffer {
 
 - [ ] **Step 4: Run the ring tests**
 
-Run: `cargo test -p sarkosd ring 2>&1 | tail -5`
+Run: `cargo test -p arkosd ring 2>&1 | tail -5`
 Expected: `4 passed`.
 
 - [ ] **Step 5: Write the failing integration test**
 
-Create `crates/sarkosd/tests/daemon.rs`:
+Create `crates/arkosd/tests/daemon.rs`:
 ```rust
-//! Drives the real sarkosd binary over a temp socket.
+//! Drives the real arkosd binary over a temp socket.
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Event, Request, Response, ServerMessage, SessionId};
 use std::io::{BufReader, BufWriter};
@@ -600,7 +600,7 @@ impl Daemon {
     fn start(extra: &[&str]) -> Daemon {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("d.sock");
-        let child = Command::new(env!("CARGO_BIN_EXE_sarkosd"))
+        let child = Command::new(env!("CARGO_BIN_EXE_arkosd"))
             .arg("--socket")
             .arg(&socket)
             .args(extra)
@@ -702,8 +702,8 @@ fn create_attach_echo_detach_reattach_replays() {
     let id = c.create("/bin/sh");
     let attached = c.request(Request::Attach { session: id });
     assert!(matches!(attached, Response::Attached { alive: true, .. }));
-    c.send(Request::Input { session: id, bytes: b"echo hello-sarkos\n".to_vec() });
-    c.wait_for_output(id, "hello-sarkos");
+    c.send(Request::Input { session: id, bytes: b"echo hello-arkos\n".to_vec() });
+    c.wait_for_output(id, "hello-arkos");
     assert_eq!(c.request(Request::Detach { session: id }), Response::Ok);
     drop(c);
 
@@ -711,7 +711,7 @@ fn create_attach_echo_detach_reattach_replays() {
     match c2.request(Request::Attach { session: id }) {
         Response::Attached { replay, alive } => {
             assert!(alive);
-            assert!(String::from_utf8_lossy(&replay).contains("hello-sarkos"), "replay was {:?}", String::from_utf8_lossy(&replay));
+            assert!(String::from_utf8_lossy(&replay).contains("hello-arkos"), "replay was {:?}", String::from_utf8_lossy(&replay));
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -818,19 +818,19 @@ fn session_env_carries_its_id() {
     let mut c = d.connect();
     let id = c.create("/bin/sh");
     c.request(Request::Attach { session: id });
-    c.send(Request::Input { session: id, bytes: b"echo id=$SARKOS_SESSION_ID\n".to_vec() });
+    c.send(Request::Input { session: id, bytes: b"echo id=$ARKOS_SESSION_ID\n".to_vec() });
     c.wait_for_output(id, &format!("id={}", id.0));
 }
 ```
 
 - [ ] **Step 6: Run to verify it fails**
 
-Run: `cargo test -p sarkosd --test daemon 2>&1 | tail -5`
+Run: `cargo test -p arkosd --test daemon 2>&1 | tail -5`
 Expected: the tests compile, then every test fails with "daemon did not create its socket" (the binary exits with "not implemented").
 
 - [ ] **Step 7: Write the session module**
 
-Create `crates/sarkosd/src/session.rs`:
+Create `crates/arkosd/src/session.rs`:
 ```rust
 //! One pseudo-terminal, its shell, its replay buffer and its subscribers.
 use crate::ring::RingBuffer;
@@ -898,7 +898,7 @@ impl Session {
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("SARKOS_SESSION_ID", spec.id.0.to_string());
+        cmd.env("ARKOS_SESSION_ID", spec.id.0.to_string());
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -1022,7 +1022,7 @@ impl Session {
 
 - [ ] **Step 8: Write the server module**
 
-Create `crates/sarkosd/src/server.rs`:
+Create `crates/arkosd/src/server.rs`:
 ```rust
 //! Accepts clients on the Unix socket, one reader and one writer thread each, and dispatches
 //! requests to sessions. Shared state is one mutex; every operation under it is short.
@@ -1070,7 +1070,7 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
     if socket.exists() {
         // A previous daemon died. Nobody can be listening if connect fails.
         if UnixStream::connect(socket).is_ok() {
-            anyhow::bail!("another sarkosd is already listening on {}", socket.display());
+            anyhow::bail!("another arkosd is already listening on {}", socket.display());
         }
         std::fs::remove_file(socket).ok();
     }
@@ -1080,7 +1080,7 @@ pub fn run(socket: &Path, opts: Options) -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => spawn_client(stream, state.clone(), opts),
-            Err(e) => eprintln!("sarkosd: accept failed: {e}"),
+            Err(e) => eprintln!("arkosd: accept failed: {e}"),
         }
     }
     Ok(())
@@ -1101,7 +1101,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
     let writer_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("sarkosd: clone stream: {e}");
+            eprintln!("arkosd: clone stream: {e}");
             return;
         }
     };
@@ -1130,7 +1130,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        eprintln!("sarkosd: client {client_id}: bad frame: {e}");
+                        eprintln!("arkosd: client {client_id}: bad frame: {e}");
                         break;
                     }
                 }
@@ -1247,7 +1247,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &Sender<ServerMessage>, req
 
 - [ ] **Step 9: Write a watchdog stub so the server compiles (Task 4 fills it in)**
 
-Create `crates/sarkosd/src/watchdog.rs`:
+Create `crates/arkosd/src/watchdog.rs`:
 ```rust
 //! Filled in by Task 4. For now the watchdog thread does nothing.
 use crate::server::Shared;
@@ -1258,7 +1258,7 @@ pub fn start(_state: Shared, _timeout: Duration) {}
 
 - [ ] **Step 10: Write main**
 
-Replace `crates/sarkosd/src/main.rs`:
+Replace `crates/arkosd/src/main.rs`:
 ```rust
 mod ring;
 mod server;
@@ -1273,7 +1273,7 @@ const DEFAULT_WATCHDOG_SECS: u64 = 30;
 
 fn default_socket() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME is set");
-    PathBuf::from(home).join("Library/Application Support/sarkos/sarkosd.sock")
+    PathBuf::from(home).join("Library/Application Support/arkos/arkosd.sock")
 }
 
 fn main() {
@@ -1284,21 +1284,21 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
-                println!("sarkosd {}", env!("CARGO_PKG_VERSION"));
+                println!("arkosd {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
             "--socket" => socket = PathBuf::from(args.next().expect("--socket needs a path")),
             "--replay-bytes" => replay = args.next().and_then(|v| v.parse().ok()).expect("--replay-bytes needs a number"),
             "--watchdog-secs" => watchdog = args.next().and_then(|v| v.parse().ok()).expect("--watchdog-secs needs a number"),
             other => {
-                eprintln!("sarkosd: unknown argument {other}");
+                eprintln!("arkosd: unknown argument {other}");
                 std::process::exit(2);
             }
         }
     }
     let opts = server::Options { replay_capacity: replay, watchdog: Duration::from_secs(watchdog) };
     if let Err(e) = server::run(&socket, opts) {
-        eprintln!("sarkosd: {e:#}");
+        eprintln!("arkosd: {e:#}");
         std::process::exit(1);
     }
 }
@@ -1306,14 +1306,14 @@ fn main() {
 
 - [ ] **Step 11: Run the integration tests**
 
-Run: `cargo test -p sarkosd 2>&1 | tail -15`
+Run: `cargo test -p arkosd 2>&1 | tail -15`
 Expected: ring tests `4 passed`; daemon tests `7 passed`. If `replay_truncated_to_capacity` fails because the shell echoes the long command and pushes "END" out of a 64-byte buffer, the test is wrong, not the daemon: raise `--replay-bytes` in that test to `256` and keep the `<= 256` assertion.
 
 - [ ] **Step 12: Commit**
 
 ```bash
-git add crates/sarkosd
-git commit -m "sarkosd: sessions over a Unix socket with a replay ring buffer"
+git add crates/arkosd
+git commit -m "arkosd: sessions over a Unix socket with a replay ring buffer"
 ```
 
 ---
@@ -1321,8 +1321,8 @@ git commit -m "sarkosd: sessions over a Unix socket with a replay ring buffer"
 ### Task 4: Watchdog
 
 **Files:**
-- Modify: `crates/sarkosd/src/watchdog.rs`
-- Test: `crates/sarkosd/tests/daemon.rs` (append)
+- Modify: `crates/arkosd/src/watchdog.rs`
+- Test: `crates/arkosd/tests/daemon.rs` (append)
 
 **Interfaces:**
 - Consumes: `server::Shared`, `ClientRecord { last_heartbeat, ui_pid, ui_exe, connected }`.
@@ -1330,7 +1330,7 @@ git commit -m "sarkosd: sessions over a Unix socket with a replay ring buffer"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `crates/sarkosd/tests/daemon.rs`:
+Append to `crates/arkosd/tests/daemon.rs`:
 ```rust
 #[test]
 fn watchdog_kills_a_silent_ui_and_relaunches_it() {
@@ -1386,12 +1386,12 @@ fn watchdog_leaves_a_heartbeating_ui_alone() {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cargo test -p sarkosd --test daemon watchdog 2>&1 | tail -6`
+Run: `cargo test -p arkosd --test daemon watchdog 2>&1 | tail -6`
 Expected: `watchdog_kills_a_silent_ui_and_relaunches_it` fails with "watchdog never killed the silent UI"; the other passes trivially.
 
 - [ ] **Step 3: Implement the watchdog**
 
-Replace `crates/sarkosd/src/watchdog.rs`:
+Replace `crates/arkosd/src/watchdog.rs`:
 ```rust
 //! Relaunches a UI whose main thread has stopped heartbeating (spec 2.4). Sessions are untouched.
 use crate::server::Shared;
@@ -1430,7 +1430,7 @@ fn scan(state: &Shared, timeout: Duration) {
             if !pid_alive(pid) {
                 continue;
             }
-            eprintln!("sarkosd: UI pid {pid} silent for {:?}, relaunching", timeout);
+            eprintln!("arkosd: UI pid {pid} silent for {:?}, relaunching", timeout);
             to_restart.push((pid, rec.ui_exe.clone()));
             // Reset so one stuck UI is not killed again on the next scan while it restarts.
             rec.last_heartbeat = now;
@@ -1450,7 +1450,7 @@ fn scan(state: &Shared, timeout: Duration) {
                 });
             }
             if let Err(e) = cmd.spawn() {
-                eprintln!("sarkosd: relaunch {} failed: {e}", exe.display());
+                eprintln!("arkosd: relaunch {} failed: {e}", exe.display());
             }
         }
     }
@@ -1459,14 +1459,14 @@ fn scan(state: &Shared, timeout: Duration) {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p sarkosd 2>&1 | tail -6`
+Run: `cargo test -p arkosd 2>&1 | tail -6`
 Expected: all daemon tests pass, `9 passed` for the integration file.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkosd
-git commit -m "sarkosd: watchdog kills and relaunches a UI that stops heartbeating"
+git add crates/arkosd
+git commit -m "arkosd: watchdog kills and relaunches a UI that stops heartbeating"
 ```
 
 ---
@@ -1474,35 +1474,35 @@ git commit -m "sarkosd: watchdog kills and relaunches a UI that stops heartbeati
 ### Task 5: UI client, daemon autostart, and a window
 
 **Files:**
-- Create: `crates/sarkos/src/paths.rs`, `crates/sarkos/src/client.rs`
-- Modify: `crates/sarkos/src/main.rs`
+- Create: `crates/arkos/src/paths.rs`, `crates/arkos/src/client.rs`
+- Modify: `crates/arkos/src/main.rs`
 - Test: inline tests in `client.rs` against a fake server thread
 
 **Interfaces:**
 - Consumes: `protocol::*`.
 - Produces:
-  - `paths::socket_path() -> PathBuf`, `paths::workspace_file(project: &Path) -> PathBuf`, `paths::daemon_exe() -> PathBuf` (sibling of the current exe named `sarkosd`)
+  - `paths::socket_path() -> PathBuf`, `paths::workspace_file(project: &Path) -> PathBuf`, `paths::daemon_exe() -> PathBuf` (sibling of the current exe named `arkosd`)
   - `client::Client::connect(socket: &Path) -> anyhow::Result<(Client, UnboundedReceiver<ServerMessage>)>`
   - `client::Client::connect_or_start(socket, daemon_exe) -> anyhow::Result<(Client, UnboundedReceiver<ServerMessage>)>`: connects, or removes a stale socket, starts the daemon detached, and retries for 3 s
   - `Client::send(&self, request: Request) -> u32` (request id), non-blocking
   - `Client::ensure_stale_socket_removed(socket)` (used by the test)
-  - `main.rs`: a GPUI window titled `sarkos`, background `#11161f`, that connects on launch and prints the session list to stderr
+  - `main.rs`: a GPUI window titled `arkos`, background `#11161f`, that connects on launch and prints the session list to stderr
 
 - [ ] **Step 1: Write paths.rs**
 
 ```rust
-//! Where sarkos keeps its socket and workspace files (spec 2.1, 4).
+//! Where arkos keeps its socket and workspace files (spec 2.1, 4).
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 fn app_support() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME is set");
-    PathBuf::from(home).join("Library/Application Support/sarkos")
+    PathBuf::from(home).join("Library/Application Support/arkos")
 }
 
 pub fn socket_path() -> PathBuf {
-    app_support().join("sarkosd.sock")
+    app_support().join("arkosd.sock")
 }
 
 pub fn workspace_file(project: &Path) -> PathBuf {
@@ -1514,16 +1514,16 @@ pub fn workspace_file(project: &Path) -> PathBuf {
 pub fn daemon_exe() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("sarkosd")))
-        .unwrap_or_else(|| PathBuf::from("sarkosd"))
+        .and_then(|p| p.parent().map(|d| d.join("arkosd")))
+        .unwrap_or_else(|| PathBuf::from("arkosd"))
 }
 ```
 
 - [ ] **Step 2: Write the failing client tests**
 
-Create `crates/sarkos/src/client.rs` with the tests module first:
+Create `crates/arkos/src/client.rs` with the tests module first:
 ```rust
-//! The UI's connection to sarkosd: a writer thread fed by `send`, a reader thread that forwards
+//! The UI's connection to arkosd: a writer thread fed by `send`, a reader thread that forwards
 //! every `ServerMessage` into a futures channel the GPUI side awaits. Nothing here blocks the
 //! caller.
 
@@ -1588,7 +1588,7 @@ mod tests {
 
 - [ ] **Step 3: Run to verify they fail**
 
-Add `mod client; mod paths;` to `crates/sarkos/src/main.rs`. Run: `cargo test -p sarkos client 2>&1 | tail -5`
+Add `mod client; mod paths;` to `crates/arkos/src/main.rs`. Run: `cargo test -p arkos client 2>&1 | tail -5`
 Expected: compile error, `Client` not defined.
 
 - [ ] **Step 4: Implement the client**
@@ -1620,7 +1620,7 @@ impl Client {
         let (tx, rx) = channel::<ClientMessage>();
         let (ev_tx, ev_rx): (UnboundedSender<ServerMessage>, UnboundedReceiver<ServerMessage>) = unbounded();
         std::thread::Builder::new()
-            .name("sarkosd-writer".into())
+            .name("arkosd-writer".into())
             .spawn(move || {
                 let mut w = BufWriter::new(stream);
                 while let Ok(msg) = rx.recv() {
@@ -1631,7 +1631,7 @@ impl Client {
             })
             .context("spawn writer")?;
         std::thread::Builder::new()
-            .name("sarkosd-reader".into())
+            .name("arkosd-reader".into())
             .spawn(move || {
                 let mut r = BufReader::new(reader_stream);
                 while let Ok(Some(msg)) = read_frame::<_, ServerMessage>(&mut r) {
@@ -1666,7 +1666,7 @@ impl Client {
             return Ok(c);
         }
         Client::ensure_stale_socket_removed(socket);
-        let log = socket.with_file_name("sarkosd.log");
+        let log = socket.with_file_name("arkosd.log");
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -1694,12 +1694,12 @@ impl Client {
 
 - [ ] **Step 5: Run the client tests**
 
-Run: `cargo test -p sarkos client 2>&1 | tail -5`
+Run: `cargo test -p arkos client 2>&1 | tail -5`
 Expected: `2 passed`.
 
 - [ ] **Step 6: Write main with a GPUI window**
 
-Replace `crates/sarkos/src/main.rs`:
+Replace `crates/arkos/src/main.rs`:
 ```rust
 mod client;
 mod paths;
@@ -1727,13 +1727,13 @@ impl Render for Root {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") {
-        println!("sarkos {}", env!("CARGO_PKG_VERSION"));
+        println!("arkos {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("sarkos: cannot reach sarkosd: {e:#}");
+            eprintln!("arkos: cannot reach arkosd: {e:#}");
             std::process::exit(1);
         }
     };
@@ -1754,8 +1754,8 @@ fn main() {
                 let ok = root_entity.update(cx, |root, cx| {
                     if let ServerMessage::Response { id, response: Response::Sessions(list) } = &msg {
                         if *id == list_id {
-                            root.status = format!("{} session(s) in sarkosd", list.len());
-                            eprintln!("sarkos: {}", root.status);
+                            root.status = format!("{} session(s) in arkosd", list.len());
+                            eprintln!("arkos: {}", root.status);
                             cx.notify();
                         }
                     }
@@ -1774,14 +1774,14 @@ If `root.entity(cx)` does not exist on `WindowHandle<Root>` in gpui 0.2.2, grep 
 
 - [ ] **Step 7: Run it**
 
-Run: `cargo run -p sarkos 2>&1 | head -5` (a window opens; close it with Cmd+Q)
-Expected: stderr prints `sarkos: 0 session(s) in sarkosd` within a second, a navy window shows the same text, and `pgrep sarkosd` shows a daemon running afterwards. Note: the daemon keeps running; that is the design.
+Run: `cargo run -p arkos 2>&1 | head -5` (a window opens; close it with Cmd+Q)
+Expected: stderr prints `arkos: 0 session(s) in arkosd` within a second, a navy window shows the same text, and `pgrep arkosd` shows a daemon running afterwards. Note: the daemon keeps running; that is the design.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/sarkos
-git commit -m "sarkos: socket client, daemon autostart, first GPUI window"
+git add crates/arkos
+git commit -m "arkos: socket client, daemon autostart, first GPUI window"
 ```
 
 ---
@@ -1789,7 +1789,7 @@ git commit -m "sarkos: socket client, daemon autostart, first GPUI window"
 ### Task 6: Keystroke to bytes
 
 **Files:**
-- Create: `crates/sarkos/src/keys.rs`
+- Create: `crates/arkos/src/keys.rs`
 - Test: inline
 
 **Interfaces:**
@@ -1875,7 +1875,7 @@ mod tests {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Add `mod keys;` to `main.rs`. Run: `cargo test -p sarkos keys 2>&1 | tail -5`
+Add `mod keys;` to `main.rs`. Run: `cargo test -p arkos keys 2>&1 | tail -5`
 Expected: compile error, `keystroke_to_bytes` not defined.
 
 - [ ] **Step 3: Implement**
@@ -1947,14 +1947,14 @@ pub fn keystroke_to_bytes(k: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p sarkos keys 2>&1 | tail -5`
+Run: `cargo test -p arkos keys 2>&1 | tail -5`
 Expected: `8 passed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/keys.rs crates/sarkos/src/main.rs
-git commit -m "sarkos: map keystrokes to terminal bytes"
+git add crates/arkos/src/keys.rs crates/arkos/src/main.rs
+git commit -m "arkos: map keystrokes to terminal bytes"
 ```
 
 ---
@@ -1962,7 +1962,7 @@ git commit -m "sarkos: map keystrokes to terminal bytes"
 ### Task 7: Scroll animator
 
 **Files:**
-- Create: `crates/sarkos/src/scroll.rs`
+- Create: `crates/arkos/src/scroll.rs`
 - Test: inline
 
 **Interfaces:**
@@ -2042,7 +2042,7 @@ mod tests {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Add `mod scroll;` to `main.rs`. Run: `cargo test -p sarkos scroll 2>&1 | tail -5`
+Add `mod scroll;` to `main.rs`. Run: `cargo test -p arkos scroll 2>&1 | tail -5`
 Expected: compile error.
 
 - [ ] **Step 3: Implement**
@@ -2092,14 +2092,14 @@ impl ScrollAnimator {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p sarkos scroll 2>&1 | tail -5`
+Run: `cargo test -p arkos scroll 2>&1 | tail -5`
 Expected: `5 passed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/scroll.rs crates/sarkos/src/main.rs
-git commit -m "sarkos: time-based smooth scroll animator"
+git add crates/arkos/src/scroll.rs crates/arkos/src/main.rs
+git commit -m "arkos: time-based smooth scroll animator"
 ```
 
 ---
@@ -2107,7 +2107,7 @@ git commit -m "sarkos: time-based smooth scroll animator"
 ### Task 8: Palette and row layout (pure)
 
 **Files:**
-- Create: `crates/sarkos/src/palette.rs`, `crates/sarkos/src/layout.rs`
+- Create: `crates/arkos/src/palette.rs`, `crates/arkos/src/layout.rs`
 - Test: inline in both
 
 **Interfaces:**
@@ -2119,7 +2119,7 @@ git commit -m "sarkos: time-based smooth scroll animator"
 
 - [ ] **Step 1: Write the failing palette tests**
 
-Create `crates/sarkos/src/palette.rs`:
+Create `crates/arkos/src/palette.rs`:
 ```rust
 //! The Navy theme's colours, hardcoded for milestone 1 (theme files arrive in milestone 2).
 //! Values follow spec 7.1: a lifted navy background, a bright grey foreground, and ANSI colours
@@ -2279,12 +2279,12 @@ If `NamedColor` has variants not listed here in alacritty_terminal 0.26 (the com
 
 - [ ] **Step 3: Run the palette tests**
 
-Add `mod palette;` to `main.rs`. Run: `cargo test -p sarkos palette 2>&1 | tail -5`
+Add `mod palette;` to `main.rs`. Run: `cargo test -p arkos palette 2>&1 | tail -5`
 Expected: `4 passed`. If `every_ansi_colour_except_black_clears_4_5_to_1` fails for a colour, brighten that entry until it passes; the test is the requirement (spec 7.1).
 
 - [ ] **Step 4: Write the failing layout tests**
 
-Create `crates/sarkos/src/layout.rs`:
+Create `crates/arkos/src/layout.rs`:
 ```rust
 //! Turns one row of terminal cells into text runs with a starting column, so the painter can
 //! shape each run once and place it at an exact cell x. Pure: no GPUI, so it is unit tested.
@@ -2400,14 +2400,14 @@ pub fn build_runs(cells: impl Iterator<Item = (char, CellStyle, CellKind)>) -> V
 
 - [ ] **Step 6: Run the layout tests**
 
-Add `mod layout;` to `main.rs`. Run: `cargo test -p sarkos layout 2>&1 | tail -5`
+Add `mod layout;` to `main.rs`. Run: `cargo test -p arkos layout 2>&1 | tail -5`
 Expected: `5 passed`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src/palette.rs crates/sarkos/src/layout.rs crates/sarkos/src/main.rs
-git commit -m "sarkos: Navy palette and pure row layout"
+git add crates/arkos/src/palette.rs crates/arkos/src/layout.rs crates/arkos/src/main.rs
+git commit -m "arkos: Navy palette and pure row layout"
 ```
 
 ---
@@ -2415,7 +2415,7 @@ git commit -m "sarkos: Navy palette and pure row layout"
 ### Task 9: Terminal entity
 
 **Files:**
-- Create: `crates/sarkos/src/terminal.rs`
+- Create: `crates/arkos/src/terminal.rs`
 - Test: inline (the `Term` runs headless; GPUI is not needed for these tests, so the tests build a `TerminalCore` directly)
 
 **Interfaces:**
@@ -2427,7 +2427,7 @@ git commit -m "sarkos: Navy palette and pure row layout"
 
 - [ ] **Step 1: Write the failing core tests**
 
-Create `crates/sarkos/src/terminal.rs`:
+Create `crates/arkos/src/terminal.rs`:
 ```rust
 //! The terminal state behind one tab: an alacritty grid fed by the daemon, plus scroll state.
 //! `TerminalCore` has no GPUI dependency so its behaviour is unit tested; `Terminal` wraps it as
@@ -2556,7 +2556,7 @@ mod tests {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Add `mod terminal;` to `main.rs`. Run: `cargo test -p sarkos terminal 2>&1 | tail -5`
+Add `mod terminal;` to `main.rs`. Run: `cargo test -p arkos terminal 2>&1 | tail -5`
 Expected: compile error, `TerminalCore` not defined.
 
 - [ ] **Step 3: Implement TerminalCore**
@@ -2715,7 +2715,7 @@ impl TerminalCore {
 
 - [ ] **Step 4: Run the core tests**
 
-Run: `cargo test -p sarkos terminal 2>&1 | tail -12`
+Run: `cargo test -p arkos terminal 2>&1 | tail -12`
 Expected: `8 passed`. Watch for two likely compile fixes: `Term::columns`/`screen_lines` come from the `Dimensions` trait (already imported); the `Row` index type is `alacritty_terminal::index::Column`.
 
 - [ ] **Step 5: Add the GPUI entity**
@@ -2819,14 +2819,14 @@ impl Terminal {
 
 - [ ] **Step 6: Build**
 
-Run: `cargo build -p sarkos 2>&1 | grep -E "^(error|warning: unused)" | head`
+Run: `cargo build -p arkos 2>&1 | grep -E "^(error|warning: unused)" | head`
 Expected: no errors. Unused warnings for `Terminal` are fine until Task 10 wires it in.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src/terminal.rs crates/sarkos/src/main.rs
-git commit -m "sarkos: terminal core over alacritty_terminal with a GPUI entity wrapper"
+git add crates/arkos/src/terminal.rs crates/arkos/src/main.rs
+git commit -m "arkos: terminal core over alacritty_terminal with a GPUI entity wrapper"
 ```
 
 ---
@@ -2834,8 +2834,8 @@ git commit -m "sarkos: terminal core over alacritty_terminal with a GPUI entity 
 ### Task 10: TerminalElement and the live window
 
 **Files:**
-- Create: `crates/sarkos/src/terminal_element.rs`
-- Modify: `crates/sarkos/src/main.rs`
+- Create: `crates/arkos/src/terminal_element.rs`
+- Modify: `crates/arkos/src/main.rs`
 
 **Interfaces:**
 - Consumes: `Terminal`, `TerminalCore::rows_for_paint`, `layout::build_runs`, `ScrollAnimator`, gpui `Element`.
@@ -2845,7 +2845,7 @@ Painting cannot be unit tested headless in gpui 0.2.2 without its test-support h
 
 - [ ] **Step 1: Write the element**
 
-Create `crates/sarkos/src/terminal_element.rs`:
+Create `crates/arkos/src/terminal_element.rs`:
 ```rust
 //! Paints a `Terminal`'s visible rows at a fractional line offset (spec 3). Only the rows in the
 //! viewport plus one above are shaped and painted, which is the virtualization.
@@ -3007,7 +3007,7 @@ impl Element for TerminalElement {
 
 - [ ] **Step 2: Wire the Root view**
 
-Replace `crates/sarkos/src/main.rs`:
+Replace `crates/arkos/src/main.rs`:
 ```rust
 mod client;
 mod keys;
@@ -3083,13 +3083,13 @@ impl Render for Root {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") {
-        println!("sarkos {}", env!("CARGO_PKG_VERSION"));
+        println!("arkos {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("sarkos: cannot reach sarkosd: {e:#}");
+            eprintln!("arkos: cannot reach arkosd: {e:#}");
             std::process::exit(1);
         }
     };
@@ -3102,7 +3102,7 @@ fn main() {
         let window = cx
             .open_window(
                 WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
-                move |_, cx| cx.new(|_| Root { client: client_for_view, terminal: None, status: "connecting to sarkosd".into() }),
+                move |_, cx| cx.new(|_| Root { client: client_for_view, terminal: None, status: "connecting to arkosd".into() }),
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
@@ -3170,7 +3170,7 @@ fn main() {
                             cx.notify();
                         }
                         ServerMessage::Response { response: Response::Error(e), .. } => {
-                            root.status = format!("sarkosd error: {e}");
+                            root.status = format!("arkosd error: {e}");
                             cx.notify();
                         }
                         ServerMessage::Event(ev) => {
@@ -3195,7 +3195,7 @@ fn main() {
 
 - [ ] **Step 3: Write a minimal workspace module so this compiles (Task 11 tests it)**
 
-Create `crates/sarkos/src/workspace.rs`:
+Create `crates/arkos/src/workspace.rs`:
 ```rust
 //! Remembers which daemon session belongs to a project folder (spec 4, milestone 1 subset).
 use crate::paths::workspace_file;
@@ -3235,7 +3235,7 @@ pub fn save_to(file: &Path, session: SessionId) {
 
 - [ ] **Step 4: Build and fix API drift**
 
-Run: `cargo build -p sarkos 2>&1 | grep -E "^error" -A 6 | head -60`
+Run: `cargo build -p arkos 2>&1 | grep -E "^error" -A 6 | head -60`
 Expected: no errors. Likely drift points and their fixes, all verified against gpui 0.2.2 source:
 - `item.text()` on `ClipboardItem`: if missing, use `item.entries().iter().find_map(|e| match e { gpui::ClipboardEntry::String(s) => Some(s.text().to_string()), _ => None })`.
 - `window.entity(cx)`: if `WindowHandle` has no `entity`, replace with `window.update(cx, |_, _, cx| cx.entity()).expect("root entity")`.
@@ -3244,7 +3244,7 @@ Expected: no errors. Likely drift points and their fixes, all verified against g
 
 - [ ] **Step 5: Manual check, part 1: it is a terminal**
 
-Run: `cargo run -p sarkos` from any project folder.
+Run: `cargo run -p arkos` from any project folder.
 Check, in order:
 1. A navy window with a shell prompt in Menlo 16 px, line height visibly loose (1.5).
 2. Type `ls -la` Enter: output appears, colours show, cursor block follows.
@@ -3255,7 +3255,7 @@ Check, in order:
 
 - [ ] **Step 6: Manual check, part 2: smooth scrolling and the flood**
 
-1. `seq 1 5000`: output floods. The window stays responsive, the CPU for sarkos stays below one core in Activity Monitor, and the last line is `5000`.
+1. `seq 1 5000`: output floods. The window stays responsive, the CPU for arkos stays below one core in Activity Monitor, and the last line is `5000`.
 2. Two-finger scroll up: the content glides with sub-line smoothness, no snapping. Scroll back down: it eases to the bottom.
 3. Scroll up, then run `yes | head -n 1000` from a second terminal into this session's PTY (`echo text > /dev/ttysNNN`, where `tty` printed the device): the view does not jump down while scrolled up.
 4. Shift+PageUp and Shift+PageDown page through history. Pressing any key jumps back to the bottom.
@@ -3263,8 +3263,8 @@ Check, in order:
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos
-git commit -m "sarkos: paint the terminal with fractional smooth scrolling"
+git add crates/arkos
+git commit -m "arkos: paint the terminal with fractional smooth scrolling"
 ```
 
 ---
@@ -3272,7 +3272,7 @@ git commit -m "sarkos: paint the terminal with fractional smooth scrolling"
 ### Task 11: Workspace persistence and reattach after a kill
 
 **Files:**
-- Modify: `crates/sarkos/src/workspace.rs` (add tests)
+- Modify: `crates/arkos/src/workspace.rs` (add tests)
 - Test: inline; plus the manual kill test, which is the milestone's acceptance test
 
 **Interfaces:**
@@ -3316,27 +3316,27 @@ mod tests {
 
 - [ ] **Step 2: Run the tests**
 
-Run: `cargo test -p sarkos workspace 2>&1 | tail -5`
+Run: `cargo test -p arkos workspace 2>&1 | tail -5`
 Expected: `3 passed` (the implementation exists from Task 10; these pin it).
 
 - [ ] **Step 3: Manual acceptance test: the kill**
 
-1. `cargo run -p sarkos` in `~/Projects/ide-sarkos`. In the terminal run `claude` and start a short task, or simply `for i in $(seq 1 300); do echo line $i; sleep 0.05; done`.
-2. While it runs, from another terminal: `pkill -9 -x sarkos`. The window vanishes.
-3. `cargo run -p sarkos` again in the same folder. Expected: the same session reappears with its full scrollback, the loop is still running or has finished with all 300 lines, and typing works. `pgrep sarkosd` shows the same daemon pid as before.
+1. `cargo run -p arkos` in `~/Projects/ide-sarkos`. In the terminal run `claude` and start a short task, or simply `for i in $(seq 1 300); do echo line $i; sleep 0.05; done`.
+2. While it runs, from another terminal: `pkill -9 -x arkos`. The window vanishes.
+3. `cargo run -p arkos` again in the same folder. Expected: the same session reappears with its full scrollback, the loop is still running or has finished with all 300 lines, and typing works. `pgrep arkosd` shows the same daemon pid as before.
 4. Scroll up through the replayed history: smooth, complete.
 5. Quit normally with Cmd+Q, relaunch: same session again.
 
 - [ ] **Step 4: Manual acceptance test: the watchdog with the real UI**
 
-1. With sarkos running, freeze it: `kill -STOP $(pgrep -x sarkos)`.
-2. Wait 35 seconds. Expected: the daemon kills the frozen UI and relaunches it (watch `tail -f ~/Library/Application\ Support/sarkos/sarkosd.log` for the "silent for 30s, relaunching" line), and the relaunched window reattaches to the same session.
+1. With arkos running, freeze it: `kill -STOP $(pgrep -x arkos)`.
+2. Wait 35 seconds. Expected: the daemon kills the frozen UI and relaunches it (watch `tail -f ~/Library/Application\ Support/arkos/arkosd.log` for the "silent for 30s, relaunching" line), and the relaunched window reattaches to the same session.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/workspace.rs
-git commit -m "sarkos: persist the session per project and reattach on launch"
+git add crates/arkos/src/workspace.rs
+git commit -m "arkos: persist the session per project and reattach on launch"
 ```
 
 ---
@@ -3344,14 +3344,14 @@ git commit -m "sarkos: persist the session per project and reattach on launch"
 ### Task 12: QoS, release build, and README
 
 **Files:**
-- Modify: `crates/sarkos/src/main.rs`, `README.md`
+- Modify: `crates/arkos/src/main.rs`, `README.md`
 
 **Interfaces:**
 - Produces: the UI main thread at user-interactive QoS (spec 2.5); a documented way to build and run both binaries.
 
 - [ ] **Step 1: Set the QoS at the top of main**
 
-In `crates/sarkos/src/main.rs`, as the first statement of `main` after the `--version` check:
+In `crates/arkos/src/main.rs`, as the first statement of `main` after the `--version` check:
 ```rust
     // Spec 2.5: the UI thread is user-interactive so macOS schedules it ahead of the heavy work
     // Claude Code's children do.
@@ -3370,11 +3370,11 @@ and call `pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)`.
 
 - [ ] **Step 2: Verify the QoS took**
 
-Run: `cargo run -p sarkos &` then `sleep 3 && ps -o pid,pri,comm -p $(pgrep -x sarkos)`; alternatively in Activity Monitor, the process should not show as "Background". Expected: it runs; no crash from the call.
+Run: `cargo run -p arkos &` then `sleep 3 && ps -o pid,pri,comm -p $(pgrep -x arkos)`; alternatively in Activity Monitor, the process should not show as "Background". Expected: it runs; no crash from the call.
 
 - [ ] **Step 3: Release build and sizes**
 
-Run: `cargo build --release 2>&1 | tail -2 && ls -la target/release/sarkos target/release/sarkosd && ps -o rss,comm -p $(pgrep -x sarkosd)`
+Run: `cargo build --release 2>&1 | tail -2 && ls -la target/release/arkos target/release/arkosd && ps -o rss,comm -p $(pgrep -x arkosd)`
 Expected: both binaries exist. Note the daemon's RSS in the commit message; the spec's budget is under 15 MB and this is the first measurement.
 
 - [ ] **Step 4: Update the README**
@@ -3389,11 +3389,11 @@ Milestone 1 of 6: the daemon and one terminal pane. See the spec for the rest.
 
 ```bash
 cargo build --release
-./target/release/sarkos        # starts sarkosd on demand, opens one terminal in the current folder
+./target/release/arkos        # starts arkosd on demand, opens one terminal in the current folder
 ```
 
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
-`~/Library/Application Support/sarkos/sarkosd.log`. To stop everything: `pkill -x sarkosd`.
+`~/Library/Application Support/arkos/arkosd.log`. To stop everything: `pkill -x arkosd`.
 
 ## Tests
 
@@ -3416,14 +3416,14 @@ GPL-3.0. Modified versions must be released under the same license. See [LICENSE
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/main.rs README.md
-git commit -m "sarkos: user-interactive QoS, README for milestone 1"
+git add crates/arkos/src/main.rs README.md
+git commit -m "arkos: user-interactive QoS, README for milestone 1"
 ```
 
 ---
 
 ## Self-review notes
 
-**Spec coverage for milestone 1.** Section 2.1 daemon, socket, replay buffer, robustness rules: Task 3. Section 2.2 UI reattach: Tasks 5, 10, 11. Section 2.3 protocol, including `SARKOS_SESSION_ID` and the `SetState` message (handled by the daemon now, sent by the hook CLI in milestone 3): Tasks 2, 3. Section 2.4 watchdog: Task 4 and the manual test in Task 11. Section 2.5 QoS and nice: Task 12 and Task 3's `setpriority`. Section 3 emulation, rendering, fractional scroll, frame pacing, text defaults, bracketed paste: Tasks 6 to 10. Box-drawing glyph stretching (section 3) is deferred to milestone 2 with the theme work, since the manual check in Task 10 step 5 decides whether Menlo's box glyphs already fill a 1.5 cell. Section 4 persistence: the milestone 1 subset in Task 11. Sections 5, 6, 8 are later milestones. Section 9 non-blocking: enforced by the thread-plus-channel design in Tasks 3 and 5.
+**Spec coverage for milestone 1.** Section 2.1 daemon, socket, replay buffer, robustness rules: Task 3. Section 2.2 UI reattach: Tasks 5, 10, 11. Section 2.3 protocol, including `ARKOS_SESSION_ID` and the `SetState` message (handled by the daemon now, sent by the hook CLI in milestone 3): Tasks 2, 3. Section 2.4 watchdog: Task 4 and the manual test in Task 11. Section 2.5 QoS and nice: Task 12 and Task 3's `setpriority`. Section 3 emulation, rendering, fractional scroll, frame pacing, text defaults, bracketed paste: Tasks 6 to 10. Box-drawing glyph stretching (section 3) is deferred to milestone 2 with the theme work, since the manual check in Task 10 step 5 decides whether Menlo's box glyphs already fill a 1.5 cell. Section 4 persistence: the milestone 1 subset in Task 11. Sections 5, 6, 8 are later milestones. Section 9 non-blocking: enforced by the thread-plus-channel design in Tasks 3 and 5.
 
 **Deferred to milestone 2 deliberately:** mouse selection and copy, tab bar, title display, the bell badge, theme files, `Term` title in `SessionInfo`.

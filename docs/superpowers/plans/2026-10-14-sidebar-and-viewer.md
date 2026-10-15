@@ -1,4 +1,4 @@
-# Sarkos IDE: Sidebar, file tree and the read-only viewer (milestone 4a). Implementation Plan
+# Arkos IDE: Sidebar, file tree and the read-only viewer (milestone 4a). Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,17 +8,17 @@
 
 **Tech Stack:** Rust stable, gpui 0.2.2 (exact pin), `syntect` 5 with the pure-Rust regex engine (`regex-fancy`), no `onig`; git through the `git` binary (no `git2`); the existing `ScrollAnimator`, `LineEdit`, `config_watch::fingerprint`. One new dependency: `syntect`.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-sarkos-design.md` section 6 (sidebar: the file tree and the viewer paragraphs; the worktree explorer paragraph and the viewer's diff gutters are milestone 4b), section 4 (viewer tabs, the sidebar keys, persistence of sidebar state), section 7 (tree and viewer colours, text presets apply to viewers) and section 9 (never block the UI thread; a viewer holds one file).
+**Spec:** `docs/superpowers/specs/2026-10-13-arkos-design.md` section 6 (sidebar: the file tree and the viewer paragraphs; the worktree explorer paragraph and the viewer's diff gutters are milestone 4b), section 4 (viewer tabs, the sidebar keys, persistence of sidebar state), section 7 (tree and viewer colours, text presets apply to viewers) and section 9 (never block the UI thread; a viewer holds one file).
 
 ## Global Constraints
 
 - macOS only. The window never blocks the UI thread on IO: directory reads, `git check-ignore`, file reads, highlighting and the polls run on the background executor; the UI thread applies results.
 - `gpui = { version = "=0.2.2", features = ["runtime_shaders"] }` pinned exactly; never bump. If a gpui or syntect name in this plan does not compile, grep `~/.cargo/registry/src/*/gpui-0.2.2/src/` or `~/.cargo/registry/src/*/syntect-5*/src/` for it, fix the call, and note the change in the commit message. Do not guess.
-- One new dependency, `syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing"] }` in `crates/sarkos/Cargo.toml`, added in Task 4 and nowhere else. No other new crates.
+- One new dependency, `syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing"] }` in `crates/arkos/Cargo.toml`, added in Task 4 and nowhere else. No other new crates.
 - The tree hides `.git`, respects `.gitignore` by default with a toggle to show ignored entries, and reads a directory's children only when it is expanded. Files over the configured limit (default 5 MB) open without highlighting; binaries show a short notice. The viewer is read-only: nothing in this plan writes to a project file.
 - The theme file format does not change: the tree uses `theme.tree.*`, the viewer `theme.viewer.*` and `theme.chrome.{window_bg, text, text_dim, sidebar, border}`. The workspace file gains an optional `sidebar` object; files without it load as before.
-- Display name "Sarkos IDE"; lowercase `sarkos` elsewhere. No em-dashes in any copy or comment. Commit messages imperative, one line, body optional, ending with a blank line, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_015xrVD54zbvkgksJUndxfpr`.
-- Tests: `cargo test -p sarkos` stays headless (no window); a test that needs a git repository creates one in a temp dir with `git init`; the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`.
+- Display name "Arkos IDE"; lowercase `arkos` elsewhere. No em-dashes in any copy or comment. Commit messages imperative, one line, body optional, ending with a blank line, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_015xrVD54zbvkgksJUndxfpr`.
+- Tests: `cargo test -p arkos` stays headless (no window); a test that needs a git repository creates one in a temp dir with `git init`; the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`.
 
 ## Review Focus
 
@@ -33,7 +33,7 @@
 ## File structure
 
 ```
-crates/sarkos/
+crates/arkos/
   Cargo.toml                   syntect (Task 4)
   src/sidebar.rs               NEW: the column: state (width, collapsed, show_ignored), the resize handle, section header, rendering of the Explorer section rows
   src/explorer.rs              NEW: the file tree model: entries, expanded set, loaded dirs, visible rows, selection moves, list_dir, mark_ignored (git check-ignore)
@@ -66,8 +66,8 @@ Rulings the plan makes where the spec is silent (the executor records any furthe
 ### Task 1: The sidebar column, Cmd+B, the resize handle, persistence
 
 **Files:**
-- Create: `crates/sarkos/src/sidebar.rs`
-- Modify: `crates/sarkos/src/workspace.rs`, `crates/sarkos/src/config.rs` (the `[sidebar]` comment only), `crates/sarkos/src/keymap.rs`, `crates/sarkos/src/command_palette.rs`, `crates/sarkos/src/main.rs`, `README.md` (keyboard rows)
+- Create: `crates/arkos/src/sidebar.rs`
+- Modify: `crates/arkos/src/workspace.rs`, `crates/arkos/src/config.rs` (the `[sidebar]` comment only), `crates/arkos/src/keymap.rs`, `crates/arkos/src/command_palette.rs`, `crates/arkos/src/main.rs`, `README.md` (keyboard rows)
 - Test: unit tests in `sidebar.rs`, `workspace.rs`, `keymap.rs`, `command_palette.rs`
 
 **Interfaces:**
@@ -76,7 +76,7 @@ Rulings the plan makes where the spec is silent (the executor records any furthe
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/sidebar.rs` with the module doc and the tests:
+Create `crates/arkos/src/sidebar.rs` with the module doc and the tests:
 
 ```rust
 //! The left sidebar (spec 6): a fixed column, Cmd+B to toggle, resizable by its right edge,
@@ -125,7 +125,7 @@ mod tests {
 }
 ```
 
-In `crates/sarkos/src/workspace.rs`'s tests:
+In `crates/arkos/src/workspace.rs`'s tests:
 
 ```rust
     #[test]
@@ -149,8 +149,8 @@ In `crates/sarkos/src/workspace.rs`'s tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- sidebar workspace keymap command_palette`
-Expected: FAIL to compile (add `mod sidebar;` and `mod explorer;` to `main.rs`; `explorer::Row` does not exist yet: for this task create `crates/sarkos/src/explorer.rs` containing only the `Row` struct from Task 2's interface, `pub struct Row { pub path: PathBuf, pub name: String, pub depth: usize, pub is_dir: bool, pub expanded: bool, pub ignored: bool, pub loading: bool }`, which Task 2 fills in around).
+Run: `~/.cargo/bin/cargo test -p arkos -- sidebar workspace keymap command_palette`
+Expected: FAIL to compile (add `mod sidebar;` and `mod explorer;` to `main.rs`; `explorer::Row` does not exist yet: for this task create `crates/arkos/src/explorer.rs` containing only the `Row` struct from Task 2's interface, `pub struct Row { pub path: PathBuf, pub name: String, pub depth: usize, pub is_dir: bool, pub expanded: bool, pub ignored: bool, pub loading: bool }`, which Task 2 fills in around).
 
 - [ ] **Step 3: Implement the state, the file format, the actions**
 
@@ -295,13 +295,13 @@ README: the keyboard table gains `| Cmd+B | toggle the sidebar |` and `| Shift+C
 
 - [ ] **Step 4: Run the tests and the build**
 
-Run: `~/.cargo/bin/cargo test -p sarkos` then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`
+Run: `~/.cargo/bin/cargo test -p arkos` then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`
 Expected: PASS; no warnings for the project's crates. By hand if a screen is available: Cmd+B hides and shows an empty sidebar column; dragging its edge resizes it between 160 and 600 px; the width survives a relaunch of that folder.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/sidebar.rs crates/sarkos/src/explorer.rs crates/sarkos/src/workspace.rs crates/sarkos/src/config.rs crates/sarkos/src/keymap.rs crates/sarkos/src/command_palette.rs crates/sarkos/src/main.rs README.md
+git add crates/arkos/src/sidebar.rs crates/arkos/src/explorer.rs crates/arkos/src/workspace.rs crates/arkos/src/config.rs crates/arkos/src/keymap.rs crates/arkos/src/command_palette.rs crates/arkos/src/main.rs README.md
 git commit -m "Add the sidebar column: Cmd+B, a resizable edge, state saved with the workspace"
 ```
 
@@ -310,8 +310,8 @@ git commit -m "Add the sidebar column: Cmd+B, a resizable edge, state saved with
 ### Task 2: The file tree model: lazy directories, gitignore, rows, the poll
 
 **Files:**
-- Modify: `crates/sarkos/src/explorer.rs` (the model around Task 1's `Row`), `crates/sarkos/src/main.rs` (`Root.explorer`, the load task), `crates/sarkos/src/workspace.rs` (nothing: `expanded` is filled by `save`)
-- Create: `crates/sarkos/src/explorer_watch.rs`
+- Modify: `crates/arkos/src/explorer.rs` (the model around Task 1's `Row`), `crates/arkos/src/main.rs` (`Root.explorer`, the load task), `crates/arkos/src/workspace.rs` (nothing: `expanded` is filled by `save`)
+- Create: `crates/arkos/src/explorer_watch.rs`
 - Test: unit tests in `explorer.rs` (temp dirs, a temp git repo), `explorer_watch.rs`
 
 **Interfaces:**
@@ -431,7 +431,7 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- explorer`
+Run: `~/.cargo/bin/cargo test -p arkos -- explorer`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement the model**
@@ -522,7 +522,7 @@ pub fn read_dir_entries(root: &Path, dir: &Path) -> Vec<EntryInfo> {
             entries
         }
         Err(e) => {
-            eprintln!("sarkos: cannot read {}: {e}", dir.display());
+            eprintln!("arkos: cannot read {}: {e}", dir.display());
             Vec::new()
         }
     }
@@ -746,13 +746,13 @@ mod tests {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- explorer`
+Run: `~/.cargo/bin/cargo test -p arkos -- explorer`
 Expected: PASS (the git test needs `git` on PATH, which the daemon tests already assume).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/explorer.rs crates/sarkos/src/explorer_watch.rs crates/sarkos/src/main.rs crates/sarkos/src/sidebar.rs crates/sarkos/src/command_palette.rs
+git add crates/arkos/src/explorer.rs crates/arkos/src/explorer_watch.rs crates/arkos/src/main.rs crates/arkos/src/sidebar.rs crates/arkos/src/command_palette.rs
 git commit -m "Model the file tree: lazy directories, gitignore through git, visible rows, a one-second poll"
 ```
 
@@ -761,7 +761,7 @@ git commit -m "Model the file tree: lazy directories, gitignore through git, vis
 ### Task 3: Tree rows: click, preview and pin, context menu, keyboard, file drag
 
 **Files:**
-- Modify: `crates/sarkos/src/sidebar.rs` (`render_rows`, the context menu), `crates/sarkos/src/drag.rs` (`FileDrag`), `crates/sarkos/src/pane_view.rs` (drop on a terminal; preview tabs dimmed), `crates/sarkos/src/main.rs` (`open_viewer`, `preview_tab`, `context_menu`, the tree's key handling), `crates/sarkos/src/tree.rs` (`find_viewer`)
+- Modify: `crates/arkos/src/sidebar.rs` (`render_rows`, the context menu), `crates/arkos/src/drag.rs` (`FileDrag`), `crates/arkos/src/pane_view.rs` (drop on a terminal; preview tabs dimmed), `crates/arkos/src/main.rs` (`open_viewer`, `preview_tab`, `context_menu`, the tree's key handling), `crates/arkos/src/tree.rs` (`find_viewer`)
 - Test: unit tests in `main.rs` (the pure open decision), `tree.rs`, `drag.rs`, `sidebar.rs`
 
 **Interfaces:**
@@ -839,7 +839,7 @@ In `sidebar.rs`'s tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- find_viewer a_preview_is_replaced a_dropped_path context_menu`
+Run: `~/.cargo/bin/cargo test -p arkos -- find_viewer a_preview_is_replaced a_dropped_path context_menu`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement**
@@ -1067,7 +1067,7 @@ pub fn run_menu_action(action: &MenuAction, cx: &mut Context<Root>) {
         MenuAction::CopyText(s) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.clone())),
         MenuAction::OpenDefault(p) => {
             if let Err(e) = std::process::Command::new("open").arg(p).spawn() {
-                eprintln!("sarkos: cannot open {}: {e}", p.display());
+                eprintln!("arkos: cannot open {}: {e}", p.display());
             }
         }
     }
@@ -1122,13 +1122,13 @@ pub fn paste_text(path: &Path) -> String {
 
 - [ ] **Step 4: Run the tests and the build**
 
-Run: `~/.cargo/bin/cargo test -p sarkos` then the warning check.
+Run: `~/.cargo/bin/cargo test -p arkos` then the warning check.
 Expected: PASS. By hand if a screen is available: clicking a file opens a dimmed viewer tab (its content is the milestone 4 placeholder until Task 5); clicking another replaces it; a double click pins; right click shows the four actions and "Copy path" lands on the clipboard; dragging a file onto a terminal pastes its path; Shift+Cmd+E then arrows and Enter open a file.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/sidebar.rs crates/sarkos/src/drag.rs crates/sarkos/src/pane_view.rs crates/sarkos/src/main.rs crates/sarkos/src/tree.rs crates/sarkos/src/paths.rs
+git add crates/arkos/src/sidebar.rs crates/arkos/src/drag.rs crates/arkos/src/pane_view.rs crates/arkos/src/main.rs crates/arkos/src/tree.rs crates/arkos/src/paths.rs
 git commit -m "Draw the file tree: click to preview, double click to pin, a context menu, keys, file drag"
 ```
 
@@ -1137,8 +1137,8 @@ git commit -m "Draw the file tree: click to preview, double click to pin, a cont
 ### Task 4: The viewer model and syntax highlighting
 
 **Files:**
-- Create: `crates/sarkos/src/viewer.rs`, `crates/sarkos/src/highlight.rs`
-- Modify: `crates/sarkos/Cargo.toml` (syntect), `Cargo.lock`, `crates/sarkos/src/config.rs` (`[viewer] highlight_limit_bytes`), `crates/sarkos/src/main.rs` (`mod` lines, `Root.highlighter`)
+- Create: `crates/arkos/src/viewer.rs`, `crates/arkos/src/highlight.rs`
+- Modify: `crates/arkos/Cargo.toml` (syntect), `Cargo.lock`, `crates/arkos/src/config.rs` (`[viewer] highlight_limit_bytes`), `crates/arkos/src/main.rs` (`mod` lines, `Root.highlighter`)
 - Test: unit tests in `viewer.rs`, `highlight.rs`, `config.rs`
 
 **Interfaces:**
@@ -1337,8 +1337,8 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- viewer highlight viewer_limit`
-Expected: FAIL to compile (add `mod viewer; mod highlight;` to `main.rs` and the `syntect` dependency to `crates/sarkos/Cargo.toml` as the constraints give it; `cargo` fetches it).
+Run: `~/.cargo/bin/cargo test -p arkos -- viewer highlight viewer_limit`
+Expected: FAIL to compile (add `mod viewer; mod highlight;` to `main.rs` and the `syntect` dependency to `crates/arkos/Cargo.toml` as the constraints give it; `cargo` fetches it).
 
 - [ ] **Step 3: Implement**
 
@@ -1539,7 +1539,7 @@ fn item(selector: &str, c: Rgb) -> ThemeItem {
 /// numbers come after keywords and constants.
 pub fn scope_theme(colors: &ViewerColors, text: Rgb) -> Theme {
     Theme {
-        name: Some("sarkos".into()),
+        name: Some("arkos".into()),
         author: None,
         settings: ThemeSettings { foreground: Some(color(text)), ..Default::default() },
         scopes: vec![
@@ -1637,13 +1637,13 @@ highlight_limit_bytes = 5242880
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- viewer highlight config`
+Run: `~/.cargo/bin/cargo test -p arkos -- viewer highlight config`
 Expected: PASS. Then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`: nothing from the project's crates (new items unused until Task 5 need `#[allow(dead_code)]` with a comment naming Task 5, or `#[cfg_attr(not(test), expect(dead_code))]`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/Cargo.toml Cargo.lock crates/sarkos/src/viewer.rs crates/sarkos/src/highlight.rs crates/sarkos/src/config.rs crates/sarkos/src/main.rs
+git add crates/arkos/Cargo.toml Cargo.lock crates/arkos/src/viewer.rs crates/arkos/src/highlight.rs crates/arkos/src/config.rs crates/arkos/src/main.rs
 git commit -m "Add the viewer model and syntect highlighting through the theme's viewer colours"
 ```
 
@@ -1652,8 +1652,8 @@ git commit -m "Add the viewer model and syntect highlighting through the theme's
 ### Task 5: The viewer element, find, reload, presets, README
 
 **Files:**
-- Create: `crates/sarkos/src/viewer_element.rs`
-- Modify: `crates/sarkos/src/viewer.rs` (`find_key`, `paste`), `crates/sarkos/src/pane_view.rs` (render a viewer tab), `crates/sarkos/src/main.rs` (`Root.viewers`, load, reload, `Find` for viewers, font keys, text preset, theme change, `watched_paths`, `paths_changed`), `README.md`
+- Create: `crates/arkos/src/viewer_element.rs`
+- Modify: `crates/arkos/src/viewer.rs` (`find_key`, `paste`), `crates/arkos/src/pane_view.rs` (render a viewer tab), `crates/arkos/src/main.rs` (`Root.viewers`, load, reload, `Find` for viewers, font keys, text preset, theme change, `watched_paths`, `paths_changed`), `README.md`
 - Test: unit tests in `viewer_element.rs` (pure layout maths), `viewer.rs`
 
 **Interfaces:**
@@ -1716,7 +1716,7 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- viewer_element a_changed_fingerprint`
+Run: `~/.cargo/bin/cargo test -p arkos -- viewer_element a_changed_fingerprint`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement the element**
@@ -2005,13 +2005,13 @@ The checklist (top of Status) gains: "- Cmd+B, expand `src`, click a file: a dim
 
 - [ ] **Step 4: Run everything**
 
-Run: `~/.cargo/bin/cargo test --workspace`, `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`, `grep -n "—" README.md crates/sarkos/src/*.rs`
+Run: `~/.cargo/bin/cargo test --workspace`, `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`, `grep -n "—" README.md crates/arkos/src/*.rs`
 Expected: all green; no project warnings; no em-dashes. By hand if a screen is available: the README checklist's new rows, in order.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/viewer_element.rs crates/sarkos/src/viewer.rs crates/sarkos/src/pane_view.rs crates/sarkos/src/main.rs README.md
+git add crates/arkos/src/viewer_element.rs crates/arkos/src/viewer.rs crates/arkos/src/pane_view.rs crates/arkos/src/main.rs README.md
 git commit -m "Show files in a viewer tab: highlighted, numbered, scrolling, with find and live reload"
 ```
 

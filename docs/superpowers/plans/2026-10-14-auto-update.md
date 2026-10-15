@@ -13,13 +13,13 @@
 ## Global Constraints
 
 - Machine rules (the user's MacBook Air locked up from build load): every cargo call is `nice -n 15 ~/.cargo/bin/cargo ...`; the worktree's local `.cargo/config.toml` (`jobs = 3`, shared `target-dir`) stays; no `--release` builds on the laptop (the warning check is `cargo check --workspace --all-targets`); never two cargo processes at once; focused test filters while iterating, the workspace suite once per task.
-- New dependencies, all small and only these: `ed25519-compact = "2"` (release-tool, sarkosd), `sha2 = "0.10"` (sarkosd), `base64 = "0.22"` (release-tool, sarkosd), `serde_json = "1"` (sarkosd; sarkos has it). No gpui bump. The daemon gains no HTTP crate: fetches run `/usr/bin/curl` by absolute path; unpacking runs `/usr/bin/ditto`.
+- New dependencies, all small and only these: `ed25519-compact = "2"` (release-tool, arkosd), `sha2 = "0.10"` (arkosd), `base64 = "0.22"` (release-tool, arkosd), `serde_json = "1"` (arkosd; arkos has it). No gpui bump. The daemon gains no HTTP crate: fetches run `/usr/bin/curl` by absolute path; unpacking runs `/usr/bin/ditto`.
 - Protocol rule (update-in-place spec, section 5): variants are appended, never inserted; existing structs never change shape. This milestone appends `Request::{UpdateStatus, CheckForUpdates, ApplyUpdate}`, `Response::UpdateStatus`, `Event::UpdateStaged`, and bumps `PROTOCOL_VERSION` to 4 with `PROTOCOL_MIN` still 1.
 - Nothing from a download runs before the manifest's signature and the zip's size and sha256 have been checked. The manifest URL is a fixed HTTPS URL on github.com (the base is a daemon argument so tests use `file://`); redirects are accepted only to `github.com`, `objects.githubusercontent.com` or `release-assets.githubusercontent.com`.
 - Versions compare by semver only: a manifest is applied only when its version is strictly greater than the running one (the git hash is informational; a re-release is a new patch version, so a replayed older signed manifest can never roll a build back). A version that failed verification or staging is not retried until the manifest changes.
 - The daemon never shows UI; the window never touches the network. Every spawned process gets `stdin` null and a timeout.
 - The release workflow has `on: workflow_dispatch` only. It builds on the runner; nothing in this plan builds a release on the laptop.
-- No em-dashes in any file. Warning-free. Headless tests only; repository or process tests take the crate's spawn lock where one exists (`crate::client::fork_lock()` in sarkos; the daemon tests run real binaries).
+- No em-dashes in any file. Warning-free. Headless tests only; repository or process tests take the crate's spawn lock where one exists (`crate::client::fork_lock()` in arkos; the daemon tests run real binaries).
 - Durations in config are plain seconds (`check_every_secs`, `idle_after_secs`), like `watchdog_secs`.
 
 ## Review Focus
@@ -34,10 +34,10 @@
 
 - `crates/release-tool/` (new, binary): `keygen`, `sign`, `verify` subcommands; `src/main.rs`, `src/sig.rs`.
 - `crates/protocol/src/release_key.rs` (new): `RELEASE_PUBLIC_KEYS: &[&str]` (base64, 32 bytes each) and `pub mod` in `lib.rs`; the protocol additions in `lib.rs`.
-- `crates/sarkosd/src/updates/mod.rs` (new): `UpdateState`, `Options` fields, the module tree. `version.rs`, `manifest.rs`, `verify.rs`, `fetch.rs`, `stage.rs`, `poll.rs`, `swap.rs`, `apply.rs`.
-- `crates/sarkosd/src/main.rs`: `--update-url`, `--check-every-secs`, `--bundle`, `--curl` arguments; `server.rs`: the three requests, `State.update`, the poll thread start, the rollback watch; `recovery.rs`: leftover cleanup on `--recover`.
-- `crates/sarkos/src/idle.rs` (new): the idle rule. `config.rs`: `[update]`. `sessions.rs`: `Pending::{Status, Check, Apply}`, outcomes. `main.rs`: `last_input`, `staged`, `update_error`, the auto-apply timer, palette commands. `chrome.rs` unchanged (`status_items` already takes the text). `command_palette.rs`, `keymap.rs` (two commands, unbound).
-- `.github/workflows/release.yml`, `packaging/Info.plist.in`, `packaging/bundle.sh`, `packaging/manifest.sh`, `scripts/release-key`, `scripts/app-management-probe.sh`, `homebrew/sarkos-ide.rb`, `README.md`.
+- `crates/arkosd/src/updates/mod.rs` (new): `UpdateState`, `Options` fields, the module tree. `version.rs`, `manifest.rs`, `verify.rs`, `fetch.rs`, `stage.rs`, `poll.rs`, `swap.rs`, `apply.rs`.
+- `crates/arkosd/src/main.rs`: `--update-url`, `--check-every-secs`, `--bundle`, `--curl` arguments; `server.rs`: the three requests, `State.update`, the poll thread start, the rollback watch; `recovery.rs`: leftover cleanup on `--recover`.
+- `crates/arkos/src/idle.rs` (new): the idle rule. `config.rs`: `[update]`. `sessions.rs`: `Pending::{Status, Check, Apply}`, outcomes. `main.rs`: `last_input`, `staged`, `update_error`, the auto-apply timer, palette commands. `chrome.rs` unchanged (`status_items` already takes the text). `command_palette.rs`, `keymap.rs` (two commands, unbound).
+- `.github/workflows/release.yml`, `packaging/Info.plist.in`, `packaging/bundle.sh`, `packaging/manifest.sh`, `scripts/release-key`, `scripts/app-management-probe.sh`, `homebrew/arkos-ide.rb`, `README.md`.
 
 ## Rulings taken while planning
 
@@ -45,7 +45,7 @@
 2. The spec's "exits twice within a minute" rollback clause is dropped: the daemon rolls back only when no window connects within 20 s of the new daemon's start. A window that connects and later crashes is the watchdog's existing business. The spec is amended in Task 6.
 3. The staged state is not in `Response::Hello` (its shape is frozen): a protocol 4 window sends `UpdateStatus` after Hello.
 4. The pending rollback is a marker file `updates/applied.json` beside the socket, read by every daemon start (resumed, recovered or fresh), so the handover format does not change.
-5. The App Management probe (Task 1) touches `/Applications` on the user's Mac with a throwaway bundle named `Sarkos Probe.app` and removes it; the implementer runs it once and records the result in the ledger. If macOS prompts or refuses, the executor applies the spec's fallback (section 4) as a ruling: `--bundle` then points at `~/Library/Application Support/sarkos/Sarkos IDE.app`, and Task 6's bundle script also produces the launcher bundle.
+5. The App Management probe (Task 1) touches `/Applications` on the user's Mac with a throwaway bundle named `Arkos Probe.app` and removes it; the implementer runs it once and records the result in the ledger. If macOS prompts or refuses, the executor applies the spec's fallback (section 4) as a ruling: `--bundle` then points at `~/Library/Application Support/arkos/Arkos IDE.app`, and Task 6's bundle script also produces the launcher bundle.
 
 ---
 
@@ -66,10 +66,10 @@ Create `scripts/app-management-probe.sh`:
 ```sh
 #!/bin/sh
 # Does macOS let a background process replace an ad-hoc signed app bundle in /Applications by
-# two renames while a copy of it runs? Makes "Sarkos Probe.app", runs it, swaps it the way the
+# two renames while a copy of it runs? Makes "Arkos Probe.app", runs it, swaps it the way the
 # updater will, and reports. Removes everything it made. Run it once on the Mac that matters.
 set -eu
-APP="/Applications/Sarkos Probe.app"
+APP="/Applications/Arkos Probe.app"
 STAGE="$(mktemp -d)"
 cleanup() { rm -rf "$APP" "$APP.old" "$APP.new" "$STAGE"; }
 trap cleanup EXIT
@@ -79,8 +79,8 @@ make_bundle() { # $1 dir, $2 version
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>sh.csarko.sarkos-probe</string>
-<key>CFBundleName</key><string>Sarkos Probe</string>
+<key>CFBundleIdentifier</key><string>sh.csarko.arkos-probe</string>
+<key>CFBundleName</key><string>Arkos Probe</string>
 <key>CFBundleExecutable</key><string>probe</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$2</string>
@@ -92,11 +92,11 @@ EOF
   codesign --force --deep --sign - "$1"
 }
 make_bundle "$APP" 1
-make_bundle "$STAGE/Sarkos Probe.app" 2
+make_bundle "$STAGE/Arkos Probe.app" 2
 "$APP/Contents/MacOS/probe" & RUNNING=$!
 sleep 1
 echo "swapping while pid $RUNNING runs the old bundle"
-mv "$STAGE/Sarkos Probe.app" "$APP.new"
+mv "$STAGE/Arkos Probe.app" "$APP.new"
 if ! mv "$APP" "$APP.old"; then echo "RESULT: first rename refused (App Management)"; exit 1; fi
 if ! mv "$APP.new" "$APP"; then echo "RESULT: second rename refused (App Management)"; mv "$APP.old" "$APP"; exit 1; fi
 sleep 1
@@ -258,7 +258,7 @@ fn main() {
 //! a release signed by both. Base64 of 32 raw ed25519 bytes.
 pub const RELEASE_PUBLIC_KEYS: &[&str] = &[
     // Generated 2026-10-14 by `release-tool keygen`; the secret half is the GitHub Actions
-    // secret SARKOS_RELEASE_KEY.
+    // secret ARKOS_RELEASE_KEY.
     "REPLACE_WITH_THE_PUBLIC_KEY_FROM_KEYGEN",
 ];
 ```
@@ -270,14 +270,14 @@ The implementer runs `nice -n 15 ~/.cargo/bin/cargo run -p release-tool -- keyge
 ```sh
 #!/bin/sh
 # Makes a release key pair and prints what goes where. Run once; keep the secret in the GitHub
-# Actions secret SARKOS_RELEASE_KEY and your password manager, the public key in
+# Actions secret ARKOS_RELEASE_KEY and your password manager, the public key in
 # crates/protocol/src/release_key.rs.
 set -eu
 cd "$(dirname "$0")/.."
 exec nice -n 15 "${CARGO:-$HOME/.cargo/bin/cargo}" run -q -p release-tool -- keygen
 ```
 
-Add `pub mod release_key;` to `crates/protocol/src/lib.rs`. Add to the workspace `[workspace.dependencies]`: `ed25519-compact = { version = "2", default-features = false, features = ["random", "std"] }`, `base64 = "0.22"`, `sha2 = "0.10"`, `serde_json = "1"` (and switch `crates/sarkos/Cargo.toml`'s `serde_json = "1"` to `serde_json.workspace = true`).
+Add `pub mod release_key;` to `crates/protocol/src/lib.rs`. Add to the workspace `[workspace.dependencies]`: `ed25519-compact = { version = "2", default-features = false, features = ["random", "std"] }`, `base64 = "0.22"`, `sha2 = "0.10"`, `serde_json = "1"` (and switch `crates/arkos/Cargo.toml`'s `serde_json = "1"` to `serde_json.workspace = true`).
 
 - [ ] **Step 5: Run the tests**
 
@@ -287,7 +287,7 @@ Expected: PASS. Then by hand: `echo hi > /tmp/m && SK=$(... keygen secret) ... s
 - [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/app-management-probe.sh scripts/release-key crates/release-tool crates/protocol/src/release_key.rs crates/protocol/src/lib.rs Cargo.toml Cargo.lock crates/sarkos/Cargo.toml
+git add scripts/app-management-probe.sh scripts/release-key crates/release-tool crates/protocol/src/release_key.rs crates/protocol/src/lib.rs Cargo.toml Cargo.lock crates/arkos/Cargo.toml
 git commit -m "Add the release signing tool, the compiled-in release key, and the App Management probe"
 ```
 
@@ -296,20 +296,20 @@ git commit -m "Add the release signing tool, the compiled-in release key, and th
 ### Task 2: Manifest, versions and verification in the daemon
 
 **Files:**
-- Create: `crates/sarkosd/src/updates/mod.rs`, `crates/sarkosd/src/updates/version.rs`, `crates/sarkosd/src/updates/manifest.rs`, `crates/sarkosd/src/updates/verify.rs`
-- Modify: `crates/sarkosd/Cargo.toml` (deps), `crates/sarkosd/src/main.rs` (`mod updates;`)
+- Create: `crates/arkosd/src/updates/mod.rs`, `crates/arkosd/src/updates/version.rs`, `crates/arkosd/src/updates/manifest.rs`, `crates/arkosd/src/updates/verify.rs`
+- Modify: `crates/arkosd/Cargo.toml` (deps), `crates/arkosd/src/main.rs` (`mod updates;`)
 - Test: unit tests in each file
 
 **Interfaces:**
 - Consumes: `protocol::release_key::RELEASE_PUBLIC_KEYS`; the signature layout from Task 1 (base64 of 64 raw bytes over the manifest bytes).
-- Produces: `updates::version::{Version { major: u64, minor: u64, patch: u64, git: String }, parse_version_string(&str) -> Option<Version> /* "sarkosd 0.1.0 (abc1234)" */, parse_semver(&str) -> Option<(u64,u64,u64)>, Version::is_newer_than(&self, running: &Version) -> bool}`, `updates::manifest::{Manifest { format: u32, version: String, git: String, published: String, arm64: Asset { url: String, size: u64, sha256: String }, min_protocol: u32 }, parse(&[u8]) -> Result<Manifest, String>, Manifest::version(&self) -> Option<Version>}`, `updates::verify::{verify_manifest(bytes: &[u8], sig_b64: &str, keys: &[&str]) -> Result<(), String>, sha256_hex(path: &Path) -> io::Result<String>}`, `updates::MAX_ZIP_BYTES: u64 = 200 * 1024 * 1024`.
+- Produces: `updates::version::{Version { major: u64, minor: u64, patch: u64, git: String }, parse_version_string(&str) -> Option<Version> /* "arkosd 0.1.0 (abc1234)" */, parse_semver(&str) -> Option<(u64,u64,u64)>, Version::is_newer_than(&self, running: &Version) -> bool}`, `updates::manifest::{Manifest { format: u32, version: String, git: String, published: String, arm64: Asset { url: String, size: u64, sha256: String }, min_protocol: u32 }, parse(&[u8]) -> Result<Manifest, String>, Manifest::version(&self) -> Option<Version>}`, `updates::verify::{verify_manifest(bytes: &[u8], sig_b64: &str, keys: &[&str]) -> Result<(), String>, sha256_hex(path: &Path) -> io::Result<String>}`, `updates::MAX_ZIP_BYTES: u64 = 200 * 1024 * 1024`.
 
 - [ ] **Step 1: Write the failing tests**
 
-`crates/sarkosd/src/updates/version.rs`:
+`crates/arkosd/src/updates/version.rs`:
 
 ```rust
-//! Version strings as both binaries print them (`sarkosd 0.1.0 (abc1234)`) and as the manifest
+//! Version strings as both binaries print them (`arkosd 0.1.0 (abc1234)`) and as the manifest
 //! carries them, with the ordering the updater uses: semver first, then the git hash as a
 //! tie-break (a re-release of the same version with a new hash is an update; the same hash is
 //! not).
@@ -328,11 +328,11 @@ mod tests {
 
     #[test]
     fn version_strings_parse_and_compare_semver_then_hash() {
-        let running = parse_version_string("sarkosd 0.1.0 (abc1234)").unwrap();
+        let running = parse_version_string("arkosd 0.1.0 (abc1234)").unwrap();
         assert_eq!(running, Version { major: 0, minor: 1, patch: 0, git: "abc1234".into() });
-        assert_eq!(parse_version_string("sarkos 1.2.3 (deadbee)\n").map(|v| v.patch), Some(3));
+        assert_eq!(parse_version_string("arkos 1.2.3 (deadbee)\n").map(|v| v.patch), Some(3));
         assert_eq!(parse_version_string("garbage"), None);
-        assert_eq!(parse_version_string("sarkosd 0.1 (abc)"), None, "three numbers");
+        assert_eq!(parse_version_string("arkosd 0.1 (abc)"), None, "three numbers");
         assert_eq!(parse_semver("0.2.1"), Some((0, 2, 1)));
         assert_eq!(parse_semver("v0.2.1"), None);
         let v = |s: &str, g: &str| Version { git: g.into(), ..parse_version_string(&format!("x {s} (z)")).unwrap() };
@@ -347,7 +347,7 @@ mod tests {
 }
 ```
 
-`crates/sarkosd/src/updates/manifest.rs`:
+`crates/arkosd/src/updates/manifest.rs`:
 
 ```rust
 //! `manifest.json` (auto-update spec, section 3). Parsed only after its signature checked out.
@@ -379,7 +379,7 @@ pub struct Manifest {
 mod tests {
     use super::*;
 
-    pub const SAMPLE: &str = r#"{"format":1,"version":"0.2.1","git":"a1b2c3d","published":"2026-10-15T03:12:00Z","arm64":{"url":"https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Sarkos-IDE-0.2.1-arm64.zip","size":23456789,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"min_protocol":1}"#;
+    pub const SAMPLE: &str = r#"{"format":1,"version":"0.2.1","git":"a1b2c3d","published":"2026-10-15T03:12:00Z","arm64":{"url":"https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip","size":23456789,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"min_protocol":1}"#;
 
     #[test]
     fn a_manifest_parses_and_the_wrong_format_or_a_bad_version_is_refused() {
@@ -407,7 +407,7 @@ mod tests {
 }
 ```
 
-`crates/sarkosd/src/updates/verify.rs`:
+`crates/arkosd/src/updates/verify.rs`:
 
 ```rust
 //! The two checks before anything from a download is trusted: the manifest's ed25519 signature
@@ -457,7 +457,7 @@ mod tests {
 }
 ```
 
-`crates/sarkosd/src/updates/mod.rs` (the skeleton; later tasks add to it):
+`crates/arkosd/src/updates/mod.rs` (the skeleton; later tasks add to it):
 
 ```rust
 //! Automatic updates (auto-update spec, sections 5 to 7): the daemon polls a signed manifest,
@@ -472,7 +472,7 @@ pub const MAX_ZIP_BYTES: u64 = 200 * 1024 * 1024;
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- updates`
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --bin arkosd -- updates`
 Expected: FAIL to compile (`parse`, `parse_version_string`, `verify_manifest` missing).
 
 - [ ] **Step 3: Implement**
@@ -575,17 +575,17 @@ pub fn sha256_hex(path: &Path) -> std::io::Result<String> {
 }
 ```
 
-`crates/sarkosd/Cargo.toml` gains `serde_json.workspace = true`, `sha2.workspace = true`, `base64.workspace = true`, `ed25519-compact.workspace = true`. `main.rs` gains `mod updates;`.
+`crates/arkosd/Cargo.toml` gains `serde_json.workspace = true`, `sha2.workspace = true`, `base64.workspace = true`, `ed25519-compact.workspace = true`. `main.rs` gains `mod updates;`.
 
 - [ ] **Step 4: Run the tests and the warning check**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- updates` then `nice -n 15 ~/.cargo/bin/cargo check --workspace --all-targets 2>&1 | grep -i "^warning"`.
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --bin arkosd -- updates` then `nice -n 15 ~/.cargo/bin/cargo check --workspace --all-targets 2>&1 | grep -i "^warning"`.
 Expected: PASS; items unused until Task 3 carry `#[allow(dead_code)] // used from Task 3`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkosd/Cargo.toml Cargo.lock crates/sarkosd/src/main.rs crates/sarkosd/src/updates
+git add crates/arkosd/Cargo.toml Cargo.lock crates/arkosd/src/main.rs crates/arkosd/src/updates
 git commit -m "Parse and verify release manifests in the daemon: versions, signature, sha256"
 ```
 
@@ -594,9 +594,9 @@ git commit -m "Parse and verify release manifests in the daemon: versions, signa
 ### Task 3: Fetch, stage and poll, with the protocol additions
 
 **Files:**
-- Create: `crates/sarkosd/src/updates/fetch.rs`, `crates/sarkosd/src/updates/stage.rs`, `crates/sarkosd/src/updates/poll.rs`
-- Modify: `crates/sarkosd/src/updates/mod.rs` (`UpdateState`), `crates/protocol/src/lib.rs` (protocol 4), `crates/sarkosd/src/main.rs` (`--update-url`, `--check-every-secs`, `--curl`, `--updates-dir`), `crates/sarkosd/src/server.rs` (`State.update`, the poll thread, `UpdateStatus`, `CheckForUpdates`, the event to clients), `crates/sarkos/src/sessions.rs` (the new `Event` variant in its two `match`es: `stash_if_restoring` returns `false` for it, `group_by_session` skips it)
-- Test: unit tests in each new file; `crates/sarkosd/tests/daemon.rs` (`a_staged_update_is_announced_and_listed`); `crates/protocol/src/lib.rs` (variant indices)
+- Create: `crates/arkosd/src/updates/fetch.rs`, `crates/arkosd/src/updates/stage.rs`, `crates/arkosd/src/updates/poll.rs`
+- Modify: `crates/arkosd/src/updates/mod.rs` (`UpdateState`), `crates/protocol/src/lib.rs` (protocol 4), `crates/arkosd/src/main.rs` (`--update-url`, `--check-every-secs`, `--curl`, `--updates-dir`), `crates/arkosd/src/server.rs` (`State.update`, the poll thread, `UpdateStatus`, `CheckForUpdates`, the event to clients), `crates/arkos/src/sessions.rs` (the new `Event` variant in its two `match`es: `stash_if_restoring` returns `false` for it, `group_by_session` skips it)
+- Test: unit tests in each new file; `crates/arkosd/tests/daemon.rs` (`a_staged_update_is_announced_and_listed`); `crates/protocol/src/lib.rs` (variant indices)
 
 **Interfaces:**
 - Consumes: Task 2's `manifest::{parse, Manifest}`, `verify::{verify_manifest, sha256_hex}`, `version::{parse_version_string, Version}`, `MAX_ZIP_BYTES`; `protocol::release_key::RELEASE_PUBLIC_KEYS`; `crate::version_string()`.
@@ -672,7 +672,7 @@ mod tests {
 }
 ```
 
-`stage.rs` tests (a fake bundle: directories plus two shell scripts; `fake_bundle(dir, version)` writes `Contents/Info.plist` with `CFBundleShortVersionString`, `Contents/MacOS/sarkos` and `sarkosd` scripts that print `sarkosd <version> (test)` for `--version`):
+`stage.rs` tests (a fake bundle: directories plus two shell scripts; `fake_bundle(dir, version)` writes `Contents/Info.plist` with `CFBundleShortVersionString`, `Contents/MacOS/arkos` and `arkosd` scripts that print `arkosd <version> (test)` for `--version`):
 
 ```rust
 #[cfg(test)]
@@ -682,10 +682,10 @@ pub(crate) mod tests {
 
     pub fn fake_bundle(dir: &Path, version: &str, git: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let app = dir.join("Sarkos IDE.app");
+        let app = dir.join("Arkos IDE.app");
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::write(app.join("Contents/Info.plist"), format!("<plist><dict><key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>")).unwrap();
-        for name in ["sarkos", "sarkosd"] {
+        for name in ["arkos", "arkosd"] {
             let p = app.join("Contents/MacOS").join(name);
             std::fs::write(&p, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo '{name} {version} ({git})'\n")).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -712,8 +712,8 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = stage(dir.path(), &m, &zip, Path::new("/usr/bin/ditto")).unwrap();
         assert_eq!(s.version, "0.2.1");
-        assert_eq!(s.bundle, dir.path().join("0.2.1").join("Sarkos IDE.app"));
-        assert!(s.bundle.join("Contents/MacOS/sarkosd").is_file());
+        assert_eq!(s.bundle, dir.path().join("0.2.1").join("Arkos IDE.app"));
+        assert!(s.bundle.join("Contents/MacOS/arkosd").is_file());
         // The wrong version inside: refused and cleaned.
         let wrong = manifest_for(&zip, "0.2.2", "abc1234");
         assert!(stage(dir.path(), &wrong, &zip, Path::new("/usr/bin/ditto")).unwrap_err().contains("0.2.1"));
@@ -726,8 +726,8 @@ pub(crate) mod tests {
         let app = fake_bundle(dir.path(), "0.2.1", "x");
         assert_eq!(check_bundle(&app, "0.2.1"), Ok(()));
         assert!(check_bundle(&app, "0.3.0").unwrap_err().contains("0.2.1"));
-        std::fs::remove_file(app.join("Contents/MacOS/sarkos")).unwrap();
-        assert!(check_bundle(&app, "0.2.1").unwrap_err().contains("sarkos"));
+        std::fs::remove_file(app.join("Contents/MacOS/arkos")).unwrap();
+        assert!(check_bundle(&app, "0.2.1").unwrap_err().contains("arkos"));
     }
 
     #[test]
@@ -801,7 +801,7 @@ mod tests {
             Outcome::Staged(st) => assert_eq!(st.version, "0.2.1"),
             other => panic!("{other:?}"),
         }
-        let staged = dir.path().join("0.2.1").join("Sarkos IDE.app");
+        let staged = dir.path().join("0.2.1").join("Arkos IDE.app");
         assert!(matches!(run_check(&fetcher(&s), dir.path(), &[&s.pk], &running, &mut bad, Path::new("/usr/bin/ditto"), Some(&staged)), Outcome::Nothing), "already staged: nothing to do");
         let newer = Version { major: 0, minor: 2, patch: 1, git: "abc1234".into() };
         assert!(matches!(run_check(&fetcher(&s), dir.path(), &[&s.pk], &newer, &mut bad, Path::new("/usr/bin/ditto"), None), Outcome::Nothing), "running it already");
@@ -843,13 +843,13 @@ mod tests {
     fn a_final_url_off_github_is_refused() {
         // `file://` cannot redirect, so this pins the pure check the download applies to curl's
         // reported final url before the file is read.
-        assert!(!crate::updates::fetch::allowed_final_url("https://cdn.evil.example/Sarkos.zip"));
+        assert!(!crate::updates::fetch::allowed_final_url("https://cdn.evil.example/Arkos.zip"));
         assert!(crate::updates::fetch::allowed_final_url("https://objects.githubusercontent.com/a"));
     }
 }
 ```
 
-Daemon integration (`crates/sarkosd/tests/daemon.rs`), near the recover tests. It needs the test to publish a signed site, but the daemon only trusts `RELEASE_PUBLIC_KEYS`; so the daemon takes `--release-key B64` (test only, documented as such) to add a key:
+Daemon integration (`crates/arkosd/tests/daemon.rs`), near the recover tests. It needs the test to publish a signed site, but the daemon only trusts `RELEASE_PUBLIC_KEYS`; so the daemon takes `--release-key B64` (test only, documented as such) to add a key:
 
 ```rust
 #[test]
@@ -880,11 +880,11 @@ fn a_staged_update_is_announced_and_listed() {
 }
 ```
 
-with helpers `test_release_key()` (the same two lines as `verify.rs`'s test helpers, using `ed25519-compact` and `base64` as dev-dependencies of sarkosd) and `publish_fake_release(dir, version, git, sk) -> PathBuf` (the fake bundle, `ditto` zip, manifest JSON, signature; the same shape as `poll.rs`'s `publish`). And a test that the event reaches a connected client: `a_connected_window_hears_update_staged`: connect first, then let the 1 s check run, read frames until `ServerMessage::Event(Event::UpdateStaged { update })` with `update.version == "9.9.9"`.
+with helpers `test_release_key()` (the same two lines as `verify.rs`'s test helpers, using `ed25519-compact` and `base64` as dev-dependencies of arkosd) and `publish_fake_release(dir, version, git, sk) -> PathBuf` (the fake bundle, `ditto` zip, manifest JSON, signature; the same shape as `poll.rs`'s `publish`). And a test that the event reaches a connected client: `a_connected_window_hears_update_staged`: connect first, then let the 1 s check run, read frames until `ServerMessage::Event(Event::UpdateStaged { update })` with `update.version == "9.9.9"`.
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p protocol` then `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- updates`
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p protocol` then `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --bin arkosd -- updates`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement**
@@ -954,9 +954,9 @@ pub struct Staged {
     pub bundle: PathBuf,
 }
 
-pub const BUNDLE_NAME: &str = "Sarkos IDE.app";
+pub const BUNDLE_NAME: &str = "Arkos IDE.app";
 
-/// `<dir>/<version>/Sarkos IDE.app` from the zip, or an error with the folder removed.
+/// `<dir>/<version>/Arkos IDE.app` from the zip, or an error with the folder removed.
 pub fn stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Staged, String> {
     let into = dir.join(&m.version);
     let _ = std::fs::remove_dir_all(&into);
@@ -979,17 +979,17 @@ pub fn stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Stage
 /// Both executables present and runnable, and the daemon inside says the manifest's version.
 pub fn check_bundle(bundle: &Path, want_version: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    for name in ["sarkos", "sarkosd"] {
+    for name in ["arkos", "arkosd"] {
         let p = bundle.join("Contents/MacOS").join(name);
         let meta = std::fs::metadata(&p).map_err(|e| format!("{name}: {e}"))?;
         if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
             return Err(format!("{name}: not an executable file"));
         }
     }
-    let said = probe_version(&bundle.join("Contents/MacOS/sarkosd"), Duration::from_secs(2)).ok_or("the staged sarkosd did not print its version")?;
+    let said = probe_version(&bundle.join("Contents/MacOS/arkosd"), Duration::from_secs(2)).ok_or("the staged arkosd did not print its version")?;
     match super::version::parse_version_string(&said) {
         Some(v) if format!("{}.{}.{}", v.major, v.minor, v.patch) == want_version => Ok(()),
-        _ => Err(format!("the staged sarkosd says {said:?}, the manifest {want_version}")),
+        _ => Err(format!("the staged arkosd says {said:?}, the manifest {want_version}")),
     }
 }
 
@@ -1134,7 +1134,7 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                         crate::server::broadcast(&st, protocol::Event::UpdateStaged { update });
                     }
                     Outcome::Failed(e) => {
-                        eprintln!("sarkosd: update check: {e}");
+                        eprintln!("arkosd: update check: {e}");
                         st.update.last_error = Some(e);
                     }
                 }
@@ -1177,13 +1177,13 @@ pub struct UpdateState {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p protocol`, `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- updates`, `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --test daemon -- update`, then `nice -n 15 ~/.cargo/bin/cargo test --workspace` once and the warning check.
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p protocol`, `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --bin arkosd -- updates`, `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --test daemon -- update`, then `nice -n 15 ~/.cargo/bin/cargo test --workspace` once and the warning check.
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/protocol/src/lib.rs crates/sarkosd/Cargo.toml Cargo.lock crates/sarkosd/src/main.rs crates/sarkosd/src/server.rs crates/sarkosd/src/updates crates/sarkosd/tests/daemon.rs crates/sarkos/src/sessions.rs crates/sarkos/src/terminal.rs
+git add crates/protocol/src/lib.rs crates/arkosd/Cargo.toml Cargo.lock crates/arkosd/src/main.rs crates/arkosd/src/server.rs crates/arkosd/src/updates crates/arkosd/tests/daemon.rs crates/arkos/src/sessions.rs crates/arkos/src/terminal.rs
 git commit -m "Fetch, verify and stage signed releases in the daemon, and tell windows one is staged"
 ```
 
@@ -1192,13 +1192,13 @@ git commit -m "Fetch, verify and stage signed releases in the daemon, and tell w
 ### Task 4: Swap the bundle, apply, and roll back
 
 **Files:**
-- Create: `crates/sarkosd/src/updates/swap.rs`, `crates/sarkosd/src/updates/apply.rs`
-- Modify: `crates/sarkosd/src/updates/mod.rs`, `crates/sarkosd/src/server.rs` (`ApplyUpdate`, the rollback watch at start, `.old` cleanup on connect), `crates/sarkosd/src/main.rs` (`--bundle`), `crates/sarkosd/src/recovery.rs` (leftover cleanup on `--recover`)
-- Test: unit tests in `swap.rs` and `apply.rs`; `crates/sarkosd/tests/daemon.rs` (`apply_update_swaps_the_bundle_and_the_new_window_confirms_it`, `a_window_that_never_connects_rolls_the_bundle_back`)
+- Create: `crates/arkosd/src/updates/swap.rs`, `crates/arkosd/src/updates/apply.rs`
+- Modify: `crates/arkosd/src/updates/mod.rs`, `crates/arkosd/src/server.rs` (`ApplyUpdate`, the rollback watch at start, `.old` cleanup on connect), `crates/arkosd/src/main.rs` (`--bundle`), `crates/arkosd/src/recovery.rs` (leftover cleanup on `--recover`)
+- Test: unit tests in `swap.rs` and `apply.rs`; `crates/arkosd/tests/daemon.rs` (`apply_update_swaps_the_bundle_and_the_new_window_confirms_it`, `a_window_that_never_connects_rolls_the_bundle_back`)
 
 **Interfaces:**
 - Consumes: Task 3's `UpdateState`, `Staged`, `Request::ApplyUpdate { version }`; `watchdog::launch_ui(exe, cwd)`; `State.windows`.
-- Produces: `updates::swap::{swap_in(bundle: &Path, new: &Path) -> Result<(), String>, old_of(bundle) -> PathBuf /* "<bundle>.old" */, finish(bundle) -> io::Result<()> /* removes .old */, rollback(bundle) -> Result<(), String> /* .old back into place */, cleanup_leftovers(bundle) /* removes .old and .new */}`, `updates::apply::{Applied { version: String, old_kept: bool, at_unix: u64 }, marker_path(updates_dir) -> PathBuf /* applied.json */, write_marker, read_marker, CONNECT_GRACE: Duration = 20 s, decide(marker: &Applied, connected_since_start: bool, now_unix: u64) -> Decision::{Wait, Confirm, Rollback}}`, the daemon argument `--bundle PATH` (default: the bundle containing the running `sarkosd`, found as `current_exe().ancestors().nth(3)` when that path ends in `.app`; `None` otherwise, which refuses `ApplyUpdate` with "not running from an app bundle").
+- Produces: `updates::swap::{swap_in(bundle: &Path, new: &Path) -> Result<(), String>, old_of(bundle) -> PathBuf /* "<bundle>.old" */, finish(bundle) -> io::Result<()> /* removes .old */, rollback(bundle) -> Result<(), String> /* .old back into place */, cleanup_leftovers(bundle) /* removes .old and .new */}`, `updates::apply::{Applied { version: String, old_kept: bool, at_unix: u64 }, marker_path(updates_dir) -> PathBuf /* applied.json */, write_marker, read_marker, CONNECT_GRACE: Duration = 20 s, decide(marker: &Applied, connected_since_start: bool, now_unix: u64) -> Decision::{Wait, Confirm, Rollback}}`, the daemon argument `--bundle PATH` (default: the bundle containing the running `arkosd`, found as `current_exe().ancestors().nth(3)` when that path ends in `.app`; `None` otherwise, which refuses `ApplyUpdate` with "not running from an app bundle").
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1212,18 +1212,18 @@ mod tests {
     fn bundle(dir: &Path, name: &str, tag: &str) -> PathBuf {
         let b = dir.join(name);
         std::fs::create_dir_all(b.join("Contents/MacOS")).unwrap();
-        std::fs::write(b.join("Contents/MacOS/sarkosd"), tag).unwrap();
+        std::fs::write(b.join("Contents/MacOS/arkosd"), tag).unwrap();
         b
     }
 
     #[test]
     fn the_swap_is_two_renames_and_keeps_the_old_bundle_until_finish() {
         let dir = tempfile::tempdir().unwrap();
-        let installed = bundle(dir.path(), "Sarkos IDE.app", "old");
-        let new = bundle(&dir.path().join("staging"), "Sarkos IDE.app", "new");
+        let installed = bundle(dir.path(), "Arkos IDE.app", "old");
+        let new = bundle(&dir.path().join("staging"), "Arkos IDE.app", "new");
         swap_in(&installed, &new).unwrap();
-        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/sarkosd")).unwrap(), "new");
-        assert_eq!(std::fs::read_to_string(old_of(&installed).join("Contents/MacOS/sarkosd")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(old_of(&installed).join("Contents/MacOS/arkosd")).unwrap(), "old");
         assert!(!new.exists(), "moved, not copied");
         finish(&installed).unwrap();
         assert!(!old_of(&installed).exists());
@@ -1232,11 +1232,11 @@ mod tests {
     #[test]
     fn rollback_puts_the_old_bundle_back() {
         let dir = tempfile::tempdir().unwrap();
-        let installed = bundle(dir.path(), "Sarkos IDE.app", "old");
-        let new = bundle(&dir.path().join("staging"), "Sarkos IDE.app", "new");
+        let installed = bundle(dir.path(), "Arkos IDE.app", "old");
+        let new = bundle(&dir.path().join("staging"), "Arkos IDE.app", "new");
         swap_in(&installed, &new).unwrap();
         rollback(&installed).unwrap();
-        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/sarkosd")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "old");
         assert!(!old_of(&installed).exists());
         assert!(rollback(&installed).is_err(), "nothing to roll back to");
     }
@@ -1244,25 +1244,25 @@ mod tests {
     #[test]
     fn a_failed_second_rename_restores_the_bundle() {
         let dir = tempfile::tempdir().unwrap();
-        let installed = bundle(dir.path(), "Sarkos IDE.app", "old");
+        let installed = bundle(dir.path(), "Arkos IDE.app", "old");
         // The new bundle is on another "volume" for rename: a path that does not exist makes the
         // second rename fail after the first succeeded.
-        let missing = dir.path().join("staging/Sarkos IDE.app");
+        let missing = dir.path().join("staging/Arkos IDE.app");
         let err = swap_in(&installed, &missing).unwrap_err();
         assert!(err.contains("rename"), "{err}");
-        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/sarkosd")).unwrap(), "old", "restored from .old");
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "old", "restored from .old");
         assert!(!old_of(&installed).exists());
     }
 
     #[test]
     fn a_stale_old_or_new_is_removed_first() {
         let dir = tempfile::tempdir().unwrap();
-        let installed = bundle(dir.path(), "Sarkos IDE.app", "old");
-        bundle(dir.path(), "Sarkos IDE.app.old", "stale");
-        bundle(dir.path(), "Sarkos IDE.app.new", "stale");
+        let installed = bundle(dir.path(), "Arkos IDE.app", "old");
+        bundle(dir.path(), "Arkos IDE.app.old", "stale");
+        bundle(dir.path(), "Arkos IDE.app.new", "stale");
         cleanup_leftovers(&installed);
         assert!(!old_of(&installed).exists());
-        assert!(!dir.path().join("Sarkos IDE.app.new").exists());
+        assert!(!dir.path().join("Arkos IDE.app.new").exists());
         assert!(installed.exists());
     }
 }
@@ -1293,7 +1293,7 @@ mod tests {
 }
 ```
 
-Daemon integration tests, with the fake bundle from Task 3's helpers (`publish_fake_release`), a `--bundle` pointing at an installed fake bundle whose `sarkos` script writes a marker file when launched, and `--update-url` on a site holding a newer fake release:
+Daemon integration tests, with the fake bundle from Task 3's helpers (`publish_fake_release`), a `--bundle` pointing at an installed fake bundle whose `arkos` script writes a marker file when launched, and `--update-url` on a site holding a newer fake release:
 
 ```rust
 #[test]
@@ -1302,7 +1302,7 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     let (sk, pk) = test_release_key();
     publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
     let home = tempfile::tempdir().unwrap();
-    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000"); // its sarkos script appends "launched" to <home>/launches
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000"); // its arkos script appends "launched" to <home>/launches
     let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap()]);
     let mut c = d.connect();
     wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
@@ -1324,7 +1324,7 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
     // now rolls back and launches the old window in each remembered project.
     let home = tempfile::tempdir().unwrap();
     let installed = fake_installed_bundle(home.path(), "9.9.9", "fffffff");
-    let old = fake_bundle_at(&home.path().join("Sarkos IDE.app.old"), "0.0.1", "0000000");
+    let old = fake_bundle_at(&home.path().join("Arkos IDE.app.old"), "0.0.1", "0000000");
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("updates")).unwrap();
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 25;
@@ -1338,11 +1338,11 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
 }
 ```
 
-(`Daemon::updates_marker(&self)` is `self.socket.parent().join("updates/applied.json")`; `wait_until(f, timeout)` polls every 50 ms and panics at the deadline; `fake_installed_bundle` and `fake_bundle_at` build the same shape as Task 3's fake bundle, with `sarkos` appending a line to `<home>/launches`.)
+(`Daemon::updates_marker(&self)` is `self.socket.parent().join("updates/applied.json")`; `wait_until(f, timeout)` polls every 50 ms and panics at the deadline; `fake_installed_bundle` and `fake_bundle_at` build the same shape as Task 3's fake bundle, with `arkos` appending a line to `<home>/launches`.)
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- updates::swap updates::apply`
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --bin arkosd -- updates::swap updates::apply`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement**
@@ -1491,7 +1491,7 @@ pub fn now_unix() -> u64 {
                     Ok(()) => {
                         let marker = crate::updates::apply::Applied { version: s.version.clone(), old_kept: true, at_unix: crate::updates::apply::now_unix() };
                         if let Err(e) = crate::updates::apply::write_marker(&dir, &marker) {
-                            eprintln!("sarkosd: cannot write the update marker: {e}");
+                            eprintln!("arkosd: cannot write the update marker: {e}");
                         }
                         let mut st = state.lock().unwrap();
                         st.update.staged = None;
@@ -1509,7 +1509,7 @@ pub fn now_unix() -> u64 {
         }
 ```
 
-`UpdateState` gains `pub applied: Option<apply::Applied>`, `pub connected_since_start: bool` (set true in `Request::Hello` handling; the daemon start sets it false). The watch: in `run_with` and `run_resumed`, after the socket listens, if `read_marker(&dir)` is `Some(m)`: set `st.update.applied = Some(m)` and spawn `updates::apply::watch(state, opts)`: a thread that every 500 ms computes `decide(&m, st.update.connected_since_start, now_unix())`: `Wait` continues; `Confirm` runs `swap::finish(bundle)`, `clear_marker`, clears `applied` and stops; `Rollback` runs `swap::rollback(bundle)` (on success: `clear_marker`, `last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, CONNECT_GRACE.as_secs()))`, and launches the old window in every `st.windows` folder with `watchdog::launch_ui(&bundle.join("Contents/MacOS/sarkos"), Some(cwd))`; on failure: `last_error` names it) and stops. The test's second connection confirms within 500 ms. `cleanup_leftovers(bundle)` runs at every daemon start when no marker exists (an interrupted swap).
+`UpdateState` gains `pub applied: Option<apply::Applied>`, `pub connected_since_start: bool` (set true in `Request::Hello` handling; the daemon start sets it false). The watch: in `run_with` and `run_resumed`, after the socket listens, if `read_marker(&dir)` is `Some(m)`: set `st.update.applied = Some(m)` and spawn `updates::apply::watch(state, opts)`: a thread that every 500 ms computes `decide(&m, st.update.connected_since_start, now_unix())`: `Wait` continues; `Confirm` runs `swap::finish(bundle)`, `clear_marker`, clears `applied` and stops; `Rollback` runs `swap::rollback(bundle)` (on success: `clear_marker`, `last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, CONNECT_GRACE.as_secs()))`, and launches the old window in every `st.windows` folder with `watchdog::launch_ui(&bundle.join("Contents/MacOS/arkos"), Some(cwd))`; on failure: `last_error` names it) and stops. The test's second connection confirms within 500 ms. `cleanup_leftovers(bundle)` runs at every daemon start when no marker exists (an interrupted swap).
 
 `recovery.rs`: `--recover` start goes through `run_with(.., recover: true)`, so the same start hook covers it; add nothing beyond a log line "update marker found" if the marker exists.
 
@@ -1517,13 +1517,13 @@ pub fn now_unix() -> u64 {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- updates`, `nice -n 15 ~/.cargo/bin/cargo test -p sarkosd --test daemon -- update roll`, then `nice -n 15 ~/.cargo/bin/cargo test --workspace` once and the warning check.
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --bin arkosd -- updates`, `nice -n 15 ~/.cargo/bin/cargo test -p arkosd --test daemon -- update roll`, then `nice -n 15 ~/.cargo/bin/cargo test --workspace` once and the warning check.
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkosd/src/updates crates/sarkosd/src/server.rs crates/sarkosd/src/main.rs crates/sarkosd/src/recovery.rs crates/sarkosd/tests/daemon.rs
+git add crates/arkosd/src/updates crates/arkosd/src/server.rs crates/arkosd/src/main.rs crates/arkosd/src/recovery.rs crates/arkosd/tests/daemon.rs
 git commit -m "Swap the app bundle on ApplyUpdate, keep the old one until a window connects, roll back otherwise"
 ```
 
@@ -1532,8 +1532,8 @@ git commit -m "Swap the app bundle on ApplyUpdate, keep the old one until a wind
 ### Task 5: The window: idle rule, config, status, auto-apply, palette commands
 
 **Files:**
-- Create: `crates/sarkos/src/idle.rs`
-- Modify: `crates/sarkos/src/config.rs` (`[update]`), `crates/sarkos/src/sessions.rs` (`Pending::{Status, Check, Apply}`, `Outcome::{UpdateStatus, Applied, ApplyFailed}`, `note_events` for `UpdateStaged`), `crates/sarkos/src/main.rs` (`last_input`, `staged`, `update_error`, the timer, `apply_staged`, the outcome arms, daemon args, `Command::{CheckForUpdates, RetryUpdate}`), `crates/sarkos/src/keymap.rs`, `crates/sarkos/src/command_palette.rs`, `crates/sarkos/src/update.rs` (`status_text_for(&StagedUpdate)`), `README.md` (Config section)
+- Create: `crates/arkos/src/idle.rs`
+- Modify: `crates/arkos/src/config.rs` (`[update]`), `crates/arkos/src/sessions.rs` (`Pending::{Status, Check, Apply}`, `Outcome::{UpdateStatus, Applied, ApplyFailed}`, `note_events` for `UpdateStaged`), `crates/arkos/src/main.rs` (`last_input`, `staged`, `update_error`, the timer, `apply_staged`, the outcome arms, daemon args, `Command::{CheckForUpdates, RetryUpdate}`), `crates/arkos/src/keymap.rs`, `crates/arkos/src/command_palette.rs`, `crates/arkos/src/update.rs` (`status_text_for(&StagedUpdate)`), `README.md` (Config section)
 - Test: unit tests in `idle.rs`, `config.rs`, `sessions.rs`, `update.rs`, `keymap.rs`
 
 **Interfaces:**
@@ -1629,7 +1629,7 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p sarkos -- idle config::tests::the_update sessions::tests::update_requests update keymap`
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkos -- idle config::tests::the_update sessions::tests::update_requests update keymap`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement**
@@ -1675,17 +1675,17 @@ idle_after_secs = 30
 
 `update.rs`: `pub fn status_text_for(s: &StagedUpdate) -> String { format!("update ready: {}", s.version) }`.
 
-README `Config` section: the `[update]` block as in the comment. README `Updating` section: a new first paragraph: "Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads and verifies a newer build, and the window applies it once you have been idle for thirty seconds (no typing, nothing open): `sarkosd` swaps in place and the window relaunches with every shell still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for updates" in the palette asks now." The existing paragraphs about `brew upgrade` and local builds stay.
+README `Config` section: the `[update]` block as in the comment. README `Updating` section: a new first paragraph: "Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads and verifies a newer build, and the window applies it once you have been idle for thirty seconds (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for updates" in the palette asks now." The existing paragraphs about `brew upgrade` and local builds stay.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `nice -n 15 ~/.cargo/bin/cargo test -p sarkos` then the warning check and the em-dash grep.
+Run: `nice -n 15 ~/.cargo/bin/cargo test -p arkos` then the warning check and the em-dash grep.
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/idle.rs crates/sarkos/src/config.rs crates/sarkos/src/sessions.rs crates/sarkos/src/main.rs crates/sarkos/src/keymap.rs crates/sarkos/src/command_palette.rs crates/sarkos/src/update.rs README.md
+git add crates/arkos/src/idle.rs crates/arkos/src/config.rs crates/arkos/src/sessions.rs crates/arkos/src/main.rs crates/arkos/src/keymap.rs crates/arkos/src/command_palette.rs crates/arkos/src/update.rs README.md
 git commit -m "Apply a staged update when the window is idle, with [update] config and palette commands"
 ```
 
@@ -1694,13 +1694,13 @@ git commit -m "Apply a staged update when the window is idle, with [update] conf
 ### Task 6: The release workflow, the bundle, the cask, the docs
 
 **Files:**
-- Create: `.github/workflows/release.yml`, `packaging/Info.plist.in`, `packaging/bundle.sh`, `packaging/manifest.sh`, `homebrew/sarkos-ide.rb`
+- Create: `.github/workflows/release.yml`, `packaging/Info.plist.in`, `packaging/bundle.sh`, `packaging/manifest.sh`, `homebrew/arkos-ide.rb`
 - Modify: `README.md` ("Releasing" section, the dogfooding checklist, the Build section's install note), `docs/superpowers/specs/2026-10-14-auto-update-design.md` (rulings 1 and 2), `.gitignore` (nothing: `dist/` is created on the runner only)
-- Test: `packaging/bundle.sh` and `packaging/manifest.sh` run locally against the dev binaries (dev build, not release: `nice -n 15 ~/.cargo/bin/cargo build -p sarkos -p sarkosd` is an incremental dev build and is allowed), producing a bundle the daemon's `check_bundle` accepts; a shell test `packaging/test.sh` that runs both scripts on the dev binaries into a temp dir and checks the zip, manifest and signature with `release-tool verify`.
+- Test: `packaging/bundle.sh` and `packaging/manifest.sh` run locally against the dev binaries (dev build, not release: `nice -n 15 ~/.cargo/bin/cargo build -p arkos -p arkosd` is an incremental dev build and is allowed), producing a bundle the daemon's `check_bundle` accepts; a shell test `packaging/test.sh` that runs both scripts on the dev binaries into a temp dir and checks the zip, manifest and signature with `release-tool verify`.
 
 **Interfaces:**
 - Consumes: Task 1's `release-tool`; Task 2's manifest format; Task 3's `stage::check_bundle` expectations (both executables in `Contents/MacOS`, `CFBundleShortVersionString`).
-- Produces: the release assets `Sarkos-IDE-<version>-arm64.zip`, `manifest.json`, `manifest.json.sig` on a GitHub Release tagged `v<version>`; the cask text.
+- Produces: the release assets `Arkos-IDE-<version>-arm64.zip`, `manifest.json`, `manifest.json.sig` on a GitHub Release tagged `v<version>`; the cask text.
 
 - [ ] **Step 1: The bundle and manifest scripts, with a local test**
 
@@ -1712,13 +1712,13 @@ git commit -m "Apply a staged update when the window is idle, with [update] conf
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>sh.csarko.sarkos</string>
+	<string>sh.csarko.arkos</string>
 	<key>CFBundleName</key>
-	<string>Sarkos IDE</string>
+	<string>Arkos IDE</string>
 	<key>CFBundleDisplayName</key>
-	<string>Sarkos IDE</string>
+	<string>Arkos IDE</string>
 	<key>CFBundleExecutable</key>
-	<string>sarkos</string>
+	<string>arkos</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -1739,21 +1739,21 @@ git commit -m "Apply a staged update when the window is idle, with [update] conf
 
 ```sh
 #!/bin/sh
-# bundle.sh VERSION BIN_DIR OUT_DIR: assembles OUT_DIR/"Sarkos IDE.app" from BIN_DIR/sarkos and
-# BIN_DIR/sarkosd, ad-hoc signs it, and zips it to OUT_DIR/Sarkos-IDE-VERSION-arm64.zip.
+# bundle.sh VERSION BIN_DIR OUT_DIR: assembles OUT_DIR/"Arkos IDE.app" from BIN_DIR/arkos and
+# BIN_DIR/arkosd, ad-hoc signs it, and zips it to OUT_DIR/Arkos-IDE-VERSION-arm64.zip.
 set -eu
 VERSION="$1"; BIN="$2"; OUT="$3"
-APP="$OUT/Sarkos IDE.app"
+APP="$OUT/Arkos IDE.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/@VERSION@/$VERSION/g" "$(dirname "$0")/Info.plist.in" > "$APP/Contents/Info.plist"
-cp "$BIN/sarkos" "$BIN/sarkosd" "$APP/Contents/MacOS/"
-chmod 755 "$APP/Contents/MacOS/sarkos" "$APP/Contents/MacOS/sarkosd"
+cp "$BIN/arkos" "$BIN/arkosd" "$APP/Contents/MacOS/"
+chmod 755 "$APP/Contents/MacOS/arkos" "$APP/Contents/MacOS/arkosd"
 if [ -f "$(dirname "$0")/AppIcon.icns" ]; then cp "$(dirname "$0")/AppIcon.icns" "$APP/Contents/Resources/"; fi
 codesign --force --deep --sign - "$APP"
-rm -f "$OUT/Sarkos-IDE-$VERSION-arm64.zip"
-ditto -c -k --keepParent "$APP" "$OUT/Sarkos-IDE-$VERSION-arm64.zip"
-echo "$OUT/Sarkos-IDE-$VERSION-arm64.zip"
+rm -f "$OUT/Arkos-IDE-$VERSION-arm64.zip"
+ditto -c -k --keepParent "$APP" "$OUT/Arkos-IDE-$VERSION-arm64.zip"
+echo "$OUT/Arkos-IDE-$VERSION-arm64.zip"
 ```
 
 `packaging/manifest.sh`:
@@ -1781,19 +1781,19 @@ echo "$OUT/manifest.json"
 set -eu
 cd "$(dirname "$0")/.."
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
-nice -n 15 "$CARGO" build -q -p sarkos -p sarkosd -p release-tool
+nice -n 15 "$CARGO" build -q -p arkos -p arkosd -p release-tool
 OUT=$(mktemp -d)
 ZIP=$(sh packaging/bundle.sh 0.0.0 target/debug "$OUT")
 sh packaging/manifest.sh 0.0.0 "$(git rev-parse --short HEAD)" "$ZIP" "file://$ZIP" "$OUT" > /dev/null
 KEYS=$(target/debug/release-tool keygen)
 SK=$(echo "$KEYS" | sed -n 's/^secret: //p'); PK=$(echo "$KEYS" | sed -n 's/^public: //p')
-SARKOS_TEST_KEY="$SK" target/debug/release-tool sign --key-env SARKOS_TEST_KEY "$OUT/manifest.json" > "$OUT/manifest.json.sig"
+ARKOS_TEST_KEY="$SK" target/debug/release-tool sign --key-env ARKOS_TEST_KEY "$OUT/manifest.json" > "$OUT/manifest.json.sig"
 target/debug/release-tool verify --public "$PK" "$OUT/manifest.json" "$OUT/manifest.json.sig"
-"$OUT/Sarkos IDE.app/Contents/MacOS/sarkosd" --version
+"$OUT/Arkos IDE.app/Contents/MacOS/arkosd" --version
 echo "packaging ok: $OUT"
 ```
 
-Run `sh packaging/test.sh`: expect `ok`, the version line, and `packaging ok`. (A dev build of `sarkos` links gpui; it is incremental in the shared target dir and allowed; it is the only build in this task.)
+Run `sh packaging/test.sh`: expect `ok`, the version line, and `packaging ok`. (A dev build of `arkos` links gpui; it is incremental in the shared target dir and allowed; it is the only build in this task.)
 
 - [ ] **Step 2: The workflow**
 
@@ -1836,17 +1836,17 @@ jobs:
           git commit -am "Release ${{ inputs.version }}"
           git tag "v${{ inputs.version }}"
       - name: Build
-        run: cargo build --release --locked -p sarkos -p sarkosd -p release-tool
+        run: cargo build --release --locked -p arkos -p arkosd -p release-tool
       - name: Bundle and sign
         env:
-          SARKOS_RELEASE_KEY: ${{ secrets.SARKOS_RELEASE_KEY }}
+          ARKOS_RELEASE_KEY: ${{ secrets.ARKOS_RELEASE_KEY }}
         run: |
           mkdir -p dist
           ZIP=$(sh packaging/bundle.sh "${{ inputs.version }}" target/release dist)
           URL="https://github.com/${{ github.repository }}/releases/download/v${{ inputs.version }}/$(basename "$ZIP")"
           sh packaging/manifest.sh "${{ inputs.version }}" "$(git rev-parse --short HEAD)" "$ZIP" "$URL" dist
-          target/release/release-tool sign --key-env SARKOS_RELEASE_KEY dist/manifest.json > dist/manifest.json.sig
-          "dist/Sarkos IDE.app/Contents/MacOS/sarkosd" --version
+          target/release/release-tool sign --key-env ARKOS_RELEASE_KEY dist/manifest.json > dist/manifest.json.sig
+          "dist/Arkos IDE.app/Contents/MacOS/arkosd" --version
       - name: Push the release commit and tag
         run: git push origin HEAD:main "v${{ inputs.version }}"
       - name: Publish
@@ -1855,22 +1855,22 @@ jobs:
         run: |
           PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
           if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
-          gh release create "v${{ inputs.version }}" dist/Sarkos-IDE-*.zip dist/manifest.json dist/manifest.json.sig --title "Sarkos IDE ${{ inputs.version }}" --notes "$NOTES"
+          gh release create "v${{ inputs.version }}" dist/Arkos-IDE-*.zip dist/manifest.json dist/manifest.json.sig --title "Arkos IDE ${{ inputs.version }}" --notes "$NOTES"
 ```
 
-Notes for the implementer: the git hash in the manifest is the release commit's, which is also the hash the binaries built from that commit print (the build runs after the bump commit); `cargo update -w` refreshes `Cargo.lock`'s own-crate versions after the bump; the push happens before `gh release create` so the tag exists on the remote; the secret `SARKOS_RELEASE_KEY` is set by the user (the README says how); `--locked` fails the build if `Cargo.lock` is stale, which the bump step prevents.
+Notes for the implementer: the git hash in the manifest is the release commit's, which is also the hash the binaries built from that commit print (the build runs after the bump commit); `cargo update -w` refreshes `Cargo.lock`'s own-crate versions after the bump; the push happens before `gh release create` so the tag exists on the remote; the secret `ARKOS_RELEASE_KEY` is set by the user (the README says how); `--locked` fails the build if `Cargo.lock` is stale, which the bump step prevents.
 
 - [ ] **Step 3: The cask, the README and the spec**
 
-`homebrew/sarkos-ide.rb` (moved to the tap repository at the Homebrew step; kept here so the text is reviewed with the code):
+`homebrew/arkos-ide.rb` (moved to the tap repository at the Homebrew step; kept here so the text is reviewed with the code):
 
 ```ruby
-cask "sarkos-ide" do
+cask "arkos-ide" do
   version "0.2.1"
   sha256 "REPLACED_BY_THE_TAP_UPDATE_SCRIPT"
 
-  url "https://github.com/csarkosh/ide-sarkos/releases/download/v#{version}/Sarkos-IDE-#{version}-arm64.zip"
-  name "Sarkos IDE"
+  url "https://github.com/csarkosh/ide-sarkos/releases/download/v#{version}/Arkos-IDE-#{version}-arm64.zip"
+  name "Arkos IDE"
   desc "Terminal-pane IDE for running many Claude Code sessions, with a daemon that keeps them alive"
   homepage "https://github.com/csarkosh/ide-sarkos"
 
@@ -1878,26 +1878,26 @@ cask "sarkos-ide" do
   depends_on macos: ">= :sonoma"
   auto_updates true
 
-  app "Sarkos IDE.app"
+  app "Arkos IDE.app"
 
   zap trash: [
-    "~/Library/Application Support/sarkos",
-    "~/Library/LaunchAgents/sh.csarko.sarkosd.plist",
+    "~/Library/Application Support/arkos",
+    "~/Library/LaunchAgents/sh.csarko.arkosd.plist",
   ]
 end
 ```
 
 README:
-- A new section `## Releasing` after `## Updating`: "Releases are built by the `release` workflow, which runs only when you start it: `gh workflow run release -f version=0.2.1` (or the Actions tab). It bumps the version, tags `v0.2.1`, builds on a macOS runner, assembles and ad-hoc signs `Sarkos IDE.app`, signs `manifest.json` with the release key (the repository secret `SARKOS_RELEASE_KEY`; make a pair with `scripts/release-key`, keep the secret there and in your password manager, and put the public half in `crates/protocol/src/release_key.rs`), and publishes a GitHub Release. Every running daemon sees it within five minutes. `release-tool verify --public <key> manifest.json manifest.json.sig` checks a published manifest by hand. `packaging/test.sh` runs the same packaging steps locally on a dev build."
-- The dogfooding checklist under Status: "- push, `gh workflow run release -f version=X`, wait for the run, see "update ready: X" in the title bar within five minutes, stop typing for thirty seconds: the window relaunches with every shell and tab where it was; `sarkos --version` in a tab prints X" and "- `[update] auto = false`: the badge stays and "Update now" applies it".
-- Section `## Updating`: mention that the IDE is installed as `Sarkos IDE.app` (the cask) and that `brew upgrade` leaves it alone (`auto_updates`).
-- The `.app` path in the "After a restart" section's launchd text if it names the binary path: `/Applications/Sarkos IDE.app/Contents/MacOS/sarkosd`.
+- A new section `## Releasing` after `## Updating`: "Releases are built by the `release` workflow, which runs only when you start it: `gh workflow run release -f version=0.2.1` (or the Actions tab). It bumps the version, tags `v0.2.1`, builds on a macOS runner, assembles and ad-hoc signs `Arkos IDE.app`, signs `manifest.json` with the release key (the repository secret `ARKOS_RELEASE_KEY`; make a pair with `scripts/release-key`, keep the secret there and in your password manager, and put the public half in `crates/protocol/src/release_key.rs`), and publishes a GitHub Release. Every running daemon sees it within five minutes. `release-tool verify --public <key> manifest.json manifest.json.sig` checks a published manifest by hand. `packaging/test.sh` runs the same packaging steps locally on a dev build."
+- The dogfooding checklist under Status: "- push, `gh workflow run release -f version=X`, wait for the run, see "update ready: X" in the title bar within five minutes, stop typing for thirty seconds: the window relaunches with every shell and tab where it was; `arkos --version` in a tab prints X" and "- `[update] auto = false`: the badge stays and "Update now" applies it".
+- Section `## Updating`: mention that the IDE is installed as `Arkos IDE.app` (the cask) and that `brew upgrade` leaves it alone (`auto_updates`).
+- The `.app` path in the "After a restart" section's launchd text if it names the binary path: `/Applications/Arkos IDE.app/Contents/MacOS/arkosd`.
 
 Spec amendments (`2026-10-14-auto-update-design.md`): in section 3, replace "(minisign-compatible format, so `minisign -V` on a Mac verifies it by hand)" with "(the base64 of the raw 64-byte ed25519 signature over the manifest bytes; `release-tool verify` checks it by hand)"; in section 7, replace "If it does not, or if it exits twice within a minute," with "If it does not,"; in section 6 replace "`Response::Hello` gains `staged: Option<String>` and the daemon sends `Event::UpdateStaged`" with "A protocol 4 window sends `UpdateStatus` after Hello and the daemon sends `Event::UpdateStaged`".
 
 - [ ] **Step 4: Check everything**
 
-Run: `sh packaging/test.sh`; `nice -n 15 ~/.cargo/bin/cargo test --workspace` once; the warning check; `grep -n "—" README.md packaging/*.sh homebrew/*.rb .github/workflows/release.yml crates/*/src/*.rs crates/sarkosd/src/updates/*.rs`; `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))"` (or `ruby -ryaml -e 'YAML.load_file(".github/workflows/release.yml")'`) to be sure the YAML parses. The workflow itself is run by the user after merge (the README's steps); the implementer does not trigger it.
+Run: `sh packaging/test.sh`; `nice -n 15 ~/.cargo/bin/cargo test --workspace` once; the warning check; `grep -n "—" README.md packaging/*.sh homebrew/*.rb .github/workflows/release.yml crates/*/src/*.rs crates/arkosd/src/updates/*.rs`; `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))"` (or `ruby -ryaml -e 'YAML.load_file(".github/workflows/release.yml")'`) to be sure the YAML parses. The workflow itself is run by the user after merge (the README's steps); the implementer does not trigger it.
 Expected: all green.
 
 - [ ] **Step 5: Commit**

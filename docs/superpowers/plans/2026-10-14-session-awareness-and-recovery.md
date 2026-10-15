@@ -1,31 +1,31 @@
-# Sarkos IDE: Session awareness and recovery after a restart. Implementation Plan
+# Arkos IDE: Session awareness and recovery after a restart. Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every tab say what its Claude Code session is doing (working, waiting on you, idle, ended) and bring every session back on its own after a restart: the same folders, the history on screen, and each Claude Code conversation resumed, with nothing to redo by hand.
 
-**Architecture:** Claude Code's lifecycle hooks run `sarkos notify`, which reads `SARKOS_SESSION_ID` from its environment and sends the daemon a state (`SetState`, already in the protocol) or an agent record (`SetAgent`: the agent's own session id and the command that resumes it). The daemon keeps each session's shell, folder, agent record and state, flushes each replay ring to a file a couple of seconds after output stops and in full on SIGTERM, and writes a manifest of sessions and open windows. A launchd agent starts `sarkosd --recover` at login, which recreates each shell in its folder with the old history under a divider, types the recorded resume command into it, and launches a window for each project that had one. The window shows a slow pulse on working tabs, a warm dot on waiting ones, counts waiting sessions in the status bar, and clears a dot when the tab is activated or typed into. Protocol 3 appends four requests and one response; the daemon still serves protocol 1 and 2 windows; the handover file becomes format 2 and the daemon still reads format 1, so the update into this version is an ordinary "Update now".
+**Architecture:** Claude Code's lifecycle hooks run `arkos notify`, which reads `ARKOS_SESSION_ID` from its environment and sends the daemon a state (`SetState`, already in the protocol) or an agent record (`SetAgent`: the agent's own session id and the command that resumes it). The daemon keeps each session's shell, folder, agent record and state, flushes each replay ring to a file a couple of seconds after output stops and in full on SIGTERM, and writes a manifest of sessions and open windows. A launchd agent starts `arkosd --recover` at login, which recreates each shell in its folder with the old history under a divider, types the recorded resume command into it, and launches a window for each project that had one. The window shows a slow pulse on working tabs, a warm dot on waiting ones, counts waiting sessions in the status bar, and clears a dot when the tab is activated or typed into. Protocol 3 appends four requests and one response; the daemon still serves protocol 1 and 2 windows; the handover file becomes format 2 and the daemon still reads format 1, so the update into this version is an ordinary "Update now".
 
-**Tech Stack:** Rust stable (edition 2021), gpui 0.2.2 (exact pin, `runtime_shaders`), libc 0.2 (`sigwait`, `pthread_sigmask`), postcard 1.1 for the manifest and handover, serde, serde_json (already a dependency of `sarkos`) for the hook settings. No new dependencies.
+**Tech Stack:** Rust stable (edition 2021), gpui 0.2.2 (exact pin, `runtime_shaders`), libc 0.2 (`sigwait`, `pthread_sigmask`), postcard 1.1 for the manifest and handover, serde, serde_json (already a dependency of `arkos`) for the hook settings. No new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-sarkos-design.md` section 5 (session awareness), section 2.3 (the `notify` CLI), section 7.1 (motion) and section 11 milestone 3; `docs/superpowers/specs/2026-10-14-update-in-place-design.md` section 11 (recovery after a reboot). The update-in-place spec's sections 2 and 5 (handover file, protocol rules) still bind.
+**Spec:** `docs/superpowers/specs/2026-10-13-arkos-design.md` section 5 (session awareness), section 2.3 (the `notify` CLI), section 7.1 (motion) and section 11 milestone 3; `docs/superpowers/specs/2026-10-14-update-in-place-design.md` section 11 (recovery after a reboot). The update-in-place spec's sections 2 and 5 (handover file, protocol rules) still bind.
 
 ## Global Constraints
 
-- macOS only, Apple Silicon. Sessions always run on this Mac: nothing in this plan talks to any other machine, and every file this milestone writes stays under `~/Library/Application Support/sarkos/`, `~/Library/LaunchAgents/` or Claude Code's own settings file.
+- macOS only, Apple Silicon. Sessions always run on this Mac: nothing in this plan talks to any other machine, and every file this milestone writes stays under `~/Library/Application Support/arkos/`, `~/Library/LaunchAgents/` or Claude Code's own settings file.
 - `gpui = { version = "=0.2.2", features = ["runtime_shaders"] }` pinned exactly; never bump. If a gpui or libc name in this plan does not compile, the API differs: grep `~/.cargo/registry/src/*/gpui-0.2.2/src/` or `~/.cargo/registry/src/*/libc-0.2.*/src/unix/bsd/apple/mod.rs` for it, fix the call, and note the change in the commit message. Do not guess.
 - Protocol (update-in-place spec section 5): `PROTOCOL_VERSION` becomes 3, `PROTOCOL_MIN` stays 1. New enum variants are appended, never inserted; existing structs never change shape (new data goes in new structs). The daemon serves versions 1, 2 and 3.
 - Handover (update-in-place spec section 2): `handover::FORMAT` becomes 2 and the daemon still reads format 1, so "Update now" from the current main works without a `pkill`. `--check-handover` keeps printing `handover 1` for the current main's exact-match check; `--handover-formats` prints the oldest and newest formats the binary reads, and a daemon accepts a candidate that answers `handover <its own FORMAT>` or whose formats cover its FORMAT.
 - The daemon never parses escape sequences (the divider line it seeds into a recovered ring is written, not parsed); the UI thread never blocks on IO (the hook CLI, `launchctl` and the settings merge run off it or in a separate process); the daemon never depends on which agent runs inside a shell beyond the agent record.
-- `sarkos notify` always exits 0 and never blocks Claude Code: no `SARKOS_SESSION_ID`, no daemon, a daemon that does not understand the request, or bad stdin all end quietly within two seconds.
+- `arkos notify` always exits 0 and never blocks Claude Code: no `ARKOS_SESSION_ID`, no daemon, a daemon that does not understand the request, or bad stdin all end quietly within two seconds.
 - Recovery only resumes; it never sends a message to an agent. The resume command is typed into the shell as a command line and nothing else is.
-- Display name "Sarkos IDE" in user-facing text; binaries, crates, the socket directory and log prefixes stay lowercase `sarkos`. The launchd label is `sh.csarko.sarkosd`.
+- Display name "Arkos IDE" in user-facing text; binaries, crates, the socket directory and log prefixes stay lowercase `arkos`. The launchd label is `sh.csarko.arkosd`.
 - Commit messages: imperative, one line, body optional. No em-dashes in any copy or comment. Every commit ends with a blank line, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_015xrVD54zbvkgksJUndxfpr`.
-- Tests: `cargo test -p sarkos` stays headless; daemon tests in `crates/sarkosd/tests/daemon.rs` run the real binary and must pass ten times in a row; the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`. Daemon tests use `--socket` under a temp dir, so their replay files and manifest land in that dir too; never the user's.
+- Tests: `cargo test -p arkos` stays headless; daemon tests in `crates/arkosd/tests/daemon.rs` run the real binary and must pass ten times in a row; the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`. Daemon tests use `--socket` under a temp dir, so their replay files and manifest land in that dir too; never the user's.
 
 ## Review Focus
 
-1. **A hook fires outside Sarkos IDE.** `claude` run in Terminal.app has no `SARKOS_SESSION_ID`; its hooks still run `sarkos notify`, which must exit 0 at once and print nothing Claude Code would show. Pinned by Task 3's `notify_without_a_session_id_exits_zero_and_sends_nothing`.
+1. **A hook fires outside Arkos IDE.** `claude` run in Terminal.app has no `ARKOS_SESSION_ID`; its hooks still run `arkos notify`, which must exit 0 at once and print nothing Claude Code would show. Pinned by Task 3's `notify_without_a_session_id_exits_zero_and_sends_nothing`.
 2. **SIGTERM while output floods.** A shutdown's SIGTERM during heavy output must write the ring's last bytes and exit 0 in well under launchd's timeout, never hang on a reader. Pinned by Task 4's `sigterm_writes_the_last_output_and_exits_zero`.
 3. **A session's folder is gone after the restart.** A manifest entry whose cwd no longer exists must come back in the home folder with a log line, not fail the whole recovery. Pinned by Task 5's `recover_puts_a_session_whose_folder_is_gone_in_home`.
 4. **The replay file is longer than the ring.** Appends run ahead of compaction, so a file can hold more than `replay_capacity` bytes; recovery must seed the ring with the tail, never the head. Pinned by Task 5's `tail_keeps_the_newest_bytes`.
@@ -38,17 +38,17 @@
 ```
 crates/
   protocol/src/lib.rs             PROTOCOL_VERSION 3; AgentRecord, SessionDetail; Request::{Goodbye, SetAgent, ClearAgent, ListSessionsDetailed}; Response::SessionsDetailed
-  sarkosd/
+  arkosd/
     src/session.rs                shell, nice, env, agent, recovered, seed; dirty tracking and take_delta for the flusher; detail()
-    src/server.rs                 the four new arms; State::{windows, manifest_dirty}; is_sarkos_binary(); run_with(opts, recover); ALREADY_LISTENING
+    src/server.rs                 the four new arms; State::{windows, manifest_dirty}; is_arkos_binary(); run_with(opts, recover); ALREADY_LISTENING
     src/handover.rs               FORMAT 2 with the new fields, OLDEST_READ 1, frozen V1 structs and conversion; atomic_write factored out
     src/upgrade.rs                validate accepts "handover N" with N <= FORMAT; the handover carries windows and flush_quiet_millis
     src/ring.rs                   total() and since(from) for incremental flushing
     src/recovery.rs               NEW: sessions dir, replay files, manifest, the flusher thread, SIGTERM watcher, recover()
     src/main.rs                   --recover, --flush-quiet-millis; --check-handover prints OLDEST_READ; signals blocked before any thread
     tests/daemon.rs               agent record, detailed list, goodbye, flush, sigterm, recover tests (append); start_in / sigterm helpers
-  sarkos/
-    src/hook_cli.rs               NEW: `sarkos notify` and `sarkos hooks`: arg parsing, stdin JSON, one-shot request, hooks JSON, settings merge
+  arkos/
+    src/hook_cli.rs               NEW: `arkos notify` and `arkos hooks`: arg parsing, stdin JSON, one-shot request, hooks JSON, settings merge
     src/pulse.rs                  NEW: the working pulse curve and its low-rate ticker
     src/launch_agent.rs           NEW: the launchd plist, install/remove through launchctl, the desired-state decision
     src/sessions.rs               states, Note, SessionDetail list, set_state/acknowledge, goodbye, waiting_count
@@ -70,17 +70,17 @@ Rulings the plan makes where the spec is silent or where the spec's letter costs
 3. The resume command is typed into the recovered shell as one line (typeahead: the bytes wait in the PTY until the shell reads its first prompt). Nothing else is ever typed; the user sends the next message.
 4. The waiting dot clears when the tab is activated or typed into, and the window tells the daemon (`SetState Idle`) so a reconnect or another window agrees.
 5. A terminal BEL marks the tab waiting too (spec 5: the feature degrades without hooks).
-6. `sarkosd --recover` with a daemon already listening exits 0 and leaves it alone; without a manifest it is a plain start. So the launchd agent is harmless whenever it runs.
+6. `arkosd --recover` with a daemon already listening exits 0 and leaves it alone; without a manifest it is a plain start. So the launchd agent is harmless whenever it runs.
 7. Start at login needs the user's say-so: `[recovery] start_at_login = "ask"` by default shows a one-line notice at launch until "Start at login" runs from the palette; `"on"` and `"off"` are kept in force by every config reload.
-8. Claude Code hooks are installed by `sarkos hooks install` (and the palette's "Install Claude Code hooks"), which merges into `~/.claude/settings.json` idempotently after writing a `.bak`; `sarkos hooks print` prints the block for a hand paste.
+8. Claude Code hooks are installed by `arkos hooks install` (and the palette's "Install Claude Code hooks"), which merges into `~/.claude/settings.json` idempotently after writing a `.bak`; `arkos hooks print` prints the block for a hand paste.
 
 ---
 
 ### Task 1: Protocol 3 and the daemon's agent record, window list and detailed list
 
 **Files:**
-- Modify: `crates/protocol/src/lib.rs`, `crates/sarkosd/src/session.rs`, `crates/sarkosd/src/server.rs`, `crates/sarkosd/src/upgrade.rs` (only where `SpawnSpec` is built, if at all), `crates/sarkosd/tests/daemon.rs`
-- Test: `crates/protocol/src/lib.rs` (new unit test), `crates/sarkosd/src/session.rs` (unit), `crates/sarkosd/tests/daemon.rs` (append)
+- Modify: `crates/protocol/src/lib.rs`, `crates/arkosd/src/session.rs`, `crates/arkosd/src/server.rs`, `crates/arkosd/src/upgrade.rs` (only where `SpawnSpec` is built, if at all), `crates/arkosd/tests/daemon.rs`
+- Test: `crates/protocol/src/lib.rs` (new unit test), `crates/arkosd/src/session.rs` (unit), `crates/arkosd/tests/daemon.rs` (append)
 
 **Interfaces:**
 - Consumes: `Request::SetState`, `Session::info()`, `State.clients` with `ui_cwd` and `ui_exe` (from the update-in-place milestone).
@@ -89,7 +89,7 @@ Rulings the plan makes where the spec is silent or where the spec's letter costs
   - `Request::Goodbye`, `Request::SetAgent { session, agent }`, `Request::ClearAgent { session, id }`, `Request::ListSessionsDetailed`; `Response::SessionsDetailed(Vec<SessionDetail>)`; `PROTOCOL_VERSION = 3`
   - `SpawnSpec { .., seed: Vec<u8>, recovered: bool, agent: Option<AgentRecord> }`
   - `Session::{set_agent, clear_agent(&str) -> bool, agent(), detail(), shell(), nice(), env(), cwd()}`
-  - `State { windows: HashMap<PathBuf, Option<PathBuf>>, manifest_dirty: bool, .. }`, `server::is_sarkos_binary(&Path) -> bool`
+  - `State { windows: HashMap<PathBuf, Option<PathBuf>>, manifest_dirty: bool, .. }`, `server::is_arkos_binary(&Path) -> bool`
 
 - [ ] **Step 1: Write the failing protocol test**
 
@@ -152,7 +152,7 @@ pub struct AgentRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionDetail {
     pub info: SessionInfo,
-    /// Recreated by `sarkosd --recover` after a restart.
+    /// Recreated by `arkosd --recover` after a restart.
     pub recovered: bool,
     pub agent: Option<AgentRecord>,
 }
@@ -164,7 +164,7 @@ Append to `Request`, after `RelaunchClient`:
     /// The window is quitting because the user asked: a restart must not reopen it. A window
     /// that vanishes without this (the shutdown killed it, or it crashed) is reopened.
     Goodbye,
-    /// From the agent's SessionStart hook through `sarkos notify`. Replaces any earlier record.
+    /// From the agent's SessionStart hook through `arkos notify`. Replaces any earlier record.
     SetAgent { session: SessionId, agent: AgentRecord },
     /// From the agent's SessionEnd hook. Clears the record only when it is still `id`'s: a
     /// SessionEnd that lands after the next SessionStart must not erase the new record.
@@ -186,7 +186,7 @@ Expected: PASS (the new test and the existing codec tests).
 
 - [ ] **Step 5: Write the failing session unit test**
 
-In `crates/sarkosd/src/session.rs`'s `mod tests`, add (model it on `snapshot_records_the_session_and_adopt_rebuilds_it`, which shows how a `SpawnSpec` is built in tests; add the three new fields there and in every other `SpawnSpec` literal in the file):
+In `crates/arkosd/src/session.rs`'s `mod tests`, add (model it on `snapshot_records_the_session_and_adopt_rebuilds_it`, which shows how a `SpawnSpec` is built in tests; add the three new fields there and in every other `SpawnSpec` literal in the file):
 
 ```rust
     #[test]
@@ -197,7 +197,7 @@ In `crates/sarkosd/src/session.rs`'s `mod tests`, add (model it on `snapshot_rec
                 id: SessionId(7),
                 cwd: dir.path().to_path_buf(),
                 shell: Some("/bin/sh".into()),
-                env: vec![("SARKOS_TEST".into(), "1".into())],
+                env: vec![("ARKOS_TEST".into(), "1".into())],
                 nice: 0,
                 rows: 24,
                 cols: 80,
@@ -212,7 +212,7 @@ In `crates/sarkosd/src/session.rs`'s `mod tests`, add (model it on `snapshot_rec
         .unwrap();
         assert_eq!(s.shell(), "/bin/sh");
         assert_eq!(s.nice(), 0);
-        assert_eq!(s.env(), &[("SARKOS_TEST".to_string(), "1".to_string())]);
+        assert_eq!(s.env(), &[("ARKOS_TEST".to_string(), "1".to_string())]);
         assert_eq!(s.cwd(), dir.path());
         let d = s.detail();
         assert!(d.recovered);
@@ -233,12 +233,12 @@ In `crates/sarkosd/src/session.rs`'s `mod tests`, add (model it on `snapshot_rec
 
 - [ ] **Step 6: Run it to see it fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- the_agent_record_is_set`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- the_agent_record_is_set`
 Expected: FAIL to compile: no field `seed`, no method `shell`.
 
 - [ ] **Step 7: Add the fields and methods to Session**
 
-In `crates/sarkosd/src/session.rs`:
+In `crates/arkosd/src/session.rs`:
 
 `SpawnSpec` gains three fields (add doc comments):
 
@@ -313,12 +313,12 @@ The `agent` lock is never taken while `state` or `child` is held, and vice versa
 
 - [ ] **Step 8: Run the session tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd`
 Expected: PASS, every `SpawnSpec` literal in the crate updated (grep `SpawnSpec {` in `server.rs` and `session.rs`: the `CreateSession` arm sets `seed: Vec::new(), recovered: false, agent: None`).
 
 - [ ] **Step 9: Write the failing daemon integration tests**
 
-Append to `crates/sarkosd/tests/daemon.rs` (add `AgentRecord` to the `use protocol::{...}` line):
+Append to `crates/arkosd/tests/daemon.rs` (add `AgentRecord` to the `use protocol::{...}` line):
 
 ```rust
 fn agent(id: &str) -> AgentRecord {
@@ -362,12 +362,12 @@ fn hello_version_3_gets_the_range_and_goodbye_is_ok() {
 
 - [ ] **Step 10: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --test daemon -- set_agent hello_version_3`
+Run: `~/.cargo/bin/cargo test -p arkosd --test daemon -- set_agent hello_version_3`
 Expected: FAIL: the daemon answers `Error` or drops the client (unknown request, or `dispatch` is not exhaustive and the crate does not compile).
 
 - [ ] **Step 11: Add the state and the arms**
 
-In `crates/sarkosd/src/server.rs`:
+In `crates/arkosd/src/server.rs`:
 
 `State` gains:
 
@@ -383,10 +383,10 @@ In `crates/sarkosd/src/server.rs`:
 A helper above `dispatch`, used by `RelaunchClient` (replace its inline check) and later by recovery:
 
 ```rust
-/// A regular file named `sarkos` owned by this user: the only binary the daemon launches as a
+/// A regular file named `arkos` owned by this user: the only binary the daemon launches as a
 /// window, whoever named it.
-pub fn is_sarkos_binary(p: &Path) -> bool {
-    let named = p.file_name().map(|n| n == "sarkos").unwrap_or(false);
+pub fn is_arkos_binary(p: &Path) -> bool {
+    let named = p.file_name().map(|n| n == "arkos").unwrap_or(false);
     // SAFETY: getuid takes no arguments and cannot fail.
     named && std::fs::metadata(p).map(|m| m.is_file() && m.uid() == unsafe { libc::getuid() }).unwrap_or(false)
 }
@@ -442,13 +442,13 @@ New arms, after `RelaunchClient`:
 
 - [ ] **Step 12: Run the daemon suite**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --test daemon`
+Run: `~/.cargo/bin/cargo test -p arkosd --test daemon`
 Expected: PASS (including the two new tests).
 
 - [ ] **Step 13: Commit**
 
 ```bash
-git add crates/protocol/src/lib.rs crates/sarkosd/src/session.rs crates/sarkosd/src/server.rs crates/sarkosd/src/reaper.rs crates/sarkosd/tests/daemon.rs
+git add crates/protocol/src/lib.rs crates/arkosd/src/session.rs crates/arkosd/src/server.rs crates/arkosd/src/reaper.rs crates/arkosd/tests/daemon.rs
 git commit -m "Speak protocol 3: the agent record, the detailed list, Goodbye and the window list"
 ```
 
@@ -457,8 +457,8 @@ git commit -m "Speak protocol 3: the agent record, the detailed list, Goodbye an
 ### Task 2: Handover format 2 that still reads format 1
 
 **Files:**
-- Modify: `crates/sarkosd/src/handover.rs`, `crates/sarkosd/src/upgrade.rs`, `crates/sarkosd/src/session.rs` (`snapshot`, `adopt`), `crates/sarkosd/src/server.rs` (`run_resumed`, `Options`), `crates/sarkosd/src/main.rs` (`--check-handover`, `--flush-quiet-millis`)
-- Test: unit tests in `handover.rs`, `upgrade.rs`, `session.rs`; `crates/sarkosd/tests/daemon.rs` (the upgrade tests must stay green)
+- Modify: `crates/arkosd/src/handover.rs`, `crates/arkosd/src/upgrade.rs`, `crates/arkosd/src/session.rs` (`snapshot`, `adopt`), `crates/arkosd/src/server.rs` (`run_resumed`, `Options`), `crates/arkosd/src/main.rs` (`--check-handover`, `--flush-quiet-millis`)
+- Test: unit tests in `handover.rs`, `upgrade.rs`, `session.rs`; `crates/arkosd/tests/daemon.rs` (the upgrade tests must stay green)
 
 **Interfaces:**
 - Consumes: Task 1's `Session` fields and `State.windows`.
@@ -466,7 +466,7 @@ git commit -m "Speak protocol 3: the agent record, the detailed list, Goodbye an
 
 - [ ] **Step 1: Write the failing handover tests**
 
-In `crates/sarkosd/src/handover.rs`'s `mod tests` add:
+In `crates/arkosd/src/handover.rs`'s `mod tests` add:
 
 ```rust
     /// A file written by the current main (format 1) resumes under this daemon with defaults for
@@ -477,7 +477,7 @@ In `crates/sarkosd/src/handover.rs`'s `mod tests` add:
         let path = dir.path().join("h.bin");
         let v1 = HandoverV1 {
             format: 1,
-            written_by: "sarkosd 0.1.0 (old)".into(),
+            written_by: "arkosd 0.1.0 (old)".into(),
             listener_fd: 5,
             replay_capacity: 1024,
             watchdog_secs: 30,
@@ -508,7 +508,7 @@ In `crates/sarkosd/src/handover.rs`'s `mod tests` add:
         atomic_write(&path, &[MAGIC.as_slice(), &body].concat()).unwrap();
         let h = read(&path).unwrap();
         assert_eq!(h.format, FORMAT);
-        assert_eq!(h.written_by, "sarkosd 0.1.0 (old)");
+        assert_eq!(h.written_by, "arkosd 0.1.0 (old)");
         assert_eq!(h.next_session, 42);
         assert_eq!(h.flush_quiet_millis, 2000);
         assert!(h.windows.is_empty());
@@ -542,7 +542,7 @@ In `crates/sarkosd/src/handover.rs`'s `mod tests` add:
             stall_secs: 10,
             flush_quiet_millis: 250,
             next_session: 42,
-            windows: vec![("/p".into(), Some("/opt/homebrew/bin/sarkos".into())), ("/q".into(), None)],
+            windows: vec![("/p".into(), Some("/opt/homebrew/bin/arkos".into())), ("/q".into(), None)],
             sessions: vec![SessionRecord {
                 id: 9,
                 cwd: "/p".into(),
@@ -583,12 +583,12 @@ In `crates/sarkosd/src/handover.rs`'s `mod tests` add:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- handover`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- handover`
 Expected: FAIL to compile: `HandoverV1`, `atomic_write`, `flush_quiet_millis` not found.
 
 - [ ] **Step 3: Implement format 2 with a format 1 reader**
 
-In `crates/sarkosd/src/handover.rs`:
+In `crates/arkosd/src/handover.rs`:
 
 ```rust
 pub const FORMAT: u32 = 2;
@@ -599,7 +599,7 @@ pub const OLDEST_READ: u32 = 1;
 
 `SessionRecord` gains, after `replay` (append, with doc comments): `pub shell: String`, `pub nice: i32`, `pub env: Vec<(String, String)>`, `pub agent: Option<AgentRecord>`, `pub recovered: bool`. `Handover` gains, after `stall_secs`: `pub flush_quiet_millis: u64`, and after `next_session`: `pub windows: Vec<(PathBuf, Option<PathBuf>)>` (doc: "Project folders with a window open and the binary each runs, carried so a restart after the swap still knows them").
 
-Frozen copies of the format 1 structs, named `SessionRecordV1` and `HandoverV1`, with exactly the fields the current file has (copy them from git: `git show HEAD:crates/sarkosd/src/handover.rs`), both `#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]` and `pub(crate)`, with a comment: "Format 1, as the current main writes it. Never edited: a format 1 file must decode with this exact shape."
+Frozen copies of the format 1 structs, named `SessionRecordV1` and `HandoverV1`, with exactly the fields the current file has (copy them from git: `git show HEAD:crates/arkosd/src/handover.rs`), both `#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]` and `pub(crate)`, with a comment: "Format 1, as the current main writes it. Never edited: a format 1 file must decode with this exact shape."
 
 ```rust
 impl From<HandoverV1> for Handover {
@@ -662,17 +662,17 @@ pub fn atomic_write(path: &Path, body: &[u8]) -> io::Result<()> {
     match format {
         FORMAT => postcard::from_bytes(body).map_err(decode_err),
         1 => postcard::from_bytes::<HandoverV1>(body).map(Handover::from).map_err(decode_err),
-        other => Err(format!("handover format {other} is not one this sarkosd reads ({OLDEST_READ} to {FORMAT})")),
+        other => Err(format!("handover format {other} is not one this arkosd reads ({OLDEST_READ} to {FORMAT})")),
     }
 ```
 
-`crates/sarkosd/src/main.rs`: `--check-handover` prints `handover {}` with `handover::OLDEST_READ`; add `--flush-quiet-millis <n>` (default 2000, into `Options.flush_quiet`). `Options` gains `pub flush_quiet: Duration` (doc: "How long output must have stopped before a session's ring is written to disk"); `run_resumed` reads it from `h.flush_quiet_millis` and sets `st.windows = h.windows.into_iter().collect(); st.manifest_dirty = true;`. `upgrade::execute` fills `flush_quiet_millis: opts.flush_quiet.as_millis() as u64` and `windows` from `State.windows` (gather it under the same lock as the session list: extend the tuple the loop breaks with).
+`crates/arkosd/src/main.rs`: `--check-handover` prints `handover {}` with `handover::OLDEST_READ`; add `--flush-quiet-millis <n>` (default 2000, into `Options.flush_quiet`). `Options` gains `pub flush_quiet: Duration` (doc: "How long output must have stopped before a session's ring is written to disk"); `run_resumed` reads it from `h.flush_quiet_millis` and sets `st.windows = h.windows.into_iter().collect(); st.manifest_dirty = true;`. `upgrade::execute` fills `flush_quiet_millis: opts.flush_quiet.as_millis() as u64` and `windows` from `State.windows` (gather it under the same lock as the session list: extend the tuple the loop breaks with).
 
 `session.rs`: `snapshot` fills `shell: self.shell.clone(), nice: self.nice, env: self.env.clone(), agent: self.agent(), recovered: self.recovered` (take the `agent` lock before the `state` lock is taken, or after it is dropped: never nested; simplest is `let agent = self.agent();` as the first line). `adopt` takes them from the record (`shell: record.shell.clone()` and so on, `agent: Mutex::new(record.agent.clone())`). Extend `snapshot_records_the_session_and_adopt_rebuilds_it` to set an agent and `recovered: true` and assert both survive `snapshot` then `adopt`.
 
 - [ ] **Step 4: Write the failing validate test**
 
-In `crates/sarkosd/src/upgrade.rs`'s `mod tests`:
+In `crates/arkosd/src/upgrade.rs`'s `mod tests`:
 
 ```rust
     #[test]
@@ -688,7 +688,7 @@ In `crates/sarkosd/src/upgrade.rs`'s `mod tests`:
 
 - [ ] **Step 5: Run it to see it fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- accepts_check`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- accepts_check`
 Expected: FAIL to compile: `accepts_check` not found.
 
 - [ ] **Step 6: Implement the check**
@@ -718,23 +718,23 @@ and `validate` uses it:
 
 - [ ] **Step 7: Run the whole daemon crate**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd` then `for i in $(seq 10); do ~/.cargo/bin/cargo test -p sarkosd --test daemon 2>&1 | grep "test result" || break; done`
+Run: `~/.cargo/bin/cargo test -p arkosd` then `for i in $(seq 10); do ~/.cargo/bin/cargo test -p arkosd --test daemon 2>&1 | grep "test result" || break; done`
 Expected: PASS; `version_and_check_handover_flags` still sees `handover 1` (now `OLDEST_READ`); the upgrade tests still pass (the fake binaries that print `handover 1` are accepted; the one that prints something else is refused).
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/sarkosd/src/handover.rs crates/sarkosd/src/upgrade.rs crates/sarkosd/src/session.rs crates/sarkosd/src/server.rs crates/sarkosd/src/main.rs
+git add crates/arkosd/src/handover.rs crates/arkosd/src/upgrade.rs crates/arkosd/src/session.rs crates/arkosd/src/server.rs crates/arkosd/src/main.rs
 git commit -m "Write handover format 2 and still read format 1, so the update into this build needs no pkill"
 ```
 
 ---
 
-### Task 3: The hook CLI: `sarkos notify` and `sarkos hooks`
+### Task 3: The hook CLI: `arkos notify` and `arkos hooks`
 
 **Files:**
-- Create: `crates/sarkos/src/hook_cli.rs`
-- Modify: `crates/sarkos/src/main.rs` (`mod hook_cli;` and the subcommand route at the top of `fn main`), `crates/sarkos/src/update.rs` (nothing; `launch_path()` is reused)
+- Create: `crates/arkos/src/hook_cli.rs`
+- Modify: `crates/arkos/src/main.rs` (`mod hook_cli;` and the subcommand route at the top of `fn main`), `crates/arkos/src/update.rs` (nothing; `launch_path()` is reused)
 - Test: unit tests in `hook_cli.rs` (a fake daemon on a temp socket)
 
 **Interfaces:**
@@ -743,12 +743,12 @@ git commit -m "Write handover format 2 and still read format 1, so the update in
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/hook_cli.rs` with the module doc and the tests first:
+Create `crates/arkos/src/hook_cli.rs` with the module doc and the tests first:
 
 ```rust
 //! The hook side of session awareness (spec 5 and 2.3) and of recovery (update-in-place spec,
-//! section 11): `sarkos notify`, run by Claude Code's hooks with `SARKOS_SESSION_ID` in its
-//! environment, sends the daemon one request and exits 0 whatever happens; `sarkos hooks` prints
+//! section 11): `arkos notify`, run by Claude Code's hooks with `ARKOS_SESSION_ID` in its
+//! environment, sends the daemon one request and exits 0 whatever happens; `arkos hooks` prints
 //! or installs the hook entries. No gpui here: this runs before the window exists.
 
 use protocol::codec::{read_frame, write_frame};
@@ -856,30 +856,30 @@ mod tests {
 
     #[test]
     fn the_hook_entries_cover_the_six_events_with_the_notification_matcher() {
-        let v = hooks_json(Path::new("/opt/homebrew/bin/sarkos"));
+        let v = hooks_json(Path::new("/opt/homebrew/bin/arkos"));
         let hooks = v["hooks"].as_object().unwrap();
         let mut events: Vec<&String> = hooks.keys().collect();
         events.sort();
         assert_eq!(events, ["Notification", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
         assert_eq!(hooks["Notification"][0]["matcher"], "permission_prompt|idle_prompt");
-        assert_eq!(hooks["Notification"][0]["hooks"][0]["command"], "/opt/homebrew/bin/sarkos notify --state waiting");
-        assert_eq!(hooks["Stop"][0]["hooks"][0]["command"], "/opt/homebrew/bin/sarkos notify --state waiting");
-        assert_eq!(hooks["UserPromptSubmit"][0]["hooks"][0]["command"], "/opt/homebrew/bin/sarkos notify --state working");
-        assert_eq!(hooks["PreToolUse"][0]["hooks"][0]["command"], "/opt/homebrew/bin/sarkos notify --state working");
+        assert_eq!(hooks["Notification"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state waiting");
+        assert_eq!(hooks["Stop"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state waiting");
+        assert_eq!(hooks["UserPromptSubmit"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state working");
+        assert_eq!(hooks["PreToolUse"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --state working");
         assert!(hooks["PreToolUse"][0].get("matcher").is_none(), "every tool");
-        assert_eq!(hooks["SessionStart"][0]["hooks"][0]["command"], "/opt/homebrew/bin/sarkos notify --event session-start");
-        assert_eq!(hooks["SessionEnd"][0]["hooks"][0]["command"], "/opt/homebrew/bin/sarkos notify --event session-end");
+        assert_eq!(hooks["SessionStart"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --event session-start");
+        assert_eq!(hooks["SessionEnd"][0]["hooks"][0]["command"], "/opt/homebrew/bin/arkos notify --event session-end");
         assert_eq!(hooks["Stop"][0]["hooks"][0]["timeout"], 5);
-        let spaced = hooks_json(Path::new("/Users/me/My Apps/sarkos"));
-        assert_eq!(spaced["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Users/me/My Apps/sarkos' notify --state waiting");
+        let spaced = hooks_json(Path::new("/Users/me/My Apps/arkos"));
+        assert_eq!(spaced["hooks"]["Stop"][0]["hooks"][0]["command"], "'/Users/me/My Apps/arkos' notify --state waiting");
     }
 
     #[test]
     fn merging_is_idempotent_replaces_an_old_path_and_keeps_other_hooks() {
-        let ours = hooks_json(Path::new("/new/sarkos"));
+        let ours = hooks_json(Path::new("/new/arkos"));
         let existing: serde_json::Value = serde_json::from_str(
             r#"{"model":"opus","hooks":{"Stop":[
-                {"hooks":[{"type":"command","command":"/old/sarkos notify --state waiting"}]},
+                {"hooks":[{"type":"command","command":"/old/arkos notify --state waiting"}]},
                 {"hooks":[{"type":"command","command":"say done"}]}
             ]}}"#,
         )
@@ -890,7 +890,7 @@ mod tests {
         let stop = merged["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2);
         assert_eq!(stop[0]["hooks"][0]["command"], "say done", "the other hook stays, first");
-        assert_eq!(stop[1]["hooks"][0]["command"], "/new/sarkos notify --state waiting");
+        assert_eq!(stop[1]["hooks"][0]["command"], "/new/arkos notify --state waiting");
         let (again, added, replaced) = merge_hooks(merged.clone(), &ours);
         assert_eq!((added, replaced), (6, 6), "a second install replaces its own entries");
         assert_eq!(again, merged);
@@ -901,17 +901,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"model":"opus"}"#).unwrap();
-        let (p, added, replaced) = install_hooks_at(&path, Path::new("/x/sarkos")).unwrap();
+        let (p, added, replaced) = install_hooks_at(&path, Path::new("/x/arkos")).unwrap();
         assert_eq!((p, added, replaced), (path.clone(), 6, 0));
         assert_eq!(std::fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(), r#"{"model":"opus"}"#);
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["model"], "opus");
-        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["command"], "/x/sarkos notify --state waiting");
+        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["command"], "/x/arkos notify --state waiting");
         // A missing file is created; a broken one is left alone.
         let fresh = dir.path().join("sub").join("settings.json");
-        assert_eq!(install_hooks_at(&fresh, Path::new("/x/sarkos")).unwrap().1, 6);
+        assert_eq!(install_hooks_at(&fresh, Path::new("/x/arkos")).unwrap().1, 6);
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(install_hooks_at(&path, Path::new("/x/sarkos")).unwrap_err().contains("cannot parse"));
+        assert!(install_hooks_at(&path, Path::new("/x/arkos")).unwrap_err().contains("cannot parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
     }
 }
@@ -919,7 +919,7 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- hook_cli`
+Run: `~/.cargo/bin/cargo test -p arkos -- hook_cli`
 Expected: FAIL to compile (add `mod hook_cli;` to `main.rs` first so the file is part of the crate): `parse_notify`, `run_with` not found.
 
 - [ ] **Step 3: Implement the module**
@@ -951,7 +951,7 @@ pub struct HookInput {
 
 /// `notify --state <working|waiting|idle>` or `notify --event <session-start|session-end>`.
 pub fn parse_notify(args: &[String]) -> Result<Notify, String> {
-    let usage = "usage: sarkos notify --state <working|waiting|idle> | --event <session-start|session-end>";
+    let usage = "usage: arkos notify --state <working|waiting|idle> | --event <session-start|session-end>";
     match (args.first().map(String::as_str), args.get(1).map(String::as_str), args.get(2).map(String::as_str)) {
         (Some("notify"), Some("--state"), Some("working")) => Ok(Notify::State(ClaudeState::Working)),
         (Some("notify"), Some("--state"), Some("waiting")) => Ok(Notify::State(ClaudeState::Waiting)),
@@ -1009,19 +1009,19 @@ pub fn send_one(socket: &Path, request: Request) -> std::io::Result<Response> {
     }
 }
 
-/// `sarkos notify ...` with its inputs explicit, for tests. Always 0 for `notify`: a hook
+/// `arkos notify ...` with its inputs explicit, for tests. Always 0 for `notify`: a hook
 /// that fails would show up in Claude Code as a hook error, for something that is only a tab
 /// icon. Every reason is on stderr, which Claude Code only shows for a non-zero exit.
 pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read) -> i32 {
     let notify = match parse_notify(args) {
         Ok(n) => n,
         Err(usage) => {
-            eprintln!("sarkos: {usage}");
+            eprintln!("arkos: {usage}");
             return 0;
         }
     };
     let Some(session) = session_env.and_then(|s| s.trim().parse::<u64>().ok()).map(SessionId) else {
-        // Started outside Sarkos IDE: nothing to tell anyone.
+        // Started outside Arkos IDE: nothing to tell anyone.
         return 0;
     };
     let input = match notify {
@@ -1033,15 +1033,15 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
         Notify::State(_) => None,
     };
     let Some(request) = request_for(&notify, session, input.as_ref()) else {
-        eprintln!("sarkos notify: the hook's stdin had no session_id; nothing recorded");
+        eprintln!("arkos notify: the hook's stdin had no session_id; nothing recorded");
         return 0;
     };
     match send_one(socket, request) {
         Ok(Response::Ok) => {}
-        Ok(Response::Error(e)) => eprintln!("sarkos notify: sarkosd answered: {e}"),
-        Ok(other) => eprintln!("sarkos notify: unexpected answer {other:?}"),
+        Ok(Response::Error(e)) => eprintln!("arkos notify: arkosd answered: {e}"),
+        Ok(other) => eprintln!("arkos notify: unexpected answer {other:?}"),
         // Includes a daemon too old to decode SetAgent: it drops the client without an answer.
-        Err(e) => eprintln!("sarkos notify: cannot reach sarkosd: {e}"),
+        Err(e) => eprintln!("arkos notify: cannot reach arkosd: {e}"),
     }
     0
 }
@@ -1058,7 +1058,7 @@ fn shell_quote(path: &Path) -> String {
 
 /// The settings block Claude Code needs (spec 5's table, plus the two lifecycle events the agent
 /// record comes from). `exe` is this binary's launch path: through Homebrew's link it survives
-/// upgrades; a build in a worktree needs `sarkos hooks install` again after moving.
+/// upgrades; a build in a worktree needs `arkos hooks install` again after moving.
 pub fn hooks_json(exe: &Path) -> serde_json::Value {
     let cmd = |tail: &str| serde_json::json!({ "type": "command", "command": format!("{} notify {tail}", shell_quote(exe)), "timeout": 5 });
     serde_json::json!({
@@ -1073,10 +1073,10 @@ pub fn hooks_json(exe: &Path) -> serde_json::Value {
     })
 }
 
-/// A matcher group that runs `sarkos notify`, whatever path it was installed from.
+/// A matcher group that runs `arkos notify`, whatever path it was installed from.
 fn is_ours(group: &serde_json::Value) -> bool {
     group["hooks"].as_array().is_some_and(|hooks| {
-        hooks.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains("sarkos notify") || c.contains("sarkos' notify")))
+        hooks.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains("arkos notify") || c.contains("arkos' notify")))
     })
 }
 
@@ -1143,13 +1143,13 @@ pub fn install_hooks(exe: &Path) -> Result<(PathBuf, usize, usize), String> {
 }
 
 fn this_exe() -> PathBuf {
-    crate::update::launch_path().unwrap_or_else(|| PathBuf::from("sarkos"))
+    crate::update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"))
 }
 
-/// `sarkos notify ...` and `sarkos hooks print|install`. The exit code for the process.
+/// `arkos notify ...` and `arkos hooks print|install`. The exit code for the process.
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
-        Some("notify") => run_with(args, &crate::paths::socket_path(), std::env::var("SARKOS_SESSION_ID").ok().as_deref(), &mut std::io::stdin()),
+        Some("notify") => run_with(args, &crate::paths::socket_path(), std::env::var("ARKOS_SESSION_ID").ok().as_deref(), &mut std::io::stdin()),
         Some("hooks") => match args.get(1).map(String::as_str) {
             Some("print") => {
                 println!("{}", serde_json::to_string_pretty(&hooks_json(&this_exe())).unwrap());
@@ -1161,12 +1161,12 @@ pub fn run(args: &[String]) -> i32 {
                     0
                 }
                 Err(e) => {
-                    eprintln!("sarkos hooks: {e}");
+                    eprintln!("arkos hooks: {e}");
                     1
                 }
             },
             _ => {
-                eprintln!("usage: sarkos hooks print | install");
+                eprintln!("usage: arkos hooks print | install");
                 2
             }
         },
@@ -1175,7 +1175,7 @@ pub fn run(args: &[String]) -> i32 {
 }
 ```
 
-In `crates/sarkos/src/main.rs`, `fn main` starts with the subcommand route, before `--version`, QoS and everything gpui:
+In `crates/arkos/src/main.rs`, `fn main` starts with the subcommand route, before `--version`, QoS and everything gpui:
 
 ```rust
     let args: Vec<String> = std::env::args().collect();
@@ -1187,18 +1187,18 @@ In `crates/sarkos/src/main.rs`, `fn main` starts with the subcommand route, befo
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- hook_cli`
-Expected: PASS (nine tests). Then `~/.cargo/bin/cargo build --release -p sarkos 2>&1 | grep -i "^warning"` prints nothing for the crate.
+Run: `~/.cargo/bin/cargo test -p arkos -- hook_cli`
+Expected: PASS (nine tests). Then `~/.cargo/bin/cargo build --release -p arkos 2>&1 | grep -i "^warning"` prints nothing for the crate.
 
 - [ ] **Step 5: Try it against the real daemon, once, by hand**
 
-With a daemon running (the window's, or `~/.cargo/bin/cargo run -p sarkosd -- --socket /tmp/t.sock` in another terminal), from a shell inside a Sarkos IDE tab (so `SARKOS_SESSION_ID` is set) run `target/release/sarkos notify --state waiting; echo $?` and expect `0` with nothing printed; then `echo '{"session_id":"abc"}' | target/release/sarkos notify --event session-start; echo $?`. Put the two lines and their output in the report. Outside a tab (no id) expect `0` at once.
+With a daemon running (the window's, or `~/.cargo/bin/cargo run -p arkosd -- --socket /tmp/t.sock` in another terminal), from a shell inside a Arkos IDE tab (so `ARKOS_SESSION_ID` is set) run `target/release/arkos notify --state waiting; echo $?` and expect `0` with nothing printed; then `echo '{"session_id":"abc"}' | target/release/arkos notify --event session-start; echo $?`. Put the two lines and their output in the report. Outside a tab (no id) expect `0` at once.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/sarkos/src/hook_cli.rs crates/sarkos/src/main.rs
-git commit -m "Add the hook CLI: sarkos notify sends a state or the agent record, sarkos hooks installs the entries"
+git add crates/arkos/src/hook_cli.rs crates/arkos/src/main.rs
+git commit -m "Add the hook CLI: arkos notify sends a state or the agent record, arkos hooks installs the entries"
 ```
 
 ---
@@ -1206,8 +1206,8 @@ git commit -m "Add the hook CLI: sarkos notify sends a state or the agent record
 ### Task 4: Replay files, the manifest and the SIGTERM flush
 
 **Files:**
-- Create: `crates/sarkosd/src/recovery.rs`
-- Modify: `crates/sarkosd/src/ring.rs` (`total`, `since`, `capacity`), `crates/sarkosd/src/session.rs` (dirty tracking, `flush_due`, `take_delta`, `replay_capacity`, `size` already exists), `crates/sarkosd/src/server.rs` (`serve` starts the flusher and the signal watcher; `next_session` setter), `crates/sarkosd/src/main.rs` (`mod recovery;`, block the signals first thing), `crates/sarkosd/tests/daemon.rs` (harness: `start_in`, `sigterm`, `sessions_dir`; two tests)
+- Create: `crates/arkosd/src/recovery.rs`
+- Modify: `crates/arkosd/src/ring.rs` (`total`, `since`, `capacity`), `crates/arkosd/src/session.rs` (dirty tracking, `flush_due`, `take_delta`, `replay_capacity`, `size` already exists), `crates/arkosd/src/server.rs` (`serve` starts the flusher and the signal watcher; `next_session` setter), `crates/arkosd/src/main.rs` (`mod recovery;`, block the signals first thing), `crates/arkosd/tests/daemon.rs` (harness: `start_in`, `sigterm`, `sessions_dir`; two tests)
 - Test: unit tests in `ring.rs`, `session.rs`, `recovery.rs`; integration tests
 
 **Interfaces:**
@@ -1216,7 +1216,7 @@ git commit -m "Add the hook CLI: sarkos notify sends a state or the agent record
 
 - [ ] **Step 1: Write the failing ring tests**
 
-In `crates/sarkosd/src/ring.rs`'s `mod tests`:
+In `crates/arkosd/src/ring.rs`'s `mod tests`:
 
 ```rust
     #[test]
@@ -1245,7 +1245,7 @@ In `crates/sarkosd/src/ring.rs`'s `mod tests`:
 
 - [ ] **Step 2: Run it to see it fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- total_counts`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- total_counts`
 Expected: FAIL to compile: `total`, `since`, `capacity` not found.
 
 - [ ] **Step 3: Implement them**
@@ -1338,7 +1338,7 @@ In `session.rs`'s `mod tests` (use `spawn_for_test(.., false)` so no reader reco
 
 - [ ] **Step 5: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- flush_due a_seeded_ring`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- flush_due a_seeded_ring`
 Expected: FAIL to compile.
 
 - [ ] **Step 6: Implement dirty tracking**
@@ -1385,12 +1385,12 @@ impl Session {
 
 - [ ] **Step 7: Run the session tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- session`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- session`
 Expected: PASS.
 
 - [ ] **Step 8: Write the failing recovery unit tests**
 
-Create `crates/sarkosd/src/recovery.rs` with its doc comment and these tests (the implementation follows in Step 10):
+Create `crates/arkosd/src/recovery.rs` with its doc comment and these tests (the implementation follows in Step 10):
 
 ```rust
 //! Recovery after a restart (update-in-place spec, section 11): each session's replay ring goes
@@ -1405,10 +1405,10 @@ mod tests {
 
     #[test]
     fn the_sessions_dir_and_file_names_sit_next_to_the_socket() {
-        let dir = sessions_dir(Path::new("/x/sarkos/sarkosd.sock"));
-        assert_eq!(dir, PathBuf::from("/x/sarkos/sessions"));
-        assert_eq!(replay_path(&dir, SessionId(42)), PathBuf::from("/x/sarkos/sessions/42.replay"));
-        assert_eq!(manifest_path(&dir), PathBuf::from("/x/sarkos/sessions/manifest.bin"));
+        let dir = sessions_dir(Path::new("/x/arkos/arkosd.sock"));
+        assert_eq!(dir, PathBuf::from("/x/arkos/sessions"));
+        assert_eq!(replay_path(&dir, SessionId(42)), PathBuf::from("/x/arkos/sessions/42.replay"));
+        assert_eq!(manifest_path(&dir), PathBuf::from("/x/arkos/sessions/manifest.bin"));
     }
 
     #[test]
@@ -1438,7 +1438,7 @@ mod tests {
                 rows: 24,
                 cols: 80,
             }],
-            windows: vec![ManifestWindow { cwd: "/p".into(), exe: Some("/opt/homebrew/bin/sarkos".into()) }],
+            windows: vec![ManifestWindow { cwd: "/p".into(), exe: Some("/opt/homebrew/bin/arkos".into()) }],
         };
         write_manifest(dir.path(), &m).unwrap();
         assert_eq!(read_manifest(dir.path()), Ok(Some(m)));
@@ -1467,7 +1467,7 @@ mod tests {
 
 - [ ] **Step 9: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- recovery`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- recovery`
 Expected: FAIL to compile (add `mod recovery;` to `main.rs` first).
 
 - [ ] **Step 10: Implement the files, the manifest and the flusher**
@@ -1579,7 +1579,7 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>, String> {
     let decode_err = |e: postcard::Error| format!("cannot decode {}: {e}", path.display());
     let (format, _) = postcard::take_from_bytes::<u32>(body).map_err(decode_err)?;
     if format != MANIFEST_FORMAT {
-        return Err(format!("manifest format {format} is not the {MANIFEST_FORMAT} this sarkosd reads"));
+        return Err(format!("manifest format {format} is not the {MANIFEST_FORMAT} this arkosd reads"));
     }
     postcard::from_bytes(body).map(Some).map_err(decode_err)
 }
@@ -1641,7 +1641,7 @@ impl Flusher {
         };
         if let Some(m) = manifest {
             if let Err(e) = write_manifest(&self.dir, &m) {
-                eprintln!("sarkosd: cannot write the manifest in {}: {e}", self.dir.display());
+                eprintln!("arkosd: cannot write the manifest in {}: {e}", self.dir.display());
             }
         }
     }
@@ -1663,7 +1663,7 @@ impl Flusher {
                 self.offsets.insert(s.id, total);
             }
             Err(e) => {
-                eprintln!("sarkosd: cannot write {}: {e}", path.display());
+                eprintln!("arkosd: cannot write {}: {e}", path.display());
                 // Next time, rewrite from the ring rather than append to a file of unknown state.
                 self.offsets.remove(&s.id);
             }
@@ -1718,13 +1718,13 @@ pub fn watch_termination(state: Shared, flusher: Arc<Mutex<Flusher>>, quiet: Dur
             // SAFETY: the set is initialised and `sig` is a valid out-pointer.
             let rc = unsafe { libc::sigwait(&set, &mut sig) };
             if rc != 0 {
-                eprintln!("sarkosd: sigwait failed ({rc}); a shutdown will not flush histories");
+                eprintln!("arkosd: sigwait failed ({rc}); a shutdown will not flush histories");
                 return;
             }
             let name = if sig == libc::SIGTERM { "SIGTERM" } else { "SIGHUP" };
-            eprintln!("sarkosd: {name}: writing every session's history and the manifest before exiting");
+            eprintln!("arkosd: {name}: writing every session's history and the manifest before exiting");
             flusher.lock().unwrap_or_else(|p| p.into_inner()).tick(&state, quiet, true);
-            eprintln!("sarkosd: exiting");
+            eprintln!("arkosd: exiting");
             std::process::exit(0);
         })
         .expect("spawn termination watcher");
@@ -1743,12 +1743,12 @@ and `State` gets `pub fn set_next_session(&mut self, v: u64) { self.next_session
 
 - [ ] **Step 11: Run the unit tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd`
 Expected: PASS.
 
 - [ ] **Step 12: Write the failing integration tests**
 
-In `crates/sarkosd/tests/daemon.rs`, the harness grows (`_dir` becomes `Option<tempfile::TempDir>`; `start` calls `start_in`):
+In `crates/arkosd/tests/daemon.rs`, the harness grows (`_dir` becomes `Option<tempfile::TempDir>`; `start` calls `start_in`):
 
 ```rust
 impl Daemon {
@@ -1778,10 +1778,10 @@ impl Daemon {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success(), "sarkosd exited with {status} on SIGTERM");
+                assert!(status.success(), "arkosd exited with {status} on SIGTERM");
                 break;
             }
-            assert!(Instant::now() < deadline, "sarkosd did not exit within 5 s of SIGTERM");
+            assert!(Instant::now() < deadline, "arkosd did not exit within 5 s of SIGTERM");
             std::thread::sleep(Duration::from_millis(20));
         }
         self._dir.take().unwrap()
@@ -1849,31 +1849,31 @@ fn sigterm_writes_the_last_output_and_exits_zero() {
 
 - [ ] **Step 13: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --test daemon -- history_is_written sigterm_writes`
+Run: `~/.cargo/bin/cargo test -p arkosd --test daemon -- history_is_written sigterm_writes`
 Expected: with Step 10 in place they pass; if either fails, the daemon side is wrong, not the test: fix the daemon. (TDD here is at the unit level; the integration tests pin the wiring in `serve` and `main`.)
 
 - [ ] **Step 14: Run the suite ten times**
 
-Run: `for i in $(seq 10); do ~/.cargo/bin/cargo test -p sarkosd --test daemon 2>&1 | grep "test result" || break; done`
+Run: `for i in $(seq 10); do ~/.cargo/bin/cargo test -p arkosd --test daemon 2>&1 | grep "test result" || break; done`
 Expected: ten `ok` lines.
 
 - [ ] **Step 15: Commit**
 
 ```bash
-git add crates/sarkosd/src/recovery.rs crates/sarkosd/src/ring.rs crates/sarkosd/src/session.rs crates/sarkosd/src/server.rs crates/sarkosd/src/main.rs crates/sarkosd/tests/daemon.rs
+git add crates/arkosd/src/recovery.rs crates/arkosd/src/ring.rs crates/arkosd/src/session.rs crates/arkosd/src/server.rs crates/arkosd/src/main.rs crates/arkosd/tests/daemon.rs
 git commit -m "Write each session's history and a manifest to disk, in full on SIGTERM"
 ```
 
 ---
 
-### Task 5: `sarkosd --recover`
+### Task 5: `arkosd --recover`
 
 **Files:**
-- Modify: `crates/sarkosd/src/recovery.rs` (`recover`, `seed_for`, `tail`, `shell_line`, `DIVIDER`), `crates/sarkosd/src/server.rs` (`run_with`, `ALREADY_LISTENING`), `crates/sarkosd/src/main.rs` (`--recover`), `crates/sarkosd/tests/daemon.rs`
+- Modify: `crates/arkosd/src/recovery.rs` (`recover`, `seed_for`, `tail`, `shell_line`, `DIVIDER`), `crates/arkosd/src/server.rs` (`run_with`, `ALREADY_LISTENING`), `crates/arkosd/src/main.rs` (`--recover`), `crates/arkosd/tests/daemon.rs`
 - Test: unit tests in `recovery.rs`; integration tests
 
 **Interfaces:**
-- Consumes: Task 4's manifest and files; Task 1's `SpawnSpec` fields, `is_sarkos_binary`; `watchdog::launch_ui`; `State::set_next_session`.
+- Consumes: Task 4's manifest and files; Task 1's `SpawnSpec` fields, `is_arkos_binary`; `watchdog::launch_ui`; `State::set_next_session`.
 - Produces: `recovery::recover(state, dir, opts) -> Recovered { sessions, windows }`, `server::run_with(opts, recover: bool)`, `server::ALREADY_LISTENING`, the `--recover` flag.
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -1911,7 +1911,7 @@ In `recovery.rs`'s `mod tests`:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- recovery`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- recovery`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement recover**
@@ -1962,16 +1962,16 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
     let manifest = match read_manifest(dir) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            eprintln!("sarkosd: no manifest in {}: nothing to recover", dir.display());
+            eprintln!("arkosd: no manifest in {}: nothing to recover", dir.display());
             return Recovered::default();
         }
         Err(e) => {
-            eprintln!("sarkosd: cannot read the manifest: {e}; starting without it");
+            eprintln!("arkosd: cannot read the manifest: {e}; starting without it");
             let _ = std::fs::remove_file(manifest_path(dir));
             return Recovered::default();
         }
     };
-    eprintln!("sarkosd: recovering {} sessions and {} windows from a manifest written by {}", manifest.sessions.len(), manifest.windows.len(), manifest.written_by);
+    eprintln!("arkosd: recovering {} sessions and {} windows from a manifest written by {}", manifest.sessions.len(), manifest.windows.len(), manifest.written_by);
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
     let mut done = Recovered::default();
     for m in &manifest.sessions {
@@ -1980,7 +1980,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
         let cwd = if m.cwd.is_dir() {
             m.cwd.clone()
         } else {
-            eprintln!("sarkosd: session {}: {} is gone, recovering it in {}", m.id, m.cwd.display(), home.display());
+            eprintln!("arkosd: session {}: {} is gone, recovering it in {}", m.id, m.cwd.display(), home.display());
             home.clone()
         };
         let spec = crate::session::SpawnSpec {
@@ -2001,7 +2001,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
             Ok(s) => {
                 if let Some(agent) = &m.agent {
                     if let Err(e) = s.write(&shell_line(&agent.resume)) {
-                        eprintln!("sarkosd: session {}: cannot type the resume command: {e:#}", m.id);
+                        eprintln!("arkosd: session {}: cannot type the resume command: {e:#}", m.id);
                     }
                 }
                 let mut st = state.lock().unwrap();
@@ -2011,7 +2011,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
                 st.sessions.insert(id, s);
                 done.sessions += 1;
             }
-            Err(e) => eprintln!("sarkosd: session {}: cannot recreate its shell: {e:#}", m.id),
+            Err(e) => eprintln!("arkosd: session {}: cannot recreate its shell: {e:#}", m.id),
         }
     }
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -2029,15 +2029,15 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
     }
     for w in &manifest.windows {
         let Some(exe) = &w.exe else {
-            eprintln!("sarkosd: window for {}: no binary recorded, not reopened", w.cwd.display());
+            eprintln!("arkosd: window for {}: no binary recorded, not reopened", w.cwd.display());
             continue;
         };
         if !w.cwd.is_dir() {
-            eprintln!("sarkosd: window for {}: the folder is gone, not reopened", w.cwd.display());
+            eprintln!("arkosd: window for {}: the folder is gone, not reopened", w.cwd.display());
             continue;
         }
-        if !crate::server::is_sarkos_binary(exe) {
-            eprintln!("sarkosd: window for {}: {} is not a sarkos binary owned by this user, not reopened", w.cwd.display(), exe.display());
+        if !crate::server::is_arkos_binary(exe) {
+            eprintln!("arkosd: window for {}: {} is not a arkos binary owned by this user, not reopened", w.cwd.display(), exe.display());
             continue;
         }
         match crate::watchdog::launch_ui(exe, Some(&w.cwd)) {
@@ -2045,7 +2045,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
                 state.lock().unwrap().windows.insert(w.cwd.clone(), Some(exe.clone()));
                 done.windows += 1;
             }
-            Err(e) => eprintln!("sarkosd: window for {}: cannot start {}: {e}", w.cwd.display(), exe.display()),
+            Err(e) => eprintln!("arkosd: window for {}: cannot start {}: {e}", w.cwd.display(), exe.display()),
         }
     }
     state.lock().unwrap().manifest_dirty = true;
@@ -2057,7 +2057,7 @@ pub fn recover(state: &Shared, dir: &Path, opts: &crate::server::Options) -> Rec
 
 ```rust
 /// How `run` fails when a daemon already serves the socket; `--recover` treats it as success.
-pub const ALREADY_LISTENING: &str = "another sarkosd is already listening on";
+pub const ALREADY_LISTENING: &str = "another arkosd is already listening on";
 ```
 
 (the existing `bail!` uses this constant), and `run` becomes `run_with(opts, false)`:
@@ -2074,7 +2074,7 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
     if recover {
         let dir = crate::recovery::sessions_dir(&opts.socket);
         let done = crate::recovery::recover(&state, &dir, &opts);
-        eprintln!("sarkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
+        eprintln!("arkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
     }
     serve(listener, state, opts)
 }
@@ -2085,22 +2085,22 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
 ```rust
     if let Err(e) = server::run_with(opts, recover) {
         if recover && e.to_string().contains(server::ALREADY_LISTENING) {
-            eprintln!("sarkosd: already running; nothing to recover");
+            eprintln!("arkosd: already running; nothing to recover");
             return;
         }
-        eprintln!("sarkosd: {e:#}");
+        eprintln!("arkosd: {e:#}");
         std::process::exit(1);
     }
 ```
 
 - [ ] **Step 4: Run the unit tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --bin sarkosd -- recovery`
+Run: `~/.cargo/bin/cargo test -p arkosd --bin arkosd -- recovery`
 Expected: PASS.
 
 - [ ] **Step 5: Write the integration tests**
 
-Append to `crates/sarkosd/tests/daemon.rs`:
+Append to `crates/arkosd/tests/daemon.rs`:
 
 ```rust
 fn detailed(c: &mut Conn) -> Vec<protocol::SessionDetail> {
@@ -2201,13 +2201,13 @@ fn recover_without_a_manifest_is_a_plain_start() {
 #[test]
 fn recover_while_a_daemon_is_listening_exits_zero_and_leaves_it() {
     let a = Daemon::start(&[]);
-    let mut second = Command::new(env!("CARGO_BIN_EXE_sarkosd")).arg("--socket").arg(&a.socket).arg("--recover").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let mut second = Command::new(env!("CARGO_BIN_EXE_arkosd")).arg("--socket").arg(&a.socket).arg("--recover").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(s) = second.try_wait().unwrap() {
             break s;
         }
-        assert!(Instant::now() < deadline, "the second sarkosd did not exit");
+        assert!(Instant::now() < deadline, "the second arkosd did not exit");
         std::thread::sleep(Duration::from_millis(20));
     };
     assert!(status.success(), "{status}");
@@ -2219,19 +2219,19 @@ fn recover_while_a_daemon_is_listening_exits_zero_and_leaves_it() {
 
 - [ ] **Step 6: Run them**
 
-Run: `~/.cargo/bin/cargo test -p sarkosd --test daemon -- recover`
+Run: `~/.cargo/bin/cargo test -p arkosd --test daemon -- recover`
 Expected: PASS (five tests). If `recover_puts_a_session_whose_folder_is_gone_in_home` fails because the shell refuses to start in a deleted folder, the daemon's fallback is wrong, not the test.
 
 - [ ] **Step 7: Run the suite ten times and the whole workspace**
 
-Run: `for i in $(seq 10); do ~/.cargo/bin/cargo test -p sarkosd --test daemon 2>&1 | grep "test result" || break; done` then `~/.cargo/bin/cargo test --workspace`
+Run: `for i in $(seq 10); do ~/.cargo/bin/cargo test -p arkosd --test daemon 2>&1 | grep "test result" || break; done` then `~/.cargo/bin/cargo test --workspace`
 Expected: ten `ok` lines; everything green.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/sarkosd/src/recovery.rs crates/sarkosd/src/server.rs crates/sarkosd/src/main.rs crates/sarkosd/tests/daemon.rs
-git commit -m "Add sarkosd --recover: rebuild every session from the manifest and reopen its windows"
+git add crates/arkosd/src/recovery.rs crates/arkosd/src/server.rs crates/arkosd/src/main.rs crates/arkosd/tests/daemon.rs
+git commit -m "Add arkosd --recover: rebuild every session from the manifest and reopen its windows"
 ```
 
 ---
@@ -2239,8 +2239,8 @@ git commit -m "Add sarkosd --recover: rebuild every session from the manifest an
 ### Task 6: Tab states in the window: the pulse, the dot, the count, the notes, Goodbye
 
 **Files:**
-- Create: `crates/sarkos/src/pulse.rs`
-- Modify: `crates/sarkos/src/sessions.rs`, `crates/sarkos/src/pane_view.rs`, `crates/sarkos/src/main.rs` (`mod pulse;`, `Root` fields, `handle_outcome`, `activate_tab`, `focus_pane`, `leaving`, the status bar call, the quit handlers)
+- Create: `crates/arkos/src/pulse.rs`
+- Modify: `crates/arkos/src/sessions.rs`, `crates/arkos/src/pane_view.rs`, `crates/arkos/src/main.rs` (`mod pulse;`, `Root` fields, `handle_outcome`, `activate_tab`, `focus_pane`, `leaving`, the status bar call, the quit handlers)
 - Test: unit tests in `pulse.rs`, `sessions.rs`, `pane_view.rs`, `main.rs`
 
 **Interfaces:**
@@ -2249,7 +2249,7 @@ git commit -m "Add sarkosd --recover: rebuild every session from the manifest an
 
 - [ ] **Step 1: Write the failing pulse test**
 
-Create `crates/sarkos/src/pulse.rs`:
+Create `crates/arkos/src/pulse.rs`:
 
 ```rust
 //! The working glyph's breathing (spec 5): a slow, soft, time-based pulse ticked at a low rate,
@@ -2323,12 +2323,12 @@ mod tests {
 
 - [ ] **Step 2: Run it to see it fail, then pass**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- pulse`
+Run: `~/.cargo/bin/cargo test -p arkos -- pulse`
 Expected: FAIL to compile until `mod pulse;` is in `main.rs` and `Root::window_active` and `SessionManager::any_working` exist (Steps 4 and 6); then PASS.
 
 - [ ] **Step 3: Write the failing session manager tests**
 
-In `crates/sarkos/src/sessions.rs`'s `mod tests` (the `info` helper stays; add `detail`):
+In `crates/arkos/src/sessions.rs`'s `mod tests` (the `info` helper stays; add `detail`):
 
 ```rust
     fn detail(id: u64, cwd: &Path, alive: bool, state: ClaudeState, recovered: bool) -> protocol::SessionDetail {
@@ -2404,7 +2404,7 @@ Update the existing tests that build `Response::Sessions(..)` for `Pending::List
 
 - [ ] **Step 4: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- sessions`
+Run: `~/.cargo/bin/cargo test -p arkos -- sessions`
 Expected: FAIL to compile: `Note`, `note_list`, `note_state`, `acknowledge`, `waiting_count`, `any_working`, `goodbye` not found.
 
 - [ ] **Step 5: Implement the manager side**
@@ -2413,7 +2413,7 @@ In `sessions.rs`:
 
 ```rust
 /// The word after a tab's title: the session is new in place of one the daemon lost, or was
-/// recreated by `sarkosd --recover` after a restart. Both clear when the user types into the tab.
+/// recreated by `arkosd --recover` after a restart. Both clear when the user types into the tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Note {
     Restarted,
@@ -2563,7 +2563,7 @@ In `pane_view.rs`'s tests, replace `tab_labels_show_state_after_the_title`:
 
 - [ ] **Step 8: Run them to see them fail, then implement the bar**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- pane_view`
+Run: `~/.cargo/bin/cargo test -p arkos -- pane_view`
 Expected: FAIL to compile. Then in `pane_view.rs`:
 
 ```rust
@@ -2623,13 +2623,13 @@ In `main.rs`'s tests (headless; `Root` is not built there today, so test the pur
     }
 ```
 
-Run: `~/.cargo/bin/cargo test -p sarkos` then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`
-Expected: PASS; no warnings for the project's crates. Then run the window for a minute against the real daemon with a `claude` session and the hooks from Task 3 installed (`target/release/sarkos hooks install`, then start `claude` in a tab): the tab pulses while Claude works, shows the dot when it stops, the status bar says "1 waiting", clicking the tab clears it. Put what you saw in the report; if the screen is locked, say so and leave it to the README checklist.
+Run: `~/.cargo/bin/cargo test -p arkos` then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`
+Expected: PASS; no warnings for the project's crates. Then run the window for a minute against the real daemon with a `claude` session and the hooks from Task 3 installed (`target/release/arkos hooks install`, then start `claude` in a tab): the tab pulses while Claude works, shows the dot when it stops, the status bar says "1 waiting", clicking the tab clears it. Put what you saw in the report; if the screen is locked, say so and leave it to the README checklist.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add crates/sarkos/src/pulse.rs crates/sarkos/src/sessions.rs crates/sarkos/src/pane_view.rs crates/sarkos/src/main.rs
+git add crates/arkos/src/pulse.rs crates/arkos/src/sessions.rs crates/arkos/src/pane_view.rs crates/arkos/src/main.rs
 git commit -m "Show what each tab's agent is doing: a breathing glyph, a waiting dot, the count, and notes"
 ```
 
@@ -2638,8 +2638,8 @@ git commit -m "Show what each tab's agent is doing: a breathing glyph, a waiting
 ### Task 7: Start at login, the palette items, the config section and the README
 
 **Files:**
-- Create: `crates/sarkos/src/launch_agent.rs`
-- Modify: `crates/sarkos/src/config.rs`, `crates/sarkos/src/keymap.rs`, `crates/sarkos/src/command_palette.rs`, `crates/sarkos/src/main.rs` (`mod launch_agent;`, `Command::{StartAtLogin, InstallHooks}` in `run`, `apply_recovery`, the launch notice), `README.md`
+- Create: `crates/arkos/src/launch_agent.rs`
+- Modify: `crates/arkos/src/config.rs`, `crates/arkos/src/keymap.rs`, `crates/arkos/src/command_palette.rs`, `crates/arkos/src/main.rs` (`mod launch_agent;`, `Command::{StartAtLogin, InstallHooks}` in `run`, `apply_recovery`, the launch notice), `README.md`
 - Test: unit tests in `launch_agent.rs`, `config.rs`, `command_palette.rs`, `keymap.rs` (the table tests must still pass)
 
 **Interfaces:**
@@ -2667,11 +2667,11 @@ In `config.rs`'s tests:
 
 - [ ] **Step 2: Run it to see it fail, then add the section**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- the_recovery_section`
+Run: `~/.cargo/bin/cargo test -p arkos -- the_recovery_section`
 Expected: FAIL to compile. Then in `config.rs`, after `AppearanceConfig`:
 
 ```rust
-/// Whether sarkosd starts at login to bring sessions back after a restart (update-in-place
+/// Whether arkosd starts at login to bring sessions back after a restart (update-in-place
 /// spec, section 11): "ask" until the user runs "Start at login" from the palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -2694,11 +2694,11 @@ pub struct RecoveryConfig {
 ```toml
 
 [recovery]
-# After a restart, sarkosd started at login brings every session back: the same folders, the
+# After a restart, arkosd started at login brings every session back: the same folders, the
 # history on screen under a divider, and each Claude Code conversation resumed (never continued:
 # you send the next message). Everything stays on this Mac. "ask" shows a notice at launch until
 # "Start at login" runs from the command palette; "on" installs the login item
-# (~/Library/LaunchAgents/sh.csarko.sarkosd.plist) and keeps it; "off" removes it.
+# (~/Library/LaunchAgents/sh.csarko.arkosd.plist) and keeps it; "off" removes it.
 start_at_login = "ask"
 ```
 
@@ -2706,18 +2706,18 @@ and the `[keybindings]` comment block gains `# "start at login" = ""` and `# "in
 
 - [ ] **Step 3: Write the failing launch agent tests**
 
-Create `crates/sarkos/src/launch_agent.rs`:
+Create `crates/arkos/src/launch_agent.rs`:
 
 ```rust
 //! The login item that brings sessions back after a restart (update-in-place spec, section 11
-//! step 3): a launchd agent in `~/Library/LaunchAgents` that runs `sarkosd --recover` once at
+//! step 3): a launchd agent in `~/Library/LaunchAgents` that runs `arkosd --recover` once at
 //! login. No KeepAlive: a daemon the window started is left alone, and `--recover` exits 0 when
 //! one is listening. Installed only when the user asks (the palette) or the config says "on".
 
 use crate::config::StartAtLogin;
 use std::path::{Path, PathBuf};
 
-pub const LABEL: &str = "sh.csarko.sarkosd";
+pub const LABEL: &str = "sh.csarko.arkosd";
 
 pub fn agent_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME is set")).join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
@@ -2727,7 +2727,7 @@ pub fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// The agent: `sarkosd --recover` with the window's `[daemon]` arguments, once at load, logging
+/// The agent: `arkosd --recover` with the window's `[daemon]` arguments, once at load, logging
 /// where the window's own daemon logs. `ExitTimeOut` gives the SIGTERM flush twenty seconds
 /// before launchd's SIGKILL at logout.
 pub fn plist(daemon_exe: &Path, daemon_args: &[String], log: &Path) -> String {
@@ -2780,7 +2780,7 @@ fn launchctl(args: &[&str]) -> Result<(), String> {
 }
 
 /// Writes the plist and loads it into this login session, so a bad file fails now rather than
-/// at the next login. Loading runs `sarkosd --recover` once, which exits at once while a daemon
+/// at the next login. Loading runs `arkosd --recover` once, which exits at once while a daemon
 /// is listening. Blocks on launchctl: call it off the UI thread.
 pub fn install(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
@@ -2811,16 +2811,16 @@ mod tests {
 
     #[test]
     fn the_plist_runs_recover_once_at_login_with_the_daemon_arguments_escaped() {
-        let p = plist(Path::new("/Users/me/My Apps/sarkosd"), &["--watchdog-secs".into(), "30".into()], Path::new("/Users/me/Library/Application Support/sarkos/sarkosd.log"));
-        assert!(p.contains("<string>sh.csarko.sarkosd</string>"));
-        assert!(p.contains("<string>/Users/me/My Apps/sarkosd</string>\n\t\t<string>--recover</string>\n\t\t<string>--watchdog-secs</string>\n\t\t<string>30</string>"));
+        let p = plist(Path::new("/Users/me/My Apps/arkosd"), &["--watchdog-secs".into(), "30".into()], Path::new("/Users/me/Library/Application Support/arkos/arkosd.log"));
+        assert!(p.contains("<string>sh.csarko.arkosd</string>"));
+        assert!(p.contains("<string>/Users/me/My Apps/arkosd</string>\n\t\t<string>--recover</string>\n\t\t<string>--watchdog-secs</string>\n\t\t<string>30</string>"));
         assert!(p.contains("<key>RunAtLoad</key>\n\t<true/>"));
         assert!(p.contains("<key>KeepAlive</key>\n\t<false/>"));
         assert!(p.contains("<key>ExitTimeOut</key>\n\t<integer>20</integer>"));
-        assert!(p.contains("<string>/Users/me/Library/Application Support/sarkos/sarkosd.log</string>"));
+        assert!(p.contains("<string>/Users/me/Library/Application Support/arkos/arkosd.log</string>"));
         assert_eq!(xml_escape("a&b<c>\"d\""), "a&amp;b&lt;c&gt;&quot;d&quot;");
-        assert!(plist(Path::new("/x&y/sarkosd"), &[], Path::new("/l")).contains("<string>/x&amp;y/sarkosd</string>"));
-        assert!(agent_path().ends_with("Library/LaunchAgents/sh.csarko.sarkosd.plist"));
+        assert!(plist(Path::new("/x&y/arkosd"), &[], Path::new("/l")).contains("<string>/x&amp;y/arkosd</string>"));
+        assert!(agent_path().ends_with("Library/LaunchAgents/sh.csarko.arkosd.plist"));
     }
 
     #[test]
@@ -2848,7 +2848,7 @@ mod tests {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- launch_agent config`
+Run: `~/.cargo/bin/cargo test -p arkos -- launch_agent config`
 Expected: PASS (after `mod launch_agent;` in `main.rs`).
 
 - [ ] **Step 5: Write the failing palette and keymap tests**
@@ -2879,7 +2879,7 @@ In `keymap.rs`: the `actions!` list gains `StartAtLogin, InstallHooks`; `Command
 
 - [ ] **Step 6: Run them to see them fail, then implement**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- command_palette keymap`
+Run: `~/.cargo/bin/cargo test -p arkos -- command_palette keymap`
 Expected: FAIL to compile. Then `command_palette::items` gains the three parameters (`start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path`) and, in the `ACTIONS` loop, details for the two commands:
 
 ```rust
@@ -2901,7 +2901,7 @@ In `main.rs`, `toggle_palette` passes `self.config.recovery.start_at_login, laun
 ```rust
             StartAtLogin => self.toggle_start_at_login(cx),
             InstallHooks => {
-                let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("sarkos"));
+                let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
                 let root = cx.entity();
                 cx.spawn(async move |_, cx| {
                     let result = cx.background_executor().spawn(async move { hook_cli::install_hooks(&exe) }).await;
@@ -2979,7 +2979,7 @@ and the methods:
 
 - [ ] **Step 7: Run the whole window crate and the build**
 
-Run: `~/.cargo/bin/cargo test -p sarkos` then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`
+Run: `~/.cargo/bin/cargo test -p arkos` then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`
 Expected: PASS; no warnings for the project's crates.
 
 - [ ] **Step 8: Write the README**
@@ -2996,7 +2996,7 @@ Two new sections before **Keyboard**:
 ## Session awareness
 
 Claude Code tells the IDE what it is doing through its hooks. Run "Install Claude Code hooks"
-from the command palette (or `sarkos hooks install`), which merges six entries into
+from the command palette (or `arkos hooks install`), which merges six entries into
 `~/.claude/settings.json` after writing a `.bak`, then start or restart `claude` in a tab:
 
 | Claude Code event | The tab |
@@ -3007,19 +3007,19 @@ from the command palette (or `sarkos hooks install`), which merges six entries i
 | the shell exits | a muted title, with the exit code |
 
 A terminal bell marks a tab waiting too, so a `claude` set to ring the bell works without hooks.
-`sarkos notify` is the hook side: it reads `SARKOS_SESSION_ID`, which every shell the daemon
-starts carries, and exits 0 whatever happens, so a `claude` run outside Sarkos IDE is unaffected.
-`sarkos hooks print` prints the entries for a hand paste. The entries name this binary by its
+`arkos notify` is the hook side: it reads `ARKOS_SESSION_ID`, which every shell the daemon
+starts carries, and exits 0 whatever happens, so a `claude` run outside Arkos IDE is unaffected.
+`arkos hooks print` prints the entries for a hand paste. The entries name this binary by its
 launch path; after moving it, install again.
 
 ## After a restart
 
 A shutdown or restart ends every process; what becomes automatic is the recovery. The daemon
-writes each session's history to `~/Library/Application Support/sarkos/sessions/<id>.replay`
+writes each session's history to `~/Library/Application Support/arkos/sessions/<id>.replay`
 a couple of seconds after output stops (in full on SIGTERM, which a clean shutdown sends) and a
 manifest of the sessions (folder, shell, the Claude Code session id from its SessionStart hook)
 and of the project folders with a window open. "Start at login" from the palette installs
-`~/Library/LaunchAgents/sh.csarko.sarkosd.plist`, which runs `sarkosd --recover` once at login:
+`~/Library/LaunchAgents/sh.csarko.arkosd.plist`, which runs `arkosd --recover` once at login:
 it recreates each shell in its folder (the home folder when that is gone) with the old output
 under a dim "resumed after restart" line, types `claude --resume <id>` into the shells that had
 a Claude Code session, and opens a window for each project that had one; each tab says
@@ -3032,14 +3032,14 @@ sends a message. Everything stays on this Mac. `[recovery] start_at_login` in th
 it on or off; "ask", the default, shows a one-line notice at launch until you decide.
 ```
 
-In **Updating**, the protocol sentence becomes "The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows, and reads the previous handover format, so updating from the update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x sarkosd`". The checklist gains, at the top:
+In **Updating**, the protocol sentence becomes "The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows, and reads the previous handover format, so updating from the update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd`". The checklist gains, at the top:
 
 ```markdown
 - "Install Claude Code hooks", then `claude` in a tab: the glyph breathes while it works, a dot
   appears when it stops, the status bar says "1 waiting", clicking the tab clears both; with
   Reduce Motion on, the glyph holds still
-- "Start at login", then `pkill -TERM sarkosd` with four tabs open: the log shows "SIGTERM:
-  writing every session's history"; `launchctl kickstart gui/$(id -u)/sh.csarko.sarkosd` (what
+- "Start at login", then `pkill -TERM arkosd` with four tabs open: the log shows "SIGTERM:
+  writing every session's history"; `launchctl kickstart gui/$(id -u)/sh.csarko.arkosd` (what
   login does) brings a window back with every tab's history under the divider and
   `claude --resume` typed into the ones that ran Claude; the tabs say "(resumed after restart)"
 - a real restart with the same four tabs: the window is back after login with the same result
@@ -3049,11 +3049,11 @@ In **Updating**, the protocol sentence becomes "The daemon and window speak prot
 
 - [ ] **Step 9: Check the copy and commit**
 
-Run: `grep -n "—" README.md crates/sarkos/src/config.rs crates/sarkos/src/launch_agent.rs crates/sarkos/src/hook_cli.rs crates/sarkosd/src/recovery.rs` (no em-dashes), then `~/.cargo/bin/cargo test --workspace`.
+Run: `grep -n "—" README.md crates/arkos/src/config.rs crates/arkos/src/launch_agent.rs crates/arkos/src/hook_cli.rs crates/arkosd/src/recovery.rs` (no em-dashes), then `~/.cargo/bin/cargo test --workspace`.
 Expected: nothing from grep; everything green.
 
 ```bash
-git add crates/sarkos/src/launch_agent.rs crates/sarkos/src/config.rs crates/sarkos/src/keymap.rs crates/sarkos/src/command_palette.rs crates/sarkos/src/main.rs README.md
+git add crates/arkos/src/launch_agent.rs crates/arkos/src/config.rs crates/arkos/src/keymap.rs crates/arkos/src/command_palette.rs crates/arkos/src/main.rs README.md
 git commit -m "Offer start at login and hook installation from the palette, and document recovery"
 ```
 
@@ -3064,6 +3064,6 @@ git commit -m "Offer start at login and hook installation from the palette, and 
 - Spec 5's table maps `Stop` to waiting and `Notification` (permission or idle prompt) to waiting; `UserPromptSubmit` and `PreToolUse` to working: Task 3's `hooks_json`. Icons, the pulse's rate and pause, the dot until focus, dead tabs muted, the BEL: Task 6. The status bar count: Task 6. "Empty states" in milestone 3's line already shipped in milestone 2 (the empty pane's animation honours Reduce Motion).
 - Section 11's four steps: replay files and manifest (Task 4), the agent record from SessionStart (Tasks 1 and 3), the launchd agent with consent (Task 7), windows reopened after the daemon listens (Task 5). The manifest leaves out the Claude state on purpose: a recovered agent starts idle.
 - Spec 2.1's "Nothing survives daemon death or a reboot" is superseded by section 11 for a reboot; daemon death without a shutdown signal still loses the ring's last seconds (whatever was not flushed), which the README says.
-- Type consistency checked: `SpawnSpec` fields (`seed`, `recovered`, `agent`) are named the same in Tasks 1, 4 and 5; `Outcome::Sessions(Vec<SessionDetail>)` in Task 6 matches Task 1's response; `command_palette::items` has the same nine parameters in Task 7's test and call; `Note` is `sessions::Note` everywhere; `is_sarkos_binary` lives in `server.rs` (Task 1) and is used by Task 5.
+- Type consistency checked: `SpawnSpec` fields (`seed`, `recovered`, `agent`) are named the same in Tasks 1, 4 and 5; `Outcome::Sessions(Vec<SessionDetail>)` in Task 6 matches Task 1's response; `command_palette::items` has the same nine parameters in Task 7's test and call; `Note` is `sessions::Note` everywhere; `is_arkos_binary` lives in `server.rs` (Task 1) and is used by Task 5.
 - Spec 5 pauses the pulse "when the window is not visible"; gpui 0.2.2 exposes no occlusion state, so Task 6 pauses it when the window is not the key window (`is_window_active`), which covers minimized, hidden and backgrounded windows; a visible window behind another keeps breathing at ten frames a second. Recorded as a ruling.
 - Review Focus pins: 1 in Task 3, 2 in Task 4, 3 and 4 in Task 5, 5 in Task 6.

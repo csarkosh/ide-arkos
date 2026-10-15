@@ -1,4 +1,4 @@
-# Sarkos IDE: Worktrees, git status in the tree, diff gutters (milestone 4b). Implementation Plan
+# Arkos IDE: Worktrees, git status in the tree, diff gutters (milestone 4b). Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,17 +8,17 @@
 
 **Tech Stack:** Rust stable, gpui 0.2.2 (exact pin), git through the `git` binary, `similar` 2 for the line diff (one new dependency), the existing `uniform_list`, `LineEdit`, `ScrollAnimator`, `config_watch::fingerprint`.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-sarkos-design.md` section 6 (the file tree's git status and folder dots, the worktree explorer paragraph, the viewer's diff gutters and inline diff), section 4 (Ctrl+Shift+G), section 7 (tree colours), section 9 (never block the UI thread; a viewer holds one file).
+**Spec:** `docs/superpowers/specs/2026-10-13-arkos-design.md` section 6 (the file tree's git status and folder dots, the worktree explorer paragraph, the viewer's diff gutters and inline diff), section 4 (Ctrl+Shift+G), section 7 (tree colours), section 9 (never block the UI thread; a viewer holds one file).
 
 ## Global Constraints
 
 - macOS only. The window never blocks the UI thread on IO: every git call, file read and diff runs on the background executor; the UI thread applies results. Every read-only git invocation goes through `explorer::git_read(root)`, which sets `-c core.fsmonitor=false -c core.hooksPath=/dev/null --no-optional-locks` and, after one `git config --get-regexp '^filter\.'` (a config read that runs nothing), `-c filter.<name>.clean= -c filter.<name>.process= -c filter.<name>.smudge=` for every filter driver the repository configures, so no program named in a crafted `.git/config` runs; `git status` adds `--ignore-submodules=all`; `git show` and `git diff` are additionally run with `--no-ext-diff` where they take it; no git command this plan adds reads `core.pager` (every call is non-interactive with piped stdout). The two worktree actions (`git worktree add`/`remove`, commands the user chose by name) use the plain `explorer::git(root)` (fsmonitor and hooks off) with their own arguments; `git_read` also passes `-c filter.<name>.required=false` so a required filter (git-lfs) does not fail the read, and refuses (returns nothing) when a driver name holds a character outside `[A-Za-z0-9_.-]`.
 - `gpui = { version = "=0.2.2", features = ["runtime_shaders"] }` pinned exactly; never bump. If a gpui or `similar` name does not compile, grep `~/.cargo/registry/src/*/gpui-0.2.2/src/` or `~/.cargo/registry/src/*/similar-2*/src/` for it, fix the call, and note the change in the commit message.
-- One new dependency, `similar = "2"` in `crates/sarkos/Cargo.toml`, added in Task 5 and nowhere else. No other new crates.
+- One new dependency, `similar = "2"` in `crates/arkos/Cargo.toml`, added in Task 5 and nowhere else. No other new crates.
 - Nothing in this plan writes to a project file except the two worktree actions the user chooses by name (`git worktree add`, `git worktree remove`), which run only from the sidebar's menu and prompt, never on a timer.
 - The theme file format does not change: statuses use `theme.tree.{added, modified, deleted, untracked}`; the viewer's gutter uses the same four. The workspace file's `sidebar` object gains optional fields with defaults.
-- Display name "Sarkos IDE"; lowercase `sarkos` elsewhere. No em-dashes in any copy or comment. Commit messages imperative, one line, body optional, ending with a blank line, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_015xrVD54zbvkgksJUndxfpr`.
-- Tests: `cargo test -p sarkos` stays headless; tests that need a repository make one in a temp dir with `git init` and take `client::fork_lock()` around anything that spawns a process; the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`.
+- Display name "Arkos IDE"; lowercase `arkos` elsewhere. No em-dashes in any copy or comment. Commit messages imperative, one line, body optional, ending with a blank line, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_015xrVD54zbvkgksJUndxfpr`.
+- Tests: `cargo test -p arkos` stays headless; tests that need a repository make one in a temp dir with `git init` and take `client::fork_lock()` around anything that spawns a process; the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`.
 
 ## Review Focus
 
@@ -33,7 +33,7 @@
 ## File structure
 
 ```
-crates/sarkos/
+crates/arkos/
   Cargo.toml                   similar (Task 5)
   src/sidebar.rs               Task 1: the Root sidebar methods move in; Task 4: the Worktrees section, shimmer, ease-in, prompt, per-worktree menu
   src/viewer.rs                Task 1: the Root viewer methods move in; Task 5: DiffMarks on the viewer, the inline toggle
@@ -65,8 +65,8 @@ Rulings the plan makes where the spec is silent or its letter costs more than it
 ### Task 1: Move the sidebar and viewer code out of main.rs
 
 **Files:**
-- Modify: `crates/sarkos/src/main.rs`, `crates/sarkos/src/sidebar.rs`, `crates/sarkos/src/viewer.rs`
-- Test: the existing suite (no behaviour change); `cargo test -p sarkos` green before and after
+- Modify: `crates/arkos/src/main.rs`, `crates/arkos/src/sidebar.rs`, `crates/arkos/src/viewer.rs`
+- Test: the existing suite (no behaviour change); `cargo test -p arkos` green before and after
 
 **Interfaces:**
 - Consumes: the `impl Root` methods in `main.rs`: `load_pending_dirs`, `open_viewer`, `escape_closes_menu`, `tree_key`, `watched_paths`, `paths_changed`, `OpenPlan`, `open_plan`, `after_close`, `after_drop`, `keeps_tree_focus` (sidebar side); `build_highlighter`, `viewer_for`, `load_viewer`, `reload_viewers_for`, `reload_all_viewers`, `load`, `active_viewer`, `should_apply` (viewer side).
@@ -74,7 +74,7 @@ Rulings the plan makes where the spec is silent or its letter costs more than it
 
 - [ ] **Step 1: Record the baseline**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | grep "test result"` and `wc -l crates/sarkos/src/main.rs`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | grep "test result"` and `wc -l crates/arkos/src/main.rs`
 Expected: the pass count (write it down) and about 2190 lines.
 
 - [ ] **Step 2: Move the sidebar block**
@@ -95,13 +95,13 @@ Cut from `main.rs` `should_apply` and the `impl Root` methods `build_highlighter
 
 - [ ] **Step 4: Verify nothing changed**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | grep "test result"`, `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`, `wc -l crates/sarkos/src/main.rs`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | grep "test result"`, `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`, `wc -l crates/arkos/src/main.rs`
 Expected: the same pass count as Step 1; no warnings for the project's crates; `main.rs` under 1900 lines. `git diff --stat` shows only moves (a `git diff --color-moved=zebra` review is the proof: every removed line reappears added).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/main.rs crates/sarkos/src/sidebar.rs crates/sarkos/src/viewer.rs
+git add crates/arkos/src/main.rs crates/arkos/src/sidebar.rs crates/arkos/src/viewer.rs
 git commit -m "Move the sidebar and viewer code out of main.rs into their modules"
 ```
 
@@ -110,8 +110,8 @@ git commit -m "Move the sidebar and viewer code out of main.rs into their module
 ### Task 2: Git status in the file tree
 
 **Files:**
-- Create: `crates/sarkos/src/gitstatus.rs`
-- Modify: `crates/sarkos/src/explorer.rs` (`Explorer.status`, `Row.{status, dirty}`), `crates/sarkos/src/explorer_watch.rs` (the refresh schedule), `crates/sarkos/src/sidebar.rs` (row colours and the folder dot; `refresh_status` on `Root`), `crates/sarkos/src/main.rs` (`mod gitstatus;`, the `status_seq` field)
+- Create: `crates/arkos/src/gitstatus.rs`
+- Modify: `crates/arkos/src/explorer.rs` (`Explorer.status`, `Row.{status, dirty}`), `crates/arkos/src/explorer_watch.rs` (the refresh schedule), `crates/arkos/src/sidebar.rs` (row colours and the folder dot; `refresh_status` on `Root`), `crates/arkos/src/main.rs` (`mod gitstatus;`, the `status_seq` field)
 - Test: unit tests in `gitstatus.rs` (parser, a temp repository), `explorer.rs`, `explorer_watch.rs`
 
 **Interfaces:**
@@ -120,7 +120,7 @@ git commit -m "Move the sidebar and viewer code out of main.rs into their module
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/gitstatus.rs`:
+Create `crates/arkos/src/gitstatus.rs`:
 
 ```rust
 //! Git status for the tree and the worktree explorer (spec 6): `git status --porcelain=v2 -z`
@@ -280,7 +280,7 @@ In `explorer_watch.rs`'s tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- gitstatus explorer explorer_watch`
+Run: `~/.cargo/bin/cargo test -p arkos -- gitstatus explorer explorer_watch`
 Expected: FAIL to compile (add `mod gitstatus;` to `main.rs`).
 
 - [ ] **Step 3: Implement**
@@ -453,13 +453,13 @@ pub fn status_result_applies(seq: u64, current: u64) -> bool {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- gitstatus explorer sidebar`
+Run: `~/.cargo/bin/cargo test -p arkos -- gitstatus explorer sidebar`
 Expected: PASS. Then `~/.cargo/bin/cargo build --release 2>&1 | grep -i "^warning"`: nothing from the project's crates.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/gitstatus.rs crates/sarkos/src/explorer.rs crates/sarkos/src/explorer_watch.rs crates/sarkos/src/sidebar.rs crates/sarkos/src/main.rs
+git add crates/arkos/src/gitstatus.rs crates/arkos/src/explorer.rs crates/arkos/src/explorer_watch.rs crates/arkos/src/sidebar.rs crates/arkos/src/main.rs
 git commit -m "Colour the file tree by git status and dot the folders with changes"
 ```
 
@@ -468,8 +468,8 @@ git commit -m "Colour the file tree by git status and dot the folders with chang
 ### Task 3: The worktree model: list, expand with status, create, remove
 
 **Files:**
-- Create: `crates/sarkos/src/worktrees.rs`
-- Modify: `crates/sarkos/src/main.rs` (`mod worktrees;`, `Root.worktrees`, the refresh hooks), `crates/sarkos/src/sessions.rs` (`create_in`), `crates/sarkos/src/workspace.rs` (`SidebarSaved.worktrees_expanded`)
+- Create: `crates/arkos/src/worktrees.rs`
+- Modify: `crates/arkos/src/main.rs` (`mod worktrees;`, `Root.worktrees`, the refresh hooks), `crates/arkos/src/sessions.rs` (`create_in`), `crates/arkos/src/workspace.rs` (`SidebarSaved.worktrees_expanded`)
 - Test: unit tests in `worktrees.rs` (parser, a temp repository with a second worktree), `sessions.rs`, `workspace.rs`
 
 **Interfaces:**
@@ -478,7 +478,7 @@ git commit -m "Colour the file tree by git status and dot the folders with chang
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/worktrees.rs`:
+Create `crates/arkos/src/worktrees.rs`:
 
 ```rust
 //! The worktree explorer's model (spec 6): `git worktree list` only, until a worktree is
@@ -654,7 +654,7 @@ In `workspace.rs`'s `the_sidebar_state_round_trips_and_is_optional`, the `Sideba
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- worktrees create_in sidebar_state`
+Run: `~/.cargo/bin/cargo test -p arkos -- worktrees create_in sidebar_state`
 Expected: FAIL to compile (add `mod worktrees;`).
 
 - [ ] **Step 3: Implement**
@@ -880,13 +880,13 @@ impl Worktrees {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- worktrees sessions workspace`
+Run: `~/.cargo/bin/cargo test -p arkos -- worktrees sessions workspace`
 Expected: PASS (the repository tests need `git` on PATH and create worktrees beside the temp dir, inside the temp root's parent: use a nested `tempdir` as the parent so nothing lands outside it). Warning check clean (items unused until Task 4 need an allowance naming Task 4).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/worktrees.rs crates/sarkos/src/sessions.rs crates/sarkos/src/workspace.rs crates/sarkos/src/main.rs crates/sarkos/src/explorer_watch.rs
+git add crates/arkos/src/worktrees.rs crates/arkos/src/sessions.rs crates/arkos/src/workspace.rs crates/arkos/src/main.rs crates/arkos/src/explorer_watch.rs
 git commit -m "Model the worktree explorer: list, lazy status on expand, create and remove through git"
 ```
 
@@ -895,7 +895,7 @@ git commit -m "Model the worktree explorer: list, lazy status on expand, create 
 ### Task 4: The Worktrees section: rows, shimmer, ease-in, actions, prompt, Ctrl+Shift+G
 
 **Files:**
-- Modify: `crates/sarkos/src/sidebar.rs` (two collapsible sections, the worktree rows, the per-worktree menu, the create prompt, `wt_key`), `crates/sarkos/src/keymap.rs` ("focus worktrees" ctrl-shift-g), `crates/sarkos/src/config.rs` (the comment line), `crates/sarkos/src/command_palette.rs` (through `ACTIONS`), `crates/sarkos/src/main.rs` (`Command::FocusWorktrees`, `Root.{wt_focused, wt_prompt}`, `sidebar_focused` handling), `crates/sarkos/src/workspace.rs` (`explorer_open`, `worktrees_open`), `README.md`
+- Modify: `crates/arkos/src/sidebar.rs` (two collapsible sections, the worktree rows, the per-worktree menu, the create prompt, `wt_key`), `crates/arkos/src/keymap.rs` ("focus worktrees" ctrl-shift-g), `crates/arkos/src/config.rs` (the comment line), `crates/arkos/src/command_palette.rs` (through `ACTIONS`), `crates/arkos/src/main.rs` (`Command::FocusWorktrees`, `Root.{wt_focused, wt_prompt}`, `sidebar_focused` handling), `crates/arkos/src/workspace.rs` (`explorer_open`, `worktrees_open`), `README.md`
 - Test: unit tests in `sidebar.rs` (pure: shimmer phase, ease, prompt state machine, menu items), `keymap.rs`, `workspace.rs`
 
 **Interfaces:**
@@ -961,7 +961,7 @@ In `sidebar.rs`'s tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- sidebar keymap workspace`
+Run: `~/.cargo/bin/cargo test -p arkos -- sidebar keymap workspace`
 Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement**
@@ -1192,13 +1192,13 @@ The keyboard table gains `| Ctrl+Shift+G | focus the worktree list |`; the Notes
 
 - [ ] **Step 4: Run the tests and the build**
 
-Run: `~/.cargo/bin/cargo test -p sarkos` then the warning check and `grep -n "—" README.md crates/sarkos/src/*.rs`.
+Run: `~/.cargo/bin/cargo test -p arkos` then the warning check and `grep -n "—" README.md crates/arkos/src/*.rs`.
 Expected: PASS; clean. By hand if a screen is available: the checklist rows above.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/sidebar.rs crates/sarkos/src/keymap.rs crates/sarkos/src/config.rs crates/sarkos/src/command_palette.rs crates/sarkos/src/main.rs crates/sarkos/src/workspace.rs crates/sarkos/src/worktrees.rs README.md
+git add crates/arkos/src/sidebar.rs crates/arkos/src/keymap.rs crates/arkos/src/config.rs crates/arkos/src/command_palette.rs crates/arkos/src/main.rs crates/arkos/src/workspace.rs crates/arkos/src/worktrees.rs README.md
 git commit -m "Draw the Worktrees section: lazy status with a shimmer, changed files easing in, actions and a create prompt"
 ```
 
@@ -1207,8 +1207,8 @@ git commit -m "Draw the Worktrees section: lazy status with a shimmer, changed f
 ### Task 5: Diff gutters and the inline diff in the viewer
 
 **Files:**
-- Create: `crates/sarkos/src/diff.rs`
-- Modify: `crates/sarkos/Cargo.toml` (`similar`), `Cargo.lock`, `crates/sarkos/src/viewer.rs` (`Viewer.{diff, inline_diff}`, the load computing the diff, `display_rows`), `crates/sarkos/src/viewer_element.rs` (gutter marks, inline rows), `crates/sarkos/src/pane_view.rs` (the toggle chip), `crates/sarkos/src/keymap.rs` ("toggle inline diff" cmd-shift-d, Viewer context), `crates/sarkos/src/config.rs` (comment line), `crates/sarkos/src/main.rs` (`Command::ToggleInlineDiff`), `README.md`
+- Create: `crates/arkos/src/diff.rs`
+- Modify: `crates/arkos/Cargo.toml` (`similar`), `Cargo.lock`, `crates/arkos/src/viewer.rs` (`Viewer.{diff, inline_diff}`, the load computing the diff, `display_rows`), `crates/arkos/src/viewer_element.rs` (gutter marks, inline rows), `crates/arkos/src/pane_view.rs` (the toggle chip), `crates/arkos/src/keymap.rs` ("toggle inline diff" cmd-shift-d, Viewer context), `crates/arkos/src/config.rs` (comment line), `crates/arkos/src/main.rs` (`Command::ToggleInlineDiff`), `README.md`
 - Test: unit tests in `diff.rs` (pure marks, a temp repository for the base), `viewer.rs`, `viewer_element.rs`
 
 **Interfaces:**
@@ -1217,7 +1217,7 @@ git commit -m "Draw the Worktrees section: lazy status with a shimmer, changed f
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/diff.rs`:
+Create `crates/arkos/src/diff.rs`:
 
 ```rust
 //! Diff gutters for the viewer (spec 6): the file against its worktree's HEAD, as a line diff
@@ -1360,7 +1360,7 @@ In `viewer_element.rs`'s tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos -- diff viewer_element keymap`
+Run: `~/.cargo/bin/cargo test -p arkos -- diff viewer_element keymap`
 Expected: FAIL to compile (add `mod diff;` and the `similar = "2"` dependency; cargo fetches it).
 
 - [ ] **Step 3: Implement**
@@ -1478,13 +1478,13 @@ README: the viewer paragraph gains: "A file in a git repository shows its change
 
 - [ ] **Step 4: Run everything**
 
-Run: `~/.cargo/bin/cargo test --workspace`, the warning check, `grep -n "—" README.md crates/sarkos/src/*.rs`.
+Run: `~/.cargo/bin/cargo test --workspace`, the warning check, `grep -n "—" README.md crates/arkos/src/*.rs`.
 Expected: all green; no project warnings; no em-dashes.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/Cargo.toml Cargo.lock crates/sarkos/src/diff.rs crates/sarkos/src/viewer.rs crates/sarkos/src/viewer_element.rs crates/sarkos/src/pane_view.rs crates/sarkos/src/keymap.rs crates/sarkos/src/config.rs crates/sarkos/src/main.rs crates/sarkos/src/explorer_watch.rs README.md
+git add crates/arkos/Cargo.toml Cargo.lock crates/arkos/src/diff.rs crates/arkos/src/viewer.rs crates/arkos/src/viewer_element.rs crates/arkos/src/pane_view.rs crates/arkos/src/keymap.rs crates/arkos/src/config.rs crates/arkos/src/main.rs crates/arkos/src/explorer_watch.rs README.md
 git commit -m "Mark added, changed and deleted lines in the viewer's gutter, with an inline diff on Cmd+Shift+D"
 ```
 

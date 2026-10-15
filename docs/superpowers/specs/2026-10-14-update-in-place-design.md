@@ -1,17 +1,17 @@
-# Sarkos IDE: updating in place without losing sessions
+# Arkos IDE: updating in place without losing sessions
 
-**Status:** design approved in conversation on 2026-10-14; this document is the written spec for review before the implementation plan. Builds on `2026-10-13-sarkos-design.md` (the main spec), whose section 2 process architecture it extends. Scheduled as its own milestone immediately after milestone 2b and before milestone 3, and required before the Homebrew step.
+**Status:** design approved in conversation on 2026-10-14; this document is the written spec for review before the implementation plan. Builds on `2026-10-13-arkos-design.md` (the main spec), whose section 2 process architecture it extends. Scheduled as its own milestone immediately after milestone 2b and before milestone 3, and required before the Homebrew step.
 
 ## 1. Why this exists
 
-Every IDE Cyrus has used (Cursor, VS Code and others) ends the Claude Code sessions running in its terminals when it updates: the app must quit, so every shell and every agent inside it dies, and the sessions have to be recovered by hand afterwards. Their employer requires updates within seven days of release, so this happens often and is disruptive enough that updates get delayed. The requirement is simple: **updating Sarkos IDE, including its daemon, never ends a session.**
+Every IDE Cyrus has used (Cursor, VS Code and others) ends the Claude Code sessions running in its terminals when it updates: the app must quit, so every shell and every agent inside it dies, and the sessions have to be recovered by hand afterwards. Their employer requires updates within seven days of release, so this happens often and is disruptive enough that updates get delayed. The requirement is simple: **updating Arkos IDE, including its daemon, never ends a session.**
 
-The main spec already puts every session in `sarkosd`, a separate process the window attaches to, so a window update (quit, replace the binary, relaunch) keeps every session today. What is missing is replacing the daemon itself without killing it, and making the whole update one command.
+The main spec already puts every session in `arkosd`, a separate process the window attaches to, so a window update (quit, replace the binary, relaunch) keeps every session today. What is missing is replacing the daemon itself without killing it, and making the whole update one command.
 
 ### 1.1 Non-goals
 
 - Surviving a daemon crash, a logout or a reboot. Section 2.1 of the main spec still holds: nothing survives daemon death. This milestone is replacement without death.
-- Downloading updates. Homebrew (`brew upgrade`) puts the new binaries on disk; Sarkos IDE notices and switches to them.
+- Downloading updates. Homebrew (`brew upgrade`) puts the new binaries on disk; Arkos IDE notices and switches to them.
 - Updating while a session is mid-keystroke with zero latency. A handover pauses output for well under a second; the kernel buffers it.
 
 ## 2. Mechanism: exec-in-place handover
@@ -22,11 +22,11 @@ The alternative, handing descriptors to a fresh process over a Unix socket (`SCM
 
 ### 2.1 Steps, in the old daemon
 
-1. Receive `Request::Upgrade { exe: PathBuf }` from a client (section 4 says who sends it and when). Validate `exe`: a regular file named `sarkosd`, owned by the current user, executable. Run it as `sarkosd --check-handover` (it prints its protocol range and exits 0) to prove it starts at all before anything is touched. Refuse with `Response::Error` otherwise; the old daemon keeps running.
+1. Receive `Request::Upgrade { exe: PathBuf }` from a client (section 4 says who sends it and when). Validate `exe`: a regular file named `arkosd`, owned by the current user, executable. Run it as `arkosd --check-handover` (it prints its protocol range and exits 0) to prove it starts at all before anything is touched. Refuse with `Response::Error` otherwise; the old daemon keeps running.
 2. Stop accepting new clients and stop the reader threads (each session's PTY reader parks; bytes arriving meanwhile wait in the kernel's PTY buffer, and a shell that fills it blocks on `write` for the duration).
-3. Write the handover file to `~/Library/Application Support/sarkos/handover-<pid>.bin`: a header (format version, daemon version, the listening socket's fd number, the watchdog and replay settings in force), then one record per session: id, cwd, pid, alive flag and exit code if ended, exit time, title, Claude state, last activity, the master fd number, the window size last set, and the replay ring's bytes. Written with `sync_all` and renamed into place.
+3. Write the handover file to `~/Library/Application Support/arkos/handover-<pid>.bin`: a header (format version, daemon version, the listening socket's fd number, the watchdog and replay settings in force), then one record per session: id, cwd, pid, alive flag and exit code if ended, exit time, title, Claude state, last activity, the master fd number, the window size last set, and the replay ring's bytes. Written with `sync_all` and renamed into place.
 4. Clear `FD_CLOEXEC` on every master fd and the listening socket. Every other descriptor keeps it.
-5. `execve(exe, ["sarkosd", "--resume", <handover path>], env)`. If `execve` returns, it failed: restore `FD_CLOEXEC`, restart the readers, delete the file, answer the client with the error. Nothing was lost.
+5. `execve(exe, ["arkosd", "--resume", <handover path>], env)`. If `execve` returns, it failed: restore `FD_CLOEXEC`, restart the readers, delete the file, answer the client with the error. Nothing was lost.
 
 ### 2.2 Steps, in the new daemon (`--resume`)
 
@@ -50,11 +50,11 @@ Today a dropped daemon connection shows a banner and stays dead. From this miles
 
 ## 4. The update, end to end
 
-1. `brew upgrade sarkos` (or any copy of new binaries into place) replaces `sarkos` and `sarkosd` on disk. Running processes keep running the old files (the old inodes stay open), so nothing changes yet.
-2. The window checks for an update on launch, on focus, and every five minutes: it runs the binary at its own launch path with `--version` and compares to its own version. On macOS Rust's `std::env::current_exe` returns the path the process was launched through, unresolved (`_NSGetExecutablePath` with no canonicalisation), so for a Homebrew install that is the `/opt/homebrew/bin/sarkos` symlink Homebrew repoints on upgrade; the window must not resolve it, since the resolved Cellar path is the old version's and `brew cleanup` deletes it. A newer version shows **"update ready: 0.4.0"** in the status bar and adds the palette command **"Update Sarkos IDE now"**.
+1. `brew upgrade arkos` (or any copy of new binaries into place) replaces `arkos` and `arkosd` on disk. Running processes keep running the old files (the old inodes stay open), so nothing changes yet.
+2. The window checks for an update on launch, on focus, and every five minutes: it runs the binary at its own launch path with `--version` and compares to its own version. On macOS Rust's `std::env::current_exe` returns the path the process was launched through, unresolved (`_NSGetExecutablePath` with no canonicalisation), so for a Homebrew install that is the `/opt/homebrew/bin/arkos` symlink Homebrew repoints on upgrade; the window must not resolve it, since the resolved Cellar path is the old version's and `brew cleanup` deletes it. A newer version shows **"update ready: 0.4.0"** in the status bar and adds the palette command **"Update Arkos IDE now"**.
 3. The command does, in order:
-   - If the daemon's version (from `Response::Hello`) differs from the on-disk `sarkosd` next to the new `sarkos`: send `Upgrade { exe }` and wait for the reconnect (section 3). The status bar says "updating daemon".
-   - Send `RelaunchClient { exe: <new sarkos>, cwd: <project> }`: the daemon notes it, the window flushes its workspace file and quits, the daemon sees the client disconnect and spawns the new window in that cwd (the watchdog already knows how to launch a window; this reuses it). A clean quit never triggers the watchdog's own relaunch, as today.
+   - If the daemon's version (from `Response::Hello`) differs from the on-disk `arkosd` next to the new `arkos`: send `Upgrade { exe }` and wait for the reconnect (section 3). The status bar says "updating daemon".
+   - Send `RelaunchClient { exe: <new arkos>, cwd: <project> }`: the daemon notes it, the window flushes its workspace file and quits, the daemon sees the client disconnect and spawns the new window in that cwd (the watchdog already knows how to launch a window; this reuses it). A clean quit never triggers the watchdog's own relaunch, as today.
 4. The new window connects, reattaches every tab, and the shells never noticed. Every open window does the same when it runs the command; a window that does not run it keeps working on the old version until it is relaunched.
 
 The order matters: the daemon updates first, so a window is never newer than its daemon (section 5).
@@ -64,34 +64,34 @@ The order matters: the daemon updates first, so a window is never newer than its
 The wire format is postcard, which is not self-describing: a struct field or an enum variant inserted in the middle breaks every older peer. Rules from this milestone on:
 
 - New enum variants are appended, never inserted; existing structs never change shape. A message that needs new fields is a new variant.
-- `Hello` carries the window's protocol version; the daemon answers `Response::Hello` with the range it speaks. A daemon refuses a window newer than its maximum with an error naming the fix ("update the daemon: run Update Sarkos IDE now"), which the update command performs. A daemon serves any window at or above its minimum.
-- `PROTOCOL_VERSION` is bumped only for a breaking change, which the rules above make rare. The current version 1 daemon does not speak `Upgrade`; the first upgrade to this milestone's daemon is the one time `pkill -x sarkosd` is still needed, and the README says so.
+- `Hello` carries the window's protocol version; the daemon answers `Response::Hello` with the range it speaks. A daemon refuses a window newer than its maximum with an error naming the fix ("update the daemon: run Update Arkos IDE now"), which the update command performs. A daemon serves any window at or above its minimum.
+- `PROTOCOL_VERSION` is bumped only for a breaking change, which the rules above make rare. The current version 1 daemon does not speak `Upgrade`; the first upgrade to this milestone's daemon is the one time `pkill -x arkosd` is still needed, and the README says so.
 
 ## 6. Versions
 
-`sarkos --version` and `sarkosd --version` print the crate version and the short git hash the binary was built from. The status bar's update notice shows the crate version. The handover file records both so a resume from a mismatched build is refused.
+`arkos --version` and `arkosd --version` print the crate version and the short git hash the binary was built from. The status bar's update notice shows the crate version. The handover file records both so a resume from a mismatched build is refused.
 
 ## 7. Failure modes
 
 | Failure | Behaviour |
 |---|---|
-| New `sarkosd` does not start (`--check-handover` fails) | Old daemon keeps running; error banner in the window |
+| New `arkosd` does not start (`--check-handover` fails) | Old daemon keeps running; error banner in the window |
 | `execve` fails | Old daemon restores its readers and keeps running; error banner |
 | New daemon rejects the handover file | Fatal: logged, sessions lost. Guarded by the check above and by the file's format version; the integration test covers a corrupt file by running the resume path on it in a daemon with no real sessions |
 | A shell exits during the swap | `waitpid` at resume catches it; `Exited` is sent on the next attach |
-| Window quits for relaunch but the new `sarkos` fails to launch | The daemon logs it and relaunches the old binary path from the last `Hello`, so a window comes back |
+| Window quits for relaunch but the new `arkos` fails to launch | The daemon logs it and relaunches the old binary path from the last `Hello`, so a window comes back |
 | Update command while another window is mid-update | `Upgrade` is refused with "already upgrading" until the resume completes |
 
 ## 8. Testing
 
 - Unit: handover file round trip (header, records, rings); the libc PTY layer spawns a shell, resizes it, reads output, adopts its own fd; children by pid detect exit under a held PTY (the milestone 2a test, re-pointed).
-- Integration (`crates/sarkosd/tests/daemon.rs`): start a daemon, create a session, type a command, send `Upgrade` pointing at the same binary; assert the pid is unchanged, `Attach` replays the earlier output, typing after the upgrade works, and `exit` is detected and reaped afterwards. A second test sends `Upgrade` with a bogus path and asserts the daemon still answers and the session still runs. A third sends `Upgrade` while the previous one is in flight.
+- Integration (`crates/arkosd/tests/daemon.rs`): start a daemon, create a session, type a command, send `Upgrade` pointing at the same binary; assert the pid is unchanged, `Attach` replays the earlier output, typing after the upgrade works, and `exit` is detected and reaped afterwards. A second test sends `Upgrade` with a bogus path and asserts the daemon still answers and the session still runs. A third sends `Upgrade` while the previous one is in flight.
 - Window: the reconnect loop against a daemon that is killed and restarted by the test harness; the version comparison and the status text are pure functions with unit tests.
-- Manual (README checklist): `cargo build --release` a new version into place while four sessions run `claude`, run "Update Sarkos IDE now", and confirm every tab comes back with its history and the agents keep working.
+- Manual (README checklist): `cargo build --release` a new version into place while four sessions run `claude`, run "Update Arkos IDE now", and confirm every tab comes back with its history and the agents keep working.
 
 ## 9. Security
 
-The daemon execs only a path given by a same-user client over the 0600 socket, and only after checking it is a regular file named `sarkosd` owned by that user. The handover file is created 0600 in the sarkos directory and deleted as soon as it is read. No new privileges, no network.
+The daemon execs only a path given by a same-user client over the 0600 socket, and only after checking it is a regular file named `arkosd` owned by that user. The handover file is created 0600 in the arkos directory and deleted as soon as it is read. No new privileges, no network.
 
 ## 10. Where it sits
 
@@ -101,9 +101,9 @@ A milestone of about six tasks between 2b and 3: children by pid; the PTY layer;
 
 A shutdown or restart (an OS update, or turning it off and on again) ends every process; no shell or Claude Code process survives it, and section 1.1 stands. What becomes automatic is the recovery: the same layout, the same folders, the history back on screen, and every Claude Code conversation resumed. What does not come back is whatever was executing at that moment (a half-finished tool call, a running build, shell variables, background jobs); Claude Code's transcript records the unfinished tool, and the agent continues from there once asked.
 
-1. **Disk-backed replay buffers.** The daemon flushes each session's ring to `~/Library/Application Support/sarkos/sessions/<id>.replay` a few seconds after output arrives and in full on SIGTERM (a clean macOS shutdown sends it). After a reboot the window shows the old output under a divider line, then the fresh shell. The file format is the handover record of section 2.1, so this reuses that code.
+1. **Disk-backed replay buffers.** The daemon flushes each session's ring to `~/Library/Application Support/arkos/sessions/<id>.replay` a few seconds after output arrives and in full on SIGTERM (a clean macOS shutdown sends it). After a reboot the window shows the old output under a divider line, then the fresh shell. The file format is the handover record of section 2.1, so this reuses that code.
 2. **A session manifest.** Per session: cwd, shell, nice, and the agent running inside it, as a kind and a resume command (`claude --resume <id>` from Claude Code's SessionStart hook in milestone 3; `codex resume <id>` from Codex CLI's SessionStart hook in a later Codex milestone: Codex's lifecycle hooks have the same shape, with `session_id`, `transcript_path`, `cwd` and `hook_event_name` on stdin and a PermissionRequest event for the waiting state, so the daemon-side record is identical for both). Written with the replay file. The IDE never depends on which agent is inside a shell beyond this record.
-3. **Start at login.** A launchd agent (`~/Library/LaunchAgents/sh.csarko.sarkosd.plist`, installed by the window on first run with the user's consent) starts `sarkosd` at login. It reads the manifest, recreates each shell in its folder, runs the recorded resume command where an agent session was recorded, and marks the tab "resumed after restart". It only resumes; it never sends a message, so the user decides when each agent continues.
-4. **Reopen the window.** The same agent launches `sarkos` in each project folder that had a window open, after the daemon is listening.
+3. **Start at login.** A launchd agent (`~/Library/LaunchAgents/sh.csarko.arkosd.plist`, installed by the window on first run with the user's consent) starts `arkosd` at login. It reads the manifest, recreates each shell in its folder, runs the recorded resume command where an agent session was recorded, and marks the tab "resumed after restart". It only resumes; it never sends a message, so the user decides when each agent continues.
+4. **Reopen the window.** The same agent launches `arkos` in each project folder that had a window open, after the daemon is listening.
 
 Plan: with milestone 3, which supplies the session id. Steps 1 and 2 may be pulled into this milestone if the handover file lands first. Sessions always run on this Mac: a daemon on another machine (which would be the only way for a process to outlive a reboot) is ruled out for privacy, so the goal is that after a restart the layout, the folders, the history and every Claude Code conversation come back on their own, with nothing for Cyrus to redo by hand.

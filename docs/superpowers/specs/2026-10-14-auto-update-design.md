@@ -1,4 +1,4 @@
-# Sarkos IDE: automatic updates
+# Arkos IDE: automatic updates
 
 Date: 2026-10-14. Status: approved in chat; this is the written design. Builds on the
 update-in-place design (`2026-10-14-update-in-place-design.md`): that milestone made an update
@@ -29,12 +29,12 @@ Decisions taken in chat on 2026-10-14:
 | Piece | Lives in | Does |
 |---|---|---|
 | Release workflow | `.github/workflows/release.yml` | Builds, bundles, signs and publishes one release, on `workflow_dispatch` only |
-| Release key | GitHub Actions secret `SARKOS_RELEASE_KEY`; public half in `crates/protocol/src/release_key.rs` | Signs the manifest; the IDE verifies it |
+| Release key | GitHub Actions secret `ARKOS_RELEASE_KEY`; public half in `crates/protocol/src/release_key.rs` | Signs the manifest; the IDE verifies it |
 | Manifest | A release asset, `manifest.json` | Says what the latest release is and how to check it |
-| Cask | `csarkosh/homebrew-tap`, `Casks/sarkos-ide.rb` | First install: `Sarkos IDE.app` into `/Applications`, `auto_updates true` |
-| Fetcher | `crates/sarkosd/src/updates/{manifest,fetch,verify,stage}.rs` | Polls, downloads, verifies, unpacks into a staging folder |
-| Swap | `crates/sarkosd/src/updates/swap.rs` | Renames the new bundle into place, keeps the old one for rollback |
-| Idle apply | `crates/sarkos/src/idle.rs` and the existing `update.rs` | Decides when a window may relaunch itself and runs the existing update flow |
+| Cask | `csarkosh/homebrew-tap`, `Casks/arkos-ide.rb` | First install: `Arkos IDE.app` into `/Applications`, `auto_updates true` |
+| Fetcher | `crates/arkosd/src/updates/{manifest,fetch,verify,stage}.rs` | Polls, downloads, verifies, unpacks into a staging folder |
+| Swap | `crates/arkosd/src/updates/swap.rs` | Renames the new bundle into place, keeps the old one for rollback |
+| Idle apply | `crates/arkos/src/idle.rs` and the existing `update.rs` | Decides when a window may relaunch itself and runs the existing update flow |
 | Protocol | `crates/protocol` | One additive message pair, protocol 4 |
 
 The window never touches the network. The daemon never shows UI. Both read the same config.
@@ -49,12 +49,12 @@ arm64 runner (free on this public repository; it is manual so no minute is spent
    `v0.2.1`, pushed back to `main` by the workflow (so the binaries' `--version` and the
    manifest agree, and the tag marks the exact source).
 3. `cargo build --release` for both crates.
-4. Assemble `Sarkos IDE.app`: `Contents/Info.plist` (bundle id `sh.csarko.sarkos`, name
-   "Sarkos IDE", `CFBundleShortVersionString` from the input, `LSUIElement` false,
-   `CFBundleExecutable` `sarkos`), `Contents/MacOS/sarkos` and `Contents/MacOS/sarkosd`,
+4. Assemble `Arkos IDE.app`: `Contents/Info.plist` (bundle id `sh.csarko.arkos`, name
+   "Arkos IDE", `CFBundleShortVersionString` from the input, `LSUIElement` false,
+   `CFBundleExecutable` `arkos`), `Contents/MacOS/arkos` and `Contents/MacOS/arkosd`,
    `Contents/Resources/` (the icon arrives with branding; empty until then).
 5. `codesign --force --deep --sign -` (ad-hoc) on the bundle.
-6. `ditto -c -k --keepParent` into `Sarkos-IDE-0.2.1-arm64.zip`.
+6. `ditto -c -k --keepParent` into `Arkos-IDE-0.2.1-arm64.zip`.
 7. Write `manifest.json`:
    ```json
    {
@@ -63,7 +63,7 @@ arm64 runner (free on this public repository; it is manual so no minute is spent
      "git": "a1b2c3d",
      "published": "2026-10-15T03:12:00Z",
      "arm64": {
-       "url": "https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Sarkos-IDE-0.2.1-arm64.zip",
+       "url": "https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip",
        "size": 23456789,
        "sha256": "..."
      },
@@ -88,18 +88,18 @@ update first, so this is belt and braces).
 
 ## 4. Install shape
 
-Homebrew is the first install only: `brew install csarkosh/tap/sarkos-ide` puts
-`Sarkos IDE.app` in `/Applications`. The cask has `auto_updates true`, so `brew upgrade` skips
+Homebrew is the first install only: `brew install csarkosh/tap/arkos-ide` puts
+`Arkos IDE.app` in `/Applications`. The cask has `auto_updates true`, so `brew upgrade` skips
 it; the IDE keeps itself current. (`brew reinstall` still works as a reset.)
 
 Paths inside the bundle never move between versions, so the launchd agent
-(`~/Library/LaunchAgents/sh.csarko.sarkosd.plist` pointing at
-`/Applications/Sarkos IDE.app/Contents/MacOS/sarkosd`), the window's on-disk version check
-(its own launch path), the Claude Code hooks (`sarkos notify` by launch path) and the socket
+(`~/Library/LaunchAgents/sh.csarko.arkosd.plist` pointing at
+`/Applications/Arkos IDE.app/Contents/MacOS/arkosd`), the window's on-disk version check
+(its own launch path), the Claude Code hooks (`arkos notify` by launch path) and the socket
 all keep working across updates. A moved bundle is the existing "install again" case.
 
-The bundle swap is Sparkle's: unpack the verified zip to `Sarkos IDE.app.new` beside the
-installed bundle, rename the installed one to `Sarkos IDE.app.old`, rename `.new` into
+The bundle swap is Sparkle's: unpack the verified zip to `Arkos IDE.app.new` beside the
+installed bundle, rename the installed one to `Arkos IDE.app.old`, rename `.new` into
 place, and delete `.old` after the next successful window launch. Two renames on one volume
 are atomic each; the running processes keep their open files (the old inodes), which is what
 the update-in-place handover relies on.
@@ -111,7 +111,7 @@ whether that prompts. So the plan's first task is an experiment on this Mac: a b
 executable is a shell script, ad-hoc signed, placed in `/Applications`, swapped by a
 background process with the two renames above, while a copy of it runs. If macOS prompts or
 blocks, the fallback is fixed now: the real bundle lives at
-`~/Library/Application Support/sarkos/Sarkos IDE.app` and `/Applications/Sarkos IDE.app` is a
+`~/Library/Application Support/arkos/Arkos IDE.app` and `/Applications/Arkos IDE.app` is a
 launcher bundle that never changes (its executable `exec`s the real one); the cask installs
 both and the updater touches only the first. Nothing else in this design changes under the
 fallback.
@@ -135,14 +135,14 @@ UI to block. Every `check_every` (default five minutes) and on `CheckForUpdates`
 4. Download the zip to `<staging>/<version>/bundle.zip` with `curl` (`--max-filesize` from
    the manifest's `size` plus a 200 MB cap, `--max-time 600`), then check the size and the
    sha256 (crate `sha2`) against the manifest.
-5. Unpack with `ditto -x -k` into `<staging>/<version>/Sarkos IDE.app`, check the structure
+5. Unpack with `ditto -x -k` into `<staging>/<version>/Arkos IDE.app`, check the structure
    (both executables present and executable, `Info.plist` version equal to the manifest's),
-   and run `<new>/Contents/MacOS/sarkosd --version` with a two-second limit to be sure it
+   and run `<new>/Contents/MacOS/arkosd --version` with a two-second limit to be sure it
    runs. Any failure deletes the folder and marks the version bad.
 6. Record `staged = { version, git, path }` and notify every connected window
    (`Event::UpdateStaged { version }`).
 
-Staging lives under `~/Library/Application Support/sarkos/updates/`; the daemon deletes
+Staging lives under `~/Library/Application Support/arkos/updates/`; the daemon deletes
 anything there that is not the current staged version on every check. Only one fetch runs at
 a time; a check during a download is ignored. The on-disk check the window already does (its
 launch path's `--version` every five minutes) stays, so a manual `brew reinstall` or a local
@@ -160,8 +160,8 @@ chrome (`idle.rs`), checked once a second while an update is staged and otherwis
 
 Applying is the existing "Update now" flow with one addition at the front: the window sends
 `ApplyUpdate` and the daemon does the bundle swap (section 4), then the daemon upgrade
-(exec-in-place with the handover file, from `<bundle>/Contents/MacOS/sarkosd`, now the new
-file), then `RelaunchClient` with the new `sarkos`. The window quits, the daemon launches the
+(exec-in-place with the handover file, from `<bundle>/Contents/MacOS/arkosd`, now the new
+file), then `RelaunchClient` with the new `arkos`. The window quits, the daemon launches the
 new window in the same project, the shells never notice. A second window that is still busy
 keeps the badge and applies itself when it goes idle; it finds the daemon already new and
 only relaunches itself. `auto = false` in `[update]` turns the automatic apply off: the badge
@@ -228,7 +228,7 @@ The daemon reads `check_every` and `--update-url`; the window reads the other tw
 - The workflow: run once by hand; the README's "Releasing" section is the checklist.
 - Dogfooding checklist (README): push, `gh workflow run release -f version=0.2.1`, wait for
   the run, see "update ready" within five minutes, stop typing, see the window relaunch with
-  every shell still there; `brew install csarkosh/tap/sarkos-ide` on a clean machine puts the
+  every shell still there; `brew install csarkosh/tap/arkos-ide` on a clean machine puts the
   app in `/Applications` and the first update lands by itself.
 
 ## 11. Where it sits

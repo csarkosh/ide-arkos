@@ -1,4 +1,4 @@
-//! Messages and framing shared by sarkosd and sarkos.
+//! Messages and framing shared by arkosd and arkos.
 //!
 //! Every request from the UI carries an id; the daemon answers with a `ServerMessage::Response`
 //! bearing the same id, and pushes `ServerMessage::Event`s on its own schedule.
@@ -55,7 +55,7 @@ pub struct AgentRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionDetail {
     pub info: SessionInfo,
-    /// Recreated by `sarkosd --recover` after a restart.
+    /// Recreated by `arkosd --recover` after a restart.
     pub recovered: bool,
     pub agent: Option<AgentRecord>,
 }
@@ -93,7 +93,7 @@ pub enum Request {
     /// The window is quitting because the user asked: a restart must not reopen it. A window
     /// that vanishes without this (the shutdown killed it, or it crashed) is reopened.
     Goodbye,
-    /// From the agent's SessionStart hook through `sarkos notify`. Replaces any earlier record.
+    /// From the agent's SessionStart hook through `arkos notify`. Replaces any earlier record.
     SetAgent { session: SessionId, agent: AgentRecord },
     /// From the agent's SessionEnd hook. Clears the record only when it is still `id`'s: a
     /// SessionEnd that lands after the next SessionStart must not erase the new record.

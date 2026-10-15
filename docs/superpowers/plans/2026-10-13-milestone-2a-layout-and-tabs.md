@@ -1,4 +1,4 @@
-# Sarkos IDE Milestone 2a: Layout and tabs. Implementation Plan
+# Arkos IDE Milestone 2a: Layout and tabs. Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,21 +8,21 @@
 
 **Tech Stack:** Rust stable (edition 2021), gpui 0.2.2 (exact pin, `runtime_shaders`), alacritty_terminal 0.26, portable-pty 0.9, postcard 1.1 + serde + serde_json, futures 0.3, libc 0.2, anyhow 1, objc2-foundation 0.3.2 (already in `Cargo.lock` through gpui). Dev: tempfile 3, proptest 1.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-sarkos-design.md` (sections 2.1, 2.4, 3 "jump to bottom", 4, 9, 10, 11 milestone 2, 12). The config file, themes, text presets, the command palette and find (sections 4 "Open config / command palette", "Cmd+F", and 7) are **milestone 2b**, a separate plan, because they are an independent subsystem; this plan leaves their bindings unbound and says so where they would go.
+**Spec:** `docs/superpowers/specs/2026-10-13-arkos-design.md` (sections 2.1, 2.4, 3 "jump to bottom", 4, 9, 10, 11 milestone 2, 12). The config file, themes, text presets, the command palette and find (sections 4 "Open config / command palette", "Cmd+F", and 7) are **milestone 2b**, a separate plan, because they are an independent subsystem; this plan leaves their bindings unbound and says so where they would go.
 
 ## Global Constraints
 
 - macOS only, Apple Silicon. No Linux or Windows code paths.
 - `gpui = { version = "=0.2.2", features = ["runtime_shaders"] }` pinned exactly. Never bump inside this plan. If a gpui or alacritty_terminal name in this plan does not compile, the API moved: grep `~/.cargo/registry/src/*/gpui-0.2.2/src/` (its `examples/drag_drop.rs`, `examples/set_menus.rs` and `examples/on_window_close_quit.rs` are the reference for drag and drop, menus and quit) or `~/.cargo/registry/src/*/alacritty_terminal-0.26.*/src/` for the method, fix the call, and note the change in the commit message. Do not guess.
-- Display name "Sarkos IDE" in the window title and user-facing text; binaries, crates, the socket directory `~/Library/Application Support/sarkos/` and log prefixes stay lowercase `sarkos`.
+- Display name "Arkos IDE" in the window title and user-facing text; binaries, crates, the socket directory `~/Library/Application Support/arkos/` and log prefixes stay lowercase `arkos`.
 - Text defaults: Menlo at 16 px, line height 1.5; background `#11161f`, foreground `#d6dae0` (spec 7.1). Cmd+= and Cmd+- nudge the focused terminal's size by 1 px within 10 to 32 px (spec 7, "nudge the size of the focused terminal without changing the preset").
 - Layout (spec 4): binary split tree; every split edge is a 4 px handle with an 8 px hit area; dragging updates the ratio live; double-click resets to equal; minimum pane size 160 px wide, 80 px tall; panes are numbered Cmd+1 to Cmd+9 left to right, top to bottom; a pane whose last tab closes with Cmd+W stays open and shows the empty state; a pane auto-closes only when its last tab is dragged into another pane; the last pane in the workspace never closes.
 - Keyboard (spec 4 table): the bindings in Task 7 are the spec's, verbatim. Unbound keys reach the focused terminal as bytes. No bell-jump or browser-focus shortcut exists.
-- Persistence (spec 4): layout tree, tab order, active tabs, split ratios, each tab's session id or viewer path are written to `~/Library/Application Support/sarkos/workspaces/<hash>.json` on every change, debounced (300 ms); on launch the tree is rebuilt and every tab reattached; a missing or dead session reopens as a fresh shell in the same cwd with a note in the tab.
+- Persistence (spec 4): layout tree, tab order, active tabs, split ratios, each tab's session id or viewer path are written to `~/Library/Application Support/arkos/workspaces/<hash>.json` on every change, debounced (300 ms); on launch the tree is rebuilt and every tab reattached; a missing or dead session reopens as a fresh shell in the same cwd with a note in the tab.
 - Daemon (spec 2.1, 2.4, 9): the daemon never parses escape sequences; the UI thread never blocks on IO; a UI client is never dropped by the daemon for slowness, the watchdog is the only authority that ends a UI; nothing allocates per output byte beyond the ring.
 - Motion (spec 7.1): the empty-state animation is slow, low contrast, plays on appearance and hover then settles, costs no frames when idle, and honours Reduce Motion.
 - Commit messages: imperative, one line, body optional. No em-dashes in any copy or comment. Every commit ends with a blank line and `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
-- Tests: `cargo test -p sarkos` must stay headless (no window); daemon tests run the real binary from `crates/sarkosd/tests/daemon.rs` and must pass ten times in a row; the build stays warning-free for the project's crates.
+- Tests: `cargo test -p arkos` must stay headless (no window); daemon tests run the real binary from `crates/arkosd/tests/daemon.rs` and must pass ten times in a row; the build stays warning-free for the project's crates.
 
 ## Review Focus
 
@@ -39,13 +39,13 @@
 ```
 crates/
   protocol/src/lib.rs             unchanged wire format (PROTOCOL_VERSION stays 1: no message changes in this plan)
-  sarkosd/
+  arkosd/
     src/session.rs                ChildSlot (try_reap), mark_exited, poll_exit, kill that never signals a reaped pid
     src/reaper.rs                 NEW: periodic poll_exit and removal of dead sessions nobody is attached to
     src/server.rs                 Options gains reaper_millis and dead_session_ttl; Hello validates ui_exe; socket path checks
     src/main.rs                   flags --reaper-millis, --dead-session-secs
     tests/daemon.rs               lifecycle, reaping and hardening tests (append)
-  sarkos/
+  arkos/
     src/tree.rs                   NEW: Tree, Node, Pane, Tab, Side, layout(), neighbor(), property tests
     src/workspace.rs              v2 format: the tree plus project path; v1 migration; WorkspaceSaver (debounced, off-thread)
     src/paths.rs                  stable FNV-1a workspace file name (replaces DefaultHasher)
@@ -71,9 +71,9 @@ Responsibilities stay one per file. `tree.rs`, `workspace.rs`, `sessions.rs` (it
 ### Task 1: Daemon session lifecycle: exit detection, safe kill, reaping, hardening
 
 **Files:**
-- Modify: `crates/sarkosd/src/session.rs`, `crates/sarkosd/src/server.rs`, `crates/sarkosd/src/main.rs`
-- Create: `crates/sarkosd/src/reaper.rs`
-- Test: `crates/sarkosd/tests/daemon.rs` (append)
+- Modify: `crates/arkosd/src/session.rs`, `crates/arkosd/src/server.rs`, `crates/arkosd/src/main.rs`
+- Create: `crates/arkosd/src/reaper.rs`
+- Test: `crates/arkosd/tests/daemon.rs` (append)
 
 **Interfaces:**
 - Consumes: the existing `Session`, `ClientSink`, `server::{Shared, State, Options, dispatch}`, `watchdog::start`.
@@ -83,14 +83,14 @@ Responsibilities stay one per file. `tree.rs`, `workspace.rs`, `sessions.rs` (it
   - `session::Session::exited_at(&self) -> Option<Instant>` and `has_subscribers(&self) -> bool`.
   - `reaper::start(state: Shared, every: Duration, ttl: Duration)`: a thread that calls `poll_exit` on every session each `every` and removes a dead session with no subscribers once `ttl` has passed since it exited.
   - `server::Options { replay_capacity, watchdog, client_pending_cap, subscriber_high_water, subscriber_stall, reaper_every: Duration, dead_session_ttl: Duration }`; CLI `--reaper-millis <n>` (default 1000) and `--dead-session-secs <n>` (default 600).
-  - `Hello` with a `ui_exe` whose file name is not `sarkos` or that is not a regular file is stored as `None` and logged.
+  - `Hello` with a `ui_exe` whose file name is not `arkos` or that is not a regular file is stored as `None` and logged.
   - `server::run` refuses to start when the socket path exists and is not a socket, and sets the parent directory to 0700 only when it created it.
 
 Why first: Task 7 binds Cmd+W to `Kill`, and milestone 1's final review found that `Kill` could signal a reaped (possibly reused) pid, that exit was detected only by PTY EOF, that the reader held the child mutex across a blocking `wait()`, and that dead sessions were never removed. These are fixed as one unit.
 
 - [ ] **Step 1: Write the failing lifecycle tests**
 
-Append to `crates/sarkosd/tests/daemon.rs`:
+Append to `crates/arkosd/tests/daemon.rs`:
 
 ```rust
 /// Waits up to `timeout` for an `Exited` event for `session`, returning its code.
@@ -169,7 +169,7 @@ fn dead_session_is_reaped_after_the_ttl_once_nobody_is_attached() {
 
 #[test]
 fn hello_with_a_foreign_ui_exe_is_not_relaunched() {
-    // A client may only ask the watchdog to relaunch a binary named `sarkos`.
+    // A client may only ask the watchdog to relaunch a binary named `arkos`.
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("marker");
     let script = dir.path().join("other");
@@ -186,16 +186,16 @@ fn hello_with_a_foreign_ui_exe_is_not_relaunched() {
     });
     std::thread::sleep(Duration::from_millis(3500));
     assert!(fake_ui.try_wait().unwrap().is_some(), "silent UI was not killed");
-    assert!(!marker.exists(), "a binary not named sarkos was relaunched");
+    assert!(!marker.exists(), "a binary not named arkos was relaunched");
     let _ = fake_ui.wait();
 }
 
 #[test]
 fn daemon_refuses_a_regular_file_at_the_socket_path() {
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("sarkosd.sock");
+    let socket = dir.path().join("arkosd.sock");
     std::fs::write(&socket, "not a socket").unwrap();
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_sarkosd"))
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_arkosd"))
         .args(["--socket", socket.to_str().unwrap(), "--watchdog-secs", "0"])
         .stderr(std::process::Stdio::null())
         .status()
@@ -205,16 +205,16 @@ fn daemon_refuses_a_regular_file_at_the_socket_path() {
 }
 ```
 
-`wait_for_exit` must not hang when the event never comes: give `Conn` a `set_read_timeout(&mut self, Option<Duration>)` helper that calls `set_read_timeout` on its stream, and call it with 5 s at the start of `wait_for_exit` (and `None` at the end); a timed-out `next_message` then panics with the daemon's silence as the message. `Daemon::connect_raw()` is a connection that sends no `Hello`; if the harness only has `connect()` (which sends a tool `Hello`) and `connect_as(ui_pid)`, add `connect_raw` next to them returning a `Conn` without the handshake. `env!("CARGO_BIN_EXE_sarkosd")` is how the existing `Daemon::start` finds the binary; reuse the same expression.
+`wait_for_exit` must not hang when the event never comes: give `Conn` a `set_read_timeout(&mut self, Option<Duration>)` helper that calls `set_read_timeout` on its stream, and call it with 5 s at the start of `wait_for_exit` (and `None` at the end); a timed-out `next_message` then panics with the daemon's silence as the message. `Daemon::connect_raw()` is a connection that sends no `Hello`; if the harness only has `connect()` (which sends a tool `Hello`) and `connect_as(ui_pid)`, add `connect_raw` next to them returning a `Conn` without the handshake. `env!("CARGO_BIN_EXE_arkosd")` is how the existing `Daemon::start` finds the binary; reuse the same expression.
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkosd --test daemon exit_is_detected 2>&1 | tail -15`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkosd --test daemon exit_is_detected 2>&1 | tail -15`
 Expected: `exit_is_detected_while_a_background_job_holds_the_pty` fails ("no Exited event ... within 1.8s", because only EOF detects exit today); `daemon_refuses_a_regular_file_at_the_socket_path` fails (the daemon removes the file and starts); `dead_session_is_reaped...` fails ("dead session never reaped"); the others may compile-fail on `--reaper-millis` being unknown, which the daemon reports as an error exit.
 
 - [ ] **Step 3: Replace the child mutex with a reaping slot**
 
-In `crates/sarkosd/src/session.rs`, change the `child` field and add the slot type. Replace `child: Mutex<Box<dyn Child + Send + Sync>>,` with `child: Mutex<ChildSlot>,` and add above `pub struct Session`:
+In `crates/arkosd/src/session.rs`, change the `child` field and add the slot type. Replace `child: Mutex<Box<dyn Child + Send + Sync>>,` with `child: Mutex<ChildSlot>,` and add above `pub struct Session`:
 
 ```rust
 /// The shell process and, once reaped, its exit code. A reaped pid may be reused by any other
@@ -346,7 +346,7 @@ Lock order after this change: the child lock is a leaf everywhere except `kill`,
 
 - [ ] **Step 6: Add the reaper thread**
 
-Create `crates/sarkosd/src/reaper.rs`:
+Create `crates/arkosd/src/reaper.rs`:
 
 ```rust
 //! Notices shells that exited while something still holds their PTY open, and forgets dead
@@ -388,7 +388,7 @@ fn scan(state: &Shared, ttl: Duration) {
         let still_dead = st.sessions.get(&id).map(|s| !s.has_subscribers()).unwrap_or(false);
         if still_dead {
             st.sessions.remove(&id);
-            eprintln!("sarkosd: session {} reaped {}s after it ended", id.0, ttl.as_secs());
+            eprintln!("arkosd: session {} reaped {}s after it ended", id.0, ttl.as_secs());
         }
     }
 }
@@ -396,11 +396,11 @@ fn scan(state: &Shared, ttl: Duration) {
 
 `Session.id` must be `pub` (it is `pub id: SessionId` today; if not, make it so). Dropping the last `Arc<Session>` closes the PTY master, which ends the reader thread's `read` with an error and the writer thread's channel; nothing else holds the session.
 
-Add `mod reaper;` to `crates/sarkosd/src/main.rs`.
+Add `mod reaper;` to `crates/arkosd/src/main.rs`.
 
 - [ ] **Step 7: Options, flags, and starting the reaper**
 
-In `crates/sarkosd/src/server.rs`, add to `Options`:
+In `crates/arkosd/src/server.rs`, add to `Options`:
 
 ```rust
     /// How often the reaper polls for exits and dead sessions.
@@ -411,14 +411,14 @@ In `crates/sarkosd/src/server.rs`, add to `Options`:
 
 In `server::run`, right after `crate::watchdog::start(state.clone(), opts.watchdog);` add `crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);`.
 
-In `crates/sarkosd/src/main.rs`, add two flags beside the existing ones, following the exact parsing style used for `--watchdog-secs`:
+In `crates/arkosd/src/main.rs`, add two flags beside the existing ones, following the exact parsing style used for `--watchdog-secs`:
 
 ```rust
             "--reaper-millis" => reaper_millis = args.next().and_then(|v| v.parse().ok()).expect("--reaper-millis needs a number"),
             "--dead-session-secs" => dead_session_secs = args.next().and_then(|v| v.parse().ok()).expect("--dead-session-secs needs a number"),
 ```
 
-with `let mut reaper_millis: u64 = 1000;` and `let mut dead_session_secs: u64 = 600;` declared beside the other defaults, and in the `Options` literal `reaper_every: Duration::from_millis(reaper_millis.max(10)), dead_session_ttl: Duration::from_secs(dead_session_secs),`. Also validate `--replay-bytes` here: `if replay == 0 { eprintln!("sarkosd: --replay-bytes must be at least 1"); std::process::exit(2); }` (milestone 1 left a zero value panicking a client thread).
+with `let mut reaper_millis: u64 = 1000;` and `let mut dead_session_secs: u64 = 600;` declared beside the other defaults, and in the `Options` literal `reaper_every: Duration::from_millis(reaper_millis.max(10)), dead_session_ttl: Duration::from_secs(dead_session_secs),`. Also validate `--replay-bytes` here: `if replay == 0 { eprintln!("arkosd: --replay-bytes must be at least 1"); std::process::exit(2); }` (milestone 1 left a zero value panicking a client thread).
 
 - [ ] **Step 8: Validate ui_exe and the socket path**
 
@@ -426,10 +426,10 @@ In `server::dispatch`'s `Request::Hello` arm, where `ui_exe` is stored on the `C
 
 ```rust
             let ui_exe = ui_exe.filter(|p| {
-                let named_sarkos = p.file_name().map(|n| n == "sarkos").unwrap_or(false);
-                let ok = named_sarkos && p.is_file();
+                let named_arkos = p.file_name().map(|n| n == "arkos").unwrap_or(false);
+                let ok = named_arkos && p.is_file();
                 if !ok {
-                    eprintln!("sarkosd: client {client_id} offered ui_exe {} which is not a sarkos binary; it will not be relaunched", p.display());
+                    eprintln!("arkosd: client {client_id} offered ui_exe {} which is not a arkos binary; it will not be relaunched", p.display());
                 }
                 ok
             });
@@ -460,17 +460,17 @@ with `use std::os::unix::fs::{FileTypeExt, PermissionsExt};` and `use anyhow::Co
 
 - [ ] **Step 9: Run the lifecycle tests, then the whole daemon suite ten times**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkosd --test daemon 2>&1 | tail -8`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkosd --test daemon 2>&1 | tail -8`
 Expected: all previous tests plus the five new ones pass.
 
-Run: `for i in $(seq 1 10); do cargo test -p sarkosd 2>&1 | grep -E 'test result|FAILED' ; done; pkill -x sarkosd; pgrep -lx sarkosd || echo clean`
+Run: `for i in $(seq 1 10); do cargo test -p arkosd 2>&1 | grep -E 'test result|FAILED' ; done; pkill -x arkosd; pgrep -lx arkosd || echo clean`
 Expected: ten green runs, no leftover daemon.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add crates/sarkosd
-git commit -m "sarkosd: detect exit under a held PTY, never signal a reaped pid, reap dead sessions"
+git add crates/arkosd
+git commit -m "arkosd: detect exit under a held PTY, never signal a reaped pid, reap dead sessions"
 ```
 
 ---
@@ -478,8 +478,8 @@ git commit -m "sarkosd: detect exit under a held PTY, never signal a reaped pid,
 ### Task 2: The layout tree (pure)
 
 **Files:**
-- Create: `crates/sarkos/src/tree.rs`
-- Modify: `crates/sarkos/Cargo.toml` (dev-dependency `proptest = "1"`), `crates/sarkos/src/main.rs` (`mod tree;`)
+- Create: `crates/arkos/src/tree.rs`
+- Modify: `crates/arkos/Cargo.toml` (dev-dependency `proptest = "1"`), `crates/arkos/src/main.rs` (`mod tree;`)
 - Test: inline unit tests and proptest properties in `tree.rs`
 
 **Interfaces:**
@@ -494,9 +494,9 @@ git commit -m "sarkosd: detect exit under a held PTY, never signal a reaped pid,
 
 - [ ] **Step 1: Add proptest and write the failing unit tests**
 
-In `crates/sarkos/Cargo.toml`, under `[dev-dependencies]` (create the section if missing; `tempfile` is already there), add `proptest = "1"`.
+In `crates/arkos/Cargo.toml`, under `[dev-dependencies]` (create the section if missing; `tempfile` is already there), add `proptest = "1"`.
 
-Create `crates/sarkos/src/tree.rs` with only the test module first (the implementation comes in step 3):
+Create `crates/arkos/src/tree.rs` with only the test module first (the implementation comes in step 3):
 
 ```rust
 //! The layout model (spec 4): a binary split tree of panes, each pane an ordered list of tabs.
@@ -899,12 +899,12 @@ mod tests {
 
 - [ ] **Step 2: Run the tests to see them fail to compile**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos tree 2>&1 | grep -E '^error' | head -5`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos tree 2>&1 | grep -E '^error' | head -5`
 Expected: errors such as `cannot find type Tree`, `cannot find value HANDLE`.
 
 - [ ] **Step 3: Implement the tree**
 
-Insert the implementation above the `#[cfg(test)]` module in `crates/sarkos/src/tree.rs`:
+Insert the implementation above the `#[cfg(test)]` module in `crates/arkos/src/tree.rs`:
 
 ```rust
 use protocol::SessionId;
@@ -1424,18 +1424,18 @@ fn overlap(a: f32, aw: f32, b: f32, bw: f32) -> f32 {
 }
 ```
 
-Add `mod tree;` to `crates/sarkos/src/main.rs` (alphabetically among the other `mod` lines). Until Task 5 uses it, put `#![allow(dead_code)] // Used from Task 5 onward` at the top of `tree.rs`.
+Add `mod tree;` to `crates/arkos/src/main.rs` (alphabetically among the other `mod` lines). Until Task 5 uses it, put `#![allow(dead_code)] // Used from Task 5 onward` at the top of `tree.rs`.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos tree 2>&1 | tail -6`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos tree 2>&1 | tail -6`
 Expected: all unit tests and the four properties pass (proptest runs 300 cases each; allow a minute). If a property finds a counterexample, it prints the minimal op sequence; fix the operation, not the property.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/Cargo.toml crates/sarkos/src/tree.rs crates/sarkos/src/main.rs Cargo.lock
-git commit -m "sarkos: layout tree with splits, tabs, reading-order numbering and property tests"
+git add crates/arkos/Cargo.toml crates/arkos/src/tree.rs crates/arkos/src/main.rs Cargo.lock
+git commit -m "arkos: layout tree with splits, tabs, reading-order numbering and property tests"
 ```
 
 ---
@@ -1443,7 +1443,7 @@ git commit -m "sarkos: layout tree with splits, tabs, reading-order numbering an
 ### Task 3: Workspace v2: the whole layout, stable file names, debounced saves
 
 **Files:**
-- Modify: `crates/sarkos/src/workspace.rs` (rewrite), `crates/sarkos/src/paths.rs`
+- Modify: `crates/arkos/src/workspace.rs` (rewrite), `crates/arkos/src/paths.rs`
 - Test: inline in both
 
 **Interfaces:**
@@ -1458,7 +1458,7 @@ Milestone 1 used `DefaultHasher`, whose output is not stable across toolchains, 
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace the test module of `crates/sarkos/src/workspace.rs` with:
+Replace the test module of `crates/arkos/src/workspace.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -1542,7 +1542,7 @@ mod tests {
 }
 ```
 
-Append to the tests in `crates/sarkos/src/paths.rs` (create the module if the file has none):
+Append to the tests in `crates/arkos/src/paths.rs` (create the module if the file has none):
 
 ```rust
 #[cfg(test)]
@@ -1562,12 +1562,12 @@ mod tests {
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos workspace paths 2>&1 | grep -E '^error|FAILED|panicked' | head`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos workspace paths 2>&1 | grep -E '^error|FAILED|panicked' | head`
 Expected: compile errors (`Workspace` has no `tree` field, `load_from` takes one argument, `SaveQueue` missing) and the paths test failing on the file name.
 
 - [ ] **Step 3: Rewrite workspace.rs**
 
-Replace everything above the test module in `crates/sarkos/src/workspace.rs` with:
+Replace everything above the test module in `crates/arkos/src/workspace.rs` with:
 
 ```rust
 //! Remembers a project's layout: the split tree with every tab's session (spec 4). Saved on
@@ -1616,7 +1616,7 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
-            eprintln!("sarkos: cannot read workspace {}: {e}", file.display());
+            eprintln!("arkos: cannot read workspace {}: {e}", file.display());
             return None;
         }
     };
@@ -1626,11 +1626,11 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
     match serde_json::from_str::<V1>(&text) {
         Ok(v1) => {
             let session = v1.sessions.first().map(|id| SessionId(*id))?;
-            eprintln!("sarkos: migrating milestone 1 workspace {}", file.display());
+            eprintln!("arkos: migrating milestone 1 workspace {}", file.display());
             Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session }) })
         }
         Err(e) => {
-            eprintln!("sarkos: ignoring corrupt workspace {}: {e}", file.display());
+            eprintln!("arkos: ignoring corrupt workspace {}: {e}", file.display());
             None
         }
     }
@@ -1696,7 +1696,7 @@ pub fn request_save(queue: &SharedSaveQueue, ws: Workspace, cx: &mut App) {
         if let Some(ws) = ws {
             cx.background_spawn(async move {
                 if let Err(e) = save(&ws.project, &ws) {
-                    eprintln!("sarkos: cannot save workspace: {e}");
+                    eprintln!("arkos: cannot save workspace: {e}");
                 }
             })
             .await;
@@ -1708,7 +1708,7 @@ pub fn request_save(queue: &SharedSaveQueue, ws: Workspace, cx: &mut App) {
 
 - [ ] **Step 4: Stable file names in paths.rs**
 
-Replace `workspace_file` in `crates/sarkos/src/paths.rs` with:
+Replace `workspace_file` in `crates/arkos/src/paths.rs` with:
 
 ```rust
 /// FNV-1a over the path bytes. Rust's `DefaultHasher` is not stable across releases, which would
@@ -1728,18 +1728,18 @@ pub fn workspace_file(project: &Path) -> PathBuf {
 }
 ```
 
-(`app_support()` is the existing helper that returns `~/Library/Application Support/sarkos`; keep it.) Remove the `DefaultHasher` import.
+(`app_support()` is the existing helper that returns `~/Library/Application Support/arkos`; keep it.) Remove the `DefaultHasher` import.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos workspace paths 2>&1 | tail -6`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos workspace paths 2>&1 | tail -6`
 Expected: all pass. `main.rs` still calls the old `workspace::load`/`save` signatures and will not compile until Task 5 replaces it; to keep the crate building in between, update the two call sites in `main.rs` minimally: `let saved = workspace::load(&project).map(|ws| ws.tree.pane(ws.tree.focused).and_then(|p| p.tabs.first().cloned())).flatten().and_then(|t| match t { Tab::Terminal { session } => Some(session), _ => None });` and `workspace::save(&project, &Workspace { version: FORMAT_VERSION, project: project.clone(), tree: Tree::new(Tab::Terminal { session: sid }) })`. Task 5 deletes both.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/sarkos/src/workspace.rs crates/sarkos/src/paths.rs crates/sarkos/src/main.rs
-git commit -m "sarkos: persist the layout tree, name workspace files stably, debounce saves"
+git add crates/arkos/src/workspace.rs crates/arkos/src/paths.rs crates/arkos/src/main.rs
+git commit -m "arkos: persist the layout tree, name workspace files stably, debounce saves"
 ```
 
 ---
@@ -1747,8 +1747,8 @@ git commit -m "sarkos: persist the layout tree, name workspace files stably, deb
 ### Task 4: The session manager (pure parts tested)
 
 **Files:**
-- Create: `crates/sarkos/src/sessions.rs`
-- Modify: `crates/sarkos/src/main.rs` (`mod sessions;`; move `reattachable` and `same_path` out, with their tests)
+- Create: `crates/arkos/src/sessions.rs`
+- Modify: `crates/arkos/src/main.rs` (`mod sessions;`; move `reattachable` and `same_path` out, with their tests)
 - Test: inline
 
 **Interfaces:**
@@ -1765,7 +1765,7 @@ git commit -m "sarkos: persist the layout tree, name workspace files stably, deb
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/sessions.rs` with only the test module (the implementation is step 3):
+Create `crates/arkos/src/sessions.rs` with only the test module (the implementation is step 3):
 
 ```rust
 //! Owns every terminal entity and the conversation with the daemon: which request asked for
@@ -1953,12 +1953,12 @@ mod tests {
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos sessions 2>&1 | grep -E '^error' | head -5`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos sessions 2>&1 | grep -E '^error' | head -5`
 Expected: `cannot find type SessionManager`, `cannot find function reconcile`.
 
 - [ ] **Step 3: Implement the manager**
 
-Insert above the test module in `crates/sarkos/src/sessions.rs`:
+Insert above the test module in `crates/arkos/src/sessions.rs`:
 
 ```rust
 use crate::client::Client;
@@ -2016,15 +2016,15 @@ pub enum Reconcile {
 pub fn reattachable(saved: SessionId, list: &[SessionInfo], project: &Path) -> bool {
     match list.iter().find(|i| i.id == saved) {
         None => {
-            eprintln!("sarkos: saved session {} is gone, starting a new one", saved.0);
+            eprintln!("arkos: saved session {} is gone, starting a new one", saved.0);
             false
         }
         Some(info) if !info.alive => {
-            eprintln!("sarkos: saved session {} has ended, starting a new one", saved.0);
+            eprintln!("arkos: saved session {} has ended, starting a new one", saved.0);
             false
         }
         Some(info) if !same_path(&info.cwd, project) => {
-            eprintln!("sarkos: saved session {} belongs to {}, starting a new one", saved.0, info.cwd.display());
+            eprintln!("arkos: saved session {} belongs to {}, starting a new one", saved.0, info.cwd.display());
             false
         }
         Some(_) => true,
@@ -2225,14 +2225,14 @@ Add `mod sessions;` to `main.rs`. Remove `reattachable`, `same_path` and their t
 
 - [ ] **Step 4: Run the tests**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos 2>&1 | tail -4`
-Expected: everything passes, including the moved tests, and `cargo build -p sarkos` is warning-free.
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos 2>&1 | tail -4`
+Expected: everything passes, including the moved tests, and `cargo build -p arkos` is warning-free.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/sessions.rs crates/sarkos/src/main.rs
-git commit -m "sarkos: session manager with launch reconciliation and per-session event routing"
+git add crates/arkos/src/sessions.rs crates/arkos/src/main.rs
+git commit -m "arkos: session manager with launch reconciliation and per-session event routing"
 ```
 
 ---
@@ -2240,8 +2240,8 @@ git commit -m "sarkos: session manager with launch reconciliation and per-sessio
 ### Task 5: The multi-pane window: split view, pane view, per-tab restore, focus
 
 **Files:**
-- Create: `crates/sarkos/src/split_view.rs`, `crates/sarkos/src/pane_view.rs`
-- Modify: `crates/sarkos/src/main.rs` (Root rewrite), `crates/sarkos/src/terminal_element.rs` (font size parameter), `crates/sarkos/src/tree.rs` and `sessions.rs` (remove the `dead_code` allows)
+- Create: `crates/arkos/src/split_view.rs`, `crates/arkos/src/pane_view.rs`
+- Modify: `crates/arkos/src/main.rs` (Root rewrite), `crates/arkos/src/terminal_element.rs` (font size parameter), `crates/arkos/src/tree.rs` and `sessions.rs` (remove the `dead_code` allows)
 - Test: the pure helpers in `split_view.rs` (`ratio_from_pointer`) and `pane_view.rs` (`tab_label`) inline; the rest is the manual checklist at the end
 
 **Interfaces:**
@@ -2254,7 +2254,7 @@ git commit -m "sarkos: session manager with launch reconciliation and per-sessio
 
 - [ ] **Step 1: Write the failing pure tests**
 
-Create `crates/sarkos/src/split_view.rs` with its test module first:
+Create `crates/arkos/src/split_view.rs` with its test module first:
 
 ```rust
 //! Renders the layout tree: absolutely positioned panes and the resize handles between them
@@ -2278,7 +2278,7 @@ mod tests {
 }
 ```
 
-Create `crates/sarkos/src/pane_view.rs` with its test module first:
+Create `crates/arkos/src/pane_view.rs` with its test module first:
 
 ```rust
 //! One pane: its tab bar and the active tab's content (a terminal, a busy notice while a shell
@@ -2302,12 +2302,12 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos split_view pane_view 2>&1 | grep -E '^error' | head -3`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos split_view pane_view 2>&1 | grep -E '^error' | head -3`
 Expected: the modules are not declared yet (`mod` lines missing) or the functions are not found.
 
 - [ ] **Step 3: Font size becomes a parameter of the element**
 
-In `crates/sarkos/src/terminal_element.rs`:
+In `crates/arkos/src/terminal_element.rs`:
 - Rename `pub const FONT_SIZE: f32 = 16.0;` to `pub const DEFAULT_FONT_SIZE: f32 = 16.0;`.
 - Add `pub fn cell_height(font_size: f32) -> f32 { font_size * LINE_HEIGHT }`.
 - `TerminalElement { terminal: Entity<Terminal>, font_size: f32 }` with `pub fn new(terminal: Entity<Terminal>, font_size: f32) -> Self`.
@@ -2620,7 +2620,7 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 
 - [ ] **Step 6: Rewrite Root in main.rs**
 
-Replace the `Root` struct, its `impl`, `impl Render for Root`, `banner_bar`, `success_clears`, `Launch`, `Restore`, `restore`, and the event loop inside `main` with the following. Keep `output_len`, `yield_now`, the `actions!(sarkos, [Quit])`, the QoS block, the connect code, the heartbeat task, `on_window_closed`, the menus and the `--version` check as they are.
+Replace the `Root` struct, its `impl`, `impl Render for Root`, `banner_bar`, `success_clears`, `Launch`, `Restore`, `restore`, and the event loop inside `main` with the following. Keep `output_len`, `yield_now`, the `actions!(arkos, [Quit])`, the QoS block, the connect code, the heartbeat task, `on_window_closed`, the menus and the `--version` check as they are.
 
 ```rust
 mod pane_view;
@@ -2638,7 +2638,7 @@ const BG: u32 = 0x11161f;
 const FG: u32 = 0xd6dae0;
 const BANNER_BG: u32 = 0x1a2130;
 const BATCH_BUDGET: usize = 1 << 20;
-const ERROR_PREFIX: &str = "sarkosd error: ";
+const ERROR_PREFIX: &str = "arkosd error: ";
 
 pub struct Root {
     pub tree: Tree,
@@ -2669,7 +2669,7 @@ impl Root {
             sessions: SessionManager::new(client.clone(), Some(client), project.clone()),
             save_queue: SharedSaveQueue::default(),
             project,
-            status: "connecting to sarkosd".into(),
+            status: "connecting to arkosd".into(),
             grids: HashMap::new(),
             grid_waiters: HashMap::new(),
             pane_focus: HashMap::new(),
@@ -2789,7 +2789,7 @@ impl Root {
                 let root = cx.entity();
                 cx.spawn(async move |cx| {
                     if let Err(e) = restore(&root, session, pane, idx, replay, alive, cx).await {
-                        eprintln!("sarkos: restoring session {} failed: {e:#}", session.0);
+                        eprintln!("arkos: restoring session {} failed: {e:#}", session.0);
                     }
                 })
                 .detach();
@@ -2797,7 +2797,7 @@ impl Root {
             Outcome::Killed { .. } => {}
             Outcome::Error(e) => {
                 self.status = format!("{ERROR_PREFIX}{e}");
-                eprintln!("sarkos: {}", self.status);
+                eprintln!("arkos: {}", self.status);
                 cx.notify();
             }
         }
@@ -2960,7 +2960,7 @@ The event loop in `main`, replacing the `Launch`-based one:
                 yield_now().await;
             }
             let reason = client_for_task.disconnect_reason().unwrap_or_else(|| "daemon connection ended".into());
-            eprintln!("sarkos: {reason}");
+            eprintln!("arkos: {reason}");
             let _ = root.update(cx, |root, cx| {
                 root.status = if root.status.starts_with(ERROR_PREFIX) { format!("{}; {reason}", root.status) } else { reason };
                 cx.notify();
@@ -2973,22 +2973,22 @@ and before `Application::new().run`: `let saved = workspace::load(&project);` wi
 
 - [ ] **Step 7: Build, run the pure tests, then the manual check**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo build -p sarkos 2>&1 | grep -E '^(warning|error)' | head; cargo test -p sarkos 2>&1 | tail -3`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo build -p arkos 2>&1 | grep -E '^(warning|error)' | head; cargo test -p arkos 2>&1 | tail -3`
 Expected: no warnings from the crate, all tests pass.
 
 Manual (record each in the report; what cannot be driven without Accessibility permission is marked "needs human eyes"):
-1. `pkill -x sarkosd; cargo run -p sarkos 2>.superpowers/run.log &` from the repo root: one pane, tab bar with "1", the tab titled by the shell, a "+" button.
+1. `pkill -x arkosd; cargo run -p arkos 2>.superpowers/run.log &` from the repo root: one pane, tab bar with "1", the tab titled by the shell, a "+" button.
 2. Click "+": a second tab appears with "starting shell" then the shell's title; typing goes to it.
 3. Close a tab with its "×": the pane stays; close the last one: the "No tabs" placeholder shows.
 4. Through a second connection or by editing the saved workspace JSON into the screenshot layout (a vertical split whose right child is a horizontal split), relaunch: three panes numbered 1, 2, 3 left to right then top to bottom, each restoring its session or starting a fresh one with "(restarted)".
 5. Drag a handle: the ratio follows the pointer; neither side goes below 160 px wide or 80 px tall; double-click resets to half.
-6. `pkill -9 sarkos`, relaunch: the same layout and sessions return.
+6. `pkill -9 arkos`, relaunch: the same layout and sessions return.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/sarkos/src
-git commit -m "sarkos: split view, pane view with tab bars, per-tab restore, resize handles"
+git add crates/arkos/src
+git commit -m "arkos: split view, pane view with tab bars, per-tab restore, resize handles"
 ```
 
 ---
@@ -2996,8 +2996,8 @@ git commit -m "sarkos: split view, pane view with tab bars, per-tab restore, res
 ### Task 6: The keyboard map
 
 **Files:**
-- Create: `crates/sarkos/src/keymap.rs`
-- Modify: `crates/sarkos/src/main.rs` (actions on the root, `Root::run`), `crates/sarkos/src/pane_view.rs` (key contexts), `crates/sarkos/src/terminal.rs` (`clear_scrollback`)
+- Create: `crates/arkos/src/keymap.rs`
+- Modify: `crates/arkos/src/main.rs` (actions on the root, `Root::run`), `crates/arkos/src/pane_view.rs` (key contexts), `crates/arkos/src/terminal.rs` (`clear_scrollback`)
 - Test: inline in `keymap.rs` and `terminal.rs`
 
 **Interfaces:**
@@ -3012,7 +3012,7 @@ git commit -m "sarkos: split view, pane view with tab bars, per-tab restore, res
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/keymap.rs` with its test module:
+Create `crates/arkos/src/keymap.rs` with its test module:
 
 ```rust
 //! The keyboard map (spec 4): VS Code's macOS defaults for the editor area, applied to panes
@@ -3045,7 +3045,7 @@ mod tests {
 
 `Keystroke::unparse()` renders a keystroke back to gpui's `cmd-k` form and `KeyBinding::keystrokes()` returns the parsed sequence; both exist in gpui 0.2.2 (`keymap/binding.rs`, `platform/keystroke.rs`). If `unparse` is missing, compare against `format!("{k}")` (Keystroke implements Display).
 
-Append to the tests in `crates/sarkos/src/terminal.rs`:
+Append to the tests in `crates/arkos/src/terminal.rs`:
 
 ```rust
     #[test]
@@ -3068,7 +3068,7 @@ Append to the tests in `crates/sarkos/src/terminal.rs`:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos keymap clear_scrollback 2>&1 | grep -E '^error' | head -3`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos keymap clear_scrollback 2>&1 | grep -E '^error' | head -3`
 Expected: `bindings`, `SPEC_ROWS`, `tab_cycle`, `clear_scrollback` not found.
 
 - [ ] **Step 3: Implement keymap.rs**
@@ -3082,7 +3082,7 @@ use gpui::{actions, Context, Div, KeyBinding, Window};
 use gpui::prelude::*;
 
 actions!(
-    sarkos,
+    arkos,
     [
         FocusPane1, FocusPane2, FocusPane3, FocusPane4, FocusPane5, FocusPane6, FocusPane7, FocusPane8, FocusPane9,
         FocusLeft, FocusRight, FocusUp, FocusDown,
@@ -3336,7 +3336,7 @@ In `Render for Root`, wrap the root div: `keymap::attach(div().size_full()..., c
 
 - [ ] **Step 6: Tests, build, manual check**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos 2>&1 | tail -3; cargo build -p sarkos 2>&1 | grep -E '^warning' | head`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos 2>&1 | tail -3; cargo build -p arkos 2>&1 | grep -E '^warning' | head`
 Expected: green, no warnings.
 
 Manual (in the running app; what needs Accessibility to drive is "needs human eyes"): Cmd+\ splits right and the new pane starts a shell; Cmd+K Cmd+\ splits down; Cmd+1, Cmd+2, Cmd+3 focus in reading order (the focus ring moves); Cmd+K Cmd+Left/Right move focus by geometry; Cmd+W closes the active tab and the pane stays; Cmd+W on an empty pane closes it; Cmd+W on the last pane does nothing; Cmd+Shift+T opens a fresh shell in the pane the tab was closed from; Ctrl+Shift+` opens a tab; Cmd+Alt+Right and Cmd+Shift+] cycle; Ctrl+Tab goes to the previous tab; Cmd+K alone in a terminal clears the scrollback (see the chord note in step 3); Cmd+= and Cmd+- change the size and the grid re-measures (`tput cols` changes); Cmd+K Cmd+M maximizes and restores.
@@ -3344,8 +3344,8 @@ Manual (in the running app; what needs Accessibility to drive is "needs human ey
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src
-git commit -m "sarkos: VS Code keyboard map for panes and tabs"
+git add crates/arkos/src
+git commit -m "arkos: VS Code keyboard map for panes and tabs"
 ```
 
 ---
@@ -3353,8 +3353,8 @@ git commit -m "sarkos: VS Code keyboard map for panes and tabs"
 ### Task 7: Drag and drop tabs
 
 **Files:**
-- Create: `crates/sarkos/src/drag.rs`
-- Modify: `crates/sarkos/src/pane_view.rs`, `crates/sarkos/src/main.rs` (drop state on `Root`), `crates/sarkos/src/tree.rs` (`take_tab`, `split_with_tab`)
+- Create: `crates/arkos/src/drag.rs`
+- Modify: `crates/arkos/src/pane_view.rs`, `crates/arkos/src/main.rs` (drop state on `Root`), `crates/arkos/src/tree.rs` (`take_tab`, `split_with_tab`)
 - Test: pure helpers inline in `drag.rs`; a tree test for `split_with_tab`
 
 **Interfaces:**
@@ -3369,7 +3369,7 @@ git commit -m "sarkos: VS Code keyboard map for panes and tabs"
 
 - [ ] **Step 1: Write the failing pure tests**
 
-Create `crates/sarkos/src/drag.rs` with its test module:
+Create `crates/arkos/src/drag.rs` with its test module:
 
 ```rust
 //! Dragging a tab (spec 4): a ghost chip follows the pointer; the hovered tab bar shows where
@@ -3423,7 +3423,7 @@ Append to `tree.rs` tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos drag split_with_tab 2>&1 | grep -E '^error' | head -3`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos drag split_with_tab 2>&1 | grep -E '^error' | head -3`
 Expected: missing items.
 
 - [ ] **Step 3: Tree helpers**
@@ -3610,15 +3610,15 @@ added with `.children(overlay)` to a `.relative()` body. Clear `drop_target` on 
 
 - [ ] **Step 6: Tests, build, manual check**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos 2>&1 | tail -3; cargo build -p sarkos 2>&1 | grep -E '^warning' | head`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos 2>&1 | tail -3; cargo build -p arkos 2>&1 | grep -E '^warning' | head`
 
 Manual (needs human eyes unless a pointer can be driven): drag a tab within its bar to reorder; drag a tab onto another pane's bar to move it; drag a tab to a pane's center, left, right, top, bottom and see the overlay and the resulting split; drag the last tab out of a pane and see the pane close; drop a tab back on its own place and see nothing change.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src
-git commit -m "sarkos: drag tabs between panes with five drop zones"
+git add crates/arkos/src
+git commit -m "arkos: drag tabs between panes with five drop zones"
 ```
 
 ---
@@ -3626,8 +3626,8 @@ git commit -m "sarkos: drag tabs between panes with five drop zones"
 ### Task 8: The empty state and the window chrome
 
 **Files:**
-- Create: `crates/sarkos/src/empty_pane.rs`, `crates/sarkos/src/motion.rs`, `crates/sarkos/src/chrome.rs`
-- Modify: `crates/sarkos/src/pane_view.rs` (`render_no_tabs` uses `empty_pane`), `crates/sarkos/src/main.rs` (bars, `content` accounts for them, `empty_anim` state)
+- Create: `crates/arkos/src/empty_pane.rs`, `crates/arkos/src/motion.rs`, `crates/arkos/src/chrome.rs`
+- Modify: `crates/arkos/src/pane_view.rs` (`render_no_tabs` uses `empty_pane`), `crates/arkos/src/main.rs` (bars, `content` accounts for them, `empty_anim` state)
 - Test: pure helpers inline
 
 **Interfaces:**
@@ -3640,7 +3640,7 @@ git commit -m "sarkos: drag tabs between panes with five drop zones"
 
 - [ ] **Step 1: Write the failing pure tests**
 
-Create `crates/sarkos/src/motion.rs`:
+Create `crates/arkos/src/motion.rs`:
 
 ```rust
 //! Honours macOS's Reduce Motion setting (spec 7.1: the UI adds no motion the user turned off).
@@ -3678,7 +3678,7 @@ mod tests {
 }
 ```
 
-Create `crates/sarkos/src/empty_pane.rs` with its test module:
+Create `crates/arkos/src/empty_pane.rs` with its test module:
 
 ```rust
 //! The friendly empty pane (spec 4): a greeting, the bindings you want next, and a slow,
@@ -3704,7 +3704,7 @@ mod tests {
 }
 ```
 
-Create `crates/sarkos/src/chrome.rs` with its test module:
+Create `crates/arkos/src/chrome.rs` with its test module:
 
 ```rust
 //! The window chrome (spec 4): a top bar with the project name and a bottom status bar with the
@@ -3725,7 +3725,7 @@ mod tests {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos motion empty_pane chrome 2>&1 | grep -E '^error|test result' | head -4`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos motion empty_pane chrome 2>&1 | grep -E '^error|test result' | head -4`
 Expected: `motion` passes once its `mod` line exists; the other two fail on missing items.
 
 - [ ] **Step 3: Implement empty_pane.rs**
@@ -3889,19 +3889,19 @@ pub fn status_bar(project: &Path, daemon: &str, sessions: usize, waiting: usize)
 }
 ```
 
-In `Render for Root`: compute `top = chrome::TOP_BAR_H`, `bottom = chrome::STATUS_BAR_H`, set `self.content = Rect { x: 0.0, y: top + banner_h, w, h: height - top - bottom - banner_h }`, and build the column as top bar, optional banner, the tree body (`flex_1().min_h_0()`), status bar with `daemon = if self.status.is_empty() { "sarkosd connected" } else { "sarkosd: see banner" }`, `sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count()`, `waiting = 0` (milestone 3 fills it from `ClaudeState`). The project name is `self.project.file_name()`'s string. Add `mod chrome; mod empty_pane; mod motion;`.
+In `Render for Root`: compute `top = chrome::TOP_BAR_H`, `bottom = chrome::STATUS_BAR_H`, set `self.content = Rect { x: 0.0, y: top + banner_h, w, h: height - top - bottom - banner_h }`, and build the column as top bar, optional banner, the tree body (`flex_1().min_h_0()`), status bar with `daemon = if self.status.is_empty() { "arkosd connected" } else { "arkosd: see banner" }`, `sessions = self.sessions.terminals.values().filter(|t| t.read(cx).alive).count()`, `waiting = 0` (milestone 3 fills it from `ClaudeState`). The project name is `self.project.file_name()`'s string. Add `mod chrome; mod empty_pane; mod motion;`.
 
 - [ ] **Step 5: Tests, build, manual check**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos 2>&1 | tail -3; cargo build -p sarkos 2>&1 | grep -E '^warning' | head`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos 2>&1 | tail -3; cargo build -p arkos 2>&1 | grep -E '^warning' | head`
 
-Manual: close every tab in a pane: the greeting, the four hints and three soft dots that drift for about six seconds and stop; hovering replays it; with System Settings > Accessibility > Display > Reduce Motion on, nothing moves; with the pane idle, Activity Monitor shows `sarkos` at 0 percent CPU (no frames); the top bar shows the folder name; the status bar shows the path, "sarkosd connected" and the session count.
+Manual: close every tab in a pane: the greeting, the four hints and three soft dots that drift for about six seconds and stop; hovering replays it; with System Settings > Accessibility > Display > Reduce Motion on, nothing moves; with the pane idle, Activity Monitor shows `arkos` at 0 percent CPU (no frames); the top bar shows the folder name; the status bar shows the path, "arkosd connected" and the session count.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/sarkos/src
-git commit -m "sarkos: friendly empty pane with a settling animation, top bar and status bar"
+git add crates/arkos/src
+git commit -m "arkos: friendly empty pane with a settling animation, top bar and status bar"
 ```
 
 ---
@@ -3909,7 +3909,7 @@ git commit -m "sarkos: friendly empty pane with a settling animation, top bar an
 ### Task 9: Milestone 1 carry-overs in the terminal
 
 **Files:**
-- Modify: `crates/sarkos/src/keys.rs`, `crates/sarkos/src/terminal.rs`, `crates/sarkos/src/pane_view.rs`
+- Modify: `crates/arkos/src/keys.rs`, `crates/arkos/src/terminal.rs`, `crates/arkos/src/pane_view.rs`
 - Test: inline
 
 **Interfaces:**
@@ -3957,7 +3957,7 @@ Append to `terminal.rs` tests:
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos keys terminal 2>&1 | grep -E '^error|FAILED|panicked' | head -4`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos keys terminal 2>&1 | grep -E '^error|FAILED|panicked' | head -4`
 
 - [ ] **Step 3: Modified arrows in keys.rs**
 
@@ -4035,14 +4035,14 @@ In `pane_view::render_terminal`, make the wrapper `.relative()` and append, when
 
 - [ ] **Step 5: Tests, build, manual check**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p sarkos 2>&1 | tail -3`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test -p arkos 2>&1 | tail -3`
 Manual: scroll up in a terminal: the pill appears; click it: the view glides to the bottom and the pill goes; Shift+Up in `less` or in a shell with `bindkey` shows the modified sequence (`cat -v` then press Shift+Up prints `^[[1;2A`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/sarkos/src
-git commit -m "sarkos: jump-to-bottom affordance, modified arrow keys, no input to ended sessions"
+git add crates/arkos/src
+git commit -m "arkos: jump-to-bottom affordance, modified arrow keys, no input to ended sessions"
 ```
 
 ---
@@ -4050,16 +4050,16 @@ git commit -m "sarkos: jump-to-bottom affordance, modified arrow keys, no input 
 ### Task 10: Keep the heartbeat alive while minimized (App Nap)
 
 **Files:**
-- Create: `crates/sarkos/src/app_nap.rs`
-- Modify: `crates/sarkos/Cargo.toml`, `crates/sarkos/src/main.rs`
+- Create: `crates/arkos/src/app_nap.rs`
+- Modify: `crates/arkos/Cargo.toml`, `crates/arkos/src/main.rs`
 - Test: manual (the behaviour is the OS's)
 
 **Interfaces:**
-- Produces: `app_nap::hold()` called once at startup: begins an `NSProcessInfo` activity with `NSActivityUserInitiatedAllowingIdleSystemSleep` and reason "sarkosd heartbeat" and keeps the token for the process lifetime, so macOS App Nap cannot throttle the 1 s heartbeat timer of a minimized or occluded window into a watchdog kill (spec 2.4).
+- Produces: `app_nap::hold()` called once at startup: begins an `NSProcessInfo` activity with `NSActivityUserInitiatedAllowingIdleSystemSleep` and reason "arkosd heartbeat" and keeps the token for the process lifetime, so macOS App Nap cannot throttle the 1 s heartbeat timer of a minimized or occluded window into a watchdog kill (spec 2.4).
 
 - [ ] **Step 1: Dependency**
 
-In `crates/sarkos/Cargo.toml` add, with the versions `Cargo.lock` already resolves for gpui (`objc2-foundation 0.3.2`; check `objc2`'s with `grep -A1 'name = "objc2"$' Cargo.lock`):
+In `crates/arkos/Cargo.toml` add, with the versions `Cargo.lock` already resolves for gpui (`objc2-foundation 0.3.2`; check `objc2`'s with `grep -A1 'name = "objc2"$' Cargo.lock`):
 
 ```toml
 objc2 = "0.6"
@@ -4084,7 +4084,7 @@ static TOKEN: OnceLock<Retained<ProtocolObject<dyn NSObjectProtocol>>> = OnceLoc
 pub fn hold() {
     TOKEN.get_or_init(|| {
         let info = NSProcessInfo::processInfo();
-        let reason = NSString::from_str("sarkosd heartbeat");
+        let reason = NSString::from_str("arkosd heartbeat");
         // SAFETY: plain Foundation call on the main thread with valid arguments; the returned
         // token is retained for the process lifetime.
         unsafe { info.beginActivityWithOptions_reason(NSActivityOptions::UserInitiatedAllowingIdleSystemSleep, &reason) }
@@ -4098,14 +4098,14 @@ In `main`, call `app_nap::hold();` right after the QoS block. Add `mod app_nap;`
 
 - [ ] **Step 3: Build and the manual check**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo build -p sarkos 2>&1 | grep -E '^(warning|error)' | head`
-Manual (needs human eyes, at least 2 minutes): launch, minimize the window, wait two minutes with another app in front, restore: the terminal is still attached (no relaunch happened; `~/Library/Application Support/sarkos/sarkosd.log` shows no "killing" line and `pgrep -x sarkos` is the same pid as before). Record the pid before and after in the report.
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo build -p arkos 2>&1 | grep -E '^(warning|error)' | head`
+Manual (needs human eyes, at least 2 minutes): launch, minimize the window, wait two minutes with another app in front, restore: the terminal is still attached (no relaunch happened; `~/Library/Application Support/arkos/arkosd.log` shows no "killing" line and `pgrep -x arkos` is the same pid as before). Record the pid before and after in the report.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/sarkos/Cargo.toml crates/sarkos/src/app_nap.rs crates/sarkos/src/main.rs Cargo.lock
-git commit -m "sarkos: hold an NSProcessInfo activity so App Nap cannot throttle the heartbeat"
+git add crates/arkos/Cargo.toml crates/arkos/src/app_nap.rs crates/arkos/src/main.rs Cargo.lock
+git commit -m "arkos: hold an NSProcessInfo activity so App Nap cannot throttle the heartbeat"
 ```
 
 ---
@@ -4118,12 +4118,12 @@ git commit -m "sarkos: hold an NSProcessInfo activity so App Nap cannot throttle
 
 - [ ] **Step 1: Full suite and release build**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH"; pkill -x sarkosd; cargo test --workspace 2>&1 | grep -E 'test result|warning: unused|FAILED'; for i in $(seq 1 10); do cargo test -p sarkosd 2>&1 | grep -E 'FAILED' ; done; echo done; cargo build --release 2>&1 | tail -1`
+Run: `export PATH="$HOME/.cargo/bin:$PATH"; pkill -x arkosd; cargo test --workspace 2>&1 | grep -E 'test result|warning: unused|FAILED'; for i in $(seq 1 10); do cargo test -p arkosd 2>&1 | grep -E 'FAILED' ; done; echo done; cargo build --release 2>&1 | tail -1`
 Expected: every suite green, ten clean daemon runs, release build finished.
 
 - [ ] **Step 2: Measure four terminals**
 
-Run the release UI (`./target/release/sarkos` from a project folder, stderr to a file under the scratch directory), make a 2x2 layout with Cmd+\ and Cmd+K Cmd+\ (or by editing the workspace JSON and relaunching), let it idle for 30 s, then `ps -o rss,comm -p $(pgrep -x sarkos) -p $(pgrep -x sarkosd)`. Record both numbers in the commit body against the spec's budgets (UI with four terminals under 120 MB, daemon under 15 MB). Stop both processes afterwards.
+Run the release UI (`./target/release/arkos` from a project folder, stderr to a file under the scratch directory), make a 2x2 layout with Cmd+\ and Cmd+K Cmd+\ (or by editing the workspace JSON and relaunching), let it idle for 30 s, then `ps -o rss,comm -p $(pgrep -x arkos) -p $(pgrep -x arkosd)`. Record both numbers in the commit body against the spec's budgets (UI with four terminals under 120 MB, daemon under 15 MB). Stop both processes afterwards.
 
 - [ ] **Step 3: README**
 

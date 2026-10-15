@@ -3,6 +3,6 @@
 //! a release signed by both. Base64 of 32 raw ed25519 bytes.
 pub const RELEASE_PUBLIC_KEYS: &[&str] = &[
     // Generated 2026-10-14 by `release-tool keygen`; the secret half is the GitHub Actions
-    // secret SARKOS_RELEASE_KEY.
+    // secret ARKOS_RELEASE_KEY.
     "v21j3+9KeOUsp7rCnlqNh8EKiDKUROz6t2RotcHzvO8=",
 ];

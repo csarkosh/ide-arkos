@@ -1,29 +1,29 @@
-# Sarkos IDE Milestone 2b: Config, themes, text presets, palette and find. Implementation Plan
+# Arkos IDE Milestone 2b: Config, themes, text presets, palette and find. Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give Sarkos IDE its config file with live reload, the Navy and Navy Light themes, the three text presets, a command palette, find in the terminal, and the tab-bar overflow menu, plus the four small items milestone 2a parked, so that every colour, size and key in the window comes from a file Cyrus can edit while the app runs.
+**Goal:** Give Arkos IDE its config file with live reload, the Navy and Navy Light themes, the three text presets, a command palette, find in the terminal, and the tab-bar overflow menu, plus the four small items milestone 2a parked, so that every colour, size and key in the window comes from a file Cyrus can edit while the app runs.
 
-**Architecture:** `config.rs` parses `~/.config/sarkos/config.toml` into a validated `Config` with line-numbered errors; `theme.rs` loads a flat colour file (two built-ins embedded) into a `Theme` that every view reads from `Root` and that each `TerminalCore` resolves cell colours against at paint time, so switching a theme repaints parsed history. A polling watcher reloads the file and `Root::apply_config` applies the parts that can change live (theme, fonts and presets, keybindings, terminal defaults); a bad edit becomes a banner and the last good config stays. The palette and the find bar share one pure `LineEdit`; find runs alacritty's own regex search with the query escaped.
+**Architecture:** `config.rs` parses `~/.config/arkos/config.toml` into a validated `Config` with line-numbered errors; `theme.rs` loads a flat colour file (two built-ins embedded) into a `Theme` that every view reads from `Root` and that each `TerminalCore` resolves cell colours against at paint time, so switching a theme repaints parsed history. A polling watcher reloads the file and `Root::apply_config` applies the parts that can change live (theme, fonts and presets, keybindings, terminal defaults); a bad edit becomes a banner and the last good config stays. The palette and the find bar share one pure `LineEdit`; find runs alacritty's own regex search with the query escaped.
 
 **Tech Stack:** Rust stable (edition 2021), gpui 0.2.2 (exact pin, `runtime_shaders`), alacritty_terminal 0.26 (its `term::search::RegexSearch`), toml 0.8 (already in `Cargo.lock` through gpui), serde + serde_json, futures 0.3. No file-watcher crate: the watcher polls the file's mtime and size every 500 ms from the background executor, which costs one `stat` per half second and no new dependency, FSEvents thread or entitlement.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-sarkos-design.md` (sections 3 "Text", 4 "Tabs", 4 keyboard rows "Clear scrollback / find / font size" and "Open config / command palette", 7, 7.1, 9, 10, 11 milestone 2, 12). Navy Light is listed under milestone 6 in section 11, but section 7.1's default appearance ("Follow the macOS appearance ... Navy for dark, Navy Light for light") needs it the moment appearance following ships, and the theme file format makes it one TOML file, so it lands here. The "size for my distance" helper and the break reminder stay in milestone 6. The sidebar (section 6) and browser (section 8) config sections are parsed and kept so the file format does not change in milestones 4 and 5, but nothing reads them yet.
+**Spec:** `docs/superpowers/specs/2026-10-13-arkos-design.md` (sections 3 "Text", 4 "Tabs", 4 keyboard rows "Clear scrollback / find / font size" and "Open config / command palette", 7, 7.1, 9, 10, 11 milestone 2, 12). Navy Light is listed under milestone 6 in section 11, but section 7.1's default appearance ("Follow the macOS appearance ... Navy for dark, Navy Light for light") needs it the moment appearance following ships, and the theme file format makes it one TOML file, so it lands here. The "size for my distance" helper and the break reminder stay in milestone 6. The sidebar (section 6) and browser (section 8) config sections are parsed and kept so the file format does not change in milestones 4 and 5, but nothing reads them yet.
 
 ## Global Constraints
 
 - macOS only, Apple Silicon. No Linux or Windows code paths.
 - `gpui = { version = "=0.2.2", features = ["runtime_shaders"] }` pinned exactly. Never bump inside this plan. If a gpui or alacritty_terminal name in this plan does not compile, the API moved: grep `~/.cargo/registry/src/*/gpui-0.2.2/src/` (its `examples/input.rs` is the reference for a hand-built text field, `examples/scrollable.rs` for `ScrollHandle`) or `~/.cargo/registry/src/*/alacritty_terminal-0.26.0/src/term/search.rs` for the method, fix the call, and note the change in the commit message. Do not guess.
-- New dependency allowed: `toml = "0.8"` in `crates/sarkos/Cargo.toml` (version 0.8.23 is already in the lockfile and the local registry). No `notify`, `regex`, `image` or `png` crate.
-- Display name "Sarkos IDE" in the window title and user-facing text; binaries, crates, the socket directory `~/Library/Application Support/sarkos/` and log prefixes stay lowercase `sarkos`.
-- Config (spec 7): `~/.config/sarkos/config.toml` (under `$XDG_CONFIG_HOME/sarkos/` when that variable is set), created with commented defaults on first run, opened by Cmd+, in the default editor, watched and applied live; a bad edit shows a non-blocking banner with the line number and keeps the last good config; sections `font`, `terminal` (scrollback, shell, nice level), `keybindings`, `sidebar`, `browser` (default URL), `daemon` (watchdog timeout, replay buffer size), `theme` (name), `appearance` (follow system light/dark or fixed). Themes: one TOML file each in `~/.config/sarkos/themes/`; built-ins embedded in the binary and extractable.
+- New dependency allowed: `toml = "0.8"` in `crates/arkos/Cargo.toml` (version 0.8.23 is already in the lockfile and the local registry). No `notify`, `regex`, `image` or `png` crate.
+- Display name "Arkos IDE" in the window title and user-facing text; binaries, crates, the socket directory `~/Library/Application Support/arkos/` and log prefixes stay lowercase `arkos`.
+- Config (spec 7): `~/.config/arkos/config.toml` (under `$XDG_CONFIG_HOME/arkos/` when that variable is set), created with commented defaults on first run, opened by Cmd+, in the default editor, watched and applied live; a bad edit shows a non-blocking banner with the line number and keeps the last good config; sections `font`, `terminal` (scrollback, shell, nice level), `keybindings`, `sidebar`, `browser` (default URL), `daemon` (watchdog timeout, replay buffer size), `theme` (name), `appearance` (follow system light/dark or fixed). Themes: one TOML file each in `~/.config/arkos/themes/`; built-ins embedded in the binary and extractable.
 - Text (spec 7, 7.1): built-in presets verbatim: Compact 14 px / 1.3 ("below the research's comfort floor, so labelled as such"), Comfortable 16 px / 1.5 (default), Relaxed 18 px / 1.6. Users add their own presets in the config. Cmd+= and Cmd+- still nudge only the focused terminal's size (1 px within 10 to 32 px) without changing the preset. The active preset is saved with the workspace. Default font Menlo. Letter spacing: no option. No warm tint or blue-light mode.
 - Colours (spec 7.1): every foreground colour in both built-in themes clears 4.5:1 luminance contrast against its background, the terminal foreground about 12:1 on Navy; no saturated low-luminance colours on the dark background. Appearance follows macOS by default: Navy for dark, Navy Light for light.
 - Keyboard (spec 4): the bindings table in Task 1 is the spec's, verbatim, plus `cmd-,` (open config), `cmd-shift-p` (command palette), `cmd-f` (find) and `cmd-q` (quit). Every binding lives in the config file and can be changed, chords included. The lone `cmd-k` binding stays first in the generated list (gpui's pending-chord rule, milestone 2a ruling 16).
 - Motion (spec 7.1): nothing new animates. The palette and find bar appear without transition. Reduce Motion is re-read on every config reload.
 - Daemon: no protocol change (`PROTOCOL_VERSION` stays 1). The `[daemon]` section is passed as `--watchdog-secs` and `--replay-bytes` only when the window starts the daemon; the config file says so.
 - Commit messages: imperative, one line, body optional. No em-dashes in any copy or comment. Every commit ends with a blank line, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_015xrVD54zbvkgksJUndxfpr`.
-- Tests: `cargo test -p sarkos` must stay headless (no window; `gpui::Keystroke::parse` and `gpui::Keymap` are fine, they need no platform); the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`.
+- Tests: `cargo test -p arkos` must stay headless (no window; `gpui::Keystroke::parse` and `gpui::Keymap` are fine, they need no platform); the build stays warning-free for the project's crates; `cargo` is at `~/.cargo/bin/cargo`.
 
 ## Review Focus
 
@@ -38,7 +38,7 @@
 ## File structure
 
 ```
-crates/sarkos/
+crates/arkos/
   Cargo.toml                   + toml = "0.8"
   themes/navy.toml             NEW: the built-in dark theme (embedded with include_str!)
   themes/navy-light.toml       NEW: the built-in light theme
@@ -61,7 +61,7 @@ crates/sarkos/
     workspace.rs               v3: text_preset
     main.rs                    Root: config, theme, presets, palette, config reload; main loads config before the window
   README.md                    milestone 2b status, keyboard rows, config section, human checklist
-docs/superpowers/specs/2026-10-13-sarkos-design.md   three corrections from milestone 1
+docs/superpowers/specs/2026-10-13-arkos-design.md   three corrections from milestone 1
 scripts/sample-png.py          NEW: stdlib-only PNG colour sampler for docs/reference/
 ```
 
@@ -72,7 +72,7 @@ Responsibilities stay one per file. `config.rs`, `theme.rs`, `line_edit.rs`, `co
 ### Task 1: The actions table, keybinding overrides, Cmd+, and the config paths
 
 **Files:**
-- Modify: `crates/sarkos/src/keymap.rs` (whole file), `crates/sarkos/src/paths.rs` (append), `crates/sarkos/src/main.rs` (`actions!`, `cx.bind_keys`, `Command::OpenConfig` arm)
+- Modify: `crates/arkos/src/keymap.rs` (whole file), `crates/arkos/src/paths.rs` (append), `crates/arkos/src/main.rs` (`actions!`, `cx.bind_keys`, `Command::OpenConfig` arm)
 - Test: unit tests in `keymap.rs` and `paths.rs`
 
 **Interfaces:**
@@ -84,12 +84,12 @@ Responsibilities stay one per file. `config.rs`, `theme.rs`, `line_edit.rs`, `co
   - `keymap::bindings() -> Vec<KeyBinding>`: `bindings_for` with no overrides (kept for `main.rs` until Task 5).
   - `keymap::keys_for(name: &str, overrides: &BTreeMap<String, String>) -> Option<String>`: the effective keystrokes of an action, `None` when unbound or unknown.
   - `keymap::Quit` (moved from `main.rs`) and `keymap::OpenConfig` actions; `Command::OpenConfig`.
-  - `paths::config_dir() -> PathBuf`, `paths::config_file() -> PathBuf` (`config.toml`), `paths::themes_dir() -> PathBuf` (`themes`), honouring a non-empty `$XDG_CONFIG_HOME`, else `~/.config/sarkos`; `paths::config_dir_from(xdg: Option<&OsStr>, home: &Path) -> PathBuf` for tests.
+  - `paths::config_dir() -> PathBuf`, `paths::config_file() -> PathBuf` (`config.toml`), `paths::themes_dir() -> PathBuf` (`themes`), honouring a non-empty `$XDG_CONFIG_HOME`, else `~/.config/arkos`; `paths::config_dir_from(xdg: Option<&OsStr>, home: &Path) -> PathBuf` for tests.
   - `Root::open_config(&mut self, cx)`: runs `open -t <config file>`; a spawn failure goes in the status banner.
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace the `tests` module at the bottom of `crates/sarkos/src/keymap.rs` with:
+Replace the `tests` module at the bottom of `crates/arkos/src/keymap.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(b.len(), SPEC_ROWS.len());
         for (keys, name, want) in SPEC_ROWS {
             let kb = b.iter().find(|kb| keys_of(kb) == *keys).unwrap_or_else(|| panic!("{keys} ({name}) unbound"));
-            assert_eq!(kb.action().name(), format!("sarkos::{want}"), "{keys}");
+            assert_eq!(kb.action().name(), format!("arkos::{want}"), "{keys}");
         }
     }
 
@@ -155,7 +155,7 @@ mod tests {
         assert!(errors[1].contains("\"splitt right\""), "{}", errors[1]);
         // The defaults stay bound when validation fails: callers keep the last good set.
         let b = bindings_for(&o);
-        assert!(b.iter().any(|kb| keys_of(kb) == "cmd-\\" && kb.action().name() == "sarkos::SplitRight"));
+        assert!(b.iter().any(|kb| keys_of(kb) == "cmd-\\" && kb.action().name() == "arkos::SplitRight"));
 
         let mut o = BTreeMap::new();
         o.insert("split right".to_string(), "cmd-d".to_string());
@@ -163,9 +163,9 @@ mod tests {
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
         assert_eq!(b.len(), ACTIONS.len() - 1, "an empty string unbinds");
-        let split = b.iter().find(|kb| kb.action().name() == "sarkos::SplitRight").unwrap();
+        let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
-        assert!(!b.iter().any(|kb| kb.action().name() == "sarkos::FontBigger"));
+        assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
         assert_eq!(keys_for("split right", &o).as_deref(), Some("cmd-d"));
         assert_eq!(keys_for("font bigger", &o), None);
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
@@ -185,7 +185,7 @@ mod tests {
         let (matched, pending) = keymap.bindings_for_input(&[k, Keystroke::parse("cmd-z").unwrap()], &ctx);
         assert!(!pending);
         assert_eq!(matched.len(), 1);
-        assert_eq!(matched[0].action().name(), "sarkos::ToggleMaximize");
+        assert_eq!(matched[0].action().name(), "arkos::ToggleMaximize");
     }
 
     #[test]
@@ -199,29 +199,29 @@ mod tests {
 }
 ```
 
-Append to the `tests` module in `crates/sarkos/src/paths.rs`:
+Append to the `tests` module in `crates/arkos/src/paths.rs`:
 
 ```rust
     #[test]
     fn config_dir_honours_xdg_config_home() {
         use std::ffi::OsStr;
         let home = Path::new("/Users/me");
-        assert_eq!(config_dir_from(None, home), PathBuf::from("/Users/me/.config/sarkos"));
-        assert_eq!(config_dir_from(Some(OsStr::new("")), home), PathBuf::from("/Users/me/.config/sarkos"));
-        assert_eq!(config_dir_from(Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/sarkos"));
-        assert!(config_file().ends_with("sarkos/config.toml"));
-        assert!(themes_dir().ends_with("sarkos/themes"));
+        assert_eq!(config_dir_from(None, home), PathBuf::from("/Users/me/.config/arkos"));
+        assert_eq!(config_dir_from(Some(OsStr::new("")), home), PathBuf::from("/Users/me/.config/arkos"));
+        assert_eq!(config_dir_from(Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/arkos"));
+        assert!(config_file().ends_with("arkos/config.toml"));
+        assert!(themes_dir().ends_with("arkos/themes"));
     }
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos keymap paths 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos keymap paths 2>&1 | tail -20`
 Expected: compile errors (`ACTIONS`, `validate`, `bindings_for`, `keys_for`, `config_dir_from` not found).
 
 - [ ] **Step 3: Rewrite keymap.rs around the table**
 
-Replace everything above the `tests` module in `crates/sarkos/src/keymap.rs` with:
+Replace everything above the `tests` module in `crates/arkos/src/keymap.rs` with:
 
 ```rust
 //! The keyboard map (spec 4): VS Code's macOS defaults for the editor area, applied to panes
@@ -235,7 +235,7 @@ use gpui::{actions, Context, Div, KeyBinding, Keystroke, Window};
 use std::collections::BTreeMap;
 
 actions!(
-    sarkos,
+    arkos,
     [
         FocusPane1, FocusPane2, FocusPane3, FocusPane4, FocusPane5, FocusPane6, FocusPane7, FocusPane8, FocusPane9,
         FocusLeft, FocusRight, FocusUp, FocusDown,
@@ -449,18 +449,18 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
 
 - [ ] **Step 4: Add the config paths**
 
-Append to `crates/sarkos/src/paths.rs` above the `tests` module:
+Append to `crates/arkos/src/paths.rs` above the `tests` module:
 
 ```rust
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME is set"))
 }
 
-/// `$XDG_CONFIG_HOME/sarkos` when that is set and non-empty, else `~/.config/sarkos` (spec 7).
+/// `$XDG_CONFIG_HOME/arkos` when that is set and non-empty, else `~/.config/arkos` (spec 7).
 pub fn config_dir_from(xdg: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
     match xdg {
-        Some(x) if !x.is_empty() => PathBuf::from(x).join("sarkos"),
-        _ => home.join(".config").join("sarkos"),
+        Some(x) if !x.is_empty() => PathBuf::from(x).join("arkos"),
+        _ => home.join(".config").join("arkos"),
     }
 }
 
@@ -481,15 +481,15 @@ and change `app_support()` to use `home()`:
 
 ```rust
 fn app_support() -> PathBuf {
-    home().join("Library/Application Support/sarkos")
+    home().join("Library/Application Support/arkos")
 }
 ```
 
 - [ ] **Step 5: Wire Quit and OpenConfig in main.rs**
 
-In `crates/sarkos/src/main.rs`:
+In `crates/arkos/src/main.rs`:
 
-1. Delete `actions!(sarkos, [Quit]);` (line 49) and the `actions,` and `KeyBinding,` imports from the `gpui` use list if nothing else uses them (`KeyBinding` is no longer used there).
+1. Delete `actions!(arkos, [Quit]);` (line 49) and the `actions,` and `KeyBinding,` imports from the `gpui` use list if nothing else uses them (`KeyBinding` is no longer used there).
 2. Add `use keymap::Quit;` after the `use workspace::...` line.
 3. Replace the two lines `cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);` and `cx.bind_keys(keymap::bindings());` with the single `cx.bind_keys(keymap::bindings());` (Quit is in the table now).
 4. In `Root::run`, add an arm after `FontDelta(d) => { ... }`:
@@ -507,7 +507,7 @@ In `crates/sarkos/src/main.rs`:
         let path = paths::config_file();
         if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
             self.status = format!("cannot open {}: {e}", path.display());
-            eprintln!("sarkos: {}", self.status);
+            eprintln!("arkos: {}", self.status);
             cx.notify();
         }
     }
@@ -515,13 +515,13 @@ In `crates/sarkos/src/main.rs`:
 
 - [ ] **Step 6: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15`
-Expected: all pass, including the five keymap tests and `config_dir_honours_xdg_config_home`. `~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning` prints 0.
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15`
+Expected: all pass, including the five keymap tests and `config_dir_honours_xdg_config_home`. `~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning` prints 0.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src/keymap.rs crates/sarkos/src/paths.rs crates/sarkos/src/main.rs
+git add crates/arkos/src/keymap.rs crates/arkos/src/paths.rs crates/arkos/src/main.rs
 git commit -m "Name every key binding and accept overrides by name"
 ```
 
@@ -530,8 +530,8 @@ git commit -m "Name every key binding and accept overrides by name"
 ### Task 2: The config file: types, defaults, parsing with line numbers, create on first run
 
 **Files:**
-- Modify: `crates/sarkos/Cargo.toml` (add `toml = "0.8"`), `crates/sarkos/src/main.rs` (`mod config;`)
-- Create: `crates/sarkos/src/config.rs`
+- Modify: `crates/arkos/Cargo.toml` (add `toml = "0.8"`), `crates/arkos/src/main.rs` (`mod config;`)
+- Create: `crates/arkos/src/config.rs`
 - Test: unit tests in `config.rs`
 
 **Interfaces:**
@@ -554,7 +554,7 @@ Why the `theme` section has two names where the spec says "theme (name)": sectio
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/config.rs` with only a `tests` module for now:
+Create `crates/arkos/src/config.rs` with only a `tests` module for now:
 
 ```rust
 #[cfg(test)]
@@ -675,19 +675,19 @@ mod tests {
 }
 ```
 
-Add `mod config;` to `main.rs` (alphabetical, after `mod closed_stack;`) and `toml = "0.8"` under `[dependencies]` in `crates/sarkos/Cargo.toml`.
+Add `mod config;` to `main.rs` (alphabetical, after `mod closed_stack;`) and `toml = "0.8"` under `[dependencies]` in `crates/arkos/Cargo.toml`.
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos config 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos config 2>&1 | tail -20`
 Expected: compile errors (`parse`, `Config`, `DEFAULT_CONFIG` not found).
 
 - [ ] **Step 3: Write the config module**
 
-Put this above the `tests` module in `crates/sarkos/src/config.rs`:
+Put this above the `tests` module in `crates/arkos/src/config.rs`:
 
 ```rust
-//! The config file (spec 7): `~/.config/sarkos/config.toml`, created with commented defaults on
+//! The config file (spec 7): `~/.config/arkos/config.toml`, created with commented defaults on
 //! first run, parsed here with line-numbered errors. `config_watch.rs` notices edits and
 //! `Root::apply_config` applies them; nothing here touches the window.
 use serde::{Deserialize, Serialize};
@@ -790,7 +790,7 @@ pub struct BrowserConfig {
     pub url: String,
 }
 
-/// Passed to sarkosd when the window starts it; a running daemon keeps its own values.
+/// Passed to arkosd when the window starts it; a running daemon keeps its own values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
@@ -929,8 +929,8 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let written = path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|()| std::fs::write(path, DEFAULT_CONFIG));
             match written {
-                Ok(()) => eprintln!("sarkos: wrote default config to {}", path.display()),
-                Err(e) => eprintln!("sarkos: cannot write default config to {}: {e}", path.display()),
+                Ok(()) => eprintln!("arkos: wrote default config to {}", path.display()),
+                Err(e) => eprintln!("arkos: cannot write default config to {}: {e}", path.display()),
             }
             Ok(Config::default())
         }
@@ -940,7 +940,7 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 
 /// Written on first run. Every key is present with its default so an edit is a one-word change;
 /// the comments carry spec 7.1's evidence notes, each a preference, never a health feature.
-pub const DEFAULT_CONFIG: &str = r##"# Sarkos IDE configuration. Watched while the app runs: a saved edit applies at once, and a bad
+pub const DEFAULT_CONFIG: &str = r##"# Arkos IDE configuration. Watched while the app runs: a saved edit applies at once, and a bad
 # edit shows a banner with the line number while the last good settings stay in force.
 #
 # The defaults follow "Check your eyes before your theme"
@@ -1032,15 +1032,15 @@ collapsed = false
 url = ""
 
 [daemon]
-# Read when the window starts sarkosd. A daemon that is already running keeps its values until
-# `pkill -x sarkosd`, which ends every session.
+# Read when the window starts arkosd. A daemon that is already running keeps its values until
+# `pkill -x arkosd`, which ends every session.
 # Seconds without a heartbeat from the window before the daemon relaunches it.
 watchdog_secs = 30
 # Bytes of output kept per session, replayed when a window reattaches.
 replay_bytes = 16777216
 
 [theme]
-# Theme files live in ~/.config/sarkos/themes/<name>.toml. "navy" and "navy-light" are built in;
+# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy" and "navy-light" are built in;
 # "Extract built-in themes" in the command palette writes them there to copy from.
 dark = "navy"
 light = "navy-light"
@@ -1057,13 +1057,13 @@ Note the `r##"..."##` string: the file contains `"` and `#` on the same lines, s
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos config 2>&1 | tail -15`
+Run: `~/.cargo/bin/cargo test -p arkos config 2>&1 | tail -15`
 Expected: all eight pass. If `errors_carry_the_line_number` reports line 4 instead of 5 for the `scrollback = "lots"` case, toml placed the span at the value; both are on line 5, so inspect `e.span()` with a `dbg!` and adjust `line_of` only if the span start is before the newline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/Cargo.toml Cargo.lock crates/sarkos/src/config.rs crates/sarkos/src/main.rs
+git add crates/arkos/Cargo.toml Cargo.lock crates/arkos/src/config.rs crates/arkos/src/main.rs
 git commit -m "Parse config.toml with line-numbered errors and write it on first run"
 ```
 
@@ -1072,8 +1072,8 @@ git commit -m "Parse config.toml with line-numbered errors and write it on first
 ### Task 3: Themes: the file format, Navy and Navy Light, loading and extraction
 
 **Files:**
-- Create: `crates/sarkos/src/theme.rs`, `crates/sarkos/themes/navy.toml`, `crates/sarkos/themes/navy-light.toml`, `scripts/sample-png.py`
-- Modify: `crates/sarkos/src/palette.rs` (serde and gpui conversions for `Rgb`, three new `Palette` fields, test helpers made `pub`), `crates/sarkos/src/main.rs` (`mod theme;`)
+- Create: `crates/arkos/src/theme.rs`, `crates/arkos/themes/navy.toml`, `crates/arkos/themes/navy-light.toml`, `scripts/sample-png.py`
+- Modify: `crates/arkos/src/palette.rs` (serde and gpui conversions for `Rgb`, three new `Palette` fields, test helpers made `pub`), `crates/arkos/src/main.rs` (`mod theme;`)
 - Test: unit tests in `theme.rs` and `palette.rs`
 
 **Interfaces:**
@@ -1093,7 +1093,7 @@ The spec says the Navy values are sampled from the VS Code screenshot in `docs/r
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to the `tests` module of `crates/sarkos/src/palette.rs`:
+Append to the `tests` module of `crates/arkos/src/palette.rs`:
 
 ```rust
     #[test]
@@ -1114,7 +1114,7 @@ Append to the `tests` module of `crates/sarkos/src/palette.rs`:
     }
 ```
 
-Create `crates/sarkos/src/theme.rs` with only this `tests` module:
+Create `crates/arkos/src/theme.rs` with only this `tests` module:
 
 ```rust
 #[cfg(test)]
@@ -1257,12 +1257,12 @@ Add `mod theme;` to `main.rs` (after `mod terminal_element;`).
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos theme palette 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos theme palette 2>&1 | tail -20`
 Expected: compile errors.
 
 - [ ] **Step 3: Extend palette.rs**
 
-In `crates/sarkos/src/palette.rs`:
+In `crates/arkos/src/palette.rs`:
 
 1. Change the `Palette` struct and `NAVY`:
 
@@ -1358,7 +1358,7 @@ pub fn contrast(a: Rgb, b: Rgb) -> f64 {
 
 - [ ] **Step 4: Write the two theme files**
 
-Create `crates/sarkos/themes/navy.toml`:
+Create `crates/arkos/themes/navy.toml`:
 
 ```toml
 # Navy: the default dark theme (spec 7, 7.1). A lifted navy, not black; a bright grey text, not
@@ -1431,7 +1431,7 @@ operator = "#c8ccd4"
 punctuation = "#a8b0bc"
 ```
 
-Create `crates/sarkos/themes/navy-light.toml`:
+Create `crates/arkos/themes/navy-light.toml`:
 
 ```toml
 # Navy Light: the light counterpart with the same hue relationships (spec 7). Text is dark on a
@@ -1597,11 +1597,11 @@ Also take the file-tree pastels from `vscode-full.png` only by eye (the icons ar
 
 - [ ] **Step 6: Write the theme module**
 
-Put this above the `tests` module in `crates/sarkos/src/theme.rs`:
+Put this above the `tests` module in `crates/arkos/src/theme.rs`:
 
 ```rust
 //! Themes (spec 7): one flat set of named colours per TOML file. Two are built in and embedded;
-//! user files in `~/.config/sarkos/themes/` override or add to them. `Root` holds the active
+//! user files in `~/.config/arkos/themes/` override or add to them. `Root` holds the active
 //! `Theme`; views read it, and each terminal resolves cells against `Theme::palette` at paint.
 use crate::palette::{luminance, Palette, Rgb};
 use serde::{Deserialize, Serialize};
@@ -1795,13 +1795,13 @@ impl Theme {
 
 - [ ] **Step 7: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos theme palette 2>&1 | tail -20`
-Expected: all pass. `~/.cargo/bin/cargo build -p sarkos 2>&1 | grep warning` prints nothing (the `Palette` fields and theme functions unused until Task 4 are `pub`, which is not a warning for a binary crate's `pub` items in a private module only when they are used; if `dead_code` warnings appear for `selection`, `find_match`, `find_current`, `names`, `extract` or `is_light`, add `#[cfg_attr(not(test), allow(dead_code))]` to each with the comment `// Read from Task 4 on.` and remove the attribute in the task that uses it).
+Run: `~/.cargo/bin/cargo test -p arkos theme palette 2>&1 | tail -20`
+Expected: all pass. `~/.cargo/bin/cargo build -p arkos 2>&1 | grep warning` prints nothing (the `Palette` fields and theme functions unused until Task 4 are `pub`, which is not a warning for a binary crate's `pub` items in a private module only when they are used; if `dead_code` warnings appear for `selection`, `find_match`, `find_current`, `names`, `extract` or `is_light`, add `#[cfg_attr(not(test), allow(dead_code))]` to each with the comment `// Read from Task 4 on.` and remove the attribute in the task that uses it).
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/sarkos/src/theme.rs crates/sarkos/src/palette.rs crates/sarkos/src/main.rs crates/sarkos/themes scripts/sample-png.py
+git add crates/arkos/src/theme.rs crates/arkos/src/palette.rs crates/arkos/src/main.rs crates/arkos/themes scripts/sample-png.py
 git commit -m "Add the theme file format with Navy and Navy Light built in"
 ```
 
@@ -1810,7 +1810,7 @@ git commit -m "Add the theme file format with Navy and Navy Light built in"
 ### Task 4: Every colour from the theme, appearance following, live palette swap
 
 **Files:**
-- Modify: `crates/sarkos/src/main.rs`, `crates/sarkos/src/chrome.rs`, `crates/sarkos/src/pane_view.rs`, `crates/sarkos/src/split_view.rs`, `crates/sarkos/src/empty_pane.rs`, `crates/sarkos/src/drag.rs`, `crates/sarkos/src/terminal.rs`, `crates/sarkos/src/terminal_element.rs`, `crates/sarkos/src/theme.rs` (`pick_name`)
+- Modify: `crates/arkos/src/main.rs`, `crates/arkos/src/chrome.rs`, `crates/arkos/src/pane_view.rs`, `crates/arkos/src/split_view.rs`, `crates/arkos/src/empty_pane.rs`, `crates/arkos/src/drag.rs`, `crates/arkos/src/terminal.rs`, `crates/arkos/src/terminal_element.rs`, `crates/arkos/src/theme.rs` (`pick_name`)
 - Test: unit tests in `terminal.rs` and `theme.rs`
 
 **Interfaces:**
@@ -1832,7 +1832,7 @@ The `restore` function in `main.rs` builds `TerminalCore`s: give each the root's
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to the `tests` module in `crates/sarkos/src/terminal.rs`:
+Append to the `tests` module in `crates/arkos/src/terminal.rs`:
 
 ```rust
     #[test]
@@ -1860,7 +1860,7 @@ Append to the `tests` module in `crates/sarkos/src/terminal.rs`:
 
 `Palette` needs `Clone` for `Palette { ..NAVY }`: add `#[derive(Debug, Clone, PartialEq, Eq)]` to it in `palette.rs`.
 
-Append to the `tests` module in `crates/sarkos/src/theme.rs`:
+Append to the `tests` module in `crates/arkos/src/theme.rs`:
 
 ```rust
     #[test]
@@ -1879,7 +1879,7 @@ Append to the `tests` module in `crates/sarkos/src/theme.rs`:
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos set_palette appearance_mode 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos set_palette appearance_mode 2>&1 | tail -20`
 Expected: compile errors (`set_palette`, `pick_name`, `is_dark`).
 
 - [ ] **Step 3: The pure parts**
@@ -1979,7 +1979,7 @@ In `main.rs`:
             Ok(_) => {}
             Err(e) => {
                 self.config_error = Some(format!("theme: {e}; keeping {}", self.theme.name));
-                eprintln!("sarkos: theme: {e}");
+                eprintln!("arkos: theme: {e}");
                 cx.notify();
             }
         }
@@ -1995,7 +1995,7 @@ In `main.rs`:
     let (config, config_error) = match config::load(&config_path) {
         Ok(c) => (c, None),
         Err(e) => {
-            eprintln!("sarkos: {e}");
+            eprintln!("arkos: {e}");
             (config::Config::default(), Some(e.to_string()))
         }
     };
@@ -2009,7 +2009,7 @@ before `Application::new().run`, and inside the `run` closure, before `open_wind
         let (theme, theme_error) = match theme::load(&name, &paths::themes_dir()) {
             Ok(t) => (t, None),
             Err(e) => {
-                eprintln!("sarkos: theme: {e}; using navy");
+                eprintln!("arkos: theme: {e}; using navy");
                 (theme::builtin("navy").expect("navy is built in"), Some(format!("theme: {e}")))
             }
         };
@@ -2079,30 +2079,30 @@ Replace every colour constant with the theme field in this table. Each function 
 `gpui::rgb(u32)` calls become `field.hsla()`; `gpui::rgba` calls become `field.alpha(a)`. After the edit, this must print only `palette.rs`, `theme.rs` and `layout.rs` test lines:
 
 ```bash
-grep -n "0x[0-9a-f]\{6\}" crates/sarkos/src/*.rs | grep -v "palette.rs\|theme.rs\|layout.rs"
+grep -n "0x[0-9a-f]\{6\}" crates/arkos/src/*.rs | grep -v "palette.rs\|theme.rs\|layout.rs"
 ```
 
 `split_view::render_handle` takes `theme: &Theme` (the `group_hover` closure needs the hover colour by value: `let hover = theme.chrome.split_handle_hover;`). `empty_pane::render` gains `theme: &Theme` after `focus`. `render_tab_bar`'s `drag_value` sets `bg: theme.chrome.banner, fg: theme.chrome.text`.
 
 - [ ] **Step 6: Run everything**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning`
 Expected: all pass; `0`.
 
 Then a launch check (the screen may be locked; it still proves the window opens and the theme loads):
 
 ```bash
 ~/.cargo/bin/cargo build --release 2>&1 | tail -2
-(cd /tmp && /Users/csarko/Projects/ide-sarkos/target/release/sarkos > /tmp/sarkos-2b-t4.log 2>&1 &)
-sleep 6; grep -c "attached to session\|wrote default config" /tmp/sarkos-2b-t4.log; pkill -x sarkos; sleep 1; tail -5 /tmp/sarkos-2b-t4.log
+(cd /tmp && /Users/csarko/Projects/ide-sarkos/target/release/arkos > /tmp/arkos-2b-t4.log 2>&1 &)
+sleep 6; grep -c "attached to session\|wrote default config" /tmp/arkos-2b-t4.log; pkill -x arkos; sleep 1; tail -5 /tmp/arkos-2b-t4.log
 ```
 
-Expected: the log shows `wrote default config to /Users/csarko/.config/sarkos/config.toml` on the very first launch and no `theme:` line.
+Expected: the log shows `wrote default config to /Users/csarko/.config/arkos/config.toml` on the very first launch and no `theme:` line.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src
+git add crates/arkos/src
 git commit -m "Draw every colour from the theme and follow the macOS appearance"
 ```
 
@@ -2111,7 +2111,7 @@ git commit -m "Draw every colour from the theme and follow the macOS appearance"
 ### Task 5: Text presets: font family and line height everywhere, saved with the workspace
 
 **Files:**
-- Modify: `crates/sarkos/src/terminal_element.rs`, `crates/sarkos/src/terminal.rs`, `crates/sarkos/src/pane_view.rs`, `crates/sarkos/src/workspace.rs`, `crates/sarkos/src/main.rs`, `crates/sarkos/src/keymap.rs` (`Command::TextPreset`), `crates/sarkos/src/config.rs` (`resolve_preset`)
+- Modify: `crates/arkos/src/terminal_element.rs`, `crates/arkos/src/terminal.rs`, `crates/arkos/src/pane_view.rs`, `crates/arkos/src/workspace.rs`, `crates/arkos/src/main.rs`, `crates/arkos/src/keymap.rs` (`Command::TextPreset`), `crates/arkos/src/config.rs` (`resolve_preset`)
 - Test: unit tests in `config.rs`, `workspace.rs`, `terminal_element.rs`
 
 **Interfaces:**
@@ -2181,7 +2181,7 @@ Append to the `tests` module in `terminal_element.rs`:
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos resolve_preset text_preset cell_height 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos resolve_preset text_preset cell_height 2>&1 | tail -20`
 Expected: compile errors.
 
 - [ ] **Step 3: The pure parts**
@@ -2324,13 +2324,13 @@ In `main.rs`:
 
 - [ ] **Step 5: Run everything**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning`
-Expected: all pass; `0`. `grep -rn "Menlo" crates/sarkos/src` must hit only `config.rs`.
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning`
+Expected: all pass; `0`. `grep -rn "Menlo" crates/arkos/src` must hit only `config.rs`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/sarkos/src
+git add crates/arkos/src
 git commit -m "Apply text presets to every terminal and save the active one"
 ```
 
@@ -2339,8 +2339,8 @@ git commit -m "Apply text presets to every terminal and save the active one"
 ### Task 6: Live reload: the watcher, apply_config, terminal defaults, daemon flags, Reduce Motion
 
 **Files:**
-- Create: `crates/sarkos/src/config_watch.rs`
-- Modify: `crates/sarkos/src/main.rs`, `crates/sarkos/src/config.rs` (`reload_decision`), `crates/sarkos/src/theme.rs` (`keep_or_switch`), `crates/sarkos/src/sessions.rs`, `crates/sarkos/src/client.rs`, `crates/sarkos/src/motion.rs`, `crates/sarkos/src/keymap.rs` (`Command::ReloadConfig`, `Command::ExtractThemes`)
+- Create: `crates/arkos/src/config_watch.rs`
+- Modify: `crates/arkos/src/main.rs`, `crates/arkos/src/config.rs` (`reload_decision`), `crates/arkos/src/theme.rs` (`keep_or_switch`), `crates/arkos/src/sessions.rs`, `crates/arkos/src/client.rs`, `crates/arkos/src/motion.rs`, `crates/arkos/src/keymap.rs` (`Command::ReloadConfig`, `Command::ExtractThemes`)
 - Test: unit tests in `config_watch.rs`, `config.rs`, `theme.rs`, `sessions.rs`, `motion.rs`
 
 **Interfaces:**
@@ -2357,7 +2357,7 @@ git commit -m "Apply text presets to every terminal and save the active one"
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/config_watch.rs` with:
+Create `crates/arkos/src/config_watch.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -2461,7 +2461,7 @@ mod tests {
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos fingerprint reload keep_or_switch configured_shell motion 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos fingerprint reload keep_or_switch configured_shell motion 2>&1 | tail -20`
 Expected: compile errors.
 
 - [ ] **Step 3: The pure parts**
@@ -2592,9 +2592,9 @@ In `main.rs`, `impl Root`:
         let (cfg, banner) = config::reload_decision(&self.config, config::load(&paths::config_file()));
         self.config_error = banner;
         if let Some(e) = &self.config_error {
-            eprintln!("sarkos: {e}");
+            eprintln!("arkos: {e}");
         } else {
-            eprintln!("sarkos: config reloaded");
+            eprintln!("arkos: config reloaded");
             self.apply_config(cfg, cx);
         }
         cx.notify();
@@ -2648,7 +2648,7 @@ In `main()`: `motion::refresh();` before `app_nap::hold();`; the daemon args:
     let (client, mut events) = match client::Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("sarkos: cannot reach sarkosd: {e:#}");
+            eprintln!("arkos: cannot reach arkosd: {e:#}");
             std::process::exit(1);
         }
     };
@@ -2660,16 +2660,16 @@ Add `mod config_watch;` to `main.rs`.
 
 - [ ] **Step 5: Run everything, then a live reload check**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning`
 Expected: all pass; `0`.
 
 Then, with the release binary running from `/tmp` as in Task 4:
 
 ```bash
-sed -i '' 's/^mode = "system"/mode = "light"/' ~/.config/sarkos/config.toml; sleep 1.5
-sed -i '' 's/^mode = "light"/mode = "sytem"/' ~/.config/sarkos/config.toml; sleep 1.5
-sed -i '' 's/^mode = "sytem"/mode = "system"/' ~/.config/sarkos/config.toml; sleep 1.5
-pkill -x sarkos; sleep 1; grep -n "config reloaded\|config.toml line" /tmp/sarkos-2b-t4.log
+sed -i '' 's/^mode = "system"/mode = "light"/' ~/.config/arkos/config.toml; sleep 1.5
+sed -i '' 's/^mode = "light"/mode = "sytem"/' ~/.config/arkos/config.toml; sleep 1.5
+sed -i '' 's/^mode = "sytem"/mode = "system"/' ~/.config/arkos/config.toml; sleep 1.5
+pkill -x arkos; sleep 1; grep -n "config reloaded\|config.toml line" /tmp/arkos-2b-t4.log
 ```
 
 Expected: two `config reloaded` lines around one `config.toml line N:` line (the mode typo), in that order.
@@ -2677,7 +2677,7 @@ Expected: two `config reloaded` lines around one `config.toml line N:` line (the
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/sarkos/src
+git add crates/arkos/src
 git commit -m "Reload config.toml live and keep the last good one on a bad edit"
 ```
 
@@ -2686,8 +2686,8 @@ git commit -m "Reload config.toml live and keep the last good one on a bad edit"
 ### Task 7: A single-line editor for the palette and the find bar
 
 **Files:**
-- Create: `crates/sarkos/src/line_edit.rs`
-- Modify: `crates/sarkos/src/main.rs` (`mod line_edit;`)
+- Create: `crates/arkos/src/line_edit.rs`
+- Modify: `crates/arkos/src/main.rs` (`mod line_edit;`)
 - Test: unit tests in `line_edit.rs`
 
 **Interfaces:**
@@ -2701,7 +2701,7 @@ gpui 0.2.2 ships no text input element (its `examples/input.rs` builds one by ha
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/sarkos/src/line_edit.rs` with:
+Create `crates/arkos/src/line_edit.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -2812,7 +2812,7 @@ Add `mod line_edit;` to `main.rs` (after `mod layout;`).
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos line_edit 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos line_edit 2>&1 | tail -20`
 Expected: compile errors.
 
 - [ ] **Step 3: Write the editor**
@@ -2972,13 +2972,13 @@ The "a"/"e" control arms are matched before the generic `m.control` early return
 
 - [ ] **Step 4: Run the tests**
 
-Run: `~/.cargo/bin/cargo test -p sarkos line_edit 2>&1 | tail -15`
+Run: `~/.cargo/bin/cargo test -p arkos line_edit 2>&1 | tail -15`
 Expected: five pass. The `render` function is unused until Task 8; add `#[cfg_attr(not(test), allow(dead_code))]` above it with the comment `// Used from Task 8.` if the build warns, and remove it then.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src/line_edit.rs crates/sarkos/src/main.rs
+git add crates/arkos/src/line_edit.rs crates/arkos/src/main.rs
 git commit -m "Add a hand-built single-line editor for the palette and find"
 ```
 
@@ -2987,8 +2987,8 @@ git commit -m "Add a hand-built single-line editor for the palette and find"
 ### Task 8: The command palette
 
 **Files:**
-- Create: `crates/sarkos/src/command_palette.rs`
-- Modify: `crates/sarkos/src/keymap.rs` (`CommandPalette` action and row, `pretty_keys`, `label`, `Command::{CommandPalette, SetTheme}`), `crates/sarkos/src/main.rs`
+- Create: `crates/arkos/src/command_palette.rs`
+- Modify: `crates/arkos/src/keymap.rs` (`CommandPalette` action and row, `pretty_keys`, `label`, `Command::{CommandPalette, SetTheme}`), `crates/arkos/src/main.rs`
 - Test: unit tests in `command_palette.rs` and `keymap.rs`
 
 **Interfaces:**
@@ -3024,7 +3024,7 @@ Append to the `tests` module in `keymap.rs`:
     }
 ```
 
-Create `crates/sarkos/src/command_palette.rs` with:
+Create `crates/arkos/src/command_palette.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -3117,7 +3117,7 @@ The `focus` field is `Option<FocusHandle>` so the pure tests can build a `Palett
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos command_palette pretty 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos command_palette pretty 2>&1 | tail -20`
 Expected: compile errors.
 
 - [ ] **Step 3: keymap additions**
@@ -3229,7 +3229,7 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
         out.push(Item { label: format!("Theme: {name}"), detail, command: Command::SetTheme(name.clone()) });
     }
     out.push(Item { label: "Reload config".into(), detail: String::new(), command: Command::ReloadConfig });
-    out.push(Item { label: "Extract built-in themes".into(), detail: "to ~/.config/sarkos/themes".into(), command: Command::ExtractThemes });
+    out.push(Item { label: "Extract built-in themes".into(), detail: "to ~/.config/arkos/themes".into(), command: Command::ExtractThemes });
     out
 }
 
@@ -3496,13 +3496,13 @@ In `main.rs`:
 
 - [ ] **Step 6: Run everything**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning`
 Expected: all pass; `0`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src
+git add crates/arkos/src
 git commit -m "Add the command palette with every action, preset and theme"
 ```
 
@@ -3511,8 +3511,8 @@ git commit -m "Add the command palette with every action, preset and theme"
 ### Task 9: Find in the terminal (Cmd+F)
 
 **Files:**
-- Create: `crates/sarkos/src/find.rs`
-- Modify: `crates/sarkos/src/terminal.rs` (search, highlights, reveal, `find` field, refresh after output), `crates/sarkos/src/terminal_element.rs` (paint highlights), `crates/sarkos/src/pane_view.rs` (the find bar, click-to-close), `crates/sarkos/src/keymap.rs` (`Find` action and row, `Command::Find`, `command_for`), `crates/sarkos/src/config.rs` (`DEFAULT_CONFIG` comment line), `crates/sarkos/src/main.rs` (`mod find;`, the `Find` arm, focus)
+- Create: `crates/arkos/src/find.rs`
+- Modify: `crates/arkos/src/terminal.rs` (search, highlights, reveal, `find` field, refresh after output), `crates/arkos/src/terminal_element.rs` (paint highlights), `crates/arkos/src/pane_view.rs` (the find bar, click-to-close), `crates/arkos/src/keymap.rs` (`Find` action and row, `Command::Find`, `command_for`), `crates/arkos/src/config.rs` (`DEFAULT_CONFIG` comment line), `crates/arkos/src/main.rs` (`mod find;`, the `Find` arm, focus)
 - Test: unit tests in `terminal.rs` and `find.rs`
 
 **Interfaces:**
@@ -3605,7 +3605,7 @@ Append to the `tests` module in `terminal.rs`:
     }
 ```
 
-Create `crates/sarkos/src/find.rs` with:
+Create `crates/arkos/src/find.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -3626,7 +3626,7 @@ mod tests {
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos escape_makes search_is search_covers highlights_follow newest_match 2>&1 | tail -20`
+Run: `~/.cargo/bin/cargo test -p arkos escape_makes search_is search_covers highlights_follow newest_match 2>&1 | tail -20`
 Expected: compile errors.
 
 - [ ] **Step 3: The search in TerminalCore**
@@ -3941,13 +3941,13 @@ In `render`, the focus choice becomes: the palette's handle if open; else the ac
 
 - [ ] **Step 6: Run everything**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning`
 Expected: all pass; `0`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sarkos/src
+git add crates/arkos/src
 git commit -m "Find in the terminal with Cmd+F, literal and case-insensitive"
 ```
 
@@ -3956,7 +3956,7 @@ git commit -m "Find in the terminal with Cmd+F, literal and case-insensitive"
 ### Task 10: The tab-bar overflow menu and a bar that keeps the active tab in view
 
 **Files:**
-- Modify: `crates/sarkos/src/pane_view.rs`, `crates/sarkos/src/main.rs`
+- Modify: `crates/arkos/src/pane_view.rs`, `crates/arkos/src/main.rs`
 - Test: unit tests in `pane_view.rs`
 
 **Interfaces:**
@@ -3986,7 +3986,7 @@ Append to the `tests` module in `pane_view.rs`:
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos overflow_menu 2>&1 | tail -10`
+Run: `~/.cargo/bin/cargo test -p arkos overflow_menu 2>&1 | tail -10`
 Expected: compile errors.
 
 - [ ] **Step 3: Implement**
@@ -4102,13 +4102,13 @@ The root div in `render` gains `.on_mouse_down(MouseButton::Left, cx.listener(|r
 
 - [ ] **Step 4: Run everything**
 
-Run: `~/.cargo/bin/cargo test -p sarkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p sarkos 2>&1 | grep -c warning`
+Run: `~/.cargo/bin/cargo test -p arkos 2>&1 | tail -15 && ~/.cargo/bin/cargo build -p arkos 2>&1 | grep -c warning`
 Expected: all pass; `0`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/sarkos/src
+git add crates/arkos/src
 git commit -m "Add the tab-bar overflow menu and keep the active tab in view"
 ```
 
@@ -4117,7 +4117,7 @@ git commit -m "Add the tab-bar overflow menu and keep the active tab in view"
 ### Task 11: Milestone 2a carry-overs, the README, and three spec corrections
 
 **Files:**
-- Modify: `crates/sarkos/src/sessions.rs`, `crates/sarkos/src/main.rs`, `README.md`, `docs/superpowers/specs/2026-10-13-sarkos-design.md`
+- Modify: `crates/arkos/src/sessions.rs`, `crates/arkos/src/main.rs`, `README.md`, `docs/superpowers/specs/2026-10-13-arkos-design.md`
 - Test: unit tests in `sessions.rs` and `main.rs`
 
 **Interfaces:**
@@ -4159,7 +4159,7 @@ Append to the `tests` module in `main.rs`:
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `~/.cargo/bin/cargo test -p sarkos quiet_success outranks 2>&1 | tail -10`
+Run: `~/.cargo/bin/cargo test -p arkos quiet_success outranks 2>&1 | tail -10`
 Expected: the first fails (`Outcome::Error`), the second does not compile.
 
 - [ ] **Step 3: Implement the three fixes**
@@ -4169,7 +4169,7 @@ Expected: the first fails (`Outcome::Error`), the second does not compile.
 ```rust
                 Some(Pending::Kill { session }) if e.starts_with("no session") => {
                     // Reaped before the kill arrived: the session is gone, which is what we asked.
-                    eprintln!("sarkos: session {} was already gone when killed", session.0);
+                    eprintln!("arkos: session {} was already gone when killed", session.0);
                     return Outcome::Killed { session };
                 }
 ```
@@ -4206,7 +4206,7 @@ In `close_tab`, inside `if session != SessionId(0) {`, before the `is_restoring`
                 let ended = self.sessions.terminals.get(&session).map(|t| !t.read(cx).alive).unwrap_or(false);
                 if ended {
                     // Nothing to bring back: end the session now instead of a minute from now.
-                    eprintln!("sarkos: closing ended session {}", session.0);
+                    eprintln!("arkos: closing ended session {}", session.0);
                     self.sessions.kill(session);
                     self.sessions.detach(session);
                     self.sessions.tab_closed(id);
@@ -4233,7 +4233,7 @@ tab-bar overflow menu. Milestone 3 (Claude Code session awareness) is next.
 ```markdown
 Things only a person at the screen can check, in order of value:
 
-- editing `~/.config/sarkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
+- editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
 - System Settings > Appearance: Light switches to Navy Light and back, history included
@@ -4242,7 +4242,7 @@ Things only a person at the screen can check, in order of value:
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
 - "Theme: navy-light" in the palette, then a config reload: the config's theme wins
-- "Extract built-in themes", then editing `~/.config/sarkos/themes/navy.toml`'s `window_bg` and
+- "Extract built-in themes", then editing `~/.config/arkos/themes/navy.toml`'s `window_bg` and
   reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
 - `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
 - Cmd+F in a pane with history: typing highlights every match and jumps to the newest; Enter
@@ -4257,8 +4257,8 @@ Things only a person at the screen can check, in order of value:
 - Cmd+K alone clearing the scrollback while the Cmd+K chords still work
 - the empty pane's animation holding still after turning on Reduce Motion and saving the config
 - after `kill -9`: the layout, every session, replayed history, the text preset, and typing
-- the window minimized for two minutes keeps its sessions: compare the `sarkos` pid before and
-  after, and look for no "relaunching" line in `~/Library/Application Support/sarkos/sarkosd.log`
+- the window minimized for two minutes keeps its sessions: compare the `arkos` pid before and
+  after, and look for no "relaunching" line in `~/Library/Application Support/arkos/arkosd.log`
 - `ps` after thirty seconds idle with four terminals
 ```
 
@@ -4277,7 +4277,7 @@ Delete the note "Cmd+F, Cmd+,, Cmd+Shift+P, Cmd+B, Cmd+Shift+E and Ctrl+Shift+G 
 ```markdown
 ## Config
 
-`~/.config/sarkos/config.toml` (or `$XDG_CONFIG_HOME/sarkos/config.toml`) is written with
+`~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with
 commented defaults on first run and opened by Cmd+, in your text editor. It is watched: a saved
 edit applies within a second. A bad edit shows a banner with the line number and keeps the last
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
@@ -4285,7 +4285,7 @@ good settings. Sections: `font` (family, the default text preset, and the preset
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), and `sidebar` and `browser` for later milestones.
 
-Themes are one TOML file each in `~/.config/sarkos/themes/`; `navy` and `navy-light` are built
+Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
 from the palette lasts until relaunch; the config file decides otherwise. Text presets are
 `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed` (18 px, 1.6); add your own under
@@ -4294,7 +4294,7 @@ from the palette lasts until relaunch; the config file decides otherwise. Text p
 
 - [ ] **Step 5: Spec corrections**
 
-In `docs/superpowers/specs/2026-10-13-sarkos-design.md`:
+In `docs/superpowers/specs/2026-10-13-arkos-design.md`:
 
 1. Section 2.1, the sentence "Per session it keeps: id, title, cwd, shell, pid, alive flag, last activity time, nice level, Claude state (section 5), and a **replay buffer**" becomes "Per session it keeps: id, title, cwd, pid, alive flag, last activity time, Claude state (section 5), and a **replay buffer**". Add after that paragraph: "The shell and nice level are fields of the CreateSession request, applied when the shell starts; they are not part of the session record."
 2. Section 2.3, the SessionEvent row's payload "session id, one of: exited(code), title(string), state(ClaudeState), bell" becomes "session id, one of: exited(code), state(ClaudeState). Title changes and the bell are escape sequences in the output, which the UI's emulator parses; the daemon never parses output (section 2.1)."
@@ -4308,15 +4308,15 @@ Expected: every suite passes; `0`.
 Memory, for the README's Status paragraph if it moved (release build, four terminals, thirty seconds idle, as in milestone 2a):
 
 ```bash
-(cd /tmp && /Users/csarko/Projects/ide-sarkos/target/release/sarkos > /tmp/sarkos-2b-final.log 2>&1 &); sleep 30
-ps -o rss=,comm= -p "$(pgrep -x sarkos)" "$(pgrep -x sarkosd)"
-pkill -x sarkos
+(cd /tmp && /Users/csarko/Projects/ide-sarkos/target/release/arkos > /tmp/arkos-2b-final.log 2>&1 &); sleep 30
+ps -o rss=,comm= -p "$(pgrep -x arkos)" "$(pgrep -x arkosd)"
+pkill -x arkos
 ```
 
-Expected: `sarkos` under 120 MB, `sarkosd` under 15 MB. If `sarkos` grew by more than 5 MB over milestone 2a's 85 MB, note it in the commit message for milestone 6.
+Expected: `arkos` under 120 MB, `arkosd` under 15 MB. If `arkos` grew by more than 5 MB over milestone 2a's 85 MB, note it in the commit message for milestone 6.
 
 ```bash
-git add crates/sarkos/src README.md docs/superpowers/specs/2026-10-13-sarkos-design.md
+git add crates/arkos/src README.md docs/superpowers/specs/2026-10-13-arkos-design.md
 git commit -m "Quiet kills of reaped sessions, immediate kill of ended tabs, README and spec fixes"
 ```
 

@@ -108,13 +108,13 @@ mod tests {
         use crate::{Request, Response};
         use std::path::PathBuf;
         for req in [
-            Request::Upgrade { exe: PathBuf::from("/opt/homebrew/bin/sarkosd") },
-            Request::RelaunchClient { exe: PathBuf::from("/opt/homebrew/bin/sarkos"), cwd: PathBuf::from("/p") },
+            Request::Upgrade { exe: PathBuf::from("/opt/homebrew/bin/arkosd") },
+            Request::RelaunchClient { exe: PathBuf::from("/opt/homebrew/bin/arkos"), cwd: PathBuf::from("/p") },
         ] {
             let bytes = postcard::to_allocvec(&req).unwrap();
             assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), req);
         }
-        let hello = Response::Hello { daemon_version: "sarkosd 0.2.0 (abc1234)".into(), protocol_min: 1, protocol_max: 2 };
+        let hello = Response::Hello { daemon_version: "arkosd 0.2.0 (abc1234)".into(), protocol_min: 1, protocol_max: 2 };
         let bytes = postcard::to_allocvec(&hello).unwrap();
         assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), hello);
         // postcard writes an enum's variant index first; Ok is still variant 0 and Error still 4,
