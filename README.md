@@ -278,8 +278,8 @@ pane loses focus the active block renders again.
 
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
-them. A file with both kinds of line ending, or one that is not valid UTF-8, opens read-only with a banner
-saying so, since a save could not keep it as it was.
+them. A file with both kinds of line ending, or one that is not valid UTF-8, opens read-only with
+a banner saying so, since a save could not keep it as it was.
 
 If the file changes on disk while you have unsaved edits, a banner says "The file changed on disk"
 with Reload (take the disk's version) and Keep mine (your text wins and the next save overwrites
@@ -370,15 +370,17 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
-| Cmd+Shift+M | toggle markdown view: rendered or raw |
+| Shift+Cmd+M | toggle markdown view: rendered or raw |
 | Cmd+S | save file (a markdown file also saves itself a second after you stop typing) |
 | Arrows | in a markdown file: move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select |
 | Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward |
+| Option+Fn+Delete | in a markdown file: delete the word after the caret |
+| Cmd+Fn+Delete | in a markdown file: delete to the line end |
 | Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
 | Tab, Shift+Tab | in a markdown list: indent or outdent the item |
 | Enter | in a markdown list: start the next item; on an empty item, end the list |
-| Escape | in a markdown file: leave the active block, or close find |
+| Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
 | Cmd+N | new window: the project chooser in its own window (also the File menu's only item); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
 | Cmd+, | open config file |

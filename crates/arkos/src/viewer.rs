@@ -1117,12 +1117,97 @@ impl Viewer {
     /// through `edit`, so the tab turns dirty and the autosave is scheduled; moves only end the
     /// typing step. A key this does not know returns `false` for the keymap and the input method.
     pub fn key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        if self.doc.is_none() {
+            return false;
+        }
+        if self.rendered() && !self.caret_placed {
+            return self.key_before_placement(ks, cx);
+        }
+        let action = key_action(ks);
         let handled = self.key_inner(ks, cx);
-        // A key the document took puts the caret in play: the rendered view shows its block raw.
-        if handled {
+        // A caret move or an edit puts the caret in play: the rendered view shows its block raw.
+        if handled && action.is_some_and(places_caret) {
             self.caret_placed = true;
         }
         handled
+    }
+
+    /// A key in the rendered view before the caret has been placed, which would otherwise act on
+    /// a caret the user cannot see (`pre_placement_action`): Space and the page keys scroll as in
+    /// the read-only viewer, an editing key first puts the caret at the start of the first block
+    /// on screen. Text typed comes through the input handler, which places the caret the same way.
+    fn key_before_placement(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let m = &ks.modifiers;
+        if ks.key == "space" && !(m.platform || m.control || m.alt) {
+            self.list_state.scroll_by(self.list_state.viewport_bounds().size.height);
+            cx.notify();
+            return true;
+        }
+        let Some(action) = key_action(ks) else { return false };
+        match action {
+            // Saving is not about the caret.
+            KeyAction::Save => {
+                self.save_command(cx);
+                return true;
+            }
+            // The find bar closes, as Escape always does; that puts the caret on its hit.
+            KeyAction::Escape if self.find.is_some() => {
+                self.close_find(cx);
+                return true;
+            }
+            _ => {}
+        }
+        match pre_placement_action(action) {
+            PrePlacement::Ignore => {}
+            PrePlacement::Scroll => {
+                self.scroll_list(action);
+                cx.notify();
+            }
+            PrePlacement::Place => {
+                self.place_at_first_visible();
+                self.key_inner(ks, cx);
+            }
+        }
+        true
+    }
+
+    /// The scroll keys of the rendered view: the page keys by the list's height, Home and End to
+    /// its ends, Up and Down by a line.
+    fn scroll_list(&mut self, action: KeyAction) {
+        let page = self.list_state.viewport_bounds().size.height;
+        let line = px(self.font_size * self.line_height);
+        match action {
+            KeyAction::Move(edit::Move::PageDown(_), _) => self.list_state.scroll_by(page),
+            KeyAction::Move(edit::Move::PageUp(_), _) => self.list_state.scroll_by(-page),
+            KeyAction::Move(edit::Move::Down, _) => self.list_state.scroll_by(line),
+            KeyAction::Move(edit::Move::Up, _) => self.list_state.scroll_by(-line),
+            KeyAction::ScrollHome => self.list_state.scroll_to(ListOffset::default()),
+            KeyAction::ScrollEnd => self.list_state.scroll_to(ListOffset { item_ix: self.list_state.item_count(), offset_in_item: px(0.0) }),
+            _ => {}
+        }
+    }
+
+    /// Puts the caret at the start of the first block on screen in the rendered view, where an
+    /// edit made before the user placed it lands.
+    fn place_at_first_visible(&mut self) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        let ix = self.list_state.logical_scroll_top().item_ix.min(self.blocks.len().saturating_sub(1));
+        let line = self.blocks.get(ix).map_or(0, |b| b.lines.start);
+        doc.break_coalescing();
+        self.caret = edit::Caret::at(doc.clamp(edit::Pos { line, ch: 0 }));
+        self.caret_placed = true;
+    }
+
+    /// The input handler's first step: in the rendered view before the caret has been placed, the
+    /// caret goes to the first block on screen. `true` when it moved, and a range the input method
+    /// gave against the old field no longer applies.
+    fn place_for_input(&mut self) -> bool {
+        if self.rendered() && !self.caret_placed {
+            self.place_at_first_visible();
+            return true;
+        }
+        self.caret_placed = true;
+        false
     }
 
     fn key_inner(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
@@ -1139,11 +1224,16 @@ impl Viewer {
         }
         match action {
             KeyAction::Save => self.save_command(cx),
+            // Escape undoes one thing at a time: the find bar closes, a selection collapses, and
+            // in the rendered view the active block renders again until the caret is placed anew.
             KeyAction::Escape => {
                 if self.find.is_some() {
                     self.close_find(cx);
-                } else {
+                } else if self.caret.anchor != self.caret.head {
                     self.caret.anchor = self.caret.head;
+                    cx.notify();
+                } else if self.rendered() {
+                    self.caret_placed = false;
                     cx.notify();
                 }
             }
@@ -1198,12 +1288,8 @@ impl Viewer {
     /// Home and End go to its ends, and Up and Down cross from block to block (`md_view::navigate`).
     /// `false` for every other key, which works as in the raw view.
     fn rendered_key(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
-        let page = self.list_state.viewport_bounds().size.height;
         match action {
-            KeyAction::Move(edit::Move::PageDown(_), _) => self.list_state.scroll_by(page),
-            KeyAction::Move(edit::Move::PageUp(_), _) => self.list_state.scroll_by(-page),
-            KeyAction::ScrollHome => self.list_state.scroll_to(ListOffset::default()),
-            KeyAction::ScrollEnd => self.list_state.scroll_to(ListOffset { item_ix: self.list_state.item_count(), offset_in_item: px(0.0) }),
+            KeyAction::Move(edit::Move::PageDown(_) | edit::Move::PageUp(_), _) | KeyAction::ScrollHome | KeyAction::ScrollEnd => self.scroll_list(action),
             KeyAction::Move(m @ (edit::Move::Up | edit::Move::Down), select) => {
                 let dir = if m == edit::Move::Up { md_view::Dir::Up } else { md_view::Dir::Down };
                 let Some(doc) = self.doc.as_mut() else { return false };
@@ -1532,7 +1618,7 @@ impl EntityInputHandler for Viewer {
         if self.field().is_none() {
             return;
         }
-        self.caret_placed = true;
+        let range = if self.place_for_input() { None } else { range };
         let target = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         if let (Some(m), Some(c)) = (self.marked.clone(), self.compose) {
             // The usual commit: the marked text becomes `text`, typed where the composition began.
@@ -1566,7 +1652,7 @@ impl EntityInputHandler for Viewer {
         if self.field().is_none() {
             return;
         }
-        self.caret_placed = true;
+        let range = if self.place_for_input() { None } else { range };
         let explicit = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         let at_range = |(a, b): (edit::Pos, edit::Pos)| edit::Caret { head: b, anchor: a, goal_col: None };
         // Where the marked text goes, in the text before the composition, and whether the marked
@@ -1881,6 +1967,37 @@ pub fn key_action(ks: &Keystroke) -> Option<KeyAction> {
         ("s", true, false) if !shift => Some(K::Save),
         _ => None,
     }
+}
+
+/// What a key does in the rendered view before the user has placed the caret, so nothing acts on
+/// a caret they cannot see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrePlacement {
+    /// The view scrolls, as the read-only viewer's did; the caret stays unplaced.
+    Scroll,
+    /// The caret goes to the start of the first block on screen, then the key applies there.
+    Place,
+    /// Nothing happens and the caret stays unplaced.
+    Ignore,
+}
+
+/// The decision table behind `PrePlacement`: Page Up and Down, Home, End, Up and Down scroll; an
+/// edit (and Undo, Redo, Select All) places the caret first; Escape, Copy and the sideways moves
+/// do nothing. Cmd+S saves whatever this says; the caller runs it before asking.
+pub fn pre_placement_action(action: KeyAction) -> PrePlacement {
+    use edit::Move as M;
+    use KeyAction as K;
+    match action {
+        K::Move(M::PageUp(_) | M::PageDown(_) | M::Up | M::Down, _) | K::ScrollHome | K::ScrollEnd => PrePlacement::Scroll,
+        K::DeleteBack(_) | K::DeleteFwd(_) | K::Newline | K::Tab | K::ShiftTab | K::Undo | K::Redo | K::Cut | K::Paste | K::SelectAll => PrePlacement::Place,
+        K::Move(..) | K::Copy | K::Escape | K::Save => PrePlacement::Ignore,
+    }
+}
+
+/// Whether a key the document took puts the caret in play (a move or an edit), so the rendered
+/// view shows the caret's block raw from then on. Escape, Copy, Save and the scroll keys do not.
+fn places_caret(action: KeyAction) -> bool {
+    !matches!(action, KeyAction::Escape | KeyAction::Copy | KeyAction::Save | KeyAction::ScrollHome | KeyAction::ScrollEnd)
 }
 
 /// What `apply_action` did, for the caller to finish: the clipboard, a save, the find bar, the
@@ -2445,6 +2562,23 @@ mod tests {
         let mut c = edit::Caret { head: Pos { line: 0, ch: 4 }, anchor: Pos { line: 0, ch: 4 }, goal_col: None };
         apply_action(&mut d, &mut c, &[], KeyAction::Newline, 20, now);
         assert_eq!(d.lines()[..3], ["~~~~".to_string(), String::new(), "~~~~".to_string()], "a tilde fence closes with its own length");
+    }
+
+    #[test]
+    fn before_the_caret_is_placed_the_scroll_keys_scroll_and_an_edit_places_it() {
+        use PrePlacement::*;
+        let k = |s: &str| pre_placement_action(key_action(&gpui::Keystroke::parse(s).unwrap()).unwrap());
+        for s in ["pageup", "pagedown", "home", "end", "up", "down", "shift-down"] {
+            assert_eq!(k(s), Scroll, "{s}");
+        }
+        for s in ["enter", "tab", "shift-tab", "backspace", "delete", "alt-backspace", "cmd-v", "cmd-x", "cmd-z", "cmd-shift-z", "cmd-a"] {
+            assert_eq!(k(s), Place, "{s}");
+        }
+        for s in ["escape", "cmd-c", "left", "right", "alt-left", "cmd-right", "cmd-up", "cmd-s"] {
+            assert_eq!(k(s), Ignore, "{s}");
+        }
+        assert!(!places_caret(KeyAction::Escape) && !places_caret(KeyAction::Copy) && !places_caret(KeyAction::ScrollEnd));
+        assert!(places_caret(KeyAction::Move(Move::Left, false)) && places_caret(KeyAction::Newline));
     }
 
     #[test]
