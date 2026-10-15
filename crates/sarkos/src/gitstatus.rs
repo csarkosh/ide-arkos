@@ -51,18 +51,18 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(PathBuf, Status)> {
     out
 }
 
-/// The repository's changes under `root`, relative to `root`. `None` outside a repository (or
-/// without git). Untracked directories are one entry each; renames show as a deletion and an
+/// The repository's changes under `root`, relative to `root`. `None` outside a repository,
+/// without git, or with a filter driver `git_read` cannot override (nothing runs). Untracked directories are one entry each; renames show as a deletion and an
 /// addition; ignored entries are not listed (the tree asks `check-ignore` for those).
 pub fn run_status(root: &Path) -> Option<Vec<(PathBuf, Status)>> {
     use std::process::Stdio;
     // Porcelain paths are relative to the repository's top, which `root` may be inside of.
-    let prefix = git_read(root).args(["rev-parse", "--show-prefix"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let prefix = git_read(root)?.args(["rev-parse", "--show-prefix"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     if !prefix.status.success() {
         return None;
     }
     let prefix = PathBuf::from(String::from_utf8_lossy(&prefix.stdout).trim_end_matches('\n'));
-    let out = git_read(root)
+    let out = git_read(root)?
         .args(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--no-renames", "--ignored=no", "--ignore-submodules=all", "--", "."])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -223,6 +223,39 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
         config(&["filter.x.required", "true"]);
         std::fs::write(dir.path().join("tracked.txt"), "one\n").unwrap();
         assert_eq!(run_status(dir.path()), Some(vec![(PathBuf::from(".gitattributes"), Status::Untracked)]));
+        assert!(!marker.exists(), "the repository's clean filter ran");
+    }
+
+    /// A filter driver `name` that touches `marker`, applied to every file, and the tracked file
+    /// rewritten at the same size so git re-hashes it through the driver.
+    fn marker_filter(dir: &Path, name: &str, marker: &Path) {
+        let config = |args: &[&str]| assert!(fixture_git(dir).arg("config").args(args).status().unwrap().success());
+        config(&[&format!("filter.{name}.clean"), &format!("sh -c 'touch \"{}\"; cat'", marker.display())]);
+        std::fs::write(dir.join(".gitattributes"), format!("* filter={name}\n")).unwrap();
+        std::fs::write(dir.join("tracked.txt"), "two\n").unwrap();
+    }
+
+    #[test]
+    fn an_unusual_filter_name_turns_status_off_and_runs_nothing() {
+        // `-c filter.a=b.clean=` would set `filter.a`, leaving the driver `a=b` to run.
+        let _lock = crate::client::fork_lock();
+        let dir = repo();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let marker = elsewhere.path().join("ran");
+        marker_filter(dir.path(), "a=b", &marker);
+        assert_eq!(run_status(dir.path()), None);
+        assert!(!marker.exists(), "the repository's clean filter ran");
+    }
+
+    #[test]
+    fn a_filter_name_with_a_dot_is_neutralized() {
+        let _lock = crate::client::fork_lock();
+        let dir = repo();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let marker = elsewhere.path().join("ran");
+        marker_filter(dir.path(), "my.driver", &marker);
+        let entries = run_status(dir.path()).expect("a repository");
+        assert!(entries.contains(&(PathBuf::from("tracked.txt"), Status::Modified)), "{entries:?}");
         assert!(!marker.exists(), "the repository's clean filter ran");
     }
 

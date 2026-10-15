@@ -75,29 +75,42 @@ pub fn fixture_git(dir: &Path) -> std::process::Command {
     cmd
 }
 
-/// The filter drivers named in `git config -z --name-only --get-regexp '^filter\.'` output:
-/// `filter.<name>.<key>` records, the name possibly holding dots or spaces.
-fn filter_driver_names(out: &[u8]) -> BTreeSet<String> {
-    out.split(|b| *b == 0)
-        .filter_map(|rec| String::from_utf8_lossy(rec).strip_prefix("filter.").and_then(|k| k.rsplit_once('.')).map(|(name, _)| name.to_string()))
-        .filter(|name| !name.is_empty())
-        .collect()
+/// The filter drivers named in `git config --null --get-regexp '^filter\.'` output, read as
+/// git reads them: each record is `key\nvalue` up to a NUL (the value may hold newlines), and a
+/// key `filter.<name>.<var>` splits at its last dot, so a name may hold dots. A key with no
+/// name is not a driver. `None` for a name that is empty or holds anything outside
+/// `[A-Za-z0-9_.-]`: git might read an override for it differently (an `=` ends `-c`'s key), so
+/// no query runs.
+fn filter_driver_names(out: &[u8]) -> Option<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let key = rec.split(|b| *b == b'\n').next().unwrap_or_default();
+        let Some(rest) = key.strip_prefix(b"filter.") else { continue };
+        let Some(dot) = rest.iter().rposition(|b| *b == b'.') else { continue };
+        let name = &rest[..dot];
+        if name.is_empty() || !name.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')) {
+            return None;
+        }
+        names.insert(String::from_utf8_lossy(name).into_owned());
+    }
+    Some(names)
 }
 
 /// `git -C <root>` for a read-only query: `GIT_SAFE_ARGS`, `--no-optional-locks` (a status
 /// leaves `.git/index` alone, so the user's own `git add` never meets its lock), and every
 /// filter driver the config names emptied and made optional: re-hashing a touched file runs
 /// no program from the folder's config. Spawns one `git config` read first (it runs nothing),
-/// so it is called off the UI thread like the query itself.
-pub fn git_read(root: &Path) -> std::process::Command {
+/// so it is called off the UI thread like the query itself. `None`, and nothing to run, when
+/// that read fails or names a driver it cannot safely override.
+pub fn git_read(root: &Path) -> Option<std::process::Command> {
     use std::process::Stdio;
-    let names = git(root)
-        .args(["config", "-z", "--name-only", "--get-regexp", r"^filter\."])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map(|out| filter_driver_names(&out.stdout))
-        .unwrap_or_default();
+    let out = git(root).args(["config", "--null", "--get-regexp", r"^filter\."]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    // Exit 1: no filter configured.
+    let names = match out.status.code() {
+        Some(0) => filter_driver_names(&out.stdout)?,
+        Some(1) => BTreeSet::new(),
+        _ => return None,
+    };
     let mut cmd = git(root);
     cmd.arg("--no-optional-locks");
     for name in names {
@@ -107,12 +120,13 @@ pub fn git_read(root: &Path) -> std::process::Command {
         // An emptied driver git-lfs marks `required` would fail the query instead.
         cmd.arg("-c").arg(format!("filter.{name}.required=false"));
     }
-    cmd
+    Some(cmd)
 }
 
 /// Marks the entries `.gitignore` ignores, by asking git from the repository root. Outside a
-/// repository, or without git, nothing is marked. One process per call: the caller runs it
-/// once per expanded directory, off the UI thread. Git refuses a path beyond a symlinked
+/// repository, without git, or with a filter config `git_read` refuses, nothing is marked. Two
+/// processes per call (the config read, the query): the caller runs it once per expanded
+/// directory, off the UI thread. Git refuses a path beyond a symlinked
 /// directory (exit 128), so nothing inside one is marked.
 pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     use std::io::Write;
@@ -120,7 +134,8 @@ pub fn mark_ignored(root: &Path, entries: &mut [EntryInfo]) {
     if entries.is_empty() {
         return;
     }
-    let Ok(mut child) = git_read(root).args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+    let Some(mut cmd) = git_read(root) else { return };
+    let Ok(mut child) = cmd.args(["check-ignore", "-z", "--stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
         return;
     };
     let Some(mut stdin) = child.stdin.take() else { return };
@@ -432,11 +447,15 @@ mod tests {
     }
 
     #[test]
-    fn every_configured_filter_driver_is_named_once() {
-        let out = b"filter.lfs.clean\0filter.lfs.process\0filter.lfs.required\0filter.a.b c.smudge\0filter.\0filter.nokey\0";
-        let names: Vec<String> = filter_driver_names(out).into_iter().collect();
-        assert_eq!(names, ["a.b c", "lfs"], "a name may hold dots and spaces; a key without one is not a driver");
-        assert!(filter_driver_names(b"").is_empty());
+    fn filter_driver_names_are_read_as_git_reads_them_and_unusual_ones_refused() {
+        // `--null` records: `key\nvalue\0`, the value possibly holding newlines.
+        let out = b"filter.lfs.clean\ngit-lfs clean -- %f\0filter.lfs.process\ngit-lfs filter-process\0filter.lfs.required\ntrue\0filter.my.driver.smudge\nline\nfilter.a=b.clean\0filter.nokey\nv\0";
+        let names: Vec<String> = filter_driver_names(out).expect("usual names").into_iter().collect();
+        assert_eq!(names, ["lfs", "my.driver"], "a name may hold dots; a value's lines are not keys; a key without a subsection is not a driver");
+        assert_eq!(filter_driver_names(b""), Some(BTreeSet::new()));
+        for unusual in [&b"filter.a=b.clean\ncat\0"[..], b"filter.a b.clean\ncat\0", b"filter..clean\ncat\0", b"filter.\"q\".clean\ncat\0", "filter.\u{e9}.clean\ncat\0".as_bytes()] {
+            assert_eq!(filter_driver_names(unusual), None, "{:?}: an override git might read differently", String::from_utf8_lossy(unusual));
+        }
     }
 
     #[test]
