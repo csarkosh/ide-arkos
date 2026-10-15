@@ -105,8 +105,9 @@ pub struct UpdateState {
     /// The update swapped in and not yet confirmed by a window or rolled back (the marker's
     /// contents).
     pub applied: Option<apply::Applied>,
-    /// Whether a window said Hello since this daemon started or since the last swap.
-    pub connected_since_start: bool,
+    /// Whether a window that was not connected at the swap (its `ui_pid` is not in the marker's
+    /// `pids_at_apply`) said Hello since: the new window, which confirms the update.
+    pub new_window_seen: bool,
     /// The last version this process swapped in or found applied: the poll treats it like a
     /// staged one, so an applied or rolled-back release is not fetched and staged again.
     pub swapped: Option<String>,

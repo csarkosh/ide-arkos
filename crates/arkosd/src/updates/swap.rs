@@ -17,8 +17,17 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Removes a stale `.old` or `.new` left by an interrupted swap. The installed bundle is never
-/// touched.
+/// touched; when it is missing (a swap or rollback died between its renames) the leftover is put
+/// back in its place instead: `.old`, or failing that `.new`.
 pub fn cleanup_leftovers(bundle: &Path) {
+    if !bundle.exists() {
+        for leftover in [old_of(bundle), new_of(bundle)] {
+            if leftover.is_dir() && std::fs::rename(&leftover, bundle).is_ok() {
+                eprintln!("arkosd: the app bundle was missing; restored it from {}", leftover.display());
+                break;
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(old_of(bundle));
     let _ = std::fs::remove_dir_all(new_of(bundle));
 }
@@ -46,16 +55,31 @@ pub fn finish(bundle: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Puts `<bundle>.old` back in place of `bundle` (which is removed).
+/// Puts `<bundle>.old` back in place of `bundle` (which is removed). If the second rename fails
+/// the failed bundle is put back, so the app is never missing; if `bundle` is already missing (an
+/// earlier rollback died between its renames) `.old` goes straight into place.
 pub fn rollback(bundle: &Path) -> Result<(), String> {
+    rollback_with(bundle, |from, to| std::fs::rename(from, to))
+}
+
+/// `rollback` with the rename given, so a test can make one of them fail.
+fn rollback_with(bundle: &Path, rename: impl Fn(&Path, &Path) -> std::io::Result<()>) -> Result<(), String> {
     let old = old_of(bundle);
     if !old.is_dir() {
         return Err("no previous bundle to roll back to".into());
     }
+    if !bundle.exists() {
+        return rename(&old, bundle).map_err(|e| format!("rename .old back: {e}"));
+    }
     let failed = new_of(bundle);
     let _ = std::fs::remove_dir_all(&failed);
-    std::fs::rename(bundle, &failed).map_err(|e| format!("move the failed bundle aside: {e}"))?;
-    std::fs::rename(&old, bundle).map_err(|e| format!("rename .old back: {e}"))?;
+    rename(bundle, &failed).map_err(|e| format!("move the failed bundle aside: {e}"))?;
+    if let Err(e) = rename(&old, bundle) {
+        return Err(match rename(&failed, bundle) {
+            Ok(()) => format!("rename .old back: {e} (the new bundle stays in place)"),
+            Err(u) => format!("rename .old back: {e}; and putting the new bundle back failed too: {u}"),
+        });
+    }
     let _ = std::fs::remove_dir_all(&failed);
     Ok(())
 }
@@ -119,5 +143,45 @@ mod tests {
         assert!(!old_of(&installed).exists());
         assert!(!dir.path().join("Arkos IDE.app.new").exists());
         assert!(installed.exists());
+    }
+
+    #[test]
+    fn a_missing_bundle_is_restored_from_old_rather_than_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("Arkos IDE.app");
+        bundle(dir.path(), "Arkos IDE.app.old", "old");
+        cleanup_leftovers(&installed);
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "old");
+        assert!(!old_of(&installed).exists());
+    }
+
+    #[test]
+    fn rollback_with_the_bundle_already_missing_puts_old_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("Arkos IDE.app");
+        bundle(dir.path(), "Arkos IDE.app.old", "old");
+        bundle(dir.path(), "Arkos IDE.app.new", "new");
+        rollback(&installed).unwrap();
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "old");
+        assert!(!old_of(&installed).exists());
+    }
+
+    #[test]
+    fn a_failed_rename_of_old_back_puts_the_new_bundle_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = bundle(dir.path(), "Arkos IDE.app", "new");
+        bundle(dir.path(), "Arkos IDE.app.old", "old");
+        let old = old_of(&installed);
+        let err = rollback_with(&installed, |from, to| {
+            if from == old {
+                Err(std::io::Error::other("injected"))
+            } else {
+                std::fs::rename(from, to)
+            }
+        })
+        .unwrap_err();
+        assert!(err.contains("the new bundle stays in place"), "{err}");
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "new", "the app is never missing");
+        assert!(old.is_dir(), "kept for another try");
     }
 }

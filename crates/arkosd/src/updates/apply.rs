@@ -13,6 +13,10 @@ pub struct Applied {
     pub version: String,
     pub old_kept: bool,
     pub at_unix: u64,
+    /// The `ui_pid`s of the windows connected at the swap. Their reconnects after the upgrade
+    /// are not the new window, so their Hellos confirm nothing.
+    #[serde(default)]
+    pub pids_at_apply: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +57,25 @@ pub fn decide(m: &Applied, connected_since_start: bool, now_unix: u64) -> Decisi
     }
 }
 
+/// The versions rolled back, one per line, so a later daemon does not stage them again (they
+/// stay until a newer release replaces them as the floor).
+pub fn rejected_path(updates_dir: &Path) -> PathBuf {
+    updates_dir.join("rejected")
+}
+
+pub fn reject(updates_dir: &Path, version: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(updates_dir)?;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(rejected_path(updates_dir))?;
+    writeln!(f, "{version}")
+}
+
+/// The newest version in `rejected`, if any.
+pub fn newest_rejected(updates_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(rejected_path(updates_dir)).ok()?;
+    text.lines().map(str::trim).filter_map(|v| super::version::parse_semver(v).map(|k| (k, v.to_string()))).max_by_key(|(k, _)| *k).map(|(_, v)| v)
+}
+
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -71,7 +94,7 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf) {
             let (m, connected) = {
                 let st = state.lock().unwrap();
                 match &st.update.applied {
-                    Some(m) => (m.clone(), st.update.connected_since_start),
+                    Some(m) => (m.clone(), st.update.new_window_seen),
                     None => return,
                 }
             };
@@ -94,8 +117,13 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf) {
                         match &result {
                             Ok(()) => {
                                 clear_marker(&dir);
+                                if let Err(e) = reject(&dir, &m.version) {
+                                    eprintln!("arkosd: cannot record {} as rejected: {e}", m.version);
+                                }
                                 st.update.last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, CONNECT_GRACE.as_secs()));
-                                st.windows.keys().cloned().collect()
+                                // A folder whose window is connected already has one.
+                                let open: Vec<&PathBuf> = st.clients.values().filter(|c| c.connected).filter_map(|c| c.ui_cwd.as_ref()).collect();
+                                st.windows.keys().filter(|f| !open.contains(f)).cloned().collect()
                             }
                             Err(e) => {
                                 st.update.last_error = Some(format!("update {}: no window came up within {}s and the rollback failed: {e}", m.version, CONNECT_GRACE.as_secs()));
@@ -119,10 +147,21 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf) {
 
 /// At every daemon start, after the socket listens: a marker means a swap happened and waits
 /// for its window (the watch runs); no marker means any `.old` or `.new` is a leftover of an
-/// interrupted swap and is removed.
+/// interrupted swap and is removed (or put back, when the bundle itself is missing). A marker
+/// with no `.old` beside an installed bundle is stale: the swap never ran (the marker is written
+/// first) or the confirm died before clearing it. The newest rejected version becomes the poll's
+/// floor.
 pub fn on_start(state: &Shared, bundle: Option<&Path>, dir: &Path) {
+    if let Some(v) = newest_rejected(dir) {
+        state.lock().unwrap().update.swapped = Some(v);
+    }
     let Some(bundle) = bundle else { return };
     match read_marker(dir) {
+        Some(m) if bundle.exists() && !super::swap::old_of(bundle).exists() => {
+            eprintln!("arkosd: update marker for {} found with no previous bundle beside it; clearing it", m.version);
+            clear_marker(dir);
+            super::swap::cleanup_leftovers(bundle);
+        }
         Some(m) => {
             eprintln!("arkosd: update marker found: {} applied, waiting for a window", m.version);
             {
@@ -143,7 +182,7 @@ mod tests {
     #[test]
     fn the_marker_round_trips_and_the_decision_waits_then_rolls_back() {
         let dir = tempfile::tempdir().unwrap();
-        let m = Applied { version: "0.2.1".into(), old_kept: true, at_unix: 1_000 };
+        let m = Applied { version: "0.2.1".into(), old_kept: true, at_unix: 1_000, pids_at_apply: vec![42] };
         write_marker(dir.path(), &m).unwrap();
         assert_eq!(read_marker(dir.path()), Some(m.clone()));
         assert_eq!(decide(&m, false, 1_005), Decision::Wait);
@@ -154,5 +193,17 @@ mod tests {
         assert_eq!(read_marker(dir.path()), None);
         std::fs::write(marker_path(dir.path()), b"junk").unwrap();
         assert_eq!(read_marker(dir.path()), None, "an unreadable marker is no marker");
+        std::fs::write(marker_path(dir.path()), br#"{"version":"0.2.1","old_kept":true,"at_unix":1}"#).unwrap();
+        assert_eq!(read_marker(dir.path()).unwrap().pids_at_apply, Vec::<u32>::new(), "a marker without pids reads");
+    }
+
+    #[test]
+    fn rejected_versions_accumulate_and_the_newest_is_the_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(newest_rejected(dir.path()), None);
+        reject(dir.path(), "0.3.0").unwrap();
+        reject(dir.path(), "0.10.0").unwrap();
+        reject(dir.path(), "0.4.0").unwrap();
+        assert_eq!(newest_rejected(dir.path()).as_deref(), Some("0.10.0"));
     }
 }

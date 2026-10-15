@@ -390,8 +390,15 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 rec.last_heartbeat = Instant::now();
                 rec.protocol = protocol_version;
             }
-            // A window came up: an applied update is confirmed (see `updates::apply::watch`).
-            st.update.connected_since_start = true;
+            // A window that was not connected at the swap came up: the new one, which confirms
+            // an applied update (see `updates::apply::watch`). The old window's reconnect after
+            // the upgrade carries a pid the marker lists, and confirms nothing.
+            let pid = st.clients.get(&client_id).and_then(|r| r.ui_pid);
+            if let (Some(pid), Some(applied)) = (pid, &st.update.applied) {
+                if !applied.pids_at_apply.contains(&pid) {
+                    st.update.new_window_seen = true;
+                }
+            }
             let window = st.clients.get(&client_id).and_then(|r| r.ui_cwd.clone().map(|cwd| (cwd, r.ui_exe.clone())));
             if let Some((cwd, exe)) = window {
                 st.windows.insert(cwd, exe);
@@ -572,42 +579,49 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
         }
         Request::ApplyUpdate { version } => {
-            let (staged, pending, bundle, dir) = {
+            let (staged, pending, pids, bundle, dir) = {
                 let st = state.lock().unwrap();
-                (st.update.staged.clone(), st.update.applied.as_ref().map(|a| a.version.clone()), opts.update.bundle.clone(), opts.update.dir.clone())
+                let pids: Vec<u32> = st.clients.values().filter(|c| c.connected).filter_map(|c| c.ui_pid).collect();
+                (st.update.staged.clone(), st.update.applied.as_ref().map(|a| a.version.clone()), pids, opts.update.bundle.clone(), opts.update.dir.clone())
             };
+            use crate::updates::apply;
             match (staged, bundle) {
                 (None, _) => Response::Error("nothing staged".into()),
                 (Some(s), _) if s.version != version => Response::Error(format!("staged {} is not {version}", s.version)),
                 (Some(_), None) => Response::Error("not running from an app bundle".into()),
                 // A second swap would remove the `.old` the first one still needs for a rollback.
                 (Some(_), Some(_)) if pending.is_some() => Response::Error(format!("update {} is still waiting for a window", pending.unwrap_or_default())),
-                (Some(s), Some(bundle)) => match crate::updates::swap::swap_in(&bundle, &s.bundle) {
-                    Ok(()) => {
-                        let marker = crate::updates::apply::Applied { version: s.version.clone(), old_kept: true, at_unix: crate::updates::apply::now_unix() };
-                        if let Err(e) = crate::updates::apply::write_marker(&dir, &marker) {
-                            eprintln!("arkosd: cannot write the update marker: {e}");
+                (Some(s), Some(bundle)) => {
+                    // The marker first: a daemon that dies mid-swap must find it at its next
+                    // start, or the start would clean the `.old` away unconfirmed.
+                    let marker = apply::Applied { version: s.version.clone(), old_kept: true, at_unix: apply::now_unix(), pids_at_apply: pids };
+                    if let Err(e) = apply::write_marker(&dir, &marker) {
+                        return Some(Response::Error(format!("cannot write the update marker: {e}")));
+                    }
+                    match crate::updates::swap::swap_in(&bundle, &s.bundle) {
+                        Ok(()) => {
+                            {
+                                let mut st = state.lock().unwrap();
+                                st.update.staged = None;
+                                st.update.applied = Some(marker);
+                                st.update.swapped = Some(s.version.clone());
+                                // Only a window that says Hello from now on confirms the new bundle.
+                                st.update.new_window_seen = false;
+                            }
+                            crate::updates::stage::clean_except(&dir, None);
+                            // Confirms or rolls back in this image too, should no upgrade follow;
+                            // an upgrade's new image starts its own from the marker.
+                            apply::watch(state.clone(), bundle, dir);
+                            Response::Ok
                         }
-                        {
+                        Err(e) => {
+                            apply::clear_marker(&dir);
                             let mut st = state.lock().unwrap();
-                            st.update.staged = None;
-                            st.update.applied = Some(marker);
-                            st.update.swapped = Some(s.version.clone());
-                            // Only a window that says Hello from now on confirms the new bundle.
-                            st.update.connected_since_start = false;
+                            st.update.last_error = Some(format!("update failed: {e}"));
+                            Response::Error(e)
                         }
-                        crate::updates::stage::clean_except(&dir, None);
-                        // Confirms or rolls back in this image too, should no upgrade follow; an
-                        // upgrade's new image starts its own from the marker.
-                        crate::updates::apply::watch(state.clone(), bundle, dir);
-                        Response::Ok
                     }
-                    Err(e) => {
-                        let mut st = state.lock().unwrap();
-                        st.update.last_error = Some(format!("update failed: {e}"));
-                        Response::Error(e)
-                    }
-                },
+                }
             }
         }
         Request::SetState { session: sid, state: claude } => match session(sid) {

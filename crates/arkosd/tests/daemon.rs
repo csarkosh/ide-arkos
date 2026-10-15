@@ -1695,7 +1695,8 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
     let home = tempfile::tempdir().unwrap();
     let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000"); // its arkos script appends "launched" to <home>/launches
-    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap()]);
+    // No watchdog: the stand-in new window's pid below is not ours to signal.
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
     let mut c = d.connect();
     wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
     assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.8".into() }), Response::Error("staged 9.9.9 is not 9.9.8".into()));
@@ -1703,9 +1704,15 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("9.9.9"), "the new bundle is in place");
     assert!(installed.with_extension("app.old").exists(), "the old one is kept until a window confirms");
     assert!(d.updates_marker().exists());
-    // The window's Upgrade and RelaunchClient follow in production; here a second Hello stands in
-    // for the relaunched window.
-    let _c2 = d.connect();
+    // After the upgrade's exec the old window reconnects with its own pid: that is not the new
+    // window, so nothing is confirmed.
+    let _reconnect = d.connect();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(installed.with_extension("app.old").exists(), "the old window's reconnect confirms nothing");
+    assert!(d.updates_marker().exists());
+    // The window's Upgrade and RelaunchClient follow in production; here a Hello from another
+    // pid stands in for the relaunched window.
+    let _c2 = d.connect_as(std::process::id() + 1);
     wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
     assert!(!d.updates_marker().exists());
     assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("nothing staged".into()), "applied once");
@@ -1744,4 +1751,38 @@ fn apply_update_outside_an_app_bundle_is_refused_and_touches_nothing() {
     assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("not running from an app bundle".into()));
     assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), "still staged");
     assert!(!d.updates_marker().exists());
+}
+
+#[test]
+fn a_second_apply_while_the_first_waits_for_its_window_is_refused() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap()]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    publish_fake_release(site.path(), "9.9.10", "eeeeeee", &sk);
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.10".into() }), Response::Error("update 9.9.9 is still waiting for a window".into()));
+    assert!(installed.with_extension("app.old").exists(), "the first swap's old bundle is kept");
+    assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("9.9.9"));
+}
+
+#[test]
+fn a_rejected_version_is_not_staged_again_by_a_later_daemon() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("updates")).unwrap();
+    std::fs::write(dir.path().join("updates/rejected"), "9.9.9\n").unwrap();
+    let d = Daemon::start_in(dir, &["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk]);
+    let mut c = d.connect();
+    // A few checks run in this time; each finds nothing newer than the rejected 9.9.9.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None });
+    assert!(!d.path().join("updates/9.9.9").exists());
 }
