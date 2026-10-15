@@ -20,21 +20,32 @@ pub struct Worktree {
     pub is_main: bool,
     /// git calls it prunable: its directory is gone.
     pub missing: bool,
+    /// A bare repository's entry (only ever the main one): no files, so never expanded.
+    pub bare: bool,
+}
+
+impl Worktree {
+    /// Whether it has a working tree to run `git status` in: not missing, not bare.
+    pub fn has_files(&self) -> bool {
+        !self.missing && !self.bare
+    }
 }
 
 pub type Changes = Vec<(PathBuf, Status)>;
 
-/// `git worktree list --porcelain`: blank-line separated blocks of `worktree <path>`,
-/// `HEAD <sha>`, `branch refs/heads/<name>` or `detached`, and optional `bare`, `locked`,
+/// `git worktree list --porcelain -z`: blocks of NUL-terminated lines, each block ended by a
+/// second NUL, so a path may hold a newline. The lines are `worktree <path>`, `HEAD <sha>`,
+/// `branch refs/heads/<name>` or `detached`, and optional `bare`, `locked [<reason>]`,
 /// `prunable <reason>`. The first block is the main checkout.
 pub fn parse_worktree_list(text: &str) -> Vec<Worktree> {
     let mut out = Vec::new();
-    for block in text.split("\n\n").filter(|b| !b.trim().is_empty()) {
+    for block in text.split("\0\0").filter(|b| !b.trim_matches('\0').is_empty()) {
         let mut path = None;
         let mut head = String::new();
         let mut branch = None;
         let mut missing = false;
-        for line in block.lines() {
+        let mut bare = false;
+        for line in block.split('\0') {
             if let Some(p) = line.strip_prefix("worktree ") {
                 path = Some(PathBuf::from(p));
             } else if let Some(h) = line.strip_prefix("HEAD ") {
@@ -43,11 +54,13 @@ pub fn parse_worktree_list(text: &str) -> Vec<Worktree> {
                 branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
             } else if line.starts_with("prunable") {
                 missing = true;
+            } else if line == "bare" {
+                bare = true;
             }
         }
         if let Some(path) = path {
             let is_main = out.is_empty();
-            out.push(Worktree { path, head, branch, is_main, missing });
+            out.push(Worktree { path, head, branch, is_main, missing, bare });
         }
     }
     out
@@ -55,7 +68,7 @@ pub fn parse_worktree_list(text: &str) -> Vec<Worktree> {
 
 /// `None` outside a repository, and when `git_read` refuses the repository's filter config.
 pub fn list(root: &Path) -> Option<Vec<Worktree>> {
-    let out = git_read(root)?.args(["worktree", "list", "--porcelain"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let out = git_read(root)?.args(["worktree", "list", "--porcelain", "-z"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -137,9 +150,10 @@ impl Worktrees {
     pub fn set_list(&mut self, list: Option<Vec<Worktree>>) {
         self.not_git = list.is_none();
         self.list = list;
+        // `None` keeps the expanded set, for the save; `to_load` runs nothing without a list.
         if let Some(l) = &self.list {
-            // A worktree that went away takes its state with it.
-            let known: HashSet<&Path> = l.iter().map(|w| w.path.as_path()).collect();
+            // A worktree that went away, or whose directory did, takes its state with it.
+            let known: HashSet<&Path> = l.iter().filter(|w| !w.missing && !w.bare).map(|w| w.path.as_path()).collect();
             self.expanded.retain(|p| known.contains(p.as_path()));
             self.changes.retain(|p, _| known.contains(p.as_path()));
             self.opened_at.retain(|p, _| known.contains(p.as_path()));
@@ -151,7 +165,8 @@ impl Worktrees {
         self.list.as_ref()?.iter().find(|w| w.path == path)
     }
 
-    /// Expands or collapses; a missing worktree stays collapsed. Collapsing drops its changes.
+    /// Expands or collapses; a path the list does not have, a missing worktree and a bare one
+    /// stay collapsed. Collapsing drops its changes.
     pub fn toggle(&mut self, path: &Path) -> bool {
         if self.expanded.remove(path) {
             self.changes.remove(path);
@@ -160,16 +175,21 @@ impl Worktrees {
             self.opened_at.remove(path);
             return false;
         }
-        if self.find(path).is_some_and(|w| w.missing) {
+        if !self.find(path).is_some_and(Worktree::has_files) {
             return false;
         }
         self.expanded.insert(path.to_path_buf());
         true
     }
 
-    /// Expanded worktrees not loaded yet, or stale, and not already loading.
+    /// Expanded worktrees the list has with files, not loaded yet or stale, and not already
+    /// loading.
     pub fn to_load(&self) -> Vec<PathBuf> {
-        self.expanded.iter().filter(|p| (!self.changes.contains_key(*p) || self.stale.contains(*p)) && !self.loading.contains(*p)).cloned().collect()
+        self.expanded
+            .iter()
+            .filter(|p| self.find(p).is_some_and(Worktree::has_files) && (!self.changes.contains_key(*p) || self.stale.contains(*p)) && !self.loading.contains(*p))
+            .cloned()
+            .collect()
     }
 
     /// The slow timer: every expanded worktree with changes loaded reloads them, keeping its
@@ -223,13 +243,13 @@ mod tests {
 
     #[test]
     fn the_porcelain_list_is_parsed_with_main_first_branches_and_prunable() {
-        let text = "worktree /Users/me/proj\nHEAD 0123456789abcdef0123456789abcdef01234567\nbranch refs/heads/main\n\n\
-worktree /Users/me/proj-feature\nHEAD 89abcdef0123456789abcdef0123456789abcdef\nbranch refs/heads/feature/x\n\n\
-worktree /Users/me/proj-detached\nHEAD aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee\ndetached\n\n\
-worktree /Users/me/gone\nHEAD bbbbbbbbccccccccddddddddeeeeeeeeffffffff\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n\n";
+        let text = "worktree /Users/me/proj\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/main\0\0\
+worktree /Users/me/proj-feature\0HEAD 89abcdef0123456789abcdef0123456789abcdef\0branch refs/heads/feature/x\0\0\
+worktree /Users/me/proj-detached\0HEAD aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee\0detached\0\0\
+worktree /Users/me/gone\0HEAD bbbbbbbbccccccccddddddddeeeeeeeeffffffff\0branch refs/heads/old\0prunable gitdir file points to non-existent location\0\0";
         let list = parse_worktree_list(text);
         assert_eq!(list.len(), 4);
-        assert_eq!(list[0], Worktree { path: "/Users/me/proj".into(), head: "01234567".into(), branch: Some("main".into()), is_main: true, missing: false });
+        assert_eq!(list[0], Worktree { path: "/Users/me/proj".into(), head: "01234567".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false });
         assert_eq!(list[1].branch.as_deref(), Some("feature/x"));
         assert!(!list[1].is_main);
         assert_eq!(list[2].branch, None, "detached");
@@ -238,17 +258,19 @@ worktree /Users/me/gone\nHEAD bbbbbbbbccccccccddddddddeeeeeeeeffffffff\nbranch r
     }
 
     #[test]
-    fn a_bare_main_spaces_in_paths_and_locked_worktrees_parse() {
-        let text = "worktree /Users/me/proj.git\nbare\n\n\
-worktree /Users/me/my proj-feat\nHEAD 0123456789abcdef0123456789abcdef01234567\nbranch refs/heads/feat\nlocked on a usb disk\n\n\
-worktree /Users/me/other\nHEAD 89abcdef0123456789abcdef0123456789abcdef\ndetached\nlocked\n";
+    fn a_bare_main_spaces_and_newlines_in_paths_and_locked_worktrees_parse() {
+        let text = "worktree /Users/me/proj.git\0bare\0\0\
+worktree /Users/me/my proj-feat\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/feat\0locked on a usb disk\0\0\
+worktree /Users/me/odd\nname\0HEAD 89abcdef0123456789abcdef0123456789abcdef\0detached\0locked\0";
+        assert!(!parse_worktree_list(text)[1].bare, "only the bare block is bare");
         let list = parse_worktree_list(text);
         assert_eq!(list.len(), 3);
-        assert_eq!(list[0], Worktree { path: "/Users/me/proj.git".into(), head: String::new(), branch: None, is_main: true, missing: false });
+        assert_eq!(list[0], Worktree { path: "/Users/me/proj.git".into(), head: String::new(), branch: None, is_main: true, missing: false, bare: true });
         assert_eq!(list[1].path, PathBuf::from("/Users/me/my proj-feat"), "a space is part of the path");
         assert_eq!(list[1].branch.as_deref(), Some("feat"));
         assert!(!list[1].missing && !list[1].is_main, "locked is neither missing nor main");
         assert_eq!(list[2].branch, None);
+        assert_eq!(list[2].path, PathBuf::from("/Users/me/odd\nname"), "with -z a newline is part of the path");
     }
 
     #[test]
@@ -259,8 +281,8 @@ worktree /Users/me/other\nHEAD 89abcdef0123456789abcdef0123456789abcdef\ndetache
 
     #[test]
     fn rows_list_worktrees_and_the_changes_of_the_expanded_ones() {
-        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false };
-        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false };
+        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false };
+        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false, bare: false };
         let mut w = Worktrees::new(vec![]);
         assert!(w.rows().is_empty(), "nothing until the list lands");
         w.set_list(Some(vec![main.clone(), feat.clone()]));
@@ -303,17 +325,41 @@ worktree /Users/me/other\nHEAD 89abcdef0123456789abcdef0123456789abcdef\ndetache
 
     #[test]
     fn a_missing_worktree_cannot_be_expanded() {
-        let gone = Worktree { path: "/gone".into(), head: "3".into(), branch: None, is_main: false, missing: true };
+        let gone = Worktree { path: "/gone".into(), head: "3".into(), branch: None, is_main: false, missing: true, bare: false };
         let mut w = Worktrees::new(vec![]);
         w.set_list(Some(vec![gone]));
         assert!(!w.toggle(Path::new("/gone")));
         assert!(w.to_load().is_empty());
+        let bare = Worktree { path: "/p.git".into(), head: String::new(), branch: None, is_main: true, missing: false, bare: true };
+        w.set_list(Some(vec![bare]));
+        assert!(!w.toggle(Path::new("/p.git")), "a bare main checkout has no files to show");
+        assert!(!w.toggle(Path::new("/not-listed")), "a path the list does not have stays collapsed");
+        assert!(w.expanded.is_empty());
+    }
+
+    #[test]
+    fn status_runs_only_for_listed_worktrees_with_files() {
+        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false };
+        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false, bare: false };
+        let mut w = Worktrees::new(vec![PathBuf::from("/p-f")]);
+        assert!(w.to_load().is_empty(), "saved expansions wait for the list");
+        w.set_list(None);
+        assert!(w.to_load().is_empty(), "not a repository: nothing loads");
+        assert_eq!(w.expanded.len(), 1, "but the expansion is kept for the save");
+        w.set_list(Some(vec![main.clone(), feat.clone()]));
+        assert_eq!(w.to_load(), vec![PathBuf::from("/p-f")]);
+        w.mark_loading(Path::new("/p-f"));
+        w.set_changes(Path::new("/p-f"), Some(vec![]));
+        w.mark_all_stale();
+        w.set_list(Some(vec![main, Worktree { missing: true, ..feat }]));
+        assert!(w.to_load().is_empty(), "an expanded worktree that went prunable gets no status");
+        assert!(w.expanded.is_empty() && w.changes.is_empty() && w.opened_at.is_empty(), "and drops its state");
     }
 
     #[test]
     fn a_vanished_worktree_drops_its_state_and_a_late_status_for_a_collapsed_one_is_ignored() {
-        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false };
-        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false };
+        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false };
+        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false, bare: false };
         let mut w = Worktrees::new(vec![PathBuf::from("/p-f")]);
         w.set_list(Some(vec![main.clone(), feat]));
         w.mark_loading(Path::new("/p-f"));
