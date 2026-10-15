@@ -83,10 +83,11 @@ fn load_or_migrate(file: &Path, legacy: &Path, project: &Path) -> Option<Workspa
     Some(ws)
 }
 
-/// Writes to disk; run it off the UI thread (see `request_save`).
 /// The sessions `project`'s saved layout names, for the chooser's counts; none without a file.
+/// A read only: milestone 1's file is read where it is, never migrated from here.
 pub fn session_ids(project: &Path) -> Vec<SessionId> {
-    load(project)
+    load_from(&workspace_file(project), project)
+        .or_else(|| load_from(&legacy_workspace_file(project), project))
         .map(|ws| {
             ws.tree
                 .tabs()
@@ -100,6 +101,7 @@ pub fn session_ids(project: &Path) -> Vec<SessionId> {
         .unwrap_or_default()
 }
 
+/// Writes to disk; run it off the UI thread (see `request_save`).
 pub fn save(project: &Path, ws: &Workspace) -> std::io::Result<()> {
     save_to(&workspace_file(project), ws)
 }

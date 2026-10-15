@@ -28,6 +28,8 @@ pub enum LinkEvent {
     /// Every Kill for the folder was answered; `errors` holds the daemon's words for those it
     /// refused.
     Stopped { folder: PathBuf, errors: Vec<String> },
+    /// The connection ended: the counts mean nothing now.
+    Lost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,23 +60,33 @@ impl Tracker {
         self.stops.insert(folder, (ids.len(), Vec::new()));
     }
 
-    pub fn on_response(&mut self, id: u32, response: Response) -> Option<LinkEvent> {
-        match (self.pending.remove(&id)?, response) {
+    /// An answer that is the tracker's gives `Ok` (with the event it completes, if any); one to
+    /// something it never asked (the Hello, the heartbeat) comes back as `Err`, for whoever did.
+    pub fn on_response(&mut self, id: u32, response: Response) -> Result<Option<LinkEvent>, Response> {
+        let Some(want) = self.pending.remove(&id) else { return Err(response) };
+        Ok(match (want, response) {
             (Want::List, Response::Sessions(list)) => Some(LinkEvent::Sessions(list)),
             (Want::List, _) => None,
             (Want::Kill(folder), response) => {
-                let (left, errors) = self.stops.get_mut(&folder)?;
+                let Some((left, errors)) = self.stops.get_mut(&folder) else { return Ok(None) };
+                // A session already gone is what was asked for.
                 if let Response::Error(e) = response {
-                    errors.push(e);
+                    if !e.starts_with("no session") {
+                        errors.push(e);
+                    }
                 }
                 *left = left.saturating_sub(1);
                 if *left > 0 {
-                    return None;
+                    return Ok(None);
                 }
-                let (_, errors) = self.stops.remove(&folder)?;
-                Some(LinkEvent::Stopped { folder, errors })
+                self.stops.remove(&folder).map(|(_, errors)| LinkEvent::Stopped { folder, errors })
             }
-        }
+        })
+    }
+
+    /// Whether every request has been answered.
+    pub fn is_idle(&self) -> bool {
+        self.pending.is_empty()
     }
 }
 
@@ -110,22 +122,28 @@ mod tests {
     }
 
     #[test]
-    fn the_tracker_matches_answers_by_id() {
+    fn the_tracker_matches_answers_by_id_and_returns_the_rest() {
         let mut t = Tracker::default();
+        assert!(t.is_idle());
         t.listed(7);
-        assert_eq!(t.on_response(3, Response::Ok), None, "the heartbeat's answer");
+        assert!(!t.is_idle());
+        // The Hello's and the heartbeat's answers are somebody else's: handed back untouched.
+        let hello = Response::Hello { daemon_version: "x".into(), protocol_min: 4, protocol_max: 4 };
+        assert_eq!(t.on_response(1, hello.clone()), Err(hello));
+        assert_eq!(t.on_response(3, Response::Ok), Err(Response::Ok));
         let list = vec![info(1, "/p", true)];
-        assert_eq!(t.on_response(7, Response::Sessions(list.clone())), Some(LinkEvent::Sessions(list)));
-        assert_eq!(t.on_response(7, Response::Ok), None, "answered once");
-        // Three kills: the event comes with the last answer, errors kept.
+        assert_eq!(t.on_response(7, Response::Sessions(list.clone())), Ok(Some(LinkEvent::Sessions(list))));
+        assert!(t.is_idle());
+        assert_eq!(t.on_response(7, Response::Ok), Err(Response::Ok), "answered once");
+        // Three kills: the event comes with the last answer; a session already gone is no
+        // error, a refusal is kept.
         t.stopping(PathBuf::from("/p"), &[10, 11, 12]);
-        assert_eq!(t.on_response(10, Response::Ok), None);
-        assert_eq!(t.on_response(12, Response::Error("no session 12".into())), None);
-        assert_eq!(t.on_response(11, Response::Ok), Some(LinkEvent::Stopped { folder: PathBuf::from("/p"), errors: vec!["no session 12".into()] }));
-        // Two folders at once stay apart.
-        t.stopping(PathBuf::from("/a"), &[20]);
-        t.stopping(PathBuf::from("/b"), &[21]);
-        assert_eq!(t.on_response(21, Response::Ok), Some(LinkEvent::Stopped { folder: PathBuf::from("/b"), errors: vec![] }));
-        assert_eq!(t.on_response(20, Response::Ok), Some(LinkEvent::Stopped { folder: PathBuf::from("/a"), errors: vec![] }));
+        assert_eq!(t.on_response(10, Response::Ok), Ok(None));
+        assert_eq!(t.on_response(12, Response::Error("no session 12".into())), Ok(None));
+        t.stopping(PathBuf::from("/q"), &[13]);
+        assert_eq!(t.on_response(11, Response::Error("an upgrade is in progress".into())), Ok(Some(LinkEvent::Stopped { folder: PathBuf::from("/p"), errors: vec!["an upgrade is in progress".into()] })));
+        assert!(!t.is_idle(), "/q's kill is still out");
+        assert_eq!(t.on_response(13, Response::Ok), Ok(Some(LinkEvent::Stopped { folder: PathBuf::from("/q"), errors: vec![] })));
+        assert!(t.is_idle());
     }
 }

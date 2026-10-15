@@ -21,6 +21,9 @@ use std::process::{Command, Stdio};
 
 /// The recent folders shown before "Show all".
 pub const TOP: usize = 5;
+/// After "Stop all": the daemon escalates a kill to SIGKILL after a second, so the list is asked
+/// again once that has passed.
+const RELIST_AFTER_STOP: std::time::Duration = std::time::Duration::from_millis(1500);
 const WIDTH: f32 = 560.0;
 const HEIGHT: f32 = 460.0;
 const TEXT: f32 = 13.0;
@@ -214,18 +217,31 @@ impl Chooser {
     }
 
     /// "Stop all" for a folder: the first ask arms the row, the second sends a Kill for each of
-    /// its sessions. Nothing while its kills are out.
+    /// its sessions. Nothing while its kills are out, or when nothing is left to stop.
     fn request_stop(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         if self.stopping.contains(&folder) {
             return;
         }
         if self.confirm.as_ref() == Some(&folder) {
-            let sessions = self.live_of(&folder).to_vec();
-            if let Some(link) = &self.link {
+            self.confirm = None;
+            let sessions = self.live.remove(&folder).unwrap_or_default();
+            if let (Some(link), false) = (&self.link, sessions.is_empty()) {
                 link.stop(folder.clone(), &sessions);
                 self.stopping.insert(folder);
+                self.notice = None;
+                // A Kill answers Ok before the shell has gone (it escalates to SIGKILL after a
+                // second), so the count is dropped here and the daemon asked again once that
+                // has passed: a refused session comes back.
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(RELIST_AFTER_STOP).await;
+                    let _ = this.update(cx, |this, _| {
+                        if let Some(link) = &this.link {
+                            link.list();
+                        }
+                    });
+                })
+                .detach();
             }
-            self.confirm = None;
         } else {
             self.confirm = Some(folder);
         }
@@ -245,6 +261,11 @@ impl Chooser {
                     })
                     .filter(|(_, v)| !v.is_empty())
                     .collect();
+                // An armed row with nothing left to stop (a worktree listed as its own folder,
+                // stopped through its project) is disarmed.
+                if self.confirm.as_ref().is_some_and(|f| !self.live.contains_key(f)) {
+                    self.confirm = None;
+                }
             }
             LinkEvent::Stopped { folder, errors } => {
                 self.stopping.remove(&folder);
@@ -252,10 +273,12 @@ impl Chooser {
                     let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| folder.display().to_string());
                     self.notice = Some(format!("{} of {name}'s sessions could not be stopped: {first}", errors.len()));
                 }
-                // The list again: what is left after the kills.
-                if let Some(link) = &self.link {
-                    link.list();
-                }
+            }
+            LinkEvent::Lost => {
+                self.live.clear();
+                self.stopping.clear();
+                self.confirm = None;
+                self.notice = Some("the daemon connection ended; the window reconnects once a folder is open".into());
             }
         }
         cx.notify();
@@ -281,6 +304,12 @@ impl Chooser {
     }
 
     fn choose(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // A kill still out would answer into the window's loop, which did not ask: a moment.
+        if !self.stopping.is_empty() || self.link.as_ref().is_some_and(|l| !l.is_idle()) {
+            self.notice = Some("a moment: sessions are still stopping".into());
+            cx.notify();
+            return;
+        }
         if let Some(f) = self.on_choice.take() {
             f(folder, cx);
         }
@@ -365,7 +394,13 @@ impl Chooser {
                 .hover(|s| s.bg(hover_bg))
                 // Not a click on the row: the row would open the folder.
                 .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| this.request_stop(path.clone(), cx)))
+                // A double click is not two asks: the second click of one lands on the Confirm
+                // the first drew under the pointer.
+                .on_click(cx.listener(move |this, ev: &ClickEvent, _window, cx| {
+                    if ev.click_count() == 1 {
+                        this.request_stop(path.clone(), cx);
+                    }
+                }))
                 .child(label)
                 .into_any_element()
         };
@@ -432,7 +467,7 @@ impl Render for Chooser {
                         this.activate(window, cx);
                     }))
                     .child(div().flex_none().text_color(if folder { text } else { dim }).child(label))
-                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(dim).child(detail))
+                    .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_right().text_color(dim).child(detail))
                     .children(trailing),
             );
         }

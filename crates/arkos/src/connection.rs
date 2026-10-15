@@ -41,9 +41,12 @@ pub fn is_final(status: &str) -> bool {
 }
 
 /// Binds `first`, then keeps the window connected until it closes.
-pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_args: Vec<String>, first: (Arc<Client>, UnboundedReceiver<ServerMessage>), cx: &mut App) {
+pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_args: Vec<String>, first: (Arc<Client>, UnboundedReceiver<ServerMessage>, Vec<ServerMessage>), cx: &mut App) {
     cx.spawn(async move |cx| {
-        let (mut client, mut events) = first;
+        // `backlog`: what the launch chooser read from this connection before the window
+        // existed and was not its own (the Hello's answer); applied before anything newer.
+        let (mut client, mut events, backlog) = first;
+        let mut backlog: VecDeque<ServerMessage> = backlog.into();
         loop {
             let generation = match root.update(cx, |root, cx| {
                 root.connected(client.clone(), cx);
@@ -58,7 +61,7 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
                 heartbeat(beat_client, alive, cx).await
             })
             .detach();
-            let Some(reason) = pump(&root, &client, &mut events, cx).await else { return };
+            let Some(reason) = pump(&root, &client, &mut events, &mut backlog, cx).await else { return };
             let Ok(status) = root.update(cx, |root, cx| {
                 root.disconnected(reason, cx);
                 root.status.clone()
@@ -136,18 +139,28 @@ pub async fn heartbeat(client: Arc<Client>, alive: impl Fn(&mut AsyncApp) -> boo
 
 /// Applies everything `client` delivers until its connection ends, and returns why it ended.
 /// `None` when the window is gone.
-async fn pump(root: &Entity<Root>, client: &Client, events: &mut UnboundedReceiver<ServerMessage>, cx: &mut AsyncApp) -> Option<String> {
+async fn pump(root: &Entity<Root>, client: &Client, events: &mut UnboundedReceiver<ServerMessage>, backlog: &mut VecDeque<ServerMessage>, cx: &mut AsyncApp) -> Option<String> {
     let mut closed = false;
     // Whether the daemon has answered anything, for the hint below.
     let mut answered = false;
     while !closed {
-        let Some(first) = events.next().await else { break };
+        let first = match backlog.pop_front() {
+            Some(first) => first,
+            None => {
+                let Some(first) = events.next().await else { break };
+                first
+            }
+        };
         // Take everything already queued, up to the byte budget, so a flood becomes one
         // grid update and one notify per terminal per batch instead of one per message.
         let mut bytes = output_len(&first);
         let mut queue = VecDeque::from([first]);
         while bytes <= BATCH_BUDGET {
-            match events.try_recv() {
+            let next = match backlog.pop_front() {
+                Some(msg) => Ok(msg),
+                None => events.try_recv(),
+            };
+            match next {
                 Ok(msg) => {
                     bytes += output_len(&msg);
                     queue.push_back(msg);

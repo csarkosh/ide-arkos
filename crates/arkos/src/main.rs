@@ -2904,15 +2904,20 @@ fn main() {
             let waiting = opened.clone();
             let beat_client = client.clone();
             cx.spawn(async move |cx| connection::heartbeat(beat_client, move |_| !waiting.get(), cx).await).detach();
+            // A quit right after "Stop all" still delivers the kills: the writer gets a moment.
             let quit_opened = opened.clone();
+            let quit_client = client.clone();
             cx.on_action(move |_: &Quit, cx| {
                 if !quit_opened.get() {
+                    quit_client.wait_sent(Duration::from_millis(500));
                     cx.quit();
                 }
             });
             let closed_opened = opened.clone();
+            let closed_client = client.clone();
             cx.on_window_closed(move |cx| {
                 if !closed_opened.get() && cx.windows().is_empty() {
+                    closed_client.wait_sent(Duration::from_millis(500));
                     cx.quit();
                 }
             })
@@ -2943,8 +2948,8 @@ fn main() {
                     client.hello();
                     let finishing = link_for_choice.finish();
                     cx.spawn(async move |cx| {
-                        let events = finishing.await;
-                        let _ = cx.update(|cx| open_project_window(project, (client, events), start, cx));
+                        let (backlog, events) = finishing.await;
+                        let _ = cx.update(|cx| open_project_window(project, (client, events, backlog), start, cx));
                     })
                     .detach();
                 }),
@@ -2952,7 +2957,7 @@ fn main() {
             .detach();
             return;
         }
-        open_project_window(cwd, (client, events), start, cx);
+        open_project_window(cwd, (client, events, Vec::new()), start, cx);
     });
 }
 
@@ -2982,7 +2987,8 @@ fn connect(daemon_args: &[String]) -> (client::Client, futures::channel::mpsc::U
 /// Opens the window on `project` and starts everything that serves it.
 fn open_project_window(
     project: PathBuf,
-    (client, events): (Arc<client::Client>, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>),
+    // The connection, and what the launch chooser read from it before the window existed.
+    (client, events, backlog): (Arc<client::Client>, futures::channel::mpsc::UnboundedReceiver<protocol::ServerMessage>, Vec<protocol::ServerMessage>),
     start: Startup,
     cx: &mut App,
 ) {
@@ -3101,7 +3107,7 @@ fn open_project_window(
         config_watch::start(root.clone(), config_path.clone(), cx);
         explorer_watch::start(root.clone(), cx);
         // The same client the root was built with; reconnects replace it from here on.
-        connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events), cx);
+        connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events, backlog), cx);
         update::start(root.clone(), cx);
         pulse::start(root.downgrade(), cx);
 
