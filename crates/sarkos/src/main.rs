@@ -165,6 +165,17 @@ pub struct Root {
     pub worktrees: worktrees::Worktrees,
     /// Bumped per `git worktree list` run; only the newest run's result is applied.
     pub worktrees_seq: u64,
+    /// Keyboard focus is in the worktree list (Ctrl+Shift+G). Focusing a pane or a tab hands
+    /// it back, as for the file tree.
+    pub wt_focused: bool,
+    /// The create prompt under the Worktrees header while it is open; it holds the keys while
+    /// `wt_focused`.
+    pub wt_prompt: Option<sidebar::Prompt>,
+    /// A worktree row's right-click menu while it is open: the worktree and the click.
+    pub wt_menu: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
+    /// The Worktrees section's focus handle, and the create prompt's.
+    pub wt_focus: FocusHandle,
+    pub wt_prompt_focus: FocusHandle,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -260,8 +271,8 @@ impl Root {
         let reconcile_with_note = saved.is_some();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
-            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
-            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
+            Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
+            None => (sidebar::Sidebar::new(config.sidebar.width, config.sidebar.collapsed, true, true, cx), explorer::Explorer::new(project.clone(), Vec::new(), false), worktrees::Worktrees::new(Vec::new())),
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
@@ -292,6 +303,11 @@ impl Root {
             status_runs: explorer_watch::StatusRuns::default(),
             worktrees,
             worktrees_seq: 0,
+            wt_focused: false,
+            wt_prompt: None,
+            wt_menu: None,
+            wt_focus: cx.focus_handle(),
+            wt_prompt_focus: cx.focus_handle(),
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -452,7 +468,7 @@ impl Root {
     }
 
     pub fn save(&mut self, cx: &mut App) {
-        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect() };
+        let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open };
         let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar) };
         request_save(&self.save_queue, ws, cx);
     }
@@ -535,6 +551,7 @@ impl Root {
     /// Focuses a pane, exiting another pane's maximize so the focused pane is on screen.
     pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
+        self.wt_focused = false;
         if self.tree.pane(pane).is_none() {
             return;
         }
@@ -563,6 +580,7 @@ impl Root {
 
     pub fn activate_tab(&mut self, pane: PaneId, idx: usize, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
+        self.wt_focused = false;
         self.tree.activate(pane, idx);
         self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
@@ -897,9 +915,11 @@ impl Root {
         if self.notice.take().is_some() {
             cx.notify();
         }
-        // A command on the focused pane (Cmd+F, Cmd+T, a split) takes the keys back from the tree.
-        if self.sidebar_focused && !keeps_tree_focus(&cmd) {
+        // A command on the focused pane (Cmd+F, Cmd+T, a split) takes the keys back from the
+        // sidebar.
+        if (self.sidebar_focused || self.wt_focused) && !keeps_tree_focus(&cmd) {
             self.sidebar_focused = false;
+            self.wt_focused = false;
             cx.notify();
         }
         match cmd {
@@ -1065,9 +1085,10 @@ impl Root {
             }
             ToggleSidebar => {
                 self.sidebar.collapsed = !self.sidebar.collapsed;
-                // A hidden tree cannot hold the keys: they go back to the focused pane.
+                // A hidden sidebar cannot hold the keys: they go back to the focused pane.
                 if self.sidebar.collapsed {
                     self.sidebar_focused = false;
+                    self.wt_focused = false;
                 }
                 // The panes change width: measurements taken before are stale, as on a resize.
                 self.grids.clear();
@@ -1080,7 +1101,26 @@ impl Root {
                     self.grids.clear();
                     self.save(cx);
                 }
+                if !self.sidebar.explorer_open {
+                    self.sidebar.explorer_open = true;
+                    self.save(cx);
+                }
                 self.sidebar_focused = true;
+                self.wt_focused = false;
+                cx.notify();
+            }
+            FocusWorktrees => {
+                if self.sidebar.collapsed {
+                    self.sidebar.collapsed = false;
+                    self.grids.clear();
+                    self.save(cx);
+                }
+                if !self.sidebar.worktrees_open {
+                    self.sidebar.worktrees_open = true;
+                    self.save(cx);
+                }
+                self.wt_focused = true;
+                self.sidebar_focused = false;
                 cx.notify();
             }
             ShowIgnoredFiles => {
@@ -1496,12 +1536,18 @@ impl Render for Root {
         }
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
-        let side_col = sidebar::render(self, cx);
+        let side_col = sidebar::render(self, window, cx);
         // Focus follows the tree: the focused pane's terminal or viewer (its find bar while that
-        // is open), or the pane's own handle. The palette holds it while it is open, the file
-        // tree after Shift+Cmd+E.
+        // is open), or the pane's own handle. The palette holds it while it is open; then the
+        // worktree prompt, the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
+        // while they hold the keys. An open prompt holds them only while the list does, so a
+        // click on a pane takes them back without losing what was typed.
         let wanted = if let Some(f) = self.palette.as_ref().and_then(|p| p.focus.clone()) {
             Some(f)
+        } else if self.wt_focused && self.wt_prompt.is_some() {
+            Some(self.wt_prompt_focus.clone())
+        } else if self.wt_focused {
+            Some(self.wt_focus.clone())
         } else if self.sidebar_focused {
             Some(self.sidebar.focus.clone())
         } else {
@@ -1573,10 +1619,10 @@ impl Render for Root {
                 }
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(|root, _ev: &MouseDownEvent, _window, cx| root.close_tab_menu(cx)))
-            // The tree's menu closes on any press outside it (its rows stop theirs), and on
-            // Escape wherever the keys are.
+            // A right-click menu (the tree's or a worktree's) closes on any press outside it
+            // (its rows stop theirs), and on Escape wherever the keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                if root.context_menu.take().is_some() {
+                if root.context_menu.take().is_some() | root.wt_menu.take().is_some() {
                     cx.notify();
                 }
             }))
@@ -1613,7 +1659,8 @@ impl Render for Root {
                     .child(div().flex_1().min_w_0().min_h_0().child(body)),
             )
             .children(command_palette::render(self, cx))
-            .children(sidebar::render_context_menu(self, cx));
+            .children(sidebar::render_context_menu(self, cx))
+            .children(sidebar::render_worktree_menu(self, cx));
         keymap::attach(root_div, cx)
     }
 }

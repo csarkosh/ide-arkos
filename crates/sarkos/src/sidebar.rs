@@ -1,18 +1,22 @@
 //! The left sidebar (spec 6): a fixed column, Cmd+B to toggle, resizable by its right edge,
-//! holding the Explorer section (and Worktrees in milestone 4b). Its state is saved with the
+//! holding two collapsible sections, the Explorer and Worktrees. Its state is saved with the
 //! workspace; the config's `[sidebar]` gives a new folder its defaults.
 
 use crate::explorer;
 use crate::gitstatus::Status;
 use crate::keymap;
+use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::sidebar;
 use crate::tree::{PaneId, Tab, TabId, Tree};
+use crate::worktrees::{Worktree, WtRow};
 use crate::Root;
-use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, UniformList, UniformListScrollHandle};
+use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
+use protocol::SessionId;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 pub const MIN_W: f32 = 160.0;
 pub const MAX_W: f32 = 600.0;
@@ -28,6 +32,11 @@ pub struct Sidebar {
     pub collapsed: bool,
     pub focus: FocusHandle,
     pub scroll: UniformListScrollHandle,
+    /// Whether each section shows its rows; the headers always show.
+    pub explorer_open: bool,
+    pub worktrees_open: bool,
+    /// The Worktrees section's own scroll: few rows, plain divs.
+    pub wt_scroll: ScrollHandle,
 }
 
 pub fn clamp_width(w: f32) -> f32 {
@@ -46,8 +55,8 @@ pub fn visible_width(width: f32, collapsed: bool) -> f32 {
 }
 
 impl Sidebar {
-    pub fn new(width: f32, collapsed: bool, cx: &mut Context<Root>) -> Self {
-        Sidebar { width: clamp_width(width), collapsed, focus: cx.focus_handle(), scroll: UniformListScrollHandle::new() }
+    pub fn new(width: f32, collapsed: bool, explorer_open: bool, worktrees_open: bool, cx: &mut Context<Root>) -> Self {
+        Sidebar { width: clamp_width(width), collapsed, focus: cx.focus_handle(), scroll: UniformListScrollHandle::new(), explorer_open, worktrees_open, wt_scroll: ScrollHandle::new() }
     }
 
     pub fn visible_width(&self) -> f32 {
@@ -55,9 +64,9 @@ impl Sidebar {
     }
 }
 
-/// The column: a header per section, the Explorer rows, and the resize handle. `None` while
-/// collapsed.
-pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
+/// The column: the Explorer and Worktrees sections, each under a header that opens and closes
+/// it, and the resize handle. `None` while collapsed.
+pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Option<Div> {
     if root.sidebar.collapsed {
         return None;
     }
@@ -65,15 +74,20 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let c = &theme.chrome;
     let width = root.sidebar.width;
     let family = root.family();
-    let header = |title: &str| -> Div {
+    let header = |id: &'static str, title: &str, open: bool| -> Stateful<Div> {
         div()
+            .id(id)
             .h(px(ROW_H))
+            .flex_none()
             .px(px(10.0))
             .flex()
             .items_center()
+            .gap(px(4.0))
             .text_color(c.text_dim.hsla())
             .text_size(px(11.0))
-            .child(title.to_uppercase())
+            .cursor_pointer()
+            .child(div().flex_none().w(px(12.0)).child(if open { "\u{25be}" } else { "\u{25b8}" }))
+            .child(div().flex_1().child(title.to_uppercase()))
     };
     let handle = div()
         .id("sidebar-handle")
@@ -90,6 +104,67 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
                 cx.notify();
             }),
         );
+    let explorer_open = root.sidebar.explorer_open;
+    let explorer = div()
+        .flex()
+        .flex_col()
+        .min_h_0()
+        .when(explorer_open, |d| d.flex_1())
+        .key_context("Explorer")
+        .track_focus(&root.sidebar.focus)
+        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tree_key(&ev.keystroke, cx)))
+        .child(header("explorer-header", "Explorer", explorer_open).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+            root.sidebar.explorer_open = !root.sidebar.explorer_open;
+            if !root.sidebar.explorer_open {
+                root.sidebar_focused = false;
+            }
+            root.save(cx);
+            cx.notify();
+        })))
+        .when(explorer_open, |d| d.child(render_rows(root, &theme, cx)));
+    let worktrees_open = root.sidebar.worktrees_open;
+    let plus = div()
+        .id("worktree-create")
+        .flex_none()
+        .px(px(4.0))
+        .text_size(px(13.0))
+        .cursor_pointer()
+        .hover(|s| s.text_color(c.text.hsla()))
+        .child("+")
+        .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+            // The header under it would close the section on the same click.
+            cx.stop_propagation();
+            root.sidebar.worktrees_open = true;
+            root.wt_prompt = Some(Prompt::new());
+            root.wt_focused = true;
+            root.sidebar_focused = false;
+            root.save(cx);
+            cx.notify();
+        }));
+    let worktrees = div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .border_t_1()
+        .border_color(c.border.hsla())
+        .key_context("Worktrees")
+        .track_focus(&root.wt_focus)
+        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.wt_key(&ev.keystroke, cx)))
+        .child(
+            header("worktrees-header", "Worktrees", worktrees_open)
+                .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
+                    root.sidebar.worktrees_open = !root.sidebar.worktrees_open;
+                    if !root.sidebar.worktrees_open {
+                        // A closed section cannot hold the keys or a prompt.
+                        root.wt_focused = false;
+                        root.wt_prompt = None;
+                    }
+                    root.save(cx);
+                    cx.notify();
+                }))
+                .child(plus),
+        )
+        .when(worktrees_open, |d| d.children(render_prompt(root, &theme, cx)).child(render_worktree_rows(root, window, &theme, cx)));
     Some(
         div()
             .relative()
@@ -104,11 +179,8 @@ pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
             .font_family(family)
             .text_size(px(13.0))
             .text_color(c.text.hsla())
-            .key_context("Explorer")
-            .track_focus(&root.sidebar.focus)
-            .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tree_key(&ev.keystroke, cx)))
-            .child(header("Explorer"))
-            .child(crate::sidebar::render_rows(root, &theme, cx))
+            .child(explorer)
+            .child(worktrees)
             .child(handle),
     )
 }
@@ -227,6 +299,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                         // The root's mouse-down closes an open menu; this one just opened.
                         cx.stop_propagation();
                         let _ = w_menu.update(cx, |root, cx| {
+                            root.wt_menu = None;
                             root.context_menu = Some(ContextMenu { path: p_menu.clone(), at: ev.position });
                             cx.notify();
                         });
@@ -325,11 +398,326 @@ pub fn after_drop(preview_tab: Option<TabId>, dragged: TabId) -> Option<TabId> {
     preview_tab.filter(|p| *p != dragged)
 }
 
-/// Whether a command leaves the keys in the file tree (Shift+Cmd+E). Every other command acts
-/// on the focused pane, so the keys go back to it.
+/// Whether a command leaves the keys in the sidebar (Shift+Cmd+E, Ctrl+Shift+G). Every other
+/// command acts on the focused pane, so the keys go back to it.
 pub fn keeps_tree_focus(cmd: &keymap::Command) -> bool {
     use keymap::Command::*;
-    matches!(cmd, ToggleSidebar | FocusFileTree | ShowIgnoredFiles | CommandPalette)
+    matches!(cmd, ToggleSidebar | FocusFileTree | FocusWorktrees | ShowIgnoredFiles | CommandPalette)
+}
+
+pub const SHIMMER_PERIOD: Duration = Duration::from_millis(1500);
+pub const EASE_IN: Duration = Duration::from_millis(150);
+
+/// Where the shimmer's band is, 0 to 1 across the row, sweeping once per period.
+pub fn shimmer_phase(elapsed: Duration) -> f32 {
+    (elapsed.as_secs_f32() % SHIMMER_PERIOD.as_secs_f32()) / SHIMMER_PERIOD.as_secs_f32()
+}
+
+/// Opacity of a changed row `elapsed` after its worktree's changes landed: ease-out to 1.
+pub fn ease_in(elapsed: Duration) -> f32 {
+    let t = (elapsed.as_secs_f32() / EASE_IN.as_secs_f32()).clamp(0.0, 1.0);
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
+/// The keyboard's row after the rows changed: still on a row, or none when there are none.
+pub fn clamp_selection(selected: Option<usize>, rows: usize) -> Option<usize> {
+    selected.filter(|_| rows > 0).map(|i| i.min(rows - 1))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WtMenuAction {
+    OpenTerminal(PathBuf),
+    Remove(PathBuf),
+    RemoveForce(PathBuf),
+}
+
+/// The right-click menu of a worktree row. The main checkout is never removed; a dirty or
+/// unloaded worktree offers force as well, since the plain removal will be refused. One with
+/// no files (missing, or a bare main checkout) has nothing to open a terminal in, and only
+/// force removes it.
+pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static str, WtMenuAction)> {
+    let mut v = Vec::new();
+    if wt.has_files() {
+        v.push(("Open terminal here", WtMenuAction::OpenTerminal(wt.path.clone())));
+    }
+    if wt.is_main {
+        return v;
+    }
+    if wt.has_files() {
+        v.push(("Remove worktree", WtMenuAction::Remove(wt.path.clone())));
+    }
+    if !wt.has_files() || dirty.map_or(true, |n| n > 0) {
+        v.push(("Remove worktree, force", WtMenuAction::RemoveForce(wt.path.clone())));
+    }
+    v
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Branch,
+    Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptStep {
+    Stay,
+    Cancel,
+    Create { branch: String, path: PathBuf },
+}
+
+/// The two-step prompt under the Worktrees header: a branch name, then the path (prefilled).
+/// Its focus handle is `Root.wt_prompt_focus`.
+pub struct Prompt {
+    pub branch: LineEdit,
+    pub path: LineEdit,
+    pub stage: Stage,
+    pub error: Option<String>,
+}
+
+impl Prompt {
+    pub fn new() -> Self {
+        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None }
+    }
+
+    pub fn key(&mut self, ks: &Keystroke, root: &Path) -> PromptStep {
+        let edit = match self.stage {
+            Stage::Branch => &mut self.branch,
+            Stage::Path => &mut self.path,
+        };
+        match edit.handle(ks) {
+            Edit::Cancel => PromptStep::Cancel,
+            Edit::Submit => match self.stage {
+                Stage::Branch => {
+                    let b = self.branch.text.trim().to_string();
+                    if b.is_empty() || b.contains(char::is_whitespace) {
+                        self.error = Some("a branch name, without spaces".into());
+                        return PromptStep::Stay;
+                    }
+                    self.error = None;
+                    self.path.set(&crate::worktrees::default_path(root, &b).to_string_lossy());
+                    self.stage = Stage::Path;
+                    PromptStep::Stay
+                }
+                Stage::Path => {
+                    let p = self.path.text.trim();
+                    if p.is_empty() {
+                        self.error = Some("a path for the worktree".into());
+                        return PromptStep::Stay;
+                    }
+                    PromptStep::Create { branch: self.branch.text.trim().to_string(), path: PathBuf::from(p) }
+                }
+            },
+            _ => PromptStep::Stay,
+        }
+    }
+}
+
+/// The create prompt under the Worktrees header: the branch, then the path, and git's or the
+/// prompt's own complaint under them.
+fn render_prompt(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Option<Div> {
+    let p = root.wt_prompt.as_ref()?;
+    let family = root.family();
+    let label = |text: &'static str| div().flex_none().w(px(44.0)).text_color(theme.chrome.text_dim.hsla()).child(text);
+    let field = |edit: &LineEdit, placeholder: &str, active: bool| -> Div {
+        if active {
+            line_edit::render(edit, placeholder, theme, family.clone(), 12.0)
+        } else {
+            div().text_size(px(12.0)).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
+        }
+    };
+    let row = |l: Div, f: Div| div().h(px(ROW_H)).px(px(10.0)).flex().items_center().gap(px(6.0)).child(l).child(div().min_w_0().flex_1().overflow_hidden().child(f));
+    Some(
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .text_size(px(12.0))
+            .bg(theme.chrome.tab_inactive.hsla())
+            // Keys reach `wt_key` through the section's listener; a click here takes them back.
+            .track_focus(&root.wt_prompt_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
+                    root.wt_focused = true;
+                    root.sidebar_focused = false;
+                    cx.notify();
+                }),
+            )
+            .child(row(label("branch"), field(&p.branch, "feature/name", p.stage == Stage::Branch)))
+            .when(p.stage == Stage::Path, |d| d.child(row(label("path"), field(&p.path, "", true))))
+            .when_some(p.error.clone(), |d, e| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.tree.deleted.hsla()).child(e))),
+    )
+}
+
+/// The Worktrees rows: each worktree (a shimmer while its first `git status` runs) and, once
+/// expanded and loaded, its changed files easing in. Requests the next frame only while
+/// something moves and Reduce Motion is off.
+fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
+    let rows = root.worktrees.rows();
+    root.worktrees.selected = clamp_selection(root.worktrees.selected, rows.len());
+    let selected = root.worktrees.selected;
+    let still = crate::motion::reduce_motion();
+    let now = Instant::now();
+    let width = root.sidebar.width;
+    let c = &theme.chrome;
+    let (selected_bg, hover_bg, dim) = (c.tab_active.hsla(), c.tab_inactive.hsla(), c.text_dim.hsla());
+    let mut moving = false;
+    let mut list = div()
+        .id("worktree-rows")
+        .flex()
+        .flex_col()
+        .max_h(px(root.content.h * 0.4))
+        .overflow_y_scroll()
+        .track_scroll(&root.sidebar.wt_scroll);
+    if root.worktrees.not_git {
+        list = list.child(div().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child("not a git repository"));
+    }
+    for (i, row) in rows.into_iter().enumerate() {
+        let base = div()
+            .id(("worktree-row", i))
+            .relative()
+            .overflow_hidden()
+            .w_full()
+            .h(px(ROW_H))
+            .pr(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .when(selected == Some(i), |d| d.bg(selected_bg))
+            .hover(|s| s.bg(hover_bg))
+            .cursor_pointer();
+        let el = match row {
+            WtRow::Worktree { wt, expanded, loading, dirty } => {
+                let band = loading.then(|| {
+                    let phase = if still {
+                        0.5
+                    } else {
+                        moving = true;
+                        shimmer_phase(root.worktrees.loading_since.get(&wt.path).map_or(Duration::ZERO, |t| now.saturating_duration_since(*t)))
+                    };
+                    div().absolute().top_0().h_full().w(px(0.3 * width)).left(px(phase * 1.3 * width - 0.3 * width)).bg(c.tab_inactive.alpha(0.6))
+                });
+                let chevron = if !wt.has_files() {
+                    ""
+                } else if expanded {
+                    "\u{25be}"
+                } else {
+                    "\u{25b8}"
+                };
+                let name = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.to_string_lossy().into_owned());
+                let branch = match (&wt.branch, wt.bare) {
+                    (Some(b), _) => b.clone(),
+                    (None, true) => "bare".to_string(),
+                    (None, false) => format!("detached {}", wt.head),
+                };
+                let count = dirty.map(|n| match n {
+                    0 => ("clean".to_string(), dim),
+                    1 => ("1 change".to_string(), theme.tree.modified.hsla()),
+                    n => (format!("{n} changes"), theme.tree.modified.hsla()),
+                });
+                let (p_click, p_menu) = (wt.path.clone(), wt.path.clone());
+                let has_menu = !worktree_menu_items(&wt, dirty).is_empty();
+                base.pl(px(10.0))
+                    .children(band)
+                    .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
+                    .child(div().flex_none().max_w(px(width * 0.5)).truncate().child(name))
+                    .child(div().min_w_0().flex_1().truncate().text_color(dim).child(branch))
+                    .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
+                    .children(count.map(|(text, color)| div().flex_none().text_size(px(11.0)).text_color(color).child(text)))
+                    .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                        root.worktrees.selected = Some(i);
+                        root.worktrees.toggle(&p_click);
+                        root.load_pending_worktrees(cx);
+                        root.save(cx);
+                        cx.notify();
+                    }))
+                    .when(has_menu, |d| {
+                        d.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+                                // The root's mouse-down closes an open menu; this one just opened.
+                                cx.stop_propagation();
+                                root.context_menu = None;
+                                root.wt_menu = Some((p_menu.clone(), ev.position));
+                                cx.notify();
+                            }),
+                        )
+                    })
+            }
+            WtRow::Change { worktree, rel, status } => {
+                let opacity = if still {
+                    1.0
+                } else {
+                    let o = root.worktrees.opened_at.get(&worktree).map_or(1.0, |t| ease_in(now.saturating_duration_since(*t)));
+                    moving |= o < 1.0;
+                    o
+                };
+                let path = worktree.join(&rel);
+                base.pl(px(10.0 + 2.0 * INDENT))
+                    .opacity(opacity)
+                    .text_color(row_color(Some(status), false, theme).hsla())
+                    .child(div().min_w_0().truncate().child(rel.to_string_lossy().into_owned()))
+                    .on_click(cx.listener(move |root, ev: &ClickEvent, _window, cx| {
+                        root.worktrees.selected = Some(i);
+                        root.open_viewer(&path, ev.click_count() >= 2, cx);
+                    }))
+            }
+        };
+        list = list.child(el);
+    }
+    if moving {
+        window.request_animation_frame();
+    }
+    list
+}
+
+/// The worktree row's right-click menu, drawn like the file tree's.
+pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
+    let (path, at) = root.wt_menu.clone()?;
+    let wt = root.worktrees.find(&path)?.clone();
+    let items = worktree_menu_items(&wt, root.worktrees.dirty_count(&path));
+    if items.is_empty() {
+        return None;
+    }
+    let c = &root.theme.chrome;
+    let hover = c.tab_active.hsla();
+    let mut m = div()
+        .absolute()
+        .left(at.x)
+        .top(at.y)
+        .min_w(px(200.0))
+        .flex()
+        .flex_col()
+        .py(px(4.0))
+        .bg(c.banner.hsla())
+        .border_1()
+        .border_color(c.border.hsla())
+        .font_family(root.family())
+        .text_size(px(12.0))
+        .text_color(c.text.hsla())
+        .occlude()
+        .on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation());
+    for (i, (label, action)) in items.into_iter().enumerate() {
+        m = m.child(
+            div()
+                .id(("worktree-menu-row", i))
+                .px(px(10.0))
+                .py(px(4.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(label)
+                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+                    root.wt_menu = None;
+                    match action.clone() {
+                        WtMenuAction::OpenTerminal(p) => root.open_terminal_in(p, cx),
+                        WtMenuAction::Remove(p) => root.remove_worktree(p, false, cx),
+                        WtMenuAction::RemoveForce(p) => root.remove_worktree(p, true, cx),
+                    }
+                    cx.notify();
+                })),
+        );
+    }
+    Some(m)
 }
 
 impl Root {
@@ -421,6 +809,7 @@ impl Root {
     /// Enter). The tab's viewer is made and loaded when the pane first shows it.
     pub fn open_viewer(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
+        self.wt_focused = false;
         let pane = self.tree.focused;
         let plan = open_plan(&self.tree, pane, path, self.preview_tab, pin);
         let idx = match plan {
@@ -450,14 +839,126 @@ impl Root {
         cx.notify();
     }
 
-    /// Escape while the tree's right-click menu is open closes the menu and nothing else.
+    /// Escape while a right-click menu (the tree's or a worktree's) is open closes the menu and
+    /// nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if ks.key != "escape" || self.context_menu.is_none() {
+        if ks.key != "escape" || (self.context_menu.is_none() && self.wt_menu.is_none()) {
             return false;
         }
         self.context_menu = None;
+        self.wt_menu = None;
         cx.notify();
         true
+    }
+
+    /// A new terminal tab in the focused pane whose shell starts in `dir` (a worktree). The tab
+    /// remembers the folder, so a restart reattaches the session.
+    pub fn open_terminal_in(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let pane = self.tree.focused;
+        let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: Some(dir.clone()) });
+        if let Some(id) = self.tree.tab_id(pane, idx) {
+            self.sessions.create_in(id, false, dir);
+        }
+        // The keys go to the new shell.
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// `git worktree add` off the UI thread. Success closes the prompt; a failure shows git's
+    /// words in it and keeps it open. The list is read again either way.
+    pub fn create_worktree(&mut self, branch: String, path: PathBuf, cx: &mut Context<Self>) {
+        let root = self.project.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { crate::worktrees::create(&root, &branch, &path) }).await;
+            let _ = this.update(cx, |root, cx| {
+                match result {
+                    Ok(()) => root.wt_prompt = None,
+                    Err(e) => {
+                        if let Some(p) = &mut root.wt_prompt {
+                            p.error = Some(e);
+                        }
+                    }
+                }
+                root.refresh_worktrees(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `git worktree remove` off the UI thread; git's refusal (changes, the main checkout) is a
+    /// notice.
+    pub fn remove_worktree(&mut self, path: PathBuf, force: bool, cx: &mut Context<Self>) {
+        let root = self.project.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { crate::worktrees::remove(&root, &path, force) }).await;
+            let _ = this.update(cx, |root, cx| {
+                if let Err(e) = result {
+                    root.show_notice(format!("cannot remove the worktree: {e}"), cx);
+                }
+                root.refresh_worktrees(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Keys in the Worktrees section: Up/Down move, Enter or Right expands a worktree or opens a
+    /// change pinned, Space previews it, Left collapses, Escape returns to the pane; with the
+    /// prompt open, the keys go to it.
+    pub fn wt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if let Some(p) = &mut self.wt_prompt {
+            match p.key(ks, &self.project.clone()) {
+                PromptStep::Stay => {}
+                PromptStep::Cancel => {
+                    self.wt_prompt = None;
+                    self.wt_focused = false;
+                }
+                PromptStep::Create { branch, path } => self.create_worktree(branch, path, cx),
+            }
+            cx.notify();
+            return;
+        }
+        if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
+            return;
+        }
+        let rows = self.worktrees.rows();
+        let sel = clamp_selection(self.worktrees.selected, rows.len());
+        match ks.key.as_str() {
+            "down" if !rows.is_empty() => self.worktrees.selected = Some(sel.map_or(0, |i| (i + 1).min(rows.len() - 1))),
+            "up" if !rows.is_empty() => self.worktrees.selected = Some(sel.map_or(0, |i| i.saturating_sub(1))),
+            "enter" | "right" | "left" | "space" => {
+                if let Some(row) = sel.and_then(|i| rows.get(i)) {
+                    match row {
+                        WtRow::Worktree { wt, expanded, .. } => {
+                            let want_open = ks.key != "left";
+                            if *expanded != want_open {
+                                self.worktrees.toggle(&wt.path);
+                                self.load_pending_worktrees(cx);
+                                self.save(cx);
+                            }
+                        }
+                        WtRow::Change { worktree, rel, .. } => {
+                            if ks.key == "enter" || ks.key == "space" {
+                                let pin = ks.key == "enter";
+                                self.open_viewer(&worktree.join(rel), pin, cx);
+                                if !pin {
+                                    self.wt_focused = true;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            "escape" => self.wt_focused = false,
+            _ => return,
+        }
+        if let Some(i) = self.worktrees.selected {
+            self.sidebar.wt_scroll.scroll_to_item(i);
+        }
+        cx.notify();
     }
 
     /// Keys in the file tree (ruling 7): Up/Down move, Right expands or enters, Left collapses or
@@ -583,6 +1084,73 @@ mod tests {
     }
 
     #[test]
+    fn the_shimmer_sweeps_once_per_period_and_the_ease_in_settles() {
+        use std::time::Duration;
+        assert!((shimmer_phase(Duration::ZERO) - 0.0).abs() < 1e-5);
+        assert!((shimmer_phase(SHIMMER_PERIOD / 2) - 0.5).abs() < 1e-5);
+        assert!((shimmer_phase(SHIMMER_PERIOD + SHIMMER_PERIOD / 4) - 0.25).abs() < 1e-5, "periodic");
+        assert_eq!(ease_in(Duration::ZERO), 0.0);
+        assert_eq!(ease_in(EASE_IN), 1.0);
+        assert_eq!(ease_in(EASE_IN * 3), 1.0, "settled");
+        let mid = ease_in(EASE_IN / 2);
+        assert!(mid > 0.5 && mid < 1.0, "ease-out: past half way at half time");
+    }
+
+    #[test]
+    fn the_worktree_menu_offers_a_terminal_and_removal_but_never_for_the_main_checkout() {
+        use crate::worktrees::Worktree;
+        let main = Worktree { path: "/p".into(), head: "1".into(), branch: Some("main".into()), is_main: true, missing: false, bare: false };
+        let feat = Worktree { path: "/p-f".into(), head: "2".into(), branch: Some("f".into()), is_main: false, missing: false, bare: false };
+        let labels = |items: Vec<(&'static str, WtMenuAction)>| items.into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+        assert_eq!(labels(worktree_menu_items(&main, Some(0))), ["Open terminal here"]);
+        assert_eq!(labels(worktree_menu_items(&feat, Some(0))), ["Open terminal here", "Remove worktree"]);
+        assert_eq!(labels(worktree_menu_items(&feat, Some(3))), ["Open terminal here", "Remove worktree", "Remove worktree, force"], "dirty: the plain remove will be refused, so force is offered");
+        assert_eq!(labels(worktree_menu_items(&feat, None)), ["Open terminal here", "Remove worktree", "Remove worktree, force"], "not loaded: cannot tell, offer both");
+        let gone = Worktree { missing: true, ..feat.clone() };
+        assert_eq!(labels(worktree_menu_items(&gone, None)), ["Remove worktree, force"], "nothing to open; only force removes a missing one");
+        let bare = Worktree { bare: true, branch: None, head: String::new(), ..main.clone() };
+        assert!(worktree_menu_items(&bare, None).is_empty(), "a bare main checkout: no files to open a terminal in, and never removed");
+        assert_eq!(worktree_menu_items(&feat, Some(0))[0].1, WtMenuAction::OpenTerminal("/p-f".into()));
+        assert_eq!(worktree_menu_items(&feat, None)[2].1, WtMenuAction::RemoveForce("/p-f".into()));
+    }
+
+    #[test]
+    fn the_create_prompt_asks_for_the_branch_then_the_path() {
+        use gpui::Keystroke;
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let root = std::path::Path::new("/Users/me/proj");
+        let mut p = Prompt::new();
+        assert_eq!(p.stage, Stage::Branch);
+        assert_eq!(p.key(&key("enter"), root), PromptStep::Stay, "an empty branch does not advance");
+        assert!(p.error.is_some());
+        // "c->c" is gpui's test syntax for a key that types its character.
+        for c in "feat/x".chars() {
+            p.key(&key(&format!("{c}->{c}")), root);
+        }
+        assert_eq!(p.branch.text, "feat/x");
+        assert_eq!(p.key(&key("enter"), root), PromptStep::Stay);
+        assert_eq!(p.stage, Stage::Path);
+        assert!(p.error.is_none(), "a good branch clears the error");
+        assert_eq!(p.path.text, "/Users/me/proj-feat-x", "the default path is filled in");
+        assert_eq!(p.key(&key("enter"), root), PromptStep::Create { branch: "feat/x".into(), path: "/Users/me/proj-feat-x".into() });
+        let mut q = Prompt::new();
+        assert_eq!(q.key(&key("escape"), root), PromptStep::Cancel);
+        for c in "a b".chars() {
+            q.key(&key(&format!("{c}->{c}")), root);
+        }
+        assert_eq!(q.key(&key("enter"), root), PromptStep::Stay, "a space is not a branch name");
+        assert_eq!((q.stage, q.error.is_some()), (Stage::Branch, true));
+    }
+
+    #[test]
+    fn the_worktrees_selection_stays_on_a_row() {
+        assert_eq!(clamp_selection(Some(5), 3), Some(2), "rows went away under it");
+        assert_eq!(clamp_selection(Some(1), 3), Some(1));
+        assert_eq!(clamp_selection(Some(0), 0), None, "no rows, no selection");
+        assert_eq!(clamp_selection(None, 3), None);
+    }
+
+    #[test]
     fn a_collapsed_sidebar_takes_no_width() {
         assert_eq!(visible_width(300.0, false), 300.0);
         assert_eq!(visible_width(300.0, true), 0.0);
@@ -601,7 +1169,7 @@ mod tests {
     #[test]
     fn only_the_sidebar_commands_and_the_palette_keep_the_keys_in_the_tree() {
         use crate::keymap::Command;
-        for cmd in [Command::ToggleSidebar, Command::FocusFileTree, Command::ShowIgnoredFiles, Command::CommandPalette] {
+        for cmd in [Command::ToggleSidebar, Command::FocusFileTree, Command::FocusWorktrees, Command::ShowIgnoredFiles, Command::CommandPalette] {
             assert!(keeps_tree_focus(&cmd), "{cmd:?}");
         }
         for cmd in [Command::Find, Command::NewTerminal, Command::FontDelta(1.0)] {

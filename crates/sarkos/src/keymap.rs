@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, StartAtLogin, InstallHooks,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, Quit
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, Quit
     ]
 );
 
@@ -69,6 +69,8 @@ pub enum Command {
     FocusFileTree,
     /// Flip whether ignored entries are listed, dimmed.
     ShowIgnoredFiles,
+    /// Put keyboard focus in the worktree list.
+    FocusWorktrees,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -115,6 +117,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("toggle sidebar", "cmd-b"),
     row("focus file tree", "cmd-shift-e"),
     row("show ignored files", ""),
+    row("focus worktrees", "ctrl-shift-g"),
     row("quit", "cmd-q"),
 ];
 
@@ -163,6 +166,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "toggle sidebar" => KeyBinding::new(keys, ToggleSidebar, context),
         "focus file tree" => KeyBinding::new(keys, FocusFileTree, context),
         "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
+        "focus worktrees" => KeyBinding::new(keys, FocusWorktrees, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -321,6 +325,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "toggle sidebar" => Command::ToggleSidebar,
         "focus file tree" => Command::FocusFileTree,
         "show ignored files" => Command::ShowIgnoredFiles,
+        "focus worktrees" => Command::FocusWorktrees,
         _ => return None,
     })
 }
@@ -362,6 +367,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
         UpdateNow => Command::UpdateNow, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
+        FocusWorktrees => Command::FocusWorktrees,
     )
 }
 
@@ -402,6 +408,7 @@ mod tests {
         ("cmd-b", "toggle sidebar", "ToggleSidebar"),
         ("cmd-shift-e", "focus file tree", "FocusFileTree"),
         ("", "show ignored files", "ShowIgnoredFiles"),
+        ("ctrl-shift-g", "focus worktrees", "FocusWorktrees"),
         ("cmd-q", "quit", "Quit"),
     ];
 

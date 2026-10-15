@@ -76,14 +76,12 @@ pub fn list(root: &Path) -> Option<Vec<Worktree>> {
 }
 
 /// Beside the project, `<project>-<branch>` with `/` in the branch turned into `-`.
-#[cfg_attr(not(test), allow(dead_code))] // The sidebar's menu and prompt use it from Task 4.
 pub fn default_path(root: &Path, branch: &str) -> PathBuf {
     let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let parent = root.parent().unwrap_or(root);
     parent.join(format!("{name}-{}", branch.replace('/', "-")))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The sidebar's menu and prompt use it from Task 4.
 fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let out = git(root).args(args).stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
@@ -93,14 +91,12 @@ fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The sidebar's menu and prompt use it from Task 4.
 fn branch_exists(root: &Path, branch: &str) -> bool {
     let Some(mut cmd) = git_read(root) else { return false };
     cmd.args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// `git worktree add <path> <branch>`, creating the branch when it does not exist yet.
-#[cfg_attr(not(test), allow(dead_code))] // The sidebar's menu and prompt use it from Task 4.
 pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
     let path = path.to_string_lossy();
     if branch_exists(root, branch) {
@@ -112,7 +108,6 @@ pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
 
 /// `git worktree remove [--force] <path>`. Without force git refuses a worktree with changes;
 /// the error is git's own text.
-#[cfg_attr(not(test), allow(dead_code))] // The sidebar's menu and prompt use it from Task 4.
 pub fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
     let path = path.to_string_lossy();
     if force {
@@ -134,6 +129,8 @@ pub struct Worktrees {
     pub expanded: BTreeSet<PathBuf>,
     pub changes: HashMap<PathBuf, Changes>,
     loading: HashSet<PathBuf>,
+    /// When each loading worktree's `git status` started, for the shimmer's phase.
+    pub loading_since: HashMap<PathBuf, Instant>,
     /// Expanded worktrees whose loaded changes are due a reload; their rows stay up meanwhile.
     stale: HashSet<PathBuf>,
     /// When each expanded worktree's changes landed, for the ease-in.
@@ -144,7 +141,7 @@ pub struct Worktrees {
 
 impl Worktrees {
     pub fn new(expanded: Vec<PathBuf>) -> Self {
-        Worktrees { list: None, not_git: false, expanded: expanded.into_iter().collect(), changes: HashMap::new(), loading: HashSet::new(), stale: HashSet::new(), opened_at: HashMap::new(), selected: None }
+        Worktrees { list: None, not_git: false, expanded: expanded.into_iter().collect(), changes: HashMap::new(), loading: HashSet::new(), loading_since: HashMap::new(), stale: HashSet::new(), opened_at: HashMap::new(), selected: None }
     }
 
     pub fn set_list(&mut self, list: Option<Vec<Worktree>>) {
@@ -171,6 +168,7 @@ impl Worktrees {
         if self.expanded.remove(path) {
             self.changes.remove(path);
             self.loading.remove(path);
+            self.loading_since.remove(path);
             self.stale.remove(path);
             self.opened_at.remove(path);
             return false;
@@ -200,11 +198,13 @@ impl Worktrees {
 
     pub fn mark_loading(&mut self, path: &Path) {
         self.loading.insert(path.to_path_buf());
+        self.loading_since.entry(path.to_path_buf()).or_insert_with(Instant::now);
     }
 
     /// The status result for an expanded worktree; `None` when git failed (shown as no changes).
     pub fn set_changes(&mut self, path: &Path, changes: Option<Changes>) {
         self.loading.remove(path);
+        self.loading_since.remove(path);
         self.stale.remove(path);
         if !self.expanded.contains(path) {
             return;

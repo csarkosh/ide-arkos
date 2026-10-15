@@ -19,6 +19,12 @@ gutters) is next.
 
 Things only a person at the screen can check, in order of value:
 
+- in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
+  clears them within ten seconds
+- Worktrees: expand one: a shimmer, then its changed files fade in; collapse and expand again:
+  `git status` runs again (watch `ps`); + creates `../proj-feat` on a new branch; Remove on a
+  dirty one is refused with git's words, force removes it
+- Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
 - Cmd+B, expand `src`, click a file: a dimmed preview tab with colours and line numbers; click
   another file: the same tab shows it; double click: a second tab; edit the file in another app:
   the viewer follows within a second
@@ -128,12 +134,21 @@ Copy path, Copy relative path, Open in default app. Drag a file onto a terminal 
 path. Shift+Cmd+E puts the keyboard in the tree: arrows move and expand, Enter opens, Space
 previews, Escape goes back to the pane.
 
+Under the Explorer, Worktrees lists `git worktree list`: each worktree's folder, branch and, once
+expanded, its changed files in the status colours with a count in the row (a collapsed worktree
+never runs `git status`). Click a changed file to read it in the viewer. Right click a worktree:
+Open terminal here, Remove worktree (refused while it has changes), Remove worktree, force. The
+"+" on the header creates one: a branch name, then the path (prefilled beside the project);
+an existing branch is checked out, a new one created. The main checkout is first and cannot be
+removed. Ctrl+Shift+G puts the keyboard in the list. The tree's rows carry git status in the
+theme's pastels (added, modified, untracked) and a folder with changes inside carries a dot.
+
 The viewer is read-only: syntax colours from your theme's `[viewer]` section through syntect's
 TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a second
 of the file changing on disk. Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
 plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
-terminals, and Cmd+= and Cmd+- resize the focused one. Git status colours, the worktree explorer
-and the diff gutters come in milestone 4b.
+terminals, and Cmd+= and Cmd+- resize the focused one. The diff gutters come later in milestone
+4b.
 
 ## Keyboard
 
@@ -176,6 +191,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+F | find in the terminal or viewer |
 | Cmd+B | toggle the sidebar |
 | Shift+Cmd+E | focus the file tree |
+| Ctrl+Shift+G | focus the worktree list |
 | Cmd+, | open config file |
 | Shift+Cmd+P | command palette |
 
@@ -198,8 +214,7 @@ Notes:
   Terminal.app. A plain click does nothing to it.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
-- Ctrl+Shift+G arrives with the worktree explorer in milestone 4b. Every binding can be
-  changed in the config file; see Config.
+- Every binding can be changed in the config file; see Config.
 
 ## Config
 

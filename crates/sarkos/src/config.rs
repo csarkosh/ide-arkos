@@ -406,6 +406,7 @@ nice = 0
 # "toggle sidebar" = "cmd-b"
 # "focus file tree" = "cmd-shift-e"
 # "show ignored files" = ""
+# "focus worktrees" = "ctrl-shift-g"
 # "quit" = "cmd-q"
 
 [sidebar]
