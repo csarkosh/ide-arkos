@@ -11,7 +11,7 @@ name = "lantern"
 fixture = "scripts/shoot/demo"
 port = 4173
 worktrees = ["rate-limit"]
-# dir = "~/Projects/lantern"   # the title bar shows the path; the default is under ~/Library/Caches
+dir = "~/Projects/lantern"   # the title bar shows the path (deleted and remade on each run)
 
 # A window that would run under the Dock or the menu bar is made smaller to clear them.
 [window]
