@@ -20,7 +20,7 @@ use crate::viewer_element::{MarkColors, ViewerElement};
 use crate::Root;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
-    KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
+    KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
@@ -567,6 +567,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
     let t_click = terminal.clone();
+    let t_up = terminal.clone();
     let t_drop = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
     let jump_id = ElementId::NamedInteger("jump".into(), terminal.read(cx).session.0 as u64);
@@ -609,9 +610,12 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                     if t.find.is_some() {
                         t.close_find(cx);
                     }
+                    // A program reporting the mouse hears the click at the release.
+                    t.mouse_pressed(ev.position);
                 });
             }),
         )
+        .on_mouse_up(MouseButton::Left, cx.listener(move |_root, ev: &MouseUpEvent, _window, cx| t_up.update(cx, |t, _| t.mouse_released(ev.position))))
         // A file dragged from the tree types its path at the prompt.
         .on_drop(cx.listener(move |_root, d: &crate::drag::FileDrag, _window, cx| {
             match crate::drag::paste_text(&d.path) {
@@ -630,7 +634,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                     ScrollDelta::Lines(p) => p.y,
                     ScrollDelta::Pixels(p) => f32::from(p.y) / cell_h,
                 };
-                t.scroll_lines(lines, cx);
+                t.wheel(lines, ev.modifiers.shift, ev.position, cx);
             });
         }))
         .child(

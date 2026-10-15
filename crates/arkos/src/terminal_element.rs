@@ -123,6 +123,7 @@ impl Element for TerminalElement {
         let (cols, rows) = grid_in(bounds, cell);
         self.terminal.update(cx, |t, _| {
             t.cell = Some(cell);
+            t.origin = Some((f32::from(bounds.origin.x), f32::from(bounds.origin.y)));
             t.ensure_size(cols, rows);
         });
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);

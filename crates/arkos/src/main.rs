@@ -27,6 +27,7 @@ mod launch_agent;
 mod layout;
 mod line_edit;
 mod motion;
+mod mouse;
 mod palette;
 mod pane_view;
 mod paths;

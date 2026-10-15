@@ -4,6 +4,7 @@
 use crate::client::Client;
 use crate::keys::keystroke_to_bytes;
 use crate::layout::{CellKind, CellStyle};
+use crate::mouse::{self, MouseMode, WheelCarry};
 use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
@@ -203,6 +204,18 @@ impl TerminalCore {
         self.term.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
+    /// What the program wants from the mouse right now (see `mouse::MouseMode`).
+    pub fn mouse_mode(&self) -> MouseMode {
+        let m = self.term.mode();
+        if m.intersects(TermMode::MOUSE_MODE) {
+            MouseMode::Report { sgr: m.contains(TermMode::SGR_MOUSE) }
+        } else if m.contains(TermMode::ALT_SCREEN) && m.contains(TermMode::ALTERNATE_SCROLL) {
+            MouseMode::Arrows { app_cursor: m.contains(TermMode::APP_CURSOR) }
+        } else {
+            MouseMode::Local
+        }
+    }
+
     /// Moves alacritty's integer display offset to `off` (clamped to history).
     /// True while the view shows history: either the grid is offset or the animator is heading
     /// there. Drives the jump-to-bottom affordance.
@@ -378,6 +391,14 @@ pub struct Terminal {
     pub find: Option<crate::find::FindState>,
     /// The link under the mouse at the last paint: underlined, and what Cmd+click opens.
     pub hovered_link: Option<HoveredLink>,
+    /// Where the element last painted its top left, in window pixels: with `cell`, what maps
+    /// the pointer to a grid cell.
+    pub origin: Option<(f32, f32)>,
+    /// The fraction of a wheel line owed to the program (see `mouse::WheelCarry`).
+    pub wheel_carry: WheelCarry,
+    /// The cell of a left press the program will hear about at release, unless it turns into a
+    /// drag first (see `mouse_pressed`).
+    pub pending_click: Option<(usize, usize)>,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -406,7 +427,61 @@ impl Terminal {
             line_height: crate::terminal_element::DEFAULT_LINE_HEIGHT,
             find: None,
             hovered_link: None,
+            origin: None,
+            wheel_carry: WheelCarry::default(),
+            pending_click: None,
         }
+    }
+
+    /// The grid cell under a window position, clamped to the grid; None before the first paint.
+    pub fn cell_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize)> {
+        let (ox, oy) = self.origin?;
+        let cell = self.cell?;
+        let col = ((f32::from(position.x) - ox) / cell.width).floor().max(0.0) as usize;
+        let row = ((f32::from(position.y) - oy) / cell.height).floor().max(0.0) as usize;
+        Some((col.min(self.core.columns().saturating_sub(1)), row.min(self.core.screen_lines().saturating_sub(1))))
+    }
+
+    /// A wheel step of `lines` (positive is up). The local history scrolls unless the program
+    /// reports the mouse or runs on the alternate screen, where the step goes to it as a report
+    /// or an arrow key; Shift forces the local scroll, as in xterm.
+    pub fn wheel(&mut self, lines: f32, shift: bool, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let mode = if shift { MouseMode::Local } else { self.core.mouse_mode() };
+        if mode == MouseMode::Local {
+            self.wheel_carry.reset();
+            self.scroll_lines(lines, cx);
+            return;
+        }
+        let whole = self.wheel_carry.whole_lines(lines);
+        if whole == 0 || !self.alive {
+            return;
+        }
+        let (col, row) = self.cell_at(position).unwrap_or((0, 0));
+        let bytes = mouse::wheel_bytes(mode, whole, col, row);
+        self.client.send(Request::Input { session: self.session, bytes });
+    }
+
+    /// A left press. When the program reports the mouse, the click is held until the release
+    /// so a drag can become a local selection instead; returns true when the press was taken.
+    pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
+        if !matches!(self.core.mouse_mode(), MouseMode::Report { .. }) {
+            return false;
+        }
+        self.pending_click = self.cell_at(position);
+        self.pending_click.is_some()
+    }
+
+    /// A left release: a held click reaches the program as a press at its cell and a release here.
+    pub fn mouse_released(&mut self, position: gpui::Point<gpui::Pixels>) {
+        let Some((col, row)) = self.pending_click.take() else { return };
+        let MouseMode::Report { sgr } = self.core.mouse_mode() else { return };
+        if !self.alive {
+            return;
+        }
+        let (rcol, rrow) = self.cell_at(position).unwrap_or((col, row));
+        let mut bytes = mouse::button_bytes(sgr, mouse::LEFT, col, row, true);
+        bytes.extend(mouse::button_bytes(sgr, mouse::LEFT, rcol, rrow, false));
+        self.client.send(Request::Input { session: self.session, bytes });
     }
 
     /// Applies one daemon event. Returns true when a repaint is needed.
@@ -652,6 +727,26 @@ mod tests {
         assert_eq!(text_of(&above), format!("l{}", top_n - 1));
         t.set_display_offset(0);
         assert!(t.rows_for_paint().above.is_none() || t.history_size() > 0);
+    }
+
+    #[test]
+    fn mouse_mode_follows_the_programs_requests() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        assert_eq!(t.mouse_mode(), MouseMode::Local);
+        // The alternate screen alone: alternate scroll is on by default, so the wheel is arrows.
+        t.apply_output(b"\x1b[?1049h");
+        assert_eq!(t.mouse_mode(), MouseMode::Arrows { app_cursor: false });
+        t.apply_output(b"\x1b[?1h");
+        assert_eq!(t.mouse_mode(), MouseMode::Arrows { app_cursor: true });
+        // Claude Code's fullscreen renderer: click reporting with the SGR encoding.
+        t.apply_output(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(t.mouse_mode(), MouseMode::Report { sgr: true });
+        t.apply_output(b"\x1b[?1006l");
+        assert_eq!(t.mouse_mode(), MouseMode::Report { sgr: false });
+        t.apply_output(b"\x1b[?1000l\x1b[?1007l");
+        assert_eq!(t.mouse_mode(), MouseMode::Local);
+        t.apply_output(b"\x1b[?1049l\x1b[?1007h");
+        assert_eq!(t.mouse_mode(), MouseMode::Local, "alternate scroll means nothing on the primary screen");
     }
 
     #[test]
