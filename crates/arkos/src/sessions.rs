@@ -143,7 +143,7 @@ pub fn reconcile(tree: &Tree, list: &[SessionInfo], project: &Path) -> Vec<Recon
             match tab {
                 Tab::Terminal { session, cwd } if reattachable(*session, list, cwd.as_deref().unwrap_or(project)) => Some(Reconcile::Attach { tab: id, session: *session }),
                 Tab::Terminal { cwd, .. } => Some(Reconcile::Create { tab: id, cwd: cwd.clone() }),
-                Tab::Viewer { .. } => None,
+                Tab::Viewer { .. } | Tab::Browser { .. } => None,
             }
         })
         .collect()
@@ -729,11 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_skips_viewer_tabs() {
+    fn reconcile_skips_viewer_and_browser_tabs() {
         let here = tempfile::tempdir().unwrap();
         let mut t = Tree::new(term(1));
         let a = t.focused;
         t.add_tab(a, Tab::Viewer { path: PathBuf::from("/x") });
+        t.add_tab(a, Tab::Browser { url: Some("https://example.com".into()), app_mode: false });
         let plan = reconcile(&t, &[info(1, here.path(), true)], here.path());
         assert_eq!(plan, vec![Reconcile::Attach { tab: t.tab_id(a, 0).unwrap(), session: SessionId(1) }]);
     }

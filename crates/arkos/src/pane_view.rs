@@ -1,8 +1,11 @@
-//! One pane: its tab bar and the active tab's content (a terminal, a file viewer, a busy notice
-//! while a shell starts or a replay is parsed, or the empty state).
+//! One pane: its tab bar and the active tab's content (a terminal, a file viewer, a browser
+//! tab's placeholder, a busy notice while a shell starts or a replay is parsed, or the empty
+//! state), and the URL prompt over the focused pane.
 
 use crate::drag;
 use crate::find;
+use crate::keymap::Command;
+use crate::line_edit::{self, Edit, LineEdit};
 use crate::motion;
 use crate::pulse;
 use crate::sessions::Note;
@@ -15,7 +18,7 @@ use crate::viewer_element::{MarkColors, ViewerElement};
 use crate::Root;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, FocusHandle,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
+    KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 
 pub const TAB_BAR_H: f32 = 28.0;
@@ -87,6 +90,114 @@ pub fn menu_rows(p: &Pane, labels: &[String]) -> Vec<(usize, String, bool)> {
     labels.iter().enumerate().map(|(i, l)| (i, l.clone(), i == p.active)).collect()
 }
 
+/// The tab bar's height while a browser tab is active: room for the pane number and a dot per
+/// tab, so the docked Chrome window gets the rest of the pane.
+pub fn slim_bar_height() -> f32 {
+    14.0
+}
+
+/// The tab bar's height for the pane's active tab: slim for a browser tab, `TAB_BAR_H` otherwise.
+pub fn bar_height_for(active: Option<&Tab>) -> f32 {
+    match active {
+        Some(Tab::Browser { .. }) => slim_bar_height(),
+        _ => TAB_BAR_H,
+    }
+}
+
+/// What a browser tab's placeholder shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserScreen {
+    /// arkos may not move other apps' windows yet: how to allow it.
+    NoPermission,
+    /// No Chrome window is docked: the URL it opens with, and whether a window was launched for it.
+    Waiting { url: Option<String>, launched: bool },
+    /// A Chrome window covers the placeholder; nothing to draw under it.
+    Docked,
+}
+
+/// The placeholder's screen: without Accessibility access nothing can dock, so that comes
+/// first; then whether a window is docked. `docked` is the dock state with its window elided.
+pub fn browser_screen(trusted: bool, docked: Option<()>, url: Option<String>, launched: bool) -> BrowserScreen {
+    match (trusted, docked) {
+        (false, _) => BrowserScreen::NoPermission,
+        (true, Some(())) => BrowserScreen::Docked,
+        (true, None) => BrowserScreen::Waiting { url, launched },
+    }
+}
+
+/// The host of an absolute URL, without user info or port; `None` when there is none.
+fn url_host(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if host_port.starts_with('[') {
+        host_port.split_inclusive(']').next().unwrap_or(host_port)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// A browser tab's label: the docked window's title, else the URL's host, else "browser".
+pub fn browser_label(title: Option<&str>, url: Option<&str>) -> String {
+    match title.filter(|t| !t.is_empty()) {
+        Some(t) => t.to_string(),
+        None => url.and_then(url_host).unwrap_or("browser").to_string(),
+    }
+}
+
+/// A URL as typed, with `https://` added when it has no scheme. `localhost:3000` has none: a
+/// scheme is only what comes before `://`, or one of the few Chrome opens without it.
+fn with_scheme(url: &str) -> String {
+    let bare = ["about:", "chrome:", "data:", "file:"];
+    if url.contains("://") || bare.iter().any(|s| url.starts_with(s)) {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    }
+}
+
+/// What the URL prompt opens: what was typed, else `[browser] url`; `None` (both empty) is a
+/// blank window.
+pub fn prompt_url(typed: &str, configured: &str) -> Option<String> {
+    let typed = typed.trim();
+    let url = if typed.is_empty() { configured.trim() } else { typed };
+    (!url.is_empty()).then(|| with_scheme(url))
+}
+
+/// The URL prompt ("New browser tab"), a small box at the top of the focused pane. `target`
+/// is the waiting browser tab whose "Open a URL..." opened it; `None` makes a new tab.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UrlPrompt {
+    pub edit: LineEdit,
+    pub app_mode: bool,
+    pub target: Option<TabId>,
+}
+
+/// What a key in the URL prompt leads to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlStep {
+    Stay,
+    Cancel,
+    /// Enter: the URL to open (`prompt_url`).
+    Open(Option<String>),
+}
+
+impl UrlPrompt {
+    pub fn new(app_mode: bool, target: Option<TabId>) -> Self {
+        UrlPrompt { edit: LineEdit::new(), app_mode, target }
+    }
+
+    /// One key; `configured` is `[browser] url`, taken when the field is empty.
+    pub fn key(&mut self, ks: &Keystroke, configured: &str) -> UrlStep {
+        match self.edit.handle(ks) {
+            Edit::Submit | Edit::SubmitBack => UrlStep::Open(prompt_url(&self.edit.text, configured)),
+            Edit::Cancel => UrlStep::Cancel,
+            _ => UrlStep::Stay,
+        }
+    }
+}
+
 /// Every tab's label and mark, in bar order; the bar and the overflow menu both show the labels.
 fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark)> {
     p.tabs
@@ -106,6 +217,8 @@ fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark
                 }
             }
             Tab::Viewer { path } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
+            // `browser_titles` holds a title only while a window is docked.
+            Tab::Browser { url, .. } => (browser_label(p.ids.get(idx).and_then(|id| root.browser_titles.get(id)).map(String::as_str), url.as_deref()), TabMark::None),
         })
         .collect()
 }
@@ -117,7 +230,8 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // `pane_order` is computed once per render by `render_tree` (reading order, structural).
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
     let tabs = tab_labels(root, &p, cx);
-    let bar = render_tab_bar(root, pane, &p, number, &tabs, cx);
+    let bar_h = bar_height_for(p.tabs.get(p.active));
+    let bar = render_tab_bar(root, pane, &p, number, &tabs, bar_h, cx);
     let labels: Vec<String> = tabs.into_iter().map(|(label, _)| label).collect();
     if !p.tabs.is_empty() {
         // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
@@ -135,6 +249,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         },
         Some(Tab::Viewer { path }) => match p.ids.get(p.active).copied() {
             Some(tab) => render_viewer(root, pane, tab, path, cx),
+            None => div(),
+        },
+        Some(Tab::Browser { url, app_mode }) => match p.ids.get(p.active).copied() {
+            Some(tab) => render_browser(root, pane, tab, url.clone(), *app_mode, cx),
             None => div(),
         },
     };
@@ -164,7 +282,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let painted = if zone.is_some() || root.drop_tints.contains_key(&pane) {
         let tint = root.drop_tints.entry(pane).or_default();
         tint.aim(zone, now);
-        tint.paint(rect.w, rect.h - TAB_BAR_H, now)
+        tint.paint(rect.w, rect.h - bar_h, now)
     } else {
         None
     };
@@ -192,9 +310,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
-    if root.tab_menu.value() == Some(&pane) && !show_overflow(p.tabs.len()) {
-        // Down to one tab: the ⋯ button is gone, so its menu goes too and does not come back
-        // with the next tab.
+    let slim = bar_h < TAB_BAR_H;
+    if root.tab_menu.value() == Some(&pane) && (!show_overflow(p.tabs.len()) || slim) {
+        // Down to one tab, or the slim bar of a browser tab: the ⋯ button is gone, so its menu
+        // goes too and does not come back with the next tab.
         root.tab_menu.hide(now);
     }
     // Drawn while it fades out too; only the open menu takes clicks.
@@ -203,7 +322,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         let mut m = div()
             .id(("menu", pane))
             .absolute()
-            .top(px(TAB_BAR_H - motion::lift(opacity, motion::MENU_LIFT)))
+            .top(px(bar_h - motion::lift(opacity, motion::MENU_LIFT)))
             .right_0()
             .opacity(opacity)
             .min_w(px(180.0))
@@ -263,10 +382,14 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(bar)
         .child(content)
         .children(menu)
+        .children(render_url_prompt(root, pane, bar_h, cx))
         .children(glow.into_iter().flatten())
 }
 
-fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], cx: &mut Context<Root>) -> Stateful<Div> {
+/// The tab bar, `height` tall. Slim (a browser tab is active), it shows only the pane number and
+/// a dot per tab, the active one lit; every tab still clicks, drags and takes drops.
+fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], height: f32, cx: &mut Context<Root>) -> Stateful<Div> {
+    let slim = height < TAB_BAR_H;
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let (fg, dim) = (c.text, c.text_dim);
@@ -276,7 +399,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     muted.a *= 0.6;
     let mut bar = div()
         .id(("bar", pane))
-        .h(px(TAB_BAR_H))
+        .h(px(height))
         .w_full()
         .flex_none()
         .flex()
@@ -285,7 +408,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .bg(c.tab_bar.hsla())
         .text_color(fg.hsla())
         .font_family(root.family())
-        .text_size(px(12.0))
+        .text_size(px(if slim { 10.0 } else { 12.0 }))
         .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
@@ -334,28 +457,33 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             fg,
             family: root.family(),
         });
+        let tab = div()
+            .id(tab_id("tab", pane, idx))
+            .h_full()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
+            .when_some(drag_value, |el, value| {
+                el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
+            })
+            .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
+                if ev.bounds.contains(&ev.event.position) {
+                    let at = drag::insert_index(ev.bounds, ev.event.position, idx);
+                    root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
+                    cx.notify();
+                }
+            }));
+        if slim {
+            // A dot per tab, wide enough to hit; the label rides along on a drag.
+            strip = strip.child(tab.px(px(4.0)).child(div().size(px(6.0)).rounded_full().bg(if is_active { c.tab_active } else { c.text_dim }.hsla())));
+            continue;
+        }
         strip = strip.child(
-            div()
-                .id(tab_id("tab", pane, idx))
-                .h_full()
-                .px(px(10.0))
-                .flex()
-                .items_center()
+            tab.px(px(10.0))
                 .gap(px(6.0))
                 .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
                 .text_color(text)
-                .cursor_pointer()
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
-                .when_some(drag_value, |el, value| {
-                    el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
-                })
-                .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
-                    if ev.bounds.contains(&ev.event.position) {
-                        let at = drag::insert_index(ev.bounds, ev.event.position, idx);
-                        root.drop_target = Some(drag::DropTarget::TabBar { pane, at });
-                        cx.notify();
-                    }
-                }))
                 .when_some(glyph, |el, g| el.child(g))
                 .child(label)
                 .child(
@@ -371,6 +499,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                         })),
                 ),
         );
+    }
+    if slim {
+        // No titles, no +, no overflow menu: the height goes to the docked window.
+        return bar.child(strip);
     }
     bar = bar.child(strip).child(
         div()
@@ -632,6 +764,130 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
 }
 
+/// A browser tab's placeholder: the rectangle a Chrome window docks onto, reported every frame
+/// (a `canvas`, like the pane's grid measure; it paints nothing and asks for no frames), and the
+/// screen `browser_screen` picks. A click anywhere in it is `browser_clicked`.
+fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>, app_mode: bool, cx: &mut Context<Root>) -> Div {
+    let focus = pane_focus(root, pane, cx);
+    let theme = root.theme.clone();
+    let family = root.family();
+    let c = &theme.chrome;
+    let weak = cx.weak_entity();
+    let report = canvas(
+        move |bounds, _window, cx| {
+            let _ = weak.update(cx, |root, _| root.report_browser_rect(tab, bounds));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let (text, dim) = (c.text.hsla(), c.text_dim.hsla());
+    let (banner, border) = (c.banner.hsla(), c.border.hsla());
+    let button = move |name: &'static str, label: &'static str| {
+        div()
+            .id(ElementId::NamedInteger(name.into(), tab))
+            .px(px(12.0))
+            .py(px(5.0))
+            .rounded(px(6.0))
+            .bg(banner)
+            .border_1()
+            .border_color(border)
+            .text_color(text)
+            .cursor_pointer()
+            .hover(move |s| s.border_color(text))
+            .child(label)
+    };
+    let column = || div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family.clone()).text_size(px(13.0)).text_color(dim);
+    let heading = |t: &'static str| div().text_color(text).text_size(px(15.0)).child(t);
+    // Task 3 feeds the dock state through here; until then nothing docks and nothing launches.
+    let screen = match browser_screen(true, None, url, false) {
+        BrowserScreen::NoPermission => column()
+            .child(heading("Docking a Chrome window needs Accessibility access"))
+            .child(div().child("arkos positions the window over this pane; it never reads its contents."))
+            .child(div().child("macOS asks once. You can take the access back in System Settings at any time."))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(10.0))
+                    .child(button("browser-grant", "Grant access").on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| root.request_accessibility(cx))))
+                    .child(button("browser-settings", "Open System Settings").on_click(|_ev: &ClickEvent, _window, cx| {
+                        cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                    })),
+            ),
+        BrowserScreen::Waiting { url, launched } => column()
+            .child(heading(if launched { "Waiting for the Chrome window it opened" } else { "Waiting for a Chrome window" }))
+            .when_some(url, |d, u| d.child(div().child(if app_mode { format!("{u} (single page)") } else { u })))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(10.0))
+                    .child(button("browser-dock", "Dock a Chrome window\u{2026}").on_click(cx.listener(|root, _ev: &ClickEvent, window, cx| root.run(Command::DockChromeWindow, window, cx))))
+                    .child(button("browser-url", "Open a URL\u{2026}").on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.open_url_prompt(app_mode, Some(tab), cx)))),
+            )
+            .child(div().pt(px(8.0)).text_size(px(12.0)).child("Tip: right-click Chrome's tab strip and choose Show Tabs Vertically to save 40 px.")),
+        BrowserScreen::Docked => div().size_full().bg(c.window_bg.hsla()),
+    };
+    div()
+        .size_full()
+        .relative()
+        .track_focus(&focus)
+        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.browser_clicked(tab, cx)))
+        .child(report)
+        .child(screen)
+}
+
+/// The URL prompt, at the top of the focused pane's content while it is open and while it fades
+/// out. It holds the keys while open (`render` focuses it): Enter opens, Escape cancels.
+fn render_url_prompt(root: &mut Root, pane: PaneId, bar_h: f32, cx: &mut Context<Root>) -> Option<Div> {
+    if root.tree.focused != pane {
+        return None;
+    }
+    let (p, opacity) = root.url_prompt.current(root.frame_now)?;
+    let live = root.url_prompt.value().is_some();
+    let theme = root.theme.clone();
+    let family = root.family();
+    let c = &theme.chrome;
+    let hint = if p.app_mode { "Enter opens it as a single page; empty opens [browser] url; Escape cancels" } else { "Enter opens it; empty opens [browser] url; Escape cancels" };
+    let field = line_edit::render(&p.edit, "a URL, like example.com", &theme, family.clone(), 13.0);
+    Some(
+        div()
+            .absolute()
+            .top(px(bar_h + 8.0 - motion::lift(opacity, motion::PANEL_LIFT)))
+            .left_0()
+            .w_full()
+            .flex()
+            .justify_center()
+            .opacity(opacity)
+            .child(
+                div()
+                    .key_context("UrlPrompt")
+                    .when(live, |d| {
+                        d.track_focus(&root.url_prompt_focus)
+                            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                            .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.url_prompt_key(&ev.keystroke, cx)))
+                    })
+                    .w(px(420.0))
+                    .max_w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(c.banner.hsla())
+                    .border_1()
+                    .border_color(c.border.hsla())
+                    .font_family(family)
+                    .child(field)
+                    .child(div().text_size(px(11.0)).text_color(c.text_dim.hsla()).child(hint)),
+            ),
+    )
+}
+
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by
 /// `render_pane`, so the replay is parsed at the size it will be shown at.
 fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Context<Root>) -> Div {
@@ -694,6 +950,64 @@ mod tests {
         let [top, ..] = glow_strips(10.0, 8.0);
         assert_eq!(top.3, 4.0, "never wider than half the pane");
         assert!(glow_strips(0.0, 0.0).iter().all(|s| s.2 >= 0.0 && s.3 >= 0.0));
+    }
+
+    #[test]
+    fn the_tab_bar_is_slim_only_while_a_browser_tab_is_active() {
+        use protocol::SessionId;
+        assert_eq!(bar_height_for(Some(&Tab::Browser { url: None, app_mode: false })), slim_bar_height());
+        assert_eq!(bar_height_for(Some(&Tab::Terminal { session: SessionId(1), cwd: None })), TAB_BAR_H);
+        assert_eq!(bar_height_for(Some(&Tab::Viewer { path: "/p/a.rs".into() })), TAB_BAR_H);
+        assert_eq!(bar_height_for(None), TAB_BAR_H);
+        assert!(slim_bar_height() < TAB_BAR_H);
+        assert_eq!(slim_bar_height(), 14.0);
+    }
+
+    #[test]
+    fn the_browser_screen_follows_permission_then_docking() {
+        assert_eq!(browser_screen(false, None, None, false), BrowserScreen::NoPermission);
+        assert_eq!(browser_screen(false, Some(()), None, false), BrowserScreen::NoPermission, "no permission outranks a stale dock");
+        assert_eq!(browser_screen(true, None, Some("https://x".into()), true), BrowserScreen::Waiting { url: Some("https://x".into()), launched: true });
+        assert_eq!(browser_screen(true, None, None, false), BrowserScreen::Waiting { url: None, launched: false });
+        assert_eq!(browser_screen(true, Some(()), None, false), BrowserScreen::Docked);
+    }
+
+    #[test]
+    fn the_url_prompt_adds_https_and_falls_back_to_the_configured_url() {
+        assert_eq!(prompt_url("example.com", ""), Some("https://example.com".into()));
+        assert_eq!(prompt_url("  localhost:3000/x ", ""), Some("https://localhost:3000/x".into()), "a port is not a scheme");
+        assert_eq!(prompt_url("http://localhost:3000", ""), Some("http://localhost:3000".into()));
+        assert_eq!(prompt_url("about:blank", ""), Some("about:blank".into()));
+        assert_eq!(prompt_url("chrome://settings", ""), Some("chrome://settings".into()));
+        assert_eq!(prompt_url("", "https://docs.rs"), Some("https://docs.rs".into()), "empty takes [browser] url");
+        assert_eq!(prompt_url("   ", "docs.rs"), Some("https://docs.rs".into()), "the configured URL gets a scheme too");
+        assert_eq!(prompt_url("", ""), None, "both empty: a blank window");
+        assert_eq!(prompt_url("", "  "), None);
+    }
+
+    #[test]
+    fn the_url_prompt_opens_on_enter_and_cancels_on_escape() {
+        let key = |k: &str| gpui::Keystroke::parse(k).unwrap();
+        let mut p = UrlPrompt::new(true, None);
+        assert_eq!(p.key(&key("enter"), ""), UrlStep::Open(None), "an empty field with no configured URL is a blank window");
+        assert_eq!(p.key(&key("enter"), "example.org"), UrlStep::Open(Some("https://example.org".into())));
+        p.edit.set("rust-lang.org");
+        assert_eq!(p.key(&key("backspace"), ""), UrlStep::Stay);
+        assert_eq!(p.edit.text, "rust-lang.or");
+        assert_eq!(p.key(&key("enter"), "example.org"), UrlStep::Open(Some("https://rust-lang.or".into())), "what was typed wins");
+        assert_eq!(p.key(&key("escape"), ""), UrlStep::Cancel);
+        assert!(p.app_mode);
+    }
+
+    #[test]
+    fn a_browser_tab_is_titled_by_its_window_else_its_host() {
+        assert_eq!(browser_label(Some("Docs - Example"), Some("https://example.com/docs")), "Docs - Example");
+        assert_eq!(browser_label(Some(""), Some("https://example.com/docs")), "example.com", "an empty title falls back");
+        assert_eq!(browser_label(None, Some("https://example.com/docs?q=1")), "example.com");
+        assert_eq!(browser_label(None, Some("http://me@localhost:3000/x")), "localhost");
+        assert_eq!(browser_label(None, Some("https://[::1]:8080/")), "[::1]");
+        assert_eq!(browser_label(None, Some("about:blank")), "browser");
+        assert_eq!(browser_label(None, None), "browser");
     }
 
     #[test]

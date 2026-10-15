@@ -1,7 +1,7 @@
 //! Closed tabs, for Cmd+Shift+T (spec 4). Closing a terminal tab detaches its session at once
 //! but kills it only after `CLOSE_GRACE`, so reopening within the grace brings back the same
-//! shell with its history. A closed viewer has nothing to end and reopens its file whenever it
-//! is popped. Pure bookkeeping; the window sends the requests.
+//! shell with its history. A closed viewer or browser tab has nothing to end and reopens
+//! whenever it is popped. Pure bookkeeping; the window sends the requests.
 
 use crate::tree::PaneId;
 use protocol::SessionId;
@@ -21,6 +21,9 @@ pub enum Closed {
     /// The session, and the worktree its tab was opened in (`None`: the project).
     Session(SessionId, Option<PathBuf>),
     Viewer(PathBuf),
+    /// A browser tab: what it opened with. It reopens waiting for a Chrome window, whenever it
+    /// is popped; the window it had was never arkos's to keep.
+    Browser { url: Option<String>, app_mode: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +42,7 @@ impl ClosedTab {
     pub fn session(&self) -> Option<SessionId> {
         match self.closed {
             Closed::Session(s, _) => Some(s),
-            Closed::Viewer(_) => None,
+            Closed::Viewer(_) | Closed::Browser { .. } => None,
         }
     }
 }
@@ -114,6 +117,20 @@ mod tests {
         s.push(closed(2, 4, t0));
         assert_eq!(s.drain_all(), vec![SessionId(2)], "quitting ends only sessions");
         assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn a_closed_browser_pops_as_a_browser_like_a_viewer() {
+        let t0 = Instant::now();
+        let mut s = ClosedStack::default();
+        let browser = |url: Option<&str>, app_mode| ClosedTab { closed: Closed::Browser { url: url.map(String::from), app_mode }, pane: 3, closed_at: t0 };
+        assert!(s.push(closed(1, 4, t0)).is_empty());
+        assert!(s.push(browser(Some("https://example.com"), true)).is_empty());
+        assert_eq!(s.expired(t0 + CLOSE_GRACE * 10), vec![SessionId(1)]);
+        assert_eq!(s.len(), 1, "the browser tab outlives the grace: it has no session to end");
+        assert_eq!(s.pop(), Some(browser(Some("https://example.com"), true)));
+        assert!(s.push(browser(None, false)).is_empty());
+        assert_eq!(s.drain_all(), Vec::<SessionId>::new(), "quitting ends only sessions");
     }
 
     #[test]

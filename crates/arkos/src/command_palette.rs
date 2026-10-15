@@ -55,7 +55,9 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
         // The two that ask for a folder end in an ellipsis, as macOS writes a command that asks more.
         let label = match command {
             Command::InstallHooks => "Install Claude Code hooks".to_string(),
-            Command::OpenFolder | Command::OpenRecent => format!("{}\u{2026}", keymap::label(a.name)),
+            Command::OpenFolder | Command::OpenRecent | Command::NewBrowserTab | Command::NewBrowserTabSinglePage => format!("{}\u{2026}", keymap::label(a.name)),
+            Command::DockChromeWindow => "Dock a Chrome window\u{2026}".to_string(),
+            Command::UndockChromeWindow => "Undock Chrome window".to_string(),
             _ => keymap::label(a.name),
         };
         out.push(Item { label, detail, command });
@@ -273,6 +275,11 @@ mod tests {
         assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
         let recent = items.iter().find(|i| i.label == "Open recent\u{2026}").unwrap();
         assert_eq!((recent.detail.as_str(), &recent.command), ("", &Command::OpenRecent));
+        let browser = items.iter().find(|i| i.label == "New browser tab\u{2026}").unwrap();
+        assert_eq!((browser.detail.as_str(), &browser.command), ("Shift+Cmd+B", &Command::NewBrowserTab));
+        assert_eq!(items.iter().find(|i| i.label == "New single-page browser tab\u{2026}").unwrap().command, Command::NewBrowserTabSinglePage);
+        assert_eq!(items.iter().find(|i| i.label == "Dock a Chrome window\u{2026}").unwrap().command, Command::DockChromeWindow);
+        assert_eq!(items.iter().find(|i| i.label == "Undock Chrome window").unwrap().command, Command::UndockChromeWindow);
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
         let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true);

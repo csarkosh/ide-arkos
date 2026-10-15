@@ -20,7 +20,8 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, RetryUpdate, StartAtLogin, InstallHooks,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, OpenRecent, Quit
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, OpenRecent,
+        NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
 );
 
@@ -81,6 +82,14 @@ pub enum Command {
     OpenFolder,
     /// Show the project chooser; the folder chosen opens in a new window.
     OpenRecent,
+    /// Ask for a URL and open a browser tab for it in the focused pane.
+    NewBrowserTab,
+    /// `NewBrowserTab` with the window opened as a single page (Chrome's app mode).
+    NewBrowserTabSinglePage,
+    /// Dock a Chrome window into a browser tab (the next release; a notice until then).
+    DockChromeWindow,
+    /// Release the focused browser tab's Chrome window; the tab stays, waiting.
+    UndockChromeWindow,
 }
 
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
@@ -133,6 +142,10 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer") },
     row("open folder", "cmd-o"),
     row("open recent", ""),
+    row("new browser tab", "cmd-shift-b"),
+    row("new single-page browser tab", ""),
+    row("dock a chrome window", ""),
+    row("undock chrome window", ""),
     row("quit", "cmd-q"),
 ];
 
@@ -187,6 +200,10 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
         "open folder" => KeyBinding::new(keys, OpenFolder, context),
         "open recent" => KeyBinding::new(keys, OpenRecent, context),
+        "new browser tab" => KeyBinding::new(keys, NewBrowserTab, context),
+        "new single-page browser tab" => KeyBinding::new(keys, NewBrowserTabSinglePage, context),
+        "dock a chrome window" => KeyBinding::new(keys, DockChromeWindow, context),
+        "undock chrome window" => KeyBinding::new(keys, UndockChromeWindow, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -351,6 +368,10 @@ pub fn command_for(name: &str) -> Option<Command> {
         "toggle inline diff" => Command::ToggleInlineDiff,
         "open folder" => Command::OpenFolder,
         "open recent" => Command::OpenRecent,
+        "new browser tab" => Command::NewBrowserTab,
+        "new single-page browser tab" => Command::NewBrowserTabSinglePage,
+        "dock a chrome window" => Command::DockChromeWindow,
+        "undock chrome window" => Command::UndockChromeWindow,
         _ => return None,
     })
 }
@@ -394,6 +415,8 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
         OpenFolder => Command::OpenFolder, OpenRecent => Command::OpenRecent,
+        NewBrowserTab => Command::NewBrowserTab, NewBrowserTabSinglePage => Command::NewBrowserTabSinglePage,
+        DockChromeWindow => Command::DockChromeWindow, UndockChromeWindow => Command::UndockChromeWindow,
     )
 }
 
@@ -440,6 +463,10 @@ mod tests {
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
         ("cmd-o", "open folder", "OpenFolder"),
         ("", "open recent", "OpenRecent"),
+        ("cmd-shift-b", "new browser tab", "NewBrowserTab"),
+        ("", "new single-page browser tab", "NewBrowserTabSinglePage"),
+        ("", "dock a chrome window", "DockChromeWindow"),
+        ("", "undock chrome window", "UndockChromeWindow"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -485,7 +512,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 8, "an empty string unbinds, and update now, check for updates, retry update, start at login, install hooks, show ignored files and open recent have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 11, "an empty string unbinds, and update now, check for updates, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -494,7 +521,11 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 7, "only update now, check for updates, retry update, start at login, install hooks, show ignored files and open recent are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 10, "only update now, check for updates, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
+        assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
+        assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
+        assert_eq!(command_for("undock chrome window"), Some(Command::UndockChromeWindow));
     }
 
     #[test]

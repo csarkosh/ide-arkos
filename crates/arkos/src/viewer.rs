@@ -665,7 +665,7 @@ impl Root {
         let p = self.tree.pane(self.tree.focused)?;
         match p.tabs.get(p.active)? {
             Tab::Viewer { .. } => self.viewers.get(p.ids.get(p.active)?).cloned(),
-            Tab::Terminal { .. } => None,
+            Tab::Terminal { .. } | Tab::Browser { .. } => None,
         }
     }
 }

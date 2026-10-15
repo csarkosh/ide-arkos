@@ -269,6 +269,15 @@ pub struct Root {
     pub last_input: Instant,
     /// The update "Update now" started, while it runs.
     pub updating: Option<UpdateStage>,
+    /// Each browser tab's placeholder as last laid out, in window pixels, and the frame that drew
+    /// it: where its docked Chrome window goes. Filled by the placeholder's `canvas` every frame.
+    pub browser_rects: HashMap<TabId, (Bounds<gpui::Pixels>, Instant)>,
+    /// Each docked browser tab's window title, its tab label; empty until something docks.
+    pub browser_titles: HashMap<TabId, String>,
+    /// The URL prompt ("New browser tab") while it is open, and while it fades out. While open it
+    /// holds the keys, through `url_prompt_focus`.
+    pub url_prompt: Transient<pane_view::UrlPrompt>,
+    pub url_prompt_focus: FocusHandle,
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
     pub window_active: bool,
     /// Where the working glyph's pulse starts; every working tab shares its phase.
@@ -289,6 +298,9 @@ pub struct Root {
 fn shell_folder(cwd: Option<PathBuf>) -> Option<PathBuf> {
     cwd.filter(|d| d.is_dir())
 }
+
+/// What the docking commands say until docking lands.
+const DOCKING_LATER: &str = "docking arrives with the next release";
 
 /// How often the idle timer asks whether a staged update may apply itself.
 const IDLE_TICK: Duration = Duration::from_secs(1);
@@ -347,7 +359,7 @@ fn focused_session_of(tree: &Tree) -> Option<SessionId> {
     let p = tree.pane(tree.focused)?;
     match p.tabs.get(p.active)? {
         Tab::Terminal { session, .. } => Some(*session),
-        Tab::Viewer { .. } => None,
+        Tab::Viewer { .. } | Tab::Browser { .. } => None,
     }
 }
 
@@ -449,6 +461,10 @@ impl Root {
             update_unreachable: None,
             last_input: Instant::now(),
             updating: None,
+            browser_rects: HashMap::new(),
+            browser_titles: HashMap::new(),
+            url_prompt: Transient::Hidden,
+            url_prompt_focus: cx.focus_handle(),
             window_active: true,
             pulse_epoch: Instant::now(),
             frame_now: Instant::now(),
@@ -465,6 +481,7 @@ impl Root {
             || self.palette.animating(now)
             || self.notice.animating(now)
             || self.wt_prompt.animating(now)
+            || self.url_prompt.animating(now)
             || self.drop_tints.values().any(|t| t.animating(now))
             || self.glow.animating(now)
             || self.find_bars.animating(now)
@@ -486,6 +503,7 @@ impl Root {
         self.palette.settle(now);
         self.notice.settle(now);
         self.wt_prompt.settle(now);
+        self.url_prompt.settle(now);
     }
 
     /// The theme the config and the current appearance name, loaded from the themes folder.
@@ -700,7 +718,7 @@ impl Root {
         let p = self.tree.pane(self.tree.focused)?;
         match p.tabs.get(p.active)? {
             Tab::Terminal { session, .. } => self.sessions.terminals.get(session).cloned(),
-            Tab::Viewer { .. } => None,
+            Tab::Viewer { .. } | Tab::Browser { .. } => None,
         }
     }
 
@@ -796,8 +814,18 @@ impl Root {
             }
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
-        } else if let Tab::Viewer { path } = tab {
-            for old in self.closed.push(ClosedTab { closed: Closed::Viewer(path), pane, closed_at: Instant::now() }) {
+        } else {
+            let closed = match tab {
+                Tab::Viewer { path } => Closed::Viewer(path),
+                Tab::Browser { url, app_mode } => {
+                    // Task 3 releases the docked window here; arkos never closes it.
+                    self.browser_rects.remove(&id);
+                    self.browser_titles.remove(&id);
+                    Closed::Browser { url, app_mode }
+                }
+                Tab::Terminal { .. } => unreachable!("handled above"),
+            };
+            for old in self.closed.push(ClosedTab { closed, pane, closed_at: Instant::now() }) {
                 eprintln!("arkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                 self.sessions.kill(old);
             }
@@ -868,7 +896,7 @@ impl Root {
         let (pane, idx) = self.tree.locate(tab)?;
         match self.tree.pane(pane)?.tabs.get(idx)? {
             Tab::Terminal { cwd, .. } => cwd.clone(),
-            Tab::Viewer { .. } => None,
+            Tab::Viewer { .. } | Tab::Browser { .. } => None,
         }
     }
 
@@ -1058,6 +1086,74 @@ impl Root {
         cx.notify();
     }
 
+    /// A browser tab in `pane` (the focused pane when that one is gone) that opens `url` (`None`:
+    /// a blank window), active and focused. It waits for a Chrome window.
+    pub fn new_browser_tab(&mut self, pane: PaneId, url: Option<String>, app_mode: bool, cx: &mut Context<Self>) {
+        let pane = if self.tree.pane(pane).is_some() { pane } else { self.tree.focused };
+        let idx = self.tree.add_tab(pane, Tab::Browser { url, app_mode });
+        self.tree.focus(pane);
+        // Saves, and scrolls the new tab into view.
+        self.activate_tab(pane, idx, cx);
+    }
+
+    /// Opens the URL prompt over the focused pane. `target` is the waiting browser tab to point
+    /// at the URL; `None` opens a new tab. Already open, it keeps what was typed.
+    pub fn open_url_prompt(&mut self, app_mode: bool, target: Option<TabId>, cx: &mut Context<Self>) {
+        if self.url_prompt.value().is_none() {
+            self.url_prompt.show(pane_view::UrlPrompt::new(app_mode, target), Instant::now());
+        }
+        self.sidebar_focused = false;
+        self.wt_focused = false;
+        cx.notify();
+    }
+
+    /// A key typed while the URL prompt has focus: edits the field (Cmd+V pastes), opens the URL
+    /// on Enter (an empty field opens `[browser] url`), closes on Escape. Closing hands the keys
+    /// back to the pane.
+    pub fn url_prompt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let configured = self.config.browser.url.clone();
+        let Some(p) = self.url_prompt.value_mut() else { return };
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                p.edit.insert_str(&text);
+                cx.notify();
+            }
+            return;
+        }
+        let (app_mode, target) = (p.app_mode, p.target);
+        match p.key(ks, &configured) {
+            pane_view::UrlStep::Stay => {}
+            pane_view::UrlStep::Cancel => {
+                self.url_prompt.hide(Instant::now());
+            }
+            pane_view::UrlStep::Open(url) => {
+                self.url_prompt.hide(Instant::now());
+                match target.and_then(|t| self.tree.locate(t)) {
+                    Some((pane, idx)) => {
+                        self.tree.replace_tab(pane, idx, Tab::Browser { url, app_mode });
+                        self.tree.focus(pane);
+                        self.activate_tab(pane, idx, cx);
+                    }
+                    None => self.new_browser_tab(self.tree.focused, url, app_mode, cx),
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Where a browser tab's placeholder was drawn this frame, from its `canvas`.
+    pub fn report_browser_rect(&mut self, tab: TabId, bounds: Bounds<gpui::Pixels>) {
+        self.browser_rects.insert(tab, (bounds, self.frame_now));
+    }
+
+    /// A click in a browser tab's placeholder. Task 3 raises the docked window; nothing yet.
+    pub fn browser_clicked(&mut self, _tab: TabId, _cx: &mut Context<Self>) {}
+
+    /// "Grant access" on the permission screen. Task 3 asks macOS; a notice until then.
+    pub fn request_accessibility(&mut self, cx: &mut Context<Self>) {
+        self.show_notice(DOCKING_LATER.into(), cx);
+    }
+
     /// Splits the focused pane and starts a fresh shell in the new one.
     pub fn split_focused(&mut self, side: Side, cx: &mut Context<Self>) {
         let pane = self.tree.focused;
@@ -1148,7 +1244,7 @@ impl Root {
             ReopenClosedTab => {
                 // Within the grace the same session comes back where it was closed; after it, or
                 // with nothing closed, a fresh shell opens there instead. A viewer comes back
-                // pinned, its file read again.
+                // pinned, its file read again; a browser tab comes back waiting for a window.
                 let Some(closed) = self.closed.pop() else {
                     self.new_terminal_tab(focused, cx);
                     return;
@@ -1160,6 +1256,7 @@ impl Root {
                         self.tree.focus(pane);
                         self.open_viewer(&path, true, cx);
                     }
+                    Closed::Browser { url, app_mode } => self.new_browser_tab(pane, url, app_mode, cx),
                     Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
                     Closed::Session(session, cwd) => {
                         eprintln!("arkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
@@ -1310,6 +1407,10 @@ impl Root {
             }
             OpenFolder => self.pick_folder(cx),
             OpenRecent => self.open_recent(cx),
+            NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
+            NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
+            // Registered now so the keymap and the palette are complete; Task 3 docks.
+            DockChromeWindow | UndockChromeWindow => self.show_notice(DOCKING_LATER.into(), cx),
         }
         let _ = window;
     }
@@ -1488,7 +1589,7 @@ impl Root {
         idle::Chrome {
             palette: self.palette.value().is_some(),
             menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some(),
-            prompt: self.wt_prompt.value().is_some(),
+            prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
         }
@@ -1955,11 +2056,13 @@ impl Render for Root {
         let side_col = sidebar::render(self, window, cx);
         // Focus follows the tree: the focused pane's terminal or viewer (its find bar while that
         // is open), or the pane's own handle. The palette holds it while it is open; then the
-        // worktree prompt, the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
+        // URL prompt (over the focused pane, until Enter or Escape), the worktree prompt, the worktree list (Ctrl+Shift+G) and the file tree (Shift+Cmd+E)
         // while they hold the keys. An open prompt holds them only while the list does, so a
         // click on a pane takes them back without losing what was typed.
         let wanted = if let Some(f) = self.palette.value().and_then(|p| p.focus.clone()) {
             Some(f)
+        } else if self.url_prompt.value().is_some() {
+            Some(self.url_prompt_focus.clone())
         } else if self.wt_focused && self.wt_prompt.value().is_some() {
             Some(self.wt_prompt_focus.clone())
         } else if self.wt_focused {
@@ -2042,7 +2145,16 @@ impl Render for Root {
                     cx.notify();
                 }
             }))
-            .on_mouse_down(MouseButton::Left, cx.listener(|root, _ev: &MouseDownEvent, _window, cx| root.close_tab_menu(cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
+                    root.close_tab_menu(cx);
+                    // A press outside the URL prompt (it stops its own) cancels it, like a menu.
+                    if root.url_prompt.hide(Instant::now()) {
+                        cx.notify();
+                    }
+                }),
+            )
             // A right-click menu (the tree's or a worktree's) closes on any press outside it
             // (its rows stop theirs), and on Escape wherever the keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
