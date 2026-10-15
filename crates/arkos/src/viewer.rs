@@ -623,8 +623,16 @@ impl Viewer {
     }
 
     /// Runs an edit on the document with the caret and the time, and takes the caret it returns.
-    /// Nothing happens without a document.
+    /// Nothing happens without a document. An input method composition in progress is finished
+    /// first, keeping its text, so the edit never lands between its marked step and its commit.
     pub fn edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
+        self.finish_composition(cx);
+        self.edit_raw(f, cx);
+    }
+
+    /// `edit` without the composition guard, for the input handler, which keeps the composition
+    /// itself.
+    fn edit_raw(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         self.caret = f(doc, self.caret, Instant::now());
@@ -634,6 +642,7 @@ impl Viewer {
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
+        self.finish_composition(cx);
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         if let Some(caret) = doc.undo() {
@@ -644,6 +653,7 @@ impl Viewer {
     }
 
     pub fn redo(&mut self, cx: &mut Context<Self>) {
+        self.finish_composition(cx);
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         if let Some(caret) = doc.redo() {
@@ -1050,8 +1060,11 @@ impl Viewer {
             }
             _ => {
                 let rows = self.rows_visible.max(1);
-                // Only Enter reads the structure (the fence rule).
-                let blocks = if action == KeyAction::Newline { self.blocks.clone() } else { Vec::new() };
+                // Only Enter reads the structure (the fence rule), without the caret's line.
+                let blocks = match (&self.doc, action) {
+                    (Some(doc), KeyAction::Newline) => structure_without_line(doc.lines(), self.caret.head.line),
+                    _ => Vec::new(),
+                };
                 let mut outcome = Outcome::Nothing;
                 self.edit(
                     |doc, caret, now| {
@@ -1103,7 +1116,7 @@ impl Viewer {
         let (marked, compose) = (self.marked.take(), self.compose.take());
         let (Some(m), Some(c), Some(doc)) = (marked, compose, self.doc.as_ref()) else { return };
         let text = doc.text_in(m.start, m.end);
-        self.edit(
+        self.edit_raw(
             |doc, _caret, now| {
                 if c.step {
                     doc.retract();
@@ -1247,7 +1260,7 @@ impl EntityInputHandler for Viewer {
             if target.is_none_or(|t| t == (m.start, m.end)) {
                 self.marked = None;
                 self.compose = None;
-                self.edit(
+                self.edit_raw(
                     |doc, _caret, now| {
                         if c.step {
                             doc.retract();
@@ -1265,8 +1278,8 @@ impl EntityInputHandler for Viewer {
         let c = self.caret;
         let selection = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
         match target {
-            Some((a, b)) if (a, b) != selection => self.edit(|doc, _caret, now| edit::Caret::at(doc.replace_range(a, b, text, now)), cx),
-            _ => self.edit(|doc, caret, now| doc.insert(caret, text, now), cx),
+            Some((a, b)) if (a, b) != selection => self.edit_raw(|doc, _caret, now| edit::Caret::at(doc.replace_range(a, b, text, now)), cx),
+            _ => self.edit_raw(|doc, caret, now| doc.insert(caret, text, now), cx),
         }
     }
 
@@ -1288,7 +1301,7 @@ impl EntityInputHandler for Viewer {
         };
         let (lo, hi) = if before.anchor <= before.head { (before.anchor, before.head) } else { (before.head, before.anchor) };
         let mut wrote = false;
-        self.edit(
+        self.edit_raw(
             |doc, caret, now| {
                 if retract {
                     doc.retract();
@@ -1624,15 +1637,38 @@ fn closes_fence(line: &str, fence: &str) -> bool {
     body.len() - trimmed.len() <= 3 && trimmed.len() >= fence.len() && trimmed.chars().all(|x| x == c)
 }
 
-/// Whether the block structure already has a code block opened on `line` and closed further down
-/// by a matching fence: the fence there was not typed just now, so Enter adds no closing one.
-fn fence_already_closed(lines: &[String], blocks: &[md_blocks::Block], line: usize, fence: &str) -> bool {
-    let Some(b) = blocks.get(md_blocks::block_at(blocks, line)) else { return false };
-    if b.lines.start != line || !matches!(b.kind, md_blocks::BlockKind::CodeBlock { .. }) {
-        return false;
-    }
+/// Whether the code block `b` is closed: its last non-blank line after its first closes `fence`.
+fn block_closed(lines: &[String], b: &md_blocks::Block, fence: &str) -> bool {
     let end = b.lines.end.min(lines.len());
-    (line + 1..end).rev().find(|&i| !lines[i].trim().is_empty()).is_some_and(|last| closes_fence(&lines[last], fence))
+    (b.lines.start + 1..end).rev().find(|&i| !lines[i].trim().is_empty()).is_some_and(|last| closes_fence(&lines[last], fence))
+}
+
+/// Whether the fence on `line` is new and Enter closes it. Not when the line lies inside a code
+/// block that starts above it (it is a closer, or code); not when a closed code block starts on it
+/// (a structure that holds the line: the fence was there before); not when the first matching
+/// fence below opens a block that never closes (a structure without the line: that fence was this
+/// one's closer, left alone).
+fn fence_needs_closing(lines: &[String], blocks: &[md_blocks::Block], line: usize, fence: &str) -> bool {
+    let is_code = |b: &md_blocks::Block| matches!(b.kind, md_blocks::BlockKind::CodeBlock { .. });
+    let at = md_blocks::block_at(blocks, line);
+    if let Some(b) = blocks.get(at).filter(|b| is_code(b) && b.lines.contains(&line)) {
+        return b.lines.start == line && !block_closed(lines, b, fence);
+    }
+    let c = fence.chars().next().unwrap_or('`');
+    let below = blocks.iter().skip(at + 1).filter(|b| is_code(b)).find(|b| {
+        lines.get(b.lines.start).and_then(|l| fence_opener(l)).is_some_and(|f| f.starts_with(c) && f.len() >= fence.len())
+    });
+    below.is_none_or(|b| block_closed(lines, b, fence_opener(&lines[b.lines.start]).unwrap_or(fence)))
+}
+
+/// The structure Enter's fence rule reads: the document without the caret's line, so a fence
+/// just typed there is not in it.
+fn structure_without_line(lines: &[String], line: usize) -> Vec<md_blocks::Block> {
+    let mut lines = lines.to_vec();
+    if let Some(l) = lines.get_mut(line) {
+        l.clear();
+    }
+    md_blocks::split(&lines)
 }
 
 /// Enter: a new fence closes itself, a list item continues (an empty one ends the list), anything
@@ -1643,7 +1679,7 @@ fn newline(doc: &mut edit::Document, caret: edit::Caret, blocks_before: &[md_blo
         let line = doc.lines()[at.line].clone();
         let len = line.chars().count();
         if at.ch == len {
-            if let Some(fence) = fence_opener(&line).filter(|f| !fence_already_closed(doc.lines(), blocks_before, at.line, f)) {
+            if let Some(fence) = fence_opener(&line).filter(|f| fence_needs_closing(doc.lines(), blocks_before, at.line, f)) {
                 doc.insert(caret, &format!("\n\n{fence}"), now);
                 return edit::Caret::at(edit::Pos { line: at.line + 1, ch: 0 });
             }
@@ -2039,6 +2075,23 @@ mod tests {
         let mut c = edit::Caret { head: Pos { line: 0, ch: 3 }, anchor: Pos { line: 0, ch: 3 }, goal_col: None };
         apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
         assert_eq!(d.lines().len(), 4, "a fence that is already closed gets a plain newline");
+        let mut d = edit::Document::from_text("```\ncode\n```");
+        let blocks = md_blocks::split(d.lines());
+        let mut c = edit::Caret { head: Pos { line: 2, ch: 3 }, anchor: Pos { line: 2, ch: 3 }, goal_col: None };
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
+        assert_eq!(d.lines(), &["```".to_string(), "code".to_string(), "```".to_string(), String::new()][..], "Enter after a closing fence is a plain newline");
+        let mut d = edit::Document::from_text("```\ncode\n```");
+        let blocks = structure_without_line(d.lines(), 0);
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 3 }, anchor: Pos { line: 0, ch: 3 }, goal_col: None };
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
+        assert_eq!(d.lines().len(), 4, "an existing opener, read without its line, still gets a plain newline");
+        // A fence typed above an existing closed block closes itself; the old block stays whole.
+        let mut d = edit::Document::from_text("```rust\n\n```\nold\n```");
+        let blocks = structure_without_line(d.lines(), 0);
+        let mut c = edit::Caret { head: Pos { line: 0, ch: 7 }, anchor: Pos { line: 0, ch: 7 }, goal_col: None };
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Newline, 20, now);
+        let want = ["```rust", "", "```", "", "```", "old", "```"].map(String::from);
+        assert_eq!((d.lines(), c.head), (&want[..], Pos { line: 1, ch: 0 }));
         assert_eq!(normalize_paste("a\r\nb\rc\n"), "a\nb\nc\n");
     }
 

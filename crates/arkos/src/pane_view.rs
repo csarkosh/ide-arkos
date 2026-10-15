@@ -986,6 +986,15 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .text_size(px(12.0))
             .cursor_pointer()
             .child("inline diff")
+            // A press on the chip is not a click in the text below: stopping it keeps the caret
+            // where it is, so the chip focuses the pane itself.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                    root.focus_pane(pane, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_chip.update(cx, |v, cx| v.toggle_inline_diff(cx))))
     });
     let (v_keys, v_wheel) = (viewer.clone(), viewer.clone());
