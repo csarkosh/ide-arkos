@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// How long the new window has to connect, counted from its relaunch or from a daemon start
+/// that finds the marker (`restart_clock`). `--connect-grace-secs` changes it for the tests.
 pub const CONNECT_GRACE: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,16 +47,31 @@ pub fn clear_marker(updates_dir: &Path) {
     let _ = std::fs::remove_file(marker_path(updates_dir));
 }
 
-/// A window connected since the swap: keep it. None within the grace: roll back. A clock before
-/// the marker's time waits (it cannot say how long it has been).
-pub fn decide(m: &Applied, connected_since_start: bool, now_unix: u64) -> Decision {
+/// A window connected since the swap: keep it. None within `grace` of the clock's start (the
+/// marker's `at_unix`, rewritten by `restart_clock`): roll back. Before the clock runs (the
+/// swap is done, the new window not yet launched) and with a clock before the marker's time
+/// (it cannot say how long it has been), it waits.
+pub fn decide(m: &Applied, connected_since_start: bool, clock_running: bool, now_unix: u64, grace: Duration) -> Decision {
     if connected_since_start {
         Decision::Confirm
-    } else if now_unix >= m.at_unix.saturating_add(CONNECT_GRACE.as_secs()) {
+    } else if clock_running && now_unix >= m.at_unix.saturating_add(grace.as_secs()) {
         Decision::Rollback
     } else {
         Decision::Wait
     }
+}
+
+/// Starts the grace from now: when the new window is launched (`disconnect` with a pending
+/// relaunch) and when a daemon starts with a marker, so the window gets the whole grace from its
+/// launch whatever came before. Rewrites the marker too, so a daemon that dies now restarts from
+/// a time close to this one. Nothing when no update waits.
+pub fn restart_clock(u: &mut super::UpdateState, dir: &Path) {
+    let Some(m) = u.applied.as_mut() else { return };
+    m.at_unix = now_unix();
+    if let Err(e) = write_marker(dir, m) {
+        eprintln!("arkosd: cannot rewrite the update marker for {}: {e}", m.version);
+    }
+    u.clock_running = true;
 }
 
 /// The versions rolled back, one per line, so a later daemon does not stage them again (they
@@ -86,25 +103,28 @@ const WATCH_EVERY: Duration = Duration::from_millis(500);
 /// Watches `st.update.applied` until a window confirms the new bundle (the `.old` one is removed)
 /// or none connects within the grace (the old bundle is put back and its window launched in
 /// every remembered project folder). Stops once either happened, or once nothing is applied.
-pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf) {
+pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf, grace: Duration) {
     std::thread::Builder::new()
         .name("update-watch".into())
         .spawn(move || loop {
             std::thread::sleep(WATCH_EVERY);
-            let (m, connected) = {
+            let (m, connected, running) = {
                 let st = state.lock().unwrap();
                 match &st.update.applied {
-                    Some(m) => (m.clone(), st.update.new_window_seen),
+                    Some(m) => (m.clone(), st.update.new_window_seen, st.update.clock_running),
                     None => return,
                 }
             };
-            match decide(&m, connected, now_unix()) {
+            match decide(&m, connected, running, now_unix(), grace) {
                 Decision::Wait => continue,
                 Decision::Confirm => {
+                    // The marker goes first: a daemon dying between the two finds an `.old` with
+                    // no marker at its start, which it removes; the other order would leave a
+                    // marker that a start could take for an unconfirmed swap.
+                    clear_marker(&dir);
                     if let Err(e) = super::swap::finish(&bundle) {
                         eprintln!("arkosd: update {} confirmed, but the old bundle stays: {e}", m.version);
                     }
-                    clear_marker(&dir);
                     state.lock().unwrap().update.applied = None;
                     eprintln!("arkosd: update {} confirmed by a window", m.version);
                     return;
@@ -116,17 +136,19 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf) {
                         st.update.applied = None;
                         match &result {
                             Ok(()) => {
-                                clear_marker(&dir);
+                                // Rejected before the marker goes: a daemon dying between the two
+                                // never stages the rolled-back version again.
                                 if let Err(e) = reject(&dir, &m.version) {
                                     eprintln!("arkosd: cannot record {} as rejected: {e}", m.version);
                                 }
-                                st.update.last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, CONNECT_GRACE.as_secs()));
+                                clear_marker(&dir);
+                                st.update.last_error = Some(format!("update {} rolled back: no window came up within {}s", m.version, grace.as_secs()));
                                 // A folder whose window is connected already has one.
                                 let open: Vec<&PathBuf> = st.clients.values().filter(|c| c.connected).filter_map(|c| c.ui_cwd.as_ref()).collect();
                                 st.windows.keys().filter(|f| !open.contains(f)).cloned().collect()
                             }
                             Err(e) => {
-                                st.update.last_error = Some(format!("update {}: no window came up within {}s and the rollback failed: {e}", m.version, CONNECT_GRACE.as_secs()));
+                                st.update.last_error = Some(format!("update {}: no window came up within {}s and the rollback failed: {e}", m.version, grace.as_secs()));
                                 Vec::new()
                             }
                         }
@@ -146,30 +168,36 @@ pub fn watch(state: Shared, bundle: PathBuf, dir: PathBuf) {
 }
 
 /// At every daemon start, after the socket listens: a marker means a swap happened and waits
-/// for its window (the watch runs); no marker means any `.old` or `.new` is a leftover of an
-/// interrupted swap and is removed (or put back, when the bundle itself is missing). A marker
-/// with no `.old` beside an installed bundle is stale: the swap never ran (the marker is written
-/// first) or the confirm died before clearing it. The newest rejected version becomes the poll's
-/// floor.
-pub fn on_start(state: &Shared, bundle: Option<&Path>, dir: &Path) {
+/// for its window (the watch runs, its clock started afresh); no marker means any `.old` or
+/// `.new` is a leftover of an interrupted swap and is removed (or put back, when the bundle
+/// itself is missing). With a marker and the bundle missing, the leftover is put back first. A
+/// marker with no `.old` left is stale: the swap never ran (the marker is written first) or it
+/// died between its renames and `.old` was just put back. The newest rejected version becomes
+/// the poll's floor.
+pub fn on_start(state: &Shared, bundle: Option<&Path>, dir: &Path, grace: Duration) {
     if let Some(v) = newest_rejected(dir) {
         state.lock().unwrap().update.swapped = Some(v);
     }
     let Some(bundle) = bundle else { return };
-    match read_marker(dir) {
-        Some(m) if bundle.exists() && !super::swap::old_of(bundle).exists() => {
+    let marker = read_marker(dir);
+    if marker.is_some() {
+        super::swap::restore_missing(bundle);
+    }
+    match marker {
+        Some(m) if !super::swap::old_of(bundle).exists() => {
             eprintln!("arkosd: update marker for {} found with no previous bundle beside it; clearing it", m.version);
             clear_marker(dir);
             super::swap::cleanup_leftovers(bundle);
         }
         Some(m) => {
-            eprintln!("arkosd: update marker found: {} applied, waiting for a window", m.version);
+            eprintln!("arkosd: update marker found: {} applied, waiting {}s for a window", m.version, grace.as_secs());
             {
                 let mut st = state.lock().unwrap();
                 st.update.swapped = Some(m.version.clone());
                 st.update.applied = Some(m);
+                restart_clock(&mut st.update, dir);
             }
-            watch(state.clone(), bundle.to_path_buf(), dir.to_path_buf());
+            watch(state.clone(), bundle.to_path_buf(), dir.to_path_buf(), grace);
         }
         None => super::swap::cleanup_leftovers(bundle),
     }
@@ -185,16 +213,78 @@ mod tests {
         let m = Applied { version: "0.2.1".into(), old_kept: true, at_unix: 1_000, pids_at_apply: vec![42] };
         write_marker(dir.path(), &m).unwrap();
         assert_eq!(read_marker(dir.path()), Some(m.clone()));
-        assert_eq!(decide(&m, false, 1_005), Decision::Wait);
-        assert_eq!(decide(&m, true, 1_005), Decision::Confirm, "a window connected: keep the new build");
-        assert_eq!(decide(&m, false, 1_000 + CONNECT_GRACE.as_secs()), Decision::Rollback);
-        assert_eq!(decide(&m, false, 900), Decision::Wait, "a clock that went backwards waits rather than rolling back");
+        let g = CONNECT_GRACE;
+        assert_eq!(decide(&m, false, true, 1_005, g), Decision::Wait);
+        assert_eq!(decide(&m, true, true, 1_005, g), Decision::Confirm, "a window connected: keep the new build");
+        assert_eq!(decide(&m, false, true, 1_000 + g.as_secs(), g), Decision::Rollback);
+        assert_eq!(decide(&m, false, true, 900, g), Decision::Wait, "a clock that went backwards waits rather than rolling back");
         clear_marker(dir.path());
         assert_eq!(read_marker(dir.path()), None);
         std::fs::write(marker_path(dir.path()), b"junk").unwrap();
         assert_eq!(read_marker(dir.path()), None, "an unreadable marker is no marker");
         std::fs::write(marker_path(dir.path()), br#"{"version":"0.2.1","old_kept":true,"at_unix":1}"#).unwrap();
         assert_eq!(read_marker(dir.path()).unwrap().pids_at_apply, Vec::<u32>::new(), "a marker without pids reads");
+    }
+
+    #[test]
+    fn the_grace_counts_from_the_relaunch_not_from_the_swap() {
+        let g = Duration::from_secs(20);
+        let m = Applied { version: "0.2.1".into(), old_kept: true, at_unix: 1_000, pids_at_apply: vec![] };
+        assert_eq!(decide(&m, false, false, 1_000 + 600, g), Decision::Wait, "no relaunch yet: the clock has not started");
+        assert_eq!(decide(&m, true, false, 1_000 + 600, g), Decision::Confirm, "a new window confirms whenever it comes");
+        // The relaunch, 30 s after the swap, restarts the clock: 25 s after the swap would have
+        // rolled back, 25 s after the relaunch waits.
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &m).unwrap();
+        let mut u = crate::updates::UpdateState { applied: Some(m), ..Default::default() };
+        restart_clock(&mut u, dir.path());
+        assert!(u.clock_running);
+        let restarted = u.applied.clone().unwrap();
+        assert!(restarted.at_unix >= now_unix() - 1, "{restarted:?}");
+        assert_eq!(read_marker(dir.path()), Some(restarted.clone()), "the marker carries the new start");
+        assert_eq!(decide(&restarted, false, true, restarted.at_unix + 19, g), Decision::Wait);
+        assert_eq!(decide(&restarted, false, true, restarted.at_unix + 20, g), Decision::Rollback);
+        let mut none = crate::updates::UpdateState::default();
+        restart_clock(&mut none, dir.path());
+        assert!(!none.clock_running, "nothing applied: no clock");
+    }
+
+    fn fake_app(at: &Path, tag: &str) {
+        std::fs::create_dir_all(at.join("Contents/MacOS")).unwrap();
+        std::fs::write(at.join("Contents/MacOS/arkosd"), tag).unwrap();
+    }
+
+    fn state() -> Shared {
+        std::sync::Arc::new(std::sync::Mutex::new(crate::server::State::default()))
+    }
+
+    #[test]
+    fn a_marker_with_only_new_beside_a_missing_bundle_puts_it_back_and_clears_the_marker() {
+        let home = tempfile::tempdir().unwrap();
+        let installed = home.path().join("Arkos IDE.app");
+        fake_app(&home.path().join("Arkos IDE.app.new"), "new");
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &Applied { version: "0.2.1".into(), old_kept: true, at_unix: 1, pids_at_apply: vec![] }).unwrap();
+        let st = state();
+        on_start(&st, Some(&installed), dir.path(), CONNECT_GRACE);
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "new", "the app is never left missing");
+        assert_eq!(read_marker(dir.path()), None, "no .old to roll back to: the marker is stale");
+        assert!(st.lock().unwrap().update.applied.is_none());
+    }
+
+    #[test]
+    fn a_marker_with_old_beside_a_missing_bundle_puts_old_back_and_clears_the_marker() {
+        // The swap died between its renames: the old bundle goes back and nothing was applied.
+        let home = tempfile::tempdir().unwrap();
+        let installed = home.path().join("Arkos IDE.app");
+        fake_app(&home.path().join("Arkos IDE.app.old"), "old");
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &Applied { version: "0.2.1".into(), old_kept: true, at_unix: 1, pids_at_apply: vec![] }).unwrap();
+        let st = state();
+        on_start(&st, Some(&installed), dir.path(), CONNECT_GRACE);
+        assert_eq!(std::fs::read_to_string(installed.join("Contents/MacOS/arkosd")).unwrap(), "old");
+        assert_eq!(read_marker(dir.path()), None);
+        assert_eq!(newest_rejected(dir.path()), None, "an interrupted swap rejects nothing");
     }
 
     #[test]

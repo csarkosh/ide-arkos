@@ -46,6 +46,7 @@ fn main() {
     let mut updates_dir = None;
     let mut release_keys = Vec::new();
     let mut bundle = None;
+    let mut connect_grace_secs = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -103,6 +104,10 @@ fn main() {
             "--release-key" => release_keys.push(args.next().expect("--release-key needs a key")),
             // The installed app that `ApplyUpdate` swaps; by default the one this binary runs from.
             "--bundle" => bundle = Some(PathBuf::from(args.next().expect("--bundle needs a path"))),
+            // Test only: how long the new window has to connect after an applied update.
+            "--connect-grace-secs" => {
+                connect_grace_secs = Some(args.next().and_then(|v| v.parse::<u64>().ok()).expect("--connect-grace-secs needs a number"))
+            }
             other => {
                 eprintln!("arkosd: unknown argument {other}");
                 std::process::exit(2);
@@ -117,6 +122,7 @@ fn main() {
     update.dir = updates_dir.unwrap_or(update.dir);
     update.extra_keys = release_keys;
     update.bundle = bundle.or(update.bundle);
+    update.connect_grace = connect_grace_secs.map(Duration::from_secs).unwrap_or(update.connect_grace);
     if let Some(path) = resume {
         let h = match handover::read(&path) {
             Ok(h) => h,

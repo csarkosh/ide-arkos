@@ -36,6 +36,9 @@ pub struct UpdateOptions {
     /// The installed `Arkos IDE.app` that `ApplyUpdate` swaps; None when the daemon does not run
     /// from a bundle, which refuses `ApplyUpdate`.
     pub bundle: Option<PathBuf>,
+    /// How long the new window has to connect after its relaunch (`apply::CONNECT_GRACE`; test
+    /// only `--connect-grace-secs`).
+    pub connect_grace: Duration,
 }
 
 impl UpdateOptions {
@@ -48,6 +51,7 @@ impl UpdateOptions {
             dir: socket.parent().unwrap_or(Path::new("/")).join("updates"),
             extra_keys: Vec::new(),
             bundle: std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)),
+            connect_grace: apply::CONNECT_GRACE,
         }
     }
 
@@ -79,6 +83,9 @@ impl UpdateOptions {
         if let Some(b) = self.bundle.as_ref().filter(|b| d.bundle.as_ref() != Some(b)) {
             out.extend(["--bundle".into(), path(b)]);
         }
+        if self.connect_grace != d.connect_grace {
+            out.extend(["--connect-grace-secs".into(), self.connect_grace.as_secs().to_string()]);
+        }
         out
     }
 }
@@ -108,6 +115,12 @@ pub struct UpdateState {
     /// Whether a window that was not connected at the swap (its `ui_pid` is not in the marker's
     /// `pids_at_apply`) said Hello since: the new window, which confirms the update.
     pub new_window_seen: bool,
+    /// Whether the grace runs for `applied`: from the new window's relaunch or this daemon's
+    /// start (`apply::restart_clock`). Between the swap and either, a rollback waits.
+    pub clock_running: bool,
+    /// The version an `ApplyUpdate` is swapping in right now: a second request is refused until
+    /// the swap finished or failed, so two cannot race the renames.
+    pub applying: Option<String>,
     /// The last version this process swapped in or found applied: the poll treats it like a
     /// staged one, so an applied or rolled-back release is not fetched and staged again.
     pub swapped: Option<String>,
@@ -179,8 +192,8 @@ mod tests {
         let d = UpdateOptions::defaults(socket);
         assert_eq!(d.dir, Path::new("/s/updates"));
         assert!(d.args(socket).is_empty(), "a release's daemon passes none, so an older one can resume");
-        let o = UpdateOptions { check_every: Duration::ZERO, extra_keys: vec!["k".into()], ..d };
-        assert_eq!(o.args(socket), ["--check-every-secs", "0", "--release-key", "k"]);
+        let o = UpdateOptions { check_every: Duration::ZERO, extra_keys: vec!["k".into()], connect_grace: Duration::from_secs(2), ..d };
+        assert_eq!(o.args(socket), ["--check-every-secs", "0", "--release-key", "k", "--connect-grace-secs", "2"]);
     }
 
     #[test]

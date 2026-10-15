@@ -1718,6 +1718,71 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("nothing staged".into()), "applied once");
 }
 
+/// The response to request `id` on `c`, skipping events and other responses.
+fn response_to(c: &mut Conn, id: u32) -> Response {
+    loop {
+        match c.next_message() {
+            ServerMessage::Response { id: rid, response } if rid == id => return response,
+            _ => continue,
+        }
+    }
+}
+
+#[test]
+fn two_applies_at_once_swap_once_and_the_first_keeps_its_old_bundle_and_marker() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap()]);
+    let mut a = d.connect();
+    let mut b = d.connect();
+    wait_until(|| matches!(a.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    // Two idle windows ask in the same instant.
+    let ia = a.send(Request::ApplyUpdate { version: "9.9.9".into() });
+    let ib = b.send(Request::ApplyUpdate { version: "9.9.9".into() });
+    let (ra, rb) = (response_to(&mut a, ia), response_to(&mut b, ib));
+    let refusal = Response::Error("update 9.9.9 is still waiting for a window".into());
+    assert!((ra == Response::Ok && rb == refusal) || (rb == Response::Ok && ra == refusal), "{ra:?} {rb:?}");
+    std::thread::sleep(Duration::from_millis(500));
+    let old = installed.with_extension("app.old");
+    assert!(std::fs::read_to_string(old.join("Contents/Info.plist")).unwrap().contains("0.0.1"), "the genuine old bundle is kept");
+    assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("9.9.9"));
+    let marker = std::fs::read_to_string(d.updates_marker()).unwrap();
+    assert!(marker.contains("\"version\":\"9.9.9\""), "{marker}");
+    assert!(matches!(a.request(Request::UpdateStatus), Response::UpdateStatus { last_error: None, .. }), "the refused one failed nothing");
+}
+
+#[test]
+fn the_grace_counts_from_the_relaunch_so_a_slow_relaunch_keeps_the_old_bundle() {
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--connect-grace-secs", "2"]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Ok);
+    // Well past the grace, and no relaunch yet: nothing rolls back.
+    std::thread::sleep(Duration::from_millis(3500));
+    let old = installed.with_extension("app.old");
+    assert!(old.exists(), "the grace has not started: no window was launched yet");
+    assert!(d.updates_marker().exists());
+    // The window asks for its relaunch and goes: the clock starts now. The new window (the fake
+    // bundle's arkos, which never connects) does not say Hello, so the grace runs out.
+    let exe = installed.join("Contents/MacOS/arkos");
+    assert_eq!(c.request(Request::RelaunchClient { exe, cwd: home.path().to_path_buf() }), Response::Ok);
+    let gone = Instant::now();
+    drop(c);
+    wait_until(|| std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap_or_default().contains("0.0.1"), Duration::from_secs(10));
+    // The clock counts whole seconds, so a 2 s grace is at least one.
+    assert!(gone.elapsed() >= Duration::from_secs(1), "rolled back {:?} after the relaunch, inside the grace", gone.elapsed());
+    assert!(!old.exists());
+    assert!(!d.updates_marker().exists());
+}
+
 #[test]
 fn a_window_that_never_connects_rolls_the_bundle_back() {
     // The marker says an update was applied 25 s ago and nobody has connected: a daemon starting
@@ -1729,7 +1794,8 @@ fn a_window_that_never_connects_rolls_the_bundle_back() {
     std::fs::create_dir_all(dir.path().join("updates")).unwrap();
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 25;
     std::fs::write(dir.path().join("updates/applied.json"), format!("{{\"version\":\"9.9.9\",\"old_kept\":true,\"at_unix\":{at}}}")).unwrap();
-    let d = Daemon::start_in(dir, &["--check-every-secs", "0", "--bundle", installed.to_str().unwrap()]);
+    // The grace restarts at this start, so a short one keeps the test quick.
+    let d = Daemon::start_in(dir, &["--check-every-secs", "0", "--bundle", installed.to_str().unwrap(), "--connect-grace-secs", "1"]);
     // Read leniently: the bundle is briefly absent between the two renames of the rollback.
     wait_until(|| std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap_or_default().contains("0.0.1"), Duration::from_secs(5));
     assert!(!old.exists(), "renamed back");

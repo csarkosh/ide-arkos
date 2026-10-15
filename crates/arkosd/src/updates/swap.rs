@@ -16,10 +16,9 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Removes a stale `.old` or `.new` left by an interrupted swap. The installed bundle is never
-/// touched; when it is missing (a swap or rollback died between its renames) the leftover is put
-/// back in its place instead: `.old`, or failing that `.new`.
-pub fn cleanup_leftovers(bundle: &Path) {
+/// When the bundle is missing (a swap or rollback died between its renames), puts a leftover
+/// back in its place: `.old`, or failing that `.new`. Removes nothing.
+pub fn restore_missing(bundle: &Path) {
     if !bundle.exists() {
         for leftover in [old_of(bundle), new_of(bundle)] {
             if leftover.is_dir() && std::fs::rename(&leftover, bundle).is_ok() {
@@ -28,6 +27,12 @@ pub fn cleanup_leftovers(bundle: &Path) {
             }
         }
     }
+}
+
+/// Removes a stale `.old` or `.new` left by an interrupted swap. The installed bundle is never
+/// touched; when it is missing the leftover is put back in its place instead (`restore_missing`).
+pub fn cleanup_leftovers(bundle: &Path) {
+    restore_missing(bundle);
     let _ = std::fs::remove_dir_all(old_of(bundle));
     let _ = std::fs::remove_dir_all(new_of(bundle));
 }
