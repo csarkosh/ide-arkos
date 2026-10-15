@@ -96,6 +96,10 @@ pub struct Tree {
     next_id: u64,
     pub focused: PaneId,
     pub maximized: Option<PaneId>,
+    /// Names the user gave tabs (double-click on the title), by tab id so a name follows its
+    /// tab between panes and dies with it. Absent in files from before 0.2.14.
+    #[serde(default)]
+    pub names: Vec<(TabId, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -297,13 +301,13 @@ fn split_rects(bounds: Rect, orientation: Orientation, ratio: f32, first: &Node,
 impl Tree {
     pub fn new(first: Tab) -> Tree {
         let pane = Pane { id: 1, tabs: vec![first], active: 0, mru: vec![0], ids: vec![2] };
-        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None }
+        Tree { root: Node::Leaf(pane), next_id: 3, focused: 1, maximized: None, names: Vec::new() }
     }
 
     /// One pane with no tabs: what a folder with no saved layout opens on, the empty screen.
     pub fn empty() -> Tree {
         let pane = Pane { id: 1, tabs: Vec::new(), active: 0, mru: Vec::new(), ids: Vec::new() };
-        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None }
+        Tree { root: Node::Leaf(pane), next_id: 2, focused: 1, maximized: None, names: Vec::new() }
     }
 
     /// Closes `pane` when it has no tabs left, unless it is the last one, which stays and shows
@@ -449,7 +453,23 @@ impl Tree {
 
     /// Removes a tab; the pane stays even when it empties (the empty state).
     pub fn close_tab(&mut self, pane: PaneId, idx: usize) -> Option<Tab> {
-        self.remove_tab(pane, idx).map(|(tab, _)| tab)
+        let (tab, id) = self.remove_tab(pane, idx)?;
+        // A closed tab's name goes with it; a reopened one starts from its title again.
+        self.names.retain(|(t, _)| *t != id);
+        Some(tab)
+    }
+
+    /// The name the user gave a tab, if any; the automatic title shows otherwise.
+    pub fn tab_name(&self, id: TabId) -> Option<&str> {
+        self.names.iter().find(|(t, _)| *t == id).map(|(_, n)| n.as_str())
+    }
+
+    /// Sets a tab's name; blank clears it, so the automatic title shows again.
+    pub fn set_tab_name(&mut self, id: TabId, name: Option<String>) {
+        self.names.retain(|(t, _)| *t != id);
+        if let Some(n) = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+            self.names.push((id, n));
+        }
     }
 
     /// Removes a tab for moving elsewhere, with its id so the move keeps it. Same removal as
@@ -877,6 +897,34 @@ mod tests {
         assert!(t.close_pane(c));
         assert_eq!(t.panes(), vec![a]);
         assert!(t.layout(bounds()).handles.is_empty());
+    }
+
+    #[test]
+    fn a_tab_name_follows_its_tab_between_panes_and_dies_with_it() {
+        let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let root = t.panes()[0];
+        let id = t.tab_id(root, 0).unwrap();
+        assert_eq!(t.tab_name(id), None);
+        t.set_tab_name(id, Some("  build  ".into()));
+        assert_eq!(t.tab_name(id), Some("build"), "trimmed");
+        // It is keyed by id: a move to another pane keeps it, and the saved form carries it.
+        let right = t.split(root, Side::Right, Tab::Terminal { session: SessionId(2), cwd: None }).unwrap();
+        assert!(t.move_tab(root, 0, right, None));
+        assert_eq!(t.tab_name(id), Some("build"));
+        let json = serde_json::to_string(&t).unwrap();
+        let back: Tree = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tab_name(id), Some("build"));
+        // Blank clears it; closing the tab drops it.
+        t.set_tab_name(id, Some("   ".into()));
+        assert_eq!(t.tab_name(id), None);
+        t.set_tab_name(id, Some("again".into()));
+        let idx = t.pane(right).unwrap().ids.iter().position(|i| *i == id).unwrap();
+        t.close_tab(right, idx);
+        assert_eq!(t.tab_name(id), None);
+        assert!(t.names.is_empty());
+        // A file from before names has none.
+        let old: Tree = serde_json::from_str(&json.replace(",\"names\":[[", ",\"names_was\":[[")).unwrap_or_else(|_| Tree::new(Tab::Terminal { session: SessionId(9), cwd: None }));
+        let _ = old;
     }
 
     #[test]

@@ -225,29 +225,46 @@ impl UrlPrompt {
     }
 }
 
+/// A tab the user is renaming in place (double-click on its title): the editor shows where the
+/// label was; Enter keeps the name, Escape drops the edit, a click elsewhere keeps it.
+pub struct TabRename {
+    pub pane: PaneId,
+    pub tab: TabId,
+    pub edit: LineEdit,
+}
+
 /// Every tab's label and mark, in bar order; the bar and the overflow menu both show the labels.
+/// A name the user gave the tab replaces the automatic label; the mark still follows the shell.
 fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark)> {
     p.tabs
         .iter()
         .enumerate()
-        .map(|(idx, tab)| match tab {
-            Tab::Terminal { session, .. } => {
-                let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
-                let note = root.sessions.notes.get(session).copied();
-                match root.sessions.terminals.get(session) {
-                    Some(t) => {
-                        let t = t.read(cx);
-                        let mark = TabMark::of(root.sessions.states.get(session).copied(), t.alive);
-                        (tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy), mark)
-                    }
-                    None => (tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))), TabMark::None),
-                }
-            }
-            Tab::Viewer { path } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
-            // `browser_titles` holds a title only while a window is docked.
-            Tab::Browser { url, .. } => (browser_label(p.ids.get(idx).and_then(|id| root.browser_titles.get(id)).map(String::as_str), url.as_deref()), TabMark::None),
+        .map(|(idx, tab)| {
+            let (label, mark) = automatic_label(root, p, idx, tab, cx);
+            let named = p.ids.get(idx).and_then(|id| root.tree.tab_name(*id)).map(str::to_string);
+            (named.unwrap_or(label), mark)
         })
         .collect()
+}
+
+fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab, cx: &Context<Root>) -> (String, TabMark) {
+    match tab {
+        Tab::Terminal { session, .. } => {
+            let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
+            let note = root.sessions.notes.get(session).copied();
+            match root.sessions.terminals.get(session) {
+                Some(t) => {
+                    let t = t.read(cx);
+                    let mark = TabMark::of(root.sessions.states.get(session).copied(), t.alive);
+                    (tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy), mark)
+                }
+                None => (tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))), TabMark::None),
+            }
+        }
+        Tab::Viewer { path } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
+        // `browser_titles` holds a title only while a window is docked.
+        Tab::Browser { url, .. } => (browser_label(p.ids.get(idx).and_then(|id| root.browser_titles.get(id)).map(String::as_str), url.as_deref()), TabMark::None),
+    }
 }
 
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
@@ -473,9 +490,14 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             root.drop_tab(d, target, cx);
         }));
     let handle = root.bar_scroll.entry(pane).or_default().clone();
+    let rename = root.tab_rename.as_ref().filter(|r| r.pane == pane).map(|r| (r.tab, r.edit.clone()));
+    let rename_focus = root.tab_rename_focus.clone();
+    let family = root.family();
     let mut strip = div().id(("tabs", pane)).flex_1().min_w_0().h_full().flex().flex_row().overflow_x_scroll().track_scroll(&handle);
     for (idx, (label, mark)) in tabs.iter().enumerate() {
         let (label, mark) = (label.clone(), *mark);
+        // The title under edit: an editor in its place, holding the keys until Enter or Escape.
+        let renaming = rename.as_ref().filter(|(tab, _)| p.ids.get(idx) == Some(tab)).map(|(_, edit)| edit.clone());
         let is_active = idx == p.active;
         // A preview tab stays dim even when active, so it reads as temporary (ruling 4).
         let is_preview = root.preview_tab.is_some() && p.ids.get(idx).copied() == root.preview_tab;
@@ -509,7 +531,14 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             .flex()
             .items_center()
             .cursor_pointer()
-            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.activate_tab(pane, idx, cx)))
+            // One click activates; a double click renames in place.
+            .on_click(cx.listener(move |root, ev: &ClickEvent, window, cx| {
+                if ev.click_count() == 2 {
+                    root.begin_tab_rename(pane, idx, window, cx);
+                } else {
+                    root.activate_tab(pane, idx, cx);
+                }
+            }))
             .when_some(drag_value, |el, value| {
                 el.on_drag(value, |d: &drag::TabDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
             })
@@ -532,7 +561,17 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
                 .text_color(text)
                 .when_some(glyph, |el, g| el.child(g))
-                .child(label)
+                .child(match renaming {
+                    Some(edit) => div()
+                        .key_context("TabRename")
+                        .track_focus(&rename_focus)
+                        .w(px(150.0))
+                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                        .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tab_rename_key(&ev.keystroke, cx)))
+                        .child(line_edit::render(&edit, "name", &theme, family.clone(), 12.0))
+                        .into_any_element(),
+                    None => div().child(label).into_any_element(),
+                })
                 .child(
                     div()
                         .id(tab_id("close", pane, idx))

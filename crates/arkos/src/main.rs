@@ -325,6 +325,9 @@ pub struct Root {
     /// holds the keys, through `url_prompt_focus`.
     pub url_prompt: Transient<pane_view::UrlPrompt>,
     pub url_prompt_focus: FocusHandle,
+    /// A tab being renamed in place (double-click on its title); its editor holds the keys.
+    pub tab_rename: Option<pane_view::TabRename>,
+    pub tab_rename_focus: FocusHandle,
     /// The Show Tabs Vertically tip was dismissed ("Got it"); Task 3 also sets it on the first
     /// dock. Kept for this process only.
     pub vertical_tabs_tip_seen: bool,
@@ -548,6 +551,8 @@ impl Root {
             ax_prompted: false,
             url_prompt: Transient::Hidden,
             url_prompt_focus: cx.focus_handle(),
+            tab_rename: None,
+            tab_rename_focus: cx.focus_handle(),
             vertical_tabs_tip_seen: false,
             window_active: true,
             pulse_epoch: Instant::now(),
@@ -1230,6 +1235,47 @@ impl Root {
     /// A key typed while the URL prompt has focus: edits the field (Cmd+V pastes), opens the URL
     /// on Enter (an empty field opens `[browser] url`), closes on Escape. Closing hands the keys
     /// back to the pane.
+    /// Double-click on a tab's title: the title becomes an editor holding the current name (or
+    /// nothing, when the tab still shows its automatic title).
+    pub fn begin_tab_rename(&mut self, pane: PaneId, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tree.tab_id(pane, idx) else { return };
+        let mut edit = crate::line_edit::LineEdit::new();
+        edit.set(self.tree.tab_name(tab).unwrap_or_default());
+        self.tab_rename = Some(pane_view::TabRename { pane, tab, edit });
+        window.focus(&self.tab_rename_focus);
+        cx.notify();
+    }
+
+    /// A key in the rename editor: Enter keeps the name, Escape drops the edit, Cmd+V pastes.
+    pub fn tab_rename_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let Some(r) = self.tab_rename.as_mut() else { return };
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                r.edit.insert_str(&text);
+                cx.notify();
+            }
+            return;
+        }
+        match r.edit.handle(ks) {
+            crate::line_edit::Edit::Submit | crate::line_edit::Edit::SubmitBack => self.commit_tab_rename(cx),
+            crate::line_edit::Edit::Cancel => {
+                self.tab_rename = None;
+                cx.notify();
+            }
+            crate::line_edit::Edit::Changed => cx.notify(),
+            _ => {}
+        }
+    }
+
+    /// Enter, or a press elsewhere: the typed name is kept and saved with the layout; a blank
+    /// one gives the tab its automatic title back.
+    pub fn commit_tab_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(r) = self.tab_rename.take() else { return };
+        self.tree.set_tab_name(r.tab, Some(r.edit.text.clone()));
+        self.save(cx);
+        cx.notify();
+    }
+
     pub fn url_prompt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
         let configured = self.config.browser.url.clone();
         let Some(p) = self.url_prompt.value_mut() else { return };
@@ -2787,6 +2833,8 @@ impl Render for Root {
                     if root.url_prompt.hide(Instant::now()) {
                         cx.notify();
                     }
+                    // A press outside the rename editor (it stops its own) keeps what was typed.
+                    root.commit_tab_rename(cx);
                 }),
             )
             // A right-click menu (the tree's or a worktree's) closes on any press outside it

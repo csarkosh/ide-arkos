@@ -117,6 +117,10 @@ Things only a person at the screen can check, in order of value:
 - revoke Accessibility in System Settings: the pane shows the permission screen within a second
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
+- double-click a tab's title, type a name, Enter: the tab shows it; `claude` retitles its own
+  window and the name stays; relaunch (Update now): the name is back; close the tab and
+  Shift+Cmd+T: the automatic title is back; a link in terminal output is underlined before the
+  pointer reaches it
 - with two panes side by side, the separator between them is a hairline and the focused pane's
   glow looks the same on its separator side as on its others; hover the separator: a wider
   stripe fades in and the panes do not move; drag it; move away: it fades out
@@ -350,6 +354,10 @@ Notes:
   Terminal.app. A plain click does nothing to it.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
+- Double-click a tab's title to rename it: Enter keeps the name, Escape drops the edit, a click
+  elsewhere keeps it, a blank name brings the automatic title back. The name is saved with the
+  layout (it survives a relaunch and an update, and follows the tab between panes) and goes
+  when the tab closes.
 - Every binding can be changed in the config file; see Config. A shifted symbol can be written
   as Shift plus the plain key (`ctrl-shift-\``) or as the character itself (`ctrl-~`): macOS
   reports the character, and both spellings are the same binding.
