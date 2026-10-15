@@ -334,6 +334,18 @@ A window newer than its daemon (one started from a new build while an older daem
 is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
 one-time path above: `pkill -x arkosd`, which ends every session, and open the window again.
 
+### When an update goes wrong
+
+Run `arkos doctor` (from the app: `"/Applications/Arkos IDE.app/Contents/MacOS/arkos" doctor`).
+It only reads: it prints the installed app and its version, whether a previous (`.old`) or
+half-swapped (`.new`) copy sits beside it, the running daemon's version and pid, the update
+marker and the rejected versions, the last lines of the daemon's update journal and of
+`window.log`, and any crash reports from the last day. The journal,
+`~/Library/Application Support/arkos/updates/journal.log`, has one timestamped line per step of
+each check, apply, relaunch, confirmation and rollback, including every Hello the daemon heard
+while it waited for the new window; `window.log` next to it keeps the output of every window the
+daemon launched. Both are what to attach to a bug report.
+
 ### Renamed from Sarkos
 
 The IDE used to be called Sarkos. A machine that ran it keeps the old login item, daemon,

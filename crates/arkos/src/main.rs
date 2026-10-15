@@ -7,6 +7,7 @@ mod config;
 mod config_watch;
 mod connection;
 mod diff;
+mod doctor;
 mod drag;
 mod empty_pane;
 mod explorer;
@@ -2140,6 +2141,10 @@ fn main() {
     // The hook CLI: no window, no daemon start, no QoS. `claude` runs these on every event.
     if matches!(args.get(1).map(String::as_str), Some("notify") | Some("hooks")) {
         std::process::exit(hook_cli::run(&args[1..]));
+    }
+    // Read-only diagnostics for a failed update: no window, no daemon start, nothing written.
+    if args.get(1).map(String::as_str) == Some("doctor") {
+        std::process::exit(doctor::run());
     }
     if args.iter().any(|a| a == "--version") {
         println!("{}", version_string());

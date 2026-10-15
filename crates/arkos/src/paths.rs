@@ -25,7 +25,8 @@ pub fn themes_dir() -> PathBuf {
     config_dir().join("themes")
 }
 
-fn app_support() -> PathBuf {
+/// `~/Library/Application Support/arkos`: the socket, the daemon's logs, `updates/`, `window.log`.
+pub fn app_support() -> PathBuf {
     home().join("Library/Application Support/arkos")
 }
 
