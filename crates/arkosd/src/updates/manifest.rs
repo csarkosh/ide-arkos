@@ -51,7 +51,7 @@ impl Manifest {
 mod tests {
     use super::*;
 
-    pub const SAMPLE: &str = r#"{"format":1,"version":"0.2.1","git":"a1b2c3d","published":"2026-10-15T03:12:00Z","arm64":{"url":"https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip","size":23456789,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"min_protocol":1}"#;
+    pub const SAMPLE: &str = r#"{"format":1,"version":"0.2.1","git":"a1b2c3d","published":"2026-10-15T03:12:00Z","arm64":{"url":"https://github.com/csarkosh/ide-arkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip","size":23456789,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"min_protocol":1}"#;
 
     #[test]
     fn a_manifest_parses_and_the_wrong_format_or_a_bad_version_is_refused() {

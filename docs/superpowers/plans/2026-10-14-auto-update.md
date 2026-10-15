@@ -263,7 +263,7 @@ pub const RELEASE_PUBLIC_KEYS: &[&str] = &[
 ];
 ```
 
-The implementer runs `nice -n 15 ~/.cargo/bin/cargo run -p release-tool -- keygen` once, pastes the `public:` value into the constant, and writes the `secret:` value to `/Users/csarko/Projects/ide-sarkos/.superpowers/sdd/2026-10-14-auto-update/RELEASE_KEY.txt` (the git-ignored workspace; the report names the path and the user moves it into the GitHub secret and their password manager, then deletes the file). The secret never goes into a commit, the report, or the reply.
+The implementer runs `nice -n 15 ~/.cargo/bin/cargo run -p release-tool -- keygen` once, pastes the `public:` value into the constant, and writes the `secret:` value to `/Users/csarko/Projects/ide-arkos/.superpowers/sdd/2026-10-14-auto-update/RELEASE_KEY.txt` (the git-ignored workspace; the report names the path and the user moves it into the GitHub secret and their password manager, then deletes the file). The secret never goes into a commit, the report, or the reply.
 
 `scripts/release-key`:
 
@@ -379,7 +379,7 @@ pub struct Manifest {
 mod tests {
     use super::*;
 
-    pub const SAMPLE: &str = r#"{"format":1,"version":"0.2.1","git":"a1b2c3d","published":"2026-10-15T03:12:00Z","arm64":{"url":"https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip","size":23456789,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"min_protocol":1}"#;
+    pub const SAMPLE: &str = r#"{"format":1,"version":"0.2.1","git":"a1b2c3d","published":"2026-10-15T03:12:00Z","arm64":{"url":"https://github.com/csarkosh/ide-arkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip","size":23456789,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"min_protocol":1}"#;
 
     #[test]
     fn a_manifest_parses_and_the_wrong_format_or_a_bad_version_is_refused() {
@@ -600,7 +600,7 @@ git commit -m "Parse and verify release manifests in the daemon: versions, signa
 
 **Interfaces:**
 - Consumes: Task 2's `manifest::{parse, Manifest}`, `verify::{verify_manifest, sha256_hex}`, `version::{parse_version_string, Version}`, `MAX_ZIP_BYTES`; `protocol::release_key::RELEASE_PUBLIC_KEYS`; `crate::version_string()`.
-- Produces: `protocol::{StagedUpdate { version: String, git: String }, Request::{UpdateStatus, CheckForUpdates, ApplyUpdate { version: String }}, Response::UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String> }, Event::UpdateStaged { update: StagedUpdate }, PROTOCOL_VERSION = 4}`; `updates::fetch::{Fetcher { base: String, curl: PathBuf }, Fetcher::fetch_manifest(&self, dir: &Path) -> Result<(Vec<u8>, String), String> /* (manifest bytes, signature b64) */, Fetcher::download(&self, url: &str, size: u64, dest: &Path) -> Result<(), String>, allowed_final_url(&str) -> bool, curl_args(url, dest, max_bytes, max_secs) -> Vec<String>}`; `updates::stage::{Staged { version: String, git: String, bundle: PathBuf }, stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Staged, String>, check_bundle(bundle: &Path, want_version: &str) -> Result<(), String>, clean_except(dir: &Path, keep: Option<&Path>)}`; `updates::poll::{run_check(fetcher, dir, keys, running: &Version, bad: &mut HashSet<String>, ditto) -> Outcome::{Nothing, Staged(Staged), Failed(String)}, start(state: Shared, fetcher, dir, every: Duration)}`; `updates::UpdateState { staged: Option<Staged>, last_error: Option<String>, checking: bool, bad: HashSet<String>, check_now: bool }`; `State.update: UpdateState`; the daemon arguments `--update-url URL` (default `https://github.com/csarkosh/ide-sarkos/releases/latest/download/`), `--check-every-secs N` (default 300; 0 disables polling), `--curl PATH` (default `/usr/bin/curl`), `--ditto PATH` (default `/usr/bin/ditto`), `--updates-dir PATH` (default `<socket dir>/updates`).
+- Produces: `protocol::{StagedUpdate { version: String, git: String }, Request::{UpdateStatus, CheckForUpdates, ApplyUpdate { version: String }}, Response::UpdateStatus { staged: Option<StagedUpdate>, last_error: Option<String> }, Event::UpdateStaged { update: StagedUpdate }, PROTOCOL_VERSION = 4}`; `updates::fetch::{Fetcher { base: String, curl: PathBuf }, Fetcher::fetch_manifest(&self, dir: &Path) -> Result<(Vec<u8>, String), String> /* (manifest bytes, signature b64) */, Fetcher::download(&self, url: &str, size: u64, dest: &Path) -> Result<(), String>, allowed_final_url(&str) -> bool, curl_args(url, dest, max_bytes, max_secs) -> Vec<String>}`; `updates::stage::{Staged { version: String, git: String, bundle: PathBuf }, stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Staged, String>, check_bundle(bundle: &Path, want_version: &str) -> Result<(), String>, clean_except(dir: &Path, keep: Option<&Path>)}`; `updates::poll::{run_check(fetcher, dir, keys, running: &Version, bad: &mut HashSet<String>, ditto) -> Outcome::{Nothing, Staged(Staged), Failed(String)}, start(state: Shared, fetcher, dir, every: Duration)}`; `updates::UpdateState { staged: Option<Staged>, last_error: Option<String>, checking: bool, bad: HashSet<String>, check_now: bool }`; `State.update: UpdateState`; the daemon arguments `--update-url URL` (default `https://github.com/csarkosh/ide-arkos/releases/latest/download/`), `--check-every-secs N` (default 300; 0 disables polling), `--curl PATH` (default `/usr/bin/curl`), `--ditto PATH` (default `/usr/bin/ditto`), `--updates-dir PATH` (default `<socket dir>/updates`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn only_github_hosts_or_file_urls_are_accepted_as_the_final_url() {
-        assert!(allowed_final_url("https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/x.zip"));
+        assert!(allowed_final_url("https://github.com/csarkosh/ide-arkos/releases/download/v0.2.1/x.zip"));
         assert!(allowed_final_url("https://objects.githubusercontent.com/github-production-release-asset/abc?x=1"));
         assert!(allowed_final_url("https://release-assets.githubusercontent.com/x"));
         assert!(allowed_final_url("file:///tmp/x/manifest.json"));
@@ -1869,10 +1869,10 @@ cask "arkos-ide" do
   version "0.2.1"
   sha256 "REPLACED_BY_THE_TAP_UPDATE_SCRIPT"
 
-  url "https://github.com/csarkosh/ide-sarkos/releases/download/v#{version}/Arkos-IDE-#{version}-arm64.zip"
+  url "https://github.com/csarkosh/ide-arkos/releases/download/v#{version}/Arkos-IDE-#{version}-arm64.zip"
   name "Arkos IDE"
   desc "Terminal-pane IDE for running many Claude Code sessions, with a daemon that keeps them alive"
-  homepage "https://github.com/csarkosh/ide-sarkos"
+  homepage "https://github.com/csarkosh/ide-arkos"
 
   depends_on arch: :arm64
   depends_on macos: ">= :sonoma"

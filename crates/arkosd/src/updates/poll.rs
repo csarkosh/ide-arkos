@@ -349,7 +349,7 @@ mod tests {
     fn a_final_url_off_github_is_refused() {
         // `file://` cannot redirect, so this pins the pure check the download applies to curl's
         // reported final url before the file is read.
-        let gh = "https://github.com/csarkosh/ide-sarkos/releases/latest/download/manifest.json";
+        let gh = "https://github.com/csarkosh/ide-arkos/releases/latest/download/manifest.json";
         assert!(!crate::updates::fetch::allowed_final_url(gh, "https://cdn.evil.example/Arkos.zip"));
         assert!(crate::updates::fetch::allowed_final_url(gh, "https://objects.githubusercontent.com/a"));
     }

@@ -1,7 +1,7 @@
 # arkos: a terminal layout manager for Claude Code sessions
 
 **Status:** design approved in conversation on 2026-10-13; this document is the written spec.
-**Name:** Arkos IDE (display name; UI binary `arkos`, daemon binary `arkosd`). Repository: `csarkosh/ide-sarkos`. License: GPL-3.0.
+**Name:** Arkos IDE (display name; UI binary `arkos`, daemon binary `arkosd`). Repository: `csarkosh/ide-arkos`. License: GPL-3.0.
 
 ## 1. Why this exists
 
@@ -458,7 +458,7 @@ Each milestone ends with Cyrus using it for real work before the next starts.
 ## 12. Repository layout
 
 ```
-ide-sarkos/
+ide-arkos/
   Cargo.toml            workspace
   crates/
     protocol/           message types, framing (shared)

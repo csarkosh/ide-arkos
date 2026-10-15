@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 /// The most a release zip may be, whatever the manifest says.
 pub const MAX_ZIP_BYTES: u64 = 200 * 1024 * 1024;
 
-pub const DEFAULT_UPDATE_URL: &str = "https://github.com/csarkosh/ide-sarkos/releases/latest/download/";
+pub const DEFAULT_UPDATE_URL: &str = "https://github.com/csarkosh/ide-arkos/releases/latest/download/";
 pub const DEFAULT_CHECK_EVERY_SECS: u64 = 300;
 
 /// The daemon's update arguments (`--update-url` and the rest, see `main.rs`).

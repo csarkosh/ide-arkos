@@ -38,7 +38,7 @@
 ## File structure
 
 ```
-ide-sarkos/
+ide-arkos/
   Cargo.toml                       workspace: members = ["crates/*"], resolver = "2"
   rust-toolchain.toml              stable
   .gitignore                       target/
@@ -3321,7 +3321,7 @@ Expected: `3 passed` (the implementation exists from Task 10; these pin it).
 
 - [ ] **Step 3: Manual acceptance test: the kill**
 
-1. `cargo run -p arkos` in `~/Projects/ide-sarkos`. In the terminal run `claude` and start a short task, or simply `for i in $(seq 1 300); do echo line $i; sleep 0.05; done`.
+1. `cargo run -p arkos` in `~/Projects/ide-arkos`. In the terminal run `claude` and start a short task, or simply `for i in $(seq 1 300); do echo line $i; sleep 0.05; done`.
 2. While it runs, from another terminal: `pkill -9 -x arkos`. The window vanishes.
 3. `cargo run -p arkos` again in the same folder. Expected: the same session reappears with its full scrollback, the loop is still running or has finished with all 300 lines, and typing works. `pgrep arkosd` shows the same daemon pid as before.
 4. Scroll up through the replayed history: smooth, complete.

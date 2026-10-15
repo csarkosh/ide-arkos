@@ -120,8 +120,8 @@ mod tests {
 
     #[test]
     fn only_github_hosts_or_file_urls_are_accepted_as_the_final_url() {
-        let gh = "https://github.com/csarkosh/ide-sarkos/releases/latest/download/x.zip";
-        assert!(allowed_final_url(gh, "https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/x.zip"));
+        let gh = "https://github.com/csarkosh/ide-arkos/releases/latest/download/x.zip";
+        assert!(allowed_final_url(gh, "https://github.com/csarkosh/ide-arkos/releases/download/v0.2.1/x.zip"));
         assert!(allowed_final_url(gh, "https://objects.githubusercontent.com/github-production-release-asset/abc?x=1"));
         assert!(allowed_final_url(gh, "https://release-assets.githubusercontent.com/x"));
         assert!(allowed_final_url("file:///tmp/x/manifest.json", "file:///tmp/x/manifest.json"));

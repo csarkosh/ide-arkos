@@ -2093,7 +2093,7 @@ Then a launch check (the screen may be locked; it still proves the window opens 
 
 ```bash
 ~/.cargo/bin/cargo build --release 2>&1 | tail -2
-(cd /tmp && /Users/csarko/Projects/ide-sarkos/target/release/arkos > /tmp/arkos-2b-t4.log 2>&1 &)
+(cd /tmp && /Users/csarko/Projects/ide-arkos/target/release/arkos > /tmp/arkos-2b-t4.log 2>&1 &)
 sleep 6; grep -c "attached to session\|wrote default config" /tmp/arkos-2b-t4.log; pkill -x arkos; sleep 1; tail -5 /tmp/arkos-2b-t4.log
 ```
 
@@ -4308,7 +4308,7 @@ Expected: every suite passes; `0`.
 Memory, for the README's Status paragraph if it moved (release build, four terminals, thirty seconds idle, as in milestone 2a):
 
 ```bash
-(cd /tmp && /Users/csarko/Projects/ide-sarkos/target/release/arkos > /tmp/arkos-2b-final.log 2>&1 &); sleep 30
+(cd /tmp && /Users/csarko/Projects/ide-arkos/target/release/arkos > /tmp/arkos-2b-final.log 2>&1 &); sleep 30
 ps -o rss=,comm= -p "$(pgrep -x arkos)" "$(pgrep -x arkosd)"
 pkill -x arkos
 ```

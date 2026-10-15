@@ -63,7 +63,7 @@ arm64 runner (free on this public repository; it is manual so no minute is spent
      "git": "a1b2c3d",
      "published": "2026-10-15T03:12:00Z",
      "arm64": {
-       "url": "https://github.com/csarkosh/ide-sarkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip",
+       "url": "https://github.com/csarkosh/ide-arkos/releases/download/v0.2.1/Arkos-IDE-0.2.1-arm64.zip",
        "size": 23456789,
        "sha256": "..."
      },
@@ -122,7 +122,7 @@ The daemon runs the check because it is always up after login (the launch agent)
 UI to block. Every `check_every` (default five minutes) and on `CheckForUpdates` from a window:
 
 1. `curl --fail --silent --location --max-time 20 --output <staging>/manifest.json` of
-   `https://github.com/csarkosh/ide-sarkos/releases/latest/download/manifest.json`, and the
+   `https://github.com/csarkosh/ide-arkos/releases/latest/download/manifest.json`, and the
    same for `manifest.json.sig`. The system `curl` carries macOS's TLS roots; the daemon
    gains no HTTP crate. The base URL is a daemon argument (`--update-url`), so tests use
    `file://` and the config can point at a fork.
