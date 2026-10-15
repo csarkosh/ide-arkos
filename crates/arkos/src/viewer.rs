@@ -4,8 +4,8 @@
 //! reloaded when the poll sees the file change. A file in a repository carries its diff
 //! against HEAD (`diff`), recomputed on every load and on the ten-second timer.
 //!
-//! A markdown file that is clean UTF-8 with one kind of line ending is also an editable
-//! `edit::Document`: edits mark the tab dirty and autosave a second later through `save_text`,
+//! A markdown file that is clean UTF-8 with one kind of line ending, and that the user may write,
+//! is also an editable `edit::Document`: edits mark the tab dirty and autosave a second later through `save_text`,
 //! and a change on disk either reloads the file or, over unsaved edits, raises a conflict.
 
 use crate::config_watch::fingerprint;
@@ -66,6 +66,8 @@ pub enum ReadOnlyWhy {
     NotUtf8,
     /// `\r\n` and a bare `\n` both occur; a save could keep only one.
     MixedEndings,
+    /// The user may not write the file; an atomic save would replace it anyway.
+    NotWritable,
 }
 
 /// What the viewer tells `Root`, which keeps the tab bar and the preview tab in step.
@@ -173,6 +175,10 @@ pub fn save_text_guarded<G>(path: &Path, text: &str, expect: Option<(u128, u64)>
     if expect.is_some() && fingerprint(path) != expect {
         return Err(SaveError::Changed);
     }
+    // The rename would replace a file the user may not write, as long as its directory allows it.
+    if std::fs::metadata(path).is_ok() && !writable(path) {
+        return Err(SaveError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only")));
+    }
     let is_link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if is_link {
         let Some(guard) = gate() else { return Err(SaveError::Superseded) };
@@ -238,6 +244,15 @@ pub fn write_recovery(dir: &Path, source: &Path, text: &str, unix_secs: u64) -> 
         }
     }
     Err(std::io::Error::other("no free recovery file name"))
+}
+
+/// Whether this process may write the file at `path` (through a symlink, to its target):
+/// `access(2)` with `W_OK`, which weighs the owner, the group and the mode as a write would.
+fn writable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: `c` is a valid NUL-terminated string that outlives the call; access only reads it.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
 /// A background save as a close or a quit sees it: they may not block on the UI thread for the
@@ -439,7 +454,8 @@ pub struct Loaded {
     /// file, or one shown plain for its size.
     pub diff: Option<DiffMarks>,
     /// The editable document, built on the background thread for a markdown file that is strict
-    /// UTF-8 with one kind of line ending (a byte order mark is set aside in `Document.bom`).
+    /// UTF-8 with one kind of line ending and that the user may write (a byte order mark is set
+    /// aside in `Document.bom`).
     pub doc: Option<edit::Document>,
     /// Why a markdown file is shown read-only; `None` for every other file.
     pub read_only: Option<ReadOnlyWhy>,
@@ -1716,8 +1732,9 @@ impl EntityInputHandler for Viewer {
 /// `with_diff`, text not shown plain for its size is diffed against its worktree's HEAD.
 ///
 /// A markdown file is never highlighted and has no size limit but `MAX_PLAIN_BYTES`: clean UTF-8
-/// with one kind of line ending becomes a document whose lines (tabs kept, the empty last line
-/// after a final break kept) are the content's; anything else is plain text, read-only, saying why.
+/// with one kind of line ending, in a file the user may write, becomes a document whose lines
+/// (tabs kept, the empty last line after a final break kept) are the content's; anything else is
+/// plain text, read-only, saying why.
 pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize, with_diff: bool) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
@@ -1733,7 +1750,7 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
         Ok(Capped::Binary) => (Content::Binary, None),
-        Ok(Capped::Bytes(bytes)) if is_markdown(path) => match markdown_document(&bytes) {
+        Ok(Capped::Bytes(bytes)) if is_markdown(path) => match markdown_document(&bytes).and_then(|d| if writable(path) { Ok(d) } else { Err(ReadOnlyWhy::NotWritable) }) {
             Ok(d) => {
                 let lines = d.shared_lines();
                 doc = Some(d);
@@ -2808,6 +2825,27 @@ mod tests {
         assert!(matches!(err, Err(SaveError::Io(_))), "{err:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep");
         assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 1, "no temp file left behind");
+    }
+
+    #[test]
+    fn a_read_only_file_is_neither_replaced_nor_edited() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ro.md");
+        std::fs::write(&path, "# keep\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let fp = crate::config_watch::fingerprint(&path);
+        let err = save_text(&path, "lost?", fp);
+        assert!(matches!(&err, Err(SaveError::Io(e)) if e.to_string() == "the file is read-only"), "{err:?}");
+        assert!(matches!(save_text(&path, "lost?", None), Err(SaveError::Io(_))), "Keep mine does not replace it either");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# keep\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444, "the file is the same one");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert!(l.doc.is_none(), "shown, not edited");
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotWritable));
+        assert!(matches!(l.content, Content::Text { ref lines, .. } if lines[0] == "# keep"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]

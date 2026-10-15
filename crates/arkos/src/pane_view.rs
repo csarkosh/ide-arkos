@@ -1019,6 +1019,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             let text = match why {
                 viewer::ReadOnlyWhy::NotUtf8 => "not UTF-8: shown read-only",
                 viewer::ReadOnlyWhy::MixedEndings => "mixed line endings: shown read-only",
+                viewer::ReadOnlyWhy::NotWritable => "read-only file: shown read-only",
             };
             banners.push(banner_row().child(text));
         }
