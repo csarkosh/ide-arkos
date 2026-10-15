@@ -35,7 +35,7 @@
 - Modify `crates/arkos/src/hook_cli.rs`: `edit_settings`, `set_wheel_scroll_acceleration_at`, `wheel_scroll_acceleration_at`, `hooks_installed_at`; `install_hooks_at` becomes a caller of `edit_settings`.
 - Modify `crates/arkos/src/paths.rs`: `last_version_file`.
 - Modify `crates/arkos/src/startup.rs`: `updated_from(file, current) -> Option<String>` (read, compare, write).
-- Modify `crates/arkos/src/chrome.rs`: `Right`, `title_bar(project, right, fullscreen, theme, on_bell, on_doctor)`, `icon_bell`, `icon_doctor`, `popover_card`; `status_items` and `is_update_item` removed.
+- Modify `crates/arkos/src/chrome.rs`: `Right`, `title_bar(project, right, fullscreen, theme, on_bell, on_doctor)`, `Icon`, `icon_points`, `icon_path`, `Popover`, `popover_card`; `status_items` and `is_update_item` removed.
 - Modify `crates/arkos/src/keymap.rs`: actions `Notifications`, `Doctor`; `Command::Notifications`, `Command::Doctor`; names "notifications", "doctor".
 - Modify `crates/arkos/src/command_palette.rs`: the two items.
 - Modify `crates/arkos/src/main.rs`: `Root` fields `notices`, `notice_menu`, `doctor_menu`, `doctor_states`; feeding the notices; opening, closing and rendering the popovers; the doctor actions; the two commands.
@@ -535,17 +535,18 @@ fn the_popovers_hang_under_their_icons() {
 }
 
 #[test]
-fn the_bell_and_the_doctor_icons_are_paths_in_a_16_px_box() {
-    for icon in [icon_bell(point(px(0.0), px(0.0)), px(1.5)), icon_doctor(point(px(0.0), px(0.0)), px(1.5))] {
-        let b = icon.bounds();
-        let (x0, y0, x1, y1) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.origin.x + b.size.width), f32::from(b.origin.y + b.size.height));
-        assert!(x0 >= 0.0 && y0 >= 0.0, "{b:?}");
-        assert!(x1 <= 16.0 && y1 <= 16.0, "{b:?}");
+fn the_bell_and_the_doctor_icons_stay_in_a_16_px_box() {
+    for icon in [Icon::Bell, Icon::Doctor] {
+        let pts = icon_points(icon);
+        assert!(pts.len() >= 6, "{icon:?} has a shape");
+        for (x, y) in pts {
+            assert!((0.75..=15.25).contains(&x) && (0.75..=15.25).contains(&y), "{icon:?} point {x},{y} leaves room for a 1.5 px stroke");
+        }
     }
 }
 ```
 
-(`icon_bell(origin: Point<Pixels>, stroke: Pixels) -> gpui::Path<Pixels>` and `icon_doctor` build the path at `origin` each time they are called, which is once per paint; `Path::bounds()` returns `&Bounds<ScaledPixels>` in gpui 0.2.2 and `ScaledPixels` converts to `f32` with `From`; if it does not, read the field through `format!("{:?}")` is not acceptable: add a `pub fn icon_points(which) -> Vec<(f32, f32)>` listing the control points and assert on those instead. Build the paths with `PathBuilder::stroke(width)` and `move_to`/`line_to`/`curve_to`/`cubic_bezier_to`, then `.build().expect("a fixed path builds")`.)
+(`#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Icon { Bell, Doctor }`; `icon_points(icon) -> Vec<(f32, f32)>` lists every anchor and control point of the icon's strokes in the 16 px box, and `icon_path(icon, origin: Point<Pixels>, stroke: Pixels) -> gpui::Path<Pixels>` builds the path from those same points offset by `origin`, with `PathBuilder::stroke(width)` and `move_to`/`line_to`/`curve_to`/`cubic_bezier_to`, then `.build().expect("a fixed path builds")`. The path is built once per paint, which is cheap. `gpui::Path`'s own bounds are in `ScaledPixels`, whose value is not readable from outside gpui, hence the test on the points.)
 
 ```rust
 // main.rs tests
@@ -590,16 +591,16 @@ In `chrome.rs`, delete `status_items`, `is_update_item`, `UpdateClick` and their
 ```rust
 .child(
     div().flex_none().flex().items_center().gap(px(ICON_GAP))
-        .child(icon_button("bell", icon_bell(px(1.5)), right.bell_dot, right.bell_open, c, on_bell))
-        .child(icon_button("doctor", icon_doctor(px(1.5)), right.doctor_dot, right.doctor_open, c, on_doctor)),
+        .child(icon_button("bell", Icon::Bell, right.bell_dot, right.bell_open, c, on_bell))
+        .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.doctor_open, c, on_doctor)),
 )
 ```
 
-`icon_button(id, path, dot, open, c, on_click)` is a `div().id(id).size(px(ICON_TARGET)).flex().items_center().justify_center().cursor_pointer().relative()` with `.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())` (so the bar's window-drag does not start) and `.on_click(on_click)`, holding a `canvas` of 16 px that paints the path in `c.text_dim` (or `c.text` when `open`), hovered colour via a `.group("icon")` and `.group_hover` is not needed: paint the colour from `open` and let the hit target's `.hover(|s| s.bg(c.tab_active.hsla()))` show the hover (a faint square), which keeps the canvas colour static. The dot is a sibling `div().absolute().top(px(3.0)).right(px(3.0)).size(px(6.0)).rounded_full().bg(c.focus_ring.hsla())` when `dot`.
+`icon_button(id, icon, dot, open, c, on_click)` is a `div().id(id).size(px(ICON_TARGET)).flex().items_center().justify_center().cursor_pointer().relative()` with `.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())` (so the bar's window-drag does not start) and `.on_click(on_click)`, holding a `canvas` of 16 px that paints the path in `c.text_dim` (or `c.text` when `open`), hovered colour via a `.group("icon")` and `.group_hover` is not needed: paint the colour from `open` and let the hit target's `.hover(|s| s.bg(c.tab_active.hsla()))` show the hover (a faint square), which keeps the canvas colour static. The dot is a sibling `div().absolute().top(px(3.0)).right(px(3.0)).size(px(6.0)).rounded_full().bg(c.focus_ring.hsla())` when `dot`.
 
-Painting a path in a canvas: `canvas(|_, _, _| (), move |bounds, _, window, _| window.paint_path(icon_bell(bounds.origin, px(1.5)), color))`: the path is built at the canvas's origin in the paint closure (`Path::translate` in gpui 0.2.2 takes scaled pixels, so building in place is simpler). `window.paint_path(path: Path<Pixels>, color)` is at gpui window.rs:2860.
+Painting a path in a canvas: `canvas(|_, _, _| (), move |bounds, _, window, _| window.paint_path(icon_path(icon, bounds.origin, px(1.5)), color))`: the path is built at the canvas's origin in the paint closure (`Path::translate` in gpui 0.2.2 takes scaled pixels, so building in place is simpler). `window.paint_path(path: Path<Pixels>, color)` is at gpui window.rs:2860.
 
-Bell (16 px box, y down): body from (4, 11) up the left side with `curve_to((8, 2), ctrl (3.5, 4))`, over the top to (12, 11) with `curve_to((12, 11), ctrl (12.5, 4))`, close across the bottom (12, 11) to (4, 11) with a line; the rim as a line (3, 11) to (13, 11); the clapper as a short arc under it: `move_to((6.5, 13))`, `curve_to((9.5, 13), ctrl (8, 15))`. Doctor: a circle of radius 6 at (8, 8) made of four `cubic_bezier_to` quarter arcs (control distance 6 by 0.5523), then a plus: (8, 5) to (8, 11) and (5, 8) to (11, 8). Keep every point inside 0.75 of the box edge so the stroke stays inside 16 px (the test checks the path bounds, which `PathBuilder` grows by the stroke).
+Points (16 px box, y down). Bell: body from (4, 11) up the left side with `curve_to((8, 2), ctrl (3.5, 4))`, over the top to (12, 11) with `curve_to((12, 11), ctrl (12.5, 4))`, close across the bottom (12, 11) to (4, 11) with a line; the rim as a line (3, 11) to (13, 11); the clapper as a short arc under it: `move_to((6.5, 13))`, `curve_to((9.5, 13), ctrl (8, 15))`. Doctor: a circle of radius 6 at (8, 8) made of four `cubic_bezier_to` quarter arcs (control distance 6 by 0.5523), then a plus: (8, 5) to (8, 11) and (5, 8) to (11, 8). Keep every point inside 0.75 of the box edge so the stroke stays inside 16 px (the test checks the path bounds, which `PathBuilder` grows by the stroke).
 
 `popover_card` is the context menu's card (copy the style from `sidebar::render_context_menu`: `absolute`, `top(px(TITLE_BAR_H + 4.0) - px(motion::lift(opacity, motion::MENU_LIFT)))`, `right(px(right))`, `w(px(width))`, `opacity`, `flex_col`, `py(4)`, `bg(c.banner)`, `border_1`, `border_color(c.border)`, `font_family(family)`, `text_size(12)`, `text_color(c.text)`, and `.when(live, |m| m.occlude().on_any_mouse_down(|_, _, cx| cx.stop_propagation()))`).
 
