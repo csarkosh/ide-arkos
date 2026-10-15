@@ -16,7 +16,7 @@ use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
 use crate::palette::Rgb;
 use crate::theme::Theme;
-use crate::viewer::{Hit, Span, Viewer};
+use crate::viewer::{self, Hit, Span, Viewer, ViewerEvent};
 use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
     canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
@@ -458,34 +458,117 @@ fn text_element(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &B
         return styled.into_any_element();
     }
     let (ranges, targets): (Vec<_>, Vec<_>) = links.into_iter().unzip();
-    let base_dir = ctx.base_dir.clone();
+    let (base_dir, viewer) = (ctx.base_dir.clone(), ctx.viewer.clone());
     InteractiveText::new(("md-text", j), styled)
         .on_click(ranges, move |i, window, cx| {
             // A plain click is for the text (the row put the caret there); Cmd+click follows the
             // link.
             if window.modifiers().platform {
                 if let Some(target) = targets.get(i) {
-                    open_link(target, &base_dir, cx);
+                    follow_link(link_action(target, &base_dir), &viewer, cx);
                 }
             }
         })
         .into_any_element()
 }
 
-/// Follows a link: a web address (or any URL with a scheme, and mail) in the browser, a path with
-/// the system's application for it, resolved against the file's directory. A link to a heading
-/// in the same file (`#...`) does nothing yet.
-fn open_link(target: &str, base_dir: &Path, cx: &mut App) {
-    if target.contains("://") || target.starts_with("mailto:") {
-        cx.open_url(target);
-        return;
+/// What Cmd+click on a link does. Nothing on disk is ever opened by the system, which could run
+/// a program: a file is only shown in Finder, and a markdown file opens in arkos.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkAction {
+    /// A web page or a mail address (`http`, `https`, `mailto`): the system opens it.
+    OpenUrl(String),
+    /// A file or folder (a path or a `file:` URL): Finder shows it.
+    Reveal(PathBuf),
+    /// A markdown file: a viewer tab opens it.
+    OpenMarkdown(PathBuf),
+    /// A link to a heading in this file, an empty target, or a scheme arkos does not follow.
+    Nothing,
+}
+
+/// Classifies a link's target, resolving a path against the file's directory `base_dir`
+/// (percent escapes decoded, a `#fragment` dropped).
+pub fn link_action(target: &str, base_dir: &Path) -> LinkAction {
+    let target = target.trim();
+    let local = |path: &str| {
+        let path = percent_decode(path.split('#').next().unwrap_or(""));
+        if path.is_empty() {
+            return LinkAction::Nothing;
+        }
+        let Some(resolved) = resolve_image(base_dir, &path) else { return LinkAction::Nothing };
+        if viewer::is_markdown(&resolved) {
+            LinkAction::OpenMarkdown(resolved)
+        } else {
+            LinkAction::Reveal(resolved)
+        }
+    };
+    match link_scheme(target) {
+        Some(("http" | "https" | "mailto", _)) => LinkAction::OpenUrl(target.to_string()),
+        Some(("file", rest)) => {
+            // `file:///p`, `file://localhost/p` or `file:/p`: an absolute path, without a query.
+            let rest = rest.strip_prefix("//").map_or(rest, |r| r.strip_prefix("localhost").unwrap_or(r));
+            match rest.split('?').next().filter(|p| p.starts_with('/')) {
+                Some(path) => local(path),
+                None => LinkAction::Nothing,
+            }
+        }
+        Some(_) => LinkAction::Nothing,
+        None => local(target),
     }
-    let path = target.split('#').next().unwrap_or("");
-    if path.is_empty() {
-        return;
+}
+
+/// A URL's scheme, lowercased, and what follows its colon: two or more letters, digits, `+`, `-`
+/// or `.` starting with a letter. A path has none.
+fn link_scheme(target: &str) -> Option<(&'static str, &str)> {
+    let (scheme, rest) = target.split_once(':')?;
+    let valid = scheme.len() >= 2 && scheme.starts_with(|c: char| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid {
+        return None;
     }
-    if let Some(resolved) = resolve_image(base_dir, path) {
-        cx.open_with_system(&resolved);
+    let known = ["http", "https", "mailto", "file"].into_iter().find(|k| scheme.eq_ignore_ascii_case(k));
+    Some((known.unwrap_or("other"), rest))
+}
+
+/// `%XX` escapes decoded, as a link to a file with a space in its name is written; text that does
+/// not decode to UTF-8 is kept as it was.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Carries out a link's action: the URL through the system, a file shown in Finder (`open -R`, on
+/// the background executor), a markdown file handed to `Root` to open in a tab.
+fn follow_link(action: LinkAction, viewer: &Entity<Viewer>, cx: &mut App) {
+    match action {
+        LinkAction::OpenUrl(url) => cx.open_url(&url),
+        LinkAction::Reveal(path) => cx
+            .background_executor()
+            .spawn(async move {
+                let status = std::process::Command::new("/usr/bin/open").arg("-R").arg(&path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+                match status {
+                    Ok(s) if s.success() => {}
+                    Ok(s) => eprintln!("arkos: cannot show {} in Finder ({s})", path.display()),
+                    Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
+                }
+            })
+            .detach(),
+        LinkAction::OpenMarkdown(path) => viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenPath(path))),
+        LinkAction::Nothing => {}
     }
 }
 
@@ -935,6 +1018,28 @@ mod tests {
         assert_eq!(resolve_image(base, "/abs/b.png"), Some(PathBuf::from("/abs/b.png")));
         assert_eq!(resolve_image(base, "https://x.y/c.png"), None);
         assert_eq!(resolve_image(base, "../c.png"), Some(PathBuf::from("/p/c.png")), "normalised");
+    }
+
+    #[test]
+    fn a_link_opens_the_web_shows_a_file_in_finder_or_opens_markdown_in_a_tab() {
+        let base = Path::new("/p/docs");
+        let url = |s: &str| LinkAction::OpenUrl(s.to_string());
+        assert_eq!(link_action("https://example.com/a?b#c", base), url("https://example.com/a?b#c"));
+        assert_eq!(link_action("HTTP://example.com", base), url("HTTP://example.com"));
+        assert_eq!(link_action("mailto:me@example.com", base), url("mailto:me@example.com"));
+        assert_eq!(link_action("other.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/other.md")));
+        assert_eq!(link_action("../Notes.MARKDOWN#part", base), LinkAction::OpenMarkdown(PathBuf::from("/p/Notes.MARKDOWN")), "the fragment goes");
+        assert_eq!(link_action("my%20notes.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/my notes.md")), "escapes decoded");
+        assert_eq!(link_action("run.sh", base), LinkAction::Reveal(PathBuf::from("/p/docs/run.sh")), "never run");
+        assert_eq!(link_action("/Applications/Calculator.app", base), LinkAction::Reveal(PathBuf::from("/Applications/Calculator.app")));
+        assert_eq!(link_action("file:///tmp/x.command", base), LinkAction::Reveal(PathBuf::from("/tmp/x.command")), "a file URL is a path");
+        assert_eq!(link_action("file://localhost/tmp/a%20b.md", base), LinkAction::OpenMarkdown(PathBuf::from("/tmp/a b.md")));
+        assert_eq!(link_action("FILE:/tmp/y", base), LinkAction::Reveal(PathBuf::from("/tmp/y")));
+        for nothing in ["#heading", "", "javascript:alert(1)", "x-apple-helpviewer://a", "vscode://file/a", "file://host/share"] {
+            assert_eq!(link_action(nothing, base), LinkAction::Nothing, "{nothing:?}");
+        }
+        assert_eq!(percent_decode("a%2"), "a%2", "a cut escape stays");
+        assert_eq!(percent_decode("%ff"), "%ff", "not UTF-8: kept as written");
     }
 
     #[test]

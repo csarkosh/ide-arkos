@@ -71,12 +71,14 @@ pub enum ReadOnlyWhy {
 }
 
 /// What the viewer tells `Root`, which keeps the tab bar and the preview tab in step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewerEvent {
     /// The document changed: the tab is dirty and is no longer a preview.
     Edited,
     Saved,
     SaveFailed,
+    /// A link to a markdown file was Cmd+clicked: it opens in a viewer tab of its own.
+    OpenPath(PathBuf),
 }
 
 /// What a load that found the file changed does to a viewer holding a document.
@@ -2265,6 +2267,7 @@ impl Root {
                         root.load(tab, true, cx);
                     }
                 }
+                ViewerEvent::OpenPath(path) => root.open_viewer(path, true, cx),
             }
             // The tab's label shows whether it is dirty.
             cx.notify();
