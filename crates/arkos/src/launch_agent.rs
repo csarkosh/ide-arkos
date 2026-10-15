@@ -234,6 +234,7 @@ mod tests {
         assert!(may_install(Path::new("/Users/me/Applications/Arkos IDE.app"), home));
         assert!(!may_install(Path::new("/Users/me/scratch/Arkos IDE.app"), home), "a copy run from a scratch folder");
         assert!(!may_install(Path::new("/Applications/Arkos IDE.app.new"), home), "the update's staging name");
+        assert!(!may_install(Path::new("/Applications/Arkos IDE.app.old"), home), "the update's kept previous app");
         assert!(!may_install(Path::new("/Applications/Arkos IDE.app.new/Contents/MacOS/Arkos IDE.app"), home));
         assert!(!may_install(Path::new("/Users/other/Applications/Arkos IDE.app"), home), "another user's");
     }

@@ -1392,7 +1392,7 @@ impl Root {
     fn set_start_at_login(&mut self, on: bool, asked: bool, cx: &mut Context<Self>) {
         if on && !launch_agent::may_install_here() {
             if asked {
-                self.show_notice("Start at login needs the app in /Applications".into(), cx);
+                self.show_notice("Start at login needs the app in /Applications or ~/Applications".into(), cx);
             } else {
                 eprintln!("arkos: not running from /Applications: the login item is left as it is");
             }
