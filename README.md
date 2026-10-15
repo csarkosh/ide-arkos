@@ -15,8 +15,8 @@ doing (a breathing glyph while it works, a warm dot when it waits on you, a mute
 shell ended), the title bar counts the sessions waiting, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
 each Claude Code conversation resumed. The sidebar shows git status in the tree and the
-worktrees, and the viewer marks a file's changes against HEAD. The browser pane docks a Chrome window into a pane (Accessibility
-permission needed). Milestone 6 is next.
+worktrees, and the viewer marks a file's changes against HEAD. The browser pane docks a Chrome
+window into a pane (Accessibility permission needed). Milestone 6 is next.
 
 Things only a person at the screen can check, in order of value:
 
