@@ -51,6 +51,7 @@ impl Link {
                 match select(events.next(), &mut stop_rx).await {
                     // The connection ended: the window's loop reconnects once it has the receiver.
                     Either::Left((None, _)) => {
+                        tracker.borrow_mut().clear();
                         let _ = cx.update(|cx| on_event(LinkEvent::Lost, cx));
                         break;
                     }
@@ -91,10 +92,10 @@ impl Link {
         self.tracker.borrow_mut().stopping(folder, &ids);
     }
 
-    /// Whether every request has been answered: a kill still out would otherwise answer into the
-    /// window's loop, which did not ask.
-    pub fn is_idle(&self) -> bool {
-        self.tracker.borrow().is_idle()
+    /// Whether a Kill is still unanswered: it would otherwise answer into the window's loop,
+    /// which did not ask.
+    pub fn kills_pending(&self) -> bool {
+        self.tracker.borrow().kills_pending()
     }
 
     /// Ends the link: the receiver and the kept messages come back for the project window.

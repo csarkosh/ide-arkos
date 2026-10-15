@@ -305,11 +305,13 @@ impl Chooser {
 
     fn choose(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         // A kill still out would answer into the window's loop, which did not ask: a moment.
-        if !self.stopping.is_empty() || self.link.as_ref().is_some_and(|l| !l.is_idle()) {
+        if !self.stopping.is_empty() || self.link.as_ref().is_some_and(|l| l.kills_pending()) {
             self.notice = Some("a moment: sessions are still stopping".into());
             cx.notify();
             return;
         }
+        // The link is the window's from here: the re-list timer finds none to ask.
+        self.link = None;
         if let Some(f) = self.on_choice.take() {
             f(folder, cx);
         }
