@@ -62,6 +62,22 @@ impl StatusRuns {
     }
 }
 
+/// What the ten-second tick runs besides `git status` (which `status_due` runs every ten
+/// seconds regardless, so a `git init` is noticed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlowTick {
+    /// The worktree list and the expanded worktrees' changes.
+    pub worktrees: bool,
+    /// The open viewers' diffs against HEAD.
+    pub rediff: bool,
+}
+
+/// Outside a repository there is no worktree to list and no HEAD to diff against: the tick
+/// runs neither until a status finds a repository and clears `not_git`.
+pub fn slow_tick_plan(not_git: bool) -> SlowTick {
+    SlowTick { worktrees: !not_git, rediff: !not_git }
+}
+
 /// The paths whose fingerprint changed since `last`. A path not in `last` is a baseline.
 pub fn changed(last: &HashMap<PathBuf, Option<(u128, u64)>>, now: &HashMap<PathBuf, Option<(u128, u64)>>) -> Vec<PathBuf> {
     now.iter().filter(|(p, f)| last.get(*p).is_some_and(|l| l != *f)).map(|(p, _)| p.clone()).collect()
@@ -104,12 +120,17 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
             if worktrees_run.elapsed() >= STATUS_EVERY {
                 worktrees_run = Instant::now();
                 let refreshed = root.update(cx, |root, cx| {
-                    root.worktrees.mark_all_stale();
-                    root.load_pending_worktrees(cx);
-                    root.refresh_worktrees(cx);
+                    let plan = slow_tick_plan(root.explorer.not_git);
+                    if plan.worktrees {
+                        root.worktrees.mark_all_stale();
+                        root.load_pending_worktrees(cx);
+                        root.refresh_worktrees(cx);
+                    }
                     // A commit or checkout changes HEAD with the files untouched: the viewers'
                     // diffs are computed again.
-                    root.rediff_viewers(cx);
+                    if plan.rediff {
+                        root.rediff_viewers(cx);
+                    }
                 });
                 if refreshed.is_err() {
                     return;
@@ -164,6 +185,12 @@ mod tests {
         assert_eq!(runs.request(), StatusAction::Start, "that run starts");
         assert!(!runs.landed(), "nothing came in while it ran");
         assert_eq!(runs.request(), StatusAction::Start);
+    }
+
+    #[test]
+    fn outside_a_repository_the_slow_tick_lists_no_worktrees_and_diffs_nothing() {
+        assert_eq!(slow_tick_plan(false), SlowTick { worktrees: true, rediff: true });
+        assert_eq!(slow_tick_plan(true), SlowTick { worktrees: false, rediff: false }, "status alone keeps running, on its own timer");
     }
 
     #[test]
