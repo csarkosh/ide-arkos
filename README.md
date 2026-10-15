@@ -56,6 +56,11 @@ Things only a person at the screen can check, in order of value:
   seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
   "(restarted)"
 - "Update now" when nothing changed relaunches the window and every tab comes back attached
+- push, `gh workflow run release -f version=X`, wait for the run, see "update ready: X" in the
+  title bar within five minutes, stop typing for thirty seconds: the window relaunches with every
+  shell and tab where it was; `arkos --version` in a tab prints X
+- `[update] auto = false`: the badge stays and "Update now" applies it
+- a relaunched window opens without taking focus from the app in use (verify by eye)
 - editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
@@ -271,19 +276,23 @@ otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) a
 
 ## Updating
 
+The IDE is installed as `/Applications/Arkos IDE.app` through the Homebrew cask (its text is in
+`homebrew/arkos-ide.rb`), which holds both `arkos` and `arkosd`. The cask says `auto_updates`, so
+`brew upgrade` leaves the app alone and the IDE updates itself.
+
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
 and verifies a newer build, and the window applies it once you have been idle for thirty seconds
 (no typing, nothing open): `arkosd` swaps in place and the window relaunches with every shell
 still there. `[update] auto = false` keeps the badge and "Update now" instead; "Check for
 updates" in the palette asks now.
 
-Sessions live in `arkosd`, so updating never ends one. After `brew upgrade arkos`, or
-`cargo build --release` into the binaries you run, the title bar shows "update ready" within
+Sessions live in `arkosd`, so updating never ends one. After `cargo build --release` into the
+binaries you run (a build from source), the title bar shows "update ready" within
 five minutes (or at the next launch), and the palette's "Update now" does the rest: if the
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
 process (same pid, the shells stay its children) and the window reconnects; then the window
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
-history. The daemon and window speak protocol 3; the daemon still serves protocol 1 and 2 windows,
+history. The daemon and window speak protocol 4; the daemon still serves protocol 1 to 3 windows,
 and reads the previous handover format, so updating from the update-in-place build is an ordinary
 "Update now". Upgrading from milestone 2b is the one update that needs `pkill -x arkosd` (the old
 daemon knows nothing of handovers), which ends every session.
@@ -296,12 +305,28 @@ A window newer than its daemon (one started from a new build while an older daem
 is refused and stops reconnecting, so "Update now" cannot reach that daemon. The fix is the
 one-time path above: `pkill -x arkosd`, which ends every session, and open the window again.
 
+## Releasing
+
+Releases are built by the `release` workflow, which runs only when you start it:
+`gh workflow run release -f version=0.2.1` (or the Actions tab). It bumps the version, tags
+`v0.2.1`, builds on a macOS runner, assembles and ad-hoc signs `Arkos IDE.app`, signs
+`manifest.json` with the release key (the repository secret `ARKOS_RELEASE_KEY`; make a pair with
+`scripts/release-key`, keep the secret there and in your password manager, and put the public half
+in `crates/protocol/src/release_key.rs`), and publishes a GitHub Release. Every running daemon
+sees it within five minutes. `release-tool verify --public <key> manifest.json manifest.json.sig`
+checks a published manifest by hand. `packaging/test.sh` runs the same packaging steps locally on
+a dev build.
+
 ## Build and run
 
 ```bash
 cargo build --release
 ./target/release/arkos        # starts arkosd on demand, opens one terminal in the current folder
 ```
+
+This runs a build from source. The released app is `/Applications/Arkos IDE.app`, installed by
+the Homebrew cask and kept current by the daemon (see Updating); `packaging/bundle.sh` is what
+assembles it.
 
 The daemon keeps running after the window closes; sessions survive the UI being killed. Logs:
 `~/Library/Application Support/arkos/arkosd.log`. A window newer than the daemon is refused
@@ -318,6 +343,7 @@ new one) and ends every session, so do it when nothing important is running.
 
 ```bash
 cargo test
+sh packaging/test.sh   # a dev build bundled, a manifest signed with a throwaway key, verified
 ```
 
 ## If you get headaches

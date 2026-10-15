@@ -71,8 +71,8 @@ arm64 runner (free on this public repository; it is manual so no minute is spent
    }
    ```
    and sign the manifest bytes with `scripts/release-sign` (a tiny Rust binary in
-   `crates/release-tool`, run on the runner) into `manifest.json.sig` (minisign-compatible
-   format, so `minisign -V` on a Mac verifies it by hand).
+   `crates/release-tool`, run on the runner) into `manifest.json.sig` (the base64 of the raw
+   64-byte ed25519 signature over the manifest bytes; `release-tool verify` checks it by hand).
 8. `gh release create v0.2.1` with the zip, `manifest.json` and `manifest.json.sig`, and
    release notes from the commits since the previous tag.
 
@@ -100,7 +100,10 @@ all keep working across updates. A moved bundle is the existing "install again" 
 
 The bundle swap is Sparkle's: unpack the verified zip to `Arkos IDE.app.new` beside the
 installed bundle, rename the installed one to `Arkos IDE.app.old`, rename `.new` into
-place, and delete `.old` after the next successful window launch. Two renames on one volume
+place, and delete `.old` after the next successful window launch. Before the swap the daemon
+writes the rollback marker `updates/applied.json`, which records the version and the window pids
+present at apply, so only a new window's connect confirms the update (the old windows
+reconnecting after the daemon's exec confirm nothing). Two renames on one volume
 are atomic each; the running processes keep their open files (the old inodes), which is what
 the update-in-place handover relies on.
 
@@ -129,8 +132,9 @@ UI to block. Every `check_every` (default five minutes) and on `CheckForUpdates`
 2. Verify the signature over the manifest bytes with the compiled-in public key (crate
    `ed25519-compact`, no dependencies of its own). A bad signature deletes the staging folder
    and logs it; nothing else is read from an unsigned manifest.
-3. Compare: the manifest's version must be greater than the running daemon's (semver), or
-   equal with a different git hash (a re-release); otherwise there is nothing to do. A version
+3. Compare: the manifest's version must be strictly greater than the running daemon's and
+   than any staged one (semver only; a re-release is a new patch version, so a replayed older
+   manifest can never roll back); otherwise there is nothing to do. A version
    already marked bad (step 5) is skipped until the manifest changes.
 4. Download the zip to `<staging>/<version>/bundle.zip` with `curl` (`--max-filesize` from
    the manifest's `size` plus a 200 MB cap, `--max-time 600`), then check the size and the
@@ -150,7 +154,7 @@ build into the bundle still shows up as "update ready".
 
 ## 6. Apply when idle (the window)
 
-`Response::Hello` gains `staged: Option<String>` and the daemon sends
+A protocol 4 window sends `UpdateStatus` after Hello and the daemon sends
 `Event::UpdateStaged` when it stages one, so a window knows at connect time and after. The
 title bar shows "update ready: 0.2.1" (the existing exception item). The window applies it
 when all of these hold for 30 s (`idle_after`, config): no key or mouse event, no drag, no
@@ -169,12 +173,11 @@ and the palette's "Update now" remain.
 
 ## 7. Failure and rollback
 
-- The new window must connect within 20 s of launch. If it does not, or if it exits twice
-  within a minute, the daemon renames `.old` back into place, launches the old window, and
-  marks the version bad; the title bar says "update 0.2.1 rolled back". The daemon itself was
-  already exec'd from the new binary; a daemon that fails to come up after exec is the
-  update-in-place design's section 7 case (the window's reconnect loop starts the binary at
-  the launch path, which after the rollback is the old one).
+- The new window must connect within 20 s of launch. If it does not, the daemon renames `.old`
+  back into place, launches the old window, and marks the version bad; the title bar says
+  "update 0.2.1 rolled back". The daemon itself was already exec'd from the new binary; a daemon
+  that fails to come up after exec is the update-in-place design's section 7 case (the window's
+  reconnect loop starts the binary at the launch path, which after the rollback is the old one).
 - `.old` is deleted after the next successful window connect; if the machine restarts in
   between, the launch agent's `--recover` run deletes a leftover `.old` or `.new`.
 - A download or signature failure never changes anything on disk outside the staging
