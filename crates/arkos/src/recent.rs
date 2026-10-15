@@ -55,9 +55,17 @@ pub fn with_noted(list: Vec<Recent>, folder: &Path, now: u64) -> Vec<Recent> {
 /// Records that `folder` was opened at `now` (seconds since the epoch). The file is written to a
 /// sibling temp file and renamed over, so a crash never leaves it torn.
 pub fn note(file: &Path, folder: &Path, now: u64) -> std::io::Result<()> {
-    let list = with_noted(load(file), folder, now);
     let parent = file.parent().ok_or_else(|| std::io::Error::other("recent file has no parent"))?;
     std::fs::create_dir_all(parent)?;
+    // One writer at a time across windows: the lock covers the read, modify and write, and is
+    // released when `lock` drops after the rename. The empty lock file stays beside the list.
+    let lock = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(parent.join("recent.json.lock"))?;
+    // SAFETY: flock on a descriptor this process owns; released when `lock` drops.
+    let rc = unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let list = with_noted(load(file), folder, now);
     let name = file.file_name().ok_or_else(|| std::io::Error::other("recent file has no name"))?;
     let tmp = parent.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
     let text = serde_json::to_string_pretty(&RecentFile { folders: list }).map_err(std::io::Error::other)?;
@@ -70,6 +78,7 @@ pub fn note(file: &Path, folder: &Path, now: u64) -> std::io::Result<()> {
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
+    drop(lock);
     written
 }
 
@@ -111,7 +120,8 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("\"folders\"") && text.contains("\"opened_unix\""), "{text}");
         let leftovers: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(leftovers.len(), 1, "no temp file left behind: {leftovers:?}");
+        let others = leftovers.iter().filter(|n| *n != "recent.json.lock").count();
+        assert_eq!(others, 1, "no temp file left behind: {leftovers:?}");
     }
 
     #[test]
@@ -153,5 +163,22 @@ mod tests {
         let shown = visible(&list);
         assert_eq!(shown.len(), 1);
         assert!(shown[0].path.ends_with("kept"));
+    }
+
+    #[test]
+    fn two_writers_at_once_keep_both_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("recent.json");
+        let (a, b) = (file.clone(), file.clone());
+        let ta = std::thread::spawn(move || for i in 0..20 { note(&a, Path::new(&format!("/a/{i}")), 1000 + i).unwrap(); });
+        let tb = std::thread::spawn(move || for i in 0..20 { note(&b, Path::new(&format!("/b/{i}")), 2000 + i).unwrap(); });
+        ta.join().unwrap();
+        tb.join().unwrap();
+        let list = load(&file);
+        assert_eq!(list.len(), 40, "forty notes under the cap of fifty: a lost update would show as fewer");
+        for i in 0..20 {
+            assert!(list.iter().any(|r| r.path == Path::new(&format!("/a/{i}"))), "/a/{i} lost");
+            assert!(list.iter().any(|r| r.path == Path::new(&format!("/b/{i}"))), "/b/{i} lost");
+        }
     }
 }
