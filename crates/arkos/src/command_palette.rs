@@ -25,7 +25,7 @@ pub struct Item {
 /// themes" writes; `update_ready` is the status bar's "update ready" text, when there is one;
 /// `update_error` is whether the last update failed, which offers "Retry update".
 /// `show_ignored` is whether the file tree lists ignored entries.
-pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, update_error: bool, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path, show_ignored: bool) -> Vec<Item> {
+pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, update_error: bool, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path, show_ignored: bool, unread: usize, to_fix: usize) -> Vec<Item> {
     let mut out = Vec::new();
     for a in ACTIONS {
         if a.name == "command palette" || a.name == "quit" {
@@ -47,6 +47,8 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
                 (StartAtLogin::On, _) => "on, set in config.toml ([recovery] start_at_login)".to_string(),
                 (StartAtLogin::Off, _) => "off, set in config.toml ([recovery] start_at_login)".to_string(),
             },
+            Command::Notifications => if unread == 0 { "nothing new".to_string() } else { format!("{unread} unread") },
+            Command::Doctor => if to_fix == 0 { "all good".to_string() } else { format!("{to_fix} to fix") },
             Command::InstallHooks => format!("into {}", claude_settings.display()),
             Command::ShowIgnoredFiles => if show_ignored { "on" } else { "off" }.to_string(),
             _ => keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default(),
@@ -243,19 +245,19 @@ mod tests {
         let cfg = Config::default();
         let dir = std::path::Path::new("/u/.config/arkos/themes");
         let settings = Path::new("/Users/me/.claude/settings.json");
-        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false);
+        let items = items(&cfg, &["navy".into(), "navy-light".into()], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0);
         // The palette and quit are not offered, nor "Retry update" with no update error.
         let n_actions = crate::keymap::ACTIONS.len() - 3;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
         assert_eq!(items.iter().find(|i| i.label == "Check for updates").unwrap().command, Command::CheckForUpdates);
         assert!(!items.iter().any(|i| i.command == Command::RetryUpdate));
-        let failed = self::items(&cfg, &[], "comfortable", "navy", dir, None, true, StartAtLogin::Ask, false, settings, false);
+        let failed = self::items(&cfg, &[], "comfortable", "navy", dir, None, true, StartAtLogin::Ask, false, settings, false, 0, 0);
         assert_eq!(failed.iter().find(|i| i.label == "Retry update").unwrap().command, Command::RetryUpdate);
         assert!(!items.iter().any(|i| i.label == "Command palette" || i.label == "Quit"));
         let update = items.iter().find(|i| i.label == "Update now").unwrap();
         assert_eq!(update.command, Command::UpdateNow);
         assert_eq!(update.detail, "relaunch on the installed binaries");
-        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"), false, StartAtLogin::Ask, false, settings, false);
+        let ready = self::items(&cfg, &[], "comfortable", "navy", dir, Some("update ready: 0.2.0 (def5678)"), false, StartAtLogin::Ask, false, settings, false, 0, 0);
         assert_eq!(ready.iter().find(|i| i.label == "Update now").unwrap().detail, "update ready: 0.2.0 (def5678)");
         let split = items.iter().find(|i| i.label == "Split right").unwrap();
         assert_eq!(split.detail, "Cmd+\\");
@@ -272,7 +274,7 @@ mod tests {
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/arkos/themes");
-        let items = self::items(&cfg, &[], "compact", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false);
+        let items = self::items(&cfg, &[], "compact", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0);
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor, current", "the floor note stays");
         let sidebar = items.iter().find(|i| i.label == "Toggle sidebar").unwrap();
@@ -290,10 +292,10 @@ mod tests {
         assert_eq!(items.iter().find(|i| i.label == "Undock Chrome window").unwrap().command, Command::UndockChromeWindow);
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
-        let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true);
+        let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true, 0, 0);
         assert_eq!(shown.iter().find(|i| i.label == "Show ignored files").unwrap().detail, "on");
         let unbound = cfg_with("split right", "");
-        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false);
+        let items = self::items(&unbound, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0);
         assert_eq!(items.iter().find(|i| i.label == "Split right").unwrap().detail, "");
     }
 
@@ -302,18 +304,28 @@ mod tests {
         let cfg = Config::default();
         let settings = Path::new("/Users/me/.claude/settings.json");
         let find = |items: &[Item], label: &str| items.iter().find(|i| i.label == label).cloned().unwrap_or_else(|| panic!("no {label}"));
-        let ask_off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, false);
+        let ask_off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, false, 2, 1);
+        let quiet = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, false, settings, false, 0, 0);
         assert_eq!(find(&ask_off, "Start at login").detail, "off: turn on so sessions come back after a restart");
         assert_eq!(find(&ask_off, "Start at login").command, Command::StartAtLogin);
-        let ask_on = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, true, settings, false);
+        let ask_on = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Ask, true, settings, false, 0, 0);
         assert_eq!(find(&ask_on, "Start at login").detail, "on: run to turn off");
-        let pinned = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::On, true, settings, false);
+        let pinned = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::On, true, settings, false, 0, 0);
         assert_eq!(find(&pinned, "Start at login").detail, "on, set in config.toml ([recovery] start_at_login)");
-        let off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Off, false, settings, false);
+        let off = items(&cfg, &[], "comfortable", "navy", Path::new("/t"), None, false, StartAtLogin::Off, false, settings, false, 0, 0);
         assert_eq!(find(&off, "Start at login").detail, "off, set in config.toml ([recovery] start_at_login)");
         let hooks = find(&ask_off, "Install Claude Code hooks");
         assert_eq!(hooks.detail, "into /Users/me/.claude/settings.json");
         assert_eq!(hooks.command, Command::InstallHooks);
+        let bell = find(&ask_off, "Notifications");
+        assert_eq!((bell.detail.as_str(), bell.command), ("2 unread", Command::Notifications));
+        let doc = find(&ask_off, "Doctor");
+        assert_eq!((doc.detail.as_str(), doc.command), ("1 to fix", Command::Doctor));
+        assert_eq!(find(&quiet, "Notifications").detail, "nothing new");
+        assert_eq!(find(&quiet, "Doctor").detail, "all good");
+        let labels: Vec<&str> = ask_off.iter().map(|i| i.label.as_str()).collect();
+        let check = labels.iter().position(|l| *l == "Check for updates").unwrap();
+        assert_eq!(&labels[check + 1..check + 3], &["Notifications", "Doctor"]);
     }
 
     fn cfg_with(name: &str, keys: &str) -> Config {

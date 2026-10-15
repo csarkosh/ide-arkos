@@ -1165,7 +1165,7 @@ impl Root {
             return;
         }
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored);
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix());
         self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
         cx.notify();
     }
@@ -2086,6 +2086,8 @@ impl Root {
                 self.sessions.check_for_updates();
                 self.show_notice("checking for updates".into(), cx);
             }
+            Notifications => self.toggle_bell(cx),
+            Doctor => self.toggle_doctor(cx),
             RetryUpdate => {
                 self.update_error = None;
                 self.refresh_update_badge(cx);

@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, RetryUpdate, StartAtLogin, InstallHooks,
+        OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, OpenFolder, OpenRecent,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
@@ -61,6 +61,10 @@ pub enum Command {
     UpdateNow,
     /// Ask the daemon to check for a new release now.
     CheckForUpdates,
+    /// Opens the bell's popover.
+    Notifications,
+    /// Opens the doctor's popover.
+    Doctor,
     /// Forget the last update error and check again (the palette offers it only after one).
     RetryUpdate,
     /// Install or remove the login item that brings sessions back after a restart; with the
@@ -134,6 +138,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("find", "cmd-f"),
     row("update now", ""),
     row("check for updates", ""),
+    row("notifications", ""),
+    row("doctor", ""),
     row("retry update", ""),
     row("start at login", ""),
     row("install claude code hooks", ""),
@@ -220,6 +226,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "find" => KeyBinding::new(keys, Find, context),
         "update now" => KeyBinding::new(keys, UpdateNow, context),
         "check for updates" => KeyBinding::new(keys, CheckForUpdates, context),
+        "notifications" => KeyBinding::new(keys, Notifications, context),
+        "doctor" => KeyBinding::new(keys, Doctor, context),
         "retry update" => KeyBinding::new(keys, RetryUpdate, context),
         "start at login" => KeyBinding::new(keys, StartAtLogin, context),
         "install claude code hooks" => KeyBinding::new(keys, InstallHooks, context),
@@ -390,6 +398,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "find" => Command::Find,
         "update now" => Command::UpdateNow,
         "check for updates" => Command::CheckForUpdates,
+        "notifications" => Command::Notifications,
+        "doctor" => Command::Doctor,
         "retry update" => Command::RetryUpdate,
         "start at login" => Command::StartAtLogin,
         "install claude code hooks" => Command::InstallHooks,
@@ -443,7 +453,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         NewTerminal => Command::NewTerminal, ClearToStart => Command::ClearToStart,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
-        UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
+        UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
         OpenFolder => Command::OpenFolder, OpenRecent => Command::OpenRecent,
@@ -485,6 +495,8 @@ mod tests {
         ("cmd-f", "find", "Find"),
         ("", "update now", "UpdateNow"),
         ("", "check for updates", "CheckForUpdates"),
+        ("", "notifications", "Notifications"),
+        ("", "doctor", "Doctor"),
         ("", "retry update", "RetryUpdate"),
         ("", "start at login", "StartAtLogin"),
         ("", "install claude code hooks", "InstallHooks"),
@@ -545,7 +557,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 11, "an empty string unbinds, and update now, check for updates, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 13, "an empty string unbinds, and update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -554,11 +566,13 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 10, "only update now, check for updates, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 12, "only update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, open recent, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
         assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
         assert_eq!(command_for("undock chrome window"), Some(Command::UndockChromeWindow));
+        assert_eq!(command_for("notifications"), Some(Command::Notifications));
+        assert_eq!(command_for("doctor"), Some(Command::Doctor));
     }
 
     #[test]
