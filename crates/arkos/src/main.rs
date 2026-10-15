@@ -181,6 +181,10 @@ pub struct Root {
     pub context_menu: Transient<sidebar::ContextMenu>,
     /// What the bell shows.
     pub notices: notices::Notices,
+    /// The doctor's table as last probed.
+    pub doctor_states: Vec<doctor_panel::Check>,
+    /// True once the doctor turned the scroll-acceleration key off during this run.
+    pub scroll_applied: bool,
     /// When the bell was last opened before the opening now; notices newer than this are unread.
     pub bell_read_before: Option<SystemTime>,
     /// The title bar popover that is open (or fading out).
@@ -504,6 +508,8 @@ impl Root {
             preview_tab: None,
             context_menu: Transient::Hidden,
             notices: Default::default(),
+            doctor_states: Vec::new(),
+            scroll_applied: false,
             popover: Transient::Hidden,
             bell_read_before: None,
             icon_hover: chrome::Popover::Closed,
@@ -606,6 +612,9 @@ impl Root {
         if next == chrome::Popover::Closed {
             self.close_popovers(now);
         } else {
+            if next == chrome::Popover::Doctor {
+                self.probe_doctor();
+            }
             if next == chrome::Popover::Bell {
                 self.bell_read_before = self.notices.opened_at();
                 self.notices.opened(SystemTime::now());
@@ -660,6 +669,7 @@ impl Root {
         if let Some(v) = updated {
             self.notices.set(notices::Kind::Updated, format!("Updated to {v}"), None, SystemTime::now());
         }
+        self.probe_doctor();
     }
 
     /// Runs what a notice's button (or its row) offers.
@@ -691,23 +701,154 @@ impl Root {
 
     /// How many fixes the doctor has to offer; the dot on its icon shows when there are any.
     fn doctor_needs_fix(&self) -> usize {
-        0
+        doctor_panel::needs_fix(&self.doctor_states)
+    }
+
+    /// Reads the doctor's table: files and flags only, no prompt, no launchctl. Run when the
+    /// popover opens, when an action finishes, and once at startup so the dot is right.
+    fn probe_doctor(&mut self) {
+        let settings = hook_cli::claude_settings_path();
+        let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
+        let p = doctor_panel::Probe {
+            settings: &settings,
+            exe: &exe,
+            start_at_login: self.config.recovery.start_at_login,
+            login_item_installed: launch_agent::installed(&launch_agent::agent_path()),
+            accessibility: self.ax.trusted(false),
+            scroll_applied: self.scroll_applied,
+        };
+        self.doctor_states = doctor_panel::probe_all(&p);
+    }
+
+    /// Runs what a doctor row's button offers. The file actions re-probe when they finish.
+    fn doctor_action(&mut self, id: doctor_panel::CheckId, cx: &mut Context<Self>) {
+        use doctor_panel::{CheckId, State};
+        match id {
+            CheckId::WheelScroll => {
+                let path = hook_cli::claude_settings_path();
+                let root = cx.entity();
+                cx.spawn(async move |_, cx| {
+                    let r = cx.background_executor().spawn(async move { hook_cli::set_wheel_scroll_acceleration_at(&path, false) }).await;
+                    let _ = root.update(cx, |root, cx| {
+                        if r.is_ok() {
+                            root.scroll_applied = true;
+                        }
+                        root.probe_doctor();
+                        if let Err(e) = r {
+                            if let Some(c) = root.doctor_states.iter_mut().find(|c| c.id == CheckId::WheelScroll) {
+                                c.state = State::Broken(e);
+                                c.button = None;
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            CheckId::StartAtLogin => self.toggle_start_at_login(cx),
+            CheckId::TitleHook => self.install_hooks(cx),
+            CheckId::Accessibility => cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"),
+        }
+    }
+
+    /// Installs the Claude Code hooks off the UI thread and says what happened.
+    fn install_hooks(&mut self, cx: &mut Context<Self>) {
+        let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let result = cx.background_executor().spawn(async move { hook_cli::install_hooks(&exe) }).await;
+            let text = match result {
+                Ok((path, added, replaced)) => format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", path.display()),
+                Err(e) => format!("cannot install hooks: {e}"),
+            };
+            let _ = root.update(cx, |root, cx| {
+                root.show_notice(text, cx);
+                root.probe_doctor();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Builds the doctor's report off the UI thread (it talks to the daemon and runs a
+    /// subprocess) and puts it on the clipboard.
+    fn copy_doctor_report(&mut self, cx: &mut Context<Self>) {
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let text = cx.background_executor().spawn(async { doctor::report(&doctor::Where::real(), SystemTime::now()) }).await;
+            let _ = root.update(cx, |root, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                root.show_notice("doctor report copied to the clipboard".into(), cx);
+            });
+        })
+        .detach();
     }
 
     /// The open popover's card, drawn while it fades out too. The bell lists its notices; the
-    /// doctor's rows come in a later task.
+    /// doctor lists its checks, each with the button that fixes it.
     fn render_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let (which, opacity) = self.popover.current(self.frame_now)?;
         let which = *which;
         let live = self.popover.value().is_some();
         let w = f32::from(window.viewport_size().width);
-        let dim = self.theme.chrome.text_dim.hsla();
         let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.family());
-        if which != chrome::Popover::Bell {
-            return Some(card.child(div().px(px(10.0)).py(px(4.0)).text_color(dim).child("Checking...")));
-        }
         let c = &self.theme.chrome;
         let (text_c, dim_c) = (c.text.hsla(), c.text_dim.hsla());
+        if which != chrome::Popover::Bell {
+            let red = self.theme.terminal.red.hsla();
+            let mut card = card;
+            for (i, check) in self.doctor_states.iter().enumerate() {
+                let (state_text, state_c) = match &check.state {
+                    doctor_panel::State::Broken(t) => (t.clone(), red),
+                    doctor_panel::State::Good(t) | doctor_panel::State::Fix(t) | doctor_panel::State::Pinned(t) => (t.clone(), dim_c),
+                };
+                let id = check.id;
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_color(text_c).child(check.title))
+                            .child(div().text_color(state_c).child(state_text)),
+                    );
+                if let Some(label) = check.button {
+                    row = row.child(
+                        div()
+                            .id(("doctor-action", i))
+                            .flex_none()
+                            .text_color(text_c)
+                            .cursor_pointer()
+                            .hover(|s| s.underline())
+                            .child(label)
+                            .on_click(cx.listener(move |root, _, _, cx| {
+                                root.doctor_action(id, cx);
+                                cx.notify();
+                            })),
+                    );
+                }
+                card = card.child(row);
+            }
+            return Some(card.child(
+                div().flex().flex_row().px(px(10.0)).py(px(4.0)).child(
+                    div()
+                        .id("doctor-copy-report")
+                        .flex_none()
+                        .text_color(text_c)
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .child("Copy report")
+                        .on_click(cx.listener(|root, _, _, cx| {
+                            root.copy_doctor_report(cx);
+                        })),
+                ),
+            ));
+        }
         let items = self.notices.items().to_vec();
         if items.is_empty() {
             return Some(card.child(div().px(px(10.0)).py(px(4.0)).text_color(dim_c).child("Nothing new")));
@@ -2226,19 +2367,7 @@ impl Root {
                 self.start_idle_timer(cx);
             }
             StartAtLogin => self.toggle_start_at_login(cx),
-            InstallHooks => {
-                let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
-                let root = cx.entity();
-                cx.spawn(async move |_, cx| {
-                    let result = cx.background_executor().spawn(async move { hook_cli::install_hooks(&exe) }).await;
-                    let text = match result {
-                        Ok((path, added, replaced)) => format!("installed {added} hook entries in {} (replaced {replaced}); restart claude for them to take effect", path.display()),
-                        Err(e) => format!("cannot install hooks: {e}"),
-                    };
-                    let _ = root.update(cx, |root, cx| root.show_notice(text, cx));
-                })
-                .detach();
-            }
+            InstallHooks => self.install_hooks(cx),
             ToggleSidebar => {
                 self.sidebar.set_collapsed(!self.sidebar.collapsed, Instant::now());
                 // A hidden sidebar cannot hold the keys: they go back to the focused pane.
@@ -2410,7 +2539,11 @@ impl Root {
                 (false, Ok(true)) => "start at login is off".to_string(),
                 (_, Err(e)) => format!("start at login: {e}"),
             };
-            let _ = root.update(cx, |root, cx| root.show_notice(text, cx));
+            let _ = root.update(cx, |root, cx| {
+                root.show_notice(text, cx);
+                root.probe_doctor();
+                cx.notify();
+            });
         })
         .detach();
     }

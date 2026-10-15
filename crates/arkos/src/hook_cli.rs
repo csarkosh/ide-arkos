@@ -239,7 +239,6 @@ pub fn edit_settings(path: &Path, edit: impl FnOnce(serde_json::Value) -> serde_
     std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6c on.
 pub fn set_wheel_scroll_acceleration_at(path: &Path, enabled: bool) -> Result<(), String> {
     edit_settings(path, |mut v| {
         if !v.is_object() {

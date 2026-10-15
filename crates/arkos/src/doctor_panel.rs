@@ -1,5 +1,4 @@
 //! The doctor's table (spec 6d, section 5): each check is a probe of the user's setup and the one action that fixes it. Probes read files and flags handed in by Root; nothing here prompts, runs launchctl, or opens a window.
-#![cfg_attr(not(test), allow(dead_code))] // Used from Task 6c on.
 
 use std::path::Path;
 

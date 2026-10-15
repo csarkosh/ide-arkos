@@ -29,7 +29,7 @@ pub struct Where {
 }
 
 impl Where {
-    fn real() -> Where {
+    pub(crate) fn real() -> Where {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         Where {
             exe: std::env::current_exe().ok(),
