@@ -20,6 +20,12 @@ window into a pane (Accessibility permission needed). Milestone 6 is next.
 
 Things only a person at the screen can check, in order of value:
 
+- `claude` in a tab with `/tui fullscreen`, a long answer: the wheel and the trackpad scroll the
+  conversation; a question with options: clicking one picks it; Option+Delete at the prompt
+  deletes the word before the cursor
+- drag across terminal text: it tints; Cmd+C, then Cmd+V at a prompt pastes it; double click
+  selects a word, triple click a line, a click clears it; a drag inside Claude Code's fullscreen
+  selects without the program reacting; `less` on a long file: the wheel moves the file
 - in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
   clears them within ten seconds
 - Worktrees: expand one: a shimmer, then its changed files fade in; collapse and expand again:
@@ -259,6 +265,8 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
 | Cmd+F | find in the terminal or viewer |
+| Cmd+C | copy the selected terminal text |
+| Cmd+V | paste |
 | Cmd+B | toggle the sidebar |
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
@@ -281,7 +289,14 @@ Notes:
   kept for Shift+Cmd+T, since nothing is left to end or bring back. A closed viewer tab comes
   back too, pinned, in the pane it was closed from.
 - Option+Left and Option+Right send the word-jump sequences ESC b and ESC f. Every other
-  modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`.
+  modified arrow, Home and End sends xterm's `ESC [ 1 ; m X`. Option+Delete sends ESC DEL, the
+  word delete, and a modified forward delete sends `ESC [ 3 ; m ~`.
+- Drag across terminal text to select it (double click a word, triple click a line); Cmd+C
+  copies it and a click clears it. A program that asks for mouse reports, such as Claude Code's
+  fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and its
+  options can be clicked; a drag still selects locally and the program never sees it. On the
+  alternate screen without mouse reports (`less`, for one) the wheel sends arrow keys, and
+  Shift+wheel always scrolls Arkos's own history.
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
   or quote) is underlined under the pointer, and Cmd+click opens it in your browser, as in
   Terminal.app. A plain click does nothing to it.

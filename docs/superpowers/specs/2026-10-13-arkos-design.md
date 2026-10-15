@@ -146,8 +146,12 @@ frames draw the latest state; animations are time-based, not frame-based.
 **Text.** CoreText via GPUI. Default Menlo at 16 px with line height 1.5 (section 7.1).
 
 **Input.** Keystrokes go to the daemon as bytes; bracketed paste is supported (Claude Code
-relies on it for multi-line input). Mouse selection and copy are local; copy uses the system
-clipboard. BEL marks the tab (section 5). A link in the output (`http://` or `https://` to the
+relies on it for multi-line input). Mouse selection and copy are local (a drag, a double click for
+a word, a triple click for a line; Cmd+C); copy uses the system clipboard. A program that turns
+on mouse reporting gets the wheel and single clicks at the cell under the pointer, in the SGR or
+X10 form it asked for; a drag is a local selection and never a report. On the alternate screen
+without reporting the wheel sends arrow keys (xterm's alternate scroll); Shift+wheel always
+scrolls the local history (added 2026-10-15). BEL marks the tab (section 5). A link in the output (`http://` or `https://` to the
 next space or quote, trailing punctuation left out) is underlined under the pointer and opened
 by Cmd+click, Terminal.app's gesture, so a plain click stays free for selection (added 2026-10-14).
 
