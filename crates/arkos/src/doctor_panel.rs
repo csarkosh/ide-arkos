@@ -68,7 +68,7 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
     vec![
         Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: scroll_state, button: scroll_button },
         Check { id: CheckId::StartAtLogin, title: "Start at login", state: login_state, button: login_button },
-        Check { id: CheckId::TitleHook, title: "Claude Code hooks", state: hook_state, button: hook_button },
+        Check { id: CheckId::TitleHook, title: "Claude Code title hook", state: hook_state, button: hook_button },
         Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: ax_state, button: ax_button },
     ]
 }
@@ -99,6 +99,7 @@ mod tests {
         assert_eq!(checks[1].button, Some("Install"));
         assert_eq!(checks[2].state, State::Fix("missing: tabs show no Claude Code state".into()));
         assert_eq!(checks[2].button, Some("Install"));
+        assert_eq!(checks[2].title, "Claude Code title hook");
         assert_eq!(checks[3], Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: State::Good("granted".into()), button: None });
         assert_eq!(needs_fix(&checks), 3);
     }
