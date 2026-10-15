@@ -1,6 +1,6 @@
 # Arkos IDE: markdown editing (milestone 7)
 
-Date: 2026-10-15. Status: draft for Cyrus's review. Builds on the read-only viewer (milestone 4a,
+Date: 2026-10-15. Status: approved by Cyrus on 2026-10-15 ("Everything else looks good") with the toggle moved into the pane, section 9. Builds on the read-only viewer (milestone 4a,
 `crates/arkos/src/viewer.rs`, `viewer_element.rs`, `highlight.rs`) and the sidebar watcher
 (`explorer_watch.rs`). Written against main at `8f8de3e` (0.2.17).
 
@@ -35,7 +35,7 @@ Rulings taken in chat on 2026-10-15:
 | 4 | Keys and text input through gpui's input handler (IME, dead keys) | `md_view.rs`, `keymap.rs` |
 | 5 | Saving: autosave, Cmd+S, atomic write, the watcher told | `viewer.rs`, `explorer_watch.rs` |
 | 6 | External changes while editing: reload or ask | `viewer.rs` |
-| 7 | The per-tab Rendered or Raw toggle at the right end of the tab bar; mode persisted | `pane_view.rs`, `tree.rs`, `workspace.rs` |
+| 7 | The per-tab Rendered or Raw toggle, a pill at the top right of the pane; mode persisted | `pane_view.rs`, `tree.rs`, `workspace.rs` |
 | 8 | Links, images, task checkboxes in the rendered view | `md_view.rs` |
 | 9 | Find in both modes | `viewer.rs` |
 | 10 | README and keybinding table | `README.md`, `keymap.rs`, `config.rs` |
@@ -195,11 +195,17 @@ The watcher reloads a viewer whose fingerprint changed. For a markdown tab:
 
 ## 9. The toggle
 
-At the right end of the tab bar, before "+", when the active tab is a markdown tab: a 20 px
-high two-segment control, "Rendered" and "Raw", 11 px text, the active segment in
-`tab_active` with `text`, the other in `text_dim`; hover lights a segment. A click, or
-`cmd-shift-m`, switches the active tab's mode and saves the layout. Other markdown tabs keep
-their modes. The bar's slim form (a browser tab in front) never shows it.
+Inside the pane, not in the tab bar: a pill floating at the top right of the active markdown
+tab's content, the same shape and style as the terminal's "jump to bottom" pill at the bottom
+right (`absolute`, 10 px from the top edge and 14 px from the right, `px(10) py(4)`,
+`rounded(10)`, `banner` background, `text` colour, the UI family at 12 px, pointer cursor; a
+mouse-down on it focuses the pane and stops there, as the jump pill's does). Its text names
+the view a click switches to: "show raw" while the tab renders, "show rendered" while it shows
+raw. It is drawn for markdown tabs only, over both modes, and never while the find bar is
+open in that corner's way (the find bar sits at the top right too, so the pill moves below it
+while the bar is open). `cmd-shift-m` ("toggle markdown view", `Viewer` context) does the same.
+Switching saves the layout; other markdown tabs keep their modes. The bar's slim form (a
+browser tab in front) is unaffected, since a browser tab is never a markdown tab.
 
 ## 10. Find
 
@@ -236,8 +242,8 @@ step through hits. Closing the find bar returns to the caret's block.
 
 Status rows: open a README in Arkos, it renders; click a paragraph, it turns raw with the
 caret where you clicked; type, wait a second, `git diff` shows the change; press Enter in a list,
-the next bullet appears; tick a task checkbox, the file shows `[x]`; Cmd+Shift+M shows the raw
-file and back; edit the file in another editor while a line is half typed, the banner offers
+the next bullet appears; tick a task checkbox, the file shows `[x]`; the "show raw" pill at the top right of the pane, or Cmd+Shift+M, shows the raw file and
+back; edit the file in another editor while a line is half typed, the banner offers
 Reload and Keep mine; a 5 MB markdown file opens and scrolls without stutter; Reduce Motion
 changes nothing here. Keyboard table rows for the two actions and the editor's keys. A section
 "Editing markdown" explaining the two modes, autosave, and that other files stay read-only for
