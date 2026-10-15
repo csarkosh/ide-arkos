@@ -78,7 +78,7 @@ Things only a person at the screen can check, in order of value:
 - the File menu shows "New Window" and nothing else; Cmd+N or the menu opens the chooser with
   the recent folders and "Open folder..."; picking one opens it in a new window; `"open recent"
   = "cmd-shift-n"` left in config.toml binds the chooser to that key with no config error
-- the title bar's right side shows a bell and a circled plus (the doctor) and no text; with an
+- the title bar's right side shows a bell and a stethoscope (the doctor) and no text; with an
   update staged the bell wears a dot and its popover says "Update ready: X" with "Update now";
   after an update the bell says "Updated to X" once, gone after you open and close it; a
   daemon drop shows "arkosd reconnecting" there and the row goes when it is back
@@ -415,8 +415,8 @@ the login item is reinstalled ("Start at login" in the palette); a daemon alread
 the interval it started with. `auto` and `idle_after_secs` apply at once.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
-`wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the circled
-plus at the right of the title bar) sets it for you.
+`wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
+stethoscope at the right of the title bar) sets it for you.
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
 in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen

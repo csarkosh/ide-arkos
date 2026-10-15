@@ -50,8 +50,8 @@ edge, vertically centred in the 28 px bar.
 
 Each icon is 16 px, stroked 1.5 px in `chrome.text_dim`, `chrome.text` on hover and while its
 popover is open. They are drawn in code with gpui paths (no asset pipeline exists and two
-icons do not justify one): the bell is an outline with a clapper; the doctor is a circle with a
-plus inside. The dot is 6 px, `chrome.accent` (the glow colour), at the icon's top right,
+icons do not justify one): the bell is an outline with a clapper; the doctor is a stethoscope
+(amended 2026-10-15 at Cyrus's request; the first cut's circled plus read as an Add button). The dot is 6 px, `chrome.accent` (the glow colour), at the icon's top right,
 present when there is something unread (bell) or something to fix (doctor). Under Reduce
 Motion nothing here animates anyway; the hover colour is a plain change.
 
