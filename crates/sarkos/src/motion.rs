@@ -3,6 +3,8 @@
 //! reload (`refresh` runs on the background executor; it spawns a process). The transitions of
 //! transient chrome live here too: their durations, curves and holders, all on `Instant`.
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 static REDUCE: AtomicBool = AtomicBool::new(false);
@@ -191,6 +193,54 @@ impl<T> Transient<T> {
     }
 }
 
+/// One `Transient` per key for chrome drawn per pane or per terminal (the focus glow, find
+/// bars), each stamped with the frame that last drew it, so one that stops being drawn (its tab
+/// went to the background, its pane closed) is forgotten instead of kept forever.
+pub struct Fades<K, T> {
+    map: HashMap<K, (Transient<T>, Instant)>,
+}
+
+impl<K, T> Default for Fades<K, T> {
+    fn default() -> Self {
+        Fades { map: HashMap::new() }
+    }
+}
+
+impl<K: Hash + Eq, T> Fades<K, T> {
+    /// Shows `want` for `key` (or hides it with `None`) and returns what to draw this frame,
+    /// drawn at `now`: the value and its opacity, the last value while it fades out.
+    pub fn sync(&mut self, key: K, want: Option<T>, now: Instant) -> Option<(&T, f32)> {
+        if want.is_none() && !self.map.contains_key(&key) {
+            return None;
+        }
+        let entry = self.map.entry(key).or_insert_with(|| (Transient::Hidden, now));
+        entry.0.set(want, now);
+        entry.1 = now;
+        entry.0.current(now)
+    }
+
+    pub fn animating(&self, now: Instant) -> bool {
+        self.map.values().any(|(h, _)| h.animating(now))
+    }
+
+    /// Drops what finished fading out, and what the frame drawn at `last_frame` did not draw.
+    pub fn settle(&mut self, now: Instant, last_frame: Instant) {
+        self.map.retain(|_, (h, drawn)| {
+            h.settle(now);
+            *drawn == last_frame && !h.is_hidden()
+        });
+    }
+
+    pub fn remove(&mut self, key: &K) {
+        self.map.remove(key);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// A width easing from one value to another over `SIDEBAR_SLIDE` (Cmd+B). Turned around
 /// mid-way, the next slide starts from `at(now)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -357,6 +407,33 @@ mod tests {
         assert_eq!(s.at(t0), 0.0);
         assert!(!s.animating(t0));
         set(false);
+    }
+
+    #[test]
+    fn fades_follow_each_key_and_forget_what_is_no_longer_drawn() {
+        let _g = test_lock(false);
+        let t0 = Instant::now();
+        let mut f: Fades<u32, ()> = Fades::default();
+        assert!(f.sync(1, None, t0).is_none());
+        assert_eq!(f.len(), 0, "nothing kept for a key never shown");
+        assert_eq!(f.sync(1, Some(()), t0), Some((&(), 0.0)));
+        assert!(f.animating(t0));
+        let t1 = t0 + ENTER;
+        assert_eq!(f.sync(1, Some(()), t1), Some((&(), 1.0)));
+        assert!(!f.animating(t1));
+        // Focus moves: 1 fades out while 2 fades in.
+        let t2 = t1 + MS(10);
+        assert_eq!(f.sync(1, None, t2), Some((&(), 1.0)));
+        assert_eq!(f.sync(2, Some(()), t2), Some((&(), 0.0)));
+        f.settle(t2, t2);
+        assert_eq!(f.len(), 2);
+        let t3 = t2 + EXIT;
+        assert!(f.sync(1, None, t3).is_none());
+        f.sync(2, Some(()), t3);
+        f.settle(t3, t3);
+        assert_eq!(f.len(), 1, "a finished exit is dropped");
+        f.settle(t3 + MS(16), t3 + MS(16));
+        assert_eq!(f.len(), 0, "a key the last frame did not draw is forgotten");
     }
 
     #[test]

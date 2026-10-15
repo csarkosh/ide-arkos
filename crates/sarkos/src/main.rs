@@ -196,6 +196,14 @@ pub struct Root {
     /// Where a dragged tab would land if released now. Cleared on drop, on a release anywhere
     /// else, and on the first move after a release outside the window.
     pub drop_target: Option<drag::DropTarget>,
+    /// Each pane's drop tint as drawn: it follows `drop_target` a frame at a time, fading and
+    /// gliding, so the logic above stays a plain `Option`.
+    pub drop_tints: HashMap<PaneId, drag::Tint>,
+    /// The focus glow of the focused pane, and of the one it just left while that fades.
+    pub glow: motion::Fades<PaneId, ()>,
+    /// The find bars as drawn, by terminal or viewer entity: the open bar, and a closed one
+    /// while it fades out.
+    pub find_bars: motion::Fades<gpui::EntityId, find::FindLook>,
     /// When each empty pane's animation started; settled panes keep an old instant.
     pub empty_anim: HashMap<PaneId, std::time::Instant>,
     /// The basename of `$SHELL`, shown on a tab whose program set no title.
@@ -329,6 +337,9 @@ impl Root {
             pane_order: Vec::new(),
             closed: ClosedStack::default(),
             drop_target: None,
+            drop_tints: HashMap::new(),
+            glow: motion::Fades::default(),
+            find_bars: motion::Fades::default(),
             empty_anim: HashMap::new(),
             shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
             config,
@@ -361,10 +372,20 @@ impl Root {
             || self.palette.animating(now)
             || self.notice.animating(now)
             || self.wt_prompt.animating(now)
+            || self.drop_tints.values().any(|t| t.animating(now))
+            || self.glow.animating(now)
+            || self.find_bars.animating(now)
     }
 
-    /// Drops what finished fading out.
-    fn settle(&mut self, now: Instant) {
+    /// Drops what finished fading out, and the per-key fades the frame drawn at `last_frame`
+    /// did not draw.
+    fn settle(&mut self, now: Instant, last_frame: Instant) {
+        self.drop_tints.retain(|_, t| {
+            t.fade.settle(now);
+            !t.fade.is_hidden()
+        });
+        self.glow.settle(now, last_frame);
+        self.find_bars.settle(now, last_frame);
         self.tab_menu.settle(now);
         self.context_menu.settle(now);
         self.wt_menu.settle(now);
@@ -516,6 +537,8 @@ impl Root {
         self.pane_focus.remove(&pane);
         self.empty_anim.remove(&pane);
         self.bar_scroll.remove(&pane);
+        self.drop_tints.remove(&pane);
+        self.glow.remove(&pane);
         if self.tab_menu.current(self.frame_now).is_some_and(|(p, _)| *p == pane) {
             // The pane is gone, and the menu with nothing to fade over.
             self.tab_menu.clear();
@@ -531,6 +554,7 @@ impl Root {
             .chain(self.pane_focus.keys())
             .chain(self.empty_anim.keys())
             .chain(self.bar_scroll.keys())
+            .chain(self.drop_tints.keys())
             .copied()
             .filter(|p| !self.pane_order.contains(p))
             .collect();
@@ -1557,8 +1581,8 @@ impl Render for Root {
         let size = window.viewport_size();
         self.window_active = window.is_window_active();
         let now = Instant::now();
-        self.frame_now = now;
-        self.settle(now);
+        let last_frame = std::mem::replace(&mut self.frame_now, now);
+        self.settle(now, last_frame);
         let theme = self.theme.clone();
         let status = if banner_visible(self.reconnecting_since, now) { self.status.clone() } else { String::new() };
         // A notice fades in and out; it keeps its row until it has faded.

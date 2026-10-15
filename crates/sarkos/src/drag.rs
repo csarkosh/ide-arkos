@@ -5,7 +5,9 @@
 use crate::palette::Rgb;
 use crate::tree::{PaneId, TabId};
 use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Point, Render, SharedString, Window};
+use crate::motion::{self, Transient};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// What a tab drag carries. `tab` is the tab's stable id: the drop re-locates the tab by it, so
 /// `pane` and `idx` (where the drag started) only describe the start.
@@ -140,6 +142,62 @@ pub fn zone_rect(zone: Zone, w: f32, h: f32) -> (f32, f32, f32, f32) {
     }
 }
 
+/// A rectangle inside a pane's body: (x, y, w, h).
+pub type ZoneRect = (f32, f32, f32, f32);
+
+/// `a` moved `t` of the way to `b`, every edge alike.
+pub fn lerp_rect(a: ZoneRect, b: ZoneRect, t: f32) -> ZoneRect {
+    let l = |x: f32, y: f32| x + (y - x) * t;
+    (l(a.0, b.0), l(a.1, b.1), l(a.2, b.2), l(a.3, b.3))
+}
+
+/// One pane's drop tint: it fades in and out with the hovered zone, and between zones its
+/// rectangle glides from where it was last painted. It only ever glides from its own pane's
+/// rectangle, and only while the tint is still on screen: a tint that faded away starts afresh.
+#[derive(Default)]
+pub struct Tint {
+    pub fade: Transient<Zone>,
+    /// Where the glide started, and when.
+    glide: Option<(ZoneRect, Instant)>,
+    /// The rectangle the last frame painted.
+    last: Option<ZoneRect>,
+}
+
+impl Tint {
+    /// Points the tint at `zone`, or takes it down with `None`.
+    pub fn aim(&mut self, zone: Option<Zone>, now: Instant) {
+        if let Some(z) = zone {
+            match self.fade.current(now).map(|(shown, _)| *shown) {
+                Some(shown) if shown != z => self.glide = self.last.map(|r| (r, now)),
+                Some(_) => {}
+                None => {
+                    self.glide = None;
+                    self.last = None;
+                }
+            }
+        }
+        self.fade.set(zone, now);
+    }
+
+    /// The rectangle to paint in a body `w` by `h`, and its opacity; `None` when nothing shows.
+    /// Fading out, it stays where it was, whatever the drop did to the pane under it.
+    pub fn paint(&mut self, w: f32, h: f32, now: Instant) -> Option<(ZoneRect, f32)> {
+        let (zone, opacity) = self.fade.current(now)?;
+        let to = zone_rect(*zone, w, h);
+        let rect = match (self.fade.value(), self.glide) {
+            (None, _) => self.last.unwrap_or(to),
+            (Some(_), Some((from, since))) => lerp_rect(from, to, motion::enter_progress(since, now, motion::ENTER)),
+            (Some(_), None) => to,
+        };
+        self.last = Some(rect);
+        Some((rect, opacity))
+    }
+
+    pub fn animating(&self, now: Instant) -> bool {
+        self.fade.animating(now) || (self.fade.value().is_some() && self.glide.is_some_and(|(_, since)| motion::enter_progress(since, now, motion::ENTER) < 1.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +231,62 @@ mod tests {
         assert_eq!(paste_text(Path::new("/x/a\nrm -rf ~")), None, "a newline would run the rest");
         assert_eq!(paste_text(Path::new("/x/\u{1b}]0;title\u{7}")), None, "an escape sequence would reach the terminal");
         assert_eq!(paste_text(Path::new("/x/del\u{7f}")), None);
+    }
+
+    #[test]
+    fn a_rectangle_moves_part_of_the_way() {
+        let a = (0.0, 0.0, 100.0, 50.0);
+        let b = (50.0, 0.0, 50.0, 100.0);
+        assert_eq!(lerp_rect(a, b, 0.0), a);
+        assert_eq!(lerp_rect(a, b, 0.5), (25.0, 0.0, 75.0, 75.0));
+        assert_eq!(lerp_rect(a, b, 1.0), b);
+    }
+
+    #[test]
+    fn the_tint_fades_in_glides_between_zones_and_never_from_a_stale_rect() {
+        let _g = motion::test_lock(false);
+        let (w, h) = (400.0, 200.0);
+        let t0 = Instant::now();
+        let mut t = Tint::default();
+        t.aim(Some(Zone::Center), t0);
+        assert_eq!(t.paint(w, h, t0), Some(((0.0, 0.0, 400.0, 200.0), 0.0)), "a fresh tint fades in where it is, no glide");
+        let t1 = t0 + motion::ENTER;
+        assert_eq!(t.paint(w, h, t1), Some(((0.0, 0.0, 400.0, 200.0), 1.0)));
+        assert!(!t.animating(t1));
+        // To the right half: from the painted rectangle, three quarters there at half time.
+        t.aim(Some(Zone::Right), t1);
+        assert!(t.animating(t1));
+        assert_eq!(t.paint(w, h, t1).unwrap().0, (0.0, 0.0, 400.0, 200.0));
+        let (r, o) = t.paint(w, h, t1 + motion::ENTER / 2).unwrap();
+        assert_eq!(o, 1.0, "the opacity stays up while it glides");
+        assert!((r.0 - 150.0).abs() < 0.5 && (r.2 - 250.0).abs() < 0.5, "{r:?}");
+        let t2 = t1 + motion::ENTER;
+        assert_eq!(t.paint(w, h, t2).unwrap().0, (200.0, 0.0, 200.0, 200.0));
+        // A drop: it fades where it was, even though the pane under it changed size.
+        t.aim(None, t2);
+        let (r, o) = t.paint(w / 2.0, h, t2 + motion::EXIT / 2).unwrap();
+        assert_eq!(r, (200.0, 0.0, 200.0, 200.0));
+        assert!(o > 0.0 && o < 1.0);
+        let t3 = t2 + motion::EXIT;
+        assert!(t.paint(w, h, t3).is_none());
+        assert!(!t.animating(t3));
+        // Hovered again later: it starts at the new zone, not from the old rectangle.
+        t.aim(Some(Zone::Left), t3 + motion::EXIT);
+        assert_eq!(t.paint(w, h, t3 + motion::EXIT).unwrap().0, (0.0, 0.0, 200.0, 200.0));
+    }
+
+    #[test]
+    fn the_tint_snaps_under_reduce_motion() {
+        let _g = motion::test_lock(true);
+        let t0 = Instant::now();
+        let mut t = Tint::default();
+        t.aim(Some(Zone::Center), t0);
+        assert_eq!(t.paint(400.0, 200.0, t0), Some(((0.0, 0.0, 400.0, 200.0), 1.0)));
+        t.aim(Some(Zone::Top), t0);
+        assert_eq!(t.paint(400.0, 200.0, t0), Some(((0.0, 0.0, 400.0, 100.0), 1.0)));
+        assert!(!t.animating(t0));
+        t.aim(None, t0);
+        assert!(t.paint(400.0, 200.0, t0).is_none());
     }
 
     #[test]

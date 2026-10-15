@@ -6,15 +6,17 @@
 
 use crate::config_watch::fingerprint;
 use crate::diff::{self, DiffMarks};
+use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
+use crate::motion::{self, Fades};
 use crate::palette::Rgb;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
 use crate::tree::{PaneId, Tab, TabId};
 use crate::viewer;
 use crate::Root;
-use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
+use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, EntityId, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -473,18 +475,24 @@ pub fn count_text(current: usize, len: usize) -> String {
 }
 
 /// The viewer's find bar, `find::render`'s chrome: the query, the count, a close button. Keys
-/// go to `find_key`, Cmd+V pastes; a click focuses `pane`.
-pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
-    let (query, count, focus) = {
-        let f = viewer.read(cx).find.as_ref()?;
-        let count = if f.searching { "searching".to_string() } else { count_text(f.current, f.hits.len()) };
-        (f.query.clone(), count, f.focus.clone())
+/// go to `find_key`, Cmd+V pastes; a click focuses `pane`. It fades and slides like the
+/// terminal's; while closing it is only drawn.
+pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: SharedString, bars: &mut Fades<EntityId, FindLook>, now: Instant, cx: &mut Context<Root>) -> Option<Div> {
+    let (look, focus) = match viewer.read(cx).find.as_ref() {
+        Some(f) => {
+            let count = if f.searching { "searching".to_string() } else { count_text(f.current, f.hits.len()) };
+            (Some(FindLook { query: f.query.clone(), count }), Some(f.focus.clone()))
+        }
+        None => (None, None),
     };
+    let (FindLook { query, count }, opacity) = bars.sync(viewer.entity_id(), look, now).map(|(l, o)| (l.clone(), o))?;
+    let live = focus.is_some();
     let (v_keys, v_close) = (viewer.clone(), viewer.clone());
     Some(
         div()
             .absolute()
-            .top(px(6.0))
+            .top(px(BAR_TOP - motion::lift(opacity, motion::PANEL_LIFT)))
+            .opacity(opacity)
             .right(px(14.0))
             .flex()
             .flex_row()
@@ -499,36 +507,40 @@ pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: Sh
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
             .text_size(px(12.0))
-            .track_focus(&focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-                    root.focus_pane(pane, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
-                // The viewer's own key handler would scroll on the same key.
-                cx.stop_propagation();
-                let ks = &ev.keystroke;
-                if ks.modifiers.platform && ks.key == "v" {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        v_keys.update(cx, |v, cx| v.find_paste(&text, cx));
-                    }
-                    return;
-                }
-                v_keys.update(cx, |v, cx| v.find_key(ks, cx));
-            }))
+            .when_some(focus, |d, focus| {
+                d.track_focus(&focus)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                            root.focus_pane(pane, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
+                        // The viewer's own key handler would scroll on the same key.
+                        cx.stop_propagation();
+                        let ks = &ev.keystroke;
+                        if ks.modifiers.platform && ks.key == "v" {
+                            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                                v_keys.update(cx, |v, cx| v.find_paste(&text, cx));
+                            }
+                            return;
+                        }
+                        v_keys.update(cx, |v, cx| v.find_key(ks, cx));
+                    }))
+            })
             .child(div().w(px(220.0)).child(line_edit::render(&query, "find", theme, family, 12.0)))
             .child(div().text_color(theme.chrome.text_dim.hsla()).child(count))
             .child(
                 div()
                     .id(("viewer-find-close", viewer.entity_id()))
                     .text_color(theme.chrome.text_dim.hsla())
-                    .hover(|s| s.text_color(theme.chrome.text.hsla()))
-                    .cursor_pointer()
                     .child("×")
-                    .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_close.update(cx, |v, cx| v.close_find(cx)))),
+                    .when(live, |d| {
+                        d.hover(|s| s.text_color(theme.chrome.text.hsla()))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_close.update(cx, |v, cx| v.close_find(cx))))
+                    }),
             ),
     )
 }

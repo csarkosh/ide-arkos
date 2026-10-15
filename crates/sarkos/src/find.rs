@@ -5,8 +5,9 @@ use crate::line_edit::{self, Edit, LineEdit};
 use crate::terminal::{Match, Terminal, MAX_MATCHES};
 use crate::theme::Theme;
 use crate::tree::PaneId;
+use crate::motion::{self, Fades};
 use crate::Root;
-use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
+use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Entity, EntityId, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, SharedString};
 use std::time::{Duration, Instant};
 
 /// While output streams in, a stale search runs again at most this often: a full-grid search
@@ -134,20 +135,35 @@ impl Terminal {
     }
 }
 
+/// What a find bar shows, kept so a closed bar can fade out as it last looked.
+#[derive(Clone)]
+pub struct FindLook {
+    pub query: LineEdit,
+    pub count: String,
+}
+
+/// Where a find bar sits below the pane's top edge once it has slid in.
+pub const BAR_TOP: f32 = 6.0;
+
 /// The bar: query, count, close. Keys go to the terminal's `find_key`; Cmd+V pastes. `pane` is
-/// the pane showing `terminal`, which a click on the bar focuses.
-pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Option<Div> {
-    let (query, count, focus) = terminal.update(cx, |t, _| {
+/// the pane showing `terminal`, which a click on the bar focuses. It fades and slides in as it
+/// opens and out as it closes; while closing it is only drawn (no focus, keys or clicks).
+pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: SharedString, bars: &mut Fades<EntityId, FindLook>, now: Instant, cx: &mut Context<Root>) -> Option<Div> {
+    let open = terminal.update(cx, |t, _| {
         t.refresh_find();
         let f = t.find.as_ref()?;
-        Some((f.query.clone(), count_text(f.current, f.matches.len()), f.focus.clone()))
-    })?;
+        Some((FindLook { query: f.query.clone(), count: count_text(f.current, f.matches.len()) }, f.focus.clone()))
+    });
+    let (look, focus) = open.map_or((None, None), |(l, f)| (Some(l), Some(f)));
+    let (FindLook { query, count }, opacity) = bars.sync(terminal.entity_id(), look, now).map(|(l, o)| (l.clone(), o))?;
+    let live = focus.is_some();
     let t_keys = terminal.clone();
     let t_close = terminal.clone();
     Some(
         div()
             .absolute()
-            .top(px(6.0))
+            .top(px(BAR_TOP - motion::lift(opacity, motion::PANEL_LIFT)))
+            .opacity(opacity)
             .right(px(14.0))
             .flex()
             .flex_row()
@@ -162,44 +178,49 @@ pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: 
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
             .text_size(px(12.0))
-            .track_focus(&focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-                    // The terminal's mouse-down would close the bar, so the event stops here; the
-                    // pane's would focus it, so the bar does that itself (render then focuses the
-                    // bar, as the focused pane's open find).
-                    root.focus_pane(pane, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
-                // The bar sits inside the terminal's element, whose key handler would otherwise
-                // send the same key to the shell.
-                cx.stop_propagation();
-                let ks = &ev.keystroke;
-                if ks.modifiers.platform && ks.key == "v" {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        t_keys.update(cx, |t, cx| t.find_paste(&text, cx));
-                    }
-                    return;
-                }
-                // Other Cmd combinations: actions were dispatched before this handler, and the
-                // line edit answers Cmd+Backspace, Cmd+Left and Cmd+Right and ignores the rest.
-                t_keys.update(cx, |t, cx| {
-                    t.find_key(ks, cx);
-                });
-            }))
+            .when_some(focus, |d, focus| {
+                d.track_focus(&focus)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                            // The terminal's mouse-down would close the bar, so the event stops
+                            // here; the pane's would focus it, so the bar does that itself (render
+                            // then focuses the bar, as the focused pane's open find).
+                            root.focus_pane(pane, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
+                        // The bar sits inside the terminal's element, whose key handler would
+                        // otherwise send the same key to the shell.
+                        cx.stop_propagation();
+                        let ks = &ev.keystroke;
+                        if ks.modifiers.platform && ks.key == "v" {
+                            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                                t_keys.update(cx, |t, cx| t.find_paste(&text, cx));
+                            }
+                            return;
+                        }
+                        // Other Cmd combinations: actions were dispatched before this handler, and
+                        // the line edit answers Cmd+Backspace, Cmd+Left and Cmd+Right and ignores
+                        // the rest.
+                        t_keys.update(cx, |t, cx| {
+                            t.find_key(ks, cx);
+                        });
+                    }))
+            })
             .child(div().w(px(220.0)).child(line_edit::render(&query, "find", theme, family, 12.0)))
             .child(div().text_color(theme.chrome.text_dim.hsla()).child(count))
             .child(
                 div()
                     .id(("find-close", terminal.entity_id()))
                     .text_color(theme.chrome.text_dim.hsla())
-                    .hover(|s| s.text_color(theme.chrome.text.hsla()))
-                    .cursor_pointer()
                     .child("×")
-                    .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t_close.update(cx, |t, cx| t.close_find(cx)))),
+                    .when(live, |d| {
+                        d.hover(|s| s.text_color(theme.chrome.text.hsla()))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t_close.update(cx, |t, cx| t.close_find(cx))))
+                    }),
             ),
     )
 }

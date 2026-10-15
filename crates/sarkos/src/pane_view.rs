@@ -126,7 +126,11 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let body = match p.tabs.get(p.active) {
         None => render_no_tabs(root, pane, rect, window, cx),
         Some(Tab::Terminal { session, .. }) => match root.sessions.terminals.get(session).cloned() {
-            Some(terminal) => render_terminal(terminal, pane, root.family(), &theme, cx),
+            Some(terminal) => {
+                let family = root.family();
+                let now = root.frame_now;
+                render_terminal(terminal, pane, family, &theme, &mut root.find_bars, now, cx)
+            }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
         Some(Tab::Viewer { path }) => match p.ids.get(p.active).copied() {
@@ -150,14 +154,21 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     .top_0()
     .left_0()
     .size_full();
-    // The five drop zones of a dragged tab: the hovered one is tinted.
-    let overlay = match root.drop_target {
-        Some(drag::DropTarget::Pane { pane: p, zone }) if p == pane => {
-            let (x, y, w, h) = drag::zone_rect(zone, rect.w, rect.h - TAB_BAR_H);
-            Some(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(theme.chrome.focus_ring.alpha(0.4)))
-        }
+    // The five drop zones of a dragged tab: the hovered one is tinted. The tint fades in and
+    // out and glides between zones; the drop itself reads `drop_target`, never the tint.
+    let now = root.frame_now;
+    let zone = match root.drop_target {
+        Some(drag::DropTarget::Pane { pane: p, zone }) if p == pane => Some(zone),
         _ => None,
     };
+    let painted = if zone.is_some() || root.drop_tints.contains_key(&pane) {
+        let tint = root.drop_tints.entry(pane).or_default();
+        tint.aim(zone, now);
+        tint.paint(rect.w, rect.h - TAB_BAR_H, now)
+    } else {
+        None
+    };
+    let overlay = painted.map(|((x, y, w, h), opacity)| div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).opacity(opacity).bg(theme.chrome.focus_ring.alpha(0.4)));
     let content = div()
         .id(("body", pane))
         .flex_1()
@@ -181,7 +192,6 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
-    let now = root.frame_now;
     if root.tab_menu.value() == Some(&pane) && !show_overflow(p.tabs.len()) {
         // Down to one tab: the ⋯ button is gone, so its menu goes too and does not come back
         // with the next tab.
@@ -227,12 +237,13 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     });
     // The focused pane glows at its edges instead of wearing a hard line: four strips that fade
     // from the focus colour to nothing, drawn over the pane so they never move its content.
-    let glow = focused.then(|| {
+    // When focus moves, the old pane's glow fades out as the new one's fades in.
+    let glow = root.glow.sync(pane, focused.then_some(()), now).map(|(_, opacity)| {
         let from = theme.chrome.focus_ring.alpha(GLOW_ALPHA);
         let mut to = from;
         to.a = 0.0;
         glow_strips(rect.w, rect.h).map(|(x, y, w, h, angle)| {
-            div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)))
+            div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)))
         })
     });
     div()
@@ -387,7 +398,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     bar
 }
 
-fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let (font_size, line_height) = {
         let t = terminal.read(cx);
@@ -496,7 +507,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 )
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
-        .children(find::render(&terminal, pane, theme, family, cx))
+        .children(find::render(&terminal, pane, theme, family, find_bars, now, cx))
 }
 
 /// What a viewer tab shows under its find bar.
@@ -618,7 +629,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
         .child(body)
         .children(chip)
-        .children(viewer::find_bar(&viewer, pane, &theme, family, cx))
+        .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
 }
 
 /// A tab whose shell is starting or whose replay is being parsed. The pane's grid is measured by
