@@ -1,12 +1,13 @@
 //! Renders the layout tree: absolutely positioned panes and the resize handles between them
-//! (spec 4: a 4 px handle with a wider hit area, live ratio while dragging, double-click resets).
+//! (spec 4: a 2 px gap with a wider hit area and a stripe under the pointer, live ratio while
+//! dragging, double-click resets).
 
 use crate::pane_view::render_pane;
 use crate::tree::{Orientation, Rect, SplitId, HANDLE};
 use crate::Root;
 use gpui::{div, prelude::*, px, Context, Div, MouseButton, MouseDownEvent, Stateful, Window};
 
-/// The hit area around a 4 px handle.
+/// The hit area around the 2 px gap.
 pub const HANDLE_HIT: f32 = 8.0;
 
 /// Where the pointer sits along the split, as a ratio in [0, 1].
@@ -30,6 +31,9 @@ pub fn render_tree(root: &mut Root, window: &mut Window, cx: &mut Context<Root>)
     root.pane_rects.clear();
     root.forget_closed_panes();
     let (ox, oy) = (root.content.x, root.content.y);
+    // A handle not drawn this frame (its pane maximized or closed) gets no leave event: forget
+    // its hover, or its stripe would come up on its own when it is drawn again.
+    root.handle_hovered.retain(|s| layout.handles.iter().any(|h| h.0 == *s));
     let mut container = div().relative().size_full();
     for (pane, rect) in &layout.panes {
         container = container.child(

@@ -2768,6 +2768,9 @@ impl Render for Root {
                 cx.listener(|root, _ev: &MouseUpEvent, _window, cx| {
                     if root.resizing.take().is_some() {
                         root.save(cx);
+                        // The handle's stripe stays while dragging: a release outside its zone
+                        // repaints so it fades out.
+                        cx.notify();
                     }
                     if root.sidebar_resizing {
                         root.sidebar_resizing = false;
