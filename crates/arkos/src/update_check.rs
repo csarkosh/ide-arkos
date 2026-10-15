@@ -139,11 +139,6 @@ pub fn ready_text(staged: Option<&StagedUpdate>, on_disk: Option<&str>) -> Optio
     staged.map(crate::update::status_text_for).or_else(|| on_disk.map(str::to_owned))
 }
 
-/// The title bar's update item: what can be acted on first.
-pub fn title_text<'a>(ready: Option<&'a str>, error: Option<&'a str>, unreachable: Option<&'a str>) -> Option<&'a str> {
-    ready.or(error.map(|_| "update failed")).or(unreachable)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,19 +219,11 @@ mod tests {
         assert_eq!(slot.as_ref().map(|p| (p.asked_at, p.polls)), Some((100 + STALE_AFTER_SECS, 0)));
     }
     #[test]
-    fn the_title_bar_ranks_ready_then_failed_then_unreachable() {
-        assert_eq!(title_text(Some("update ready: 1"), Some("e"), Some("updates unreachable for 2 days")), Some("update ready: 1"));
-        assert_eq!(title_text(None, Some("e"), Some("u")), Some("update failed"));
-        assert_eq!(title_text(None, None, Some("u")), Some("u"));
-        assert_eq!(title_text(None, None, None), None);
-    }
-    #[test]
-    fn the_ready_text_survives_a_failure_and_outranks_it_in_the_title_bar() {
+    fn the_ready_text_survives_a_failure() {
         let staged = StagedUpdate { version: "2.0".into(), git: "g".into() };
         // `note_update_status(None, Some("bad hash"), ..)` drops `staged`; the launch path's text stays.
         let ready = ready_text(None, Some("update ready: 2.0"));
         assert_eq!(ready.as_deref(), Some("update ready: 2.0"));
-        assert_eq!(title_text(ready.as_deref(), Some("bad hash"), None), Some("update ready: 2.0"));
         assert_eq!(ready_text(Some(&staged), None).as_deref(), Some("update ready: 2.0"));
         assert_eq!(ready_text(None, None), None);
     }

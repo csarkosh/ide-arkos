@@ -409,6 +409,11 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
     .track_scroll(root.sidebar.scroll.clone())
 }
 
+/// Whether a key press is Escape with something to close.
+pub(crate) fn escape_closes(key: &str, any_open: bool) -> bool {
+    key == "escape" && any_open
+}
+
 /// The right-click menu, drawn over everything at the click. A mouse-down anywhere else closes
 /// it (the root's listener); its own rows stop the event so their click lands.
 pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
@@ -1065,15 +1070,16 @@ impl Root {
         cx.notify();
     }
 
-    /// Escape while a right-click menu (the tree's or a worktree's) is open closes the menu and
-    /// nothing else.
+    /// Escape while a right-click menu (the tree's or a worktree's) or a title bar popover is
+    /// open closes it and nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if ks.key != "escape" || (self.context_menu.value().is_none() && self.wt_menu.value().is_none()) {
+        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.popover.value().is_some()) {
             return false;
         }
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
+        self.close_popovers(now);
         cx.notify();
         true
     }
@@ -1315,6 +1321,13 @@ mod tests {
     use super::*;
     use crate::tree::{Side, Tree};
     use protocol::SessionId;
+
+    #[test]
+    fn escape_with_nothing_open_is_not_taken() {
+        assert!(!escape_closes("escape", false));
+        assert!(escape_closes("escape", true));
+        assert!(!escape_closes("a", true));
+    }
 
     #[test]
     fn the_width_stays_between_the_limits() {

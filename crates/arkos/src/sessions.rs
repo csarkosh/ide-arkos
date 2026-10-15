@@ -343,11 +343,6 @@ impl SessionManager {
         true
     }
 
-    /// Terminal tabs in the tree whose session waits on the user (the status bar's count).
-    pub fn waiting_count(&self, tree: &Tree) -> usize {
-        tree.tabs().into_iter().filter(|(_, _, tab)| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Waiting))).count()
-    }
-
     /// Whether a terminal tab in the tree shows a working agent. The list carries every
     /// project's sessions, and one no tab shows gets no `State` events to end its `Working`.
     pub fn any_working(&self, tree: &Tree) -> bool {
@@ -691,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_count_covers_terminal_tabs_in_the_tree_and_any_working_is_true_with_one() {
+    fn any_working_covers_terminal_tabs_in_the_tree() {
         let rec = Recorder::new();
         let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
         let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
@@ -701,13 +696,11 @@ mod tests {
         m.note_state(SessionId(1), ClaudeState::Waiting);
         m.note_state(SessionId(2), ClaudeState::Waiting);
         m.note_state(SessionId(9), ClaudeState::Waiting);
-        assert_eq!(m.waiting_count(&tree), 2, "a session no tab shows is not counted");
         assert!(!m.any_working(&tree));
         m.note_state(SessionId(8), ClaudeState::Working);
         assert!(!m.any_working(&tree), "another project's session, or one reconcile replaced, never pulses here");
         m.note_state(SessionId(2), ClaudeState::Working);
         assert!(m.any_working(&tree));
-        assert_eq!(m.waiting_count(&tree), 1);
     }
 
     #[test]

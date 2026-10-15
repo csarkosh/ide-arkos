@@ -5,7 +5,7 @@
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub enum Kind {
     UpdateReady,
     Updated,
@@ -16,7 +16,7 @@ pub enum Kind {
 
 /// What clicking a notice does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub enum Action {
     UpdateNow,
     OpenConfig,
@@ -33,14 +33,12 @@ pub struct Notice {
 
 /// The notices now standing, at most one per kind.
 #[derive(Default)]
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 pub struct Notices {
     items: Vec<Notice>,
     opened_at: Option<SystemTime>,
     seen_updated: bool,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
 impl Notices {
     /// Replaces the kind's notice. The same text keeps its time, so a condition that is
     /// reported again every tick does not read as new news.
@@ -112,7 +110,7 @@ impl Notices {
 }
 
 /// How long ago `at` was, for the notice list. A clock that went back reads "just now".
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub fn relative_time(at: SystemTime, now: SystemTime) -> String {
     let Ok(ago) = now.duration_since(at) else {
         return "just now".into();
@@ -146,7 +144,7 @@ fn local_clock(at: SystemTime) -> (i32, i32) {
 
 /// What the Daemon kind shows: connection trouble first, then a failed update, then an
 /// unreachable update server, else nothing.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 5 on.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 pub fn daemon_notice(label: &str, update_error: Option<&str>, unreachable: Option<&str>) -> Option<String> {
     if label != "arkosd connected" && label != "arkosd connecting" {
         Some(label.to_string())

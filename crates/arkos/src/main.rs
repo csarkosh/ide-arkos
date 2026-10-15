@@ -102,6 +102,7 @@ fn daemon_label(status: &str) -> &'static str {
 }
 
 /// `daemon_label`, except that while the window is reconnecting the bar says so at once.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
 fn daemon_label_with(status: &str, reconnecting: bool) -> &'static str {
     if reconnecting {
         "arkosd reconnecting"
@@ -179,6 +180,12 @@ pub struct Root {
     pub preview_tab: Option<TabId>,
     /// The file tree's right-click menu while it is open, and while it fades out.
     pub context_menu: Transient<sidebar::ContextMenu>,
+    /// What the bell shows.
+    pub notices: notices::Notices,
+    /// The title bar popover that is open (or fading out).
+    pub popover: Transient<chrome::Popover>,
+    /// Which title bar icon the pointer is over (`Closed`: none).
+    pub icon_hover: chrome::Popover,
     /// Bumped per `git status` run; only the newest run's result is applied.
     pub status_seq: u64,
     /// The `git status` run in flight, and whether another was asked for meanwhile.
@@ -270,6 +277,7 @@ pub struct Root {
     /// The idle timer that applies a staged update is running (`start_idle_timer`).
     pub auto_apply_timer: bool,
     /// "updates unreachable for N days" (`update::unreachable_text`) from the last `UpdateStatus`.
+    #[cfg_attr(not(test), allow(dead_code))] // Written now, read again from Task 6b on.
     pub update_unreachable: Option<String>,
     /// The poll behind a check the user asked for; None when none runs.
     pub check_poll: Option<update_check::Poll>,
@@ -495,6 +503,9 @@ impl Root {
             explorer,
             preview_tab: None,
             context_menu: Transient::Hidden,
+            notices: Default::default(),
+            popover: Transient::Hidden,
+            icon_hover: chrome::Popover::Closed,
             status_seq: 0,
             status_runs: explorer_watch::StatusRuns::default(),
             worktrees,
@@ -575,10 +586,56 @@ impl Root {
         }
     }
 
+    /// Opens the bell's popover, or closes it when it is the one open. Any right-click menu
+    /// closes first: one floating card at a time.
+    fn toggle_bell(&mut self, cx: &mut Context<Self>) {
+        self.toggle_popover(chrome::Popover::Bell, cx);
+    }
+
+    fn toggle_doctor(&mut self, cx: &mut Context<Self>) {
+        self.toggle_popover(chrome::Popover::Doctor, cx);
+    }
+
+    fn toggle_popover(&mut self, which: chrome::Popover, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        self.context_menu.hide(now);
+        self.wt_menu.hide(now);
+        self.tab_menu.hide(now);
+        let next = self.popover.value().copied().unwrap_or_default().toggled(which);
+        if next == chrome::Popover::Closed {
+            self.popover.hide(now);
+        } else {
+            self.popover.show(next, now);
+        }
+        cx.notify();
+    }
+
+    /// Closes the popover; true when one was open.
+    pub fn close_popovers(&mut self, now: Instant) -> bool {
+        self.popover.hide(now)
+    }
+
+    /// How many fixes the doctor has to offer; the dot on its icon shows when there are any.
+    fn doctor_needs_fix(&self) -> usize {
+        0
+    }
+
+    /// The open popover's card, drawn while it fades out too. Its rows come in later tasks.
+    fn render_popover(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let (which, opacity) = self.popover.current(self.frame_now)?;
+        let which = *which;
+        let live = self.popover.value().is_some();
+        let w = f32::from(window.viewport_size().width);
+        let dim = self.theme.chrome.text_dim.hsla();
+        let row = div().px(px(10.0)).py(px(4.0)).text_color(dim).child(if which == chrome::Popover::Bell { "Nothing new" } else { "Checking..." });
+        Some(chrome::popover_card(which, w, opacity, live, &self.theme, self.family()).child(row))
+    }
+
     /// Whether any transition is under way at `now`, so the next frame looks different.
     pub fn any_motion(&self, now: Instant) -> bool {
         self.tab_menu.animating(now)
             || self.context_menu.animating(now)
+            || self.popover.animating(now)
             || self.wt_menu.animating(now)
             || self.palette.animating(now)
             || self.notice.animating(now)
@@ -607,6 +664,7 @@ impl Root {
         self.find_bars.settle(now, last_frame);
         self.tab_menu.settle(now);
         self.context_menu.settle(now);
+        self.popover.settle(now);
         self.wt_menu.settle(now);
         self.palette.settle(now);
         self.notice.settle(now);
@@ -2251,6 +2309,7 @@ impl Root {
     }
 
     /// A click on the title bar's "update ready" badge: apply the staged release, else update from disk.
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 6b on.
     pub fn update_clicked(&mut self, cx: &mut Context<Self>) {
         if self.staged.is_some() {
             self.apply_staged(cx);
@@ -2313,7 +2372,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some(),
+            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.browser_drop.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -2847,11 +2906,24 @@ impl Render for Root {
                 window.focus(&f);
             }
         }
-        let daemon = daemon_label_with(&self.status, self.reconnecting_since.is_some());
-        // A failed update says so until a release is staged again or "Retry update" runs.
-        let update_text = update_check::title_text(self.update_ready.as_deref(), self.update_error.as_deref(), self.update_unreachable.as_deref());
-        let items = chrome::status_items(update_text, (daemon != CONNECTED_LABEL).then_some(daemon), self.sessions.waiting_count(&self.tree));
-        let title_bar = chrome::title_bar(&self.project, items, window.is_fullscreen(), &theme, Some(Box::new(cx.listener(|root, _, _, cx| root.update_clicked(cx)))));
+        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover };
+        let hover = |which: chrome::Popover| {
+            Box::new(cx.listener(move |root, on: &bool, _, cx| {
+                let next = if *on { which } else { chrome::Popover::Closed };
+                if root.icon_hover != next {
+                    root.icon_hover = next;
+                    cx.notify();
+                }
+            })) as chrome::IconHover
+        };
+        let title_bar = chrome::title_bar(
+            &self.project,
+            right,
+            window.is_fullscreen(),
+            &theme,
+            (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
+            (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
+        );
         let family = self.family();
         let root_div = div()
             .relative()
@@ -2931,7 +3003,7 @@ impl Render for Root {
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.wt_menu.hide(now) {
+                if root.context_menu.hide(now) | root.wt_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))
@@ -2978,6 +3050,7 @@ impl Render for Root {
             )
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))
+            .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx));
         // One request per frame while anything eases; an idle window asks for none.
         if self.any_motion(now) {
@@ -3342,6 +3415,9 @@ fn open_project_window(
                         // next activation is seen as one.
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
+                            if !root.window_active && root.close_popovers(Instant::now()) {
+                                cx.notify();
+                            }
                             root.dock_tick(cx);
                         })
                         .detach();
