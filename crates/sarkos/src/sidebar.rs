@@ -356,9 +356,13 @@ impl Root {
         }
     }
 
-    /// Runs `git status` for the project on the background executor; a result older than a
-    /// newer run is dropped.
+    /// Runs `git status` for the project on the background executor, one run at a time: asked
+    /// while one is in flight, it runs once more when that one lands. A result older than a
+    /// newer run is dropped (a backstop: runs do not overlap).
     pub fn refresh_status(&mut self, cx: &mut Context<Self>) {
+        if self.status_runs.request() == crate::explorer_watch::StatusAction::Defer {
+            return;
+        }
         self.status_seq += 1;
         let seq = self.status_seq;
         let root = self.project.clone();
@@ -368,6 +372,9 @@ impl Root {
                 if crate::explorer_watch::status_result_applies(seq, root.status_seq) {
                     root.explorer.set_status(entries);
                     cx.notify();
+                }
+                if root.status_runs.landed() {
+                    root.refresh_status(cx);
                 }
             });
         })

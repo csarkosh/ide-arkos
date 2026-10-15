@@ -14,11 +14,11 @@ pub const STATUS_EVERY: Duration = Duration::from_secs(10);
 const STATUS_DEBOUNCE: Duration = Duration::from_secs(1);
 
 /// Whether to run `git status` now: never run yet, a change seen at least a second ago and not
-/// yet reflected, or ten seconds since the last run.
+/// yet reflected, or ten seconds since the last run (changes on every poll included).
 pub fn status_due(last_run: Option<Instant>, changed_at: Option<Instant>, now: Instant) -> bool {
     match (last_run, changed_at) {
         (None, _) => true,
-        (Some(run), Some(changed)) if changed > run => now.duration_since(changed) >= STATUS_DEBOUNCE,
+        (Some(run), Some(changed)) if changed > run => now.duration_since(changed) >= STATUS_DEBOUNCE || now.duration_since(run) >= STATUS_EVERY,
         (Some(run), _) => now.duration_since(run) >= STATUS_EVERY,
     }
 }
@@ -26,6 +26,39 @@ pub fn status_due(last_run: Option<Instant>, changed_at: Option<Instant>, now: I
 /// Whether a `git status` result belongs to the newest run the window started.
 pub fn status_result_applies(seq: u64, current: u64) -> bool {
     seq == current
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusAction {
+    Start,
+    Defer,
+}
+
+/// The window's `git status` runs, one at a time so a slow repository neither piles up
+/// processes nor drops every result as superseded: a request while one is in flight is
+/// remembered, and however many came in, one more run starts when it lands.
+#[derive(Debug, Default)]
+pub struct StatusRuns {
+    in_flight: bool,
+    pending: bool,
+}
+
+impl StatusRuns {
+    pub fn request(&mut self) -> StatusAction {
+        if self.in_flight {
+            self.pending = true;
+            StatusAction::Defer
+        } else {
+            self.in_flight = true;
+            StatusAction::Start
+        }
+    }
+
+    /// A run landed: whether to request the one deferred while it ran.
+    pub fn landed(&mut self) -> bool {
+        self.in_flight = false;
+        std::mem::take(&mut self.pending)
+    }
 }
 
 /// The paths whose fingerprint changed since `last`. A path not in `last` is a baseline.
@@ -97,6 +130,20 @@ mod tests {
         assert!(!status_due(Some(t0), Some(t0 + Duration::from_millis(900)), t0 + Duration::from_millis(1300)), "a change under a second ago waits");
         assert!(status_due(Some(t0), None, t0 + STATUS_EVERY + Duration::from_millis(1)), "the slow timer");
         assert!(status_due(None, None, t0), "never run: run now");
+        let fresh = t0 + STATUS_EVERY + Duration::from_millis(100);
+        assert!(status_due(Some(t0), Some(fresh), fresh + Duration::from_millis(100)), "changes on every poll do not starve the slow timer");
+    }
+
+    #[test]
+    fn status_runs_one_at_a_time_and_requests_meanwhile_collapse_into_one_more() {
+        let mut runs = StatusRuns::default();
+        assert_eq!(runs.request(), StatusAction::Start);
+        assert_eq!(runs.request(), StatusAction::Defer, "one is in flight");
+        assert_eq!(runs.request(), StatusAction::Defer);
+        assert!(runs.landed(), "the requests made meanwhile run once more");
+        assert_eq!(runs.request(), StatusAction::Start, "that run starts");
+        assert!(!runs.landed(), "nothing came in while it ran");
+        assert_eq!(runs.request(), StatusAction::Start);
     }
 
     #[test]

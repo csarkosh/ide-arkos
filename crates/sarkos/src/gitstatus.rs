@@ -95,7 +95,7 @@ pub fn dirty_dirs(root: &Path, entries: &[(PathBuf, Status)]) -> HashSet<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::explorer::git;
+    use crate::explorer::fixture_git;
 
     #[test]
     fn porcelain_v2_entries_are_parsed_with_their_status() {
@@ -135,7 +135,7 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
     fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
-            let st = git(dir.path()).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+            let st = fixture_git(dir.path()).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
             assert!(st.success(), "git {args:?}");
         };
         run(&["init", "-q"]);
@@ -179,7 +179,7 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("sub/kept.txt"), "").unwrap();
         std::fs::write(dir.path().join("sub/my file \"q\".txt"), "").unwrap();
-        let st = git(dir.path()).args(["add", "sub/kept.txt", "sub/my file \"q\".txt"]).status().unwrap();
+        let st = fixture_git(dir.path()).args(["add", "sub/kept.txt", "sub/my file \"q\".txt"]).status().unwrap();
         assert!(st.success());
         std::fs::write(dir.path().join("sub/src/new.txt"), "").unwrap();
         std::fs::write(dir.path().join("src/outside.txt"), "").unwrap();
@@ -210,7 +210,7 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0";
         let dir = repo();
         let elsewhere = tempfile::tempdir().unwrap();
         let marker = elsewhere.path().join("ran");
-        let config = |args: &[&str]| assert!(git(dir.path()).arg("config").args(args).status().unwrap().success());
+        let config = |args: &[&str]| assert!(fixture_git(dir.path()).arg("config").args(args).status().unwrap().success());
         config(&["filter.x.clean", &format!("sh -c 'touch \"{}\"; cat'", marker.display())]);
         config(&["filter.x.process", &format!("sh -c 'touch \"{}\"'", marker.display())]);
         std::fs::write(dir.path().join(".gitattributes"), "* filter=x\n").unwrap();

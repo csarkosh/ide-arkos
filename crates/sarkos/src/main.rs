@@ -158,6 +158,8 @@ pub struct Root {
     pub context_menu: Option<sidebar::ContextMenu>,
     /// Bumped per `git status` run; only the newest run's result is applied.
     pub status_seq: u64,
+    /// The `git status` run in flight, and whether another was asked for meanwhile.
+    pub status_runs: explorer_watch::StatusRuns,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -282,6 +284,7 @@ impl Root {
             preview_tab: None,
             context_menu: None,
             status_seq: 0,
+            status_runs: explorer_watch::StatusRuns::default(),
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,

@@ -66,6 +66,15 @@ pub fn git(root: &Path) -> std::process::Command {
     cmd
 }
 
+/// `git -C <dir>` for the tests' fixtures, blind to the user's global and system config (a
+/// `commit.gpgsign` there would run gpg on the fixture's commit).
+#[cfg(test)]
+pub fn fixture_git(dir: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").arg("-C").arg(dir);
+    cmd
+}
+
 /// The filter drivers named in `git config -z --name-only --get-regexp '^filter\.'` output:
 /// `filter.<name>.<key>` records, the name possibly holding dots or spaces.
 fn filter_driver_names(out: &[u8]) -> BTreeSet<String> {
@@ -383,7 +392,7 @@ mod tests {
         let _fork = crate::client::fork_lock();
         let dir = project();
         let git = |args: &[&str]| {
-            let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+            let st = fixture_git(dir.path()).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
             assert!(st.success(), "git {args:?}");
         };
         fs::remove_dir_all(dir.path().join(".git")).unwrap();
@@ -438,7 +447,7 @@ mod tests {
         let repo = dir.path().join("repo");
         fs::create_dir(&repo).unwrap();
         let git = |args: &[&str]| {
-            let st = std::process::Command::new("git").arg("-C").arg(&repo).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+            let st = fixture_git(&repo).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
             assert!(st.success(), "git {args:?}");
         };
         git(&["init", "-q"]);
@@ -512,7 +521,7 @@ mod tests {
         // Runs git: see FORK_LOCK.
         let _fork = crate::client::fork_lock();
         let dir = tempfile::tempdir().unwrap();
-        let st = std::process::Command::new("git").arg("-C").arg(dir.path()).args(["init", "-q"]).status().unwrap();
+        let st = fixture_git(dir.path()).args(["init", "-q"]).status().unwrap();
         assert!(st.success());
         fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
         let logs = dir.path().join("logs");
