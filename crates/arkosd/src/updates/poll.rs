@@ -178,7 +178,9 @@ fn newest(a: Option<Version>, b: Option<Version>) -> Option<Version> {
 
 /// The poll thread: every `every`, or sooner when a window asked (`check_now`). The state lock
 /// is never held across a check.
-pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf, running: Version) {
+/// `running` is this daemon's version; each check compares against the newer of it and the
+/// installed `bundle`'s (`super::floor`), read afresh, so a hand-installed newer app is seen.
+pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf, running: Version, bundle: Option<PathBuf>) {
     state.lock().unwrap().update.polling = true;
     std::thread::Builder::new()
         .name("updates".into())
@@ -200,7 +202,10 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                 };
                 if due {
                     last = Some(std::time::Instant::now());
-                    let outcome = run_check(&f, &dir, &keys, &running, &mut bad, &ditto, staged.as_ref());
+                    let floor = super::floor(&running, bundle.as_deref());
+                    super::drop_stale_staged(&state, &dir, &floor);
+                    let staged = staged.filter(|s| s.is_newer_than(&floor));
+                    let outcome = run_check(&f, &dir, &keys, &floor, &mut bad, &ditto, staged.as_ref());
                     match &outcome {
                         Outcome::Nothing => {}
                         Outcome::Staged(s) => crate::journal::note(format_args!("staged {} ({}) at {}", s.version, s.git, s.bundle.display())),

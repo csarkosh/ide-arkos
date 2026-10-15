@@ -86,12 +86,26 @@ pub fn remove_not_newer(dir: &Path, running: &super::version::Version) -> Vec<St
         let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
         let Some((major, minor, patch)) = super::version::parse_semver(&name) else { continue };
         let v = super::version::Version { major, minor, patch, git: String::new() };
-        if p.is_dir() && !v.is_newer_than(running) && std::fs::remove_dir_all(&p).is_ok() {
-            removed.push(name);
+        if p.is_dir() && !v.is_newer_than(running) {
+            match std::fs::remove_dir_all(&p) {
+                Ok(()) => removed.push(name),
+                Err(e) => crate::journal::note(format_args!("staged {name} is not newer than {}.{}.{} but cannot be deleted: {e}", running.major, running.minor, running.patch)),
+            }
         }
     }
     removed.sort();
     removed
+}
+
+/// The version an app bundle says it is: `CFBundleShortVersionString` in its `Info.plist` (XML,
+/// as `packaging/Info.plist.in` writes it). None when missing or not a version.
+pub fn installed_version(bundle: &Path) -> Option<super::version::Version> {
+    let text = std::fs::read_to_string(bundle.join("Contents/Info.plist")).ok()?;
+    let after = &text[text.find("<key>CFBundleShortVersionString</key>")? + "<key>CFBundleShortVersionString</key>".len()..];
+    let value = after.trim_start().strip_prefix("<string>")?;
+    let value = &value[..value.find("</string>")?];
+    let (major, minor, patch) = super::version::parse_semver(value.trim())?;
+    Some(super::version::Version { major, minor, patch, git: String::new() })
 }
 
 #[cfg(test)]
@@ -161,6 +175,18 @@ pub(crate) mod tests {
         assert!(dir.path().join("manifest.json").exists(), "files at the top stay");
         clean_except(dir.path(), None);
         assert!(!dir.path().join("0.2.1").exists());
+    }
+
+    #[test]
+    fn the_installed_version_is_read_from_the_info_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_bundle(dir.path(), "0.2.6", "x");
+        assert_eq!(installed_version(&app).map(|v| (v.major, v.minor, v.patch)), Some((0, 2, 6)));
+        std::fs::write(app.join("Contents/Info.plist"), "<plist><dict>\n\t<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>\n</dict></plist>").unwrap();
+        assert_eq!(installed_version(&app).map(|v| v.patch), Some(3), "the template's layout");
+        std::fs::write(app.join("Contents/Info.plist"), "<plist><dict><key>CFBundleShortVersionString</key><string>@VERSION@</string></dict></plist>").unwrap();
+        assert_eq!(installed_version(&app), None);
+        assert_eq!(installed_version(&dir.path().join("missing.app")), None);
     }
 
     #[test]

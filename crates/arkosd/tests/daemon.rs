@@ -1753,7 +1753,7 @@ fn apply_update_swaps_the_bundle_and_the_new_window_confirms_it() {
     let _c2 = d.connect_as(std::process::id() + 1);
     wait_until(|| !installed.with_extension("app.old").exists(), Duration::from_secs(5));
     assert!(!d.updates_marker().exists());
-    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("nothing staged".into()), "applied once");
+    assert_eq!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error("9.9.9 is not newer than running or installed 9.9.9".into()), "applied once: the installed app is 9.9.9 now");
 }
 
 #[test]
@@ -2028,11 +2028,45 @@ fn a_staged_release_not_newer_than_a_restarted_daemon_is_deleted_and_never_offer
     // Requests are served only after the start's cleanup.
     assert!(!d.path().join("updates/9.9.9").exists(), "removed at the start");
     let journal = std::fs::read_to_string(d.path().join("updates/journal.log")).unwrap();
-    assert!(journal.contains("start: staged 9.9.9 on disk is not newer than running 9.9.10: removed"), "{journal}");
+    assert!(journal.contains("staged 9.9.9 on disk is not newer than running or installed 9.9.10: deleted"), "{journal}");
     // A few checks run; each finds the manifest's 9.9.9 not newer than 9.9.10.
     std::thread::sleep(Duration::from_millis(2500));
     assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, .. }));
-    assert!(matches!(c.request(Request::ApplyUpdate { version: "9.9.9".into() }), Response::Error(_)));
+    match c.request(Request::ApplyUpdate { version: "9.9.9".into() }) {
+        Response::Error(e) => assert!(e.contains("not newer than"), "{e}"),
+        other => panic!("{other:?}"),
+    }
     assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("0.0.1"), "nothing swapped");
     assert!(!d.updates_marker().exists());
+}
+
+#[test]
+fn a_staged_release_not_newer_than_a_hand_installed_app_is_never_offered_or_applied() {
+    // The daemon keeps running its own version; 9.9.9 is staged, then the user installs 9.9.10
+    // over the app by hand. The idle window must not be offered 9.9.9, nor swap it in.
+    let site = tempfile::tempdir().unwrap();
+    let (sk, pk) = test_release_key();
+    publish_fake_release(site.path(), "9.9.9", "fffffff", &sk);
+    let home = tempfile::tempdir().unwrap();
+    let installed = fake_installed_bundle(home.path(), "0.0.1", "0000000");
+    let d = Daemon::start(&["--update-url", &format!("file://{}/", site.path().display()), "--check-every-secs", "1", "--release-key", &pk, "--bundle", installed.to_str().unwrap(), "--watchdog-secs", "0"]);
+    let mut c = d.connect();
+    wait_until(|| matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: Some(_), .. }), Duration::from_secs(10));
+    assert!(d.path().join("updates/9.9.9/Arkos IDE.app").is_dir());
+    fake_installed_bundle(home.path(), "9.9.10", "1111111");
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, .. }), "no badge, no idle apply");
+    match c.request(Request::ApplyUpdate { version: "9.9.9".into() }) {
+        Response::Error(e) => assert!(e.contains("not newer than running or installed 9.9.10"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    let journal = d.path().join("updates/journal.log");
+    wait_until(|| !d.path().join("updates/9.9.9").exists(), Duration::from_secs(5));
+    let text = std::fs::read_to_string(&journal).unwrap();
+    assert!(text.contains("apply 9.9.9 refused: ") && text.contains("not newer than running or installed 9.9.10"), "{text}");
+    assert!(std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap().contains("9.9.10"), "the hand-installed app stays");
+    assert!(!installed.with_extension("app.old").exists() && !d.updates_marker().exists(), "nothing swapped");
+    // Later checks find 9.9.9 not newer than the installed 9.9.10: never staged again.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(matches!(c.request(Request::UpdateStatus), Response::UpdateStatus { staged: None, last_error: None, .. }));
+    assert!(!d.path().join("updates/9.9.9").exists());
 }

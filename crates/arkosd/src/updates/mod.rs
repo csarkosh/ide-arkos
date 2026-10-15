@@ -155,19 +155,35 @@ impl UpdateState {
     }
 }
 
-/// At every daemon start, the fresh one and the one an in-place exec resumes: a staged release
-/// that is not newer than what runs now (the app was updated by hand past it) is deleted from
-/// disk and forgotten, so no window is offered it and none can apply a downgrade.
+/// The version a release must be newer than: the newer of what runs and what the installed
+/// bundle says it is (the app may have been updated by hand while an older daemon runs). A
+/// missing or unreadable bundle version falls back to what runs.
+pub fn floor(running: &version::Version, bundle: Option<&Path>) -> version::Version {
+    match bundle.and_then(stage::installed_version) {
+        Some(installed) if installed.is_newer_than(running) => installed,
+        _ => running.clone(),
+    }
+}
+
+/// `0.2.6`, for messages.
+pub fn semver(v: &version::Version) -> String {
+    format!("{}.{}.{}", v.major, v.minor, v.patch)
+}
+
+/// At every daemon start (the fresh one and the one an in-place exec resumes) and before every
+/// check: a staged release that is not newer than `running` (the `floor`: the app may have been
+/// updated by hand past it) is deleted from disk and forgotten, so no window is offered it and
+/// none can apply a downgrade.
 pub fn drop_stale_staged(state: &crate::server::Shared, dir: &Path, running: &version::Version) {
     let dropped = {
         let mut st = state.lock().unwrap();
         st.update.staged.take_if(|s| poll::is_stale(s, running))
     };
     if let Some(s) = dropped {
-        crate::journal::note(format_args!("staged {} ({}) is not newer than running {}.{}.{}: dropped", s.version, s.git, running.major, running.minor, running.patch));
+        crate::journal::note(format_args!("staged {} ({}) is not newer than running or installed {}: forgotten", s.version, s.git, semver(running)));
     }
     for v in stage::remove_not_newer(dir, running) {
-        crate::journal::note(format_args!("start: staged {v} on disk is not newer than running {}.{}.{}: removed", running.major, running.minor, running.patch));
+        crate::journal::note(format_args!("staged {v} on disk is not newer than running or installed {}: deleted", semver(running)));
     }
 }
 

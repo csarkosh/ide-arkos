@@ -143,7 +143,7 @@ pub fn run_with(opts: Options, recover: bool) -> Result<()> {
         eprintln!("arkosd: recovered {} sessions and reopened {} windows", done.sessions, done.windows);
     }
     crate::updates::apply::on_start(&state, opts.update.bundle.as_deref(), &opts.update.dir, opts.update.connect_grace);
-    crate::updates::drop_stale_staged(&state, &opts.update.dir, &opts.update.running());
+    crate::updates::drop_stale_staged(&state, &opts.update.dir, &crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref()));
     serve(listener, state, opts)
 }
 
@@ -197,7 +197,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
     crate::journal::note(format_args!("resumed as {} (pid {}) from a handover written by {}, {} sessions", crate::version_string(), std::process::id(), h.written_by, st.sessions.len()));
     let state = Arc::new(Mutex::new(st));
     crate::updates::apply::on_start(&state, opts.update.bundle.as_deref(), &opts.update.dir, opts.update.connect_grace);
-    crate::updates::drop_stale_staged(&state, &opts.update.dir, &opts.update.running());
+    crate::updates::drop_stale_staged(&state, &opts.update.dir, &crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref()));
     serve(listener, state, opts)
 }
 
@@ -209,7 +209,7 @@ fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     if !u.check_every.is_zero() {
         let keys = protocol::release_key::RELEASE_PUBLIC_KEYS.iter().map(|k| k.to_string()).chain(u.extra_keys.iter().cloned()).collect();
         let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone() };
-        crate::updates::poll::start(state.clone(), fetcher, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running());
+        crate::updates::poll::start(state.clone(), fetcher, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running(), u.bundle.clone());
     }
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     let dir = crate::recovery::sessions_dir(&opts.socket);
@@ -604,10 +604,12 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             Response::Sessions(list)
         }
         Request::UpdateStatus => {
+            // Read before the lock: it reads the installed bundle's Info.plist.
+            let running = crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref());
             let st = state.lock().unwrap();
-            let running = opts.update.running();
             Response::UpdateStatus {
-                // Never a release not newer than what runs: no window may offer a downgrade.
+                // Never a release not newer than what runs or is installed: no window may offer
+                // a downgrade (no badge, no idle apply).
                 staged: st.update.staged.as_ref().filter(|s| !crate::updates::poll::is_stale(s, &running)).map(|s| StagedUpdate { version: s.version.clone(), git: s.git.clone() }),
                 last_error: st.update.last_error.clone(),
                 unreachable_for_secs: st.update.unreachable_for_secs(crate::updates::apply::now_unix()),
@@ -626,7 +628,9 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             use crate::updates::apply;
             // Checked and claimed under one lock, as `upgrade::begin` does: a second request
             // arriving while this one swaps is refused, so two cannot race the renames.
-            let running = opts.update.running();
+            let running = crate::updates::floor(&opts.update.running(), opts.update.bundle.as_deref());
+            let asked_is_stale = crate::updates::version::parse_semver(&version).is_some_and(|(major, minor, patch)| !crate::updates::version::Version { major, minor, patch, git: String::new() }.is_newer_than(&running));
+            let mut forgotten = None;
             let claimed = {
                 let mut st = state.lock().unwrap();
                 let pids: Vec<u32> = st.clients.values().filter(|c| c.connected).filter_map(|c| c.ui_pid).collect();
@@ -636,16 +640,16 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                     // one still needs for a rollback, and a window whose apply comes second hears
                     // that another one is applying (not "nothing staged", which reads as a failure).
                     _ if waiting.is_some() => Err(format!("update {} is still waiting for a window", waiting.unwrap_or_default())),
-                    (None, _) => Err("nothing staged".to_string()),
-                    // The app was updated past it (by hand, then an in-place exec): applying it
-                    // would be a downgrade. Forgotten and deleted.
+                    // The app was updated past it (by hand, while this daemon ran): applying it would
+                    // be a downgrade. Forgotten here, deleted once the lock is released.
                     (Some(s), _) if crate::updates::poll::is_stale(&s, &running) => {
                         st.update.staged = None;
-                        if let Some(folder) = s.bundle.parent() {
-                            let _ = std::fs::remove_dir_all(folder);
-                        }
-                        Err(format!("staged {} is not newer than running {}.{}.{}", s.version, running.major, running.minor, running.patch))
+                        let e = format!("staged {} is not newer than running or installed {}", s.version, crate::updates::semver(&running));
+                        forgotten = Some(s);
+                        Err(e)
                     }
+                    _ if asked_is_stale => Err(format!("{version} is not newer than running or installed {}", crate::updates::semver(&running))),
+                    (None, _) => Err("nothing staged".to_string()),
                     (Some(s), _) if s.version != version => Err(format!("staged {} is not {version}", s.version)),
                     (Some(_), None) => Err("not running from an app bundle".into()),
                     (Some(s), Some(bundle)) => {
@@ -658,6 +662,12 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 Ok(c) => c,
                 Err(e) => {
                     crate::journal::note(format_args!("apply {version} refused: {e}"));
+                    if let Some(folder) = forgotten.as_ref().and_then(|s| s.bundle.parent()) {
+                        match std::fs::remove_dir_all(folder) {
+                            Ok(()) => crate::journal::note(format_args!("staged {} deleted: {}", version, folder.display())),
+                            Err(e) => crate::journal::note(format_args!("staged {} cannot be deleted from {}: {e}", version, folder.display())),
+                        }
+                    }
                     return Some(Response::Error(e));
                 }
             };
