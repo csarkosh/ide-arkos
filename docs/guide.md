@@ -362,6 +362,76 @@ from the palette lasts until the config reloads or the app relaunches; the confi
 otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
+### Themes for agents
+
+A coding agent running in an Arkos terminal can make a theme, try it, check its contrast and
+switch to it with commands, and change the common settings the same way. `arkos guide` prints
+what the agent needs.
+
+`arkos` is on the PATH only when the binary was linked; the Homebrew cask installs the app alone.
+The full path is `/Applications/Arkos IDE.app/Contents/MacOS/arkos`. A later change puts it on the
+PATH inside Arkos shells.
+
+Exit codes, for every command: 0 done; 1 refused or failed (a bad file, an unknown name, a low
+contrast pair, a window that reported an error or none that answered, an old daemon); 2 usage;
+3 a window was needed and none is running. `--json` prints one JSON value and nothing else.
+
+| Command | What it does | Exit codes |
+| --- | --- | --- |
+| `arkos theme list` | every theme, marking a broken file | 0 |
+| `arkos theme validate <file>` | checks a file: `ok: {name}` or the error | 0, 1 |
+| `arkos theme template [<built-in>]` | a built-in's TOML to start from; `--json` gives the key schema | 0, 1 |
+| `arkos theme contrast <file-or-name>` | one line per colour pair, `ok` or `LOW (needs 4.5)` | 0, 1 when any pair is low |
+| `arkos theme add <file>` | copies a file into the themes folder; `--replace` overwrites | 0, 1 |
+| `arkos theme use <name-or-file>` | writes `[theme] dark` or `light` (`--dark`, `--light`) and reloads every window | 0, 1 |
+| `arkos theme preview <name-or-file>` | shows a draft in every window without writing; `--end` restores | 0, 1, 3 |
+| `arkos theme current` | the config's themes and what each window shows | 0, 1 |
+| `arkos settings get [<key>]` | the config file, or one key's value | 0, 1 |
+| `arkos settings set <key> <value>` | sets a key on the allow-list, then reloads every window | 0, 1, 2 |
+| `arkos config reload` | asks every window to read `config.toml` now | 0, 1, 3 |
+| `arkos guide` | prints the agent guide; `--path` writes it to a file and prints the path; `--install` installs it as a Claude Code skill | 0, 1 |
+
+Every command that talks to windows prints one line per window, `window {pid} ({project}): ...`,
+and `window {pid}: no answer` for one that stays silent for two seconds. `use` and `settings set`
+with no window open save the file and print `saved; no window running` (exit 0). `use` and
+`settings set` write `config.toml` in place and keep its comments; a `config.toml` that does not
+load is refused by `use`, and repaired by `settings set` when the edit makes it load.
+
+The configured theme's file is watched like `config.toml`: an edit applies within a second. A file
+that does not parse keeps the last good theme on screen and puts the error in the banner. While
+`config.toml` itself is broken, a theme edit waits for the config to load again. A preview ends at
+`--end`, at the next config or theme reload, or when the window closes; ending one while the
+configured theme's file is broken keeps the preview's colours with the error shown.
+
+`arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
+`font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
+`font.presets.<name>.line_height` (1.0 to 2.5), `update.auto` (true, false) and
+`recovery.start_at_login` (ask, on, off). Any other key exits 2 and lists these. A bad value is
+refused before anything is written. `settings get <key>` reads the file only, so a key left at its
+default answers `no such key`.
+
+An agent finds `arkos guide` in three ways, from no setup to one command:
+
+1. The SessionStart hook ("Install Claude Code hooks" in the palette, or the doctor). In an Arkos
+   shell it prints two lines telling the session it runs inside Arkos IDE and to run `arkos guide`
+   first. It also installs the guide as a skill into the starting Claude Code's own config folder
+   (`CLAUDE_CONFIG_DIR`, else `~/.claude`); that Claude Code loads the skill at its next start.
+2. `arkos guide --install` writes the skill (`skills/arkos-ide/SKILL.md`) into the config folder of
+   the current environment and prints a line to paste into `AGENTS.md` or `CLAUDE.md`, for agents
+   that read those. The palette's "Install agent guide" does the same. It never overwrites a skill
+   it did not write. `arkos guide --path` writes the guide to
+   `~/Library/Application Support/arkos/agent-guide.md` for agents that take a file.
+3. `arkos --help` lists `guide` first, and `arkos theme` with no arguments says `see: arkos guide`.
+
+The doctor ("Agent guide for Claude Code" in the wrench's list) offers to install or refresh the
+skill, and `arkos doctor` has a `themes:` section: `{n} themes, all valid` or one line per theme
+file that does not load, a `theme.dark` or `theme.light` that names no theme, and the skill's
+state (installed, not installed, older than this build, or a different skill). The doctor row
+checks only the folder of the environment Arkos runs in.
+
+`arkos config`, `arkos settings` and `arkos guide` are commands, so they win over a folder of the
+same name: `arkos ./config` opens the folder.
+
 ## Updating
 
 The IDE is installed as `/Applications/Arkos IDE.app` through the Homebrew cask (its text is in
@@ -405,13 +475,16 @@ and records the version in
 `~/Library/Application Support/arkos/updates/rejected` so it is never downloaded again (a newer
 release still is). To try a rejected version again, delete that file.
 
+This version (0.4.0 when released) speaks protocol 6, which the agent commands need: the update
+moves the daemon and every window together, so a window never talks to an older daemon.
+
 Sessions live in `arkosd`, so updating never ends one. After `cargo build --release` into the
 binaries you run (a build from source), the bell gets its dot and "Update ready" within
 five minutes (or at the next launch), and the palette's "Update now" does the rest: if the
 daemon's binary changed, the daemon writes a handover file, execs the new binary in the same
 process (same pid, the shells stay its children) and the window reconnects; then the window
 asks the daemon to relaunch it from the new binary and quits. Every tab comes back with its
-history. The daemon and window speak protocol 5; the daemon still serves protocol 1 to 4 windows,
+history. The daemon and window speak protocol 6; the daemon still serves protocol 1 to 5 windows,
 and reads the previous handover formats and recovery manifest, so updating from 0.2.12 or the
 update-in-place build is an ordinary "Update now". Upgrading from milestone 2b is the one
 update that needs `pkill -x arkosd` (the old daemon knows nothing of handovers), which ends

@@ -226,6 +226,26 @@ Things only a person at the screen can check, in order of value:
 - Settings: Dark theme or Mode switches the window at once and `config.toml` keeps its comments;
   "Add theme…" with a broken file shows the error and copies nothing, and with a file named
   like an installed theme asks "Replace the existing ..." first
+- edit the configured theme's file (`~/.config/arkos/themes/<name>.toml`, change `window_bg`) while
+  the window shows it: the colour follows within a second; save it with a typo: the banner names
+  the error and the last good colours stay
+- `arkos theme contrast` on a copy of `navy` with `tree.ignored` set close to `window_bg`: a
+  `LOW` line and exit 1; fix the colour: every line `ok` and exit 0
+- `arkos theme preview <file>` with two windows open: both show the draft and nothing in
+  `config.toml` changes; `arkos theme preview --end` restores both
+- `arkos theme use timo-purple`: `config.toml` keeps its comments with `[theme] dark` changed,
+  and one `window {pid} ({project}): timo-purple applied` line per window
+- `arkos settings set font.preset compact`: every terminal shrinks within a second, and the
+  config's comments are still there
+- a theme file with a syntax error in `~/.config/arkos/themes/`: `arkos doctor` lists it under
+  `themes:`; with no skill installed the doctor's "Agent guide for Claude Code" row says so, and
+  "Apply" installs it
+- `arkos guide` prints the guide; `arkos guide --path` prints a path to a readable copy
+- with the hooks installed and no skill, a fresh `claude` in a tab, asked "change the theme to
+  something warm": it runs `arkos guide` unprompted, makes and applies a theme, and ends with
+  `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
+  session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
+- the same with the skill installed (`arkos guide --install`) and the hooks removed
 - `arkos theme list` shows `navy`, `navy-light`, `timo-purple`, `peach-light` and `lavender-light` as built in; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits

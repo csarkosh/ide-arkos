@@ -68,6 +68,7 @@ markdown editor, and a Claude Code session drafting the next one from the notes.
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the
   browser pane, keys, settings and updates.
 - **[Themes](docs/themes.md)**: the five built in, and how to make your own.
+- **Agents**: run `arkos guide` in an Arkos terminal for how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.
 
 ## License

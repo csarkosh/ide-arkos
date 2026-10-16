@@ -34,8 +34,9 @@ One TOML file: a top-level `name`, five required tables of `#rrggbb` colours, an
 `[font]` table. Every colour key is required; an unknown or missing key is an error.
 `arkos theme template --json` prints the full schema as data; the summary:
 
-- `name`: a bare file stem (letters, digits, `-`, `_`). It must equal the file's stem, and it is
-  the name `[theme] dark` and `[theme] light` use.
+- `name`: the name `[theme] dark` and `[theme] light` use. `add` and `use` store the file as
+  `<name>.toml` whatever the source file is called; a file placed in the themes folder by hand
+  should be named `<name>.toml`. Letters, digits, `-` and `_` are the recommended characters.
 - `[chrome]`: surfaces `window_bg`, `title_bar`, `status_bar`, `sidebar`, `tab_bar`,
   `tab_active`, `tab_inactive`, `banner`; lines `border`, `split_handle`, `split_handle_hover`;
   the accent `focus_ring`; text `text` and `text_dim`.
@@ -88,21 +89,24 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   `added {name}` or `replaced {name}`; a name taken by a file or a built-in prints
   `exists: {name}; pass --replace` and exits 1. JSON `{ "name", "replaced" }`.
 - `arkos theme use <name-or-file> [--dark|--light] [--replace] [--json]`: a `.toml` path is added
-  first; the name must load (else `unknown theme: {name}` or the file's error, exit 1, nothing
+  first (`exists: {name}; pass --replace`, exit 1, when that name is already in the themes
+  folder: running `use draft.toml` again after more edits needs `--replace`); the name must load (else `unknown theme: {name}` or the file's error, exit 1, nothing
   written); then `[theme] dark` or `light` is written (the key from the flag, else from
   `[appearance] mode`, else from the window's system appearance, else dark) and every window
   reloads. Lines: `window {pid} ({project}): {name} applied`; a window whose active key is the
   other one prints `window {pid} ({project}): saved for {key} mode; shows {theme} in {active} mode`
-  (still exit 0); a window that shows another theme in the written key's mode prints
-  `shows {other}`, or its theme or config error, and exits 1. No window: `saved; no window running`,
-  exit 0. Every window silent: `saved; no window answered`, then the `no answer` lines, exit 0.
+  (exit 0 unless it reports a theme or config error, which is printed instead and exits 1); a
+  window that shows another theme in the written key's mode prints `shows {other}` and exits 1.
+  No window: `saved; no window running`, exit 0. No window answered (all silent or too old):
+  `saved; no window answered`, then their `no answer` / `too old for this command` lines, exit 0.
   `use` refuses a `config.toml` that does not load. JSON
   `{ "name", "key", "saved": true, "windows": [{ "pid", "project", "theme"?, "error"? }], "missing": [pids], "too_old": [pids] }`.
 - `arkos theme preview <name-or-file> [--json]` and `arkos theme preview --end [--json]`: shows a
   theme in every window without writing anything; the TOML is validated first. Lines
   `window {pid} ({project}): previewing {name}` and `window {pid} ({project}): preview ended, {theme}`.
-  Exit 3 with no window. JSON `{ "windows", "missing", "too_old" }`. A preview ends at
-  `--end`, at the next config or theme reload, or when the window closes. Ending one while the
+  Exit 3 with no window, 1 when none answered. JSON `{ "windows", "missing", "too_old" }`. It ends at
+  `--end`, at the next config or theme reload, when the system appearance changes, or when the
+  window closes. Ending one while the
   configured theme's file is broken keeps the preview's colours on screen with a theme error set.
 - `arkos theme current [--json]`: `config: dark {d}, light {l}, mode {m}`, then per window
   `window {pid} ({project}): {theme} ({dark|light}, system is {dark|light}), preset {preset}, family {family}`,
@@ -122,7 +126,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   and `saved; no window answered` as for `use`. Unlike `use`, it repairs a broken `config.toml`
   when the edit makes it load. JSON `{ "key", "value", "saved", "windows", "missing", "too_old" }`.
 - `arkos config reload [--json]`: asks every window to read its config now:
-  `window {pid} ({project}): reloaded, {theme}` or its errors. Exit 3 with no window.
+  `window {pid} ({project}): reloaded, {theme}` or its errors. Exit 3: no window; 1: none answered.
 - `arkos guide [--path | --install]`: prints this guide; `--path` writes it to a file and prints
   the path; `--install` installs the skill into your Claude config folder and prints a line to
   paste into `AGENTS.md` or `CLAUDE.md`.
