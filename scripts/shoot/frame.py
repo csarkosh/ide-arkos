@@ -16,7 +16,7 @@ Needs Pillow."""
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 SCALE = 2
 RADIUS = 12 * SCALE  # macOS windows' corner radius, about 12 points
@@ -52,19 +52,21 @@ CAPTION_PAD = (14 * SCALE, 7 * SCALE)
 CAPTION_GAP = 10 * SCALE
 
 
-def captioned(still, text):
-    """The still with its caption centred under it: a dark pill with light text, readable on
-    light and dark pages alike."""
+def captioned(still, text, align):
+    """The still with its caption on its bottom edge: a dark pill with light text, readable on
+    light and dark pages alike, hung on the window's lower border at the left, centre or right
+    (the side the still shows from behind the front one)."""
     font = ImageFont.truetype(CAPTION_FONT, CAPTION_SIZE)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     box = probe.textbbox((0, 0), text, font=font)
     tw, th = box[2] - box[0], box[3] - box[1]
     pw, ph = tw + 2 * CAPTION_PAD[0], th + 2 * CAPTION_PAD[1]
-    out = Image.new("RGBA", (max(still.width, pw), still.height + CAPTION_GAP + ph), (0, 0, 0, 0))
-    out.alpha_composite(still, ((out.width - still.width) // 2, 0))
-    px, py = (out.width - pw) // 2, still.height + CAPTION_GAP
+    inset = 36 * SCALE
+    px = {"left": PAD + inset, "center": (still.width - pw) // 2, "right": still.width - PAD - inset - pw}[align]
+    py = still.height - PAD - ph // 2
+    out = still.copy()
     pill = Image.new("RGBA", out.size, (0, 0, 0, 0))
-    ImageDraw.Draw(pill).rounded_rectangle((px, py, px + pw, py + ph), radius=ph // 2, fill=(17, 19, 24, 235))
+    ImageDraw.Draw(pill).rounded_rectangle((px, py, px + pw, py + ph), radius=ph // 2, fill=(17, 19, 24, 240), outline=(232, 234, 240, 70), width=SCALE)
     out.alpha_composite(pill)
     ImageDraw.Draw(out).text((px + CAPTION_PAD[0] - box[0], py + CAPTION_PAD[1] - box[1]), text, font=font, fill=(232, 234, 240, 255))
     return out
@@ -72,30 +74,28 @@ def captioned(still, text):
 
 def compose(out, pieces):
     """pieces: [(path, caption)], the first in front. The backs are scaled down and tilted a
-    little, set behind and to the sides; the front sits lower and centred, as Day Hike's
-    postcards do."""
-    stills = [captioned(Image.open(p).convert("RGBA"), c) for p, c in pieces]
-    front, backs = stills[0], stills[1:]
+    little, set behind and to the sides, higher than the front; the front sits lower and
+    centred, as Day Hike's postcards do, and each still carries its caption where it shows."""
     front_w = 1520 * SCALE // 2
+    back_w = round(front_w * 0.72)
+    front = captioned(Image.open(pieces[0][0]).convert("RGBA"), pieces[0][1], "center")
     front = front.resize((front_w, round(front.height * front_w / front.width)), Image.Resampling.LANCZOS)
-    back_w = round(front_w * 0.66)
-    tilts = [3.2, -3.2, 2.0]
     placed = []
-    for i, b in enumerate(backs):
+    for i, (path, caption) in enumerate(pieces[1:]):
+        side = "left" if i % 2 == 0 else "right"
+        b = captioned(Image.open(path).convert("RGBA"), caption, side)
         b = b.resize((back_w, round(b.height * back_w / b.width)), Image.Resampling.LANCZOS)
-        b = b.rotate(tilts[i % len(tilts)], expand=True, resample=Image.Resampling.BICUBIC)
-        placed.append(b)
-    # The canvas: the backs peek out by about a third of their width on each side of the front.
-    peek = round(back_w * 0.36)
+        b = b.rotate(3.0 if side == "left" else -3.0, expand=True, resample=Image.Resampling.BICUBIC)
+        placed.append((side, b))
+    # The backs show by almost half their width beside the front and rise above it.
+    peek = round(back_w * 0.46)
+    rise = round(front.height * 0.14)
     width = front.width + 2 * peek
-    top_drop = round(front.height * 0.09)
-    height = max([front.height + top_drop] + [top_drop // 2 + b.height for b in placed]) + 8 * SCALE
+    height = max([rise + front.height] + [b.height for _, b in placed]) + 4 * SCALE
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    for i, b in enumerate(placed):
-        x = 0 if i % 2 == 0 else width - b.width
-        y = top_drop // 2 if i < 2 else top_drop
-        canvas.alpha_composite(b, (x, y))
-    canvas.alpha_composite(front, ((width - front.width) // 2, top_drop))
+    for side, b in placed:
+        canvas.alpha_composite(b, (0 if side == "left" else width - b.width, 0))
+    canvas.alpha_composite(front, ((width - front.width) // 2, rise))
     canvas = canvas.crop(canvas.getbbox())
     canvas.save(out, optimize=True)
     print(f"{out}: {canvas.width}x{canvas.height}")
