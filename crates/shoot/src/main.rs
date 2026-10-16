@@ -764,7 +764,7 @@ fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) ->
     }
     // Claude Code reads .claude/settings.json in the folder it runs in: every pane's folder
     // gets one (the worktree's is its own; a worktree's checkout does not carry the main one's).
-    let settings = claude_settings(arkos_exe);
+    let settings = claude_settings(arkos_exe, &story.window.claude_theme);
     let mut dirs: Vec<PathBuf> = story.panes.iter().filter(|p| p.is_terminal()).map(|p| p.dir(demo)).collect();
     dirs.push(demo.to_path_buf());
     dirs.sort();
@@ -781,11 +781,13 @@ fn first_heading(readme: &Path) -> Option<String> {
     std::fs::read_to_string(readme).ok()?.lines().find_map(|l| l.strip_prefix("# ").map(|t| t.trim().to_string()))
 }
 
-/// The hooks `arkos hooks install` writes (hook_cli.rs), for the dev binary, and permissions.
-fn claude_settings(arkos_exe: &Path) -> serde_json::Value {
+/// The hooks `arkos hooks install` writes (hook_cli.rs), for the dev binary, the permissions a
+/// session needs to work without asking, and Claude Code's theme for the scene.
+fn claude_settings(arkos_exe: &Path, claude_theme: &str) -> serde_json::Value {
     let exe = arkos_exe.display().to_string().replace('\'', "'\\''");
     let cmd = |tail: &str| serde_json::json!({ "type": "command", "command": format!("'{exe}' notify {tail}"), "timeout": 5 });
     serde_json::json!({
+        "theme": claude_theme,
         "permissions": {
             // Every shell command: a pattern list still stops at one with a variable in it, and
             // a session stopped at a permission question is not working. The demo is a copy.

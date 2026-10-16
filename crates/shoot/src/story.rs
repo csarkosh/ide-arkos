@@ -78,6 +78,15 @@ pub struct WindowSpec {
     /// shows one look names it for both.
     #[serde(default)]
     pub theme: ThemePair,
+    /// Claude Code's own theme in the demo's sessions (its `theme` setting): `light-ansi` or
+    /// `dark-ansi` draw it in the terminal's sixteen colours, which Arkos's themes set, so its
+    /// code and prompts read on the scene's background. `auto` lets it detect the background.
+    #[serde(default = "default_claude_theme")]
+    pub claude_theme: String,
+}
+
+fn default_claude_theme() -> String {
+    "auto".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,6 +226,9 @@ impl Story {
 
     fn check(&self) -> Result<()> {
         let mut seen = std::collections::BTreeSet::new();
+        if !["auto", "dark", "light", "dark-ansi", "light-ansi", "dark-daltonized", "light-daltonized"].contains(&self.window.claude_theme.as_str()) {
+            bail!("window.claude_theme must be one of Claude Code's themes (auto, dark, light, dark-ansi, light-ansi, dark-daltonized, light-daltonized)");
+        }
         for p in &self.panes {
             if !seen.insert(p.name.as_str()) {
                 bail!("pane {:?} is listed twice", p.name);

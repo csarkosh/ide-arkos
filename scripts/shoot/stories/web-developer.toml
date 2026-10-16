@@ -20,6 +20,8 @@ sidebar_width = 240
 expanded = ["src"]
 # The built-in lavender-light theme, Visual Studio's modern light look, in both pictures.
 theme = { dark = "lavender-light", light = "lavender-light" }
+# Claude Code draws itself in the terminal's sixteen colours, which the theme sets.
+claude_theme = "light-ansi"
 
 [[pane]]
 name = "rate limit"

@@ -18,6 +18,8 @@ sidebar_width = 240
 expanded = ["posts", "notes"]
 # A writer's look: the built-in peach-light theme, cream and peach, in both pictures.
 theme = { dark = "peach-light", light = "peach-light" }
+# Claude Code draws itself in the terminal's sixteen colours, which the theme sets.
+claude_theme = "light-ansi"
 
 [[pane]]
 name = "decision logs"
