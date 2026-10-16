@@ -21,10 +21,10 @@ The window around the terminal.
 
 | Key | What it paints | Must contrast with |
 | --- | --- | --- |
-| `window_bg` | The window background behind everything | `text`, `text_dim`, `focus_ring` |
+| `window_bg` | The window background behind everything | `text`, `text_dim`, `focus_ring`, the `tree` and `viewer` colours |
 | `title_bar` | The title bar | `text` |
 | `status_bar` | The status bar at the bottom | `text`, `text_dim` |
-| `sidebar` | The file tree and project sidebar | `text`, `text_dim`, the `tree` colours |
+| `sidebar` | The file tree and project sidebar | `text`, `text_dim` |
 | `tab_bar` | The strip behind the tabs | `text_dim` |
 | `tab_active` | The selected tab | `text` |
 | `tab_inactive` | The other tabs | `text`, `text_dim` |
@@ -55,16 +55,16 @@ Colours that carry meaning in the interface.
 
 | Key | What it paints | Must contrast with |
 | --- | --- | --- |
-| `working` | The mark on a tab whose agent is working | `window_bg` |
-| `waiting` | The mark on a tab waiting for you | `window_bg` |
-| `bell` | The mark on a tab that rang the bell | `window_bg` |
+| `working` | The mark on a tab whose agent is working | `terminal.background` |
+| `waiting` | The mark on a tab waiting for you | `terminal.background` |
+| `bell` | The mark on a tab that rang the bell | `terminal.background` |
 | `error_banner` | The background of an error banner | `text` |
 | `find_match` | The background of a search match in the terminal | `terminal.foreground` |
 | `find_current` | The background of the current search match | `terminal.foreground` |
 
 ## [tree]
 
-Git status colours in the file tree. Each is text on `chrome.sidebar` and must reach 4.5:1 there.
+Git status colours in the file tree. Each is text on `chrome.window_bg` and must reach 4.5:1 there.
 
 | Key | What it paints |
 | --- | --- |
@@ -76,7 +76,7 @@ Git status colours in the file tree. Each is text on `chrome.sidebar` and must r
 
 ## [viewer]
 
-Syntax colours in the file viewer. Each is text on `terminal.background` and must reach 4.5:1 there.
+Syntax colours in the file viewer. Each is text on `chrome.window_bg` and must reach 4.5:1 there.
 
 | Key | What it paints |
 | --- | --- |

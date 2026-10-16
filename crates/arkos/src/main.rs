@@ -3516,10 +3516,11 @@ fn main() {
     if matches!(args.get(1).map(String::as_str), Some("notify") | Some("hooks")) {
         std::process::exit(hook_cli::run(&args[1..]));
     }
-    // Read-only diagnostics for a failed update: no window, no daemon start, nothing written.
+    // The theme CLI: no window and no daemon start; it lists and checks theme files.
     if args.get(1).map(String::as_str) == Some("theme") {
         std::process::exit(theme::theme_cli(&args[2..]));
     }
+    // Read-only diagnostics for a failed update: no window, no daemon start, nothing written.
     if args.get(1).map(String::as_str) == Some("doctor") {
         std::process::exit(doctor::run());
     }

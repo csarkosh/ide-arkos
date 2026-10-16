@@ -502,7 +502,8 @@ mod tests {
     #[test]
     fn import_uses_the_theme_s_own_name_and_asks_before_replacing() {
         let src_dir = tempfile::tempdir().unwrap();
-        let dir = tempfile::tempdir().unwrap().path().join("themes"); // created on demand
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a").join("themes"); // created on demand
         let src = src_dir.path().join("whatever.toml");
         std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \"ocean\"")).unwrap();
         assert_eq!(import_file(&src, &dir, false), Ok(("ocean".into(), false)));
@@ -511,7 +512,8 @@ mod tests {
         assert_eq!(import_file(&src, &dir, true), Ok(("ocean".into(), true)));
         std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \"../../x\"")).unwrap();
         assert!(import_file(&src, &dir, true).is_err(), "a name that leaves the folder");
-        assert!(!dir.parent().unwrap().join("x.toml").exists());
+        assert!(!dir.join("x.toml").exists() && !dir.parent().unwrap().join("x.toml").exists());
+        assert!(!root.path().join("x.toml").exists(), "nothing lands two levels up");
         std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \".hidden\"")).unwrap();
         assert!(import_file(&src, &dir, true).is_err());
         std::fs::write(&src, "nope").unwrap();
