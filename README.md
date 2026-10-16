@@ -7,11 +7,43 @@ separate daemon so a frozen UI never loses work.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/hero-light.png" width="760">
+  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with a docked browser and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-light.png" width="900">
 </picture>
 
 Written in Rust with GPUI. The design is in
 [docs/superpowers/specs/2026-10-13-arkos-design.md](docs/superpowers/specs/2026-10-13-arkos-design.md).
+
+## Who it's for
+
+Three ways people use it; every picture is a real session, taken by `scripts/shoot.sh`
+(see Screenshots).
+
+**The multi tasker** runs several Claude Code sessions on unrelated workstreams at once and
+orchestrates the agents that orchestrate the subagents: here a rate limiter for a web service,
+an inbox being triaged, and a trip being planned, three windows' worth of work in one, with the
+tabs saying which session is working and which is waiting on you.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/multitasker-dark.png">
+  <img alt="Three Claude Code sessions in one Arkos IDE window, no sidebar: a rate limiter being built by three background agents, an inbox triaged by four, and a trip being planned" src="docs/images/multitasker-light.png" width="760">
+</picture>
+
+**The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
+checkout, the app's page docked in Chrome next to the code, and the tests in a shell; the file
+tree and the worktree list show what changed.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/web-developer-dark.png">
+  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/web-developer-light.png" width="760">
+</picture>
+
+**The blogger** is not an engineer: a folder of posts in the file tree, two of them open in the
+markdown editor, and a Claude Code session drafting the next one from the notes.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-dark.png">
+  <img alt="An Arkos IDE window with a folder of markdown posts in the file tree, a post rendered in the editor and a Claude Code session drafting a new post beside it" src="docs/images/blogger-light.png" width="760">
+</picture>
 
 ## Status
 

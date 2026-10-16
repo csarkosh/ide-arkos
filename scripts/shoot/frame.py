@@ -97,6 +97,8 @@ def compose(out, pieces):
         canvas.alpha_composite(b, (0 if side == "left" else width - b.width, 0))
     canvas.alpha_composite(front, ((width - front.width) // 2, rise))
     canvas = canvas.crop(canvas.getbbox())
+    # 1800 px wide: twice the width a README shows it at, a third of the bytes of the raw size.
+    canvas = canvas.resize((1800, round(canvas.height * 1800 / canvas.width)), Image.Resampling.LANCZOS)
     canvas.save(out, optimize=True)
     print(f"{out}: {canvas.width}x{canvas.height}")
 
