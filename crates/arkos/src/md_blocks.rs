@@ -151,6 +151,9 @@ pub enum Inline {
     Html(String),
     Metadata(String),
     Image { alt: String, path: String },
+    /// A paragraph of two or more images and nothing but whitespace between them (a row of
+    /// badges): each image's alt text and path.
+    Images(Vec<(String, String)>),
 }
 
 /// The inline content of one block's text. A soft break becomes a space, a hard break a newline,
@@ -202,8 +205,9 @@ struct Walker {
     containers: usize,
     items: Vec<usize>,
     image: Option<(String, String)>,
-    image_first: bool,
-    para_image: Option<(String, String)>,
+    /// The images of the paragraph being walked, outside any container: alt text, path, and the
+    /// index of the run holding the alt text.
+    para_images: Vec<(String, String, usize)>,
 }
 
 impl Walker {
@@ -224,13 +228,13 @@ impl Walker {
 }
 
 fn walk(src: &str) -> Vec<Inline> {
-    let mut w = Walker { out: Vec::new(), runs: Vec::new(), style: Style::default(), saved: Vec::new(), lists: 0, containers: 0, items: Vec::new(), image: None, image_first: false, para_image: None };
+    let mut w = Walker { out: Vec::new(), runs: Vec::new(), style: Style::default(), saved: Vec::new(), lists: 0, containers: 0, items: Vec::new(), image: None, para_images: Vec::new() };
     let mut heading = 1u8;
     for (event, range) in Parser::new_ext(src, OPTIONS).into_offset_iter() {
         match event {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => {
-                    w.para_image = None;
+                    w.para_images.clear();
                     if !w.sink().is_empty() {
                         w.push("\n".into(), range.start..range.start);
                     }
@@ -258,7 +262,6 @@ fn walk(src: &str) -> Vec<Inline> {
                     }
                 }
                 Tag::Image { dest_url, .. } => {
-                    w.image_first = w.sink().is_empty();
                     w.image = Some((String::new(), dest_url.to_string()));
                 }
                 _ => {}
@@ -267,10 +270,18 @@ fn walk(src: &str) -> Vec<Inline> {
                 TagEnd::Paragraph => {
                     if w.containers == 0 {
                         let runs = std::mem::take(&mut w.runs);
-                        match w.para_image.take() {
-                            Some((alt, path)) if runs.len() == 1 => w.out.push(Inline::Image { alt, path }),
-                            _ => w.out.push(Inline::Para(runs)),
-                        }
+                        let images = std::mem::take(&mut w.para_images);
+                        // Images with only spaces and line breaks between them render as images.
+                        let only_images = runs.iter().enumerate().all(|(i, r)| images.iter().any(|im| im.2 == i) || (r.text.trim().is_empty() && !r.style.code && !r.style.html));
+                        let mut images: Vec<(String, String)> = images.into_iter().map(|(alt, path, _)| (alt, path)).collect();
+                        w.out.push(match images.len() {
+                            1 if only_images => {
+                                let (alt, path) = images.remove(0);
+                                Inline::Image { alt, path }
+                            }
+                            2.. if only_images => Inline::Images(images),
+                            _ => Inline::Para(runs),
+                        });
                     }
                 }
                 TagEnd::Heading(_) => {
@@ -298,8 +309,9 @@ fn walk(src: &str) -> Vec<Inline> {
                 }
                 TagEnd::Image => {
                     if let Some((alt, path)) = w.image.take() {
-                        if w.containers == 0 && w.image_first {
-                            w.para_image = Some((alt.clone(), path));
+                        if w.containers == 0 {
+                            let at = w.runs.len();
+                            w.para_images.push((alt.clone(), path, at));
                         }
                         w.push(alt, range);
                     }
@@ -603,6 +615,14 @@ mod tests {
         let loose = inline("- [x] a\n\n- [ ] b", &BlockKind::List);
         let tasks: Vec<Option<bool>> = loose.iter().map(|i| match i { Inline::Item { task, .. } => *task, other => panic!("{other:?}") }).collect();
         assert_eq!(tasks, vec![Some(true), Some(false)], "a loose list keeps its tasks");
+    }
+
+    #[test]
+    fn a_paragraph_of_only_images_is_a_badge_row() {
+        let inl = inline("![a](a.png) ![b](https://x/b.svg)\n![c](c.png)", &BlockKind::Paragraph);
+        assert!(matches!(&inl[0], Inline::Images(v) if v.len() == 3));
+        let inl = inline("![a](a.png) text", &BlockKind::Paragraph);
+        assert!(!matches!(&inl[0], Inline::Images(_)), "text beside an image is a paragraph");
     }
 
     #[test]

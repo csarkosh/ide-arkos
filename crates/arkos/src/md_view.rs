@@ -3,7 +3,9 @@
 //! and dropped only for the blocks an edit changed. Paragraphs are in the UI font, code in the
 //! terminal's, and a table is a grid of cells at the paragraph size (its source in the terminal
 //! font when it does not parse); a task item's box toggles the item through an undoable edit, and
-//! a link opens on Cmd+click.
+//! a link opens on Cmd+click. An image is drawn from disk, or from the cache once a web
+//! address's fetch has landed (`remote_image`), several in one paragraph in a row; Cmd+click shows
+//! it in Preview.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -18,6 +20,7 @@ use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
 use crate::md_table::{self, Align};
 use crate::palette::Rgb;
+use crate::remote_image::{self, Remote};
 use crate::theme::Theme;
 use crate::viewer::{self, Hit, Span, Viewer, ViewerEvent};
 use crate::viewer_element::{self as element, RawColors, RawLayout};
@@ -84,8 +87,7 @@ fn heading_scale(level: u8) -> f32 {
 /// directory, with `.` and `..` resolved lexically; an absolute path as it is. A web address has
 /// no path.
 pub fn resolve_image(base_dir: &Path, path: &str) -> Option<PathBuf> {
-    let lower = path.get(..8).unwrap_or(path).to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
+    if remote_image::is_remote(path) {
         return None;
     }
     let mut out = PathBuf::new();
@@ -127,6 +129,29 @@ enum Piece {
     Metadata(SharedString),
     /// An image: its alt text (or its path when it has none) for the fallback box, and its path.
     Image { label: SharedString, path: String },
+    /// A paragraph of images only (a row of badges): each one's label and path, as for `Image`.
+    Images(Vec<(SharedString, String)>),
+}
+
+impl Piece {
+    /// The paths of the images the piece shows.
+    fn image_paths(&self) -> impl Iterator<Item = &String> {
+        let (one, row) = match self {
+            Piece::Image { path, .. } => (Some(path), &[][..]),
+            Piece::Images(images) => (None, images.as_slice()),
+            _ => (None, &[][..]),
+        };
+        one.into_iter().chain(row.iter().map(|(_, path)| path))
+    }
+}
+
+/// What an image's box says when it cannot be drawn: its alt text, or its path when it has none.
+fn image_label(alt: String, path: &str) -> SharedString {
+    if alt.is_empty() {
+        path.to_string().into()
+    } else {
+        alt.into()
+    }
 }
 
 impl From<Inline> for Piece {
@@ -141,7 +166,8 @@ impl From<Inline> for Piece {
             Inline::Table(t) => Piece::Table(TablePiece::new(t)),
             Inline::Html(t) => Piece::Html(t.into()),
             Inline::Metadata(t) => Piece::Metadata(t.into()),
-            Inline::Image { alt, path } => Piece::Image { label: if alt.is_empty() { path.clone().into() } else { alt.into() }, path },
+            Inline::Image { alt, path } => Piece::Image { label: image_label(alt, &path), path },
+            Inline::Images(images) => Piece::Images(images.into_iter().map(|(alt, path)| (image_label(alt, &path), path)).collect()),
         }
     }
 }
@@ -180,14 +206,16 @@ struct GridCell {
 
 impl GridCell {
     /// The cell's runs as a paragraph's: emphasis, code and links render, `\|` is drawn as `|`
-    /// (inside a code span too) and an image shows its alt text. Text that would parse as another
-    /// block (a list marker, a heading's hashes) is drawn as it is.
+    /// (inside a code span too) and an image shows its alt text (a row of them their alt texts).
+    /// Text that would parse as another block (a list marker, a heading's hashes) is drawn as it
+    /// is.
     fn new(text: String) -> GridCell {
         let plain = |shown: String| vec![Run { text: shown, style: md_blocks::Style::default(), source: 0..text.len() }];
         let mut runs = match md_blocks::inline(&text, &BlockKind::Paragraph).as_slice() {
             [] => Vec::new(),
             [Inline::Para(runs)] => runs.clone(),
             [Inline::Image { alt, .. }] => plain(alt.clone()),
+            [Inline::Images(images)] => plain(images.iter().map(|(alt, _)| alt.as_str()).collect::<Vec<_>>().join(" ")),
             _ => plain(text.replace("\\|", "|")),
         };
         for run in runs.iter_mut().filter(|r| r.style.code) {
@@ -269,12 +297,44 @@ fn code_lines(text: &str) -> Vec<String> {
     text.strip_suffix('\n').unwrap_or(text).split('\n').map(|l| l.replace('\t', "    ")).collect()
 }
 
+/// Fills block `ix`'s cache entry (`fill_cache`) and moves its web images along
+/// (`track_remote`). The list calls it for each rendered row it draws, so a block shown raw
+/// fetches nothing.
+pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, ctx: &BlockCtx, cx: &mut Context<Viewer>) {
+    fill_cache(v, ix, highlighter, ctx);
+    track_remote(v, ix, cx);
+}
+
+/// Block `ix`'s web images, each moved along once (`remote_image::advance`): one not seen yet is
+/// ready from the cache or queued, one whose fetch ended is ready or failed. While any is still
+/// fetching, the fetches that now have a slot start (`Viewer::start_fetches`); a fetch's end
+/// draws the window again, which brings each viewer showing the image here.
+fn track_remote(v: &mut Viewer, ix: usize, cx: &mut Context<Viewer>) {
+    let Some(Some(r)) = v.block_cache.get(ix) else { return };
+    let mut dir = None;
+    let mut fetching = false;
+    for url in r.pieces.iter().flat_map(Piece::image_paths).filter(|p| remote_image::is_remote(p)) {
+        let state = v.remote.get(url);
+        if matches!(state, Some(Remote::Ready(_) | Remote::Failed)) {
+            continue;
+        }
+        let next = remote_image::advance(state, url, || dir.get_or_insert_with(remote_image::cache_dir).clone());
+        fetching |= next.as_ref().is_none_or(|n| *n == Remote::Fetching);
+        if let Some(next) = next {
+            v.remote.insert(url.clone(), next);
+        }
+    }
+    if fetching {
+        Viewer::start_fetches(cx);
+    }
+}
+
 /// Fills block `ix`'s cache entry if it is empty, and colours a code block once the highlighter is
 /// there (again when it changed), unless it is over the highlight limit (`ctx.highlight_limit`)
 /// or `HIGHLIGHT_MAX_LINES` (`should_highlight`); a code block's runs are made again only when
 /// its colours, the font or the text colour changed. Nothing is computed for a block already
 /// cached.
-pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, ctx: &BlockCtx) {
+fn fill_cache(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, ctx: &BlockCtx) {
     let (Some(doc), Some(block), Some(slot)) = (v.doc.as_ref(), v.blocks.get(ix), v.block_cache.get_mut(ix)) else { return };
     let r = slot.get_or_insert_with(|| {
         let lines = doc.lines();
@@ -317,6 +377,8 @@ pub struct BlockCtx {
     pub view_w: f32,
     /// A table grid was drawn this frame, so the canvas checks the width it was drawn for.
     pub drew_grid: Rc<Cell<bool>>,
+    /// Cmd is held as the rows are built, so an image shows the hand.
+    pub cmd_held: Cell<bool>,
     pub text: Hsla,
     pub dim: Hsla,
     pub link: Hsla,
@@ -357,6 +419,7 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         wide_tables,
         view_w,
         drew_grid: drew_grid.clone(),
+        cmd_held: Cell::new(false),
         text: theme.chrome.text.hsla(),
         dim: theme.chrome.text_dim.hsla(),
         link: theme.chrome.focus_ring.hsla(),
@@ -390,13 +453,14 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
                 }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
-                ctx.viewer.update(cx, |v, _| {
-                    fill(v, ix, highlighter.as_ref(), &ctx);
+                ctx.viewer.update(cx, |v, cx| {
+                    fill(v, ix, highlighter.as_ref(), &ctx, cx);
                     measure_table(v, ix, &ctx, window);
                 });
+                ctx.cmd_held.set(window.modifiers().platform);
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
-                    (Some(block), Some(r)) => block_element(ix, &block.kind, r, &ctx),
+                    (Some(block), Some(r)) => block_element(ix, &block.kind, r, v, &ctx),
                     _ => div().into_any_element(),
                 }
             })
@@ -497,10 +561,10 @@ enum Part {
     Code(Rc<str>),
 }
 
-/// One block's row: its inlines in the block's type, 6 px of space below. A press puts the caret
-/// at the source position under it (Shift extends the selection); a drag that reaches the row
-/// moves the selection's head there.
-pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) -> AnyElement {
+/// One block's row: its inlines in the block's type, 6 px of space below, with the frame's state
+/// from `v` (the web images' fetches). A press puts the caret at the source position under it
+/// (Shift extends the selection); a drag that reaches the row moves the selection's head there.
+pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx: &BlockCtx) -> AnyElement {
     let size = ctx.font_size * scale(kind);
     let row = div()
         .id(("md-block", ix))
@@ -538,7 +602,16 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
             // An HTML block is its source, dimmed (spec 5.2).
             Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
             Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
-            Piece::Image { label, path } => image_element(label, path, ctx),
+            Piece::Image { label, path } => image_element(label, path, v, ctx, &parts.task_press),
+            // Badges sit side by side, wrapping onto more lines when the view is narrow.
+            Piece::Images(images) => div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(4.0))
+                .children(images.iter().map(|(label, path)| image_element(label, path, v, ctx, &parts.task_press)))
+                .into_any_element(),
         };
         children.push(child);
     }
@@ -549,8 +622,8 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
     let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
     row.children(children)
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
-            // A task box's press is for the box, and Cmd+click is for a link: the block stays
-            // rendered so their clicks land on the button's release.
+            // A task box's press is for the box, and Cmd+click is for a link or an image: the
+            // block stays rendered so their clicks land.
             if task_press.replace(false) || ev.modifiers.platform {
                 return;
             }
@@ -1012,15 +1085,56 @@ fn mono_box(text: &SharedString, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) 
         .into_any_element()
 }
 
-/// An image from disk at most the view's width; its alt text (or path), `label`, in a dashed box
-/// when it cannot be loaded or is on the web.
-fn image_element(label: &SharedString, path: &str, ctx: &BlockCtx) -> AnyElement {
-    let (label, dim, border) = (label.clone(), ctx.dim, ctx.border);
-    let alt_box = move || div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(label.clone()).into_any_element();
-    match resolve_image(&ctx.base_dir, path) {
-        Some(resolved) => img(resolved).max_w_full().with_fallback(alt_box).into_any_element(),
-        None => alt_box(),
+/// An image at most the view's width (its natural size when smaller): from disk, or for a web
+/// address from the cache once its fetch has landed (`Viewer.remote`). Its alt text (or path),
+/// `label`, is shown in a dashed box instead while a fetch runs (with "loading"), after one failed
+/// (with the url), and when the file cannot be drawn. A plain press is the row's, which puts the
+/// caret in the block; Cmd+click shows the file in Preview, the row standing aside through
+/// `press`, and only with Cmd held does the pointer turn to the hand.
+fn image_element(label: &SharedString, path: &str, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    let (dim, border) = (ctx.dim, ctx.border);
+    let alt_box = move |text: SharedString| move || div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(text.clone()).into_any_element();
+    let file = if remote_image::is_remote(path) {
+        match v.remote.get(path) {
+            Some(Remote::Ready(file)) => Some(file.clone()),
+            Some(Remote::Failed) if label.as_ref() == path => return alt_box(label.clone())(),
+            Some(Remote::Failed) => return alt_box(format!("{label}: {path}").into())(),
+            Some(Remote::Fetching) | None => return alt_box(format!("{label} (loading)").into())(),
+        }
+    } else {
+        resolve_image(&ctx.base_dir, path)
+    };
+    let Some(file) = file else { return alt_box(label.clone())() };
+    let press = press.clone();
+    img(file.clone())
+        .max_w_full()
+        .with_fallback(alt_box(label.clone()))
+        .when(ctx.cmd_held.get(), |i| i.cursor_pointer())
+        .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
+            if ev.modifiers.platform {
+                press.set(true);
+                open_in_preview(file.clone(), cx);
+            }
+        })
+        .into_any_element()
+}
+
+/// Shows an image file in Preview (`/usr/bin/open -a Preview`, on the background executor), never
+/// through a bare `open`, which could run a program. A path that is not absolute is not opened.
+fn open_in_preview(file: PathBuf, cx: &mut App) {
+    if !file.is_absolute() {
+        return;
     }
+    cx.background_executor()
+        .spawn(async move {
+            let status = std::process::Command::new("/usr/bin/open").args(remote_image::preview_args(&file)).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            match status {
+                Ok(s) if s.success() => {}
+                Ok(s) => eprintln!("arkos: cannot show {} in Preview ({s})", file.display()),
+                Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
+            }
+        })
+        .detach();
 }
 
 /// Where a raw block was laid out in a frame, kept in `Viewer.raw_blocks` for the input handler
@@ -1364,6 +1478,7 @@ mod tests {
         assert_eq!(text("y \\| z"), "y | z");
         assert_eq!(text("`a\\|b`"), "a|b", "in a code span too");
         assert_eq!(text("![logo](l.png)"), "logo");
+        assert_eq!(text("![a](a.png) ![b](https://x/b.svg)"), "a b", "a row of badges shows their alt texts");
         assert_eq!(text("- x"), "- x", "not a list");
         assert_eq!(text(""), "");
         assert!(matches!(TablePiece::new("| a |\n|---|\n| 1 |".into()), TablePiece::Grid(..)));

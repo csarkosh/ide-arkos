@@ -19,6 +19,7 @@ use crate::md_table;
 use crate::md_view;
 use crate::motion::{self, Fades};
 use crate::palette::Rgb;
+use crate::remote_image;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
 use crate::tree::{PaneId, Tab, TabId, ViewMode};
@@ -29,6 +30,7 @@ use gpui::{
     div, prelude::*, px, App, Bounds, ClickEvent, ClipboardItem, Context, Div, Entity, EntityId, EntityInputHandler, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, ListAlignment,
     ListOffset, ListState, MouseButton, MouseDownEvent, Pixels, Point, SharedString, UTF16Selection, Window,
 };
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -572,6 +574,10 @@ pub struct Viewer {
     /// caret entered it (`table_text`). Leaving it realigns its pipes when the text differs
     /// (`note_caret_moved`). Undo, redo and `edit_elsewhere` leave it as it is.
     table_entry: Option<(usize, String)>,
+    /// The web images the rendered view has shown, by url: fetching, in the cache, or failed
+    /// (`md_view::fill` moves them along; a failed one is fetched again only when the file is
+    /// opened again, in a new viewer).
+    pub remote: HashMap<String, remote_image::Remote>,
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -629,6 +635,33 @@ impl Viewer {
             compose: None,
             selecting: false,
             table_entry: None,
+            remote: HashMap::new(),
+        }
+    }
+
+    /// Starts the web image fetches that have a slot in the process-wide queue
+    /// (`remote_image::queue`), each on the background executor (curl blocks its thread, at most
+    /// `remote_image::MAX_IN_FLIGHT` of them). The fetch frees its slot itself, whether or not
+    /// this viewer is still open; then this viewer starts the next ones and draws again, and the
+    /// window's frame lets every view showing the image find it in the cache (`md_view::fill`).
+    pub fn start_fetches(cx: &mut Context<Self>) {
+        let ready = remote_image::queue().start_ready();
+        for url in ready {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Err(e) = remote_image::fetch(&remote_image::cache_dir(), &url) {
+                            eprintln!("arkos: cannot fetch the image {url}: {e}");
+                        }
+                        remote_image::queue().done(&url);
+                    })
+                    .await;
+                let _ = this.update(cx, |_, cx| {
+                    Viewer::start_fetches(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
         }
     }
 

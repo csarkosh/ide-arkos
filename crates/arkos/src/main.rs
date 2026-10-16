@@ -3,6 +3,7 @@ mod agent_cli;
 mod app_nap;
 mod aux;
 mod ax;
+mod cache;
 mod chooser_sessions;
 mod chrome;
 mod client;
@@ -46,6 +47,7 @@ mod pane_view;
 mod paths;
 mod pulse;
 mod recent;
+mod remote_image;
 mod scroll;
 mod settings;
 mod split_view;
@@ -4168,6 +4170,8 @@ fn open_project_window(
         let root = window.entity(cx).expect("root entity");
         // About and Settings take their details from the Root from now on.
         aux::set_root(cx, root.downgrade());
+        // The caches' old entries go once a launch, on a thread of their own, now the window is up.
+        std::thread::spawn(cache::sweep_all);
         root.update(cx, |root, cx| {
             root.config_error = config_error;
             root.theme_error = theme_error;
