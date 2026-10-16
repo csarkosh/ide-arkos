@@ -56,6 +56,7 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
         // The display name keeps its capitals; the config name is lower case.
         // The two that ask for a folder end in an ellipsis, as macOS writes a command that asks more.
         let label = match command {
+            Command::About => "About Arkos IDE".to_string(),
             Command::InstallHooks => "Install Claude Code hooks".to_string(),
             Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage => format!("{}\u{2026}", keymap::label(a.name)),
             Command::DockChromeWindow => "Dock a Chrome window\u{2026}".to_string(),
@@ -283,6 +284,12 @@ mod tests {
         assert_eq!((tree.detail.as_str(), &tree.command), ("Shift+Cmd+E", &Command::FocusFileTree));
         let open = items.iter().find(|i| i.label == "Open folder\u{2026}").unwrap();
         assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
+        let about = items.iter().find(|i| i.label == "About Arkos IDE").unwrap();
+        assert_eq!((about.detail.as_str(), &about.command), ("", &Command::About));
+        let prefs = items.iter().find(|i| i.label == "Settings").unwrap();
+        assert_eq!((prefs.detail.as_str(), &prefs.command), ("Cmd+,", &Command::OpenSettings));
+        let config = items.iter().find(|i| i.label == "Open config").unwrap();
+        assert_eq!((config.detail.as_str(), &config.command), ("", &Command::OpenConfig), "Cmd+, is Settings now");
         let window = items.iter().find(|i| i.label == "New window").unwrap();
         assert_eq!((window.detail.as_str(), &window.command), ("Cmd+N", &Command::NewWindow));
         let browser = items.iter().find(|i| i.label == "New browser tab\u{2026}").unwrap();

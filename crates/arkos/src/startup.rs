@@ -66,6 +66,12 @@ pub fn quits_on_close(project_opened: bool, chooser_plan: bool, windows_left: us
     }
 }
 
+/// The windows that count for `quits_on_close`: `left` without the About and Settings windows
+/// (`aux_open` of them), which never keep the app alive on their own.
+pub fn windows_without_aux(left: usize, aux_open: usize) -> usize {
+    left.saturating_sub(aux_open)
+}
+
 pub type Connected = (Client, UnboundedReceiver<ServerMessage>);
 
 /// Connects to the daemon, starting it when none answers, off the main thread. The window
@@ -98,7 +104,6 @@ pub fn updated_from(file: &Path, current: &str) -> Option<String> {
 /// When this install first ran: the unix seconds `file` holds. A missing or unreadable file (or
 /// garbage in it) counts as missing: `now` is written there, through a temp file and a rename,
 /// and returned, so every later launch reads the same moment back.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
 pub fn installed_since(file: &Path, now: SystemTime) -> SystemTime {
     let stored = std::fs::read_to_string(file)
         .ok()
@@ -255,6 +260,14 @@ mod tests {
         // Once the project window is up its own handler decides.
         assert!(!quits_on_close(true, false, 0, false, false));
         assert!(!quits_on_close(true, true, 0, false, false));
+    }
+
+    #[test]
+    fn about_and_settings_do_not_count_as_windows_before_the_project_window() {
+        assert_eq!(windows_without_aux(1, 1), 0, "only About is left");
+        assert!(quits_on_close(false, false, windows_without_aux(1, 1), false, false), "the failure window closed with About open");
+        assert_eq!(windows_without_aux(3, 2), 1, "the failure window with About and Settings");
+        assert_eq!(windows_without_aux(0, 1), 0, "never below nothing");
     }
 
     #[test]

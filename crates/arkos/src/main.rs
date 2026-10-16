@@ -1,4 +1,6 @@
+mod about;
 mod app_nap;
+mod aux;
 mod ax;
 mod chooser_sessions;
 mod chrome;
@@ -41,6 +43,7 @@ mod paths;
 mod pulse;
 mod recent;
 mod scroll;
+mod settings;
 mod split_view;
 mod startup;
 mod sessions;
@@ -258,6 +261,9 @@ pub struct Root {
     pub viewers: HashMap<TabId, Entity<Viewer>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
+    /// When this install first ran (`startup::installed_since`, read once in `main()`).
+    #[allow(dead_code)] // Used from Task 3b on.
+    pub installed: SystemTime,
     /// The config file's problem shown under the connection banner; `None` when all is well.
     /// Kept apart from `status`, which belongs to the connection and clears when it answers.
     pub config_error: Option<String>,
@@ -430,7 +436,8 @@ fn should_activate(relaunch_env: Option<&str>) -> bool {
 #[derive(Debug, PartialEq)]
 enum AfterClose {
     Quit,
-    CloseChooser,
+    /// Close the "New Window" chooser and the About and Settings windows; the quit follows.
+    CloseAux,
     Stay,
 }
 
@@ -443,13 +450,13 @@ fn quit_forced(last_attempt: Option<Instant>, now: Instant) -> bool {
     last_attempt.is_some_and(|t| now.saturating_duration_since(t) <= FORCE_QUIT_WITHIN)
 }
 
-/// What a window closing leads to: the last one quits; the project window gone with only its
-/// "New Window" chooser left closes that chooser, so the quit follows.
-fn after_window_closed(windows_left: usize, project_open: bool, chooser_open: bool) -> AfterClose {
+/// What a window closing leads to: the last one quits; the project window gone with its "New
+/// Window" chooser, About or Settings left (`aux_open`) closes those, so the quit follows.
+fn after_window_closed(windows_left: usize, project_open: bool, aux_open: bool) -> AfterClose {
     if windows_left == 0 {
         AfterClose::Quit
-    } else if !project_open && chooser_open {
-        AfterClose::CloseChooser
+    } else if !project_open && aux_open {
+        AfterClose::CloseAux
     } else {
         AfterClose::Stay
     }
@@ -482,7 +489,7 @@ fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
 }
 
 impl Root {
-    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool, cx: &mut Context<Self>) -> Self {
+    fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool, installed: SystemTime, cx: &mut Context<Self>) -> Self {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
         let window_saved = saved.as_ref().and_then(|w| w.window.clone());
@@ -560,6 +567,7 @@ impl Root {
             highlighter: None,
             viewers: HashMap::new(),
             system_is_dark,
+            installed,
             config_error: None,
             theme_error: None,
             notice: Transient::Hidden,
@@ -1467,8 +1475,8 @@ impl Root {
         sessions.len()
     }
 
-    /// Cmd+, (spec 7): opens the config file in the default text editor. Task 2 creates the file
-    /// at launch, so it exists by the time this runs.
+    /// The palette's "Open config" (spec 7): opens the config file in the default text editor.
+    /// Task 2 creates the file at launch, so it exists by the time this runs.
     pub fn open_config(&mut self, cx: &mut Context<Self>) {
         let path = paths::config_file();
         if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
@@ -2500,6 +2508,8 @@ impl Root {
             }
             OpenFolder => self.pick_folder(cx),
             NewWindow => self.new_window(cx),
+            About => aux::open_about(cx),
+            OpenSettings => aux::open_settings(cx),
             NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
             NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
             DockChromeWindow => self.open_dock_list(cx),
@@ -2545,9 +2555,9 @@ impl Root {
         .detach();
     }
 
-    /// "New Window" (the File menu, Cmd+N): the chooser in its own window, with the recent folders
-    /// and the native picker; the folder chosen opens in a new window. One at a time: asking again
-    /// brings the open one forward.
+    /// "New Window" (the Arkos IDE menu, Cmd+N): the chooser in its own window, with the recent
+    /// folders and the native picker; the folder chosen opens in a new window. One at a time:
+    /// asking again brings the open one forward.
     fn new_window(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.chooser {
             if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
@@ -3458,16 +3468,19 @@ impl Render for Root {
     }
 }
 
-/// The menu bar. Set again when the key bindings change so it shows the bound keys.
+/// The menu bar: one menu. Set again when the key bindings change so it shows the bound keys.
+/// "New Window" is one item: the chooser offers the recent folders and the native picker both.
 fn menus() -> Vec<Menu> {
-    vec![
-        Menu { name: "Arkos IDE".into(), items: vec![MenuItem::action("Quit", Quit)] },
-        Menu {
-            name: "File".into(),
-            // One item: the chooser offers the recent folders and the native picker both.
-            items: vec![MenuItem::action("New Window", keymap::NewWindow)],
-        },
-    ]
+    vec![Menu {
+        name: "Arkos IDE".into(),
+        items: vec![
+            MenuItem::action("About Arkos IDE", keymap::About),
+            MenuItem::separator(),
+            MenuItem::action("New Window", keymap::NewWindow),
+            MenuItem::action("Settings", keymap::OpenSettings),
+            MenuItem::action("Quit", Quit),
+        ],
+    }]
 }
 
 fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme) -> Div {
@@ -3542,6 +3555,9 @@ fn main() {
             (config::Config::default(), Some(e.to_string()))
         }
     };
+    // Taken right after the load: the project window reads the file again when it changed since
+    // (Settings opened from the chooser writes it).
+    let fingerprint = config_watch::fingerprint(&config_path);
     // Used only when this window starts the daemon; a running one keeps its own settings.
     let daemon_args = daemon_args(&config);
     let cwd = std::env::current_dir().expect("cwd");
@@ -3549,6 +3565,8 @@ fn main() {
     let plan = launch::startup_plan(&cwd, relaunched);
     // Once per process: a synchronous read and write of one tiny file, before any window.
     let updated = startup::updated_from(&paths::last_version_file(), env!("CARGO_PKG_VERSION"));
+    // The same: the first run's moment, written on the first run and read back on every other.
+    let installed = startup::installed_since(&paths::installed_file(), SystemTime::now());
     let yes = |b: bool| if b { "yes" } else { "no" };
     eprintln!("{} starting in {} (relaunch: {}, chooser: {})", version_string(), cwd.display(), yes(relaunched), yes(plan.is_chooser()));
     // The connect runs off the main thread once the app runs, the chooser included: a window the
@@ -3565,18 +3583,9 @@ fn main() {
         cx.bind_keys(keymap::bindings_for(&config.keybindings));
         cx.set_menus(menus());
         let system_is_dark = theme::is_dark(cx.window_appearance());
-        let name = theme::pick_name(config.appearance.mode, system_is_dark, &config.theme).to_string();
-        let (theme, theme_error) = match theme::load(&name, &paths::themes_dir()) {
-            Ok(t) => (t, None),
-            Err(e) => {
-                // A broken user navy-light.toml still gives a light window.
-                let t = theme::builtin(&name).or_else(|| theme::builtin("navy")).expect("navy is built in");
-                let banner = format!("theme: {e}; using built-in {}", t.name);
-                eprintln!("arkos: {banner}");
-                (t, Some(banner))
-            }
-        };
+        let (theme, theme_error) = startup_theme(&config, system_is_dark);
         let (look_config, look_theme) = (config.clone(), theme.clone());
+        aux::init(cx, aux::LaunchState { config: config.clone(), theme: theme.clone(), config_path: config_path.clone(), installed, fingerprint });
         let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark, updated };
         let launch = Rc::new(Launch {
             plan,
@@ -3600,17 +3609,24 @@ fn main() {
                 cx.quit();
             }
         });
+        // About and Settings work in every state, so they are registered once, here, for the
+        // whole run. The project window's own handlers run the same functions, and an action one
+        // of them handles stops there.
+        cx.on_action(|_: &keymap::About, cx| aux::open_about(cx));
+        cx.on_action(|_: &keymap::OpenSettings, cx| aux::open_settings(cx));
         // Closing the launch chooser quits, the failure window's red button too; "Try again"
         // closes the failure window as its connect starts, which is no reason to quit.
         let closing = launch.clone();
         cx.on_window_closed(move |cx| {
             let windows = cx.windows();
+            // About and Settings never keep the app alive on their own.
+            let left = startup::windows_without_aux(windows.len(), aux::aux_open(cx));
             // Still opening when its handle is not known yet: open, as long as any window is.
             let chooser_open = match closing.chooser.get() {
                 Some(h) => windows.iter().any(|w| w.window_id() == h.window_id()),
-                None => !windows.is_empty(),
+                None => left > 0,
             };
-            if startup::quits_on_close(closing.opened.get(), plan.is_chooser(), windows.len(), chooser_open, closing.retry.borrow().running()) {
+            if startup::quits_on_close(closing.opened.get(), plan.is_chooser(), left, chooser_open, closing.retry.borrow().running()) {
                 closing.flush();
                 cx.quit();
             }
@@ -3654,6 +3670,22 @@ fn main() {
         let opening = launch::open_chooser(cx, true, plan.focus(), launch.config.clone(), launch.theme.clone(), None, on_choice);
         launch.connect(Some(opening), cx);
     });
+}
+
+/// The theme the config names for this appearance, at launch. One that does not load gives the
+/// built-in of the same name, else navy, and the banner that says so.
+fn startup_theme(config: &config::Config, system_is_dark: bool) -> (theme::Theme, Option<String>) {
+    let name = theme::pick_name(config.appearance.mode, system_is_dark, &config.theme).to_string();
+    match theme::load(&name, &paths::themes_dir()) {
+        Ok(t) => (t, None),
+        Err(e) => {
+            // A broken user navy-light.toml still gives a light window.
+            let t = theme::builtin(&name).or_else(|| theme::builtin("navy")).expect("navy is built in");
+            let banner = format!("theme: {e}; using built-in {}", t.name);
+            eprintln!("arkos: {banner}");
+            (t, Some(banner))
+        }
+    }
 }
 
 /// The start while no project window exists: the connect runs off the main thread, the launch
@@ -3791,7 +3823,25 @@ fn open_project_window(
     start: Startup,
     cx: &mut App,
 ) {
-    let Startup { config, config_error, config_path, daemon_args, save_queue, theme, theme_error, system_is_dark, updated } = start;
+    let Startup { mut config, mut config_error, config_path, daemon_args, save_queue, mut theme, mut theme_error, system_is_dark, updated } = start;
+    let now = config_watch::fingerprint(&config_path);
+    let (launched, installed) = match cx.try_global::<aux::Aux>().and_then(|aux| aux.launch.as_ref()) {
+        Some(launch) => (launch.fingerprint, launch.installed),
+        None => (now, SystemTime::now()),
+    };
+    // The file changed since `main()` read it (Settings, opened from the chooser, writes it): read
+    // it again, and the theme it names, so that change is not lost.
+    if now != launched {
+        let (cfg, banner) = config::reload_decision(&config, config::load(&config_path));
+        if cfg.keybindings != config.keybindings {
+            cx.clear_key_bindings();
+            cx.bind_keys(keymap::bindings_for(&cfg.keybindings));
+            cx.set_menus(menus());
+        }
+        config = cfg;
+        config_error = banner;
+        (theme, theme_error) = startup_theme(&config, system_is_dark);
+    }
     // Synchronous on purpose: one small file read, done before the window opens, so it cannot
     // stall painting or input. Saves happen on the background executor.
     let saved = workspace::load(&project);
@@ -3841,7 +3891,7 @@ fn open_project_window(
                             root.dock_tick(cx);
                         })
                         .detach();
-                        let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
+                        let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = ax::screen::ns_window_of(window);
                         // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
                         // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,
@@ -3878,6 +3928,8 @@ fn open_project_window(
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
+        // About and Settings take their details from the Root from now on.
+        aux::set_root(cx, root.downgrade());
         root.update(cx, |root, cx| {
             root.config_error = config_error;
             root.theme_error = theme_error;
@@ -3915,13 +3967,14 @@ fn open_project_window(
             let left = cx.windows().len();
             let project_open = cx.windows().iter().any(|w| w.window_id() == project_window);
             let chooser = close_root.read(cx).chooser.filter(|h| cx.windows().iter().any(|w| w.window_id() == h.window_id()));
-            match after_window_closed(left, project_open, chooser.is_some()) {
+            match after_window_closed(left, project_open, chooser.is_some() || aux::aux_open(cx) > 0) {
                 AfterClose::Quit => {
                     close_root.update(cx, |root, cx| if says_goodbye(root.user_closing, left) { root.leaving(cx) } else { root.flush_for_quit(false, cx) });
                     cx.quit();
                 }
-                // Its own close comes back here with no window left, and quits as above.
-                AfterClose::CloseChooser => {
+                // Their closes come back here, the last with no window left, and quit as above.
+                AfterClose::CloseAux => {
+                    aux::close_all(cx);
                     if let Some(h) = chooser {
                         let _ = h.update(cx, |_, window, _| window.remove_window());
                     }
@@ -3983,9 +4036,17 @@ mod tests {
     #[test]
     fn launch_closing_the_project_window_closes_its_chooser_then_quits() {
         assert_eq!(after_window_closed(0, false, false), AfterClose::Quit);
-        assert_eq!(after_window_closed(1, false, true), AfterClose::CloseChooser, "only the chooser is left");
+        assert_eq!(after_window_closed(1, false, true), AfterClose::CloseAux, "only the chooser is left");
         assert_eq!(after_window_closed(1, true, false), AfterClose::Stay, "the chooser closed; the project stays");
         assert_eq!(after_window_closed(2, true, true), AfterClose::Stay);
+    }
+
+    #[test]
+    fn an_aux_window_left_alone_does_not_keep_the_app_alive() {
+        assert_eq!(after_window_closed(0, false, false), AfterClose::Quit);
+        assert_eq!(after_window_closed(1, false, true), AfterClose::CloseAux, "About stayed after the project window closed");
+        assert_eq!(after_window_closed(2, false, true), AfterClose::CloseAux, "the chooser and About both");
+        assert_eq!(after_window_closed(1, true, true), AfterClose::Stay, "a project window remains");
     }
 
     #[test]

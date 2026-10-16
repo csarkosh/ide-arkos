@@ -41,7 +41,6 @@ pub fn app_support_from(override_dir: Option<&std::ffi::OsStr>, home: &Path) -> 
 }
 
 /// Holds the unix seconds of this install's first run (`startup::installed_since`).
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
 pub fn installed_file() -> PathBuf {
     app_support().join("installed")
 }

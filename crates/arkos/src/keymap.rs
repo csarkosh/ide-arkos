@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
+        About, OpenSettings, OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
@@ -44,6 +44,11 @@ pub enum Command {
     /// Terminal.app's Cmd+K: drop the history and the screen, keep the cursor line at the top.
     ClearToStart,
     FontDelta(f32),
+    /// Open the About window, or bring it forward when it is open.
+    About,
+    /// Open the Settings window, or bring it forward when it is open.
+    OpenSettings,
+    /// Open config.toml in the default text editor.
     OpenConfig,
     /// Switch every terminal to the named text preset (the palette runs it).
     TextPreset(String),
@@ -115,9 +120,10 @@ const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: None }
 }
 
-/// The spec's table (section 4) plus open config, the command palette, find, the update commands
-/// and quit. The order is the registration order. "update now", "check for updates" and "retry
-/// update" have no default keys: they are palette commands unless the config binds them.
+/// The spec's table (section 4) plus about, settings, open config, the command palette, find, the
+/// update commands and quit. The order is the registration order. "update now", "check for
+/// updates" and "retry update" have no default keys: they are palette commands unless the config
+/// binds them.
 pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
@@ -138,7 +144,11 @@ pub const ACTIONS: &[ActionSpec] = &[
     row("move tab left", "cmd-k cmd-shift-left"), row("move tab right", "cmd-k cmd-shift-right"),
     row("new terminal tab", "ctrl-shift-`"),
     row("font bigger", "cmd-="), row("font smaller", "cmd--"),
-    row("open config", "cmd-,"),
+    // Before "open config" on purpose: gpui ranks bindings at the same depth later-first, so a
+    // user's `"open config" = "cmd-,"` wins over Settings' default Cmd+,.
+    row("about", ""),
+    row("settings", "cmd-,"),
+    row("open config", ""),
     row("command palette", "cmd-shift-p"),
     row("find", "cmd-f"),
     row("update now", ""),
@@ -228,6 +238,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "new terminal tab" => KeyBinding::new(keys, NewTerminal, context),
         "font bigger" => KeyBinding::new(keys, FontBigger, context),
         "font smaller" => KeyBinding::new(keys, FontSmaller, context),
+        "about" => KeyBinding::new(keys, About, context),
+        "settings" => KeyBinding::new(keys, OpenSettings, context),
         "open config" => KeyBinding::new(keys, OpenConfig, context),
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "find" => KeyBinding::new(keys, Find, context),
@@ -416,6 +428,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "new terminal tab" => Command::NewTerminal,
         "font bigger" => Command::FontDelta(1.0),
         "font smaller" => Command::FontDelta(-1.0),
+        "about" => Command::About,
+        "settings" => Command::OpenSettings,
         "open config" => Command::OpenConfig,
         "find" => Command::Find,
         "update now" => Command::UpdateNow,
@@ -476,6 +490,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         MoveTabLeft => Command::MoveTabWithin(-1), MoveTabRight => Command::MoveTabWithin(1),
         NewTerminal => Command::NewTerminal, ClearToStart => Command::ClearToStart,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
+        About => Command::About, OpenSettings => Command::OpenSettings,
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
@@ -515,7 +530,9 @@ mod tests {
         ("cmd-k cmd-shift-left", "move tab left", "MoveTabLeft"), ("cmd-k cmd-shift-right", "move tab right", "MoveTabRight"),
         ("ctrl-shift-`", "new terminal tab", "NewTerminal"),
         ("cmd-=", "font bigger", "FontBigger"), ("cmd--", "font smaller", "FontSmaller"),
-        ("cmd-,", "open config", "OpenConfig"),
+        ("", "about", "About"),
+        ("cmd-,", "settings", "OpenSettings"),
+        ("", "open config", "OpenConfig"),
         ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-f", "find", "Find"),
         ("", "update now", "UpdateNow"),
@@ -600,7 +617,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 12, "an empty string unbinds, and update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 14, "an empty string unbinds, and about, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -609,13 +626,31 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 11, "only update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 13, "only about, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
         assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
         assert_eq!(command_for("undock chrome window"), Some(Command::UndockChromeWindow));
         assert_eq!(command_for("notifications"), Some(Command::Notifications));
         assert_eq!(command_for("doctor"), Some(Command::Doctor));
+    }
+
+    #[test]
+    fn a_user_s_cmd_comma_override_beats_settings() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let ctx = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        let k = Keystroke::parse("cmd-,").unwrap();
+        let keymap = Keymap::new(bindings_for(&BTreeMap::new()));
+        let (matched, _) = keymap.bindings_for_input(&[k.clone()], &ctx);
+        assert_eq!(matched[0].action().name(), "arkos::OpenSettings", "by default Cmd+, opens Settings");
+        let mut o = BTreeMap::new();
+        o.insert("open config".to_string(), "cmd-,".to_string());
+        let keymap = Keymap::new(bindings_for(&o));
+        let (matched, _) = keymap.bindings_for_input(&[k], &ctx);
+        assert_eq!(matched[0].action().name(), "arkos::OpenConfig", "a user's override comes later in the list and wins");
+        assert_eq!(keys_for("open config", &BTreeMap::new()), None);
+        assert_eq!(keys_for("settings", &BTreeMap::new()), Some("cmd-,".to_string()));
+        assert_eq!(command_for("about"), Some(Command::About));
     }
 
     #[test]
