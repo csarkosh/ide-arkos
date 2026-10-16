@@ -92,7 +92,7 @@ Both have defaults, so an existing config is unchanged. `arkos settings get|set 
 
 ### 3.2 Environment
 
-`DO_NOT_TRACK`, `ARKOS_TELEMETRY=off|log`, `CI`, and a non-interactive session, exactly as the crate's mode table says. `ARKOS_TELEMETRY=log` prints every payload the daemon would send to its log instead, and the app's invitation says so.
+`DO_NOT_TRACK`, `ARKOS_TELEMETRY=off|log`, `CI`, and a non-interactive session, exactly as the crate's mode table says. `ARKOS_TELEMETRY=log` prints every payload the daemon would send to its log instead; under it the invitation is not shown (the crate's `invite` is false under any environment reason), so the disclosure page is where `log` is explained. An app launched from the Dock, and the daemon it starts, do not see variables set in a shell's rc file; the disclosure says so and points at the config keys.
 
 ### 3.3 The invitation
 
