@@ -4,7 +4,7 @@ use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, Event, Request, Response, ServerMessage, SessionId, StagedUpdate, PROTOCOL_MIN, PROTOCOL_VERSION};
+use protocol::{ClientMessage, CustomizeOutcome, Event, Request, Response, ServerMessage, SessionId, StagedUpdate, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, PROTOCOL_MIN, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
@@ -49,6 +49,25 @@ pub struct ClientRecord {
     pub relaunch: Option<(PathBuf, PathBuf)>,
 }
 
+/// A tool client's `Customize` waiting for the windows' answers (agent theme spec, section 5).
+/// The daemon only relays: it knows nothing of themes.
+pub struct CustomizeWait {
+    /// The tool client that asked; its leaving drops the record.
+    pub client: ClientId,
+    /// The id of the tool's `Customize` message, which the `Customized` answer carries.
+    pub msg_id: u32,
+    /// Where the answer goes once every window has answered or the wait is over.
+    pub tx: ClientSink,
+    /// The pids of the windows asked that have not answered yet.
+    pub waiting: Vec<u32>,
+    /// The answers so far, in arrival order.
+    pub outcomes: Vec<CustomizeOutcome>,
+    /// The project windows on a protocol before `CUSTOMIZE_FROM`, which were not asked.
+    pub too_old: Vec<u32>,
+    /// When the windows were asked: only a wait this old is flushed by a deadline.
+    pub started: Instant,
+}
+
 #[derive(Default)]
 pub struct State {
     pub sessions: HashMap<SessionId, Arc<Session>>,
@@ -70,6 +89,8 @@ pub struct State {
     pub manifest_dirty: bool,
     /// The poll thread's findings: what is staged and how the last check went.
     pub update: crate::updates::UpdateState,
+    /// The `Customize` requests waiting for windows, by the tool's own id.
+    pub customize: HashMap<u64, CustomizeWait>,
 }
 
 impl State {
@@ -115,6 +136,42 @@ fn status_parts(st: &State, running: &crate::updates::version::Version) -> (Opti
 pub fn broadcast(st: &State, event: Event) {
     for rec in st.clients.values().filter(|r| r.connected && r.protocol >= UPDATE_EVENTS_FROM) {
         rec.tx.send(ServerMessage::Event(event.clone()));
+    }
+}
+
+/// The clients a `Customize` is relayed to, as (client, pid), in connection order, and the pids
+/// of the project windows too old to be asked. A project window said Hello with a pid and a
+/// folder: the launch chooser (whose empty folder `window_folder` keeps as None), `arkos
+/// doctor`'s probe (pid 0, kept as None) and tool clients (no Hello, protocol 0) are neither.
+fn customize_targets(st: &State) -> (Vec<(ClientId, u32)>, Vec<u32>) {
+    let mut windows: Vec<(ClientId, u32, u32)> = st
+        .clients
+        .iter()
+        .filter(|(_, r)| r.connected && r.ui_cwd.is_some())
+        .filter_map(|(id, r)| r.ui_pid.map(|pid| (*id, pid, r.protocol)))
+        .collect();
+    windows.sort_by_key(|(id, _, _)| *id);
+    let targets = windows.iter().filter(|(_, _, protocol)| *protocol >= CUSTOMIZE_FROM).map(|(id, pid, _)| (*id, *pid)).collect();
+    let too_old = windows.iter().filter(|(_, _, protocol)| *protocol < CUSTOMIZE_FROM).map(|(_, pid, _)| *pid).collect();
+    (targets, too_old)
+}
+
+/// Sends a finished wait's `Customized` answer: whoever is still waiting is `missing`. A tool
+/// that hung up meanwhile is skipped by its closed sink.
+fn answer_customize(w: CustomizeWait) {
+    let response = Response::Customized { outcomes: w.outcomes, missing: w.waiting, too_old: w.too_old };
+    w.tx.send(ServerMessage::Response { id: w.msg_id, response });
+}
+
+/// The deadline of the `Customize` `id`: answers it if it is still waiting and as old as
+/// `CUSTOMIZE_WAIT`. A younger record under the same id is a later request, which its own
+/// deadline answers.
+fn flush_customize(state: &Shared, id: u64) {
+    let mut st = state.lock().unwrap();
+    if st.customize.get(&id).is_some_and(|w| w.started.elapsed() >= CUSTOMIZE_WAIT) {
+        if let Some(w) = st.customize.remove(&id) {
+            answer_customize(w);
+        }
     }
 }
 
@@ -340,10 +397,27 @@ fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
                 }
             }
         }
-        let (relaunch, ui_exe, ui_cwd) = match st.clients.remove(&client_id) {
-            Some(rec) => (rec.relaunch, rec.ui_exe, rec.ui_cwd),
+        let (relaunch, ui_exe, ui_cwd, ui_pid) = match st.clients.remove(&client_id) {
+            Some(rec) => (rec.relaunch, rec.ui_exe, rec.ui_cwd, rec.ui_pid),
             None => return,
         };
+        // A tool that hung up wants no answer; a window that left will not answer, and a wait
+        // left with nobody to hear from is answered now.
+        st.customize.retain(|_, w| w.client != client_id);
+        if let Some(pid) = ui_pid {
+            let mut done = Vec::new();
+            for (id, w) in st.customize.iter_mut() {
+                w.waiting.retain(|p| *p != pid);
+                if w.waiting.is_empty() {
+                    done.push(*id);
+                }
+            }
+            for id in done {
+                if let Some(w) = st.customize.remove(&id) {
+                    answer_customize(w);
+                }
+            }
+        }
         // The new window starts now: an applied update's grace counts from here.
         let clock = if relaunch.is_some() { crate::updates::apply::restart_clock(&mut st.update, updates_dir) } else { None };
         (relaunch, ui_exe, ui_cwd, clock)
@@ -804,6 +878,53 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             None => Response::Error(format!("no session {}", sid.0)),
         },
+        // Relayed to every project window under one lock; the answer goes later through `tx`
+        // with this message's id, when every window has answered or `CUSTOMIZE_WAIT` is over.
+        Request::Customize { id: customize_id, action } => {
+            let mut st = state.lock().unwrap();
+            if st.customize.contains_key(&customize_id) {
+                return Some(Response::Error("customize id in flight".into()));
+            }
+            let (targets, too_old) = customize_targets(&st);
+            let started = Instant::now();
+            let event = Event::Customize { id: customize_id, action };
+            let waiting: Vec<u32> = targets
+                .into_iter()
+                .filter(|(client, _)| st.clients.get(client).is_some_and(|r| r.tx.send(ServerMessage::Event(event.clone()))))
+                .map(|(_, pid)| pid)
+                .collect();
+            if waiting.is_empty() {
+                return Some(Response::Customized { outcomes: vec![], missing: vec![], too_old });
+            }
+            st.customize.insert(customize_id, CustomizeWait { client: client_id, msg_id: id, tx: tx.clone(), waiting, outcomes: vec![], too_old, started });
+            drop(st);
+            let state = state.clone();
+            std::thread::Builder::new()
+                .name(format!("customize-{customize_id}"))
+                .spawn(move || {
+                    std::thread::sleep(CUSTOMIZE_WAIT);
+                    flush_customize(&state, customize_id);
+                })
+                .expect("spawn customize deadline");
+            return None;
+        }
+        // Always `Ok`: an answer after the wait, or a second one, is dropped, never an error the
+        // window would show as a banner.
+        Request::CustomizeDone { id: customize_id, outcome } => {
+            let mut st = state.lock().unwrap();
+            if let Some(w) = st.customize.get_mut(&customize_id) {
+                if let Some(i) = w.waiting.iter().position(|p| *p == outcome.pid) {
+                    w.waiting.remove(i);
+                    w.outcomes.push(outcome);
+                }
+                if w.waiting.is_empty() {
+                    if let Some(w) = st.customize.remove(&customize_id) {
+                        answer_customize(w);
+                    }
+                }
+            }
+            Response::Ok
+        }
     };
     Some(response)
 }

@@ -4180,6 +4180,7 @@ version = "0.3.4"
 dependencies = [
  "postcard",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

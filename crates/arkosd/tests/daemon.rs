@@ -1,6 +1,6 @@
 //! Drives the real arkosd binary over a temp socket.
 use protocol::codec::{read_frame, write_frame};
-use protocol::{AgentRecord, ClientMessage, Event, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
+use protocol::{AgentRecord, ClientMessage, CustomizeAction, CustomizeOutcome, Event, Report, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -128,6 +128,24 @@ impl Conn {
 
     fn next_message(&mut self) -> ServerMessage {
         read_frame(&mut self.r).expect("daemon went silent or the frame was bad").expect("daemon closed the connection")
+    }
+
+    /// The next event, skipping any responses queued before it.
+    fn next_event(&mut self) -> Event {
+        loop {
+            if let ServerMessage::Event(ev) = self.next_message() {
+                return ev;
+            }
+        }
+    }
+
+    /// The next response, whatever its id, skipping any events queued before it.
+    fn response(&mut self) -> Response {
+        loop {
+            if let ServerMessage::Response { response, .. } = self.next_message() {
+                return response;
+            }
+        }
     }
 
     fn set_read_timeout(&mut self, timeout: Option<Duration>) {
@@ -2288,4 +2306,79 @@ fn a_grace_survives_the_handover_and_the_manifest() {
     wait_until(|| !alive(&mut c, sid), Duration::from_secs(5));
     let text = journal(&b);
     assert!(text.contains(&not_reopened(sid, 2)), "the requested length, not what was left of it: {text}");
+}
+
+#[test]
+fn a_customize_request_is_relayed_to_every_project_window_and_answered_when_all_report() {
+    let d = Daemon::start(&[]);
+    let base = std::process::id();
+    let mut w1 = d.connect_as(base + 1);
+    let mut w2 = d.connect_as(base + 2);
+    let mut chooser = d.connect_raw();
+    // A chooser says Hello with no folder and must not be asked.
+    chooser.request(Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: base + 3, ui_exe: None, ui_cwd: PathBuf::new() });
+    let mut tool = d.connect_raw();
+    tool.send(Request::Customize { id: 1, action: CustomizeAction::ReportState });
+    for (w, pid) in [(&mut w1, base + 1), (&mut w2, base + 2)] {
+        assert_eq!(w.next_event(), Event::Customize { id: 1, action: CustomizeAction::ReportState });
+        assert_eq!(w.request(Request::CustomizeDone { id: 1, outcome: CustomizeOutcome { pid, project: "/p".into(), result: Ok(Report::default()) } }), Response::Ok);
+    }
+    match tool.response() {
+        Response::Customized { outcomes, missing, too_old } => {
+            assert_eq!(outcomes.iter().map(|o| o.pid).collect::<Vec<_>>(), vec![base + 1, base + 2]);
+            assert!(missing.is_empty() && too_old.is_empty());
+        }
+        other => panic!("{other:?}"),
+    }
+    // A late answer is still Ok, never an error the window would show.
+    assert_eq!(w1.request(Request::CustomizeDone { id: 1, outcome: CustomizeOutcome { pid: base + 1, project: "/p".into(), result: Ok(Report::default()) } }), Response::Ok);
+}
+
+#[test]
+fn a_silent_window_is_named_after_the_wait_and_no_window_answers_at_once() {
+    let d = Daemon::start(&[]);
+    let base = std::process::id();
+    let _w1 = d.connect_as(base + 1);
+    let mut w2 = d.connect_as(base + 2);
+    let mut tool = d.connect_raw();
+    let t0 = Instant::now();
+    tool.send(Request::Customize { id: 5, action: CustomizeAction::EndPreview });
+    let _ = w2.next_event();
+    w2.request(Request::CustomizeDone { id: 5, outcome: CustomizeOutcome { pid: base + 2, project: "/p".into(), result: Err("no preview".into()) } });
+    let r = tool.response();
+    assert!(t0.elapsed() >= Duration::from_millis(1900) && t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    match r {
+        Response::Customized { outcomes, missing, .. } => {
+            assert_eq!(outcomes.iter().map(|o| o.pid).collect::<Vec<_>>(), vec![base + 2]);
+            assert_eq!(missing, vec![base + 1]);
+        }
+        other => panic!("{other:?}"),
+    }
+    let d2 = Daemon::start(&[]);
+    let mut tool = d2.connect_raw();
+    tool.send(Request::Customize { id: 1, action: CustomizeAction::ReportState });
+    assert_eq!(tool.response(), Response::Customized { outcomes: vec![], missing: vec![], too_old: vec![] });
+}
+
+#[test]
+fn a_customize_id_in_flight_is_refused_and_a_window_that_leaves_is_not_waited_for() {
+    let d = Daemon::start(&[]);
+    let base = std::process::id();
+    let w1 = d.connect_as(base + 1);
+    let mut w2 = d.connect_as(base + 2);
+    let mut tool = d.connect_raw();
+    let t0 = Instant::now();
+    tool.send(Request::Customize { id: 3, action: CustomizeAction::ReloadConfig });
+    let _ = w2.next_event();
+    assert_eq!(d.connect_raw().request(Request::Customize { id: 3, action: CustomizeAction::ReportState }), Response::Error("customize id in flight".into()));
+    w2.request(Request::CustomizeDone { id: 3, outcome: CustomizeOutcome { pid: base + 2, project: "/p".into(), result: Ok(Report::default()) } });
+    drop(w1);
+    match tool.response() {
+        Response::Customized { outcomes, missing, too_old } => {
+            assert_eq!(outcomes.iter().map(|o| o.pid).collect::<Vec<_>>(), vec![base + 2]);
+            assert!(missing.is_empty() && too_old.is_empty(), "{missing:?} {too_old:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(t0.elapsed() < Duration::from_millis(1900), "answered when the window left, not at the deadline: {:?}", t0.elapsed());
 }

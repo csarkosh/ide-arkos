@@ -121,7 +121,7 @@ mod tests {
         // so a version 1 window decodes every reply it can receive from this daemon.
         assert_eq!(postcard::to_allocvec(&Response::Ok).unwrap(), vec![0]);
         assert_eq!(postcard::to_allocvec(&Response::Error(String::new())).unwrap(), vec![4, 0]);
-        assert_eq!(crate::PROTOCOL_VERSION, 5);
+        assert_eq!(crate::PROTOCOL_VERSION, 6);
         assert_eq!(crate::PROTOCOL_MIN, 1);
     }
 }

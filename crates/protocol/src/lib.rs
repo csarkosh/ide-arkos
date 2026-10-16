@@ -7,14 +7,16 @@ pub mod release_key;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Bumped only for a breaking change. New enum variants are appended, never inserted, and
 /// existing structs never change shape, so a daemon can keep serving older windows: it answers
 /// a `Hello` with the range it speaks (spec update-in-place section 5). Version 3 adds the agent
 /// record, the detailed list and Goodbye for recovery after a restart. Version 4 adds the update
 /// status, check and apply requests and the staged event. Version 5 adds the detailed status
-/// (the check's state) and the grace detach.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// (the check's state) and the grace detach. Version 6 adds the customize relay: a tool client's
+/// `Customize`, the windows' `Event::Customize` and `CustomizeDone`, and the `Customized` answer.
+pub const PROTOCOL_VERSION: u32 = 6;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -24,6 +26,12 @@ pub const UPDATE_EVENTS_FROM: u32 = 4;
 pub const UPDATE_STATUS_DETAILED_FROM: u32 = 5;
 /// The first protocol where the daemon ends a closed tab's session after its grace.
 pub const DETACH_FOR_GRACE_FROM: u32 = 5;
+/// The first protocol whose windows answer `Event::Customize`. An older project window is not
+/// asked and is listed in `Response::Customized::too_old`.
+pub const CUSTOMIZE_FROM: u32 = 6;
+/// How long the daemon waits for the windows' answers to a `Customize` before it replies with
+/// the silent ones as `missing`.
+pub const CUSTOMIZE_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub u64);
@@ -74,6 +82,50 @@ pub struct SessionDetail {
 pub struct StagedUpdate {
     pub version: String,
     pub git: String,
+}
+
+/// What a tool client asks every project window to do (agent theme spec, section 5). A window
+/// never writes a file for any of these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CustomizeAction {
+    /// Show the theme in `toml` until the preview ends; the config is untouched.
+    PreviewTheme { toml: String },
+    /// End a preview and show the configured theme again.
+    EndPreview,
+    /// Read the config and the theme file again, as a file change would.
+    ReloadConfig,
+    /// Change nothing; report what is shown.
+    ReportState,
+}
+
+/// What a window shows after an action: enough for the tool to check that a change landed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    /// The name of the theme on screen, a preview's included.
+    pub theme: String,
+    pub dark: bool,
+    pub system_is_dark: bool,
+    /// The text size preset.
+    pub preset: String,
+    /// The effective font family.
+    pub family: String,
+    /// The previewed theme's name while a preview is on.
+    pub preview: Option<String>,
+    /// The banner text when the config failed to load.
+    pub config_error: Option<String>,
+    /// The banner text when the theme file failed to load.
+    pub theme_error: Option<String>,
+}
+
+/// One window's answer to a `Customize`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomizeOutcome {
+    /// The window's process id.
+    pub pid: u32,
+    /// The project folder the window has open.
+    pub project: PathBuf,
+    /// The window's state after the action, or why the action failed.
+    pub result: Result<Report, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +180,13 @@ pub enum Request {
     /// The window closed a tab: end `session` unless a window attaches it within `secs`.
     /// Answered `Ok` at once; a second request restarts the grace.
     DetachForGrace { session: SessionId, secs: u32 },
+    /// From a tool client (no Hello needed): relay `action` to every project window as
+    /// `Event::Customize` and answer `Response::Customized` once all have answered or after
+    /// `CUSTOMIZE_WAIT`. `id` is the tool's own and must not be in flight already.
+    Customize { id: u64, action: CustomizeAction },
+    /// A window's answer to `Event::Customize { id, .. }`. Answered `Ok` whether or not the id is
+    /// still waiting: a late answer is never an error.
+    CustomizeDone { id: u64, outcome: CustomizeOutcome },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +221,10 @@ pub enum Response {
         /// The last check's transport failure, None once a check reaches the manifest again.
         transient_error: Option<String>,
     },
+    /// The answer to `Customize`: the windows' outcomes in arrival order, the pids of windows
+    /// that were asked and did not answer in time, and the pids of project windows on a protocol
+    /// below `CUSTOMIZE_FROM`, which were not asked.
+    Customized { outcomes: Vec<CustomizeOutcome>, missing: Vec<u32>, too_old: Vec<u32> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +234,9 @@ pub enum Event {
     State { session: SessionId, state: ClaudeState },
     /// Sent to every connected client when a release has been staged.
     UpdateStaged { update: StagedUpdate },
+    /// A tool client's `Customize`, sent only to project windows on `CUSTOMIZE_FROM` or later.
+    /// The window answers with `Request::CustomizeDone` carrying the same `id`.
+    Customize { id: u64, action: CustomizeAction },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +256,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 5);
+        assert_eq!(PROTOCOL_VERSION, 6);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -225,5 +291,30 @@ mod tests {
         let old = Response::UpdateStatus { staged: None, last_error: None, unreachable_for_secs: None };
         assert_eq!(postcard::from_bytes::<Response>(&postcard::to_allocvec(&old).unwrap()).unwrap(), old);
         assert_eq!((UPDATE_STATUS_FROM, UPDATE_EVENTS_FROM, UPDATE_STATUS_DETAILED_FROM, DETACH_FOR_GRACE_FROM), (4, 4, 5, 5));
+    }
+
+    #[test]
+    fn customize_messages_round_trip_through_json_and_sit_at_the_end_of_their_enums() {
+        let a = CustomizeAction::PreviewTheme { toml: "name = \"x\"".into() };
+        let r = Report { theme: "navy".into(), dark: true, system_is_dark: true, preset: "comfortable".into(), family: "Menlo".into(), preview: None, config_error: None, theme_error: None };
+        let o = CustomizeOutcome { pid: 7, project: "/p".into(), result: Ok(r.clone()) };
+        for req in [Request::Customize { id: 9, action: a.clone() }, Request::CustomizeDone { id: 9, outcome: o.clone() }] {
+            let text = serde_json::to_string(&req).unwrap();
+            assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), req);
+        }
+        let ev = Event::Customize { id: 9, action: CustomizeAction::ReportState };
+        assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
+        let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
+        assert_eq!(PROTOCOL_VERSION, 6);
+        assert_eq!(CUSTOMIZE_FROM, 6);
+        assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
+        assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
+        assert_eq!(first_byte(&Request::CustomizeDone { id: 9, outcome: o }), 22);
+        assert_eq!(first_byte(&resp), 9);
+        assert_eq!(first_byte(&ev), 4);
+        // The codec is postcard: the same messages survive it too.
+        let bytes = postcard::to_allocvec(&resp).unwrap();
+        assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), resp);
     }
 }
