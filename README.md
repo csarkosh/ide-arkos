@@ -33,8 +33,8 @@ the command palette once, and the tabs follow what each session is doing.
 
 ## Who it's for
 
-Three ways people use it; every picture is a real session, taken by `scripts/shoot.sh`
-(see Screenshots).
+Three ways people use it, each in one of the built-in themes (navy, lavender-light,
+peach-light); every picture is a real session, taken by `scripts/shoot.sh` (see Screenshots).
 
 **The multi tasker** runs several Claude Code sessions on unrelated workstreams at once and
 orchestrates the agents that orchestrate the subagents: here a rate limiter for a web service,
