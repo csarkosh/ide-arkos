@@ -570,9 +570,10 @@ pub struct Viewer {
     compose: Option<Compose>,
     /// A left-button drag that started in the text is selecting.
     selecting: bool,
-    /// The table block the caret is in, in the rendered view: its start line and its text when the
-    /// caret entered it (`table_text`). Leaving it realigns its pipes when the text differs
-    /// (`note_caret_moved`). Undo, redo and `edit_elsewhere` leave it as it is.
+    /// The table block the caret is in, in the rendered view: its start line and its text
+    /// (`table_text`) at the caret's entry or at the last undo or redo, whichever came later.
+    /// Leaving it realigns its pipes when the text differs (`note_caret_moved`, `next_entry`).
+    /// Edits, including `edit_elsewhere`, leave it as it is.
     table_entry: Option<(usize, String)>,
     /// The web images the rendered view has shown, by url: fetching, in the cache, or failed
     /// (`md_view::fill` moves them along; a failed one is fetched again only when the file is
@@ -807,7 +808,7 @@ impl Viewer {
             self.caret = caret;
             self.changed(old_lines, cx);
             self.reveal_caret();
-            self.note_caret_moved(cx);
+            self.note_caret_moved(true, cx);
         }
     }
 
@@ -819,7 +820,7 @@ impl Viewer {
             self.caret = caret;
             self.changed(old_lines, cx);
             self.reveal_caret();
-            self.note_caret_moved(cx);
+            self.note_caret_moved(true, cx);
         }
     }
 
@@ -1306,7 +1307,7 @@ impl Viewer {
     /// A key's work (`run_key`), then the table the caret may have left is realigned.
     fn key_inner(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
         let handled = self.run_key(ks, cx);
-        self.note_caret_moved(cx);
+        self.note_caret_moved(false, cx);
         handled
     }
 
@@ -1565,7 +1566,7 @@ impl Viewer {
         if !self.pending_append {
             self.reveal_caret();
         }
-        self.note_caret_moved(cx);
+        self.note_caret_moved(false, cx);
         cx.notify();
     }
 
@@ -1687,7 +1688,7 @@ impl Viewer {
         self.selecting = true;
         self.caret_placed = true;
         self.pending_append = false;
-        self.note_caret_moved(cx);
+        self.note_caret_moved(false, cx);
         cx.notify();
     }
 
@@ -1702,47 +1703,33 @@ impl Viewer {
     }
 
     /// After the caret moved (a key, a press, a click on the tail, an undo or a redo): in the
-    /// rendered view, when the caret and its selection have left the table block `table_entry`
-    /// holds, that table's pipes are realigned if its text differs from the text it had when the
-    /// caret entered (`realign_on_leave`, one undo step); then `table_entry` holds the caret's
-    /// block when it is a table. Comparing with the entry text rather than keeping an edited flag
-    /// means an undo that puts the caret back in the table and a leave again leave the restored
-    /// text alone. Outside the rendered view nothing is realigned and the entry is forgotten.
-    fn note_caret_moved(&mut self, cx: &mut Context<Self>) {
+    /// rendered view, `next_entry` decides whether the table block `table_entry` holds was left
+    /// with its text changed since the snapshot, and that table's pipes are realigned
+    /// (`realign_on_leave`, one undo step); then `table_entry` takes the snapshot `next_entry`
+    /// gives. `refresh` (an undo or a redo) takes a new snapshot of the table the caret is in even
+    /// when it never left, so the snapshot always holds the text at the last entry or history
+    /// step, and undoing back to the original text and leaving realigns nothing. Outside the
+    /// rendered view nothing is realigned and the entry is forgotten.
+    fn note_caret_moved(&mut self, refresh: bool, cx: &mut Context<Self>) {
         if !self.rendered() {
             self.table_entry = None;
             return;
         }
-        let touches = |blocks: &[md_blocks::Block], c: edit::Caret, start: usize| {
-            [c.head.line, c.anchor.line].iter().any(|&l| blocks.get(md_blocks::block_at(blocks, l)).is_some_and(|b| b.lines.start == start))
-        };
-        if let Some((start, entry)) = self.table_entry.take() {
-            if touches(&self.blocks, self.caret, start) {
-                self.table_entry = Some((start, entry));
-                return;
-            }
-            let Some(doc) = self.doc.as_ref() else { return };
-            let range = self
-                .blocks
-                .get(md_blocks::block_at(&self.blocks, start))
-                .filter(|b| b.lines.start == start && b.kind == md_blocks::BlockKind::Table)
-                .map(|b| table_range(doc.lines(), b));
-            if let Some(range) = range {
-                self.edit_elsewhere(
-                    |doc, caret, now| {
-                        realign_on_leave(doc, range, &entry, now);
-                        caret
-                    },
-                    cx,
-                );
-            }
-        }
         let Some(doc) = self.doc.as_ref() else { return };
-        self.table_entry = self
-            .blocks
-            .get(self.active_block())
-            .filter(|b| b.kind == md_blocks::BlockKind::Table)
-            .map(|b| (b.lines.start, table_text(doc.lines(), table_range(doc.lines(), b))));
+        let (realign, next) = next_entry(&self.blocks, doc.lines(), self.caret, self.table_entry.take(), refresh);
+        if let Some((range, entry)) = realign {
+            self.edit_elsewhere(
+                |doc, caret, now| {
+                    realign_on_leave(doc, range, &entry, now);
+                    // The realigned lines are not the caret's, but a caret that was placed from
+                    // the old lines stays on the document.
+                    edit::Caret { head: doc.clamp(caret.head), anchor: doc.clamp(caret.anchor), goal_col: caret.goal_col }
+                },
+                cx,
+            );
+        }
+        // The realign kept every line count, and the snapshot is of another block.
+        self.table_entry = next;
     }
 
     /// The mouse moved with the left button down: a drag that began in the text moves the head.
@@ -2143,6 +2130,31 @@ fn table_cell_pos(lines: &[String], block: &md_blocks::Block, pos: md_table::Cel
 /// The lines of table block `block` down to its last line with text, the lines `realign` rewrites.
 fn table_range(lines: &[String], block: &md_blocks::Block) -> Range<usize> {
     block.lines.start..md_blocks::pos_of_offset(block, lines, usize::MAX).line + 1
+}
+
+/// The leave check after a caret move, pure: `entry` is the snapshot (`table_entry`: a table's
+/// start line and its `table_text`), `blocks` and `lines` the document now. Returns the table to
+/// realign, its lines and the snapshot's text, when the caret and its selection have left it and
+/// its text differs from the snapshot; and the next snapshot: while the caret or its selection is
+/// still in the table, the same one, or with `refresh` (an undo or a redo) the text now of the
+/// table the caret is in; otherwise the table the caret is in, as it is now, or `None`.
+///
+/// The snapshot knows its table by the start line. When the block on that line no longer is a
+/// table starting there, the snapshot is dropped and nothing is realigned: an edit that moves
+/// the table's start while the caret is inside it (Enter before the header) forgets the
+/// snapshot, and the table is then taken as entered with that edit, never realigned for it.
+fn next_entry(blocks: &[md_blocks::Block], lines: &[String], caret: edit::Caret, entry: Option<(usize, String)>, refresh: bool) -> (Option<(Range<usize>, String)>, Option<(usize, String)>) {
+    let block_of = |line: usize| blocks.get(md_blocks::block_at(blocks, line));
+    let table_at = |start: usize| block_of(start).filter(|b| b.lines.start == start && b.kind == md_blocks::BlockKind::Table);
+    let snapshot = |b: &md_blocks::Block| (b.lines.start, table_text(lines, table_range(lines, b)));
+    let caret_table = || block_of(caret.head.line).filter(|b| b.kind == md_blocks::BlockKind::Table).map(snapshot);
+    let Some((start, text)) = entry else { return (None, caret_table()) };
+    if [caret.head.line, caret.anchor.line].iter().any(|&l| block_of(l).is_some_and(|b| b.lines.start == start)) {
+        let next = if refresh { caret_table().or_else(|| table_at(start).map(snapshot)) } else { Some((start, text)) };
+        return (None, next);
+    }
+    let realign = table_at(start).map(|b| table_range(lines, b)).filter(|r| table_text(lines, r.clone()) != text).map(|r| (r, text));
+    (realign, caret_table())
 }
 
 /// Lines `range`, each followed by a newline: a table's text as `table_entry` keeps it.
@@ -2809,6 +2821,61 @@ mod tests {
         d.undo();
         assert_eq!(d.to_text(), text);
         assert!(!realign_on_leave(&mut d, 0..3, text, now), "after the undo the entry text is the restored text");
+    }
+
+    #[test]
+    fn undo_back_to_the_original_text_and_out_does_not_realign() {
+        let original = "intro\n\n|a|b|\n|-|-|\n|1|2|\n";
+        let mut d = edit::Document::from_text(original);
+        let now = Instant::now();
+        let in_table = edit::Caret::at(edit::Pos { line: 2, ch: 2 });
+        let away = edit::Caret::at(edit::Pos { line: 0, ch: 0 });
+        let step = |d: &edit::Document, caret, entry, refresh| next_entry(&md_blocks::split(d.lines()), d.lines(), caret, entry, refresh);
+        // The caret enters: the snapshot is the original text.
+        let (realign, entry) = step(&d, in_table, None, false);
+        assert!(realign.is_none());
+        assert_eq!(entry.as_ref().map(|(start, _)| *start), Some(2));
+        // The user types, then leaves: the table is realigned.
+        d.insert(in_table, "x", now);
+        let typed = d.to_text();
+        let (realign, entry) = step(&d, away, entry, false);
+        let (range, snapshot) = realign.expect("the typed table is realigned on leave");
+        assert!(realign_on_leave(&mut d, range, &snapshot, now));
+        assert!(entry.is_none(), "the caret is in a paragraph");
+        // Undo the realign: the caret is back in the table and the snapshot is the typed text.
+        let c = d.undo().unwrap();
+        assert_eq!(d.to_text(), typed);
+        let (realign, entry) = step(&d, c, entry, true);
+        assert!(realign.is_none());
+        // Undo the typing: still in the table, the snapshot refreshed to the original text.
+        let c = d.undo().unwrap();
+        assert_eq!(d.to_text(), original);
+        let (realign, entry) = step(&d, c, entry, true);
+        assert!(realign.is_none());
+        assert_eq!(entry.as_ref().map(|(_, text)| text.as_str()), Some("|a|b|\n|-|-|\n|1|2|\n"));
+        // Leave: the original text is left alone and the redo history is kept.
+        let (realign, entry) = step(&d, away, entry, false);
+        assert!(realign.is_none(), "nothing to realign");
+        assert!(entry.is_none());
+        assert_eq!(d.to_text(), original);
+        assert!(d.redo().is_some(), "the redo history is still there");
+        assert_eq!(d.to_text(), typed);
+    }
+
+    #[test]
+    fn next_entry_forgets_a_snapshot_whose_start_line_no_longer_starts_a_table() {
+        let snapshot = Some((2, "|a|b|\n|-|-|\n|1|2|\n".to_string()));
+        let away = edit::Caret::at(edit::Pos { line: 0, ch: 0 });
+        // Enter before the header moved the table down a line, and the caret left it.
+        let d = edit::Document::from_text("intro\n\n\n|a|b|\n|-|-|\n|1|2|\n");
+        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot.clone(), false), (None, None));
+        // The delimiter row was broken: the block is a paragraph now, left as typed.
+        let d = edit::Document::from_text("intro\n\n|a|b|\n|-x-|\n|1|2|\n");
+        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot.clone(), false), (None, None));
+        // The same table still there and changed: it is realigned.
+        let d = edit::Document::from_text("intro\n\n|a|bc|\n|-|-|\n|1|2|\n");
+        let (realign, _) = next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot, false);
+        assert_eq!(realign.map(|(range, _)| range), Some(2..5));
     }
 
     #[test]
