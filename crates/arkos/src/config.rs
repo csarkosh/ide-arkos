@@ -512,6 +512,7 @@ option_as_meta = true
 # "open config" = ""
 # "command palette" = "cmd-shift-p"
 # "find" = "cmd-f"
+# "copy as shown" = "cmd-shift-c"
 # "update now" = ""
 # "check for updates" = ""
 # "notifications" = ""

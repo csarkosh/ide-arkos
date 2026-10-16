@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
+        About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
@@ -66,6 +66,9 @@ pub enum Command {
     SetTheme(String),
     /// Open the active terminal's find bar, or focus it when it is open.
     Find,
+    /// Copy the focused terminal's selection with its rows as they are on screen, the way out
+    /// when Cmd+C's re-flow should not apply (code, a table).
+    CopyAsShown,
     /// Run the installed update: the daemon first when its binary changed, then this window.
     UpdateNow,
     /// Ask the daemon to check for a new release now.
@@ -193,6 +196,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Window, "open config", ""),
     row(Section::Window, "command palette", "cmd-shift-p"),
     row(Section::Terminal, "find", "cmd-f"),
+    // Terminal-only, so Shift+Cmd+C stays free in the viewer and the browser.
+    ActionSpec { name: "copy as shown", keys: "cmd-shift-c", context: Some("Terminal"), section: Section::Terminal },
     row(Section::Maintenance, "update now", ""),
     row(Section::Maintenance, "check for updates", ""),
     row(Section::Maintenance, "notifications", ""),
@@ -288,6 +293,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "open config" => KeyBinding::new(keys, OpenConfig, context),
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "find" => KeyBinding::new(keys, Find, context),
+        "copy as shown" => KeyBinding::new(keys, CopyAsShown, context),
         "update now" => KeyBinding::new(keys, UpdateNow, context),
         "check for updates" => KeyBinding::new(keys, CheckForUpdates, context),
         "notifications" => KeyBinding::new(keys, Notifications, context),
@@ -556,6 +562,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "documentation" => Command::Documentation,
         "open config" => Command::OpenConfig,
         "find" => Command::Find,
+        "copy as shown" => Command::CopyAsShown,
         "update now" => Command::UpdateNow,
         "check for updates" => Command::CheckForUpdates,
         "notifications" => Command::Notifications,
@@ -617,7 +624,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         About => Command::About, OpenSettings => Command::OpenSettings,
         Keybindings => Command::Keybindings, Documentation => Command::Documentation,
-        OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
+        OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find, CopyAsShown => Command::CopyAsShown,
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks, InstallAgentGuide => Command::InstallAgentGuide,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
@@ -663,6 +670,7 @@ mod tests {
         ("", "open config", "OpenConfig"),
         ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-f", "find", "Find"),
+        ("cmd-shift-c", "copy as shown", "CopyAsShown"),
         ("", "update now", "UpdateNow"),
         ("", "check for updates", "CheckForUpdates"),
         ("", "notifications", "Notifications"),
@@ -714,6 +722,8 @@ mod tests {
         for name in ["toggle markdown view", "save file"] {
             assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Viewer"), "{name} acts on the focused viewer only");
         }
+        let copy = ACTIONS.iter().find(|a| a.name == "copy as shown").map(|a| (a.context, a.section));
+        assert_eq!(copy, Some((Some("Terminal"), Section::Terminal)), "Shift+Cmd+C copies the focused terminal's selection only");
     }
 
     #[test]

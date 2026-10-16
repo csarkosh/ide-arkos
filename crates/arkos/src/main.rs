@@ -50,6 +50,7 @@ mod pane_view;
 mod paths;
 mod pulse;
 mod recent;
+mod reflow;
 mod remote_image;
 mod scroll;
 mod settings;
@@ -2605,6 +2606,12 @@ impl Root {
                     v.update(cx, |v, cx| v.open_find(cx));
                 } else if let Some(t) = self.active_terminal(cx) {
                     t.update(cx, |t, cx| t.open_find(cx));
+                }
+            }
+            CopyAsShown => {
+                // The selection's rows as they are on screen: Cmd+C's re-flow is for prose.
+                if let Some(text) = self.active_terminal(cx).and_then(|t| t.read(cx).core.selection_text()) {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 }
             }
             SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),

@@ -360,6 +360,18 @@ impl TerminalCore {
         self.term.selection_to_string().filter(|s| !s.is_empty())
     }
 
+    /// The text Cmd+C copies: the selection with the lines a program wrapped for this width
+    /// joined (`reflow`). A block selection is a rectangle of cells, so it stays as it is.
+    pub fn copy_text(&self) -> Option<String> {
+        let text = self.selection_text()?;
+        let selection = self.term.selection.as_ref()?;
+        if selection.ty == SelectionType::Block {
+            return Some(text);
+        }
+        let first_col = selection.to_range(&self.term).map_or(0, |r| r.start.column.0);
+        Some(crate::reflow::reflow(&text, self.columns(), first_col))
+    }
+
     /// The selection's on-screen parts at the current display offset.
     pub fn selection_spans(&self) -> Vec<SelectionSpan> {
         let Some(r) = self.term.selection.as_ref().and_then(|s| s.to_range(&self.term)) else { return Vec::new() };
@@ -1004,6 +1016,45 @@ mod tests {
         assert_eq!(t.selection_text().as_deref(), Some("hello"));
         t.selection_start(2, 1, Side::Left, SelectionType::Lines);
         assert_eq!(t.selection_text().as_deref(), Some("second line\n"));
+    }
+
+    /// Claude Code's way at 30 columns: each row ends with a real newline, the widest at 30.
+    const WRAPPED: &[u8] = b"\xe2\x97\x8f The limiter is done and all\r\n  six tests pass.\r\n  Next I will wire it into the\r\n  server routes.";
+
+    #[test]
+    fn copying_joins_a_program_s_own_wraps_and_keeps_its_breaks() {
+        let mut t = TerminalCore::new(30, 6, 100);
+        t.apply_output(WRAPPED);
+        assert_eq!(t.copy_text(), None);
+        t.selection_start(0, 0, Side::Left, SelectionType::Simple);
+        t.selection_update(15, 3, Side::Right);
+        assert_eq!(t.copy_text().as_deref(), Some("\u{25cf} The limiter is done and all six tests pass.\n  Next I will wire it into the server routes."));
+        // "Copy as shown" keeps the rows as they are on screen.
+        assert_eq!(t.selection_text().as_deref(), Some("\u{25cf} The limiter is done and all\n  six tests pass.\n  Next I will wire it into the\n  server routes."));
+    }
+
+    #[test]
+    fn copying_counts_the_column_the_selection_starts_at() {
+        let mut t = TerminalCore::new(30, 6, 100);
+        t.apply_output(WRAPPED);
+        // From "is", 14 cells in: the row still ran to column 29, so its newline is a wrap.
+        t.selection_start(14, 0, Side::Left, SelectionType::Simple);
+        t.selection_update(15, 3, Side::Right);
+        assert_eq!(t.copy_text().as_deref(), Some("is done and all six tests pass.\n  Next I will wire it into the server routes."));
+    }
+
+    #[test]
+    fn a_block_selection_copies_as_shown_and_a_line_selection_keeps_its_newline() {
+        let mut t = TerminalCore::new(30, 6, 100);
+        t.apply_output(WRAPPED);
+        t.selection_start(0, 0, Side::Left, SelectionType::Block);
+        t.selection_update(29, 3, Side::Right);
+        assert!(t.selection_text().is_some_and(|s| s.contains('\n')));
+        assert_eq!(t.copy_text(), t.selection_text(), "a rectangle of cells is never re-flowed");
+        t.selection_start(0, 0, Side::Left, SelectionType::Lines);
+        t.selection_update(0, 1, Side::Right);
+        assert_eq!(t.selection_text().as_deref(), Some("\u{25cf} The limiter is done and all\n  six tests pass.\n"));
+        assert_eq!(t.copy_text().as_deref(), Some("\u{25cf} The limiter is done and all six tests pass.\n"));
     }
 
     #[test]

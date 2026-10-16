@@ -250,7 +250,8 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
 | Cmd+F | find in the terminal or viewer |
-| Cmd+C | copy the selected terminal text |
+| Cmd+C | copy the selected terminal text, with the lines a program wrapped to the pane's width joined |
+| Shift+Cmd+C | copy as shown: the selected terminal text with its rows as they are on screen, for code or a table |
 | Cmd+V | paste |
 | Cmd+B | toggle the sidebar |
 | Shift+Cmd+E | focus the file tree |
@@ -310,6 +311,13 @@ Notes:
   first click of a double click has already reached it. On the alternate screen without mouse
   reports (`less`, for one) the wheel sends arrow keys (xterm's alternate scroll, `?1007`, on by
   default), and Shift+wheel always scrolls Arkos's own history.
+- Claude Code wraps its own prose to the pane's width and ends each row with a real newline, so
+  Cmd+C joins those rows back into one line per paragraph or list item: a row joins the next when
+  the next one's first word would not have fit on it. A row that ends early, a blank line, a list
+  marker, a box-drawn frame or table, and text that never came within 12 cells of the width all
+  keep their line breaks, and a continuation's indent is dropped on the join. Shift+Cmd+C
+  ("copy as shown") copies the rows exactly as they are on screen, and a block selection is
+  always copied as shown.
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
   or quote) is underlined, and Cmd+click opens it in your browser, as in
   Terminal.app. A plain click does nothing to it.

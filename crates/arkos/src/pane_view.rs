@@ -831,9 +831,15 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
-            // Cmd+C copies the selection and nothing else: Ctrl+C stays the interrupt.
+            // Shift+Cmd+C is "copy as shown", an action that never gets here while it is bound;
+            // rebound elsewhere, it does nothing rather than Cmd+C's re-flowed copy.
+            if ks.modifiers.platform && ks.modifiers.shift && ks.key == "c" {
+                return;
+            }
+            // Cmd+C copies the selection and nothing else: Ctrl+C stays the interrupt. The lines
+            // a program wrapped for this width come out joined (`TerminalCore::copy_text`).
             if ks.modifiers.platform && ks.key == "c" {
-                if let Some(text) = t_keys.read(cx).core.selection_text() {
+                if let Some(text) = t_keys.read(cx).core.copy_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
                 return;
