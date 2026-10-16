@@ -67,7 +67,7 @@ use gpui::{
 use protocol::{Event, Request, SessionId, StagedUpdate};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1074,10 +1074,7 @@ impl Root {
     pub fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         let old = std::mem::replace(&mut self.config, cfg);
         if old.keybindings != self.config.keybindings {
-            cx.clear_key_bindings();
-            cx.bind_keys(keymap::bindings_for(&self.config.keybindings));
-            // The menu bar shows (and on macOS answers) the keys bound when it was set.
-            cx.set_menus(menus());
+            rebind(cx, &self.config.keybindings);
         }
         self.switch_theme(cx);
         if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
@@ -3476,6 +3473,14 @@ impl Render for Root {
     }
 }
 
+/// Replaces the key bindings with the defaults plus `keybindings`, and sets the menu bar again:
+/// it shows (and on macOS answers) the keys bound when it was set.
+fn rebind(cx: &mut App, keybindings: &BTreeMap<String, String>) {
+    cx.clear_key_bindings();
+    cx.bind_keys(keymap::bindings_for(keybindings));
+    cx.set_menus(menus());
+}
+
 /// The menu bar: one menu. Set again when the key bindings change so it shows the bound keys.
 /// "New Window" is one item: the chooser offers the recent folders and the native picker both.
 fn menus() -> Vec<Menu> {
@@ -3556,6 +3561,10 @@ fn main() {
     motion::refresh();
     app_nap::hold();
     let config_path = paths::config_file();
+    // Taken before the load: the project window reads the file again when it changed since
+    // (Settings opened from the chooser writes it), so a write landing during the load is not
+    // missed; at worst it costs one extra reload.
+    let fingerprint = config_watch::fingerprint(&config_path);
     let (config, config_error) = match config::load(&config_path) {
         Ok(c) => (c, None),
         Err(e) => {
@@ -3563,9 +3572,6 @@ fn main() {
             (config::Config::default(), Some(e.to_string()))
         }
     };
-    // Taken right after the load: the project window reads the file again when it changed since
-    // (Settings opened from the chooser writes it).
-    let fingerprint = config_watch::fingerprint(&config_path);
     // Used only when this window starts the daemon; a running one keeps its own settings.
     let daemon_args = daemon_args(&config);
     let cwd = std::env::current_dir().expect("cwd");
@@ -3833,18 +3839,15 @@ fn open_project_window(
 ) {
     let Startup { mut config, mut config_error, config_path, daemon_args, save_queue, mut theme, mut theme_error, system_is_dark, updated } = start;
     let now = config_watch::fingerprint(&config_path);
-    let (launched, installed) = match cx.try_global::<aux::Aux>().and_then(|aux| aux.launch.as_ref()) {
-        Some(launch) => (launch.fingerprint, launch.installed),
-        None => (now, SystemTime::now()),
-    };
+    // `main()` sets the registry up before any window, so a missing one is a wiring bug.
+    let launch = cx.global::<aux::Aux>().launch.as_ref().expect("aux::init runs before any window");
+    let (launched, installed) = (launch.fingerprint, launch.installed);
     // The file changed since `main()` read it (Settings, opened from the chooser, writes it): read
     // it again, and the theme it names, so that change is not lost.
     if now != launched {
         let (cfg, banner) = config::reload_decision(&config, config::load(&config_path));
         if cfg.keybindings != config.keybindings {
-            cx.clear_key_bindings();
-            cx.bind_keys(keymap::bindings_for(&cfg.keybindings));
-            cx.set_menus(menus());
+            rebind(cx, &cfg.keybindings);
         }
         config = cfg;
         config_error = banner;
