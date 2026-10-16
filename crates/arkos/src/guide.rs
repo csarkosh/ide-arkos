@@ -22,14 +22,25 @@ const USAGE: &str = "usage: arkos guide [--path | --install]\n";
 const STAMP_PREFIX: &str = "<!-- arkos-guide: ";
 const STAMP_SUFFIX: &str = " -->";
 
-/// The first 16 hex digits of the SHA-256 of `TEXT`: the version an installed skill carries.
+/// The skill's YAML front matter with its closing `---` line. The description is quoted: it holds
+/// a second ": ", which YAML refuses in a plain value (it has no `"` or `\` to escape).
+fn front_matter() -> String {
+    format!("---\nname: {SKILL_NAME}\ndescription: \"{SKILL_DESCRIPTION}\"\n---\n")
+}
+
+/// The first 16 hex digits of the SHA-256 of the front matter followed by `TEXT` (everything in
+/// `SKILL.md` but the stamp line itself): the version an installed skill carries, so a change to
+/// either part gives a new stamp.
 pub fn stamp() -> String {
-    Sha256::digest(TEXT.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
+    let mut h = Sha256::new();
+    h.update(front_matter().as_bytes());
+    h.update(TEXT.as_bytes());
+    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 /// The whole `SKILL.md`: the front matter, the stamp line, then the guide.
 pub fn skill_text() -> String {
-    format!("---\nname: {SKILL_NAME}\ndescription: {SKILL_DESCRIPTION}\n---\n{STAMP_PREFIX}{}{STAMP_SUFFIX}\n{TEXT}", stamp())
+    format!("{}{STAMP_PREFIX}{}{STAMP_SUFFIX}\n{TEXT}", front_matter(), stamp())
 }
 
 /// What a skills folder holds under `arkos-ide/SKILL.md`.
@@ -185,7 +196,7 @@ mod tests {
         assert_eq!(i.path, dir.path().join("arkos-ide").join("SKILL.md"));
         assert!(!i.replaced);
         let text = std::fs::read_to_string(&i.path).unwrap();
-        assert!(text.starts_with("---\nname: arkos-ide\ndescription: Customize Arkos IDE"), "{text}");
+        assert!(text.starts_with("---\nname: arkos-ide\ndescription: \"Customize Arkos IDE"), "{text}");
         assert!(text.contains(&format!("<!-- arkos-guide: {} -->\n", stamp())));
         assert!(text.ends_with(TEXT));
         assert_eq!(skill_state(dir.path()), SkillState::Current);
@@ -204,6 +215,12 @@ mod tests {
         assert_eq!(guide_cli_to(&["--path".into()], dir.path(), dir.path(), &mut out, &mut err), 0);
         let p = PathBuf::from(String::from_utf8(out).unwrap().trim());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), TEXT);
+        let mtime = std::fs::metadata(&p).unwrap().modified().unwrap();
+        assert_eq!(guide_cli_to(&["--path".into()], dir.path(), dir.path(), &mut Vec::new(), &mut Vec::new()), 0);
+        assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), mtime, "an unchanged copy is not rewritten");
+        std::fs::write(&p, "an older guide").unwrap();
+        assert_eq!(guide_cli_to(&["--path".into()], dir.path(), dir.path(), &mut Vec::new(), &mut Vec::new()), 0);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), TEXT, "a copy that differs is rewritten");
         assert_eq!(guide_cli_to(&["--install".into()], dir.path(), dir.path(), &mut Vec::new(), &mut Vec::new()), 1, "the stranger stays");
         assert_eq!(skills_dir_from(Some(std::ffi::OsStr::new("/h/.claude2")), Path::new("/h")), PathBuf::from("/h/.claude2/skills"));
         assert_eq!(skills_dir_from(None, Path::new("/h")), PathBuf::from("/h/.claude/skills"));
@@ -219,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stamp_is_sixteen_hex_digits_of_the_guide_s_hash() {
+    fn the_stamp_is_sixteen_lowercase_hex_digits() {
         let s = stamp();
         assert_eq!(s.len(), 16);
         assert!(s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{s}");
@@ -242,5 +259,35 @@ mod tests {
         assert_eq!(String::from_utf8(err).unwrap(), USAGE);
         assert!(skills_dir_from(Some(OsStr::new("")), Path::new("/h")).ends_with(".claude/skills"), "an empty variable is unset");
         assert!(std::fs::read_dir(dir.path().join("arkos-ide")).unwrap().all(|e| e.unwrap().file_name() == "SKILL.md"), "no temporary file left");
+    }
+
+    #[test]
+    fn the_front_matter_is_yaml_a_skill_loader_accepts() {
+        let text = skill_text();
+        let body = text.strip_prefix("---\n").unwrap();
+        let (front, _) = body.split_once("\n---\n").unwrap();
+        for line in front.lines() {
+            let (key, value) = line.split_once(": ").unwrap_or_else(|| panic!("not a key: value line: {line}"));
+            assert!(key.chars().all(|c| c.is_ascii_lowercase()), "{line}");
+            match value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+                Some(inner) => assert!(!inner.contains('"') && !inner.contains('\\'), "nothing to escape inside the quotes: {line}"),
+                None => assert!(!value.contains(": ") && !value.starts_with(['"', '\'', '{', '[', '&', '*', '!', '|', '>', '%', '@', '`']), "a plain value YAML would refuse: {line}"),
+            }
+        }
+        assert_eq!(front.lines().map(|l| l.split_once(": ").unwrap().0).collect::<Vec<_>>(), ["name", "description"]);
+    }
+
+    #[test]
+    fn the_stamp_covers_the_front_matter_as_well_as_the_guide() {
+        let mut h = Sha256::new();
+        h.update(TEXT.as_bytes());
+        let text_only: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+        assert_ne!(stamp(), text_only, "the front matter is hashed too");
+        let skill = skill_text();
+        let without_stamp = skill.replace(&format!("{STAMP_PREFIX}{}{STAMP_SUFFIX}\n", stamp()), "");
+        let mut h = Sha256::new();
+        h.update(without_stamp.as_bytes());
+        let whole: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+        assert_eq!(stamp(), whole, "everything in SKILL.md but the stamp line");
     }
 }
