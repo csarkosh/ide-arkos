@@ -1020,7 +1020,7 @@ impl Root {
             self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
         }
         self.theme = Arc::new(theme);
-        // About and Settings follow the theme too.
+        // About, Settings and Keybindings follow the theme too.
         aux::push_theme(cx, &self.theme);
         // Every open viewer re-highlights in the new colours.
         self.reload_all_viewers(cx);
@@ -1099,6 +1099,8 @@ impl Root {
         let old = std::mem::replace(&mut self.config, cfg);
         if old.keybindings != self.config.keybindings {
             rebind(cx, &self.config.keybindings);
+            // An open Keybindings window shows the saved override at once.
+            aux::push_keybindings(cx, &self.config.keybindings);
         }
         self.switch_theme(cx);
         if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
@@ -3996,14 +3998,15 @@ fn open_project_window(
             root.sync_docks(cx);
             cx.notify();
         });
-        // A Settings window or About opened from the chooser shows this window's state and theme
-        // from now on.
-        let (shown, theme) = {
+        // A Settings, About or Keybindings window opened from the chooser shows this window's
+        // state and theme from now on.
+        let (shown, theme, overrides) = {
             let root = root.read(cx);
-            (root.settings_shown(), root.theme.clone())
+            (root.settings_shown(), root.theme.clone(), root.config.keybindings.clone())
         };
         aux::push_settings(cx, shown);
         aux::push_theme(cx, &theme);
+        aux::push_keybindings(cx, &overrides);
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
             // Goodbye here, while everything runs; the close this quit makes finds it said. Unsaved

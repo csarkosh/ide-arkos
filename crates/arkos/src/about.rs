@@ -1,6 +1,6 @@
 //! The About window: the build, update and install details, the paths a bug report needs, and the
 //! attribution. Everything it shows comes from one `Details`, which the clipboard text renders too.
-use crate::chrome::UI_FONT;
+use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
 use crate::theme::Theme;
 use crate::{aux, client, keymap, paths, update};
 use gpui::{
@@ -19,9 +19,12 @@ pub const AUTHOR: &str = "Cyrus Sarkosh";
 /// Where the author's name links to.
 pub const AUTHOR_URL: &str = "https://github.com/csarkosh";
 
-/// The window's size: fixed, since the window is not resizable.
+/// The window's title, which its own title bar draws.
+const TITLE: &str = "About Arkos IDE";
+/// The window's size: fixed, since the window is not resizable. The height is the content's
+/// 520 px plus the title bar.
 const WIDTH: f32 = 420.0;
-const HEIGHT: f32 = 520.0;
+const HEIGHT: f32 = 520.0 + TITLE_BAR_H;
 /// The width of the table's label column.
 const LABEL_W: f32 = 112.0;
 /// The colours of the donation line's two glyphs: Claude's orange spark and a red heart.
@@ -210,7 +213,8 @@ pub fn open(cx: &mut App, details: Details, theme: Theme) -> Option<WindowHandle
     let fixed = size(px(WIDTH), px(HEIGHT));
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, fixed, cx))),
-        titlebar: Some(TitlebarOptions { title: Some("About Arkos IDE".into()), appears_transparent: false, traffic_light_position: None }),
+        // The window draws the IDE's own title bar in the native one's place.
+        titlebar: Some(TitlebarOptions { title: Some(TITLE.into()), appears_transparent: true, traffic_light_position: None }),
         focus: true,
         is_resizable: false,
         window_min_size: Some(fixed),
@@ -312,34 +316,42 @@ impl Render for AboutWindow {
             .size_full()
             .flex()
             .flex_col()
-            .gap(px(12.0))
-            .p(px(20.0))
             .bg(bg)
             .text_color(text)
             .font_family(SharedString::from(UI_FONT))
+            .child(chrome::aux_title_bar(TITLE, &self.theme))
             .child(
                 div()
-                    .flex_none()
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
-                    .child(div().text_size(px(20.0)).font_weight(gpui::FontWeight::SEMIBOLD).child("Arkos IDE"))
-                    .child(div().text_size(px(13.0)).text_color(dim).child(self.details.version.clone())),
-            )
-            .child(table)
-            .child(div().flex_none().flex().child(copy))
-            .child(
-                div()
-                    .flex_none()
-                    .pt(px(12.0))
-                    .border_t_1()
-                    .border_color(border)
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .text_size(px(12.0))
-                    .text_color(dim)
-                    .child(author)
-                    .children(donate),
+                    .gap(px(12.0))
+                    .p(px(20.0))
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(20.0)).font_weight(gpui::FontWeight::SEMIBOLD).child("Arkos IDE"))
+                            .child(div().text_size(px(13.0)).text_color(dim).child(self.details.version.clone())),
+                    )
+                    .child(table)
+                    .child(div().flex_none().flex().child(copy))
+                    .child(
+                        div()
+                            .flex_none()
+                            .pt(px(12.0))
+                            .border_t_1()
+                            .border_color(border)
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .text_size(px(12.0))
+                            .text_color(dim)
+                            .child(author)
+                            .children(donate),
+                    ),
             )
     }
 }

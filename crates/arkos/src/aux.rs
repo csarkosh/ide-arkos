@@ -1,13 +1,15 @@
 //! The auxiliary windows' registry: the About, Settings and Keybindings windows, one of each at
-//! most, and the project window's Root once it exists. A gpui global, so the actions registered once in `main()`
-//! reach them in every state, the launch chooser's included, and the close rules can count them.
+//! most, and the project window's Root once it exists. A gpui global, so the actions registered
+//! once in `main()` reach them in every state, the launch chooser's included, and the close rules
+//! can count them.
 use crate::about::{self, AboutWindow};
 use crate::config::{self, Config};
-use crate::keybindings::KeybindingsWindow;
+use crate::keybindings::{self, KeybindingsWindow};
 use crate::settings::{self, SettingsWindow, Shown};
 use crate::theme::Theme;
-use crate::{launch, paths, Root};
-use gpui::{App, WeakEntity, WindowHandle};
+use crate::{keymap, launch, paths, Root};
+use gpui::{App, SharedString, WeakEntity, WindowHandle};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -126,10 +128,45 @@ fn settings_state(cx: &App) -> Option<(Shown, Theme)> {
     Some((Shown { config, error, write_error: None, update_ready: None, active_preset: None }, launch.theme.clone()))
 }
 
-/// The Keybindings menu item and Cmd+/: will bring the Keybindings window forward, or open it.
-/// Until the window exists it only says it was asked for.
-pub fn open_keybindings(_cx: &mut App) {
-    eprintln!("arkos: the Keybindings window is not built yet");
+/// The Keybindings menu item, Cmd+/ and Settings' "Keybindings": brings the Keybindings window
+/// forward with the bindings in force now, or opens it. The bindings come from the project
+/// window's Root when there is one, else from what `main()` loaded. Deferred, because the Root's
+/// own command runs this while the Root is being updated, and gpui refuses a second update or
+/// read of an entity meanwhile.
+pub fn open_keybindings(cx: &mut App) {
+    cx.defer(|cx| {
+        let Some(aux) = cx.try_global::<Aux>() else { return };
+        let handle = aux.keybindings;
+        let Some((overrides, theme, mono)) = keybindings_state(cx) else { return };
+        let rows = keymap::grouped(&overrides);
+        if let Some(handle) = handle {
+            // Its window may have closed meanwhile.
+            let (pushed, drawn_in) = (rows.clone(), theme.clone());
+            if handle
+                .update(cx, |w, window, cx| {
+                    w.set_rows(pushed, cx);
+                    w.set_theme(drawn_in, cx);
+                    window.activate_window();
+                })
+                .is_ok()
+            {
+                return;
+            }
+        }
+        let handle = keybindings::open(cx, rows, theme, mono);
+        cx.global_mut::<Aux>().keybindings = handle;
+    });
+}
+
+/// The Keybindings window's overrides, theme and monospace family: the Root's, or before the
+/// project window exists, the launch config's and the launch theme.
+fn keybindings_state(cx: &App) -> Option<(BTreeMap<String, String>, Theme, SharedString)> {
+    if let Some(root) = root(cx) {
+        let root = root.read(cx);
+        return Some((root.config.keybindings.clone(), (*root.theme).clone(), root.family()));
+    }
+    let launch = cx.try_global::<Aux>()?.launch.as_ref()?;
+    Some((launch.config.keybindings.clone(), launch.theme.clone(), launch.config.font.family.clone().into()))
 }
 
 /// Where the Documentation menu item and command go: the README on GitHub.
@@ -146,15 +183,28 @@ pub fn push_settings(cx: &mut App, shown: Shown) {
     let _ = handle.update(cx, |w, _window, cx| w.set_shown(shown, cx));
 }
 
-/// Redraws the open About and Settings windows in `theme`, the project window's new one.
+/// Shows the bindings in force under `overrides` in the Keybindings window when it is open, so a
+/// saved override shows at once.
+pub fn push_keybindings(cx: &mut App, overrides: &BTreeMap<String, String>) {
+    let Some(handle) = cx.try_global::<Aux>().and_then(|aux| aux.keybindings) else { return };
+    let rows = keymap::grouped(overrides);
+    let _ = handle.update(cx, |w, _window, cx| w.set_rows(rows, cx));
+}
+
+/// Redraws the open About, Settings and Keybindings windows in `theme`, the project window's new
+/// one.
 pub fn push_theme(cx: &mut App, theme: &Theme) {
     let Some(aux) = cx.try_global::<Aux>() else { return };
-    let (about, settings) = (aux.about, aux.settings);
+    let (about, settings, keybindings) = (aux.about, aux.settings, aux.keybindings);
     if let Some(h) = about {
         let theme = theme.clone();
         let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
     }
     if let Some(h) = settings {
+        let theme = theme.clone();
+        let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
+    }
+    if let Some(h) = keybindings {
         let theme = theme.clone();
         let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
     }
@@ -250,7 +300,7 @@ pub fn close_all(cx: &mut App) {
     aux.keybindings = None;
 }
 
-/// New Window pressed in About or Settings: the project window's New Window when there is one;
+/// New Window pressed in About, Settings or Keybindings: the project window's New Window when there is one;
 /// before that, the launch chooser comes forward, as its own New Window does. Deferred, as
 /// `open_settings` is.
 pub fn forward_new_window(cx: &mut App) {

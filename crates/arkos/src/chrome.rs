@@ -174,11 +174,43 @@ fn icon_button(id: &'static str, icon: Icon, dot: bool, lit: bool, c: &crate::th
         .when(dot, |d| d.child(div().absolute().top(px(3.0)).right(px(3.0)).size(px(6.0)).rounded_full().bg(c.focus_ring.hsla())))
 }
 
+/// `bar` made to act as the native title bar did: a left press drags the window and a double
+/// click zooms it.
+fn drag_to_move(bar: Div) -> Div {
+    bar.on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _cx| {
+        if ev.click_count == 2 {
+            window.titlebar_double_click();
+        } else {
+            window.start_window_move();
+        }
+    })
+}
+
+/// The title bar of the About, Settings and Keybindings windows: the project window's bar with
+/// the window's title in place of the project path and no icons, so every window the menu opens
+/// looks like the IDE.
+pub fn aux_title_bar(title: &str, theme: &Theme) -> Div {
+    let c = &theme.chrome;
+    drag_to_move(div())
+        .h(px(TITLE_BAR_H))
+        .w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .pl(px(TRAFFIC_LIGHTS_W))
+        .pr(px(BAR_RIGHT_PAD))
+        .bg(c.title_bar.hsla())
+        .text_color(c.text.hsla())
+        .font_family(SharedString::from(UI_FONT))
+        .text_size(px(13.0))
+        .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
+}
+
 /// The bar. Dragging it moves the window and a double click zooms it, as the native bar did.
 /// In full screen the traffic lights are gone, so the text starts at the edge.
 pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
     let c = &theme.chrome;
-    div()
+    drag_to_move(div())
         .h(px(TITLE_BAR_H))
         .w_full()
         .flex_none()
@@ -191,13 +223,6 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
         .text_color(c.text.hsla())
         .font_family(SharedString::from(UI_FONT))
         .text_size(px(13.0))
-        .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _cx| {
-            if ev.click_count == 2 {
-                window.titlebar_double_click();
-            } else {
-                window.start_window_move();
-            }
-        })
         .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Arkos IDE"))
         .child(
             div()

@@ -131,7 +131,6 @@ impl Section {
         [Section::Window, Section::Panes, Section::Tabs, Section::Terminal, Section::Sidebar, Section::Browser, Section::Markdown, Section::Maintenance];
 
     /// The section's heading in the Keybindings window.
-    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
     pub fn title(self) -> &'static str {
         match self {
             Section::Window => "Window and app",
@@ -140,7 +139,7 @@ impl Section {
             Section::Terminal => "Terminal",
             Section::Sidebar => "Sidebar and files",
             Section::Browser => "Browser",
-            Section::Markdown => "Markdown editing",
+            Section::Markdown => "Viewer and markdown editing",
             Section::Maintenance => "Updates and maintenance",
         }
     }
@@ -203,9 +202,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Sidebar, "focus file tree", "cmd-shift-e"),
     row(Section::Sidebar, "show ignored files", ""),
     row(Section::Sidebar, "focus worktrees", "ctrl-shift-g"),
-    ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer"), section: Section::Sidebar },
-    ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer"), section: Section::Sidebar },
-    ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer"), section: Section::Sidebar },
+    ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer"), section: Section::Markdown },
+    ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer"), section: Section::Markdown },
+    ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer"), section: Section::Markdown },
     row(Section::Window, "open folder", "cmd-o"),
     row(Section::Window, "new window", "cmd-n"),
     row(Section::Browser, "new browser tab", "cmd-shift-b"),
@@ -436,10 +435,23 @@ pub fn label(name: &str) -> String {
     }
 }
 
+/// An action's display name, as the palette and the Keybindings window write it: the config name
+/// with its first letter upper-cased, except where the product names keep their capitals, and the
+/// commands that ask for more end in an ellipsis, as macOS writes them.
+pub fn label_for(name: &str) -> String {
+    match command_for(name) {
+        Some(Command::About) => "About Arkos IDE".to_string(),
+        Some(Command::InstallHooks) => "Install Claude Code hooks".to_string(),
+        Some(Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage) => format!("{}\u{2026}", label(name)),
+        Some(Command::DockChromeWindow) => "Dock a Chrome window\u{2026}".to_string(),
+        Some(Command::UndockChromeWindow) => "Undock Chrome window".to_string(),
+        _ => label(name),
+    }
+}
+
 /// The document viewer's fixed keys, which no `[keybindings]` entry changes: the label and the
 /// keys in the Mac spelling. Each is one `viewer::key_action` maps, except Cmd+click, which the
 /// rendered view's links answer (`md_view`).
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
     ("Save", "Cmd+S"),
     ("Leave the block", "Escape"),
@@ -458,7 +470,6 @@ pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
 
 /// One line of the Keybindings window: what the action is called and its keys in the Mac
 /// spelling, `None` when nothing is bound.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyRow {
     pub label: String,
@@ -466,33 +477,31 @@ pub struct KeyRow {
 }
 
 /// Every action with its keys in force under `overrides`, grouped by section in display order (a
-/// section with no rows is left out), in `ACTIONS` order within a section. The nine "focus pane N"
-/// rows read as one row while every one of them keeps its default; the Markdown section lists
+/// section with no rows is left out), in `ACTIONS` order within a section, each labelled as the
+/// palette labels it (`label_for`). The nine "focus pane N" rows read as one row while every one
+/// of them keeps its default; the Markdown section lists the viewer's actions, then
 /// `MARKDOWN_KEYS`.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn grouped(overrides: &BTreeMap<String, String>) -> Vec<(Section, Vec<KeyRow>)> {
     let focus_pane = |a: &ActionSpec| a.name.starts_with("focus pane ");
     let collapse = ACTIONS.iter().filter(|a| focus_pane(a)).all(|a| keys_for(a.name, overrides).as_deref() == Some(a.keys));
     Section::ALL
         .iter()
         .map(|&section| {
-            let rows: Vec<KeyRow> = if section == Section::Markdown {
-                MARKDOWN_KEYS.iter().map(|(label, keys)| KeyRow { label: label.to_string(), keys: Some(keys.to_string()) }).collect()
-            } else {
-                let mut rows = Vec::new();
-                for a in ACTIONS.iter().filter(|a| a.section == section) {
-                    if collapse && focus_pane(a) {
-                        // The first of the nine stands for them all; the rest add nothing.
-                        if a.name == "focus pane 1" {
-                            let keys = format!("{} to {}", pretty_keys("cmd-1"), pretty_keys("cmd-9"));
-                            rows.push(KeyRow { label: "Focus pane 1 to 9".to_string(), keys: Some(keys) });
-                        }
-                        continue;
+            let mut rows = Vec::new();
+            for a in ACTIONS.iter().filter(|a| a.section == section) {
+                if collapse && focus_pane(a) {
+                    // The first of the nine stands for them all; the rest add nothing.
+                    if a.name == "focus pane 1" {
+                        let keys = format!("{} to {}", pretty_keys("cmd-1"), pretty_keys("cmd-9"));
+                        rows.push(KeyRow { label: "Focus pane 1 to 9".to_string(), keys: Some(keys) });
                     }
-                    rows.push(KeyRow { label: label(a.name), keys: keys_for(a.name, overrides).map(|k| pretty_keys(&k)) });
+                    continue;
                 }
-                rows
-            };
+                rows.push(KeyRow { label: label_for(a.name), keys: keys_for(a.name, overrides).map(|k| pretty_keys(&k)) });
+            }
+            if section == Section::Markdown {
+                rows.extend(MARKDOWN_KEYS.iter().map(|(label, keys)| KeyRow { label: label.to_string(), keys: Some(keys.to_string()) }));
+            }
             (section, rows)
         })
         .filter(|(_, rows)| !rows.is_empty())
@@ -831,7 +840,8 @@ mod tests {
         let mut seen = 0;
         for (section, rows) in &g {
             for row in rows {
-                if *section == Section::Markdown {
+                // The viewer's fixed keys are not actions; the viewer's three actions are.
+                if *section == Section::Markdown && MARKDOWN_KEYS.iter().any(|(label, _)| *label == row.label) {
                     continue;
                 }
                 seen += if row.label == "Focus pane 1 to 9" { 9 } else { 1 };
@@ -843,11 +853,15 @@ mod tests {
         let window = &g.iter().find(|(s, _)| *s == Section::Window).unwrap().1;
         assert!(window.iter().any(|r| r.label == "Keybindings" && r.keys.as_deref() == Some("Cmd+/")));
         assert!(window.iter().any(|r| r.label == "Documentation" && r.keys.is_none()));
+        assert!(window.iter().any(|r| r.label == "About Arkos IDE" && r.keys.is_none()), "the palette's label");
         let maint = &g.iter().find(|(s, _)| *s == Section::Maintenance).unwrap().1;
         assert!(maint.iter().any(|r| r.label == "Doctor" && r.keys.is_none()));
         let md = &g.iter().find(|(s, _)| *s == Section::Markdown).unwrap().1;
-        assert_eq!(md.len(), MARKDOWN_KEYS.len());
-        assert_eq!(md[0], KeyRow { label: "Save".into(), keys: Some("Cmd+S".into()) });
+        let viewer: Vec<&str> = md[..3].iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file"], "the viewer's actions come first");
+        assert_eq!(md.len(), 3 + MARKDOWN_KEYS.len());
+        assert_eq!(md[3], KeyRow { label: "Save".into(), keys: Some("Cmd+S".into()) });
+        assert!(md[3..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
         let mut o = BTreeMap::new();
         o.insert("find".to_string(), "cmd-shift-f".to_string());
         o.insert("focus pane 3".to_string(), "cmd-shift-3".to_string());
@@ -863,7 +877,20 @@ mod tests {
     #[test]
     fn the_sections_carry_the_window_s_headings() {
         let titles: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
-        assert_eq!(titles, ["Window and app", "Panes", "Tabs", "Terminal", "Sidebar and files", "Browser", "Markdown editing", "Updates and maintenance"]);
+        assert_eq!(titles, ["Window and app", "Panes", "Tabs", "Terminal", "Sidebar and files", "Browser", "Viewer and markdown editing", "Updates and maintenance"]);
+    }
+
+    #[test]
+    fn an_action_s_label_reads_as_the_palette_writes_it() {
+        assert_eq!(label_for("about"), "About Arkos IDE");
+        assert_eq!(label_for("install claude code hooks"), "Install Claude Code hooks");
+        assert_eq!(label_for("open folder"), "Open folder\u{2026}");
+        assert_eq!(label_for("new browser tab"), "New browser tab\u{2026}");
+        assert_eq!(label_for("new single-page browser tab"), "New single-page browser tab\u{2026}");
+        assert_eq!(label_for("dock a chrome window"), "Dock a Chrome window\u{2026}");
+        assert_eq!(label_for("undock chrome window"), "Undock Chrome window");
+        assert_eq!(label_for("keybindings"), "Keybindings");
+        assert_eq!(label_for("quit"), "Quit", "an action the palette does not list still reads by its name");
     }
 
     #[test]

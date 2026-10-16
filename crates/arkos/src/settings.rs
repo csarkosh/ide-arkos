@@ -2,7 +2,7 @@
 //! `config::set_values` and applied at once by whoever handed the window its `on_change` (the
 //! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
 //! was last handed (`set_shown`), so an edit made in an editor shows here too.
-use crate::chrome::UI_FONT;
+use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
 use crate::config::{self, AppearanceMode, Config, FontConfig, StartAtLogin};
 use crate::theme::{self, Theme};
 use crate::{aux, keymap, paths};
@@ -20,11 +20,13 @@ pub type OnChange = Rc<dyn Fn(&[(&[&str], toml_edit::Value)], &mut App)>;
 /// The Updates section's "Update now".
 pub type OnUpdate = Rc<dyn Fn(&mut App)>;
 
-/// The window's opening size and its minimum.
+/// The window's title, which its own title bar draws.
+const TITLE: &str = "Settings";
+/// The window's opening size and its minimum. Each height is the content's plus the title bar.
 const WIDTH: f32 = 560.0;
-const HEIGHT: f32 = 480.0;
+const HEIGHT: f32 = 480.0 + TITLE_BAR_H;
 const MIN_WIDTH: f32 = 480.0;
-const MIN_HEIGHT: f32 = 360.0;
+const MIN_HEIGHT: f32 = 360.0 + TITLE_BAR_H;
 /// The width of the section column.
 const SECTIONS_W: f32 = 132.0;
 /// The size stepper's range and the line height stepper's, with their increments.
@@ -226,7 +228,8 @@ pub struct SettingsWindow {
 pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_change: OnChange, on_update: OnUpdate) -> Option<WindowHandle<SettingsWindow>> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx))),
-        titlebar: Some(TitlebarOptions { title: Some("Settings".into()), appears_transparent: false, traffic_light_position: None }),
+        // The window draws the IDE's own title bar in the native one's place.
+        titlebar: Some(TitlebarOptions { title: Some(TITLE.into()), appears_transparent: true, traffic_light_position: None }),
         focus: true,
         is_resizable: true,
         window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
@@ -362,17 +365,38 @@ impl SettingsWindow {
 
 /// The theme's chrome colours, as the controls use them.
 #[derive(Clone, Copy)]
-struct Colors {
-    text: Hsla,
-    dim: Hsla,
-    border: Hsla,
-    accent: Hsla,
-    pill: Hsla,
+pub struct Colors {
+    pub text: Hsla,
+    pub dim: Hsla,
+    pub border: Hsla,
+    pub accent: Hsla,
+    pub pill: Hsla,
+}
+
+impl Colors {
+    /// The controls' colours in `theme`.
+    pub fn of(theme: &Theme) -> Colors {
+        let t = &theme.chrome;
+        Colors { text: t.text.hsla(), dim: t.text_dim.hsla(), border: t.border.hsla(), accent: t.focus_ring.hsla(), pill: t.banner.hsla() }
+    }
+}
+
+/// Opens the config file in the default text editor (`open -t`), off the main thread. The
+/// Keyboard section's "Open config" and the Keybindings window's run it.
+pub fn open_config_in_editor(cx: &App) {
+    let path = paths::config_file();
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
+                eprintln!("arkos: cannot open {}: {e}", path.display());
+            }
+        })
+        .detach();
 }
 
 /// A pill button, drawn like the terminal's "jump to bottom" pill. A selected one is outlined in
 /// the accent colour; a disabled one is dimmed and the caller attaches no click handler.
-fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
+pub fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
     let p = div()
         .id(id)
         .flex_none()
@@ -593,24 +617,21 @@ impl SettingsWindow {
 
     fn keyboard(&self, c: Colors) -> Vec<AnyElement> {
         // Live even while the config has a problem: opening the file is how it gets fixed.
-        let open = pill("open-config", "Open config", false, true, c).on_click(|_, _, cx| {
-            let path = paths::config_file();
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
-                        eprintln!("arkos: cannot open {}: {e}", path.display());
-                    }
-                })
-                .detach();
-        });
-        vec![div().flex().items_center().gap(px(8.0)).child("Keybindings live in config.toml").child(open).into_any_element()]
+        let open = pill("open-config", "Open config", false, true, c).on_click(|_, _, cx| open_config_in_editor(cx));
+        // `open_keybindings` defers its work itself, so this window is not being updated when the
+        // Keybindings window reads the Root.
+        let list = pill("open-keybindings", "Keybindings", false, true, c).on_click(|_, _, cx| aux::open_keybindings(cx));
+        vec![
+            div().flex().items_center().gap(px(8.0)).child("Keybindings live in config.toml").child(open).into_any_element(),
+            div().flex().items_center().gap(px(8.0)).child("Every binding is listed under Help, Keybindings").child(list).into_any_element(),
+        ]
     }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.theme.chrome;
-        let c = Colors { text: t.text.hsla(), dim: t.text_dim.hsla(), border: t.border.hsla(), accent: t.focus_ring.hsla(), pill: t.banner.hsla() };
+        let c = Colors::of(&self.theme);
         let (bg, sidebar) = (t.window_bg.hsla(), t.sidebar.hsla());
         let enabled = self.shown.editable();
         let mut sections = div().w(px(SECTIONS_W)).flex_none().flex().flex_col().gap(px(2.0)).p(px(10.0)).bg(sidebar).border_r_1().border_color(c.border);
@@ -667,12 +688,13 @@ impl Render for SettingsWindow {
             .on_action(|_: &keymap::NewWindow, _, cx| aux::forward_new_window(cx))
             .size_full()
             .flex()
+            .flex_col()
             .bg(bg)
             .text_color(c.text)
             .text_size(px(13.0))
             .font_family(SharedString::from(UI_FONT))
-            .child(sections)
-            .child(content)
+            .child(chrome::aux_title_bar(TITLE, &self.theme))
+            .child(div().flex_1().min_h_0().flex().child(sections).child(content))
     }
 }
 

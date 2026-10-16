@@ -130,7 +130,7 @@ Things only a person at the screen can check, in order of value:
   shell and tab where it was; `arkos --version` in a tab prints X
 - `[update] auto = false`: the bell's dot stays and "Update now" applies it
 - a relaunched window opens without taking focus from the app in use (verify by eye)
-- the menu bar has one menu, "Arkos IDE": About Arkos IDE, a line, New Window, Settings, Quit, in
+- the menu bar's first menu, "Arkos IDE": About Arkos IDE, a line, New Window, Settings, Quit, in
   that order, and no File menu; Cmd+N or "New Window" opens the chooser with
   the recent folders and "Open folder..."; picking one opens it in a new window; `"open recent"
   = "cmd-shift-n"` left in config.toml binds the chooser to that key with no config error
@@ -190,6 +190,17 @@ Things only a person at the screen can check, in order of value:
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window
   opens with the change in effect
+- the menu bar's second menu, "Help": Keybindings with Cmd+/ beside it, then Documentation
+- Cmd+/ (or Help, Keybindings) opens the Keybindings window with eight sections, "Window and app"
+  first and "Updates and maintenance" last; Escape or Cmd+W closes it; Cmd+/ again brings the same
+  window forward
+- with the Keybindings window open, `"find" = "cmd-shift-f"` saved under `[keybindings]`: its Find
+  row reads Shift+Cmd+F within a second; `"doctor" = ""` leaves Doctor reading "none"
+- Help, Documentation: this README opens in the default browser
+- Settings, Keyboard, "Keybindings": the Keybindings window opens
+- About, Settings and Keybindings show the IDE's own title bar with the window's name and no
+  native one; dragging the bar moves the window, a double click zooms Settings and Keybindings,
+  and the bar follows a theme change with the rest of the window
 - typing in each pane, and that Cmd combinations never reach the shell
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
 - drag a tab across a pane's zones and on into another pane: the tint glides and fades,
@@ -453,7 +464,8 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
 | Cmd+N | new window: the project chooser in its own window (also the menu's "New Window"); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
 | Cmd+, | settings |
-| (unbound) | about, open config |
+| Cmd+/ | keybindings: the Keybindings window (also Help, Keybindings) |
+| (unbound) | about, documentation, open config |
 | Shift+Cmd+P | command palette |
 
 Notes:
@@ -503,23 +515,37 @@ Notes:
   as Shift plus the plain key (`ctrl-shift-\``) or as the character itself (`ctrl-~`): macOS
   reports the character, and both spellings are the same binding.
 
-## Menu, About and Settings
+## Menu, About, Settings and Keybindings
 
-The menu bar has one menu, "Arkos IDE": About Arkos IDE, a line, New Window, Settings, Quit. It
-works from the chooser, the project window, About and Settings alike. Each Arkos process has its
-own About and Settings windows, so two open projects mean two of each. Closing the project window
-closes them and quits the app. New Window from About or Settings goes to the project window, or
-brings the chooser forward.
+The menu bar has two menus. "Arkos IDE" holds About Arkos IDE, a line, New Window, Settings, Quit;
+"Help" holds Keybindings and Documentation. They work from the chooser, the project window, About,
+Settings and Keybindings alike. Each Arkos process has its own About, Settings and Keybindings
+windows, so two open projects mean two of each. Closing the project window closes them and quits
+the app. New Window from any of the three goes to the project window, or brings the chooser
+forward. The three draw the project window's title bar instead of the native one: the window's
+name in bold where the project path would be, dragged to move the window and double clicked to
+zoom it (About keeps its fixed size).
 
-About (menu, or "About Arkos IDE" in the palette; no key) shows these rows: Version, Build (hash
-and date), Last updated, First installed, Daemon, Protocol, macOS, Config, Themes, App Support,
-Window log and Daemon log. Daemon reads "{version} (hash), pid N", or "not connected". Dates read
-"today HH:MM" for the current day, else YYYY-MM-DD. Asking for About again refreshes the rows.
-"Copy details" puts "Arkos IDE {version}" and one `label: value` line per row on the clipboard.
-Below are "Made by Cyrus Sarkosh" (a link to his GitHub); a "Buy me more tokens" line shows only
-once a donation URL is set in the build.
+Help, Keybindings (or Cmd+/, or "Keybindings" in the palette) opens a read-only list of every
+action with the keys in force, grouped by what it acts on: Window and app, Panes, Tabs, Terminal,
+Sidebar and files, Browser, Viewer and markdown editing, and Updates and maintenance. The names
+read as the palette writes them, and the keys as the Mac does (Shift+Cmd+P). An override in
+`config.toml` shows as the key it binds, within a second of saving; an unbound action reads
+"none". The nine "focus pane" rows read as one, "Focus pane 1 to 9", while all nine keep their
+defaults. The viewer section ends with the editor's fixed keys (undo, copy, a list's Tab), which
+no config entry changes. The footer says "Change them under [keybindings] in config.toml" next to
+an "Open config" button. Help, Documentation opens this README in the default browser; it has no
+key unless the config binds `"documentation"`.
 
-Settings (menu or Cmd+,) has five sections.
+About (menu, or "About Arkos IDE" in the palette; no key), under the shared title bar, shows
+these rows: Version, Build (hash and date), Last updated, First installed, Daemon, Protocol,
+macOS, Config, Themes, App Support, Window log and Daemon log. Daemon reads "{version} (hash), pid
+N", or "not connected". Dates read "today HH:MM" for the current day, else YYYY-MM-DD. Asking for
+About again refreshes the rows. "Copy details" puts "Arkos IDE {version}" and one `label: value`
+line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub); a "Buy
+me more tokens" line shows only once a donation URL is set in the build.
+
+Settings (menu or Cmd+,) has the shared title bar and five sections.
 
 - Appearance: Mode (System, Dark, Light), the dark and light theme, "Add theme…" and "Show themes
   folder". "Add theme…" takes a `.toml` file (anything else is refused), names the copy after
@@ -536,23 +562,25 @@ Settings (menu or Cmd+,) has five sections.
 - Startup: "Start at login" on or off; it reads "set by config to ask" while the file says `ask`.
 - Updates: the automatic-updates switch; "{version} is ready" with "Update now" when a build
   waits.
-- Keyboard: "Keybindings live in config.toml" and an "Open config" button.
+- Keyboard: "Keybindings live in config.toml" and an "Open config" button, then "Every binding is
+  listed under Help, Keybindings" and a "Keybindings" button that opens that window.
 
-Every change is written to `config.toml` in place, keeping its comments, order and formatting,
-and applies at once; Settings and About follow a live theme change. Other Arkos windows are other
-processes and follow within a second through the config watcher. A change made in the chooser is
-written and takes effect when the project window opens. While the config has an error, Settings
-shows the error in a banner and its controls are read-only, except "Open config". A write the
-file refuses (a read-only file, say) is said above the controls, which stay live. Keybindings
-stay in the file. A user's `"open config" = "cmd-,"` makes the key open the config file instead
-of Settings; the menu still shows the shortcut next to Settings, a known limit.
+Every change is written to `config.toml` in place, keeping its comments, order and formatting, and
+applies at once; Settings, About and Keybindings follow a live theme change. Other Arkos windows
+are other processes and follow within a second through the config watcher. A change made in the
+chooser is written and takes effect when the project window opens. While the config has an error,
+Settings shows the error in a banner and its controls are read-only, except "Open config". A write
+the file refuses (a read-only file, say) is said above the controls, which stay live. Keybindings
+stay in the file. A user's `"open config" = "cmd-,"` makes the key open the config file instead of
+Settings; the menu still shows the shortcut next to Settings, a known limit.
 
 ## Config
 
-`~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with
-commented defaults on first run and opened in your text editor from Settings' Keyboard section
-("Open config") or the palette's "Open config". It is watched: a saved edit applies within a
-second. A bad edit shows a banner with the line number and keeps the last good settings.
+`~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with commented
+defaults on first run and opened in your text editor from Settings' Keyboard section ("Open
+config"), the Keybindings window's footer, or the palette's "Open config". It is watched: a saved
+edit applies within a second. A bad edit shows a banner with the line number and keeps the last
+good settings.
 Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts

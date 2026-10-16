@@ -53,17 +53,8 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
             Command::ShowIgnoredFiles => if show_ignored { "on" } else { "off" }.to_string(),
             _ => keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default(),
         };
-        // The display name keeps its capitals; the config name is lower case.
-        // The two that ask for a folder end in an ellipsis, as macOS writes a command that asks more.
-        let label = match command {
-            Command::About => "About Arkos IDE".to_string(),
-            Command::InstallHooks => "Install Claude Code hooks".to_string(),
-            Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage => format!("{}\u{2026}", keymap::label(a.name)),
-            Command::DockChromeWindow => "Dock a Chrome window\u{2026}".to_string(),
-            Command::UndockChromeWindow => "Undock Chrome window".to_string(),
-            _ => keymap::label(a.name),
-        };
-        out.push(Item { label, detail, command });
+        // The Keybindings window labels its rows the same way.
+        out.push(Item { label: keymap::label_for(a.name), detail, command });
     }
     for (name, p) in &cfg.font.presets {
         let mut detail = format!("{} px, line height {}", p.size, p.line_height);
