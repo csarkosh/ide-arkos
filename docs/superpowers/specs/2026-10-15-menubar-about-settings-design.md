@@ -1,6 +1,6 @@
 # Arkos IDE: the menubar, About, Settings and the Timo Purple theme (milestone 8a)
 
-Date: 2026-10-15. Status: draft for Cyrus's review. Builds on the title bar icons design
+Date: 2026-10-15. Status: approved by Cyrus on 2026-10-15 ("approve, write the plan"). Builds on the title bar icons design
 (`2026-10-15-title-bar-icons-design.md`) and the config and theme work of milestones 3 and 7.
 Written against main at `f64c013` (0.3.0). Milestone 8b (the agent-first theme interface) follows
 and relies on the theme schema and the `arkos theme` commands this milestone adds.
