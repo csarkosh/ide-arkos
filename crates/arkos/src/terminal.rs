@@ -327,22 +327,59 @@ impl TerminalCore {
         out
     }
 
-    /// A viewport cell as a grid point (history lines are negative).
-    fn grid_point(&self, col: usize, row: usize) -> Point {
-        Point::new(Line(row as i32 - self.display_offset() as i32), Column(col.min(self.columns().saturating_sub(1))))
+    /// A column and a grid line as a grid point, the column clamped to the grid.
+    fn grid_point(&self, col: usize, line: Line) -> Point {
+        Point::new(line, Column(col.min(self.columns().saturating_sub(1))))
     }
 
-    /// Starts a selection at a viewport cell: characters from a drag, a word from a double click,
-    /// a line from a triple. Alacritty owns it from here, so it follows its text as output scrolls.
-    pub fn selection_start(&mut self, col: usize, row: usize, side: Side, ty: SelectionType) {
-        self.term.selection = Some(Selection::new(ty, self.grid_point(col, row), side));
+    /// The grid line shown at viewport row `row` at the current display offset (history lines
+    /// are negative).
+    pub fn line_at_row(&self, row: usize) -> i32 {
+        row as i32 - self.display_offset() as i32
     }
 
-    /// Moves the selection's end to a viewport cell.
-    pub fn selection_update(&mut self, col: usize, row: usize, side: Side) {
-        let p = self.grid_point(col, row);
+    /// Starts a selection at a grid cell: characters from a drag, a word from a double click, a
+    /// line from a triple. Alacritty owns it from here, so it follows its text as output scrolls.
+    pub fn selection_start(&mut self, col: usize, line: Line, side: Side, ty: SelectionType) {
+        self.term.selection = Some(Selection::new(ty, self.grid_point(col, line), side));
+    }
+
+    /// Moves the selection's end to a grid cell.
+    pub fn selection_update(&mut self, col: usize, line: Line, side: Side) {
+        let p = self.grid_point(col, line);
         if let Some(s) = self.term.selection.as_mut() {
             s.update(p, side);
+        }
+    }
+
+    /// One frame of a drag held past the pane's edge: scrolls `rate * dt` lines (positive is up
+    /// into history) with no glide, moves the grid to match, and extends the selection to the
+    /// top or bottom viewport row at `col`. A drag that left the pane before its first move in
+    /// it has no selection yet, so one starts from `anchor` (the press as a grid cell, its side
+    /// facing the drag). Returns whether another frame can scroll further: false once history
+    /// runs out that way. A program reporting the mouse, or anything on the alternate screen,
+    /// owns the wheel, so nothing happens there and the answer is false.
+    pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize, anchor: Option<(usize, i32, Side)>) -> bool {
+        let alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
+        if rate == 0.0 || alt_screen || matches!(self.mouse_mode(), MouseMode::Report { .. }) {
+            return false;
+        }
+        let history = self.history_size() as f32;
+        self.scroll.scroll_direct(rate * dt, history);
+        self.set_display_offset(self.scroll.current.max(0.0).floor() as usize);
+        if !self.selection_active() {
+            if let Some((acol, aline, aside)) = anchor {
+                self.selection_start(acol, Line(aline), aside, SelectionType::Simple);
+            }
+        }
+        // The top row is taken from its left side and the bottom row to its right, so the
+        // pointer's cell is in the selection either way.
+        let (row, side) = if rate > 0.0 { (0, Side::Left) } else { (self.screen_lines().saturating_sub(1), Side::Right) };
+        self.selection_update(col, Line(self.line_at_row(row)), side);
+        if rate > 0.0 {
+            self.scroll.current < history
+        } else {
+            self.scroll.current > 0.0
         }
     }
 
@@ -569,6 +606,18 @@ impl Terminal {
         Some(mouse::cell_under(f32::from(position.x), f32::from(position.y), origin, (cell.width, cell.height), self.frac, self.core.columns(), self.core.screen_lines()))
     }
 
+    /// The grid cell (column, line) under a window position once the view rests at scroll
+    /// position `at` (lines of history, as the animator counts them), and the half of the cell
+    /// the pointer is on; None before the first paint. A wheel notch eases over a few frames, so
+    /// this is the text the pointer will be over when it lands, not what was painted last.
+    fn grid_cell_at(&self, position: gpui::Point<gpui::Pixels>, at: f32) -> Option<(usize, i32, Side)> {
+        let (origin, cell) = (self.origin?, self.cell?);
+        let at = at.max(0.0);
+        let off = at.floor();
+        let (col, row, side) = mouse::cell_under(f32::from(position.x), f32::from(position.y), origin, (cell.width, cell.height), at - off, self.core.columns(), self.core.screen_lines());
+        Some((col, row as i32 - off as i32, side))
+    }
+
     /// The link under a window position, if any (see `TerminalCore::link_at`); None before the
     /// first paint, and None off the grid, where `point_at` would clamp to the nearest cell: the
     /// padding past the last row or column shows no underline, so it opens no menu either.
@@ -594,6 +643,13 @@ impl Terminal {
             } else {
                 self.scroll_lines(lines, cx);
             }
+            // A wheel sends no move, so a selection being dragged takes its end from the text
+            // the pointer is over once the scroll lands.
+            if self.clicks.held() && self.core.selection_active() {
+                if let Some((col, line, side)) = self.grid_cell_at(position, self.core.scroll.target) {
+                    self.core.selection_update(col, Line(line), side);
+                }
+            }
             return;
         }
         // The program's rows are the live ones: a view left in the history comes back first.
@@ -614,15 +670,25 @@ impl Terminal {
     pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>, click_count: usize, first_mouse: bool, cx: &mut Context<Self>) {
         let Some((col, row, side)) = self.point_at(position) else { return };
         let report = matches!(self.core.mouse_mode(), MouseMode::Report { .. }) && !first_mouse;
-        let gesture = self.clicks.press(col, row, side, click_count, report);
+        let gesture = self.clicks.press(col, row, self.core.line_at_row(row), side, click_count, report);
         self.apply(gesture, cx);
     }
 
     /// A move (see `mouse::Clicks::moved`); `left_down` is whether the left button is held.
     pub fn mouse_moved(&mut self, position: gpui::Point<gpui::Pixels>, left_down: bool, cx: &mut Context<Self>) {
         let Some((col, row, side)) = self.point_at(position) else { return };
-        let gesture = self.clicks.moved(col, row, side, left_down, self.core.selection_active());
+        let gesture = self.clicks.moved(col, self.core.line_at_row(row), side, left_down, self.core.selection_active());
         self.apply(gesture, cx);
+    }
+
+    /// One frame of a held drag past the element's top or bottom edge at `rate` lines per
+    /// second (see `TerminalCore::drag_scroll_step`), with the pointer over column `col`. The
+    /// press is the anchor, its side facing the way the drag went. Returns whether to keep
+    /// scrolling.
+    pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize) -> bool {
+        let side = if rate > 0.0 { Side::Right } else { Side::Left };
+        let anchor = self.clicks.anchor().map(|(acol, aline)| (acol, aline, side));
+        self.core.drag_scroll_step(rate, dt, col, anchor)
     }
 
     /// A left release over the terminal: a held click reaches a live program now.
@@ -645,12 +711,12 @@ impl Terminal {
         match gesture {
             Gesture::Nothing => return,
             Gesture::Clear => self.core.selection_clear(),
-            Gesture::Select { ty, col, row, side } => self.core.selection_start(col, row, side, ty),
-            Gesture::Start { anchor: (acol, arow, aside), to: (col, row, side) } => {
-                self.core.selection_start(acol, arow, aside, SelectionType::Simple);
-                self.core.selection_update(col, row, side);
+            Gesture::Select { ty, col, line, side } => self.core.selection_start(col, Line(line), side, ty),
+            Gesture::Start { anchor: (acol, aline, aside), to: (col, line, side) } => {
+                self.core.selection_start(acol, Line(aline), aside, SelectionType::Simple);
+                self.core.selection_update(col, Line(line), side);
             }
-            Gesture::Extend { col, row, side } => self.core.selection_update(col, row, side),
+            Gesture::Extend { col, line, side } => self.core.selection_update(col, Line(line), side),
         }
         cx.notify();
     }
@@ -957,13 +1023,13 @@ mod tests {
         let mut t = TerminalCore::new(20, 3, 100);
         t.apply_output(b"hello world\r\nsecond line");
         assert_eq!(t.selection_text(), None);
-        t.selection_start(0, 0, Side::Left, SelectionType::Simple);
-        t.selection_update(4, 0, Side::Right);
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(4, Line(0), Side::Right);
         assert_eq!(t.selection_text().as_deref(), Some("hello"));
         assert_eq!(t.selection_spans(), vec![SelectionSpan { row: 0, start: 0, end: 4 }]);
         // Across rows: the first row runs to its end, the last from its start.
-        t.selection_start(6, 0, Side::Left, SelectionType::Simple);
-        t.selection_update(5, 1, Side::Right);
+        t.selection_start(6, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(5, Line(1), Side::Right);
         assert_eq!(t.selection_text().as_deref(), Some("world\nsecond"));
         assert_eq!(t.selection_spans(), vec![SelectionSpan { row: 0, start: 6, end: 19 }, SelectionSpan { row: 1, start: 0, end: 5 }]);
         t.selection_clear();
@@ -975,8 +1041,8 @@ mod tests {
     fn the_link_under_a_cell_is_found_and_the_selection_is_left_alone() {
         let mut t = TerminalCore::new(30, 3, 100);
         t.apply_output(b"see https://csarko.sh now\r\nplain text");
-        t.selection_start(0, 1, Side::Left, SelectionType::Simple);
-        t.selection_update(4, 1, Side::Right);
+        t.selection_start(0, Line(1), Side::Left, SelectionType::Simple);
+        t.selection_update(4, Line(1), Side::Right);
         let link = HoveredLink { row: 0, start: 4, end: 21, url: "https://csarko.sh".into() };
         assert_eq!(t.link_at(4, 0), Some(link.clone()), "the first cell of the URL");
         assert_eq!(t.link_at(20, 0), Some(link), "the last cell of the URL");
@@ -1012,9 +1078,9 @@ mod tests {
     fn double_and_triple_clicks_select_a_word_and_a_line() {
         let mut t = TerminalCore::new(20, 3, 100);
         t.apply_output(b"hello world\r\nsecond line");
-        t.selection_start(2, 0, Side::Left, SelectionType::Semantic);
+        t.selection_start(2, Line(0), Side::Left, SelectionType::Semantic);
         assert_eq!(t.selection_text().as_deref(), Some("hello"));
-        t.selection_start(2, 1, Side::Left, SelectionType::Lines);
+        t.selection_start(2, Line(1), Side::Left, SelectionType::Lines);
         assert_eq!(t.selection_text().as_deref(), Some("second line\n"));
     }
 
@@ -1026,8 +1092,8 @@ mod tests {
         let mut t = TerminalCore::new(30, 6, 100);
         t.apply_output(WRAPPED);
         assert_eq!(t.copy_text(), None);
-        t.selection_start(0, 0, Side::Left, SelectionType::Simple);
-        t.selection_update(15, 3, Side::Right);
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(15, Line(3), Side::Right);
         assert_eq!(t.copy_text().as_deref(), Some("\u{25cf} The limiter is done and all six tests pass.\n  Next I will wire it into the server routes."));
         // "Copy as shown" keeps the rows as they are on screen.
         assert_eq!(t.selection_text().as_deref(), Some("\u{25cf} The limiter is done and all\n  six tests pass.\n  Next I will wire it into the\n  server routes."));
@@ -1038,8 +1104,8 @@ mod tests {
         let mut t = TerminalCore::new(30, 6, 100);
         t.apply_output(WRAPPED);
         // From "is", 14 cells in: the row still ran to column 29, so its newline is a wrap.
-        t.selection_start(14, 0, Side::Left, SelectionType::Simple);
-        t.selection_update(15, 3, Side::Right);
+        t.selection_start(14, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(15, Line(3), Side::Right);
         assert_eq!(t.copy_text().as_deref(), Some("is done and all six tests pass.\n  Next I will wire it into the server routes."));
     }
 
@@ -1047,12 +1113,12 @@ mod tests {
     fn a_block_selection_copies_as_shown_and_a_line_selection_keeps_its_newline() {
         let mut t = TerminalCore::new(30, 6, 100);
         t.apply_output(WRAPPED);
-        t.selection_start(0, 0, Side::Left, SelectionType::Block);
-        t.selection_update(29, 3, Side::Right);
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Block);
+        t.selection_update(29, Line(3), Side::Right);
         assert!(t.selection_text().is_some_and(|s| s.contains('\n')));
         assert_eq!(t.copy_text(), t.selection_text(), "a rectangle of cells is never re-flowed");
-        t.selection_start(0, 0, Side::Left, SelectionType::Lines);
-        t.selection_update(0, 1, Side::Right);
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Lines);
+        t.selection_update(0, Line(1), Side::Right);
         assert_eq!(t.selection_text().as_deref(), Some("\u{25cf} The limiter is done and all\n  six tests pass.\n"));
         assert_eq!(t.copy_text().as_deref(), Some("\u{25cf} The limiter is done and all six tests pass.\n"));
     }
@@ -1061,14 +1127,89 @@ mod tests {
     fn a_selection_follows_its_text_into_history() {
         let mut t = TerminalCore::new(20, 2, 100);
         t.apply_output(b"hello world\r\nsecond");
-        t.selection_start(0, 0, Side::Left, SelectionType::Simple);
-        t.selection_update(4, 0, Side::Right);
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(4, Line(0), Side::Right);
         // One more line scrolls "hello" into history; the selection goes with it.
         t.apply_output(b"\r\nthird");
         assert_eq!(t.selection_text().as_deref(), Some("hello"));
         assert!(t.selection_spans().is_empty(), "off screen at the live bottom");
         t.set_display_offset(1);
         assert_eq!(t.selection_spans(), vec![SelectionSpan { row: 0, start: 0, end: 4 }]);
+    }
+
+    /// The selection's first and last cells as (line, column) pairs, history lines negative.
+    fn selected_lines(t: &TerminalCore) -> ((i32, usize), (i32, usize)) {
+        let r = t.term.selection.as_ref().and_then(|s| s.to_range(&t.term)).expect("a selection");
+        ((r.start.line.0, r.start.column.0), (r.end.line.0, r.end.column.0))
+    }
+
+    fn with_history(cols: usize, rows: usize, lines: usize) -> TerminalCore {
+        let mut t = TerminalCore::new(cols, rows, 100);
+        for i in 0..lines {
+            t.apply_output(format!("l{i}\r\n").as_bytes());
+        }
+        t
+    }
+
+    #[test]
+    fn a_selection_is_held_in_grid_lines_so_scrolling_never_moves_its_start() {
+        let mut t = with_history(20, 8, 50);
+        // The anchor's right side, as `Clicks` gives a drag that sets off upwards.
+        t.selection_start(0, Line(5), Side::Right, SelectionType::Simple);
+        t.set_display_offset(3);
+        // Viewport row 0 of a view scrolled up 3 lines is line -3.
+        t.selection_update(0, Line(0 - t.display_offset() as i32), Side::Left);
+        assert_eq!(selected_lines(&t), ((-3, 0), (5, 0)));
+    }
+
+    #[test]
+    fn a_drag_past_the_edge_scrolls_the_history_and_selects_to_the_edge_row() {
+        let mut t = with_history(20, 5, 30);
+        let history = t.history_size();
+        assert!(history > 10, "enough history to scroll through: {history}");
+        // Pressed at column 1 of line 2, and the pointer left over the top before any move in the
+        // pane: the selection starts from the anchor and runs to the top row at the pointer.
+        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right))));
+        assert_eq!(t.scroll.current, 3.0);
+        assert_eq!(t.display_offset(), 3, "the step moves the grid itself");
+        assert_eq!(selected_lines(&t), ((-3, 3), (2, 1)));
+        // The next frame extends the same selection; the anchor only starts a missing one.
+        assert!(t.drag_scroll_step(6.0, 0.5, 0, Some((9, 4, Side::Right))));
+        assert_eq!(t.display_offset(), 6);
+        assert_eq!(selected_lines(&t), ((-6, 0), (2, 1)));
+        // History runs out: the view stops at its top and the step says so.
+        assert!(!t.drag_scroll_step(60.0, 1.0, 0, None));
+        assert_eq!(t.display_offset(), history);
+        assert_eq!(t.scroll.current, history as f32);
+        assert!(!t.drag_scroll_step(6.0, 0.1, 0, None));
+        assert_eq!(t.display_offset(), history);
+        // Below the bottom scrolls back down, to the live view, and selects to the bottom row.
+        assert!(t.drag_scroll_step(-6.0, 0.5, 4, None));
+        assert_eq!(t.display_offset(), history - 3);
+        assert!(!t.drag_scroll_step(-60.0, 1.0, 4, None));
+        assert_eq!(t.display_offset(), 0);
+        assert_eq!(t.scroll.current, 0.0);
+        assert_eq!(selected_lines(&t).1, (4, 4));
+    }
+
+    #[test]
+    fn a_drag_past_the_edge_never_scrolls_a_program_that_owns_the_mouse() {
+        let still = |t: &TerminalCore| t.display_offset() == 0 && t.scroll.current == 0.0 && !t.selection_active();
+        let mut t = with_history(20, 5, 30);
+        assert!(!t.drag_scroll_step(0.0, 0.5, 0, Some((1, 2, Side::Right))), "a pointer inside is no drag past the edge");
+        assert!(still(&t));
+        // Mouse reporting: the wheel and the drag are the program's.
+        t.apply_output(b"\x1b[?1000h");
+        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right))));
+        assert!(still(&t));
+        // The alternate screen, with alternate scroll and without it.
+        t.apply_output(b"\x1b[?1000l\x1b[?1049h");
+        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right))));
+        assert!(still(&t));
+        t.apply_output(b"\x1b[?1007l");
+        assert_eq!(t.mouse_mode(), MouseMode::Local);
+        assert!(!t.drag_scroll_step(-6.0, 0.5, 0, Some((1, 2, Side::Right))));
+        assert!(still(&t));
     }
 
     #[test]

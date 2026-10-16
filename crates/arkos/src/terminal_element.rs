@@ -136,6 +136,7 @@ impl Element for TerminalElement {
         let cw = cell.width;
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
         // The colours come from the terminal's palette, which follows the theme.
+        let mouse = window.mouse_position();
         let (rows, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
@@ -144,17 +145,30 @@ impl Element for TerminalElement {
             let sync_open = t.core.sync_pending();
             let now = Instant::now();
             let dt = frame_dt(t.last_frame, now);
+            // A press held with the pointer above or below the element scrolls the history that
+            // way and drags the selection along. It is decided here, from the pointer's position
+            // each frame, because the pane hears no moves once the pointer has left it. The step
+            // runs before the tick and the split, so the rows, their fraction and the selection
+            // painted below agree.
+            let drag_scrolling = t.clicks.held() && {
+                let (x, y) = (f32::from(mouse.x), f32::from(mouse.y));
+                let (top, bottom) = (f32::from(bounds.top()), f32::from(bounds.bottom()));
+                let rate = crate::mouse::drag_scroll_rate(y, top, bottom, cell.height);
+                let origin = (f32::from(bounds.origin.x), top);
+                let col = crate::mouse::cell_under(x, top, origin, (cell.width, cell.height), 0.0, t.core.columns(), t.core.screen_lines()).0;
+                rate != 0.0 && t.drag_scroll_step(rate, dt, col)
+            };
             let animating = t.core.scroll.tick(dt);
             // Once settled, forget the frame time: the next scroll after idle starts from one
             // nominal frame instead of the capped gap, which would jump most of the distance.
-            t.last_frame = if animating || sync_open { Some(now) } else { None };
+            t.last_frame = if animating || sync_open || drag_scrolling { Some(now) } else { None };
             let (off, frac) = split_offset(t.core.scroll.current);
             t.core.set_display_offset(off);
             t.frac = frac;
             let find_owed = t.refresh_find();
             let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open, highlights, t.core.selection_spans(), palette.clone(), find_owed)
+            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         window.paint_quad(fill(bounds, hsla(bg)));
