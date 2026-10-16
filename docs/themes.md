@@ -95,5 +95,5 @@ Syntax colours in the file viewer. Each is text on `chrome.window_bg` and must r
 1. Copy a built-in as a starting point. "Extract built-in themes" in the command palette writes them into the themes folder (`~/.config/arkos/themes/`), or copy one from `crates/arkos/themes/`.
 2. Give the copy its own `name` and edit the colours.
 3. Check it with `arkos theme validate <file>`. It prints `ok: <name>` when the file parses and names the problem otherwise. `arkos theme list` shows every theme and marks a broken file as invalid.
-4. Put the file in the themes folder as `<name>.toml`, or use "Add theme" in Settings, which does the same copy.
+4. Put the file in the themes folder as `<name>.toml`, or use "Add theme…" in Settings, which does the same copy and asks "Replace the existing <name>?" first when a theme of that name is installed, a built-in included.
 5. Pick it in Settings, or set `dark` or `light` under `[theme]` in `config.toml`. A file in the folder with a built-in's name replaces that built-in.

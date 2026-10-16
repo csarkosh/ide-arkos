@@ -1080,10 +1080,16 @@ impl Root {
     }
 
     /// What the Settings window shows from this window's state: the badge's version, without its
-    /// "update ready: " prefix.
+    /// "update ready: " prefix, and the text preset this window uses.
     pub fn settings_shown(&self) -> settings::Shown {
         let update_ready = self.update_ready.as_deref().map(|t| update::ready_version(t).unwrap_or(t).to_string());
-        settings::Shown { config: self.config.clone(), error: self.config_error.clone(), update_ready }
+        settings::Shown {
+            config: self.config.clone(),
+            error: self.config_error.clone(),
+            write_error: None,
+            update_ready,
+            active_preset: Some(self.text_preset.clone()),
+        }
     }
 
     /// Applies every live setting. The `[daemon]` section only matters when the window starts
@@ -2430,7 +2436,10 @@ impl Root {
             }
             OpenConfig => self.open_config(cx),
             TextPreset(name) => {
-                self.apply_text_preset(&name, cx);
+                // The Settings window's Text section shows the preset this window uses.
+                if self.apply_text_preset(&name, cx) {
+                    aux::push_settings(cx, self.settings_shown());
+                }
             }
             ReloadConfig => self.reload_config(cx),
             ExtractThemes => {
@@ -3975,8 +3984,14 @@ fn open_project_window(
             root.sync_docks(cx);
             cx.notify();
         });
-        // A Settings window opened from the chooser shows this window's state from now on.
-        aux::push_settings(cx, root.read(cx).settings_shown());
+        // A Settings window or About opened from the chooser shows this window's state and theme
+        // from now on.
+        let (shown, theme) = {
+            let root = root.read(cx);
+            (root.settings_shown(), root.theme.clone())
+        };
+        aux::push_settings(cx, shown);
+        aux::push_theme(cx, &theme);
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
             // Goodbye here, while everything runs; the close this quit makes finds it said. Unsaved
@@ -4059,7 +4074,29 @@ fn open_project_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{after_window_closed, daemon_label, pick_grid, quit_forced, says_goodbye, AfterClose, shell_name, should_activate, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
+    use super::{after_window_closed, daemon_label, menus, pick_grid, quit_forced, says_goodbye, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
+    use crate::keymap;
+    use gpui::{Action, MenuItem};
+
+    #[test]
+    fn the_menu_bar_is_one_menu_with_about_new_window_settings_and_quit() {
+        let menus = menus();
+        assert_eq!(menus.len(), 1);
+        assert_eq!(menus[0].name.as_ref(), "Arkos IDE");
+        let want: [Option<(&str, &dyn Action)>; 5] =
+            [Some(("About Arkos IDE", &keymap::About)), None, Some(("New Window", &keymap::NewWindow)), Some(("Settings", &keymap::OpenSettings)), Some(("Quit", &Quit))];
+        assert_eq!(menus[0].items.len(), want.len());
+        for (ix, (item, want)) in menus[0].items.iter().zip(want).enumerate() {
+            match (item, want) {
+                (MenuItem::Separator, None) => {}
+                (MenuItem::Action { name, action, .. }, Some((want_name, want_action))) => {
+                    assert_eq!(name.as_ref(), want_name, "item {ix}");
+                    assert!(action.partial_eq(want_action), "item {ix}: {} runs {}", want_name, action.name());
+                }
+                _ => panic!("item {ix} is not the expected kind"),
+            }
+        }
+    }
 
     #[test]
     fn a_window_the_daemon_relaunched_does_not_take_focus() {

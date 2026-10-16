@@ -12,6 +12,7 @@ use gpui::{
 };
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 /// Writes the edits to the config file and applies them; the window calls it for every change.
@@ -46,6 +47,14 @@ const MONO_HINTS: [&str; 26] = [
 /// The installed families whose advances for "i" and "W" agree, found once per run on the
 /// background executor (loading every family takes a moment) and kept for later windows.
 static FIXED_PITCH: OnceLock<Vec<String>> = OnceLock::new();
+/// Set when the advance check starts, so a window opened while it runs does not start another.
+static FIXED_PITCH_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this window should start the advance check: true once per run, and never once its
+/// result is in.
+fn claim_fixed_pitch_check() -> bool {
+    FIXED_PITCH.get().is_none() && !FIXED_PITCH_STARTED.swap(true, Ordering::SeqCst)
+}
 
 /// The sections of the left column, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,20 +81,38 @@ impl Section {
 }
 
 /// What the window shows: the config in force, the config file's problem (which makes every
-/// control read-only), and the version an update would install.
+/// control read-only), why the last write was refused (the controls stay live), the version an
+/// update would install, and the text preset the project window uses (`None` before there is
+/// one).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shown {
     pub config: Config,
     pub error: Option<String>,
+    pub write_error: Option<String>,
     pub update_ready: Option<String>,
+    pub active_preset: Option<String>,
+}
+
+impl Shown {
+    /// `self` with a refused write's reason, shown above the controls until the next push.
+    pub fn with_write_error(self, e: String) -> Shown {
+        Shown { write_error: Some(e), ..self }
+    }
+
+    /// Whether the controls take clicks: only a config file that does not load makes them
+    /// read-only, since fixing the file is then the way forward.
+    pub fn editable(&self) -> bool {
+        self.error.is_none()
+    }
 }
 
 /// The Text section's presets: every name sorted, the chosen one, and its size and line height.
-/// A chosen name that is not among the presets resolves as the project window resolves it
-/// (`config::resolve_preset`), so the steppers edit the preset the terminals show.
-pub fn preset_rows(cfg: &FontConfig) -> (Vec<String>, String, f32, f32) {
+/// The chosen one is the project window's preset (`active`) when there is a project window, else
+/// the config's default; a name that is not among the presets resolves as the project window
+/// resolves it (`config::resolve_preset`), so the steppers edit the preset the terminals show.
+pub fn preset_rows(cfg: &FontConfig, active: Option<&str>) -> (Vec<String>, String, f32, f32) {
     let names: Vec<String> = cfg.presets.keys().cloned().collect();
-    let (chosen, p) = config::resolve_preset(None, &cfg.preset, &cfg.presets);
+    let (chosen, p) = config::resolve_preset(active, &cfg.preset, &cfg.presets);
     (names, chosen, p.size, p.line_height)
 }
 
@@ -208,17 +235,21 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
     let opened = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| {
             let fonts = FIXED_PITCH.get().filter(|f| !f.is_empty()).cloned().unwrap_or(fonts);
-            if FIXED_PITCH.get().is_none() {
+            if claim_fixed_pitch_check() {
                 let text = cx.text_system().clone();
-                cx.spawn(async move |view, cx| {
+                cx.spawn(async move |_, cx| {
                     let found = cx.background_executor().spawn(async move { fixed_pitch(&text, &text.all_font_names()) }).await;
                     let found = FIXED_PITCH.get_or_init(|| found).clone();
                     // An empty result means the check found nothing it could measure: keep the
-                    // names.
+                    // names. The result goes to the Settings window open when it lands, which
+                    // may be a later one than the window that started the check.
                     if !found.is_empty() {
-                        let _ = view.update(cx, |w: &mut SettingsWindow, cx| {
-                            w.fonts = found;
-                            cx.notify();
+                        let _ = cx.update(|cx| {
+                            let Some(handle) = cx.try_global::<aux::Aux>().and_then(|aux| aux.settings) else { return };
+                            let _ = handle.update(cx, |w, _window, cx| {
+                                w.fonts = found;
+                                cx.notify();
+                            });
                         });
                     }
                 })
@@ -478,7 +509,7 @@ impl SettingsWindow {
             families = families.child(row);
         }
         out.push(families.into_any_element());
-        let (names, chosen, size, line_height) = preset_rows(font);
+        let (names, chosen, size, line_height) = preset_rows(font, self.shown.active_preset.as_deref());
         out.push(heading("Text preset", c).into_any_element());
         let mut presets = div().flex().flex_col();
         for (ix, name) in names.into_iter().enumerate() {
@@ -581,7 +612,7 @@ impl Render for SettingsWindow {
         let t = &self.theme.chrome;
         let c = Colors { text: t.text.hsla(), dim: t.text_dim.hsla(), border: t.border.hsla(), accent: t.focus_ring.hsla(), pill: t.banner.hsla() };
         let (bg, sidebar) = (t.window_bg.hsla(), t.sidebar.hsla());
-        let enabled = self.shown.error.is_none();
+        let enabled = self.shown.editable();
         let mut sections = div().w(px(SECTIONS_W)).flex_none().flex().flex_col().gap(px(2.0)).p(px(10.0)).bg(sidebar).border_r_1().border_color(c.border);
         for (ix, section) in Section::ALL.into_iter().enumerate() {
             let current = section == self.section;
@@ -608,7 +639,20 @@ impl Render for SettingsWindow {
             Section::Keyboard => self.keyboard(c),
         };
         let banner = self.shown.error.clone().map(|e| div().flex_none().px(px(10.0)).py(px(6.0)).rounded(px(4.0)).bg(c.pill).text_color(c.text).child(e));
-        let content = div().id("settings-controls").flex_1().min_w_0().overflow_y_scroll().p(px(16.0)).flex().flex_col().gap(px(4.0)).children(banner).children(controls);
+        // A refused write is said above the controls, which stay live: the next write may succeed.
+        let write_error = self.shown.write_error.clone().map(|e| div().flex_none().pb(px(6.0)).text_color(c.dim).child(e));
+        let content = div()
+            .id("settings-controls")
+            .flex_1()
+            .min_w_0()
+            .overflow_y_scroll()
+            .p(px(16.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children(banner)
+            .children(write_error)
+            .children(controls);
         div()
             .id("settings")
             .key_context("Settings")
@@ -640,7 +684,7 @@ mod tests {
     #[test]
     fn the_text_section_reads_the_presets_filters_fixed_pitch_families_and_rounds() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
-        let (names, chosen, size, lh) = preset_rows(&cfg.font);
+        let (names, chosen, size, lh) = preset_rows(&cfg.font, None);
         assert_eq!(names, vec!["comfortable", "compact", "relaxed"]);
         assert_eq!((chosen.as_str(), size, lh), ("comfortable", 16.0, 1.5));
         let fams = monospace_families(&["Helvetica".into(), "SF Mono".into(), "Menlo".into(), "Fira Code".into(), "JetBrains Mono".into(), "Menlo".into()]);
@@ -682,9 +726,33 @@ mod tests {
         let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
         cfg.font.preset = "gone".into();
         cfg.font.presets.insert("aaa".into(), crate::config::TextPreset { size: 12.0, line_height: 1.2 });
-        let (_, chosen, size, lh) = preset_rows(&cfg.font);
+        let (_, chosen, size, lh) = preset_rows(&cfg.font, None);
         // Comfortable, as `config::resolve_preset` picks it, not the first name in order.
         assert_eq!((chosen.as_str(), size, lh), ("comfortable", 16.0, 1.5));
+        // With a project window, the rows show and step the preset that window uses.
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let (_, chosen, size, lh) = preset_rows(&cfg.font, Some("compact"));
+        assert_eq!((chosen.as_str(), size, lh), ("compact", 14.0, 1.3));
+        // A window preset that is gone falls back to the default, as the Root resolves it.
+        let (_, chosen, size, lh) = preset_rows(&cfg.font, Some("nope"));
+        assert_eq!((chosen.as_str(), size, lh), ("comfortable", 16.0, 1.5));
+    }
+
+    #[test]
+    fn a_refused_write_leaves_the_controls_live_and_only_a_load_error_makes_them_read_only() {
+        let config: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let shown = Shown { config, error: None, write_error: None, update_ready: None, active_preset: None };
+        assert!(shown.editable());
+        let refused = shown.clone().with_write_error("cannot write config.toml: read-only".into());
+        assert_eq!(refused.write_error.as_deref(), Some("cannot write config.toml: read-only"));
+        assert!(refused.editable(), "a refused write keeps every control live");
+        assert!(!Shown { error: Some("line 3: bad".into()), ..shown }.editable(), "a load error makes them read-only");
+    }
+
+    #[test]
+    fn the_font_check_starts_once_per_process() {
+        assert!(claim_fixed_pitch_check(), "the first Settings window starts the check");
+        assert!(!claim_fixed_pitch_check(), "a window opened while it runs does not start a second");
     }
 
     #[test]

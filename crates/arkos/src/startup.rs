@@ -8,6 +8,7 @@ use crate::theme::Theme;
 use futures::channel::mpsc::UnboundedReceiver;
 use gpui::{div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHandle, KeyDownEvent, SharedString, Task, TitlebarOptions, Window, WindowBounds, WindowOptions};
 use protocol::ServerMessage;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -101,13 +102,22 @@ pub fn updated_from(file: &Path, current: &str) -> Option<String> {
     }
 }
 
+/// The most of the install marker that is read: far more than the number and newline written
+/// there, so a longer file is garbage and is never read whole.
+const MARKER_MAX: u64 = 32;
+
 /// When this install first ran: the unix seconds `file` holds. A missing or unreadable file (or
-/// garbage in it) counts as missing: `now` is written there, through a temp file and a rename,
-/// and returned, so every later launch reads the same moment back.
+/// garbage in it, or more than `MARKER_MAX` bytes) counts as missing: `now` is written there,
+/// through a temp file and a rename, and returned, so every later launch reads the same moment
+/// back.
 pub fn installed_since(file: &Path, now: SystemTime) -> SystemTime {
-    let stored = std::fs::read_to_string(file)
+    let mut head = String::new();
+    // One byte past the limit tells a long file from one that fits.
+    let read = std::fs::File::open(file).and_then(|f| f.take(MARKER_MAX + 1).read_to_string(&mut head));
+    let stored = read
         .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&n| n as u64 <= MARKER_MAX)
+        .and_then(|_| head.trim().parse::<u64>().ok())
         .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)));
     if let Some(at) = stored {
         return at;
@@ -315,5 +325,13 @@ mod tests {
         std::fs::write(&file, "18446744073709551615\n").unwrap();
         let t2 = t1 + Duration::from_secs(5);
         assert_eq!(installed_since(&file, t2), t2, "a number too big for a time counts as missing");
+        // A long file is garbage, whatever it starts with, and only its head is read.
+        std::fs::write(&file, format!("1800000000{}\n", " ".repeat(40))).unwrap();
+        let t3 = t2 + Duration::from_secs(5);
+        assert_eq!(installed_since(&file, t3), t3, "a marker longer than any number written counts as missing");
+        std::fs::write(&file, "7".repeat(4 << 20)).unwrap();
+        let t4 = t3 + Duration::from_secs(5);
+        assert_eq!(installed_since(&file, t4), t4, "a huge file counts as missing");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{}\n", 1_800_000_020u64), "and is replaced");
     }
 }

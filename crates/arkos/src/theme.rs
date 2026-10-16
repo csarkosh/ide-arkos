@@ -210,7 +210,8 @@ pub fn list(dir: &Path) -> Vec<(String, Source)> {
 
 /// Copies the theme file `src` into `dir` under the name the theme itself declares. Only `.toml`
 /// files are taken. Ok is the name and whether a file of that name was already there; without
-/// `replace` an existing file is left alone and the error is "exists".
+/// `replace` an existing file is left alone and the error is "exists", as it is for a built-in's
+/// name, which the copy would shadow.
 pub fn import_file(src: &Path, dir: &Path, replace: bool) -> Result<(String, bool), String> {
     if src.extension().and_then(|e| e.to_str()) != Some("toml") {
         return Err("only .toml theme files can be added".into());
@@ -223,7 +224,8 @@ pub fn import_file(src: &Path, dir: &Path, replace: bool) -> Result<(String, boo
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dest = dir.join(format!("{name}.toml"));
     let existed = dest.exists();
-    if existed && !replace {
+    let shadows_builtin = BUILTIN.iter().any(|(b, _)| *b == name);
+    if (existed || shadows_builtin) && !replace {
         return Err("exists".into());
     }
     std::fs::write(&dest, text).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
@@ -509,6 +511,13 @@ mod tests {
         assert!(dir.join("ocean.toml").is_file());
         assert_eq!(import_file(&src, &dir, false), Err("exists".into()));
         assert_eq!(import_file(&src, &dir, true), Ok(("ocean".into(), true)));
+        // A theme named like a built-in would shadow it, so that asks too.
+        for builtin in ["navy", "navy-light", "timo-purple"] {
+            std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", &format!("name = \"{builtin}\""))).unwrap();
+            assert_eq!(import_file(&src, &dir, false), Err("exists".into()), "{builtin}");
+            assert!(!dir.join(format!("{builtin}.toml")).exists(), "nothing written before the answer");
+            assert_eq!(import_file(&src, &dir, true), Ok((builtin.to_string(), false)), "{builtin}");
+        }
         std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \"../../x\"")).unwrap();
         assert!(import_file(&src, &dir, true).is_err(), "a name that leaves the folder");
         assert!(!dir.join("x.toml").exists() && !dir.parent().unwrap().join("x.toml").exists());

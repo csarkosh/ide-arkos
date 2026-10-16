@@ -165,7 +165,7 @@ Things only a person at the screen can check, in order of value:
   and one `label: value` line per row; the "Buy me more tokens" line is hidden while
   `DONATE_URL` is empty
 - Settings: Dark theme or Mode switches the window at once and `config.toml` keeps its comments;
-  "Add theme..." with a broken file shows the error and copies nothing, and with a file named
+  "Add theme…" with a broken file shows the error and copies nothing, and with a file named
   like an installed theme asks "Replace the existing ..." first
 - `arkos theme list` shows `navy`, `navy-light` and `timo-purple` as built in; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
@@ -503,15 +503,18 @@ once a donation URL is set in the build.
 
 Settings (menu or Cmd+,) has five sections.
 
-- Appearance: Mode (System, Dark, Light), the dark and light theme, "Add theme..." and "Show themes
-  folder". "Add theme..." takes a `.toml` file (anything else is refused), names the copy after
+- Appearance: Mode (System, Dark, Light), the dark and light theme, "Add theme…" and "Show themes
+  folder". "Add theme…" takes a `.toml` file (anything else is refused), names the copy after
   the file's own `name`, shows the error under the button for a bad file, and asks "Replace the
-  existing {name}?" before overwriting. A new theme is set as the dark or light theme by the mode
-  in force. "Show themes folder" creates the folder, then reveals it. A configured theme that is
-  neither built in nor a file is listed first as "(not installed)".
+  existing {name}?" before overwriting a theme file or shadowing a built-in of that name. A new
+  theme is set as the dark or light theme by the mode in force. "Show themes folder" creates the
+  folder, then reveals it. A configured theme that is neither built in nor a file is listed
+  first as "(not installed)".
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
-  write both values of the preset together and show the file's values as they are.
+  write both values of the preset together and show the file's values as they are. The preset
+  shown and stepped is the one this project window uses (in the chooser, the config's default);
+  picking one makes it the default for new workspaces and applies it to this window.
 - Startup: "Start at login" on or off; it reads "set by config to ask" while the file says `ask`.
 - Updates: the automatic-updates switch; "{version} is ready" with "Update now" when a build
   waits.
@@ -521,16 +524,18 @@ Every change is written to `config.toml` in place, keeping its comments, order a
 and applies at once; Settings and About follow a live theme change. Other Arkos windows are other
 processes and follow within a second through the config watcher. A change made in the chooser is
 written and takes effect when the project window opens. While the config has an error, Settings
-shows the error in a banner and its controls are read-only, except "Open config". Keybindings
+shows the error in a banner and its controls are read-only, except "Open config". A write the
+file refuses (a read-only file, say) is said above the controls, which stay live. Keybindings
 stay in the file. A user's `"open config" = "cmd-,"` makes the key open the config file instead
 of Settings; the menu still shows the shortcut next to Settings, a known limit.
 
 ## Config
 
 `~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with
-commented defaults on first run and opened from Settings' Keyboard section ("Open config") or the palette's "Open config", in your text editor. It is watched: a saved
-edit applies within a second. A bad edit shows a banner with the line number and keeps the last
-good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
+commented defaults on first run and opened in your text editor from Settings' Keyboard section
+("Open config") or the palette's "Open config". It is watched: a saved edit applies within a
+second. A bad edit shows a banner with the line number and keeps the last good settings.
+Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and

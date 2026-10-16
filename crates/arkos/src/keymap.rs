@@ -93,8 +93,8 @@ pub enum Command {
     SaveFile,
     /// Pick a folder with the native picker and open it in a new window.
     OpenFolder,
-    /// Show the project chooser in its own window (the File menu's "New Window"); the folder
-    /// chosen opens in a new window.
+    /// Show the project chooser in its own window (the "New Window" item in the Arkos IDE menu);
+    /// the folder chosen opens in a new window.
     NewWindow,
     /// Ask for a URL and open a browser tab for it in the focused pane.
     NewBrowserTab,

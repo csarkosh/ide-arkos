@@ -92,11 +92,13 @@ pub fn open_settings(cx: &mut App) {
         let handle = aux.settings;
         let Some((shown, theme)) = settings_state(cx) else { return };
         if let Some(handle) = handle {
-            // A window opened from the chooser shows the Root's state once there is a Root.
-            let pushed = shown.clone();
+            // A window opened from the chooser shows the Root's state, and its theme, once there
+            // is a Root.
+            let (pushed, drawn_in) = (shown.clone(), theme.clone());
             if handle
                 .update(cx, |w, window, cx| {
                     w.set_shown(pushed, cx);
+                    w.set_theme(drawn_in, cx);
                     window.activate_window();
                 })
                 .is_ok()
@@ -119,7 +121,7 @@ fn settings_state(cx: &App) -> Option<(Shown, Theme)> {
     }
     let launch = cx.try_global::<Aux>()?.launch.as_ref()?;
     let (config, error) = config::reload_decision(&launch.config, config::load(&launch.config_path));
-    Some((Shown { config, error, update_ready: None }, launch.theme.clone()))
+    Some((Shown { config, error, write_error: None, update_ready: None, active_preset: None }, launch.theme.clone()))
 }
 
 /// Shows `shown` in the Settings window when it is open.
@@ -143,40 +145,55 @@ pub fn push_theme(cx: &mut App, theme: &Theme) {
 }
 
 /// The Settings window's one write. With a project window, the Root reloads the config, which
-/// applies the change and shows it in the window. Before that, the write is the whole change: the
+/// applies the change and shows it in the window; a picked preset (the default for new
+/// workspaces) is applied to this window as well. Before that, the write is the whole change: the
 /// file is read back so the window shows it, and the project window reads it when it opens. A
-/// refused write shows as the window's banner. Looked up at each call, so a window opened from
-/// the chooser writes through the Root once there is one.
+/// refused write is said in the window above its controls, which stay live. Looked up at each
+/// call, so a window opened from the chooser writes through the Root once there is one.
 fn apply_settings_edits(edits: &[(&[&str], toml_edit::Value)], cx: &mut App) {
     if let Some(root) = root(cx) {
         let written = config::set_values(&paths::config_file(), edits);
+        let picked = picked_preset(edits);
         root.update(cx, |root, cx| match written {
-            Ok(()) => root.reload_config(cx),
+            Ok(()) => {
+                root.reload_config(cx);
+                // A changed default is applied by the reload; the default picked again is not.
+                if let Some(name) = picked.filter(|name| *name != root.text_preset) {
+                    if root.apply_text_preset(&name, cx) {
+                        push_settings(cx, root.settings_shown());
+                    }
+                }
+            }
             Err(e) => {
                 eprintln!("arkos: settings: {e}");
-                push_settings(cx, Shown { error: Some(e), ..root.settings_shown() });
+                push_settings(cx, root.settings_shown().with_write_error(e));
             }
         });
         return;
     }
     let Some(launch) = cx.try_global::<Aux>().and_then(|aux| aux.launch.as_ref()) else { return };
     let (path, current) = (launch.config_path.clone(), launch.config.clone());
-    let shown = match config::set_values(&path, edits) {
-        Ok(()) => {
-            let (config, error) = config::reload_decision(&current, config::load(&path));
-            if error.is_none() {
-                if let Some(launch) = cx.global_mut::<Aux>().launch.as_mut() {
-                    launch.config = config.clone();
-                }
-            }
-            Shown { config, error, update_ready: None }
+    let written = config::set_values(&path, edits);
+    let (config, error) = config::reload_decision(&current, config::load(&path));
+    if written.is_ok() && error.is_none() {
+        if let Some(launch) = cx.global_mut::<Aux>().launch.as_mut() {
+            launch.config = config.clone();
         }
+    }
+    let shown = Shown { config, error, write_error: None, update_ready: None, active_preset: None };
+    let shown = match written {
+        Ok(()) => shown,
         Err(e) => {
             eprintln!("arkos: settings: {e}");
-            Shown { config: current, error: Some(e), update_ready: None }
+            shown.with_write_error(e)
         }
     };
     push_settings(cx, shown);
+}
+
+/// The preset name an edit of `[font] preset` writes, if the edits hold one.
+fn picked_preset(edits: &[(&[&str], toml_edit::Value)]) -> Option<String> {
+    edits.iter().find(|(keys, _)| *keys == ["font", "preset"]).and_then(|(_, v)| v.as_str()).map(str::to_string)
 }
 
 /// The Settings window's "Update now": the bell's action on the project window. It is only shown
