@@ -117,6 +117,10 @@ pub struct Shot {
     /// seconds, and the picture wants its work on screen.
     #[serde(default)]
     pub after_secs: u64,
+    /// Pane name to how many files its session must have changed or added in its folder (git
+    /// status) before the shot: work on screen, whatever the clock says.
+    #[serde(default)]
+    pub changed: BTreeMap<String, usize>,
     /// Open the browser pane's page in Chrome while a session works, so Arkos docks it.
     #[serde(default)]
     pub chrome: bool,
@@ -191,6 +195,11 @@ impl Story {
                 }
                 if !["working", "waiting", "idle"].contains(&state.as_str()) {
                     bail!("shot {:?}: state for {pane:?} must be working, waiting or idle", s.name);
+                }
+            }
+            for pane in s.changed.keys() {
+                if !seen.contains(pane.as_str()) || self.pane(pane).is_browser() {
+                    bail!("shot {:?}: changed names {pane:?}, which is not a terminal pane", s.name);
                 }
             }
             for c in &s.crops {

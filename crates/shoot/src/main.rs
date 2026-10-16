@@ -315,7 +315,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             theme = shot.theme.clone();
             pause(Duration::from_millis(1500))?;
         }
-        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress)?;
+        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress, &demo, &worktrees)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
@@ -345,7 +345,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 /// opens the browser pane's page in Chrome the first time a session works, which is when
 /// Arkos docks a new Chrome window. Returns what was not as asked.
 #[allow(clippy::too_many_arguments)]
-fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>, chrome_before: &mut Option<Vec<u32>>, repo: &Path, progress: &Progress) -> Result<Vec<String>> {
+fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>, chrome_before: &mut Option<Vec<u32>>, repo: &Path, progress: &Progress, demo: &Path, worktrees: &BTreeMap<String, PathBuf>) -> Result<Vec<String>> {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(shot.timeout_secs);
     let mut settle_until = None;
@@ -369,7 +369,17 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
                 say("opened the page in Chrome for Arkos to dock");
             }
         }
-        let unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
+        let mut unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
+        for (pane, want) in &shot.changed {
+            let dir = match &story.pane(pane).cwd {
+                Some(w) => worktrees[w].clone(),
+                None => demo.to_path_buf(),
+            };
+            let n = changed_files(&dir);
+            if n < *want {
+                unmet.push(format!("{pane} has changed {n} files, not {want}"));
+            }
+        }
         let chrome_pending = shot.chrome && chrome_url.is_none();
         let settling = settle_until.is_some_and(|t| Instant::now() < t);
         let too_early = progress.started.elapsed() < Duration::from_secs(shot.after_secs);
@@ -403,6 +413,16 @@ fn activate(pid: u32) -> bool {
         std::thread::sleep(Duration::from_millis(300));
     }
     false
+}
+
+/// How many files `git status` lists as changed or new in `dir` (0 outside a repository).
+fn changed_files(dir: &Path) -> usize {
+    Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(dir)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
 }
 
 /// `screencapture` of one window by its id, without its shadow: the window as it is, in front
