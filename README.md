@@ -25,12 +25,11 @@ Built for Apple silicon, macOS 14 or later.
 
 ```sh
 brew install --cask csarkosh/tap/arkos-ide
-xattr -dr com.apple.quarantine "/Applications/Arkos IDE.app"
 ```
 
-The second line is needed until the first notarized release; from then on the app updates
-itself (see Updating). Run "Install Claude Code hooks" from the command palette once, and the
-tabs follow what each session is doing.
+Releases are signed with a Developer ID and notarized, so the download opens as any app does,
+and from then on the app updates itself (see Updating). Run "Install Claude Code hooks" from
+the command palette once, and the tabs follow what each session is doing.
 
 ## Who it's for
 
@@ -598,11 +597,10 @@ The IDE is installed as `/Applications/Arkos IDE.app` through the Homebrew cask 
 
 ```
 brew install --cask csarkosh/tap/arkos-ide
-xattr -dr com.apple.quarantine "/Applications/Arkos IDE.app"
 ```
 
-The second line is needed until the app is notarized: the bundle is ad-hoc signed, and Gatekeeper
-refuses a quarantined ad-hoc app. The daemon's own updates never carry the attribute. The cask says `auto_updates`, so
+Releases from 0.3.2 on are signed with a Developer ID and notarized, so the download opens as any
+app does. The cask says `auto_updates`, so
 `brew upgrade` leaves the app alone and the IDE updates itself.
 
 Updates arrive by themselves: the daemon checks the release manifest every five minutes, downloads
