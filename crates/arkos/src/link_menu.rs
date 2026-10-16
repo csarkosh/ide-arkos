@@ -1,11 +1,11 @@
 //! The terminal's right-click menu on a link: "Open Link" and "Copy Link", drawn like the file
-//! tree's menu at the click. A right-click (or Control+click, the Mac's other right-click) off a
-//! link opens nothing.
+//! tree's menu at the click. gpui delivers a Control+click as a right press, so it opens the menu
+//! too. A right-click off a link opens nothing.
 
 use crate::motion;
 use crate::sidebar::{run_menu_action, MenuAction};
 use crate::Root;
-use gpui::{div, prelude::*, px, ClickEvent, Context, Div, Modifiers, MouseButton, MouseDownEvent, Pixels, Point};
+use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseButton, MouseDownEvent, Pixels, Point};
 use std::time::Instant;
 
 /// The open menu: the link it acts on and where the press was, in window pixels.
@@ -30,14 +30,13 @@ pub enum PressKind {
     Nothing,
 }
 
-/// Decides a press from its button, its modifiers and whether a link is under it. A right press
-/// on a link opens the menu, and so does a left press with Control held, which is how a Mac
-/// without a second button right-clicks. A right press off a link does nothing at all, so it
-/// neither clears the selection nor reaches the program.
-pub fn press_kind(button: MouseButton, modifiers: Modifiers, link: bool) -> PressKind {
+/// Decides a press from its button and whether a link is under it. A right press on a link opens
+/// the menu; gpui delivers a Control+click as a right press with Control cleared, so that is how
+/// a Mac without a second button opens it too. A right press off a link does nothing at all, so
+/// it neither clears the selection nor reaches the program.
+pub fn press_kind(button: MouseButton, link: bool) -> PressKind {
     match button {
         MouseButton::Right if link => PressKind::LinkMenu,
-        MouseButton::Left if modifiers.control && link => PressKind::LinkMenu,
         MouseButton::Left => PressKind::Gesture,
         _ => PressKind::Nothing,
     }
@@ -91,16 +90,12 @@ mod tests {
     }
 
     #[test]
-    fn a_right_or_control_press_on_a_link_opens_the_menu_and_nothing_else_does() {
-        let none = Modifiers::default();
-        let control = Modifiers { control: true, ..Modifiers::default() };
-        assert_eq!(press_kind(MouseButton::Right, none, true), PressKind::LinkMenu);
-        assert_eq!(press_kind(MouseButton::Right, control, true), PressKind::LinkMenu);
-        assert_eq!(press_kind(MouseButton::Left, control, true), PressKind::LinkMenu, "Control+click is the Mac's right-click");
-        assert_eq!(press_kind(MouseButton::Right, none, false), PressKind::Nothing, "off a link a right-click does nothing");
-        assert_eq!(press_kind(MouseButton::Left, none, true), PressKind::Gesture, "a plain click on a link selects as before");
-        assert_eq!(press_kind(MouseButton::Left, none, false), PressKind::Gesture);
-        assert_eq!(press_kind(MouseButton::Left, control, false), PressKind::Gesture, "Control+click off a link is an ordinary press");
-        assert_eq!(press_kind(MouseButton::Middle, none, true), PressKind::Nothing);
+    fn a_right_press_on_a_link_opens_the_menu_and_nothing_else_does() {
+        // A Control+click reaches here as a right press: gpui turns it into one.
+        assert_eq!(press_kind(MouseButton::Right, true), PressKind::LinkMenu);
+        assert_eq!(press_kind(MouseButton::Right, false), PressKind::Nothing, "off a link a right-click does nothing");
+        assert_eq!(press_kind(MouseButton::Left, true), PressKind::Gesture, "a plain click on a link selects as before");
+        assert_eq!(press_kind(MouseButton::Left, false), PressKind::Gesture);
+        assert_eq!(press_kind(MouseButton::Middle, true), PressKind::Nothing);
     }
 }

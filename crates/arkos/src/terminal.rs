@@ -701,8 +701,9 @@ impl Terminal {
         }
     }
 
-    /// The button came up somewhere else, or the press was a Cmd+click on a link or a
-    /// Control+click that opened the link menu: nothing is held for the program.
+    /// The left button came up somewhere else, a right button came up (gpui reports a left
+    /// release made with Control held as a right release), or the press was a Cmd+click on a
+    /// link: nothing is held for the program, and the drag is over.
     pub fn mouse_cancelled(&mut self) {
         self.clicks.cancel();
     }

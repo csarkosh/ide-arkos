@@ -778,22 +778,19 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
 }
 
 /// Opens the link menu when the press asks for it (see `link_menu::press_kind`) and returns
-/// whether it did. The link is the one under the press now, not the one the last paint saw. The
+/// whether it did: a right press on a link, which is also what gpui delivers for a Control+click.
+/// The link is the one under the press now, not the one the last paint saw. The
 /// event stops here, which skips the root's mouse-downs, so what they would close is closed here
 /// instead: the other menus and the popovers (one floating card at a time), the URL prompt, and
 /// a tab rename, which keeps what was typed. A press that does not open the menu is left alone
 /// for the caller.
 fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEvent, cx: &mut Context<Root>) -> bool {
     // Only a press that could open the menu looks for a link.
-    let link = if ev.button == MouseButton::Right || ev.modifiers.control { terminal.read(cx).link_at_position(ev.position) } else { None };
-    if press_kind(ev.button, ev.modifiers, link.is_some()) != PressKind::LinkMenu {
+    let link = if ev.button == MouseButton::Right { terminal.read(cx).link_at_position(ev.position) } else { None };
+    if press_kind(ev.button, link.is_some()) != PressKind::LinkMenu {
         return false;
     }
     let Some(link) = link else { return false };
-    if ev.button == MouseButton::Left {
-        // Nothing is held for the program, and the selection stays.
-        terminal.update(cx, |t, _| t.mouse_cancelled());
-    }
     cx.stop_propagation();
     let now = std::time::Instant::now();
     root.last_input = now;
@@ -820,6 +817,8 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_menu = terminal.clone();
     let t_up = terminal.clone();
     let t_up_out = terminal.clone();
+    let t_rup = terminal.clone();
+    let t_rup_out = terminal.clone();
     let t_move = terminal.clone();
     let t_drop = terminal.clone();
     let scrolled_up = terminal.read(cx).core.scrolled_up();
@@ -863,20 +862,16 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         }))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+            cx.listener(move |_root, ev: &MouseDownEvent, _window, cx| {
                 // Cmd+click on a link opens it (Terminal.app's gesture); the plain click stays
-                // free for selection later.
+                // free for selection later. A Control+click never gets here: gpui delivers it as
+                // a right press, which the listener below takes.
                 if ev.modifiers.platform {
                     if let Some(link) = t_click.read(cx).hovered_link.clone() {
                         cx.open_url(&link.url);
                         t_click.update(cx, |t, _| t.mouse_cancelled());
                         return;
                     }
-                }
-                // Control+click on a link is the Mac's right-click: the link menu opens, and the
-                // selection and the program are left as they were.
-                if open_link_menu(root, &t_click, ev, cx) {
-                    return;
                 }
                 // A click back into the terminal closes the find bar.
                 t_click.update(cx, |t, cx| {
@@ -889,8 +884,9 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 });
             }),
         )
-        // A right-click on a link opens its menu; anywhere else it does nothing and the event
-        // goes on to the root, which closes whatever menu was open.
+        // A right-click on a link opens its menu, and so does a Control+click, which gpui
+        // delivers as a right press; anywhere else it does nothing and the event goes on to the
+        // root, which closes whatever menu was open.
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
@@ -900,6 +896,11 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         .on_mouse_up(MouseButton::Left, cx.listener(move |_root, ev: &MouseUpEvent, _window, cx| t_up.update(cx, |t, _| t.mouse_released(ev.position))))
         // The button came up outside the terminal: the program hears nothing of the press.
         .on_mouse_up_out(MouseButton::Left, cx.listener(move |_root, _ev: &MouseUpEvent, _window, cx| t_up_out.update(cx, |t, _| t.mouse_cancelled())))
+        // gpui reports a left release made with Control held as a right release, and a
+        // right-click in the middle of a drag leaves the left press held, so a right release
+        // anywhere ends the drag too; otherwise auto-scroll could run with the button up.
+        .on_mouse_up(MouseButton::Right, cx.listener(move |_root, _ev: &MouseUpEvent, _window, cx| t_rup.update(cx, |t, _| t.mouse_cancelled())))
+        .on_mouse_up_out(MouseButton::Right, cx.listener(move |_root, _ev: &MouseUpEvent, _window, cx| t_rup_out.update(cx, |t, _| t.mouse_cancelled())))
         // A file dragged from the tree types its path at the prompt.
         .on_drop(cx.listener(move |_root, d: &crate::drag::FileDrag, _window, cx| {
             match crate::drag::paste_text(&d.path) {
