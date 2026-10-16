@@ -10,6 +10,7 @@ use protocol::{ClientMessage, Event, Request, Response, ServerMessage, PROTOCOL_
 use std::io::{BufReader, BufWriter};
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -45,6 +46,9 @@ pub struct Client {
     unread: UnreadGate,
     /// Kept so dropping the client can close the socket and release a waiting reader.
     stream: UnixStream,
+    /// The pid of the process at the other end, read once at connect; `None` when the system
+    /// would not say.
+    peer_pid: Option<u32>,
 }
 
 impl Drop for Client {
@@ -64,6 +68,7 @@ impl Client {
     /// Connects with `cap` unread output bytes allowed in the channel before the reader waits.
     pub fn connect_with_cap(socket: &Path, cap: usize) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
         let stream = UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
+        let peer_pid = peer_pid_of(&stream);
         let reader_stream = stream.try_clone().context("clone socket")?;
         let shutdown_stream = stream.try_clone().context("clone socket")?;
         let unread: UnreadGate = Arc::new((Mutex::new(Unread::default()), Condvar::new()));
@@ -136,9 +141,14 @@ impl Client {
                 *reason_for_reader.lock().unwrap() = Some(reason);
             })
             .context("spawn reader")?;
-        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream };
+        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream, peer_pid };
         client.hello();
         Ok((client, ev_rx))
+    }
+
+    /// The daemon's pid as the socket reported it at connect, for the About window.
+    pub fn peer_pid(&self) -> Option<u32> {
+        self.peer_pid
     }
 
     /// Says Hello with this process's pid, binary and folder: at connect, and again on the same
@@ -246,6 +256,17 @@ impl Client {
             }
         }
     }
+}
+
+/// The pid of the process at the other end of a connected Unix socket (`LOCAL_PEERPID`); `None`
+/// when the call fails.
+fn peer_pid_of(stream: &UnixStream) -> Option<u32> {
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into `pid`, which is that size, and the fd is
+    // the stream's own, open for the duration of the call.
+    let rc = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID, (&mut pid as *mut libc::pid_t).cast(), &mut len) };
+    (rc == 0 && pid > 0).then_some(pid as u32)
 }
 
 /// Where a daemon the window starts writes its log: next to its socket.
@@ -365,6 +386,18 @@ mod tests {
         let seen = server.join().unwrap();
         assert!(matches!(seen[0].request, Request::Hello { protocol_version: PROTOCOL_VERSION, .. }));
         assert_eq!(seen[1].request, Request::ListSessions);
+    }
+
+    #[test]
+    fn the_peer_pid_is_the_process_at_the_other_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("fake.sock");
+        let server = fake_daemon(&socket);
+        let (client, _rx) = Client::connect(&socket).unwrap();
+        // The fake daemon runs in this test process.
+        assert_eq!(client.peer_pid(), Some(std::process::id()));
+        client.send(Request::ListSessions);
+        server.join().unwrap();
     }
 
     #[test]

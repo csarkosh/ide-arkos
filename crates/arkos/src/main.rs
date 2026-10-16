@@ -262,7 +262,6 @@ pub struct Root {
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
-    #[allow(dead_code)] // Used from Task 3b on.
     pub installed: SystemTime,
     /// The config file's problem shown under the connection banner; `None` when all is well.
     /// Kept apart from `status`, which belongs to the connection and clears when it answers.
@@ -1484,6 +1483,15 @@ impl Root {
             eprintln!("arkos: {text}");
             self.show_notice(text, cx);
         }
+    }
+
+    /// What the About window shows, from this window's state: the daemon's version and pid while
+    /// connected. The version stays from the last `Hello` after a disconnect, so the bell's
+    /// connected test decides.
+    pub fn details(&self) -> about::Details {
+        let connected = daemon_label_with(&self.status, self.reconnecting_since.is_some()) == CONNECTED_LABEL;
+        let daemon = self.daemon_version.clone().filter(|_| connected).map(|v| (v, self.sessions.client.as_ref().and_then(|c| c.peer_pid())));
+        about::Details::gather(self.installed, daemon)
     }
 
     /// Shows a one-off notice as its own banner and takes it down after `NOTICE_FOR`, unless a
@@ -3505,7 +3513,6 @@ pub fn version_string() -> String {
 }
 
 /// The date this build's commit was made, `YYYY-MM-DD` (or `unknown`), recorded by `build.rs`.
-#[allow(dead_code)] // Used from Task 3b on.
 pub fn build_date() -> &'static str {
     env!("ARKOS_BUILD_DATE")
 }

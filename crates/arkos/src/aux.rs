@@ -1,7 +1,7 @@
 //! The auxiliary windows' registry: the About and Settings windows, one of each at most, and the
 //! project window's Root once it exists. A gpui global, so the actions registered once in `main()`
 //! reach them in every state, the launch chooser's included, and the close rules can count them.
-use crate::about::AboutWindow;
+use crate::about::{self, AboutWindow};
 use crate::config::Config;
 use crate::settings::SettingsWindow;
 use crate::theme::Theme;
@@ -16,7 +16,6 @@ use std::time::SystemTime;
 pub struct LaunchState {
     #[allow(dead_code)] // Used from Task 4 on.
     pub config: Config,
-    #[allow(dead_code)] // Used from Task 3b on.
     pub theme: Theme,
     #[allow(dead_code)] // Used from Task 4 on.
     pub config_path: PathBuf,
@@ -50,10 +49,30 @@ pub fn set_root(cx: &mut App, root: WeakEntity<Root>) {
     cx.global_mut::<Aux>().root = Some(root);
 }
 
-/// The About menu item and command: brings the About window forward, or opens it. Until Task 3b
-/// fills the window in, this only says it was asked.
-pub fn open_about(_cx: &mut App) {
-    eprintln!("arkos: About Arkos IDE asked for; the window arrives in Task 3b");
+/// The About menu item and command: brings the About window forward, or opens it. Its details
+/// come from the project window's Root when there is one, else from what `main()` loaded, with no
+/// daemon. Deferred, because the Root's own command runs this while the Root is being updated, and
+/// gpui refuses a second update or read of an entity meanwhile.
+pub fn open_about(cx: &mut App) {
+    cx.defer(|cx| {
+        let Some(aux) = cx.try_global::<Aux>() else { return };
+        if let Some(handle) = aux.about {
+            if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+                return;
+            }
+        }
+        let shown = match root(cx) {
+            Some(root) => {
+                let root = root.read(cx);
+                Some((root.details(), (*root.theme).clone()))
+            }
+            // Before the project window there is no daemon connection to report.
+            None => cx.global::<Aux>().launch.as_ref().map(|l| (about::Details::gather(l.installed, None), l.theme.clone())),
+        };
+        let Some((details, theme)) = shown else { return };
+        let handle = about::open(cx, details, theme);
+        cx.global_mut::<Aux>().about = handle;
+    });
 }
 
 /// The Settings menu item and Cmd+,: brings the Settings window forward, or opens it. Until Task 4
@@ -95,7 +114,6 @@ pub fn close_all(cx: &mut App) {
 /// New Window pressed in About or Settings: the project window's New Window when there is one;
 /// before that, the launch chooser comes forward, as its own New Window does. Deferred, as
 /// `open_settings` is.
-#[allow(dead_code)] // Used from Task 3b on.
 pub fn forward_new_window(cx: &mut App) {
     let root = root(cx);
     cx.defer(move |cx| {
