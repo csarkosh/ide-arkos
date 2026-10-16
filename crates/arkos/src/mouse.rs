@@ -257,9 +257,11 @@ mod tests {
         k.press(4, 5, 5, Side::Left, 1, false);
         assert!(k.held());
         assert_eq!(k.moved(4, 2, Side::Left, true, false), Gesture::Start { anchor: (4, 5, Side::Right), to: (4, 2, Side::Left) });
-        // The pressed cell is a grid cell: the viewport cell it was pressed on means nothing now.
-        k.press(4, 5, 5, Side::Left, 1, false);
-        assert_eq!(k.moved(4, 5, Side::Right, true, false), Gesture::Nothing, "still on the pressed line");
+        // The other way: pressed at viewport row 5 with the view scrolled up 3 lines (line 2),
+        // then the view goes back to the bottom. The pointer is on the same viewport row, but
+        // that row is line 5 now, so the press has become a drag down from line 2.
+        k.press(4, 5, 2, Side::Left, 1, false);
+        assert_eq!(k.moved(4, 5, Side::Right, true, false), Gesture::Start { anchor: (4, 2, Side::Left), to: (4, 5, Side::Right) });
     }
 
     #[test]

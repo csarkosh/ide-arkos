@@ -358,10 +358,13 @@ impl TerminalCore {
     /// it has no selection yet, so one starts from `anchor` (the press as a grid cell, its side
     /// facing the drag). Returns whether another frame can scroll further: false once history
     /// runs out that way. A program reporting the mouse, or anything on the alternate screen,
-    /// owns the wheel, so nothing happens there and the answer is false.
-    pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize, anchor: Option<(usize, i32, Side)>) -> bool {
+    /// owns the wheel, so nothing happens there and the answer is false. `ended` says the
+    /// session is over: no program hears the mouse then, so its last reporting mode is ignored,
+    /// as `Terminal::wheel` ignores it.
+    pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize, anchor: Option<(usize, i32, Side)>, ended: bool) -> bool {
         let alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
-        if rate == 0.0 || alt_screen || matches!(self.mouse_mode(), MouseMode::Report { .. }) {
+        let reported = !ended && matches!(self.mouse_mode(), MouseMode::Report { .. });
+        if rate == 0.0 || alt_screen || reported {
             return false;
         }
         let history = self.history_size() as f32;
@@ -688,7 +691,7 @@ impl Terminal {
     pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize) -> bool {
         let side = if rate > 0.0 { Side::Right } else { Side::Left };
         let anchor = self.clicks.anchor().map(|(acol, aline)| (acol, aline, side));
-        self.core.drag_scroll_step(rate, dt, col, anchor)
+        self.core.drag_scroll_step(rate, dt, col, anchor, !self.alive)
     }
 
     /// A left release over the terminal: a held click reaches a live program now.
@@ -1159,7 +1162,7 @@ mod tests {
         t.selection_start(0, Line(5), Side::Right, SelectionType::Simple);
         t.set_display_offset(3);
         // Viewport row 0 of a view scrolled up 3 lines is line -3.
-        t.selection_update(0, Line(0 - t.display_offset() as i32), Side::Left);
+        t.selection_update(0, Line(t.line_at_row(0)), Side::Left);
         assert_eq!(selected_lines(&t), ((-3, 0), (5, 0)));
     }
 
@@ -1170,24 +1173,24 @@ mod tests {
         assert!(history > 10, "enough history to scroll through: {history}");
         // Pressed at column 1 of line 2, and the pointer left over the top before any move in the
         // pane: the selection starts from the anchor and runs to the top row at the pointer.
-        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right))));
+        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right)), false));
         assert_eq!(t.scroll.current, 3.0);
         assert_eq!(t.display_offset(), 3, "the step moves the grid itself");
         assert_eq!(selected_lines(&t), ((-3, 3), (2, 1)));
         // The next frame extends the same selection; the anchor only starts a missing one.
-        assert!(t.drag_scroll_step(6.0, 0.5, 0, Some((9, 4, Side::Right))));
+        assert!(t.drag_scroll_step(6.0, 0.5, 0, Some((9, 4, Side::Right)), false));
         assert_eq!(t.display_offset(), 6);
         assert_eq!(selected_lines(&t), ((-6, 0), (2, 1)));
         // History runs out: the view stops at its top and the step says so.
-        assert!(!t.drag_scroll_step(60.0, 1.0, 0, None));
+        assert!(!t.drag_scroll_step(60.0, 1.0, 0, None, false));
         assert_eq!(t.display_offset(), history);
         assert_eq!(t.scroll.current, history as f32);
-        assert!(!t.drag_scroll_step(6.0, 0.1, 0, None));
+        assert!(!t.drag_scroll_step(6.0, 0.1, 0, None, false));
         assert_eq!(t.display_offset(), history);
         // Below the bottom scrolls back down, to the live view, and selects to the bottom row.
-        assert!(t.drag_scroll_step(-6.0, 0.5, 4, None));
+        assert!(t.drag_scroll_step(-6.0, 0.5, 4, None, false));
         assert_eq!(t.display_offset(), history - 3);
-        assert!(!t.drag_scroll_step(-60.0, 1.0, 4, None));
+        assert!(!t.drag_scroll_step(-60.0, 1.0, 4, None, false));
         assert_eq!(t.display_offset(), 0);
         assert_eq!(t.scroll.current, 0.0);
         assert_eq!(selected_lines(&t).1, (4, 4));
@@ -1197,20 +1200,35 @@ mod tests {
     fn a_drag_past_the_edge_never_scrolls_a_program_that_owns_the_mouse() {
         let still = |t: &TerminalCore| t.display_offset() == 0 && t.scroll.current == 0.0 && !t.selection_active();
         let mut t = with_history(20, 5, 30);
-        assert!(!t.drag_scroll_step(0.0, 0.5, 0, Some((1, 2, Side::Right))), "a pointer inside is no drag past the edge");
+        assert!(!t.drag_scroll_step(0.0, 0.5, 0, Some((1, 2, Side::Right)), false), "a pointer inside is no drag past the edge");
         assert!(still(&t));
         // Mouse reporting: the wheel and the drag are the program's.
         t.apply_output(b"\x1b[?1000h");
-        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right))));
+        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right)), false));
         assert!(still(&t));
         // The alternate screen, with alternate scroll and without it.
         t.apply_output(b"\x1b[?1000l\x1b[?1049h");
-        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right))));
+        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right)), false));
         assert!(still(&t));
         t.apply_output(b"\x1b[?1007l");
         assert_eq!(t.mouse_mode(), MouseMode::Local);
-        assert!(!t.drag_scroll_step(-6.0, 0.5, 0, Some((1, 2, Side::Right))));
+        assert!(!t.drag_scroll_step(-6.0, 0.5, 0, Some((1, 2, Side::Right)), false));
         assert!(still(&t));
+    }
+
+    #[test]
+    fn an_ended_session_scrolls_its_history_on_a_drag_past_the_edge_even_in_report_mode() {
+        // The program left mouse reporting on when it died; the wheel scrolls the history of an
+        // ended session, and so does a drag past the edge.
+        let mut t = with_history(20, 5, 30);
+        t.apply_output(b"\x1b[?1000h");
+        assert!(matches!(t.mouse_mode(), MouseMode::Report { .. }));
+        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right)), true));
+        assert_eq!(t.display_offset(), 3);
+        assert_eq!(selected_lines(&t), ((-3, 3), (2, 1)));
+        // The alternate screen has no history to scroll, ended or not.
+        t.apply_output(b"\x1b[?1000l\x1b[?1049h");
+        assert!(!t.drag_scroll_step(6.0, 0.5, 3, None, true));
     }
 
     #[test]
