@@ -206,7 +206,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         Some(d) => PathBuf::from(expand_home(d)),
         None => dirs.cache.join(&story.demo.name),
     };
-    let worktrees = prepare_demo(&repo.join(&story.demo.fixture), &demo, story, &bin.join("arkos"))?;
+    let worktrees = prepare_demo(&repo.join(&story.demo.fixture), &demo, story, &bin.join("arkos"), repo)?;
     let demo = demo.canonicalize()?;
     running.demo = Some(demo.clone());
     say(&format!("demo project at {}", demo.display()));
@@ -699,7 +699,35 @@ fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
 /// name, and Claude Code's project settings: Arkos's hooks aimed at the dev binary (the user's
 /// own, aimed at the installed app, reach the other daemon and do nothing) and the permissions
 /// a session needs to work without asking.
-fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) -> Result<BTreeMap<String, PathBuf>> {
+/// Claude Code's theme for the scene. An `-ansi` theme draws with the terminal's sixteen
+/// colours, but paints the user's message on ANSI bright black, which Arkos's themes keep
+/// readable as dim *text*, so as a background it fails the text on it (navy 3:1; on a light
+/// theme the text is ANSI white, another dark grey, under 2:1). For those the shoot writes a
+/// custom Claude Code theme, `~/.claude/themes/arkos-shoot.json`, on that base with the
+/// message background set to the Arkos theme's find-match colour, the one surface its tests
+/// hold to 4.5:1 under text, and names it.
+fn claude_theme_for(story: &Story, repo: &Path) -> Result<String> {
+    let base = story.window.claude_theme.as_str();
+    if !base.ends_with("-ansi") {
+        return Ok(base.to_string());
+    }
+    let arkos_theme = if base.starts_with("light") { &story.window.theme.light } else { &story.window.theme.dark };
+    let file = repo.join("crates/arkos/themes").join(format!("{arkos_theme}.toml"));
+    let text = std::fs::read_to_string(&file).with_context(|| format!("read {} for its selection colour", file.display()))?;
+    let toml: toml::Value = toml::from_str(&text).with_context(|| format!("parse {}", file.display()))?;
+    let selection = toml.get("semantic").and_then(|t| t.get("find_match")).and_then(|v| v.as_str()).with_context(|| format!("{}: no semantic.find_match", file.display()))?;
+    let dir = PathBuf::from(std::env::var("HOME").context("HOME")?).join(".claude/themes");
+    std::fs::create_dir_all(&dir)?;
+    let theme = serde_json::json!({
+        "name": "Arkos shoot",
+        "base": base,
+        "overrides": { "userMessageBackground": selection, "userMessageBackgroundHover": selection }
+    });
+    std::fs::write(dir.join("arkos-shoot.json"), serde_json::to_string_pretty(&theme)?)?;
+    Ok("custom:arkos-shoot".to_string())
+}
+
+fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path, repo: &Path) -> Result<BTreeMap<String, PathBuf>> {
     if !fixture.is_dir() {
         bail!("fixture {} is not a folder", fixture.display());
     }
@@ -764,7 +792,8 @@ fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) ->
     }
     // Claude Code reads .claude/settings.json in the folder it runs in: every pane's folder
     // gets one (the worktree's is its own; a worktree's checkout does not carry the main one's).
-    let settings = claude_settings(arkos_exe, &story.window.claude_theme);
+    let claude_theme = claude_theme_for(story, repo)?;
+    let settings = claude_settings(arkos_exe, &claude_theme);
     let mut dirs: Vec<PathBuf> = story.panes.iter().filter(|p| p.is_terminal()).map(|p| p.dir(demo)).collect();
     dirs.push(demo.to_path_buf());
     dirs.sort();
