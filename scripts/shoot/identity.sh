@@ -12,11 +12,12 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$NAME\""; t
   echo "the \"$NAME\" identity exists already"
   exit 0
 fi
+# macOS's own openssl (LibreSSL): a PKCS12 from Homebrew's OpenSSL 3 uses a MAC `security import` cannot read.
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$TMP/key.pem" -out "$TMP/cert.pem" \
+/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$TMP/key.pem" -out "$TMP/cert.pem" \
   -subj "/CN=$NAME" -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=critical,codeSigning" 2>/dev/null
-openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -out "$TMP/identity.p12" -passout pass:shoot -name "$NAME"
+/usr/bin/openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -out "$TMP/identity.p12" -passout pass:shoot -name "$NAME"
 # -T lets codesign use the key without a prompt at every signing.
 security import "$TMP/identity.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P shoot -T /usr/bin/codesign
 # Trusted for code signing by this user (an administrator's password is asked for).
