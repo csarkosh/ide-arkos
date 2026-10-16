@@ -357,7 +357,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         // The captures themselves stay with the progress files; `out` gets the framed pictures.
         let picture = format!("{}-{}", story.scene.name, shot.name);
         let raw = progress.dir.join(format!("{picture}.raw.png"));
-        capture_window(window_id, &raw)?;
+        capture_steady(repo, window_id, &raw)?;
         // The Chrome window Arkos docked is another app's window: captured on its own and laid
         // over the pane it sits on.
         let overlay = match running.chrome_before.as_deref().map(|before| docked_chrome(repo, frame, before)).transpose()?.flatten() {
@@ -470,6 +470,29 @@ fn capture_window(id: u32, out: &Path) -> Result<()> {
         std::thread::sleep(Duration::from_secs(1));
     }
     bail!("screencapture failed for {}", out.display())
+}
+
+/// A capture of a frame that holds still: two captures 400 ms apart, kept when under 0.4% of
+/// the pixels differ (a spinner and a clock tick pass; a pane mid-repaint, which Claude Code
+/// does whole lines at a time, does not), tried up to eight times before the last one is kept
+/// with a note.
+fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
+    let other = out.with_extension("b.png");
+    for attempt in 1..=8 {
+        capture_window(id, out)?;
+        std::thread::sleep(Duration::from_millis(400));
+        capture_window(id, &other)?;
+        let diff = Command::new("python3").arg("-I").arg(repo.join("scripts/shoot/diff.py")).arg(out).arg(&other).output().context("diff.py")?;
+        let fraction: f64 = String::from_utf8_lossy(&diff.stdout).trim().parse().unwrap_or(1.0);
+        if fraction < 0.004 {
+            let _ = std::fs::rename(&other, out);
+            return Ok(());
+        }
+        say(&format!("capture {attempt}: {:.1}% of the window changed between two frames; again", fraction * 100.0));
+    }
+    say("no still frame in eight tries; keeping the last");
+    let _ = std::fs::rename(&other, out);
+    Ok(())
 }
 
 /// A window the window server lists: `scripts/shoot/windows.swift`'s line.

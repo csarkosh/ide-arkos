@@ -894,7 +894,9 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .px(px(10.0))
                 .py(px(4.0))
                 .rounded(px(10.0))
-                .bg(theme.chrome.banner.hsla())
+                .bg(pill_bg(&theme))
+                .border_1()
+                .border_color(pill_border(&theme))
                 .text_color(theme.chrome.text.hsla())
                 .font_family(family.clone())
                 .text_size(px(12.0))
@@ -928,6 +930,21 @@ pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
         (false, true) => 14.0 + CHIP_W + 8.0,
         (false, false) => 12.0,
     }
+}
+
+/// The overlay pills ("jump to bottom", "show raw") float over text: a translucent banner
+/// colour with a faint edge, so what lies under them still shows through. (gpui 0.2 blurs only
+/// a whole window's backdrop, not an element's, so this is transparency alone.)
+fn pill_bg(theme: &Theme) -> gpui::Hsla {
+    let mut c = theme.chrome.banner.hsla();
+    c.a = 0.72;
+    c
+}
+
+fn pill_border(theme: &Theme) -> gpui::Hsla {
+    let mut c = theme.chrome.border.hsla();
+    c.a = 0.6;
+    c
 }
 
 /// The mode pill's text: it names the mode a click switches to.
@@ -1089,7 +1106,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .justify_center()
             .py(px(4.0))
             .rounded(px(10.0))
-            .bg(theme.chrome.banner.hsla())
+            .bg(pill_bg(&theme))
+            .border_1()
+            .border_color(pill_border(&theme))
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
             .text_size(px(12.0))
