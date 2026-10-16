@@ -2,7 +2,9 @@
 //! installed app and its leftovers, the daemon (asked over its socket with a Hello that names no
 //! window, so it confirms nothing and is never relaunched), the update marker and the rejected
 //! versions, the end of the daemon's update journal and of `window.log`, and the crash reports
-//! from the last day. It starts no daemon, opens no window and changes no file.
+//! from the last day, and the themes with the agent guide skill. It starts no daemon, opens no
+//! window and changes no file.
+use crate::guide::SkillState;
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, PROTOCOL_VERSION};
 use std::fmt::Write as _;
@@ -26,6 +28,12 @@ pub struct Where {
     pub app_support: PathBuf,
     pub socket: PathBuf,
     pub reports: PathBuf,
+    /// The themes folder (`~/.config/arkos/themes`).
+    pub themes: PathBuf,
+    /// `config.toml`, read and never created.
+    pub config: PathBuf,
+    /// The agent guide skill's folder in this environment's Claude config.
+    pub skills: PathBuf,
 }
 
 impl Where {
@@ -37,6 +45,9 @@ impl Where {
             app_support: crate::paths::app_support(),
             socket: crate::paths::socket_path(),
             reports: home.join("Library/Logs/DiagnosticReports"),
+            themes: crate::paths::themes_dir(),
+            config: crate::paths::config_file(),
+            skills: crate::guide::skills_dir(),
         }
     }
 
@@ -95,8 +106,50 @@ pub fn report(w: &Where, now: SystemTime) -> String {
     section(&mut out, &format!("last {WINDOW_LOG_LINES} lines of {}", window_log.display()), &tail(&text, WINDOW_LOG_LINES));
     let reports: Vec<String> = recent_reports(&w.reports, now).into_iter().map(|p| p.display().to_string()).collect();
     section(&mut out, &format!("crash reports from the last day in {}", w.reports.display()), &reports);
+    section(&mut out, "themes", &themes_section(&w.themes, &w.config, &w.skills, &crate::guide::skill_state(&w.skills)));
     let _ = writeln!(out, "the daemon's own log: {}", w.socket.with_file_name("arkosd.log").display());
     out
+}
+
+/// The doctor's themes lines: `{n} themes, all valid`, or one `{path}: {error}` line per theme
+/// file that does not load; a `[theme] dark` or `light` that names neither a built-in nor a file;
+/// and where the agent guide skill stands in `skills_dir`. The config is read with
+/// `read_to_string` and `config::parse`, so a missing file is not created.
+pub fn themes_section(themes: &Path, config: &Path, skills_dir: &Path, skill: &SkillState) -> Vec<String> {
+    let listed = crate::theme::list(themes);
+    let mut lines: Vec<String> = listed
+        .iter()
+        .filter_map(|(name, source)| match source {
+            crate::theme::Source::Invalid(e) => Some(format!("{}: {e}", themes.join(format!("{name}.toml")).display())),
+            _ => None,
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(format!("{} themes, all valid", listed.len()));
+    }
+    match std::fs::read_to_string(config) {
+        Ok(text) => match crate::config::parse(&text) {
+            Ok(cfg) => {
+                for (key, name) in [("dark", &cfg.theme.dark), ("light", &cfg.theme.light)] {
+                    if !listed.iter().any(|(n, _)| n == name) {
+                        lines.push(format!("theme.{key} names no theme: {name}"));
+                    }
+                }
+            }
+            Err(e) => lines.push(format!("theme names not checked: {e}")),
+        },
+        // No config yet: the defaults name built-ins.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => lines.push(format!("theme names not checked: cannot read {}: {e}", config.display())),
+    }
+    let said = match skill {
+        SkillState::Missing => "not installed".to_string(),
+        SkillState::Current => "installed".to_string(),
+        SkillState::Outdated(old) => format!("older than this build ({old})"),
+        SkillState::Foreign => "a different skill".to_string(),
+    };
+    lines.push(format!("agent guide skill in {}: {said}", skills_dir.display()));
+    lines
 }
 
 fn section(out: &mut String, title: &str, lines: &[String]) {
@@ -186,6 +239,8 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guide::SkillState;
+    use crate::theme;
 
     fn listing(dir: &Path) -> Vec<(PathBuf, u64, Option<SystemTime>)> {
         let mut out = Vec::new();
@@ -224,7 +279,20 @@ mod tests {
         std::fs::write(&old, "old crash").unwrap();
         let now = SystemTime::now();
         std::fs::File::options().write(true).open(&old).unwrap().set_modified(now - Duration::from_secs(3 * 24 * 3600)).unwrap();
-        let w = Where { exe: None, default_bundle: bundle.clone(), app_support: support.clone(), socket: support.join("arkosd.sock"), reports: reports.clone() };
+        let config = root.path().join("config");
+        std::fs::create_dir_all(config.join("themes")).unwrap();
+        std::fs::write(config.join("themes").join("half.toml"), "name = \"half\"\n").unwrap();
+        std::fs::write(config.join("config.toml"), "[theme]\ndark = \"half\"\n").unwrap();
+        let w = Where {
+            exe: None,
+            default_bundle: bundle.clone(),
+            app_support: support.clone(),
+            socket: support.join("arkosd.sock"),
+            reports: reports.clone(),
+            themes: config.join("themes"),
+            config: config.join("config.toml"),
+            skills: root.path().join("claude").join("skills"),
+        };
         let before = listing(root.path());
         let text = report(&w, now);
         assert_eq!(listing(root.path()), before, "read-only");
@@ -240,6 +308,29 @@ mod tests {
         assert!(text.contains("window line 29\n") && text.contains("window line 10\n") && !text.contains("window line 9\n"), "the last 20: {text}");
         assert!(text.contains("arkos-2026-10-15-080412.ips"), "{text}");
         assert!(!text.contains("Safari") && !text.contains("arkosd-2026-10-01"), "only ours, and only from the last day: {text}");
+        assert!(text.contains("\nthemes:\n"), "{text}");
+        assert!(text.contains(&format!("  {}: ", config.join("themes").join("half.toml").display())), "{text}");
+        assert!(text.contains(&format!("  agent guide skill in {}: not installed\n", root.path().join("claude").join("skills").display())), "{text}");
+    }
+
+    #[test]
+    fn the_themes_section_lists_invalid_files_and_missing_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("broken.toml"), "name = \"broken\"\n").unwrap();
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, "[theme]\ndark = \"gone\"\nlight = \"navy-light\"\n").unwrap();
+        let lines = themes_section(&themes, &cfg, Path::new("/h/.claude/skills"), &SkillState::Missing);
+        assert!(lines.iter().any(|l| l.starts_with(&format!("{}: ", themes.join("broken.toml").display()))), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "theme.dark names no theme: gone"), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("names no theme: broken")), "an invalid file has its own line");
+        assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude/skills: not installed"), "{lines:?}");
+        std::fs::remove_file(themes.join("broken.toml")).unwrap();
+        std::fs::write(&cfg, "[theme]\ndark = \"navy\"\n").unwrap();
+        let lines = themes_section(&themes, &cfg, Path::new("/h/.claude/skills"), &SkillState::Outdated("abc".into()));
+        assert_eq!(lines[0], format!("{} themes, all valid", theme::BUILTIN.len()));
+        assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude/skills: older than this build (abc)"));
     }
 
     #[test]
@@ -276,7 +367,16 @@ mod tests {
 
     #[test]
     fn doctor_finds_the_bundle_the_binary_runs_from() {
-        let w = |exe: &str| Where { exe: Some(exe.into()), default_bundle: "/Applications/Arkos IDE.app".into(), app_support: "/s".into(), socket: "/s/a.sock".into(), reports: "/r".into() };
+        let w = |exe: &str| Where {
+            exe: Some(exe.into()),
+            default_bundle: "/Applications/Arkos IDE.app".into(),
+            app_support: "/s".into(),
+            socket: "/s/a.sock".into(),
+            reports: "/r".into(),
+            themes: "/c/themes".into(),
+            config: "/c/config.toml".into(),
+            skills: "/h/.claude/skills".into(),
+        };
         assert_eq!(w("/Users/me/Apps/Arkos IDE.app/Contents/MacOS/arkos").bundle(), PathBuf::from("/Users/me/Apps/Arkos IDE.app"));
         assert_eq!(w("/x/target/debug/arkos").bundle(), PathBuf::from("/Applications/Arkos IDE.app"));
     }

@@ -507,6 +507,7 @@ option_as_meta = true
 # "retry update" = ""
 # "start at login" = ""
 # "install claude code hooks" = ""
+# "install agent guide" = ""
 # "toggle sidebar" = "cmd-b"
 # "focus file tree" = "cmd-shift-e"
 # "show ignored files" = ""

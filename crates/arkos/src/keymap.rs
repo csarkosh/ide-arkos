@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
+        About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
@@ -81,6 +81,8 @@ pub enum Command {
     StartAtLogin,
     /// Merge the Claude Code hook entries into its settings file.
     InstallHooks,
+    /// Install the agent guide as a skill in this environment's Claude config folder.
+    InstallAgentGuide,
     /// Collapse or show the sidebar.
     ToggleSidebar,
     /// Put keyboard focus in the file tree.
@@ -198,6 +200,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Maintenance, "retry update", ""),
     row(Section::Maintenance, "start at login", ""),
     row(Section::Maintenance, "install claude code hooks", ""),
+    row(Section::Maintenance, "install agent guide", ""),
     row(Section::Sidebar, "toggle sidebar", "cmd-b"),
     row(Section::Sidebar, "focus file tree", "cmd-shift-e"),
     row(Section::Sidebar, "show ignored files", ""),
@@ -292,6 +295,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "retry update" => KeyBinding::new(keys, RetryUpdate, context),
         "start at login" => KeyBinding::new(keys, StartAtLogin, context),
         "install claude code hooks" => KeyBinding::new(keys, InstallHooks, context),
+        "install agent guide" => KeyBinding::new(keys, InstallAgentGuide, context),
         "toggle sidebar" => KeyBinding::new(keys, ToggleSidebar, context),
         "focus file tree" => KeyBinding::new(keys, FocusFileTree, context),
         "show ignored files" => KeyBinding::new(keys, ShowIgnoredFiles, context),
@@ -555,6 +559,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "retry update" => Command::RetryUpdate,
         "start at login" => Command::StartAtLogin,
         "install claude code hooks" => Command::InstallHooks,
+        "install agent guide" => Command::InstallAgentGuide,
         "toggle sidebar" => Command::ToggleSidebar,
         "focus file tree" => Command::FocusFileTree,
         "show ignored files" => Command::ShowIgnoredFiles,
@@ -609,7 +614,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         About => Command::About, OpenSettings => Command::OpenSettings,
         Keybindings => Command::Keybindings, Documentation => Command::Documentation,
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
-        UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
+        UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks, InstallAgentGuide => Command::InstallAgentGuide,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
         ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile,
@@ -661,6 +666,7 @@ mod tests {
         ("", "retry update", "RetryUpdate"),
         ("", "start at login", "StartAtLogin"),
         ("", "install claude code hooks", "InstallHooks"),
+        ("", "install agent guide", "InstallAgentGuide"),
         ("cmd-b", "toggle sidebar", "ToggleSidebar"),
         ("cmd-shift-e", "focus file tree", "FocusFileTree"),
         ("", "show ignored files", "ShowIgnoredFiles"),
@@ -736,7 +742,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 15, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 16, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -745,7 +751,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 14, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 15, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
         assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
@@ -883,6 +889,7 @@ mod tests {
     fn an_action_s_label_reads_as_the_palette_writes_it() {
         assert_eq!(label_for("about"), "About Arkos IDE");
         assert_eq!(label_for("install claude code hooks"), "Install Claude Code hooks");
+        assert_eq!(label_for("install agent guide"), "Install agent guide");
         assert_eq!(label_for("open folder"), "Open folder\u{2026}");
         assert_eq!(label_for("new browser tab"), "New browser tab\u{2026}");
         assert_eq!(label_for("new single-page browser tab"), "New single-page browser tab\u{2026}");

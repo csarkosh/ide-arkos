@@ -50,6 +50,8 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
             Command::Notifications => if unread == 0 { "nothing new".to_string() } else { format!("{unread} unread") },
             Command::Doctor => if to_fix == 0 { "all good".to_string() } else { format!("{to_fix} to fix") },
             Command::InstallHooks => format!("into {}", claude_settings.display()),
+            // The skills folder sits beside the settings file: both follow CLAUDE_CONFIG_DIR.
+            Command::InstallAgentGuide => format!("into {}", claude_settings.with_file_name("skills").display()),
             Command::ShowIgnoredFiles => if show_ignored { "on" } else { "off" }.to_string(),
             _ => keymap::keys_for(a.name, &cfg.keybindings).map(|k| keymap::pretty_keys(&k)).unwrap_or_default(),
         };
@@ -323,6 +325,8 @@ mod tests {
         let hooks = find(&ask_off, "Install Claude Code hooks");
         assert_eq!(hooks.detail, "into /Users/me/.claude/settings.json");
         assert_eq!(hooks.command, Command::InstallHooks);
+        let guide = find(&ask_off, "Install agent guide");
+        assert_eq!((guide.detail.as_str(), guide.command), ("into /Users/me/.claude/skills", Command::InstallAgentGuide));
         let bell = find(&ask_off, "Notifications");
         assert_eq!((bell.detail.as_str(), bell.command), ("2 unread", Command::Notifications));
         let doc = find(&ask_off, "Doctor");

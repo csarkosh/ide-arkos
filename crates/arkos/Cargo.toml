@@ -17,6 +17,8 @@ gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
 alacritty_terminal = "0.26"
 futures = "0.3"
 serde_json.workspace = true
+# The agent guide skill's version stamp (guide.rs).
+sha2.workspace = true
 objc2 = "0.6"
 # Already in the tree through gpui: the AppKit view behind the window, for docking (spec 8).
 raw-window-handle = "0.6"

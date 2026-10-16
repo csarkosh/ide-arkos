@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use crate::config::StartAtLogin;
+use crate::guide::SkillState;
 use crate::hook_cli;
 
 /// Which row of the doctor a check is; Root uses it to route an action and to mark a row broken.
@@ -14,6 +15,7 @@ pub enum CheckId {
     StartAtLogin,
     TitleHook,
     Accessibility,
+    AgentGuide,
 }
 
 /// How a check stands; the text is what the row shows under its title.
@@ -42,9 +44,15 @@ pub struct Probe<'a> {
     pub login_item_installed: bool,
     pub accessibility: bool,
     pub scroll_applied: bool,
+    /// The skills folder of this process's Claude config (`guide::skills_dir`).
+    pub skills: &'a Path,
+    /// What that folder holds under `arkos-ide`.
+    pub skill: SkillState,
+    /// Whether the Claude config folder around `skills` exists at all.
+    pub claude_present: bool,
 }
 
-/// The four checks, in the order the popover lists them.
+/// The five checks, in the order the popover lists them.
 pub fn probe_all(p: &Probe) -> Vec<Check> {
     let (scroll_state, scroll_button) = match hook_cli::wheel_scroll_acceleration_at(p.settings) {
         Ok(Some(false)) => (State::Good(if p.scroll_applied { "on; restart claude for it to take effect" } else { "on" }.into()), None),
@@ -67,11 +75,20 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
     } else {
         (State::Fix("not granted: browser tabs cannot dock".into()), Some("Open System Settings"))
     };
+    let dir = p.skills.display();
+    let (guide_state, guide_button) = match (&p.skill, p.claude_present) {
+        (_, false) => (State::Pinned("no Claude Code config found".into()), None),
+        (SkillState::Missing, true) => (State::Fix(format!("not installed in {dir}: agents cannot find the toolkit")), Some("Install")),
+        (SkillState::Current, true) => (State::Good(format!("installed in {dir}; other Claude config folders get it when a session starts inside Arkos")), None),
+        (SkillState::Outdated(old), true) => (State::Fix(format!("older than this build ({old})")), Some("Update")),
+        (SkillState::Foreign, true) => (State::Broken(format!("a different skill sits at {}", p.skills.join(crate::guide::SKILL_NAME).join("SKILL.md").display())), None),
+    };
     vec![
         Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: scroll_state, button: scroll_button },
         Check { id: CheckId::StartAtLogin, title: "Start at login", state: login_state, button: login_button },
         Check { id: CheckId::TitleHook, title: "Claude Code title hook", state: hook_state, button: hook_button },
         Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: ax_state, button: ax_button },
+        Check { id: CheckId::AgentGuide, title: "Agent guide for Claude Code", state: guide_state, button: guide_button },
     ]
 }
 
@@ -84,9 +101,20 @@ pub fn needs_fix(checks: &[Check]) -> usize {
 mod tests {
     use super::*;
     use crate::config::StartAtLogin;
+    use crate::guide::SkillState;
 
     fn probe<'a>(settings: &'a Path, exe: &'a Path) -> Probe<'a> {
-        Probe { settings, exe, start_at_login: StartAtLogin::Ask, login_item_installed: false, accessibility: true, scroll_applied: false }
+        Probe {
+            settings,
+            exe,
+            start_at_login: StartAtLogin::Ask,
+            login_item_installed: false,
+            accessibility: true,
+            scroll_applied: false,
+            skills: Path::new("/h/.claude/skills"),
+            skill: SkillState::Current,
+            claude_present: true,
+        }
     }
 
     #[test]
@@ -95,7 +123,7 @@ mod tests {
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
         let checks = probe_all(&probe(&settings, exe));
-        assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::Accessibility]);
+        assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::Accessibility, CheckId::AgentGuide]);
         assert_eq!(checks[0], Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: State::Fix("off: fast scrolls jump in Claude Code".into()), button: Some("Apply") });
         assert_eq!(checks[1].state, State::Fix("off: sessions do not come back after a restart".into()));
         assert_eq!(checks[1].button, Some("Install"));
@@ -164,5 +192,33 @@ mod tests {
         assert!(matches!(&checks[2].state, State::Broken(t) if t.starts_with("cannot parse")), "{:?}", checks[2].state);
         assert_eq!(checks[2].button, None);
         assert_eq!(needs_fix(&checks), 1, "a broken row is not a fix the doctor can make; only start at login is left");
+    }
+
+    #[test]
+    fn the_agent_guide_check_installs_updates_or_leaves_a_stranger_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let exe = Path::new("/x/arkos");
+        let mut p = probe(&settings, exe);
+        let guide = |p: &Probe| probe_all(p).into_iter().find(|c| c.id == CheckId::AgentGuide).unwrap();
+        assert_eq!(guide(&p).title, "Agent guide for Claude Code");
+        assert_eq!(guide(&p).state, State::Good("installed in /h/.claude/skills; other Claude config folders get it when a session starts inside Arkos".into()));
+        assert_eq!(guide(&p).button, None);
+        let base = needs_fix(&probe_all(&p));
+        p.skill = SkillState::Missing;
+        assert_eq!(guide(&p).state, State::Fix("not installed in /h/.claude/skills: agents cannot find the toolkit".into()));
+        assert_eq!(guide(&p).button, Some("Install"));
+        assert_eq!(needs_fix(&probe_all(&p)), base + 1);
+        p.skill = SkillState::Outdated("x".into());
+        assert_eq!(guide(&p).state, State::Fix("older than this build (x)".into()));
+        assert_eq!(guide(&p).button, Some("Update"));
+        p.skill = SkillState::Foreign;
+        assert_eq!(guide(&p).state, State::Broken("a different skill sits at /h/.claude/skills/arkos-ide/SKILL.md".into()));
+        assert_eq!(guide(&p).button, None);
+        p.skill = SkillState::Missing;
+        p.claude_present = false;
+        assert_eq!(guide(&p).state, State::Pinned("no Claude Code config found".into()));
+        assert_eq!(guide(&p).button, None);
+        assert_eq!(needs_fix(&probe_all(&p)), base, "no Claude Code, nothing to fix");
     }
 }

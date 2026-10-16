@@ -15,6 +15,10 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 /// A hook's stdin is a small JSON object; more than this is not one.
 const STDIN_CAP: u64 = 64 * 1024;
 
+/// What the SessionStart hook prints inside Arkos. Claude Code adds a SessionStart hook's
+/// standard output to the agent's context, so the agent learns where the guide is.
+pub const CONTEXT_LINES: &str = "This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `arkos guide` first and follow it.\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     SessionStart,
@@ -109,8 +113,10 @@ pub fn send_one_with(socket: &Path, request: Request, timeout: Duration) -> std:
 
 /// `arkos notify ...` with its inputs explicit, for tests. Always 0 for `notify`: a hook
 /// that fails would show up in Claude Code as a hook error, for something that is only a tab
-/// icon. Every reason is on stderr, which Claude Code only shows for a non-zero exit.
-pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read) -> i32 {
+/// icon. Every reason is on stderr, which Claude Code only shows for a non-zero exit. A session
+/// start inside Arkos first installs or refreshes the agent guide skill in `skills` (the starting
+/// Claude Code's own folder) and prints `CONTEXT_LINES` to `out`; nothing else goes to `out`.
+pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, skills: &Path) -> i32 {
     let notify = match parse_notify(args) {
         Ok(n) => n,
         Err(usage) => {
@@ -122,6 +128,14 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
         // Started outside Arkos IDE: nothing to tell anyone.
         return 0;
     };
+    if notify == Notify::Event(HookEvent::SessionStart) {
+        // The skill reaches this Claude Code at its next start; the lines cover this one.
+        if let Err(e) = crate::guide::ensure_skill(skills) {
+            eprintln!("arkos notify: the agent guide skill was not installed: {e}");
+        }
+        let _ = out.write_all(CONTEXT_LINES.as_bytes());
+        let _ = out.flush();
+    }
     let input = match notify {
         Notify::Event(_) => {
             let mut text = String::new();
@@ -309,7 +323,14 @@ fn this_exe() -> PathBuf {
 /// `arkos notify ...` and `arkos hooks print|install`. The exit code for the process.
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
-        Some("notify") => run_with(args, &crate::paths::socket_path(), std::env::var("ARKOS_SESSION_ID").ok().as_deref(), &mut std::io::stdin()),
+        Some("notify") => run_with(
+            args,
+            &crate::paths::socket_path(),
+            std::env::var("ARKOS_SESSION_ID").ok().as_deref(),
+            &mut std::io::stdin(),
+            &mut std::io::stdout(),
+            &crate::guide::skills_dir(),
+        ),
         Some("hooks") => match args.get(1).map(String::as_str) {
             Some("print") => {
                 println!("{}", serde_json::to_string_pretty(&hooks_json(&this_exe())).unwrap());
@@ -404,50 +425,86 @@ mod tests {
     fn notify_sends_one_request_for_the_session_in_the_environment() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
-        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty());
+        let skills = dir.path().join("skills");
+        let mut out = Vec::new();
+        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &skills);
         assert_eq!(code, 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Waiting });
+        assert!(out.is_empty(), "a state hook prints nothing");
+        assert!(!skills.exists(), "only a session start installs the skill");
     }
 
     #[test]
     fn a_session_start_hook_records_the_agent_from_stdin() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
-        let mut stdin = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut stdin), 0);
+        let skills = dir.path().join("skills");
+        let start = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#;
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &skills), 0);
         let agent = AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["claude".into(), "--resume".into(), "abc".into()] };
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { session: SessionId(7), agent });
+        assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
+        let skill = skills.join("arkos-ide").join("SKILL.md");
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), crate::guide::skill_text(), "the starting Claude Code's folder gets the skill");
+        let mtime = std::fs::metadata(&skill).unwrap().modified().unwrap();
+        // A second start finds the skill current and leaves the file alone.
+        let again = tempfile::tempdir().unwrap();
+        let (socket, _rx) = fake_daemon(again.path());
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &skills), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
+        assert_eq!(std::fs::metadata(&skill).unwrap().modified().unwrap(), mtime);
+        // A skill someone else wrote under that name stays as it was, and the hook still succeeds.
+        std::fs::write(&skill, "---\nname: theirs\n---\nhi\n").unwrap();
+        let third = tempfile::tempdir().unwrap();
+        let (socket, _rx) = fake_daemon(third.path());
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &skills), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), "---\nname: theirs\n---\nhi\n");
     }
 
     #[test]
     fn a_session_end_hook_clears_the_agent_unless_the_process_was_killed() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
+        let skills = dir.path().join("skills");
+        let mut out = Vec::new();
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"other"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &skills), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"clear"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &skills), 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::ClearAgent { session: SessionId(7), id: "abc".into() });
+        assert!(out.is_empty(), "a session end prints nothing");
+        assert!(!skills.exists());
     }
 
     #[test]
     fn notify_without_a_session_id_exits_zero_and_sends_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
-        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty()), 0);
-        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty()), 0);
+        let skills = dir.path().join("skills");
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &skills), 0);
+        let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#.as_bytes();
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &skills), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
+        assert!(out.is_empty(), "outside Arkos a session start prints nothing");
+        assert!(!skills.exists(), "and installs nothing");
     }
 
     #[test]
     fn notify_without_a_daemon_or_with_bad_arguments_exits_zero_quickly() {
         let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills");
         let started = std::time::Instant::now();
-        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty()), 0);
-        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty()), 0);
+        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &skills), 0);
+        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &skills), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

@@ -4,9 +4,10 @@ A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `s
 
 ## Contrast rules
 
-The theme tests hold every built-in to two rules, and a theme of your own should meet them too.
+The theme tests hold every built-in to these rules, and `arkos theme contrast <file-or-name>` checks a theme of your own against the same pairs, one line per pair, exiting 1 while any pair is low.
 
 - Every colour drawn as text or a mark must reach 4.5:1 contrast against the background it sits on (the WCAG AA ratio for normal text).
+- The interface text (`chrome.text` on `chrome.window_bg`) must reach 7:1.
 - The terminal text (`terminal.foreground` on `terminal.background`) must reach 11:1, which is about the 12:1 the design asks for.
 
 Black is a background colour on a dark theme and a text colour on a light one, so `terminal.black` is checked against `terminal.background` only on a light theme.
@@ -109,3 +110,5 @@ A family that is not installed on the Mac is left out: that slot shows what it w
 3. Check it with `arkos theme validate <file>`. It prints `ok: <name>` when the file parses and names the problem otherwise. `arkos theme list` shows every theme and marks a broken file as invalid.
 4. Put the file in the themes folder as `<name>.toml`, or use "Add theme…" in Settings, which does the same copy and asks "Replace the existing <name>?" first when a theme of that name is installed, a built-in included.
 5. Pick it in Settings, or set `dark` or `light` under `[theme]` in `config.toml`. A file in the folder with a built-in's name replaces that built-in.
+
+A coding agent does the same from a shell with `arkos theme template`, `contrast`, `preview` and `use`; `arkos guide` prints the steps, written for an agent.

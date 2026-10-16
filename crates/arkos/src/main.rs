@@ -22,6 +22,7 @@ mod explorer;
 mod explorer_watch;
 mod find;
 mod gitstatus;
+mod guide;
 mod highlight;
 mod hook_cli;
 mod idle;
@@ -765,6 +766,7 @@ impl Root {
     fn probe_doctor(&mut self) {
         let settings = hook_cli::claude_settings_path();
         let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
+        let skills = guide::skills_dir();
         let p = doctor_panel::Probe {
             settings: &settings,
             exe: &exe,
@@ -772,6 +774,9 @@ impl Root {
             login_item_installed: launch_agent::installed(&launch_agent::agent_path()),
             accessibility: self.ax.trusted(false),
             scroll_applied: self.scroll_applied,
+            skill: guide::skill_state(&skills),
+            claude_present: skills.parent().is_some_and(|d| d.is_dir()),
+            skills: &skills,
         };
         self.doctor_states = doctor_panel::probe_all(&p);
     }
@@ -807,6 +812,7 @@ impl Root {
             }
             CheckId::StartAtLogin => self.toggle_start_at_login(cx),
             CheckId::TitleHook => self.install_hooks(cx),
+            CheckId::AgentGuide => self.install_agent_guide(cx),
             CheckId::Accessibility => cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"),
         }
     }
@@ -836,6 +842,32 @@ impl Root {
                 root.show_notice(text, cx);
                 match error {
                     Some(e) => root.mark_doctor_broken(doctor_panel::CheckId::TitleHook, e),
+                    None => root.probe_doctor(),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Installs the agent guide skill into this environment's Claude config off the UI thread and
+    /// says what happened.
+    fn install_agent_guide(&mut self, cx: &mut Context<Self>) {
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let result = cx.background_executor().spawn(async move { guide::install_skill(&guide::skills_dir()) }).await;
+            let (text, error) = match result {
+                Ok(i) => {
+                    let verb = if i.replaced { "updated" } else { "installed" };
+                    (format!("{verb} the agent guide skill at {}; Claude Code loads it at its next start", i.path.display()), None)
+                }
+                Err(e) => (format!("cannot install the agent guide: {e}"), Some(e)),
+            };
+            let _ = root.update(cx, |root, cx| {
+                root.doctor_busy = None;
+                root.show_notice(text, cx);
+                match error {
+                    Some(e) => root.mark_doctor_broken(doctor_panel::CheckId::AgentGuide, e),
                     None => root.probe_doctor(),
                 }
                 cx.notify();
@@ -2571,6 +2603,7 @@ impl Root {
             }
             StartAtLogin => self.toggle_start_at_login(cx),
             InstallHooks => self.install_hooks(cx),
+            InstallAgentGuide => self.install_agent_guide(cx),
             ToggleSidebar => {
                 self.sidebar.set_collapsed(!self.sidebar.collapsed, Instant::now());
                 // A hidden sidebar cannot hold the keys: they go back to the focused pane.
@@ -3699,6 +3732,7 @@ fn main() {
     // the files itself and asks running windows through the daemon when one is up. These come
     // before the folder argument below, so a folder named `config` opens as `arkos ./config`.
     match args.get(1).map(String::as_str) {
+        Some("guide") => std::process::exit(guide::guide_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
