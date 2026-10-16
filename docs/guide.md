@@ -305,7 +305,10 @@ Notes:
   Enter and Esc. Everywhere else those keys keep their usual bytes: Shift+Enter in a shell is
   Enter. A program killed on the alternate screen can leave the protocol on; `reset` clears it.
 - Drag across terminal text to select it (double click a word, triple click a line); Cmd+C
-  copies it and a click clears it. A program that asks for mouse reports, such as Claude Code's
+  copies it with a program's own line wraps joined (see the next item), Shift+Cmd+C copies it as
+  shown, and a click clears it. A selection keeps its place while you scroll, and dragging past
+  the pane's top or bottom edge scrolls the history, except in programs that take the mouse or
+  the whole screen, such as Claude Code's fullscreen renderer, vim or `less`. A program that asks for mouse reports, such as Claude Code's
   fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and its
   options can be clicked; a drag still selects locally and the program never sees it, though the
   first click of a double click has already reached it. On the alternate screen without mouse
@@ -314,13 +317,15 @@ Notes:
 - Claude Code wraps its own prose to the pane's width and ends each row with a real newline, so
   Cmd+C joins those rows back into one line per paragraph or list item: a row joins the next when
   the next one's first word would not have fit on it. A row that ends early, a blank line, a list
-  marker, a box-drawn frame or table, and text that never came within 12 cells of the width all
-  keep their line breaks, and a continuation's indent is dropped on the join. Shift+Cmd+C
+  marker, a box-drawn frame or table, a rule (`=====`), columns padded with spaces (`ps aux`), a
+  row cut short with `...`, and text that never came within 12 cells of the width all keep their
+  line breaks, and a continuation's indent is dropped on the join. Shift+Cmd+C
   ("copy as shown") copies the rows exactly as they are on screen, and a block selection is
   always copied as shown.
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
   or quote) is underlined, and Cmd+click opens it in your browser, as in
-  Terminal.app. A plain click does nothing to it.
+  Terminal.app. A plain click does nothing to it. A right-click (or Control+click) on a link
+  offers Open Link and Copy Link.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and
   shows the empty screen, which is also what a folder with no saved layout opens on.
 - Double-click a tab's title to rename it: Enter keeps the name, Escape drops the edit, a click
