@@ -34,8 +34,9 @@ if [ "$STATUS" != "Accepted" ]; then
   xcrun notarytool log "$ID" "$@" >&2 || true
   exit 1
 fi
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+# Only the zip's path goes to stdout: callers capture it (ZIP=$(... notarize.sh ...)).
+xcrun stapler staple "$APP" >&2
+xcrun stapler validate "$APP" >&2
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 echo "$ZIP"
