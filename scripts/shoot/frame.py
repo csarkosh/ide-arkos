@@ -8,7 +8,8 @@ another capture (the Chrome window Arkos docked) over the window at those pixels
     python3 -I scripts/shoot/frame.py <raw.png> <out.png> [--overlay chrome.png:1810,70] [--crop tabs:0,0,0.6,0.12]...
 
 `compose` lays framed stills out as the hero: the first large in front, the others fanned
-behind it, a caption under each (the scene's words), on a transparent ground:
+behind it, a caption on each (the scene's words), on a transparent ground; `compose-portrait`
+the same as a tall picture, for a place beside text:
 
     python3 -I scripts/shoot/frame.py compose <out.png> <front.png>:"The multi tasker" <back.png>:"The web developer" [<back2.png>:"The blogger"]
 
@@ -56,11 +57,11 @@ CANVAS_W = 1260 * SCALE
 OUT_W = 1800
 
 
-def captioned(still, text, align, scale):
-    """The still with its caption hung on its lower border at the left, centre or right (the
-    side it shows from behind the front one): a dark pill with light text, readable on light
-    and dark pages alike. `scale` is the still's size against the framed original, whose
-    shadow padding the pill sits inside of."""
+def captioned(still, text, align, scale, edge="bottom"):
+    """The still with its caption hung on its lower (or upper) border at the left, centre or
+    right (the side it shows from behind the front one): a dark pill with light text, readable
+    on light and dark pages alike. `scale` is the still's size against the framed original,
+    whose shadow padding the pill sits inside of."""
     font = ImageFont.truetype(CAPTION_FONT, CAPTION_SIZE)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     box = probe.textbbox((0, 0), text, font=font)
@@ -69,7 +70,7 @@ def captioned(still, text, align, scale):
     pad = round(PAD * scale)
     inset = 10 * SCALE
     px = {"left": pad + inset, "center": (still.width - pw) // 2, "right": still.width - pad - inset - pw}[align]
-    py = still.height - pad - ph // 2
+    py = still.height - pad - ph // 2 if edge == "bottom" else pad - ph // 2
     out = still.copy()
     pill = Image.new("RGBA", out.size, (0, 0, 0, 0))
     ImageDraw.Draw(pill).rounded_rectangle((px, py, px + pw, py + ph), radius=ph // 2, fill=(17, 19, 24, 240), outline=(232, 234, 240, 70), width=SCALE)
@@ -109,15 +110,53 @@ def compose(out, pieces):
     print(f"{out}: {canvas.width}x{canvas.height}")
 
 
+PORTRAIT_W = 600 * SCALE
+PORTRAIT_OUT_W = 1000
+
+
+def compose_portrait(out, pieces):
+    """The same three stills as a tall picture, for a place beside text (csarko.sh's card): the
+    first behind-still at the top, the front one over its lower half, the second behind-still
+    under the front one's lower half, tilted the other way; captions on the edges that show."""
+    W = PORTRAIT_W
+    front_w = round(W * 0.88)
+    back_w = round(W * 0.78)
+    src = Image.open(pieces[0][0]).convert("RGBA")
+    front = src.resize((front_w, round(src.height * front_w / src.width)), Image.Resampling.LANCZOS)
+    front = captioned(front, pieces[0][1], "center", front_w / src.width)
+    backs = []
+    for i, (path, caption) in enumerate(pieces[1:3]):
+        src = Image.open(path).convert("RGBA")
+        b = src.resize((back_w, round(src.height * back_w / src.width)), Image.Resampling.LANCZOS)
+        if i == 0:
+            b = captioned(b, caption, "left", back_w / src.width, edge="top").rotate(2.5, expand=True, resample=Image.Resampling.BICUBIC)
+        else:
+            b = captioned(b, caption, "right", back_w / src.width).rotate(-2.5, expand=True, resample=Image.Resampling.BICUBIC)
+        backs.append(b)
+    top = backs[0]
+    front_y = round(top.height * 0.45)
+    bottom_y = front_y + round(front.height * 0.6)
+    height = bottom_y + (backs[1].height if len(backs) > 1 else 0) + 4 * SCALE
+    canvas = Image.new("RGBA", (W, max(height, front_y + front.height + 4 * SCALE)), (0, 0, 0, 0))
+    canvas.alpha_composite(top, (0, 0))
+    if len(backs) > 1:
+        canvas.alpha_composite(backs[1], (W - backs[1].width, bottom_y))
+    canvas.alpha_composite(front, ((W - front_w) // 2, front_y))
+    canvas = canvas.crop(canvas.getbbox())
+    canvas = canvas.resize((PORTRAIT_OUT_W, round(canvas.height * PORTRAIT_OUT_W / canvas.width)), Image.Resampling.LANCZOS)
+    canvas.save(out, optimize=True)
+    print(f"{out}: {canvas.width}x{canvas.height}")
+
+
 def main(argv):
-    if argv and argv[0] == "compose":
+    if argv and argv[0] in ("compose", "compose-portrait"):
         if len(argv) < 4:
             sys.exit(__doc__)
         pieces = []
         for arg in argv[2:]:
             path, _, caption = arg.rpartition(":")
             pieces.append((Path(path), caption))
-        return compose(Path(argv[1]), pieces)
+        return (compose_portrait if argv[0] == "compose-portrait" else compose)(Path(argv[1]), pieces)
     if len(argv) < 2:
         sys.exit(__doc__)
     raw, out = Path(argv[0]), Path(argv[1])
