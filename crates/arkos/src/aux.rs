@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::SystemTime;
 
-/// What `main()` read before any window existed: what About and Settings show until the project
-/// window's Root takes over, and the config file's fingerprint, so the project window can tell a
-/// change made from the chooser.
+/// What `main()` read before any window existed: what About, Settings and Keybindings show
+/// until the project window's Root takes over, and the config file's fingerprint, so the project
+/// window can tell a change made from the chooser.
 pub struct LaunchState {
     pub config: Config,
     pub theme: Theme,
@@ -46,8 +46,8 @@ pub fn init(cx: &mut App, launch: LaunchState) {
     cx.set_global(Aux { launch: Some(launch), ..Aux::default() });
 }
 
-/// Records the project window's Root, from which About and Settings take their details from now
-/// on.
+/// Records the project window's Root, from which About, Settings and Keybindings take their
+/// details from now on.
 pub fn set_root(cx: &mut App, root: WeakEntity<Root>) {
     cx.global_mut::<Aux>().root = Some(root);
 }
@@ -300,8 +300,8 @@ pub fn close_all(cx: &mut App) {
     aux.keybindings = None;
 }
 
-/// New Window pressed in About, Settings or Keybindings: the project window's New Window when there is one;
-/// before that, the launch chooser comes forward, as its own New Window does. Deferred, as
+/// New Window pressed in About, Settings or Keybindings: the project window's New Window when
+/// there is one; before that, the launch chooser comes forward, as its own New Window does. Deferred, as
 /// `open_settings` is.
 pub fn forward_new_window(cx: &mut App) {
     let root = root(cx);

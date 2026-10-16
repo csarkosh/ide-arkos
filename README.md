@@ -95,6 +95,7 @@ Things only a person at the screen can check, in order of value:
   `git status` runs again (watch `ps`); + creates `../proj-feat` on a new branch; Remove on a
   dirty one is refused with git's words, force removes it
 - Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
+- a worktree with 40 changes lists them readably, one per row, and the list scrolls
 - edit a tracked file in another app while the viewer shows it: the gutter bars appear within a
   second; Shift+Cmd+D shows the deleted lines; `git commit` clears the bars within ten seconds; a
   file in a worktree diffs against that worktree's HEAD

@@ -67,7 +67,8 @@ pub fn quits_on_close(project_opened: bool, chooser_plan: bool, windows_left: us
     }
 }
 
-/// The windows that count for `quits_on_close`: `left` without the About and Settings windows
+/// The windows that count for `quits_on_close`: `left` without the About, Settings and
+/// Keybindings windows
 /// (`aux_open` of them), which never keep the app alive on their own.
 pub fn windows_without_aux(left: usize, aux_open: usize) -> usize {
     left.saturating_sub(aux_open)

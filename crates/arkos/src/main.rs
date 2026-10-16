@@ -442,7 +442,8 @@ fn should_activate(relaunch_env: Option<&str>) -> bool {
 #[derive(Debug, PartialEq)]
 enum AfterClose {
     Quit,
-    /// Close the "New Window" chooser and the About and Settings windows; the quit follows.
+    /// Close the "New Window" chooser and the About, Settings and Keybindings windows; the quit
+    /// follows.
     CloseAux,
     Stay,
 }

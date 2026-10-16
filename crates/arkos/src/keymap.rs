@@ -158,8 +158,8 @@ const fn row(section: Section, name: &'static str, keys: &'static str) -> Action
     ActionSpec { name, keys, context: None, section }
 }
 
-/// The spec's table (section 4) plus about, settings, keybindings, documentation, open config, the command palette, find, the
-/// update commands and quit. The order is the registration order. "update now", "check for
+/// The spec's table (section 4) plus about, settings, keybindings, documentation, open config,
+/// the command palette, find, the update commands and quit. The order is the registration order. "update now", "check for
 /// updates" and "retry update" have no default keys: they are palette commands unless the config
 /// binds them.
 pub const ACTIONS: &[ActionSpec] = &[
@@ -453,7 +453,6 @@ pub fn label_for(name: &str) -> String {
 /// keys in the Mac spelling. Each is one `viewer::key_action` maps, except Cmd+click, which the
 /// rendered view's links answer (`md_view`).
 pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
-    ("Save", "Cmd+S"),
     ("Leave the block", "Escape"),
     ("Continue a list", "Enter"),
     ("Undo", "Cmd+Z"),
@@ -860,7 +859,7 @@ mod tests {
         let viewer: Vec<&str> = md[..3].iter().map(|r| r.label.as_str()).collect();
         assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file"], "the viewer's actions come first");
         assert_eq!(md.len(), 3 + MARKDOWN_KEYS.len());
-        assert_eq!(md[3], KeyRow { label: "Save".into(), keys: Some("Cmd+S".into()) });
+        assert_eq!(md[3], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
         assert!(md[3..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
         let mut o = BTreeMap::new();
         o.insert("find".to_string(), "cmd-shift-f".to_string());
