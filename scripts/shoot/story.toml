@@ -47,13 +47,15 @@ ratio = 0.6
 first = { tabs = ["rate limit", "durations"] }
 second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second = { tabs = ["shell"] } }
 
-# `wait` names the Claude Code state each tab must show (working, waiting, idle); `chrome`
-# opens the browser pane's page while a session works, which is when Arkos docks it.
+# `wait` names the Claude Code state each tab must show (working, waiting, idle), `after_secs`
+# how long after the prompts the shot may be taken at the earliest (so the work shows), and
+# `chrome` opens the browser pane's page while a session works, which is when Arkos docks it.
 [[shot]]
 name = "hero-dark"
 theme = "dark"
 wait = { "rate limit" = "working", durations = "waiting" }
-timeout_secs = 300
+after_secs = 150
+timeout_secs = 360
 chrome = true
 
 [[shot.crop]]

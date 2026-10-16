@@ -89,6 +89,33 @@ fn say(msg: &str) {
     eprintln!("arkos-shoot: {msg}");
 }
 
+/// Set by SIGINT or SIGTERM: the run stops at its next step and ends everything it started
+/// (the window, the daemon, the sessions, the site, the Chrome window), as it would at the end.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn install_signal_handlers() {
+    unsafe {
+        libc::signal(libc::SIGINT, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
+}
+
+/// A pause that ends early, with an error, when a signal asked the run to stop.
+fn pause(d: Duration) -> Result<()> {
+    let until = Instant::now() + d;
+    while Instant::now() < until {
+        if STOPPING.load(std::sync::atomic::Ordering::SeqCst) {
+            bail!("stopped by a signal");
+        }
+        std::thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
+    }
+    Ok(())
+}
+
 /// What the run started and must end, whatever happens on the way.
 #[derive(Default)]
 struct Running {
@@ -98,6 +125,8 @@ struct Running {
     client: Option<Daemon>,
     sessions: Vec<SessionId>,
     chrome_url: Option<String>,
+    /// The browser panes' pages, closed in Chrome at the end whatever happened.
+    pages: Vec<String>,
     /// Chrome's windows before the shoot opened its page: the docked one is the new one.
     chrome_before: Option<Vec<u32>>,
 }
@@ -117,6 +146,10 @@ fn run(opts: Opts) -> Result<()> {
     std::fs::create_dir_all(&opts.out)?;
     let out = opts.out.canonicalize()?;
     clean(&dirs)?;
+    // A previous run that was killed may have left its page open in Chrome.
+    for url in story.panes.iter().filter_map(|p| p.browser.as_deref()) {
+        close_chrome_windows(url);
+    }
     std::fs::create_dir_all(&dirs.state)?;
     std::fs::create_dir_all(dirs.config_home.join("arkos"))?;
 
@@ -124,7 +157,8 @@ fn run(opts: Opts) -> Result<()> {
         Some(a) => a.canonicalize().with_context(|| format!("app bundle {}", a.display()))?,
         None => make_bundle(&repo, &bin, &dirs.cache.join("app"))?,
     };
-    let mut running = Running::default();
+    install_signal_handlers();
+    let mut running = Running { pages: story.panes.iter().filter_map(|p| p.browser.clone()).collect(), ..Running::default() };
     let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, &mut running);
     stop(&mut running, &dirs);
     result
@@ -162,7 +196,18 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 4. The shoot's own daemon.
     let log = std::fs::File::create(dirs.state.join("arkosd.log"))?;
-    let daemon = Command::new(bin.join("arkosd"))
+    let mut daemon = Command::new(bin.join("arkosd"));
+    // The daemon's environment is every shell's, and so every demo Claude Code's: nothing of
+    // the session this runs from may reach them (a CLAUDE_CODE_* marker makes Claude Code
+    // treat the demo as a child session; ARKOS_SESSION_ID would aim its hooks at the
+    // wrong tab).
+    for (key, _) in std::env::vars_os() {
+        let k = key.to_string_lossy();
+        if k.starts_with("CLAUDE") || k.starts_with("ARKOS_") {
+            daemon.env_remove(&key);
+        }
+    }
+    let daemon = daemon
         .arg("--socket")
         .arg(dirs.socket())
         .args(["--check-every-secs", "0"])
@@ -211,7 +256,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     // The window notes where it opened; that frame is the one to capture.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        std::thread::sleep(Duration::from_millis(500));
+        pause(Duration::from_millis(500))?;
         if let Some(f) = saved_frame(&ws_file) {
             frame = f;
             break;
@@ -224,7 +269,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     if !activate(window_pid) && app.is_none() {
         say("could not bring the window to the front; it may be behind the app in use");
     }
-    std::thread::sleep(Duration::from_secs(2));
+    pause(Duration::from_secs(2))?;
     let window_id = arkos_window_id(repo, window_pid)?;
     let progress = Progress { dir: out.join("progress"), window_id, started: Instant::now(), last: Some(std::cell::Cell::new(Instant::now() - Duration::from_secs(60))) };
     std::fs::create_dir_all(&progress.dir)?;
@@ -245,17 +290,17 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         client.input(SessionId(sessions[&pane.name]), "claude\r")?;
     }
     if !claude.is_empty() {
-        std::thread::sleep(Duration::from_secs(6));
+        pause(Duration::from_secs(6))?;
         for pane in &claude {
             client.input(SessionId(sessions[&pane.name]), "\x1b[B")?;
-            std::thread::sleep(Duration::from_millis(300));
+            pause(Duration::from_millis(300))?;
             client.input(SessionId(sessions[&pane.name]), "\r")?;
         }
-        std::thread::sleep(Duration::from_secs(4));
+        pause(Duration::from_secs(4))?;
         for pane in &claude {
             let id = SessionId(sessions[&pane.name]);
             client.input(id, pane.claude.as_deref().expect("filtered"))?;
-            std::thread::sleep(Duration::from_millis(400));
+            pause(Duration::from_millis(400))?;
             client.input(id, "\r")?;
             say(&format!("{}: prompt sent", pane.name));
         }
@@ -268,7 +313,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         if shot.theme != theme {
             write_config(&dirs.config_file(), story, &shot.theme)?;
             theme = shot.theme.clone();
-            std::thread::sleep(Duration::from_millis(1500));
+            pause(Duration::from_millis(1500))?;
         }
         let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress)?;
         if !unmet.is_empty() {
@@ -327,7 +372,8 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
         let unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
         let chrome_pending = shot.chrome && chrome_url.is_none();
         let settling = settle_until.is_some_and(|t| Instant::now() < t);
-        if unmet.is_empty() && !chrome_pending && !settling {
+        let too_early = progress.started.elapsed() < Duration::from_secs(shot.after_secs);
+        if unmet.is_empty() && !chrome_pending && !settling && !too_early {
             return Ok(Vec::new());
         }
         if Instant::now() > deadline {
@@ -337,7 +383,7 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
             }
             return Ok(all);
         }
-        std::thread::sleep(Duration::from_millis(500));
+        pause(Duration::from_millis(500))?;
     }
 }
 
@@ -711,12 +757,9 @@ fn stop(running: &mut Running, dirs: &Dirs) {
         let _ = s.kill();
         let _ = s.wait();
     }
-    if let Some(url) = running.chrome_url.take() {
-        let script = format!("tell application \"Google Chrome\" to close (every window whose URL of active tab starts with \"{url}\")");
-        let ok = Command::new("osascript").args(["-e", &script]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-        if !ok {
-            say(&format!("could not close Chrome's {url} window; close it yourself"));
-        }
+    // Every page the run may have opened, whether it got to the capture or not.
+    for url in running.pages.drain(..) {
+        close_chrome_windows(&url);
     }
     for f in ["daemon.pid", "window.pid", "site.pid"] {
         let _ = std::fs::remove_file(dirs.state.join(f));
@@ -777,6 +820,17 @@ fn start_window(bin: &Path, app: Option<&Path>, demo: &Path, dirs: &Dirs) -> Res
             bail!("the window did not start from {}", app.display());
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Closes Chrome's windows on `url` (the page the shoot opened, docked or not): an Apple
+/// event to Chrome, which macOS may refuse until the Automation permission is granted; then
+/// the windows stay and the run says so.
+fn close_chrome_windows(url: &str) {
+    let script = format!("tell application \"Google Chrome\" to close (every window whose URL of active tab starts with \"{url}\")");
+    let ok = Command::new("osascript").args(["-e", &script]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        say(&format!("could not close Chrome's {url} windows (Automation permission for Chrome?); close them yourself"));
     }
 }
 

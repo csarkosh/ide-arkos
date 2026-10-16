@@ -113,6 +113,10 @@ pub struct Shot {
     pub wait: BTreeMap<String, String>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Not before this many seconds after the prompts went in: a session is "working" within
+    /// seconds, and the picture wants its work on screen.
+    #[serde(default)]
+    pub after_secs: u64,
     /// Open the browser pane's page in Chrome while a session works, so Arkos docks it.
     #[serde(default)]
     pub chrome: bool,
