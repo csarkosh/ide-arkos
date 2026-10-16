@@ -749,7 +749,7 @@ fn claude_settings(arkos_exe: &Path) -> serde_json::Value {
         "permissions": {
             // Every shell command: a pattern list still stops at one with a variable in it, and
             // a session stopped at a permission question is not working. The demo is a copy.
-            "allow": ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "Bash"],
+            "allow": ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"],
             "defaultMode": "acceptEdits"
         },
         "hooks": {

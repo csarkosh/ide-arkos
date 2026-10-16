@@ -40,12 +40,15 @@ ratio = 0.5
 first = { tabs = ["lantern"] }
 second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox"] }, second = { tabs = ["lisbon"] } }
 
+# The moment: the sessions have fanned out their subagents and the first files are in. A
+# session waiting on its own background agents reports "waiting" (its prompt is idle), so the
+# states asked for are the inbox's alone; the work shows through the changed files.
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { lantern = "working", inbox = "working" }
-changed = { inbox = 2, lisbon = 1 }
-after_secs = 45
+wait = { inbox = "working" }
+changed = { inbox = 2, lantern = 3 }
+after_secs = 60
 timeout_secs = 420
 
 [[shot.crop]]
