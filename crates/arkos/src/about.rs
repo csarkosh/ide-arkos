@@ -196,6 +196,12 @@ impl AboutWindow {
         self.theme = theme;
         cx.notify();
     }
+
+    /// Redraws the window in the project window's new theme.
+    pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        cx.notify();
+    }
 }
 
 /// Opens the About window centred on the main display and gives it the keyboard. `None` when

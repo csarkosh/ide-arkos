@@ -154,7 +154,7 @@ fn local_clock(at: SystemTime) -> (i32, i32) {
 /// The notice text for the update-ready field the bar used to show: its "update ready: "
 /// prefix capitalised; a text without the prefix is kept as it is.
 pub fn update_ready_text(bar_text: &str) -> String {
-    match bar_text.strip_prefix("update ready: ") {
+    match crate::update::ready_version(bar_text) {
         Some(v) => format!("Update ready: {v}"),
         None => bar_text.to_string(),
     }

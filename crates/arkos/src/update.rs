@@ -67,15 +67,24 @@ pub fn unreachable_text(secs: Option<u64>) -> Option<String> {
     Some(format!("updates unreachable for {days} day{}", if days == 1 { "" } else { "s" }))
 }
 
+/// What every update-ready badge text starts with.
+const READY_PREFIX: &str = "update ready: ";
+
 /// "update ready: 0.2.0 (def5678)": the installed string without the binary's name.
 pub fn status_text(installed: &str) -> String {
     let version = installed.trim().split_once(' ').map(|(_, v)| v).unwrap_or(installed.trim());
-    format!("update ready: {version}")
+    format!("{READY_PREFIX}{version}")
 }
 
 /// "update ready: 0.2.1": the daemon's staged release, by its version.
 pub fn status_text_for(s: &StagedUpdate) -> String {
-    format!("update ready: {}", s.version)
+    format!("{READY_PREFIX}{}", s.version)
+}
+
+/// The version a badge text names ("0.2.1" from "update ready: 0.2.1"); `None` for a text that
+/// is not a badge.
+pub fn ready_version(badge: &str) -> Option<&str> {
+    badge.strip_prefix(READY_PREFIX)
 }
 
 /// Checks now and every `CHECK_EVERY`, off the UI thread, and records the result on the root
@@ -120,6 +129,13 @@ mod tests {
         assert_eq!(status_text("garbage"), "update ready: garbage");
         assert!(!other_build("arkosd 0.1.0 (abc1234)", "arkos 0.1.0 (abc1234)"), "the daemon and the window of one build");
         assert!(other_build("arkosd 0.2.0 (def5678)", "arkos 0.1.0 (abc1234)"));
+    }
+
+    #[test]
+    fn the_badge_text_maps_back_to_the_version_it_names() {
+        assert_eq!(ready_version(&status_text("arkos 0.2.0 (def5678)")), Some("0.2.0 (def5678)"));
+        assert_eq!(ready_version(&status_text_for(&StagedUpdate { version: "0.2.1".into(), git: "abc".into() })), Some("0.2.1"));
+        assert_eq!(ready_version("something else"), None);
     }
 
     #[test]

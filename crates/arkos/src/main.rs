@@ -1019,6 +1019,8 @@ impl Root {
             self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
         }
         self.theme = Arc::new(theme);
+        // About and Settings follow the theme too.
+        aux::push_theme(cx, &self.theme);
         // Every open viewer re-highlights in the new colours.
         self.reload_all_viewers(cx);
         for t in self.sessions.terminals.values() {
@@ -1077,9 +1079,11 @@ impl Root {
         cx.notify();
     }
 
-    /// What the Settings window shows from this window's state.
+    /// What the Settings window shows from this window's state: the badge's version, without its
+    /// "update ready: " prefix.
     pub fn settings_shown(&self) -> settings::Shown {
-        settings::Shown { config: self.config.clone(), error: self.config_error.clone(), update_ready: self.update_ready.clone() }
+        let update_ready = self.update_ready.as_deref().map(|t| update::ready_version(t).unwrap_or(t).to_string());
+        settings::Shown { config: self.config.clone(), error: self.config_error.clone(), update_ready }
     }
 
     /// Applies every live setting. The `[daemon]` section only matters when the window starts

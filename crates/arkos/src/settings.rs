@@ -3,7 +3,7 @@
 //! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
 //! was last handed (`set_shown`), so an edit made in an editor shows here too.
 use crate::chrome::UI_FONT;
-use crate::config::{AppearanceMode, Config, FontConfig, StartAtLogin};
+use crate::config::{self, AppearanceMode, Config, FontConfig, StartAtLogin};
 use crate::theme::{self, Theme};
 use crate::{aux, keymap, paths};
 use gpui::{
@@ -81,14 +81,12 @@ pub struct Shown {
 }
 
 /// The Text section's presets: every name sorted, the chosen one, and its size and line height.
-/// A chosen name that is not among the presets reads as the first preset.
+/// A chosen name that is not among the presets resolves as the project window resolves it
+/// (`config::resolve_preset`), so the steppers edit the preset the terminals show.
 pub fn preset_rows(cfg: &FontConfig) -> (Vec<String>, String, f32, f32) {
     let names: Vec<String> = cfg.presets.keys().cloned().collect();
-    let chosen = cfg.presets.get_key_value(&cfg.preset).or_else(|| cfg.presets.iter().next());
-    match chosen {
-        Some((name, p)) => (names, name.clone(), p.size, p.line_height),
-        None => (names, cfg.preset.clone(), 16.0, 1.5),
-    }
+    let (chosen, p) = config::resolve_preset(None, &cfg.preset, &cfg.presets);
+    (names, chosen, p.size, p.line_height)
 }
 
 /// The fixed-pitch families by name alone, sorted and without repeats: the fallback list, shown
@@ -111,10 +109,37 @@ pub fn round_tenth(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
+/// `v` rounded to four decimals: enough to undo an f32's noise (1.5499999523 back to 1.55)
+/// without changing a value written by hand.
+fn round_fine(v: f64) -> f64 {
+    (v * 10_000.0).round() / 10_000.0
+}
+
 /// One stepper press: `value` moved by `delta`, kept within `range`, rounded to a tenth. A value
 /// outside the range is clamped by its first step.
 fn step(value: f64, delta: f64, range: (f64, f64)) -> f64 {
-    round_tenth((value + delta).clamp(range.0, range.1))
+    round_tenth((round_fine(value) + delta).clamp(range.0, range.1))
+}
+
+/// A stepper press on a preset: the new size and line height, written together. The one stepped
+/// moves by `delta`; the other is written back as it is.
+fn preset_step(size: f64, line_height: f64, stepping_size: bool, delta: f64) -> (f64, f64) {
+    if stepping_size {
+        (step(size, delta, SIZE_RANGE), round_fine(line_height))
+    } else {
+        (round_fine(size), step(line_height, delta, LINE_RANGE))
+    }
+}
+
+/// The Updates section's line for a ready version.
+fn ready_line(version: &str) -> String {
+    format!("{version} is ready")
+}
+
+/// The row a configured name gets when it is not among `listed`: shown first, marked current,
+/// never clickable.
+fn not_installed(current: &str, listed: &[String]) -> Option<String> {
+    (!listed.iter().any(|n| n == current)).then(|| format!("{current} (not installed)"))
 }
 
 /// Which `[theme]` key an imported theme is selected under: the mode's, or with the mode System,
@@ -233,6 +258,12 @@ fn edit(keys: &[&str], value: impl Into<toml_edit::Value>) -> Edit {
 }
 
 impl SettingsWindow {
+    /// Redraws the window in the project window's new theme.
+    pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        cx.notify();
+    }
+
     /// Shows a newly loaded config (or its error) and the themes folder as it is now.
     pub fn set_shown(&mut self, shown: Shown, cx: &mut Context<Self>) {
         self.shown = shown;
@@ -353,9 +384,9 @@ fn heading(text: &'static str, c: Colors) -> gpui::Div {
     div().pt(px(6.0)).text_color(c.dim).text_size(px(12.0)).child(text)
 }
 
-/// A number as the steppers show it: "16", "1.5".
+/// A number as the steppers show it, as it is in the file: "16", "1.55".
 fn number(v: f64) -> String {
-    round_tenth(v).to_string()
+    round_fine(v).to_string()
 }
 
 impl SettingsWindow {
@@ -375,6 +406,10 @@ impl SettingsWindow {
         for (key, title, list_id, current) in [("dark", "Dark theme", "theme-dark", &cfg.theme.dark), ("light", "Light theme", "theme-light", &cfg.theme.light)] {
             out.push(heading(title, c).into_any_element());
             let mut list = div().flex().flex_col();
+            let names: Vec<String> = self.themes.iter().map(|(n, _)| n.clone()).collect();
+            if let Some(missing) = not_installed(current, &names) {
+                list = list.child(list_row((list_id, usize::MAX), missing, true, enabled, c));
+            }
             for (ix, (name, source)) in self.themes.iter().enumerate() {
                 let id = (list_id, ix);
                 let row = match source {
@@ -430,8 +465,8 @@ impl SettingsWindow {
         let font = &self.shown.config.font;
         let mut out = vec![heading("Font family", c).into_any_element()];
         let mut families = div().flex().flex_col();
-        if !self.fonts.contains(&font.family) {
-            families = families.child(list_row("font-missing", format!("{} (not installed)", font.family), true, enabled, c));
+        if let Some(missing) = not_installed(&font.family, &self.fonts) {
+            families = families.child(list_row("font-missing", missing, true, enabled, c));
         }
         for (ix, name) in self.fonts.iter().enumerate() {
             let current = *name == font.family;
@@ -457,16 +492,15 @@ impl SettingsWindow {
         out.push(presets.into_any_element());
         // Both steppers write the preset whole, since a preset needs its size and line height.
         let (size, line_height) = (f64::from(size), f64::from(line_height));
-        let steppers = [("Size", "size-step", size, SIZE_STEP, SIZE_RANGE, true), ("Line height", "line-step", line_height, LINE_STEP, LINE_RANGE, false)];
-        for (title, id, value, increment, range, is_size) in steppers {
+        let steppers = [("Size", "size-step", size, SIZE_STEP, true), ("Line height", "line-step", line_height, LINE_STEP, false)];
+        for (title, id, value, increment, is_size) in steppers {
             out.push(heading(title, c).into_any_element());
             let press = |ix: usize, sign: &'static str, delta: f64| {
                 let mut p = pill((id, ix), sign, false, enabled, c);
                 if enabled {
                     let name = chosen.clone();
                     p = p.on_click(cx.listener(move |w, _, _, cx| {
-                        let next = step(value, delta, range);
-                        let (s, l) = if is_size { (next, round_tenth(line_height)) } else { (round_tenth(size), next) };
+                        let (s, l) = preset_step(size, line_height, is_size, delta);
                         w.change(vec![edit(&["font", "presets", &name, "size"], s), edit(&["font", "presets", &name, "line_height"], l)], cx);
                     }));
                 }
@@ -521,7 +555,7 @@ impl SettingsWindow {
                     cx.defer(move |cx| on_update(cx));
                 });
             }
-            out.push(div().pt(px(8.0)).flex().items_center().gap(px(8.0)).child(format!("{version} is ready")).child(now).into_any_element());
+            out.push(div().pt(px(8.0)).flex().items_center().gap(px(8.0)).child(ready_line(version)).child(now).into_any_element());
         }
         out
     }
@@ -627,13 +661,29 @@ mod tests {
         assert_eq!(step(f64::from(1.6f32), 0.1, LINE_RANGE), 1.7, "f32 noise does not reach the file");
         assert_eq!(step(2.0, 0.1, LINE_RANGE), 2.0);
         assert_eq!(step(1.0, 0.1, LINE_RANGE), 1.2);
+        // The value not stepped is written back as it is, only its f32 noise undone.
+        assert_eq!(preset_step(16.0, f64::from(1.55f32), true, SIZE_STEP), (17.0, 1.55));
+        assert_eq!(preset_step(f64::from(16.5f32), f64::from(1.55f32), false, LINE_STEP), (16.5, 1.7));
+        assert_eq!(preset_step(40.0, 1.5, true, -SIZE_STEP), (32.0, 1.5));
+        assert_eq!(number(f64::from(1.55f32)), "1.55", "the steppers show a value as it is");
+        assert_eq!(number(16.0), "16");
     }
 
     #[test]
-    fn a_missing_chosen_preset_reads_as_the_first_one() {
+    fn the_updates_line_names_the_version_and_a_missing_choice_is_listed_first() {
+        assert_eq!(ready_line("0.2.0 (def5678)"), "0.2.0 (def5678) is ready");
+        let listed = ["navy".to_string(), "navy-light".to_string()];
+        assert_eq!(not_installed("nvy", &listed), Some("nvy (not installed)".to_string()));
+        assert_eq!(not_installed("navy", &listed), None);
+    }
+
+    #[test]
+    fn a_missing_chosen_preset_reads_as_the_root_resolves_it() {
         let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
         cfg.font.preset = "gone".into();
+        cfg.font.presets.insert("aaa".into(), crate::config::TextPreset { size: 12.0, line_height: 1.2 });
         let (_, chosen, size, lh) = preset_rows(&cfg.font);
+        // Comfortable, as `config::resolve_preset` picks it, not the first name in order.
         assert_eq!((chosen.as_str(), size, lh), ("comfortable", 16.0, 1.5));
     }
 

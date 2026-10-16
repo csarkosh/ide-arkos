@@ -128,6 +128,20 @@ pub fn push_settings(cx: &mut App, shown: Shown) {
     let _ = handle.update(cx, |w, _window, cx| w.set_shown(shown, cx));
 }
 
+/// Redraws the open About and Settings windows in `theme`, the project window's new one.
+pub fn push_theme(cx: &mut App, theme: &Theme) {
+    let Some(aux) = cx.try_global::<Aux>() else { return };
+    let (about, settings) = (aux.about, aux.settings);
+    if let Some(h) = about {
+        let theme = theme.clone();
+        let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
+    }
+    if let Some(h) = settings {
+        let theme = theme.clone();
+        let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
+    }
+}
+
 /// The Settings window's one write. With a project window, the Root reloads the config, which
 /// applies the change and shows it in the window. Before that, the write is the whole change: the
 /// file is read back so the window shows it, and the project window reads it when it opens. A
