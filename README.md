@@ -1,17 +1,36 @@
-# Arkos IDE
+<h1 align="center">Arkos IDE</h1>
 
-A terminal layout manager for running many Claude Code sessions side by side: a grid of
-terminal panes with tabs, a docked Chrome pane, a file tree and git worktree explorer, in a
-window that stays light on memory, scrolls smoothly, and keeps every session alive in a
-separate daemon so a frozen UI never loses work.
+<p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
   <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with a docked browser and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-light.png" width="900">
 </picture>
 
-Written in Rust with GPUI. The design is in
-[docs/superpowers/specs/2026-10-13-arkos-design.md](docs/superpowers/specs/2026-10-13-arkos-design.md).
+<p align="center">
+<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a docked Chrome pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b>
+</p>
+
+Arkos is a terminal layout manager built for Claude Code: a grid of terminal panes with tabs
+that say which session is working and which is waiting on you, a Chrome window docked into a
+pane beside the code, a file tree and git worktree explorer, and a markdown editor for the
+documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
+update or a restart never loses work: the window comes back and every tab is where you left
+it, with Claude Code resumed. Written in Rust with GPUI, it stays light on memory and scrolls
+smoothly with dozens of sessions open.
+
+Built for Apple silicon, macOS 14 or later.
+
+## Install
+
+```sh
+brew install --cask csarkosh/tap/arkos-ide
+xattr -dr com.apple.quarantine "/Applications/Arkos IDE.app"
+```
+
+The second line is needed until the first notarized release; from then on the app updates
+itself (see Updating). Run "Install Claude Code hooks" from the command palette once, and the
+tabs follow what each session is doing.
 
 ## Who it's for
 
