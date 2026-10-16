@@ -80,7 +80,7 @@ pub type Connected = (Client, UnboundedReceiver<ServerMessage>);
 /// never waits on it: the chooser opens meanwhile, or the project window once it is done.
 pub fn connect_in_background(daemon_args: Vec<String>, cx: &mut App) -> Task<Result<Connected, String>> {
     cx.background_executor()
-        .spawn(async move { Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args).map_err(|e| format!("{e:#}")) })
+        .spawn(async move { Client::connect_or_start(&paths::socket_path(), &paths::daemon_exe(), &daemon_args, None).map_err(|e| format!("{e:#}")) })
 }
 
 /// Reads the version the last launch recorded in `file`, records `current`, and says whether

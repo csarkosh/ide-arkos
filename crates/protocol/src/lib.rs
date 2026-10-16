@@ -16,7 +16,9 @@ use std::time::Duration;
 /// status, check and apply requests and the staged event. Version 5 adds the detailed status
 /// (the check's state) and the grace detach. Version 6 adds the customize relay: a tool client's
 /// `Customize`, the windows' `Event::Customize` and `CustomizeDone`, and the `Customized` answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 adds telemetry: the window's `Session` after its Hello and the `TelemetryStatus`
+/// request and answer.
+pub const PROTOCOL_VERSION: u32 = 7;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -29,6 +31,9 @@ pub const DETACH_FOR_GRACE_FROM: u32 = 5;
 /// The first protocol whose windows answer `Event::Customize`. An older project window is not
 /// asked and is listed in `Response::Customized::too_old`.
 pub const CUSTOMIZE_FROM: u32 = 6;
+/// The first protocol whose windows send `Session` after their Hello. An older window sends
+/// none, and the daemon seals nothing for it.
+pub const TELEMETRY_FROM: u32 = 7;
 /// How long the daemon waits for the windows' answers to a `Customize` before it replies with
 /// the silent ones as `missing`.
 pub const CUSTOMIZE_WAIT: Duration = Duration::from_secs(2);
@@ -187,6 +192,13 @@ pub enum Request {
     /// A window's answer to `Event::Customize { id, .. }`. Answered `Ok` whether or not the id is
     /// still waiting: a late answer is never an error.
     CustomizeDone { id: u64, outcome: CustomizeOutcome },
+    /// Sent by a protocol 7 window right after every Hello when it keeps a journal: the id of
+    /// its usage session, which the daemon seals when the window goes. A later one replaces it
+    /// (the journal restarts under a fresh id when usage is turned on). Answered `Ok`.
+    Session { sid: String },
+    /// The telemetry mode and the queue as the daemon sees them, for `arkos telemetry status`
+    /// and the doctor. Answered `TelemetryStatus`, whatever protocol the client said.
+    TelemetryStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +237,28 @@ pub enum Response {
     /// that were asked and did not answer in time, and the pids of project windows on a protocol
     /// below `CUSTOMIZE_FROM`, which were not asked.
     Customized { outcomes: Vec<CustomizeOutcome>, missing: Vec<u32>, too_old: Vec<u32> },
+    /// The answer to `TelemetryStatus`.
+    TelemetryStatus {
+        /// The usage setting in effect: "off", "local" or "on".
+        usage: String,
+        /// The crash setting in effect: "never", "ask" or "always".
+        crashes: String,
+        /// Whether the daemon would upload what is queued.
+        uploads: bool,
+        /// Why the mode is not what the config says (an environment rule, a config error, a
+        /// source build), None when it is.
+        reason: Option<String>,
+        /// The reports waiting in the queue.
+        queued: u32,
+        /// The journals not sealed yet: sessions running, or left by a window that is gone.
+        journals: u32,
+        /// The UTC day number of the last first-party update check; None before the first.
+        last_check_day: Option<i64>,
+        /// The reports the collector accepted, ever.
+        sent: u64,
+        /// The reports the collector refused, ever.
+        rejected: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,7 +290,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 6);
+        assert_eq!(PROTOCOL_VERSION, 7);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -306,7 +340,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
         let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
-        assert_eq!(PROTOCOL_VERSION, 6);
+        assert_eq!(PROTOCOL_VERSION, 7);
         assert_eq!(CUSTOMIZE_FROM, 6);
         assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
         assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
@@ -316,5 +350,50 @@ mod tests {
         // The codec is postcard: the same messages survive it too.
         let bytes = postcard::to_allocvec(&resp).unwrap();
         assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), resp);
+    }
+
+    #[test]
+    fn telemetry_messages_round_trip_and_sit_at_the_end_of_their_enums() {
+        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(TELEMETRY_FROM, 7);
+        let session = Request::Session { sid: "0123456789abcdef0123456789abcdef".into() };
+        let status = Response::TelemetryStatus {
+            usage: "on".into(),
+            crashes: "never".into(),
+            uploads: false,
+            reason: Some("DO_NOT_TRACK is set".into()),
+            queued: 2,
+            journals: 1,
+            last_check_day: Some(20_377),
+            sent: 9,
+            rejected: 1,
+        };
+        assert_eq!(first_byte(&session), 23);
+        assert_eq!(first_byte(&Request::TelemetryStatus), 24);
+        assert_eq!(first_byte(&status), 10);
+        for req in [session, Request::TelemetryStatus] {
+            let bytes = postcard::to_allocvec(&req).unwrap();
+            assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), req);
+        }
+        let bytes = postcard::to_allocvec(&status).unwrap();
+        assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), status);
+    }
+
+    /// The bytes a protocol 6 window writes for its Hello, spelled out rather than encoded by
+    /// today's types: variant 0, the version, the pid as a varint (4242), `None`, then an empty
+    /// folder. Protocol 7 leaves `Hello` alone, so they decode and encode exactly as before.
+    #[test]
+    fn a_protocol_6_hello_still_decodes() {
+        let wire = [0u8, 6, 0x92, 0x21, 0, 0];
+        let hello = Request::Hello { protocol_version: 6, ui_pid: 4242, ui_exe: None, ui_cwd: PathBuf::new() };
+        assert_eq!(postcard::from_bytes::<Request>(&wire).unwrap(), hello);
+        assert_eq!(postcard::to_allocvec(&hello).unwrap(), wire);
+        let mut wire = vec![0u8, 6, 0x92, 0x21, 1, 8];
+        wire.extend_from_slice(b"/a/arkos");
+        wire.push(2);
+        wire.extend_from_slice(b"/p");
+        let hello = Request::Hello { protocol_version: 6, ui_pid: 4242, ui_exe: Some("/a/arkos".into()), ui_cwd: "/p".into() };
+        assert_eq!(postcard::from_bytes::<Request>(&wire).unwrap(), hello);
+        assert_eq!(postcard::to_allocvec(&hello).unwrap(), wire);
     }
 }

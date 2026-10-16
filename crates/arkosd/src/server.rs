@@ -47,6 +47,9 @@ pub struct ClientRecord {
     pub protocol: u32,
     /// The window and directory `RelaunchClient` asked for, launched when this client goes.
     pub relaunch: Option<(PathBuf, PathBuf)>,
+    /// The usage session id its `Session` named, whose journal is sealed when it goes; None for
+    /// a client that sent none (a protocol 6 window, a tool, a window keeping no journal).
+    pub sid: Option<String>,
 }
 
 /// A tool client's `Customize` waiting for the windows' answers (agent theme spec, section 5).
@@ -309,7 +312,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
         let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
-            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None },
+            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None, sid: None },
         );
         (id, sink)
     };
@@ -595,6 +598,26 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             Response::Ok
         }
+        // Kept on the record alone: the record leaves the table when the window goes, and the
+        // journal is sealed from what it held. A later one replaces it.
+        Request::Session { sid } => {
+            if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                rec.sid = Some(sid);
+            }
+            Response::Ok
+        }
+        // Until the daemon keeps telemetry state: the config's defaults and an empty queue.
+        Request::TelemetryStatus => Response::TelemetryStatus {
+            usage: "local".into(),
+            crashes: "ask".into(),
+            uploads: false,
+            reason: None,
+            queued: 0,
+            journals: 0,
+            last_check_day: None,
+            sent: 0,
+            rejected: 0,
+        },
         Request::SetAgent { session: sid, agent } => match session(sid) {
             Some(s) => {
                 s.set_agent(agent);
@@ -960,5 +983,78 @@ mod tests {
         assert!(!grace_unless_upgrading(&state, &s, 60));
         assert_eq!(s.grace_secs(), None, "no grace the snapshot may have missed");
         let _ = s.kill();
+    }
+
+    fn test_options(dir: &Path) -> Options {
+        let socket = dir.join("arkosd.sock");
+        Options {
+            replay_capacity: 64,
+            watchdog: Duration::from_secs(60),
+            client_pending_cap: 1 << 20,
+            backpressure: Backpressure::default(),
+            reaper_every: Duration::from_secs(1),
+            dead_session_ttl: Duration::from_secs(60),
+            flush_quiet: Duration::from_secs(1),
+            update: crate::updates::UpdateOptions::defaults(&socket),
+            socket,
+        }
+    }
+
+    /// A client in the table with a sink nobody reads, as `serve` would add it.
+    fn add_client(state: &Shared, client: ClientId) -> ClientSink {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let sink = ClientSink::new(client, a, 1 << 20);
+        let rec = ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None, sid: None };
+        state.lock().unwrap().clients.insert(client, rec);
+        sink
+    }
+
+    fn hello(protocol_version: u32) -> Request {
+        Request::Hello { protocol_version, ui_pid: 0, ui_exe: None, ui_cwd: PathBuf::new() }
+    }
+
+    /// The sid a protocol 7 window sends after its Hello is what the daemon later seals that
+    /// window's journal from; a second one (the journal restarted on an opt-in) replaces it.
+    #[test]
+    fn the_session_after_hello_is_kept_on_the_window_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        let tx = add_client(&state, 1);
+        assert!(matches!(dispatch(&state, 1, &tx, 1, hello(7), &opts), Some(Response::Hello { protocol_max: 7, .. })));
+        assert_eq!(state.lock().unwrap().clients[&1].sid, None, "no sid before the window sends one");
+        let first = "0123456789abcdef0123456789abcdef";
+        assert_eq!(dispatch(&state, 1, &tx, 2, Request::Session { sid: first.into() }, &opts), Some(Response::Ok));
+        assert_eq!(state.lock().unwrap().clients[&1].sid.as_deref(), Some(first));
+        let second = "fedcba9876543210fedcba9876543210";
+        assert_eq!(dispatch(&state, 1, &tx, 3, Request::Session { sid: second.into() }, &opts), Some(Response::Ok));
+        assert_eq!(state.lock().unwrap().clients[&1].sid.as_deref(), Some(second));
+        // A second Hello on the same connection (the chooser naming its project) keeps it.
+        dispatch(&state, 1, &tx, 4, hello(7), &opts);
+        assert_eq!(state.lock().unwrap().clients[&1].sid.as_deref(), Some(second));
+    }
+
+    /// `TelemetryStatus` is not gated on the Hello's protocol: the command line and the doctor
+    /// ask it, and a protocol 6 window that never sends `Session` simply has nothing sealed.
+    #[test]
+    fn telemetry_status_answers_whatever_the_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        let empty = Response::TelemetryStatus {
+            usage: "local".into(),
+            crashes: "ask".into(),
+            uploads: false,
+            reason: None,
+            queued: 0,
+            journals: 0,
+            last_check_day: None,
+            sent: 0,
+            rejected: 0,
+        };
+        let old = add_client(&state, 1);
+        dispatch(&state, 1, &old, 1, hello(6), &opts);
+        assert_eq!(dispatch(&state, 1, &old, 2, Request::TelemetryStatus, &opts), Some(empty.clone()));
+        assert_eq!(state.lock().unwrap().clients[&1].sid, None);
+        let tool = add_client(&state, 2);
+        assert_eq!(dispatch(&state, 2, &tool, 1, Request::TelemetryStatus, &opts), Some(empty));
     }
 }

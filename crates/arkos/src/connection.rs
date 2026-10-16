@@ -74,7 +74,7 @@ impl Reconnect {
 pub async fn attempt(socket: &std::path::Path, daemon_exe: &std::path::Path, daemon_args: &[String], start: bool, cx: &AsyncApp) -> Result<(Client, UnboundedReceiver<ServerMessage>), String> {
     let (s, d, a) = (socket.to_path_buf(), daemon_exe.to_path_buf(), daemon_args.to_vec());
     cx.background_executor()
-        .spawn(async move { if start { Client::connect_or_start(&s, &d, &a) } else { Client::connect(&s) } })
+        .spawn(async move { if start { Client::connect_or_start(&s, &d, &a, None) } else { Client::connect(&s, None) } })
         .await
         .map_err(|e| format!("{e:#}"))
 }

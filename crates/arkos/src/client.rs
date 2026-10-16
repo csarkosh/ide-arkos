@@ -49,6 +49,9 @@ pub struct Client {
     /// The pid of the process at the other end, read once at connect; `None` when the system
     /// would not say.
     peer_pid: Option<u32>,
+    /// The usage session id sent after every Hello, so the daemon can seal this window's
+    /// journal; None when the window keeps none.
+    sid: Option<String>,
 }
 
 impl Drop for Client {
@@ -61,12 +64,13 @@ impl Drop for Client {
 }
 
 impl Client {
-    pub fn connect(socket: &Path) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
-        Client::connect_with_cap(socket, CLIENT_UNREAD_CAP)
+    /// Connects and says Hello, followed by `Session` when `sid` is given.
+    pub fn connect(socket: &Path, sid: Option<String>) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
+        Client::connect_with_cap(socket, CLIENT_UNREAD_CAP, sid)
     }
 
     /// Connects with `cap` unread output bytes allowed in the channel before the reader waits.
-    pub fn connect_with_cap(socket: &Path, cap: usize) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
+    pub fn connect_with_cap(socket: &Path, cap: usize, sid: Option<String>) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
         let stream = UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
         let peer_pid = peer_pid_of(&stream);
         let reader_stream = stream.try_clone().context("clone socket")?;
@@ -141,7 +145,7 @@ impl Client {
                 *reason_for_reader.lock().unwrap() = Some(reason);
             })
             .context("spawn reader")?;
-        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream, peer_pid };
+        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream, peer_pid, sid };
         client.hello();
         Ok((client, ev_rx))
     }
@@ -153,14 +157,19 @@ impl Client {
 
     /// Says Hello with this process's pid, binary and folder: at connect, and again on the same
     /// connection once the launch chooser's folder is the working directory, so the daemon
-    /// replaces the empty folder the first one named.
+    /// replaces the empty folder the first one named. The session id follows it at once when
+    /// there is one. Returns the Hello's id.
     pub fn hello(&self) -> u32 {
-        self.send(Request::Hello {
+        let id = self.send(Request::Hello {
             protocol_version: PROTOCOL_VERSION,
             ui_pid: std::process::id(),
             ui_exe: std::env::current_exe().ok(),
             ui_cwd: crate::launch::hello_cwd(&std::env::current_dir().unwrap_or_default()),
-        })
+        });
+        if let Some(sid) = &self.sid {
+            self.send(Request::Session { sid: sid.clone() });
+        }
+        id
     }
 
     /// Queues a request. Returns its id so the response can be matched.
@@ -216,9 +225,9 @@ impl Client {
     }
 
     /// Connects, or starts the daemon detached from this process (with `daemon_args` after its
-    /// socket) and retries for three seconds.
-    pub fn connect_or_start(socket: &Path, daemon_exe: &Path, daemon_args: &[String]) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
-        if let Ok(c) = Client::connect(socket) {
+    /// socket) and retries for three seconds. `sid` is `connect`'s.
+    pub fn connect_or_start(socket: &Path, daemon_exe: &Path, daemon_args: &[String], sid: Option<String>) -> Result<(Client, UnboundedReceiver<ServerMessage>)> {
+        if let Ok(c) = Client::connect(socket, sid.clone()) {
             return Ok(c);
         }
         Client::ensure_stale_socket_removed(socket)?;
@@ -243,7 +252,7 @@ impl Client {
         });
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            match Client::connect(socket) {
+            match Client::connect(socket, sid.clone()) {
                 Ok(c) => return Ok(c),
                 Err(e) if Instant::now() >= deadline => {
                     return Err(e.context(format!(
@@ -309,8 +318,13 @@ mod tests {
     use futures::executor::block_on;
     use futures::StreamExt;
 
-    /// A one-connection fake daemon that answers every request with Ok.
+    /// A one-connection fake daemon that answers every request with Ok, for two requests.
     fn fake_daemon(socket: &std::path::Path) -> std::thread::JoinHandle<Vec<ClientMessage>> {
+        fake_daemon_for(socket, 2)
+    }
+
+    /// A one-connection fake daemon that answers `frames` requests with Ok and returns them.
+    fn fake_daemon_for(socket: &std::path::Path, frames: usize) -> std::thread::JoinHandle<Vec<ClientMessage>> {
         let listener = UnixListener::bind(socket).unwrap();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -321,7 +335,7 @@ mod tests {
                 let id = msg.id;
                 seen.push(msg);
                 write_frame(&mut w, &ServerMessage::Response { id, response: Response::Ok }).unwrap();
-                if seen.len() == 2 {
+                if seen.len() == frames {
                     break;
                 }
             }
@@ -377,7 +391,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("fake.sock");
         let server = fake_daemon(&socket);
-        let (client, mut rx) = Client::connect(&socket).unwrap();
+        let (client, mut rx) = Client::connect(&socket, None).unwrap();
         let id = client.send(Request::ListSessions);
         let first = block_on(rx.next()).unwrap();
         let second = block_on(rx.next()).unwrap();
@@ -388,12 +402,42 @@ mod tests {
         assert_eq!(seen[1].request, Request::ListSessions);
     }
 
+    /// A window with a session id says it right after every Hello, so the daemon can seal its
+    /// journal; one without sends Hello alone, as a protocol 6 window does.
+    #[test]
+    fn sends_the_session_right_after_hello_only_when_it_has_a_sid() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("sid.sock");
+        let server = fake_daemon_for(&socket, 5);
+        let sid = "0123456789abcdef0123456789abcdef".to_string();
+        let (client, _rx) = Client::connect(&socket, Some(sid.clone())).unwrap();
+        client.send(Request::ListSessions);
+        // The chooser's second Hello names the project; the sid follows it again.
+        client.hello();
+        let seen: Vec<Request> = server.join().unwrap().into_iter().map(|m| m.request).collect();
+        assert!(matches!(seen[0], Request::Hello { protocol_version: PROTOCOL_VERSION, .. }), "{seen:?}");
+        assert_eq!(seen[1], Request::Session { sid: sid.clone() });
+        assert_eq!(seen[2], Request::ListSessions);
+        assert!(matches!(seen[3], Request::Hello { .. }), "{seen:?}");
+        assert_eq!(seen[4], Request::Session { sid });
+
+        let socket = dir.path().join("nosid.sock");
+        let server = fake_daemon_for(&socket, 3);
+        let (client, _rx) = Client::connect(&socket, None).unwrap();
+        client.send(Request::ListSessions);
+        client.hello();
+        let seen: Vec<Request> = server.join().unwrap().into_iter().map(|m| m.request).collect();
+        assert!(matches!(seen[0], Request::Hello { .. }), "{seen:?}");
+        assert_eq!(seen[1], Request::ListSessions);
+        assert!(matches!(seen[2], Request::Hello { .. }), "{seen:?}");
+    }
+
     #[test]
     fn the_peer_pid_is_the_process_at_the_other_end() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("fake.sock");
         let server = fake_daemon(&socket);
-        let (client, _rx) = Client::connect(&socket).unwrap();
+        let (client, _rx) = Client::connect(&socket, None).unwrap();
         // The fake daemon runs in this test process.
         assert_eq!(client.peer_pid(), Some(std::process::id()));
         client.send(Request::ListSessions);
@@ -416,7 +460,7 @@ mod tests {
             }
             seen
         });
-        let (client, _rx) = Client::connect(&socket).unwrap();
+        let (client, _rx) = Client::connect(&socket, None).unwrap();
         client.send(Request::Kill { session: protocol::SessionId(7) });
         assert!(client.wait_sent(Duration::from_secs(5)));
         // Dropping the client shuts the socket at once; the Kill was already on the wire.
@@ -463,7 +507,7 @@ mod tests {
                 write_frame(&mut w, &msg).unwrap();
             }
         });
-        let (client, mut rx) = Client::connect_with_cap(&socket, CAP).unwrap();
+        let (client, mut rx) = Client::connect_with_cap(&socket, CAP, None).unwrap();
         let mut got: Vec<u8> = Vec::new();
         let mut rounds = 0;
         while got.len() < FRAME * FRAMES {
@@ -496,7 +540,7 @@ mod tests {
         let socket = dir.path().join("hangup.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || drop(listener.accept().unwrap()));
-        let (client, mut rx) = Client::connect(&socket).unwrap();
+        let (client, mut rx) = Client::connect(&socket, None).unwrap();
         server.join().unwrap();
         assert!(block_on(rx.next()).is_none());
         assert_eq!(client.disconnect_reason().as_deref(), Some("daemon closed the connection"));
