@@ -1,7 +1,8 @@
 # The agent theme interface (milestone 8b)
 
-Status: plan reviewed (opus, 2026-10-16, "With fixes") and amended; the rulings on the reviewer's
-questions are in the ledger and in the constraints below. Spec:
+Status: approved by Cyrus on 2026-10-16 after the opus review was folded in (with the ruling that
+the skill reaches every Claude config directory). Merged without a release: ships together with
+markdown rendering Tier B and analytics. Spec:
 `docs/superpowers/specs/2026-10-16-agent-theme-interface-design.md` (approved by Cyrus on
 2026-10-16, "approve, defaults accepted": `arkos theme use`, `arkos guide`, keybindings off the
 settings allow-list, a two-second wait for window answers, the protocol bump at 0.4.0, the skill
@@ -211,9 +212,20 @@ channel.
   file there whose first line is not `---` followed by `name: arkos-ide`; then prints the paragraph
   for `AGENTS.md` or `CLAUDE.md`: `Arkos IDE: run \`arkos guide\` before changing its theme or
   settings.` `guide::skill_state(dir) -> SkillState::{Missing, Current, Outdated(String), Foreign}`
-  compares the stamp (`Outdated` carries the old stamp, which the doctor line shows). `guide::
-  skills_dir()` is `$CLAUDE_CONFIG_DIR/skills` when that variable is set (as `hook_cli::
-  claude_settings_path` honours it, ~239) else `~/.claude/skills`. `arkos --help` (new; today only
+  compares the stamp (`Outdated` carries the old stamp, which the doctor line shows). The skill goes into every
+  Claude config directory on the machine (Cyrus, 2026-10-16: "the solution needs to support the
+  `.claude2` and `.claude3` directories too"): `guide::claude_dirs() -> Vec<PathBuf>` is
+  `$CLAUDE_CONFIG_DIR` when set, plus `~/.claude`, plus every sibling directory `~/.claude*` that
+  holds a `settings.json` (so `~/.claude2` and `~/.claude3` count and a cache folder does not),
+  deduplicated and sorted, through the pure `claude_dirs_from(config_dir_env: Option<&OsStr>,
+  home: &Path) -> Vec<PathBuf>`; the skills folder of a config dir is `<dir>/skills`. `--install`
+  installs into each dir and prints one line per dir (`installed {path}` / `refreshed {path}` /
+  `refused {path}: a different skill`), exit 1 when any dir refused; `skill_state(dir)` is per
+  dir and `skill_states() -> Vec<(PathBuf, SkillState)>` runs over `claude_dirs()`. The doctor
+  row summarises them: Good "installed in {m} Claude config folders"; Fix "not installed in {n}
+  of {m} Claude config folders" with "Install" (which installs where Missing or Outdated and
+  leaves Foreign alone); Broken naming the first foreign path; Pinned when `claude_dirs()` is
+  empty. The read-only report prints one line per dir. `arkos --help` (new; today only
   `--version` exists) prints `USAGE` with `guide` first.
 - **The hook** (`hook_cli.rs`): `run_with` gains `out: &mut dyn Write` (the call at ~306 and the
   eight test calls change); for `--event session-start`, after the session id parses (~113), it
@@ -221,20 +233,19 @@ channel.
   notify` still exits 0 always. `pub const CONTEXT_LINES: &str = "This session runs inside Arkos
   IDE.\nTo change its theme, fonts or settings, run \`arkos guide\` first and follow it.\n"`.
 - **The doctor**: `doctor_panel::probe_all` gains `CheckId::AgentGuide` ("Agent guide for Claude
-  Code") from `Probe.skill: SkillState` and `Probe.claude_present: bool` (the Claude config dir
-  exists): `State::Fix("not installed: agents cannot find the toolkit")` with "Install";
-  `State::Good("installed")`; `State::Fix("older than this build ({old})")` with "Update";
-  `State::Broken("a different skill sits at {path}")`; when the Claude config dir does not exist,
-  `State::Pinned("no Claude Code config found")` with no button, not counted as a fix. The two
+  Code") from `Probe.skills: Vec<(PathBuf, SkillState)>` (one entry per Claude config dir that
+  exists): the states per the Guide constraint (Good, Fix with "Install", Broken, Pinned when the
+  list is empty), through a pure `guide_check(skills: &[(PathBuf, SkillState)]) -> (State,
+  Option<&'static str>)` with a test over the five shapes. The two
   `Probe` construction sites change (main.rs ~763 and the test helper doctor_panel.rs ~89, which
-  sets `skill: SkillState::Current, claude_present: true` so the existing counts hold); the
+  sets `skills: vec![(PathBuf::from("/h/.claude"), SkillState::Current)]` so the existing counts hold); the
   existing tests' id vectors gain `AgentGuide`; `doctor_action`'s exhaustive match (main.rs ~783)
   gains the arm calling `guide::install_skill` on the background executor with a notice. The
   read-only `doctor::report` gains a `themes` section from `pub fn themes_section(themes: &Path,
-  config: &Path, skill: &SkillState) -> Vec<String>`: `{n} themes, all valid` or one line per
+  config: &Path, skills: &[(PathBuf, SkillState)]) -> Vec<String>`: `{n} themes, all valid` or one line per
   invalid file `{path}: {error}`; `theme.dark names no theme: {name}` (and `light`) only when
-  neither a built-in nor a file of that name exists; `agent guide skill: not installed | installed
-  | older than this build ({old}) | a different skill at {path}`; it reads the config with
+  neither a built-in nor a file of that name exists; one line per Claude config dir `agent guide skill in {dir}: not installed |
+  installed | older than this build ({old}) | a different skill`; it reads the config with
   `read_to_string` and `config::parse` (never `config::load`, which writes). `doctor::Where`
   gains `themes`, `config` and `skills` paths (its two test constructions ~227 and ~279 change). A
   "preview still active" check is deferred (a two-second round trip in a read-only command).
@@ -679,13 +690,14 @@ pub struct Installed { pub path: PathBuf, pub replaced: bool }
 pub fn install_skill(dir: &Path) -> Result<Installed, String>;
 pub fn write_copy(app_support: &Path) -> Result<PathBuf, String>; // --path
 pub fn guide_cli_to(args: &[String], skills_dir: &Path, app_support: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32;
-pub fn skills_dir() -> PathBuf; // $CLAUDE_CONFIG_DIR/skills or ~/.claude/skills
-pub fn skills_dir_from(config_dir: Option<&OsStr>, home: &Path) -> PathBuf; // pure
+pub fn claude_dirs() -> Vec<PathBuf>;
+pub fn claude_dirs_from(config_dir_env: Option<&OsStr>, home: &Path) -> Vec<PathBuf>; // pure, reads the home folder
+pub fn skill_states() -> Vec<(PathBuf, SkillState)>;
 // hook_cli.rs
 pub const CONTEXT_LINES: &str;
 pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write) -> i32;
 // doctor.rs
-pub fn themes_section(themes: &Path, config: &Path, skill: &SkillState) -> Vec<String>;
+pub fn themes_section(themes: &Path, config: &Path, skills: &[(PathBuf, SkillState)]) -> Vec<String>;
 ```
 
 - [ ] **Step 1: Failing tests**
@@ -720,8 +732,14 @@ fn the_skill_is_installed_once_refreshed_when_stale_and_never_over_a_stranger() 
     let p = PathBuf::from(String::from_utf8(out).unwrap().trim());
     assert_eq!(std::fs::read_to_string(&p).unwrap(), TEXT);
     assert_eq!(guide_cli_to(&["--install".into()], dir.path(), dir.path(), &mut Vec::new(), &mut Vec::new()), 1, "the stranger stays");
-    assert_eq!(skills_dir_from(Some(std::ffi::OsStr::new("/c")), Path::new("/h")), PathBuf::from("/c/skills"));
-    assert_eq!(skills_dir_from(None, Path::new("/h")), PathBuf::from("/h/.claude/skills"));
+    let home = tempfile::tempdir().unwrap();
+    for d in [".claude", ".claude2", ".claude3", ".claude-cache", ".claudex"] { std::fs::create_dir_all(home.path().join(d)).unwrap(); }
+    for d in [".claude2", ".claude3", ".claudex"] { std::fs::write(home.path().join(d).join("settings.json"), "{}").unwrap(); }
+    let dirs = claude_dirs_from(None, home.path());
+    assert_eq!(dirs, vec![home.path().join(".claude"), home.path().join(".claude2"), home.path().join(".claude3"), home.path().join(".claudex")], "a sibling without settings.json is not a config dir");
+    let with_env = claude_dirs_from(Some(home.path().join(".claude3").as_os_str()), home.path());
+    assert_eq!(with_env.len(), 4, "the env dir is listed once");
+    assert_eq!(claude_dirs_from(None, Path::new("/nonexistent")), vec![PathBuf::from("/nonexistent/.claude")], "~/.claude always counts");
     assert!(!TEXT.contains('\u{2014}'));
     assert!(TEXT.lines().count() > 100);
     for cmd in ["arkos theme template", "arkos theme contrast", "arkos theme preview", "arkos theme use", "arkos theme current", "arkos settings set", "arkos guide"] {
@@ -741,22 +759,22 @@ fn the_themes_section_lists_invalid_files_and_missing_names() {
     std::fs::write(themes.join("broken.toml"), "name = \"broken\"\n").unwrap();
     let cfg = dir.path().join("config.toml");
     std::fs::write(&cfg, "[theme]\ndark = \"gone\"\nlight = \"navy-light\"\n").unwrap();
-    let lines = themes_section(&themes, &cfg, &SkillState::Missing);
+    let lines = themes_section(&themes, &cfg, &[(PathBuf::from("/h/.claude"), SkillState::Missing)]);
     assert!(lines.iter().any(|l| l.starts_with(&format!("{}: ", themes.join("broken.toml").display()))), "{lines:?}");
     assert!(lines.iter().any(|l| l == "theme.dark names no theme: gone"), "{lines:?}");
     assert!(!lines.iter().any(|l| l.contains("names no theme: broken")), "an invalid file has its own line");
-    assert!(lines.iter().any(|l| l == "agent guide skill: not installed"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude: not installed"), "{lines:?}");
     std::fs::remove_file(themes.join("broken.toml")).unwrap();
     std::fs::write(&cfg, "[theme]\ndark = \"navy\"\n").unwrap();
-    let lines = themes_section(&themes, &cfg, &SkillState::Outdated("abc".into()));
+    let lines = themes_section(&themes, &cfg, &[(PathBuf::from("/h/.claude"), SkillState::Outdated("abc".into()))]);
     assert_eq!(lines[0], format!("{} themes, all valid", theme::BUILTIN.len()));
-    assert!(lines.iter().any(|l| l == "agent guide skill: older than this build (abc)"));
+    assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude: older than this build (abc)"));
 }
 
-// doctor_panel.rs: probe_all with Probe.skill = Missing (claude_present true) gives the AgentGuide
-// check in Fix with "Install"; Current gives Good with no button; Outdated("x") gives Fix "Update"
-// with the text naming x; Foreign gives Broken; claude_present false gives Pinned with no button
-// and does not count in needs_fix. The existing tests' id vectors gain AgentGuide at the end.
+// doctor_panel.rs: guide_check over [] gives Pinned with no button (not counted in needs_fix);
+// all Current gives Good "installed in 2 Claude config folders"; one Missing of two gives Fix
+// "not installed in 1 of 2 Claude config folders" with "Install"; an Outdated counts as not
+// installed; a Foreign gives Broken naming its path. The existing tests' id vectors gain AgentGuide.
 ```
 
 - [ ] **Step 2: Run to see them fail**: `nice -n 15 ~/.cargo/bin/cargo test -p arkos --bin arkos -- guide:: hook_cli:: doctor:: doctor_panel:: keymap:: command_palette::`.
@@ -764,8 +782,9 @@ fn the_themes_section_lists_invalid_files_and_missing_names() {
   constraints. The guide follows spec section 7's outline with the exact command lines and JSON
   shapes from Task 3; the worked example is Timo Purple (accent `#00ffff`, background `#330076`)
   with the contrast reasoning behind `crates/arkos/themes/timo-purple.toml`'s values. The Root's
-  doctor Apply and the palette command both call `guide::install_skill(&guide::skills_dir())` on
-  the background executor and show a notice with the path or the error.
+  doctor Apply and the palette command both run `guide::install_all()` (every dir in
+  `claude_dirs()` that is Missing or Outdated) on the background executor and show a notice with
+  the count installed or the first error.
 - [ ] **Step 4: Run, check, commit**: `git commit -m "The agent guide: arkos guide, a Claude Code skill, the hook's pointer, a doctor check"`.
 
 ---
@@ -790,9 +809,10 @@ fn the_themes_section_lists_invalid_files_and_missing_names() {
 - A configurable wait (`--wait <secs>`) for window answers; dropping a disconnecting window from
   a wait at once rather than at the cut.
 - The doctor's "preview still active" check (a two-second round trip in a read-only command).
-- The guide as a Codex-native file; a project-level skill install (`--install --project`);
-  installing the skill into several Claude config directories at once (this machine uses
-  `~/.claude2` and `~/.claude3` through aliases).
+- The guide as a Codex-native file; a project-level skill install (`--install --project`).
+- The Claude Code hooks install and the wheel-scroll Apply still touch only one settings file
+  (`claude_settings_path`); `claude_dirs()` could drive them too, so the doctor fixes `~/.claude2`
+  and `~/.claude3` as well (recommended as the next small change after 8b).
 - `arkos theme preview` for one window only (`--pid`); today every window previews.
 - A `--watch` mode for `arkos theme contrast`.
 - `settings get` falling back to the effective (merged) config for keys absent from the file.
@@ -802,8 +822,9 @@ fn the_themes_section_lists_invalid_files_and_missing_names() {
 - Spec section 3: Task 2. Section 4: Task 3. Section 5: Tasks 1, 2, 3. Section 6: Task 3. Section
   7: Task 4. Section 8: Task 4. Section 9: Task 5. Section 11: Task 4 (the hook, the skill,
   `--help`).
-- Rulings on the plan reviewer's questions (Cyrus to confirm at approval): the skill installs under
-  `$CLAUDE_CONFIG_DIR/skills` when that is set, else `~/.claude/skills`; the stamp tracks the
+- Rulings on the plan reviewer's questions (Cyrus, 2026-10-16): the skill installs into every
+  Claude config directory (`$CLAUDE_CONFIG_DIR`, `~/.claude`, and every `~/.claude*` sibling with
+  a `settings.json`); the stamp tracks the
   guide's content, not the release; a machine without a Claude config shows the row pinned, not as
   a fix; `arkos config`, `arkos settings` and `arkos guide` shadow folders of those names (use
   `arkos ./config`); a silent or too-old window prints its line and `use`/`settings set` still
