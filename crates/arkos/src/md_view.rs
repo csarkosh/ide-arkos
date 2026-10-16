@@ -198,11 +198,11 @@ impl GridCell {
 }
 
 /// A table's measured widths: each column's natural width (its widest cell over the first
-/// `MEASURED_ROWS` rows, padding and hairline included) for the prose family and size in `key`,
+/// `MEASURED_ROWS` rows, padding and hairline included) for the prose family, the terminal family and the size in `key`,
 /// and the sideways scroll of a table in `WideTables::Scroll`. Measured once per block, again when
 /// the family or size changed; an edit makes a new entry, which is fine.
 struct Widths {
-    key: Option<(SharedString, f32)>,
+    key: Option<(SharedString, SharedString, f32)>,
     natural: Vec<f32>,
     scroll: ScrollHandle,
 }
@@ -219,7 +219,7 @@ pub fn column_widths(natural: &[f32], view: f32, mode: WideTables) -> Vec<f32> {
     }
 }
 
-/// Measures block `ix`'s table, when it is a grid not yet measured at the prose family and size:
+/// Measures block `ix`'s table, when it is a grid not yet measured at the frame's families and size:
 /// each column's widest cell over the first `MEASURED_ROWS` rows (the header semibold), its text's
 /// width plus the cell's padding and its 1 px hairline. The list's row closure calls it, the one
 /// place with a `Window` to measure text with.
@@ -227,7 +227,8 @@ fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window)
     let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
     let Some(Piece::Table(TablePiece::Grid(grid, widths))) = r.pieces.first_mut() else { return };
     let size = ctx.font_size * PARA;
-    if widths.key.as_ref().is_some_and(|(family, at)| *family == ctx.ui && *at == size) {
+    // A code span in a cell is measured in the terminal family, so it is in the key too.
+    if widths.key.as_ref().is_some_and(|(ui, mono, at)| *ui == ctx.ui && *mono == ctx.mono && *at == size) {
         return;
     }
     let mut natural = vec![0.0f32; grid.align.len()];
@@ -239,7 +240,7 @@ fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window)
             *w = w.max(text_w + CELL_PAD_X * 2.0 + 1.0);
         }
     }
-    widths.key = Some((ctx.ui.clone(), size));
+    widths.key = Some((ctx.ui.clone(), ctx.mono.clone(), size));
     widths.natural = natural;
 }
 
@@ -543,6 +544,8 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
     }
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
+    // A grid's cells place the caret themselves and give the row no text to map a drag through.
+    let grid = r.pieces.iter().any(|p| matches!(p, Piece::Table(TablePiece::Grid(..))));
     let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
     row.children(children)
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
@@ -558,7 +561,9 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
             });
         })
         .on_mouse_move(move |ev: &MouseMoveEvent, _window, cx| {
-            if ev.pressed_button != Some(MouseButton::Left) {
+            // Over a table grid a drag would map to the block's first character, so the jitter of
+            // a press on a cell would select back to it: the head waits for the raw block instead.
+            if ev.pressed_button != Some(MouseButton::Left) || grid {
                 return;
             }
             v_move.update(cx, |v, cx| {

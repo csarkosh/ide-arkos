@@ -61,8 +61,25 @@ pub fn parse(source: &str) -> Option<Table> {
 /// space inside each pipe, a leading and a trailing pipe always, the delimiter row keeping its
 /// colons with its dashes stretched to the column (at least three). What followed the last line
 /// with text (the trailing newline, or nothing) is kept as it was. `None` when `parse` fails.
+///
+/// The grid truncates a long row to the header's count, but `realign` never drops a cell: a short
+/// row is padded with empty cells, and a long row's cells past the header's count follow the
+/// aligned ones unpadded (trimmed, `\|` kept), the widths coming from the header's columns only.
 pub fn realign(source: &str) -> Option<String> {
     let t = parse(source)?;
+    let columns = t.header.len();
+    // The body rows as typed, every cell kept: `parse` truncated them for the grid.
+    let body: Vec<Vec<String>> = table_lines(source)
+        .iter()
+        .skip(2)
+        .map(|line| {
+            let mut cells = cell_texts(line);
+            if cells.len() < columns {
+                cells.resize(columns, String::new());
+            }
+            cells
+        })
+        .collect();
     let widths: Vec<usize> = t
         .align
         .iter()
@@ -75,13 +92,14 @@ pub fn realign(source: &str) -> Option<String> {
             };
             // The delimiter cell is the column's width plus the two spaces, and holds at least
             // three dashes besides its colons.
-            let text = std::iter::once(&t.header).chain(&t.rows).map(|row| row[c].width()).max().unwrap_or(0);
+            let text = std::iter::once(&t.header).chain(&body).map(|row| row[c].width()).max().unwrap_or(0);
             text.max(1 + colons)
         })
         .collect();
     let row = |cells: &[String]| {
-        let padded: Vec<String> = cells.iter().zip(&t.align).zip(&widths).map(|((text, a), &w)| pad(text, *a, w)).collect();
-        format!("| {} |", padded.join(" | "))
+        let aligned = cells.iter().zip(&t.align).zip(&widths).map(|((text, a), &w)| pad(text, *a, w));
+        let all: Vec<String> = aligned.chain(cells.iter().skip(columns).cloned()).collect();
+        format!("| {} |", all.join(" | "))
     };
     let delimiter: Vec<String> = t
         .align
@@ -95,7 +113,7 @@ pub fn realign(source: &str) -> Option<String> {
         })
         .collect();
     let mut out = vec![row(&t.header), format!("|{}|", delimiter.join("|"))];
-    out.extend(t.rows.iter().map(|r| row(r)));
+    out.extend(body.iter().map(|r| row(r)));
     Some(out.join("\n") + tail(source))
 }
 
@@ -290,6 +308,15 @@ mod tests {
         assert_eq!(out, "| a      |  b  |\n|--------|:---:|\n| x \\| y |  z  |");
         assert_eq!(parse(&out).unwrap(), t, "the cells read back as they were");
         assert_eq!(realign(&out).unwrap(), out);
+    }
+
+    #[test]
+    fn realign_keeps_a_long_row_s_extra_cells_after_the_aligned_ones() {
+        let src = "|a|b|\n|-|-|\n|1|22|extra \\| x|\n";
+        let out = realign(src).unwrap();
+        assert_eq!(out, "| a | b  |\n|---|----|\n| 1 | 22 | extra \\| x |\n");
+        assert_eq!(realign(&out).unwrap(), out, "idempotent");
+        assert_eq!(parse(&out).unwrap().rows, vec![vec!["1", "22"]], "the grid still shows the header's count");
     }
 
     #[test]
