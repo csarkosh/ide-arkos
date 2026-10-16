@@ -2335,6 +2335,28 @@ fn a_customize_request_is_relayed_to_every_project_window_and_answered_when_all_
 }
 
 #[test]
+fn a_project_window_on_protocol_5_is_listed_too_old_and_not_asked() {
+    let d = Daemon::start(&[]);
+    let pid = std::process::id() + 1;
+    let project = tempfile::tempdir().unwrap();
+    let mut old = d.connect_raw();
+    let r = old.request(Request::Hello { protocol_version: 5, ui_pid: pid, ui_exe: None, ui_cwd: project.path().to_path_buf() });
+    assert!(matches!(r, Response::Hello { .. }), "{r:?}");
+    let mut tool = d.connect_raw();
+    let t0 = Instant::now();
+    assert_eq!(tool.request(Request::Customize { id: 9, action: CustomizeAction::ReportState }), Response::Customized { outcomes: vec![], missing: vec![], too_old: vec![pid] });
+    assert!(t0.elapsed() < Duration::from_millis(1900), "answered at once, not after the wait: {:?}", t0.elapsed());
+    old.set_read_timeout(Some(Duration::from_millis(300)));
+    loop {
+        match read_frame::<_, ServerMessage>(&mut old.r) {
+            Ok(Some(ServerMessage::Event(Event::Customize { .. }))) => panic!("a protocol 5 window was asked"),
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break,
+        }
+    }
+}
+
+#[test]
 fn a_silent_window_is_named_after_the_wait_and_no_window_answers_at_once() {
     let d = Daemon::start(&[]);
     let base = std::process::id();

@@ -93,7 +93,7 @@ impl Reach {
     fn line(&self) -> String {
         match self {
             Reach::NoWindow => "no window running".into(),
-            Reach::OldDaemon => "arkosd is older than this command; quit and reopen Arkos IDE".into(),
+            Reach::OldDaemon => "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (ends every session)".into(),
             Reach::Io(e) => e.clone(),
         }
     }
@@ -298,7 +298,9 @@ fn contrast(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write
         let _ = writeln!(out, "{}", json!({ "name": t.name, "ok": ok, "pairs": pairs }));
     } else {
         for (p, r) in &rows {
-            let _ = if *r >= p.needs { writeln!(out, "{} {r:.1}:1 ok", p.what) } else { writeln!(out, "{} {r:.1}:1 LOW (needs {})", p.what, p.needs) };
+            // A low ratio is cut down, not rounded, to two decimals, so one just under the
+            // threshold never reads as reaching it.
+            let _ = if *r >= p.needs { writeln!(out, "{} {r:.1}:1 ok", p.what) } else { writeln!(out, "{} {:.2}:1 LOW (needs {})", p.what, (r * 100.0).floor() / 100.0, p.needs) };
         }
     }
     if ok {
@@ -846,9 +848,12 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
     if let Err(e) = config::set_values(env.config, &edits) {
         return fail(err, &e);
     }
-    let judge = |r: &Report| match &r.config_error {
-        Some(e) => Err(e.clone()),
-        None => Ok(format!("{key} applied")),
+    // A key that picks the theme fails on a theme error too; the others only on a config error.
+    let picks_theme = matches!(*key, "appearance.mode" | "theme.dark" | "theme.light");
+    let judge = |r: &Report| match (&r.config_error, &r.theme_error) {
+        (Some(e), _) => Err(e.clone()),
+        (None, Some(e)) if picks_theme => Err(e.clone()),
+        _ => Ok(format!("{key} applied")),
     };
     reload_after_save(env, a.has("--json"), json!({ "key": key, "value": value_json(&value), "saved": true }), &judge, out, err)
 }
@@ -894,7 +899,10 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["contrast".into(), f.display().to_string()], &env, &mut out, &mut err), 1);
         let s = String::from_utf8(out).unwrap();
-        assert!(s.lines().any(|l| l.starts_with("tree.ignored on window_bg ") && l.ends_with("LOW (needs 4.5)")), "{s}");
+        let low = crate::palette::contrast(t.tree.ignored, t.chrome.window_bg);
+        assert!(s.lines().any(|l| l == format!("tree.ignored on window_bg {:.2}:1 LOW (needs 4.5)", (low * 100.0).floor() / 100.0)), "{s}");
+        let two_decimals = |l: &str| l.split(' ').find(|w| w.ends_with(":1")).is_some_and(|w| w.trim_end_matches(":1").split_once('.').is_some_and(|(_, d)| d.len() == 2));
+        assert!(s.lines().filter(|l| l.contains(" LOW ")).all(two_decimals), "{s}");
         assert!(s.lines().any(|l| l == format!("chrome.text on window_bg {:.1}:1 ok", crate::palette::contrast(t.chrome.text, t.chrome.window_bg))));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["contrast".into(), "navy".into(), "--json".into()], &env, &mut out, &mut err), 0);
@@ -999,6 +1007,7 @@ mod tests {
         let got = customize(&sock, CustomizeAction::ReportState, Duration::from_secs(1)).unwrap();
         assert_eq!((got.outcomes[0].pid, got.missing.clone(), got.too_old.clone()), (3, vec![4], vec![5]));
         assert!(matches!(customize(&sock, CustomizeAction::ReportState, Duration::from_secs(1)), Err(Reach::OldDaemon)));
+        assert_eq!(Reach::OldDaemon.line(), "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (ends every session)");
         server.join().unwrap();
         assert!(matches!(customize(&dir.path().join("absent.sock"), CustomizeAction::ReportState, Duration::from_millis(10)), Err(Reach::NoWindow)));
         let env = Env { socket: &dir.path().join("absent.sock"), config: &dir.path().join("c.toml"), themes: dir.path(), wait: Duration::from_millis(10) };
@@ -1161,6 +1170,27 @@ mod tests {
         assert!(v["windows"][0].get("error").is_none(), "{v}");
         assert_eq!(use_dark(false), (0, "saved; no window answered\nwindow 8: no answer\nwindow 9: too old for this command\n".to_string()));
         assert_eq!(server.join().unwrap(), vec![CustomizeAction::ReloadConfig; 3]);
+    }
+
+    #[test]
+    fn settings_set_fails_on_a_theme_error_only_for_a_key_that_picks_the_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("d.sock");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
+        let broken = Report { theme: "navy".into(), theme_error: Some("draft.toml: missing key chrome.text".into()), ..Report::default() };
+        let answers = vec![one_window(broken.clone(), vec![], vec![]); 4];
+        let server = fake_daemon(&sock, answers);
+        let env = Env { socket: &sock, config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
+        for (key, value) in [("theme.dark", "navy"), ("theme.light", "navy-light"), ("appearance.mode", "dark")] {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            assert_eq!(settings_cli_to(&["set".into(), key.into(), value.into()], &env, &mut out, &mut err), 1, "{key}");
+            assert_eq!(String::from_utf8(out).unwrap(), "window 7 (/p): draft.toml: missing key chrome.text\n", "{key}");
+        }
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(settings_cli_to(&["set".into(), "update.auto".into(), "false".into()], &env, &mut out, &mut err), 0, "a key that does not pick the theme");
+        assert_eq!(String::from_utf8(out).unwrap(), "window 7 (/p): update.auto applied\n");
+        assert_eq!(server.join().unwrap(), vec![CustomizeAction::ReloadConfig; 4]);
     }
 
     #[test]

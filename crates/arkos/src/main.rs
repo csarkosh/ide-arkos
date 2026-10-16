@@ -1081,16 +1081,19 @@ impl Root {
         cx.notify();
     }
 
-    /// macOS switched between light and dark. In "system" mode the theme follows; a theme that
-    /// fails to load leaves the current one and says why in the banner. A preview ends here, in
-    /// any mode, so the screen shows what the config names.
+    /// macOS reported its appearance. Only a switch between light and dark counts (see
+    /// `appearance_step`). In "system" mode the theme follows; a theme that fails to load leaves
+    /// the current one and says why in the banner. A preview ends here, in any mode, so the screen
+    /// shows what the config names.
     pub fn set_system_appearance(&mut self, dark: bool, cx: &mut Context<Self>) {
+        let (end_preview, switch) = appearance_step(self.system_is_dark, dark, self.config.appearance.mode, self.preview.is_some());
         self.system_is_dark = dark;
-        let previewing = self.preview.take().is_some();
-        if self.config.appearance.mode != config::AppearanceMode::System && !previewing {
-            return;
+        if end_preview {
+            self.preview = None;
         }
-        self.switch_theme(cx);
+        if switch {
+            self.switch_theme(cx);
+        }
     }
 
     /// Loads the theme the config and appearance name and switches to it if it differs. A theme
@@ -3641,8 +3644,6 @@ impl Render for Root {
     }
 }
 
-/// Replaces the key bindings with the defaults plus `keybindings`, and sets the menu bar again:
-/// it shows (and on macOS answers) the keys bound when it was set.
 /// One window's answer to a `Customize`: a preview whose TOML did not parse is its error, every
 /// other action reports the state `after` it ran. `parsed` is read only for a preview.
 pub fn customize_outcome(action: &CustomizeAction, parsed: Result<theme::Theme, String>, after: protocol::Report) -> Result<protocol::Report, String> {
@@ -3657,6 +3658,19 @@ pub fn theme_file_for(mode: config::AppearanceMode, system_is_dark: bool, cfg: &
     themes.join(format!("{}.toml", theme::pick_name(mode, system_is_dark, cfg)))
 }
 
+/// What a reported system appearance asks of a window, as (end the preview, switch the theme).
+/// A report in the shade the window already knows (a vibrant or high contrast variant of it) asks
+/// for nothing, so it cannot end an agent's preview. A change of shade ends a preview in any mode
+/// and switches the theme in "system" mode or when a preview ended.
+pub fn appearance_step(was_dark: bool, dark: bool, mode: config::AppearanceMode, previewing: bool) -> (bool, bool) {
+    if was_dark == dark {
+        return (false, false);
+    }
+    (previewing, previewing || mode == config::AppearanceMode::System)
+}
+
+/// Replaces the key bindings with the defaults plus `keybindings`, and sets the menu bar again:
+/// it shows (and on macOS answers) the keys bound when it was set.
 fn rebind(cx: &mut App, keybindings: &BTreeMap<String, String>) {
     cx.clear_key_bindings();
     cx.bind_keys(keymap::bindings_for(keybindings));
@@ -4411,6 +4425,22 @@ mod tests {
         assert_eq!(shell_folder(Some(dir.path().to_path_buf())), Some(dir.path().to_path_buf()));
         assert_eq!(shell_folder(Some(dir.path().join("gone"))), None, "a removed worktree: the project");
         assert_eq!(shell_folder(None), None);
+    }
+
+    #[test]
+    fn only_a_change_of_shade_ends_a_preview_or_switches_the_theme() {
+        use super::appearance_step;
+        use crate::config::AppearanceMode::{Dark, Light, System};
+        for mode in [System, Dark, Light] {
+            for previewing in [false, true] {
+                assert_eq!(appearance_step(true, true, mode, previewing), (false, false), "a variant of dark: {mode:?} {previewing}");
+                assert_eq!(appearance_step(false, false, mode, previewing), (false, false), "a variant of light: {mode:?} {previewing}");
+            }
+        }
+        assert_eq!(appearance_step(true, false, System, false), (false, true), "system mode follows");
+        assert_eq!(appearance_step(true, false, Dark, false), (false, false), "a fixed mode ignores it");
+        assert_eq!(appearance_step(false, true, Light, true), (true, true), "a change of shade ends a preview in any mode");
+        assert_eq!(appearance_step(false, true, System, true), (true, true));
     }
 
     #[test]

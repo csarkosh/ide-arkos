@@ -20,8 +20,9 @@ for you, so never write the file by hand when a command exists.
 - Theme files: `~/.config/arkos/themes/<name>.toml`. A file shadows a built-in of the same name.
 - The daemon's socket: `~/Library/Application Support/arkos/arkosd.sock`.
 - The logs, in the same folder: `window.log`, `arkosd.log`, and `updates/journal.log`.
-- The binary: `/Applications/Arkos IDE.app/Contents/MacOS/arkos`. When `arkos` is not on your
-  PATH, call it by that full path (quote it: the name has a space).
+- The binary: inside an Arkos shell, `arkos` is on your PATH and `$ARKOS_BIN` holds its full
+  path. When `arkos` is not on your PATH, call it as `"$ARKOS_BIN"`, or by its full path; the
+  usual one is `/Applications/Arkos IDE.app/Contents/MacOS/arkos` (quote it: the name has a space).
 - This guide as a file: `arkos guide --path` writes it to the Application Support folder above
   and prints the path.
 
@@ -81,9 +82,9 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 - `arkos theme template [<built-in>] [--json]`: a built-in's TOML (default `navy`); an unknown
   built-in exits 1. `--json` gives the schema instead:
   `{ "tables": [{ "name", "keys": [{ "key", "meaning", "contrast_with"?, "needs"? }] }] }`.
-- `arkos theme contrast <file-or-name> [--json]`: one line per pair, `{what} {ratio}:1 ok` or
-  `{what} {ratio}:1 LOW (needs {needs})` with the ratio to one decimal, as in
-  `tree.ignored on window_bg 4.2:1 LOW (needs 4.5)`; exit 1 when any pair is low. An argument ending in
+- `arkos theme contrast <file-or-name> [--json]`: one line per pair, `{what} {ratio}:1 ok` with
+  the ratio to one decimal, or `{what} {ratio}:1 LOW (needs {needs})` with the ratio cut down to two
+  decimals, as in `tree.ignored on window_bg 4.46:1 LOW (needs 4.5)`; exit 1 when any pair is low. An argument ending in
   `.toml` is a file. JSON `{ "name", "ok", "pairs": [{ "what", "fg", "bg", "ratio", "needs", "ok" }] }`.
 - `arkos theme add <file> [--replace] [--json]`: copies the file into the themes folder:
   `added {name}` or `replaced {name}`; a name taken by a file or a built-in prints
@@ -122,14 +123,19 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `update.auto` (true, false) and `recovery.start_at_login` (ask, on, off). Another key exits 2
   with the list. A bad value is refused before anything is written. Then every window reloads:
-  `window {pid} ({project}): {key} applied` or its config error (exit 1); `saved; no window running`
+  `window {pid} ({project}): {key} applied` or its config error (exit 1), or, for
+  `appearance.mode`, `theme.dark` and `theme.light`, its theme error (exit 1); `saved; no window running`
   and `saved; no window answered` as for `use`. Unlike `use`, it repairs a broken `config.toml`
   when the edit makes it load. JSON `{ "key", "value", "saved", "windows", "missing", "too_old" }`.
 - `arkos config reload [--json]`: asks every window to read its config now:
   `window {pid} ({project}): reloaded, {theme}` or its errors. Exit 3: no window; 1: none answered.
+  A reload, from this command or from `use` and `settings set`, recreates a missing `config.toml`
+  with the defaults (the file watcher does the same); that is the one case where a window writes a
+  file on this channel.
 - `arkos guide [--path | --install]`: prints this guide; `--path` writes it to a file and prints
-  the path; `--install` installs the skill into your Claude config folder and prints a line to
-  paste into `AGENTS.md` or `CLAUDE.md`.
+  the path; `--install` installs the skill into your Claude config folder (or prints
+  `already current: {path}` and writes nothing when it is up to date) and prints a line to paste
+  into `AGENTS.md` or `CLAUDE.md`.
 
 ## 5. The workflow
 

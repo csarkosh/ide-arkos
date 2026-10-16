@@ -15,9 +15,30 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 /// A hook's stdin is a small JSON object; more than this is not one.
 const STDIN_CAP: u64 = 64 * 1024;
 
-/// What the SessionStart hook prints inside Arkos. Claude Code adds a SessionStart hook's
-/// standard output to the agent's context, so the agent learns where the guide is.
+/// What the SessionStart hook prints inside Arkos when `arkos` resolves on its PATH. Claude Code
+/// adds a SessionStart hook's standard output to the agent's context, so the agent learns where
+/// the guide is.
 pub const CONTEXT_LINES: &str = "This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `arkos guide` first and follow it.\n";
+
+/// The SessionStart hook's two lines: `CONTEXT_LINES` when `on_path`, else the second line names
+/// `exe`, this binary, by its full path, quoted for `sh`, so the command it gives runs as written.
+pub fn context_lines(on_path: bool, exe: &Path) -> String {
+    if on_path {
+        CONTEXT_LINES.to_string()
+    } else {
+        format!("This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `{} guide` first and follow it.\n", shell_quote(exe))
+    }
+}
+
+/// Whether `name` resolves through `path_var` (a `PATH` value): some entry holds a file of that
+/// name with an execute bit. Empty entries are skipped rather than read as the current folder.
+pub fn resolves_on_path(path_var: &str, name: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path_var
+        .split(':')
+        .filter(|dir| !dir.is_empty())
+        .any(|dir| std::fs::metadata(Path::new(dir).join(name)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
@@ -114,9 +135,10 @@ pub fn send_one_with(socket: &Path, request: Request, timeout: Duration) -> std:
 /// `arkos notify ...` with its inputs explicit, for tests. Always 0 for `notify`: a hook
 /// that fails would show up in Claude Code as a hook error, for something that is only a tab
 /// icon. Every reason is on stderr, which Claude Code only shows for a non-zero exit. A session
-/// start inside Arkos first installs or refreshes the agent guide skill in `skills` (the starting
-/// Claude Code's own folder) and prints `CONTEXT_LINES` to `out`; nothing else goes to `out`.
-pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, skills: &Path) -> i32 {
+/// start inside Arkos, and only that, calls `start` for the skills folder (the starting Claude
+/// Code's own, `None` when the environment names none) and the context lines; it installs or
+/// refreshes the agent guide skill there and prints the lines to `out`; nothing else goes to `out`.
+pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, start: &dyn Fn() -> (Option<PathBuf>, String)) -> i32 {
     let notify = match parse_notify(args) {
         Ok(n) => n,
         Err(usage) => {
@@ -130,10 +152,16 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
     };
     if notify == Notify::Event(HookEvent::SessionStart) {
         // The skill reaches this Claude Code at its next start; the lines cover this one.
-        if let Err(e) = crate::guide::ensure_skill(skills) {
-            eprintln!("arkos notify: the agent guide skill was not installed: {e}");
+        let (skills, lines) = start();
+        match skills {
+            Some(dir) => {
+                if let Err(e) = crate::guide::ensure_skill(&dir) {
+                    eprintln!("arkos notify: the agent guide skill was not installed: {e}");
+                }
+            }
+            None => eprintln!("arkos notify: the agent guide skill was not installed: neither CLAUDE_CONFIG_DIR nor HOME is set"),
         }
-        let _ = out.write_all(CONTEXT_LINES.as_bytes());
+        let _ = out.write_all(lines.as_bytes());
         let _ = out.flush();
     }
     let input = match notify {
@@ -161,7 +189,7 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
 }
 
 /// Quoted for `sh` when the path needs it.
-fn shell_quote(path: &Path) -> String {
+pub(crate) fn shell_quote(path: &Path) -> String {
     let s = path.to_string_lossy();
     if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c)) {
         s.into_owned()
@@ -329,7 +357,10 @@ pub fn run(args: &[String]) -> i32 {
             std::env::var("ARKOS_SESSION_ID").ok().as_deref(),
             &mut std::io::stdin(),
             &mut std::io::stdout(),
-            &crate::guide::skills_dir(),
+            &|| {
+                let on_path = std::env::var("PATH").is_ok_and(|p| resolves_on_path(&p, "arkos"));
+                (crate::guide::find_skills_dir(), context_lines(on_path, &this_exe()))
+            },
         ),
         Some("hooks") => match args.get(1).map(String::as_str) {
             Some("print") => {
@@ -421,13 +452,19 @@ mod tests {
         (socket, rx)
     }
 
+    /// A session start's inputs for a test: the skills folder given, and the on-PATH lines.
+    fn start_in(skills: &Path) -> impl Fn() -> (Option<PathBuf>, String) + '_ {
+        move || (Some(skills.to_path_buf()), CONTEXT_LINES.to_string())
+    }
+
     #[test]
     fn notify_sends_one_request_for_the_session_in_the_environment() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
-        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &skills);
+        let unresolved = || -> (Option<PathBuf>, String) { panic!("a state notify resolves no skills folder") };
+        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &unresolved);
         assert_eq!(code, 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Waiting });
         assert!(out.is_empty(), "a state hook prints nothing");
@@ -441,7 +478,7 @@ mod tests {
         let skills = dir.path().join("skills");
         let start = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#;
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills)), 0);
         let agent = AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["claude".into(), "--resume".into(), "abc".into()] };
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { session: SessionId(7), agent });
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
@@ -452,7 +489,7 @@ mod tests {
         let again = tempfile::tempdir().unwrap();
         let (socket, _rx) = fake_daemon(again.path());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills)), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
         assert_eq!(std::fs::metadata(&skill).unwrap().modified().unwrap(), mtime);
         // A skill someone else wrote under that name stays as it was, and the hook still succeeds.
@@ -460,7 +497,7 @@ mod tests {
         let third = tempfile::tempdir().unwrap();
         let (socket, _rx) = fake_daemon(third.path());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills)), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
         assert_eq!(std::fs::read_to_string(&skill).unwrap(), "---\nname: theirs\n---\nhi\n");
     }
@@ -472,15 +509,64 @@ mod tests {
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"other"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills)), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"clear"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills)), 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::ClearAgent { session: SessionId(7), id: "abc".into() });
         assert!(out.is_empty(), "a session end prints nothing");
         assert!(!skills.exists());
+    }
+
+    #[test]
+    fn without_home_a_state_notify_still_reports_and_a_session_start_skips_only_the_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(dir.path());
+        // The environment as the hook would see it with neither CLAUDE_CONFIG_DIR nor HOME set.
+        let homeless = || (crate::guide::skills_dir_from(None, None), CONTEXT_LINES.to_string());
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("7"), &mut std::io::empty(), &mut out, &homeless), 0);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Working });
+        assert!(out.is_empty());
+        let again = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(again.path());
+        let start = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#;
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &homeless), 0);
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { .. }), "the agent is still recorded");
+        assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES, "and the lines still print");
+    }
+
+    #[test]
+    fn the_context_lines_name_the_full_path_when_arkos_is_not_on_the_path() {
+        assert_eq!(context_lines(true, Path::new("/anywhere/arkos")), CONTEXT_LINES);
+        assert_eq!(
+            context_lines(false, Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos")),
+            "This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `'/Applications/Arkos IDE.app/Contents/MacOS/arkos' guide` first and follow it.\n"
+        );
+        assert!(context_lines(false, Path::new("/opt/arkos/bin/arkos")).contains("run `/opt/arkos/bin/arkos guide` first"));
+    }
+
+    #[test]
+    fn arkos_resolves_only_through_an_executable_file_on_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, plain, folder) = (dir.path().join("bin"), dir.path().join("plain"), dir.path().join("folder"));
+        for d in [&bin, &plain, &folder] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(bin.join("arkos"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("arkos"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(plain.join("arkos"), "not executable").unwrap();
+        std::fs::set_permissions(plain.join("arkos"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::create_dir_all(folder.join("arkos")).unwrap();
+        let joined = |dirs: &[&Path]| dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(":");
+        assert!(resolves_on_path(&joined(&[&plain, &folder, &bin]), "arkos"), "the last entry has it");
+        assert!(!resolves_on_path(&joined(&[&plain, &folder]), "arkos"), "a plain file and a folder do not count");
+        assert!(!resolves_on_path(&joined(&[&bin]), "arkosd"));
+        assert!(!resolves_on_path("", "arkos"));
+        assert!(!resolves_on_path(&format!("::{}", dir.path().join("missing").display()), "arkos"));
     }
 
     #[test]
@@ -489,10 +575,10 @@ mod tests {
         let (socket, rx) = fake_daemon(dir.path());
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &skills), 0);
-        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &start_in(&skills)), 0);
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &skills), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &start_in(&skills)), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         assert!(out.is_empty(), "outside Arkos a session start prints nothing");
         assert!(!skills.exists(), "and installs nothing");
@@ -503,8 +589,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skills = dir.path().join("skills");
         let started = std::time::Instant::now();
-        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &skills), 0);
-        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &skills), 0);
+        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills)), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

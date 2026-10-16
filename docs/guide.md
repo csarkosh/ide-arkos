@@ -368,9 +368,9 @@ A coding agent running in an Arkos terminal can make a theme, try it, check its 
 switch to it with commands, and change the common settings the same way. `arkos guide` prints
 what the agent needs.
 
-`arkos` is on the PATH only when the binary was linked; the Homebrew cask installs the app alone.
-The full path is `/Applications/Arkos IDE.app/Contents/MacOS/arkos`. A later change puts it on the
-PATH inside Arkos shells.
+Inside Arkos shells, `arkos` is on PATH and `$ARKOS_BIN` names the binary; elsewhere use the full
+path, usually `/Applications/Arkos IDE.app/Contents/MacOS/arkos` (the Homebrew cask installs the
+app alone and links nothing onto the PATH).
 
 Exit codes, for every command: 0 done; 1 refused or failed (a bad file, an unknown name, a low
 contrast pair, a window that reported an error or none that answered, an old daemon); 2 usage;
@@ -400,8 +400,9 @@ load is refused by `use`, and repaired by `settings set` when the edit makes it 
 The configured theme's file is watched like `config.toml`: an edit applies within a second. A file
 that does not parse keeps the last good theme on screen and puts the error in the banner. While
 `config.toml` itself is broken, a theme edit waits for the config to load again. A preview ends at
-`--end`, at the next config or theme reload, or when the window closes; ending one while the
-configured theme's file is broken keeps the preview's colours with the error shown.
+`--end`, at the next config or theme reload, when the system appearance changes (dark to light or
+back), or when the window closes; ending one while the configured theme's file is broken keeps
+the preview's colours with the error shown.
 
 `arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
@@ -414,20 +415,23 @@ An agent finds `arkos guide` in three ways, from no setup to one command:
 
 1. The SessionStart hook ("Install Claude Code hooks" in the palette, or the doctor). In an Arkos
    shell it prints two lines telling the session it runs inside Arkos IDE and to run `arkos guide`
-   first. It also installs the guide as a skill into the starting Claude Code's own config folder
-   (`CLAUDE_CONFIG_DIR`, else `~/.claude`); that Claude Code loads the skill at its next start.
+   first (by the binary's full path when `arkos` is not on the hook's PATH). It also installs the
+   guide as a skill into the starting Claude Code's own config folder (`CLAUDE_CONFIG_DIR`, else
+   `~/.claude`); that Claude Code loads the skill at its next start.
 2. `arkos guide --install` writes the skill (`skills/arkos-ide/SKILL.md`) into the config folder of
    the current environment and prints a line to paste into `AGENTS.md` or `CLAUDE.md`, for agents
-   that read those. The palette's "Install agent guide" does the same. It never overwrites a skill
-   it did not write. `arkos guide --path` writes the guide to
-   `~/Library/Application Support/arkos/agent-guide.md` for agents that take a file.
+   that read those; a skill already up to date is left alone (`already current: {path}`). The
+   palette's "Install agent guide" installs it too. It never overwrites a skill it did not write.
+   `arkos guide --path` writes the guide to `~/Library/Application Support/arkos/agent-guide.md`
+   for agents that take a file.
 3. `arkos --help` lists `guide` first, and `arkos theme` with no arguments says `see: arkos guide`.
 
 The doctor ("Agent guide for Claude Code" in the wrench's list) offers to install or refresh the
 skill, and `arkos doctor` has a `themes:` section: `{n} themes, all valid` or one line per theme
-file that does not load, a `theme.dark` or `theme.light` that names no theme, and the skill's
-state (installed, not installed, older than this build, or a different skill). The doctor row
-checks only the folder of the environment Arkos runs in.
+file that does not load (ending with the `arkos theme validate` command to run on it), a
+`theme.dark` or `theme.light` that names no theme, and the skill's state (installed, not
+installed, older than this build, or a different skill). The doctor row checks only the folder of
+the environment Arkos runs in.
 
 `arkos config`, `arkos settings` and `arkos guide` are commands, so they win over a folder of the
 same name: `arkos ./config` opens the folder.

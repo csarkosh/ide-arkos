@@ -310,7 +310,7 @@ pub struct Session {
     /// the handover and the manifest.
     shell: String,
     nice: i32,
-    /// The caller's extra variables only, not `TERM` and the session id.
+    /// The caller's extra variables only, not `TERM`, the session id, `ARKOS_BIN` or `PATH`.
     env: Vec<(String, String)>,
     /// The agent inside, from its SessionStart hook; its SessionEnd hook clears it. A leaf lock:
     /// never taken while `state` or `child` is held, and neither of those is taken under it.
@@ -338,6 +338,22 @@ struct SessionState {
     grace_secs: Option<u32>,
 }
 
+/// `ARKOS_BIN` and `PATH` for a spawned shell. The app bundle holds `arkos` beside `arkosd`, and
+/// the Homebrew cask links neither onto the PATH, so the shell gets the full path of the `arkos`
+/// beside `exe` (this daemon) and that folder ahead of the inherited `PATH`, which is otherwise
+/// kept. A login shell's path_helper may move the folder after the system paths; the name
+/// collides with nothing there. Empty when `exe` is unknown or has no folder.
+fn arkos_bin_env(exe: Option<&Path>, inherited_path: Option<&str>) -> Vec<(String, String)> {
+    let Some(folder) = exe.and_then(Path::parent).and_then(Path::to_str).filter(|f| !f.is_empty()) else {
+        return Vec::new();
+    };
+    let path = match inherited_path {
+        Some(rest) if !rest.is_empty() => format!("{folder}:{rest}"),
+        _ => folder.to_string(),
+    };
+    vec![("ARKOS_BIN".to_string(), format!("{folder}/arkos")), ("PATH".to_string(), path)]
+}
+
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -361,6 +377,7 @@ impl Session {
             ("COLORTERM".to_string(), "truecolor".to_string()),
             ("ARKOS_SESSION_ID".to_string(), spec.id.0.to_string()),
         ];
+        env.extend(arkos_bin_env(std::env::current_exe().ok().as_deref(), std::env::var("PATH").ok().as_deref()));
         env.extend(spec.env.iter().cloned());
         let pid = pty::spawn(slave, &shell, &args, &spec.cwd, &env).context("spawn shell")?;
         if spec.nice != 0 {
@@ -987,6 +1004,50 @@ mod tests {
             }
         }
         assert_eq!(exits, 1);
+    }
+
+    #[test]
+    fn a_shell_finds_the_arkos_beside_the_daemon_first_on_its_path() {
+        let spec = SpawnSpec {
+            id: SessionId(13),
+            cwd: std::env::temp_dir(),
+            shell: Some("/bin/sh".into()),
+            env: vec![],
+            nice: 0,
+            rows: 24,
+            cols: 200,
+            replay_capacity: 8192,
+            backpressure: Backpressure::default(),
+            seed: Vec::new(),
+            recovered: false,
+            agent: None,
+        };
+        let folder = std::env::current_exe().unwrap().parent().unwrap().to_str().unwrap().to_string();
+        let s = Session::spawn(spec).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        s.write(b"echo \"bin=$ARKOS_BIN first=${PATH%%:*}\"\n").unwrap();
+        // The typed line echoes with the variables unexpanded, so only the shell's answer matches.
+        let want = format!("bin={folder}/arkos first={folder}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !String::from_utf8_lossy(&s.state.lock().unwrap().replay.snapshot()).contains(&want) {
+            assert!(Instant::now() < deadline, "no {want:?} in {:?}", String::from_utf8_lossy(&s.state.lock().unwrap().replay.snapshot()));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        s.kill().unwrap();
+    }
+
+    #[test]
+    fn the_arkos_entries_prepend_the_folder_and_are_skipped_without_one() {
+        let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkosd");
+        let folder = "/Applications/Arkos IDE.app/Contents/MacOS";
+        assert_eq!(
+            arkos_bin_env(Some(exe), Some("/usr/bin:/bin")),
+            vec![("ARKOS_BIN".to_string(), format!("{folder}/arkos")), ("PATH".to_string(), format!("{folder}:/usr/bin:/bin"))]
+        );
+        assert_eq!(arkos_bin_env(Some(exe), None)[1], ("PATH".to_string(), folder.to_string()));
+        assert_eq!(arkos_bin_env(Some(exe), Some(""))[1], ("PATH".to_string(), folder.to_string()));
+        assert!(arkos_bin_env(None, Some("/usr/bin")).is_empty(), "no daemon path, no entries");
+        assert!(arkos_bin_env(Some(Path::new("arkosd")), Some("/usr/bin")).is_empty(), "a bare name has no folder");
     }
 
     #[test]

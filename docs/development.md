@@ -239,7 +239,7 @@ Things only a person at the screen can check, in order of value:
   config's comments are still there
 - a theme file with a syntax error in `~/.config/arkos/themes/`: `arkos doctor` lists it under
   `themes:`; with no skill installed the doctor's "Agent guide for Claude Code" row says so, and
-  "Apply" installs it
+  "Install" installs it
 - `arkos guide` prints the guide; `arkos guide --path` prints a path to a readable copy
 - with the hooks installed and no skill, a fresh `claude` in a tab, asked "change the theme to
   something warm": it runs `arkos guide` unprompted, makes and applies a theme, and ends with

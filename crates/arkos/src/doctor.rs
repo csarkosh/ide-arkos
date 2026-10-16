@@ -111,8 +111,9 @@ pub fn report(w: &Where, now: SystemTime) -> String {
     out
 }
 
-/// The doctor's themes lines: `{n} themes, all valid`, or one `{path}: {error}` line per theme
-/// file that does not load; a `[theme] dark` or `light` that names neither a built-in nor a file;
+/// The doctor's themes lines: `{n} themes, all valid`, or one
+/// `{path}: {error}; run arkos theme validate {path}` line per theme file that does not load (the
+/// second path quoted for `sh`); a `[theme] dark` or `light` that names neither a built-in nor a file;
 /// and where the agent guide skill stands in `skills_dir`. The config is read with
 /// `read_to_string` and `config::parse`, so a missing file is not created.
 pub fn themes_section(themes: &Path, config: &Path, skills_dir: &Path, skill: &SkillState) -> Vec<String> {
@@ -120,7 +121,10 @@ pub fn themes_section(themes: &Path, config: &Path, skills_dir: &Path, skill: &S
     let mut lines: Vec<String> = listed
         .iter()
         .filter_map(|(name, source)| match source {
-            crate::theme::Source::Invalid(e) => Some(format!("{}: {e}", themes.join(format!("{name}.toml")).display())),
+            crate::theme::Source::Invalid(e) => {
+                let path = themes.join(format!("{name}.toml"));
+                Some(format!("{}: {e}; run arkos theme validate {}", path.display(), crate::hook_cli::shell_quote(&path)))
+            }
             _ => None,
         })
         .collect();
@@ -322,7 +326,9 @@ mod tests {
         let cfg = dir.path().join("config.toml");
         std::fs::write(&cfg, "[theme]\ndark = \"gone\"\nlight = \"navy-light\"\n").unwrap();
         let lines = themes_section(&themes, &cfg, Path::new("/h/.claude/skills"), &SkillState::Missing);
-        assert!(lines.iter().any(|l| l.starts_with(&format!("{}: ", themes.join("broken.toml").display()))), "{lines:?}");
+        let broken = themes.join("broken.toml");
+        let line = lines.iter().find(|l| l.starts_with(&format!("{}: ", broken.display()))).unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(line.ends_with(&format!("; run arkos theme validate {}", crate::hook_cli::shell_quote(&broken))), "the line ends with the fix: {line}");
         assert!(lines.iter().any(|l| l == "theme.dark names no theme: gone"), "{lines:?}");
         assert!(!lines.iter().any(|l| l.contains("names no theme: broken")), "an invalid file has its own line");
         assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude/skills: not installed"), "{lines:?}");
