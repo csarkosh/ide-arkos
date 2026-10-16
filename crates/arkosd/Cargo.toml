@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 protocol.workspace = true
+telemetry.workspace = true
 serde.workspace = true
 postcard.workspace = true
 anyhow.workspace = true

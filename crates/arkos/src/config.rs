@@ -20,6 +20,9 @@ pub struct Config {
     pub appearance: AppearanceConfig,
     pub recovery: RecoveryConfig,
     pub update: UpdateConfig,
+    /// Usage and crash reports (telemetry spec, section 3.1): the type is the shared crate's,
+    /// because the daemon reads this table too.
+    pub telemetry: ::telemetry::TelemetryConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -225,6 +228,7 @@ impl Default for Config {
             appearance: AppearanceConfig::default(),
             recovery: RecoveryConfig::default(),
             update: UpdateConfig::default(),
+            telemetry: ::telemetry::TelemetryConfig::default(),
         }
     }
 }
@@ -594,6 +598,15 @@ start_at_login = "ask"
 auto = true
 check_every_secs = 300
 idle_after_secs = 30
+
+[telemetry]
+# Usage reports: which features you used and for how long, never a file, a folder, a name or
+# anything typed, under an id that ends with the window. "local" records them on this Mac only;
+# "on" also sends them; "off" records nothing. Help > What Arkos Sends shows every field.
+# usage = "local"
+# Crash reports: "ask" shows the report and asks before sending each one; "always" sends them
+# without asking; "never" deletes them.
+# crashes = "ask"
 "##;
 
 /// The preset a workspace uses: what it saved, else the config's default, else comfortable.
@@ -734,6 +747,107 @@ mod tests {
         }
         assert!(DEFAULT_CONFIG.contains("csarko.sh/research/check-your-eyes-before-your-theme"));
         assert!(DEFAULT_CONFIG.contains("convergence"), "the eye-examination note (spec 7.1)");
+        // The telemetry keys are written commented, at their defaults, so the file states no choice.
+        assert!(DEFAULT_CONFIG.contains("\n[telemetry]\n"), "the telemetry table");
+        assert!(DEFAULT_CONFIG.contains("\n# usage = \"local\"\n"), "usage, commented");
+        assert!(DEFAULT_CONFIG.contains("\n# crashes = \"ask\"\n"), "crashes, commented");
+    }
+
+    #[test]
+    fn the_telemetry_table_is_read_through_the_shared_type() {
+        use ::telemetry::visits_app::{Crashes, Usage};
+        use ::telemetry::TelemetryConfig;
+        let defaults = TelemetryConfig { usage: Usage::Local, crashes: Crashes::Ask };
+        assert_eq!(parse("").unwrap().telemetry, defaults);
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap().telemetry, defaults, "the written defaults");
+        assert_eq!(::telemetry::parse_table(DEFAULT_CONFIG), Ok(defaults), "the daemon reads the same table");
+        let c = parse("[telemetry]\nusage = \"on\"\ncrashes = \"always\"\n").unwrap();
+        assert_eq!(c.telemetry, TelemetryConfig { usage: Usage::On, crashes: Crashes::Always });
+        let e = parse("[telemetry]\nusage = \"on\"\nuploads = true\n").unwrap_err();
+        assert_eq!(e.line, Some(3), "{e}");
+        assert!(e.message.contains("uploads"), "unknown keys are refused like everywhere else: {e}");
+        let e = parse("[telemetry]\ncrashes = \"sometimes\"\n").unwrap_err();
+        assert_eq!(e.line, Some(2), "{e}");
+        assert!(e.message.contains("sometimes"), "{e}");
+        let back = toml::to_string(&c).unwrap();
+        assert_eq!(parse(&back).unwrap(), c);
+    }
+
+    /// Every `Command` variant, with any value where it carries one.
+    fn every_command() -> Vec<crate::keymap::Command> {
+        use crate::keymap::Command::*;
+        use crate::tree::Side;
+        let all = vec![
+            FocusPane(1), FocusDir(Side::Left), Split(Side::Right), ToggleMaximize, MoveTabToPane(1), CycleTab(1), MruTab, CloseTab,
+            ReopenClosedTab, CloseAllInPane, MoveTabWithin(1), NewTerminal, ClearToStart, FontDelta(1.0), About, OpenSettings, Keybindings,
+            Documentation, OpenConfig, TextPreset(String::new()), ReloadConfig, ExtractThemes, CommandPalette, SetTheme(String::new()), Find,
+            CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
+            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder,
+            NewWindow, NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, DockChromeWindowAt(0), UndockChromeWindow,
+        ];
+        // A variant added to `Command` stops this match from compiling until it is listed above,
+        // and then the test below asks for it in `telemetry/events.toml`.
+        for c in &all {
+            match c {
+                FocusPane(_) | FocusDir(_) | Split(_) | ToggleMaximize | MoveTabToPane(_) | CycleTab(_) | MruTab | CloseTab | ReopenClosedTab
+                | CloseAllInPane | MoveTabWithin(_) | NewTerminal | ClearToStart | FontDelta(_) | About | OpenSettings | Keybindings
+                | Documentation | OpenConfig | TextPreset(_) | ReloadConfig | ExtractThemes | CommandPalette | SetTheme(_) | Find | CopyAsShown
+                | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
+                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile
+                | OpenFolder | NewWindow | NewBrowserTab | NewBrowserTabSinglePage | DockChromeWindow | DockChromeWindowAt(_)
+                | UndockChromeWindow => {}
+            }
+        }
+        all
+    }
+
+    /// A variant's name in snake case, from its `Debug` form: `DockChromeWindowAt(0)` is
+    /// `dock_chrome_window_at`.
+    fn snake_name(c: &crate::keymap::Command) -> String {
+        let debug = format!("{c:?}");
+        let mut out = String::new();
+        for (i, ch) in debug.chars().take_while(|ch| ch.is_alphanumeric()).enumerate() {
+            if ch.is_uppercase() && i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        }
+        out
+    }
+
+    /// One `d` key's listed values in the compiled allowlist file.
+    fn allowlisted(event: &str, key: &str) -> std::collections::BTreeSet<String> {
+        let file: toml::Table = toml::from_str(::telemetry::EVENTS_TOML).unwrap();
+        file["events"][event][key].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn the_palette_event_names_exactly_the_commands() {
+        use ::telemetry::visits_app::{DValue, Event};
+        let names: std::collections::BTreeSet<String> = every_command().iter().map(snake_name).collect();
+        assert_eq!(names.len(), every_command().len(), "no two variants share a name");
+        assert_eq!(allowlisted("palette", "command"), names, "telemetry/events.toml's palette commands are Command's variants");
+        for name in &names {
+            let ev = Event { n: "palette".into(), t: 0, d: [("command".to_string(), DValue::Str(name.clone()))].into() };
+            assert_eq!(::telemetry::allowlist().check(&ev), Ok(()), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_settings_event_names_exactly_the_config_keys() {
+        let toml::Value::Table(sections) = toml::Value::try_from(Config::default()).unwrap() else { panic!("a table") };
+        let mut keys = std::collections::BTreeSet::new();
+        for (section, table) in &sections {
+            for key in table.as_table().unwrap().keys() {
+                // A preset's name is the person's own, so every preset is one key.
+                keys.insert(if section == "font" && key == "presets" { "font.presets".to_string() } else { format!("{section}.{key}") });
+            }
+        }
+        // The two the defaults leave out: an unset shell, and the keybindings table, which is one
+        // key because an action's name has spaces in it.
+        keys.insert("terminal.shell".into());
+        keys.insert("keybindings".into());
+        assert_eq!(allowlisted("settings", "key"), keys, "telemetry/events.toml's settings keys are the config's");
     }
 
     #[test]

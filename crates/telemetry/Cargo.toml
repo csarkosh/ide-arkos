@@ -1,0 +1,17 @@
+[package]
+name = "telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+visits-app.workspace = true
+serde.workspace = true
+# The same major visits-app parses the allowlist with; the app's own config reader is toml 0.8.
+toml = "1"
+# The panic hook's frames, unresolved, and the hash of a panic message's first line.
+backtrace.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,43 +1,12 @@
 //! Where arkos keeps its socket and workspace files (spec 2.1, 4).
 use std::path::{Path, PathBuf};
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").expect("HOME is set"))
-}
-
-/// `$XDG_CONFIG_HOME/arkos` when that is set and non-empty, else `~/.config/arkos` (spec 7).
-pub fn config_dir_from(xdg: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
-    match xdg {
-        Some(x) if !x.is_empty() => PathBuf::from(x).join("arkos"),
-        _ => home.join(".config").join("arkos"),
-    }
-}
-
-pub fn config_dir() -> PathBuf {
-    config_dir_from(std::env::var_os("XDG_CONFIG_HOME").as_deref(), &home())
-}
-
-pub fn config_file() -> PathBuf {
-    config_dir().join("config.toml")
-}
+// The config folder and Application Support moved to the shared crate, so the daemon reads the
+// same `[telemetry]` table; the app's callers keep their `paths::` names.
+pub use ::telemetry::{app_support, config_dir, config_file};
 
 pub fn themes_dir() -> PathBuf {
     config_dir().join("themes")
-}
-
-/// `~/Library/Application Support/arkos`: the socket, the daemon's logs, `updates/`, `window.log`.
-/// `$ARKOS_APP_SUPPORT`, when set and non-empty, replaces it: a second, separate Arkos (its own
-/// daemon, sessions and workspaces) beside the one in use, which the screenshot shoot
-/// (`scripts/shoot.sh`) runs from a dev build.
-pub fn app_support() -> PathBuf {
-    app_support_from(std::env::var_os("ARKOS_APP_SUPPORT").as_deref(), &home())
-}
-
-pub fn app_support_from(override_dir: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
-    match override_dir {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => home.join("Library/Application Support/arkos"),
-    }
 }
 
 /// Holds the unix seconds of this install's first run (`startup::installed_since`).
@@ -118,14 +87,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_support_honours_the_override_only_when_it_is_set() {
-        let home = Path::new("/Users/x");
-        assert_eq!(app_support_from(None, home), PathBuf::from("/Users/x/Library/Application Support/arkos"));
-        assert_eq!(app_support_from(Some(std::ffi::OsStr::new("")), home), PathBuf::from("/Users/x/Library/Application Support/arkos"));
-        assert_eq!(app_support_from(Some(std::ffi::OsStr::new("/tmp/shoot")), home), PathBuf::from("/tmp/shoot"));
-    }
-
-    #[test]
     fn workspace_file_name_is_stable_across_builds() {
         // FNV-1a of the path bytes; the value is pinned so a toolchain change cannot orphan files.
         let f = workspace_file(Path::new("/tmp/a"));
@@ -148,14 +109,9 @@ mod tests {
     }
 
     #[test]
-    fn config_dir_honours_xdg_config_home() {
-        use std::ffi::OsStr;
-        let home = Path::new("/Users/me");
-        assert_eq!(config_dir_from(None, home), PathBuf::from("/Users/me/.config/arkos"));
-        assert_eq!(config_dir_from(Some(OsStr::new("")), home), PathBuf::from("/Users/me/.config/arkos"));
-        assert_eq!(config_dir_from(Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/arkos"));
+    fn themes_live_in_the_config_folder() {
+        assert_eq!(themes_dir(), config_dir().join("themes"));
         assert!(config_file().ends_with("arkos/config.toml"));
-        assert!(themes_dir().ends_with("arkos/themes"));
     }
 
     #[test]

@@ -9,6 +9,11 @@ license = "GPL-3.0-only"
 
 [workspace.dependencies]
 protocol = { path = "crates/protocol" }
+telemetry = { path = "crates/telemetry" }
+# The client half of lib-visits: the report types, consent, the journal and the queue.
+visits-app = { git = "https://github.com/csarkosh/lib-visits", tag = "v0.3.1" }
+# The panic hook's frames, unresolved.
+backtrace = "0.3"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1.1", features = ["alloc"] }
 anyhow = "1"
