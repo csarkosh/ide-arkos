@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use story::{Shot, Story};
 
 const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>]
+       arkos-shoot bundle [--story ...] [--bin target/debug]   (only makes and signs the bundle, to grant it Accessibility)
        arkos-shoot clean";
 
 /// Where the shoot keeps everything: the daemon's state (socket, sessions, workspaces, logs),
@@ -73,6 +74,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("run") => parse_opts(&args[1..]).and_then(run),
+        Some("bundle") => parse_opts(&args[1..]).and_then(bundle_only),
         Some("clean") => Dirs::new().and_then(|d| clean(&d)),
         _ => {
             eprintln!("{USAGE}");
@@ -83,6 +85,18 @@ fn main() {
         eprintln!("arkos-shoot: {e:#}");
         std::process::exit(1);
     }
+}
+
+/// Makes (and signs, when the identity exists) the bundle a run would, and names it, so it
+/// can be added under Accessibility before any run.
+fn bundle_only(opts: Opts) -> Result<()> {
+    let dirs = Dirs::new()?;
+    let story_path = opts.story.canonicalize().with_context(|| format!("story {}", opts.story.display()))?;
+    let repo = story_path.parent().and_then(Path::parent).and_then(Path::parent).context("the story's repository")?.to_path_buf();
+    let bin = opts.bin.canonicalize().with_context(|| format!("binaries in {}", opts.bin.display()))?;
+    let app = make_bundle(&repo, &bin, &dirs.cache.join("app"))?;
+    println!("{}", app.display());
+    Ok(())
 }
 
 fn say(msg: &str) {
@@ -731,6 +745,18 @@ fn make_bundle(repo: &Path, bin: &Path, dir: &Path) -> Result<PathBuf> {
     let icon = repo.join("packaging/AppIcon.icns");
     if icon.is_file() {
         std::fs::copy(icon, app.join("Contents/Resources/AppIcon.icns"))?;
+    }
+    // Signed as "Arkos Shoot" when that identity exists (scripts/shoot/identity.sh): then the
+    // bundle's identity is the certificate, not the binary's hash, and macOS keeps the
+    // Accessibility grant across rebuilds. Unsigned otherwise, with the grant to redo each time.
+    let identities = Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    if identities.contains("\"Arkos Shoot\"") {
+        let status = Command::new("codesign").args(["--force", "--deep", "--sign", "Arkos Shoot", "--identifier", "sh.csarko.arkos.shoot"]).arg(&app).stdout(Stdio::null()).stderr(Stdio::null()).status().context("codesign")?;
+        if !status.success() {
+            bail!("codesign as \"Arkos Shoot\" failed for {}", app.display());
+        }
+    } else {
+        say("no \"Arkos Shoot\" signing identity: the bundle is unsigned, and macOS forgets its Accessibility grant at every rebuild (scripts/shoot/identity.sh makes one)");
     }
     Ok(app)
 }

@@ -640,10 +640,14 @@ states it asks for. Nothing in them is staged afterwards; change the storyboard 
 pictures. The shoot runs a second arkosd of its own (`ARKOS_APP_SUPPORT` names its state
 folder, under `~/Library/Caches/arkos-shoot`), so the Arkos in use is untouched. It spends a
 few minutes of your Claude Code account, needs the Screen Recording permission for the app it
-runs from, and wants your hands off the keyboard and mouse while its window is up, with one
-exception: the first time, the browser pane asks for the Accessibility permission for the
-shoot's own copy of the app (`~/Library/Caches/arkos-shoot/app`); grant it, and the docked
-Chrome window is in the pictures from then on.
+runs from, and does not need its window in front (it captures by window id). The browser pane
+needs the Accessibility permission for the shoot's own bundle
+(`~/Library/Caches/arkos-shoot/app/Arkos IDE.app`): run `scripts/shoot/identity.sh` once, which
+makes a self-signed "Arkos Shoot" certificate the bundle is signed with (an ad-hoc signature's
+identity is the binary's hash, and macOS would forget the grant at every rebuild), then add
+the bundle under System Settings > Privacy & Security > Accessibility once. Progress captures
+and the panes' states land in `docs/images/progress/` every 20 s while it runs, and a run whose
+Claude Code panes never start is ended after a minute.
 
 ## If you get headaches
 
