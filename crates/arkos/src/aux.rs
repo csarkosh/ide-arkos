@@ -48,18 +48,14 @@ pub fn set_root(cx: &mut App, root: WeakEntity<Root>) {
     cx.global_mut::<Aux>().root = Some(root);
 }
 
-/// The About menu item and command: brings the About window forward, or opens it. Its details
-/// come from the project window's Root when there is one, else from what `main()` loaded, with no
-/// daemon. Deferred, because the Root's own command runs this while the Root is being updated, and
-/// gpui refuses a second update or read of an entity meanwhile.
+/// The About menu item and command: brings the About window forward with fresh details, or opens
+/// it. The details come from the project window's Root when there is one, else from what `main()`
+/// loaded, with no daemon. Deferred, because the Root's own command runs this while the Root is
+/// being updated, and gpui refuses a second update or read of an entity meanwhile.
 pub fn open_about(cx: &mut App) {
     cx.defer(|cx| {
         let Some(aux) = cx.try_global::<Aux>() else { return };
-        if let Some(handle) = aux.about {
-            if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
-                return;
-            }
-        }
+        let handle = aux.about;
         let shown = match root(cx) {
             Some(root) => {
                 let root = root.read(cx);
@@ -69,6 +65,18 @@ pub fn open_about(cx: &mut App) {
             None => cx.global::<Aux>().launch.as_ref().map(|l| (about::Details::gather(l.installed, None), l.theme.clone())),
         };
         let Some((details, theme)) = shown else { return };
+        // An open About takes the fresh details, so one opened from the chooser stops saying "not
+        // connected" once the project window exists. Its window may have closed meanwhile.
+        if let Some(h) = handle {
+            let (d, t) = (details.clone(), theme.clone());
+            let refreshed = h.update(cx, move |view, window, cx| {
+                view.refresh(d, t, cx);
+                window.activate_window();
+            });
+            if refreshed.is_ok() {
+                return;
+            }
+        }
         let handle = about::open(cx, details, theme);
         cx.global_mut::<Aux>().about = handle;
     });

@@ -93,10 +93,12 @@ impl Details {
     /// The table, label and value, in the order the window draws it. `now` decides whether a date
     /// reads "today HH:MM".
     pub fn rows(&self, now: SystemTime) -> Vec<(&'static str, String)> {
-        let daemon = match &self.daemon {
+        // The Hello names the binary first ("arkosd 0.3.1 (abc1234)"); the row's label says it.
+        let daemon = self.daemon.as_ref().map(|(v, pid)| (v.strip_prefix("arkosd ").unwrap_or(v), pid));
+        let daemon = match daemon {
             None => "not connected".to_string(),
             Some((version, Some(pid))) => format!("{version}, pid {pid}"),
-            Some((version, None)) => version.clone(),
+            Some((version, None)) => version.to_string(),
         };
         vec![
             ("Version", self.version.clone()),
@@ -186,6 +188,16 @@ pub struct AboutWindow {
     focus: FocusHandle,
 }
 
+impl AboutWindow {
+    /// Replaces what the window shows, for an About asked for again while it is open: the details
+    /// may have been gathered before the project window and its daemon connection existed.
+    pub fn refresh(&mut self, details: Details, theme: Theme, cx: &mut Context<Self>) {
+        self.details = details;
+        self.theme = theme;
+        cx.notify();
+    }
+}
+
 /// Opens the About window centred on the main display and gives it the keyboard. `None` when
 /// gpui could not open it, which the log records.
 pub fn open(cx: &mut App, details: Details, theme: Theme) -> Option<WindowHandle<AboutWindow>> {
@@ -218,13 +230,23 @@ impl Render for AboutWindow {
         let (bg, text, dim, border, link, pill) = (c.window_bg.hsla(), c.text.hsla(), c.text_dim.hsla(), c.border.hsla(), c.focus_ring.hsla(), c.banner.hsla());
         let mut table = div().id("about-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(5.0)).text_size(px(13.0));
         for (ix, (label, value)) in self.details.rows(SystemTime::now()).into_iter().enumerate() {
+            // The themes folder may not exist before the first theme file; it is made first, as
+            // Settings' "Show themes folder" does.
+            let make = label == "Themes";
             let value = match self.details.path_of(label).map(Path::to_path_buf) {
                 Some(path) => div()
                     .id(("about-path", ix))
                     .text_color(link)
                     .cursor_pointer()
                     .hover(|s| s.underline())
-                    .on_click(move |_, _, cx| cx.reveal_path(&path))
+                    .on_click(move |_, _, cx| {
+                        if make {
+                            if let Err(e) = std::fs::create_dir_all(&path) {
+                                eprintln!("arkos: cannot create {}: {e}", path.display());
+                            }
+                        }
+                        cx.reveal_path(&path);
+                    })
                     .child(value)
                     .into_any_element(),
                 None => div().child(value).into_any_element(),
@@ -345,6 +367,9 @@ mod tests {
         assert!(!text.contains("None"));
         let with = Details { daemon: Some(("0.3.1".into(), Some(4242))), ..d.clone() };
         assert_eq!(with.rows(now).iter().find(|(k, _)| *k == "Daemon").unwrap().1, "0.3.1, pid 4242");
+        let hello = Details { daemon: Some(("arkosd 0.3.1 (abc1234)".into(), Some(4242))), ..d.clone() };
+        assert_eq!(hello.rows(now).iter().find(|(k, _)| *k == "Daemon").unwrap().1, "0.3.1 (abc1234), pid 4242");
+        assert!(hello.clipboard_text(now).contains("\nDaemon: 0.3.1 (abc1234), pid 4242\n"));
         let no_pid = Details { daemon: Some(("0.3.1".into(), None)), ..d };
         assert_eq!(no_pid.rows(now).iter().find(|(k, _)| *k == "Daemon").unwrap().1, "0.3.1");
     }

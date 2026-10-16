@@ -116,6 +116,12 @@ fn daemon_label_with(status: &str, reconnecting: bool) -> &'static str {
     }
 }
 
+/// Whether the window is connected to the daemon: no connection status standing and no reconnect
+/// under way, the state `daemon_label_with` calls "arkosd connected".
+fn daemon_connected(status: &str, reconnecting: bool) -> bool {
+    status.is_empty() && !reconnecting
+}
+
 /// The busy mark a terminal tab shows after a disconnect.
 fn disconnect_mark(is_final: bool) -> &'static str {
     if is_final {
@@ -1490,10 +1496,10 @@ impl Root {
     }
 
     /// What the About window shows, from this window's state: the daemon's version and pid while
-    /// connected. The version stays from the last `Hello` after a disconnect, so the bell's
-    /// connected test decides.
+    /// connected. The version stays from the last `Hello` after a disconnect, so the connection
+    /// state decides.
     pub fn details(&self) -> about::Details {
-        let connected = daemon_label_with(&self.status, self.reconnecting_since.is_some()) == CONNECTED_LABEL;
+        let connected = daemon_connected(&self.status, self.reconnecting_since.is_some());
         let daemon = self.daemon_version.clone().filter(|_| connected).map(|v| (v, self.sessions.client.as_ref().and_then(|c| c.peer_pid())));
         about::Details::gather(self.installed, daemon)
     }
@@ -4144,6 +4150,15 @@ mod tests {
         assert!(banner_visible(None, t0), "a status that is not a reconnect shows at once");
         assert_eq!(daemon_label_with("daemon closed the connection", true), "arkosd reconnecting");
         assert_eq!(daemon_label_with("", false), "arkosd connected");
+    }
+
+    #[test]
+    fn the_daemon_counts_as_connected_only_with_no_status_and_no_reconnect() {
+        use super::daemon_connected;
+        assert!(daemon_connected("", false));
+        assert!(!daemon_connected("", true));
+        assert!(!daemon_connected("daemon closed the connection", false));
+        assert!(!daemon_connected(super::CONNECTING, false));
     }
 
     #[test]
