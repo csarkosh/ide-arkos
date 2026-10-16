@@ -4,8 +4,8 @@
 //! source, the theme's colours and the scale (`<key>.png`, with its size in `<key>.json`). Two
 //! Chrome runs per render: `--dump-dom` reads the size the page puts in its title, then
 //! `--screenshot` takes a transparent picture of exactly that size at twice the pixels. Nothing
-//! leaves the machine: the page is a local file whose content security policy allows only inline
-//! code and local files, and Chrome runs with every background service off, the name resolver
+//! leaves the machine: the page is a local file whose content security policy allows only local
+//! files and its own inline script (by its hash), and Chrome runs with every background service off, the name resolver
 //! pointed nowhere and a throwaway profile of the process's own (`profile-<pid>`, made for each
 //! render and removed after it). One render runs at a time in the process (a window is a
 //! process), through the `queue()` gate, and only for a block drawn rendered, never for the one
@@ -141,26 +141,15 @@ fn colour(value: &str) -> String {
 }
 
 /// The page Chrome renders `source` from, in `theme`'s colours: a content security policy that
-/// allows inline code and local files only (no network, whatever the diagram holds), the bundled
-/// script beside it, the source escaped in a `<pre class="mermaid">`, and a script that awaits
-/// `mermaid.run()` and then puts the result in the title: `ok <w> <h>`, the diagram's size in
-/// CSS pixels (its natural width, at most `MAX_W`), with the diagram and the page sized to it,
-/// or `error <the first line of the message>`. The page and the diagram's background are
-/// transparent.
+/// allows only local files and the one inline script the page holds, by its hash (no network,
+/// and no other script, whatever the diagram holds), the bundled script beside it, the source
+/// escaped in a `<pre class="mermaid">`, and a script that awaits `mermaid.run()` and then puts
+/// the result in the title: `ok <w> <h>`, the diagram's size in CSS pixels (its natural width, at
+/// most `MAX_W`), with the diagram and the page sized to it, or `error <the first line of the
+/// message>`. The page and the diagram's background are transparent.
 pub fn page(source: &str, theme: &MermaidTheme) -> String {
-    format!(
-        r#"<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' file:; style-src 'unsafe-inline'; img-src data:">
-<title></title>
-<style>html, body {{ margin: 0; padding: 0; background: transparent; }} pre.mermaid {{ margin: 0; padding: 0; display: inline-block; }}</style>
-<script src="./{SCRIPT_NAME}"></script>
-</head>
-<body>
-<pre class="mermaid">{source}</pre>
-<script>
+    let script = format!(
+        r#"
 mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: {{ background: 'transparent', primaryColor: '{primary}', primaryTextColor: '{text}', lineColor: '{line}', secondaryColor: '{secondary}', tertiaryColor: '{tertiary}', fontFamily: '-apple-system, system-ui' }} }});
 (async () => {{
   try {{
@@ -179,17 +168,51 @@ mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: {{ back
     document.title = 'error ' + (String((e && e.message) || e).split('\n')[0] || '{FAILED}');
   }}
 }})();
-</script>
-</body>
-</html>
 "#,
-        source = escape_html(source),
         primary = colour(&theme.primary),
         text = colour(&theme.text),
         line = colour(&theme.line),
         secondary = colour(&theme.secondary),
         tertiary = colour(&theme.tertiary),
+    );
+    format!(
+        r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {hash} file:; style-src 'unsafe-inline'; img-src data:">
+<title></title>
+<style>html, body {{ margin: 0; padding: 0; background: transparent; }} pre.mermaid {{ margin: 0; padding: 0; display: inline-block; }}</style>
+<script src="./{SCRIPT_NAME}"></script>
+</head>
+<body>
+<pre class="mermaid">{source}</pre>
+<script>{script}</script>
+</body>
+</html>
+"#,
+        hash = script_hash(&script),
+        source = escape_html(source),
     )
+}
+
+/// A content security policy source that allows the inline script `script` and nothing else:
+/// `'sha256-<the base64 of its SHA-256>'`, over the exact text between its tags.
+fn script_hash(script: &str) -> String {
+    format!("'sha256-{}'", base64(&Sha256::digest(script.as_bytes())))
+}
+
+/// Standard base64 with padding, the encoding a CSP hash source takes.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 /// The Google Chrome bundle: in `/Applications`, else in `~/Applications`, as the browser pane
@@ -228,7 +251,8 @@ fn file_url(path: &Path) -> String {
 
 /// The flags of both Chrome runs: headless, with the user data in `profile`, and nothing that
 /// reaches out: no background networking, component updates, sync, default apps, extensions or
-/// crash reports, every host name resolving to nothing, and no keychain prompt. Virtual time lets the page's
+/// crash reports, every host name resolving to nothing, no proxy (a PAC script would be fetched)
+/// and no WebRTC traffic outside one, and no keychain prompt. Virtual time lets the page's
 /// script finish before Chrome reads the page, and `--timeout` ends a page that never settles.
 pub fn common_args(profile: &Path) -> Vec<String> {
     [
@@ -244,6 +268,8 @@ pub fn common_args(profile: &Path) -> Vec<String> {
         "--no-default-browser-check",
         "--disable-breakpad",
         "--host-resolver-rules=MAP * ~NOTFOUND",
+        "--no-proxy-server",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
     ]
     .into_iter()
     .map(String::from)
@@ -343,11 +369,12 @@ fn cache_files(dir: &Path, key: &str) -> (PathBuf, PathBuf) {
     (dir.join(format!("{key}.png")), dir.join(format!("{key}.json")))
 }
 
-/// The diagram with `key` when a render (in this process or another) left it in `dir`: its PNG,
-/// with the size from the `{ "w", "h" }` file beside it.
+/// The diagram with `key` when a render (in this process or another) left it in `dir` and it is
+/// not near its sweep (`cache::fresh`): its PNG, with the size from the `{ "w", "h" }` file beside
+/// it.
 pub fn cached(dir: &Path, key: &str) -> Option<Diagram> {
     let (png, size) = cache_files(dir, key);
-    if !png.is_file() {
+    if !crate::cache::fresh(&png, crate::cache::MERMAID_AGE) || !crate::cache::fresh(&size, crate::cache::MERMAID_AGE) {
         return None;
     }
     let size: serde_json::Value = serde_json::from_slice(&std::fs::read(size).ok()?).ok()?;
@@ -579,12 +606,23 @@ mod tests {
         assert!(html.contains(&format!("<script src=\"./{SCRIPT_NAME}\">")));
         assert!(html.contains("Content-Security-Policy") && html.contains("default-src 'none'"));
         assert!(html.contains("await mermaid.run"));
+        // The policy allows the page's one inline script by its hash, and no inline script else.
+        let script = html.split("<script>").nth(1).and_then(|rest| rest.split("</script>").next()).expect("the inline script");
+        assert!(script.contains("mermaid.initialize") && script.contains("'#2a0062'"));
+        let hash = format!("'sha256-{}'", base64(&Sha256::digest(script.as_bytes())));
+        assert!(html.contains(&format!("script-src {hash} file:;")), "{html}");
+        assert!(!html.contains("script-src 'unsafe-inline'"));
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&Sha256::digest(b"abc")), "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=", "the SHA-256 of abc, as a CSP hash writes it");
         assert_eq!(cache_key("a", &t, 2), cache_key("a", &t, 2));
         let t2 = MermaidTheme { primary: "#000000".into(), ..t.clone() };
         assert_ne!(cache_key("a", &t, 2), cache_key("a", &t2, 2), "the values, not a name");
         let c = Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
         let common = common_args(Path::new("/p"));
-        for flag in ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps", "--disable-extensions", "--no-default-browser-check", "--disable-breakpad", "--host-resolver-rules=MAP * ~NOTFOUND", "--user-data-dir=/p", "--virtual-time-budget=5000", "--timeout=15000"] {
+        for flag in ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps", "--disable-extensions", "--no-default-browser-check", "--disable-breakpad", "--host-resolver-rules=MAP * ~NOTFOUND", "--no-proxy-server", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--user-data-dir=/p", "--virtual-time-budget=5000", "--timeout=15000"] {
             assert!(common.contains(&flag.to_string()), "{flag}");
         }
         let d = dump_args(c, Path::new("/p"), Path::new("/k.html"));
@@ -626,6 +664,18 @@ mod tests {
         assert_eq!(advance(Some(&Diagram::Rendering), new, page, at, || true), Some(Diagram::Error("Parse error on line 2:".into())), "a PNG without its size file is not ready");
         std::fs::write(dir.path().join(format!("{new}.json")), r#"{"w":10,"h":20}"#).unwrap();
         assert_eq!(advance(Some(&Diagram::Rendering), new, page, at, || true), Some(Diagram::Ready { png: dir.path().join(format!("{new}.png")), w: 10, h: 20 }));
+    }
+
+    #[test]
+    fn a_diagram_near_its_sweep_age_is_rendered_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (png, size) = cache_files(dir.path(), "test-old-diagram");
+        std::fs::write(&png, "png").unwrap();
+        std::fs::write(&size, r#"{"w":4,"h":3}"#).unwrap();
+        assert!(cached(dir.path(), "test-old-diagram").is_some());
+        let old = std::time::SystemTime::now() - (crate::cache::MERMAID_AGE - std::time::Duration::from_secs(3600));
+        std::fs::File::options().write(true).open(&png).unwrap().set_modified(old).unwrap();
+        assert_eq!(cached(dir.path(), "test-old-diagram"), None, "within a day of the sweep: missing, so it is rendered again");
     }
 
     #[test]

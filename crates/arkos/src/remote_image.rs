@@ -26,6 +26,9 @@ const BACKSTOP: Duration = Duration::from_secs(20);
 pub const MAX_IN_FLIGHT: usize = 4;
 /// The extensions a fetched file is given, from `sniff_extension`.
 const EXTENSIONS: [&str; 5] = ["png", "jpg", "gif", "webp", "svg"];
+/// How many of a fetched file's first bytes `sniff_extension` looks at: enough for an SVG's
+/// leading white space.
+const SNIFF_BYTES: u64 = 512;
 
 /// Where one remote image is, for the rendered view: being fetched (or waiting for a slot),
 /// in the cache at this path, or not to be had.
@@ -55,10 +58,10 @@ pub fn cache_path(dir: &Path, url: &str) -> PathBuf {
 }
 
 /// `url`'s image in `dir` when an earlier fetch (in this process or another) left it there,
-/// under whichever extension it was given.
+/// under whichever extension it was given, and it is not near its sweep (`cache::fresh`).
 pub fn cached(dir: &Path, url: &str) -> Option<PathBuf> {
     let base = cache_path(dir, url);
-    EXTENSIONS.iter().map(|ext| base.with_extension(ext)).find(|p| p.is_file())
+    EXTENSIONS.iter().map(|ext| base.with_extension(ext)).find(|p| crate::cache::fresh(p, crate::cache::IMAGES_AGE))
 }
 
 /// curl's arguments for fetching `url` into `dest`: `--disable` first, so no `~/.curlrc` adds
@@ -78,20 +81,25 @@ pub fn curl_args(url: &str, dest: &Path) -> Vec<String> {
     ]
 }
 
-/// The extension for an image from its first bytes: PNG, JPEG, GIF and WebP by their
-/// signatures, anything else taken for SVG (gpui renders both kinds, and a file that is neither
-/// shows the alt box).
-pub fn sniff_extension(head: &[u8]) -> &'static str {
+/// The extension for an image from its first bytes (`SNIFF_BYTES` of them): PNG, JPEG, GIF and
+/// WebP by their signatures, SVG when `<svg` or `<?xml` follows an optional byte order mark and
+/// white space. Anything else (an HTML page a captive portal or a rate limit served with a 200)
+/// is `None`, not an image.
+pub fn sniff_extension(head: &[u8]) -> Option<&'static str> {
+    let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
+    let text = &text[text.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(text.len())..];
     if head.starts_with(b"\x89PNG") {
-        "png"
+        Some("png")
     } else if head.starts_with(b"\xff\xd8\xff") {
-        "jpg"
+        Some("jpg")
     } else if head.starts_with(b"GIF8") {
-        "gif"
+        Some("gif")
     } else if head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP") {
-        "webp"
+        Some("webp")
+    } else if text.starts_with(b"<svg") || text.starts_with(b"<?xml") {
+        Some("svg")
     } else {
-        "svg"
+        None
     }
 }
 
@@ -99,6 +107,26 @@ pub fn sniff_extension(head: &[u8]) -> &'static str {
 /// `open`, which could run a program.
 pub fn preview_args(file: &Path) -> Vec<String> {
     vec!["-a".into(), "Preview".into(), file.to_string_lossy().into_owned()]
+}
+
+/// The extensions of the image files Preview is asked to show when their first bytes are not
+/// one `sniff_extension` knows (a TIFF, a HEIC, a BMP).
+const PREVIEW_EXTENSIONS: [&str; 11] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "tif", "tiff", "heic", "bmp", "ico"];
+
+/// The file to show in Preview for the image at `file`: its canonical path, when `file` is
+/// absolute and resolves (symlinks followed) to a plain file whose first bytes are an image's
+/// (`sniff_extension`) or whose resolved name has an image's extension; else `None`, so a link
+/// named like an image that leads to an app, a folder or a script is refused. It reads the disk,
+/// so the caller runs it on the background executor, and the canonical path is what is opened.
+pub fn checked_preview_path(file: &Path) -> Option<PathBuf> {
+    if !file.is_absolute() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(file).ok().filter(|p| p.is_file())?;
+    let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
+    let sniffed = std::fs::File::open(&canonical).and_then(|f| f.take(SNIFF_BYTES).read_to_end(&mut head)).is_ok() && sniff_extension(&head).is_some();
+    let named = canonical.extension().and_then(|e| e.to_str()).is_some_and(|e| PREVIEW_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
+    (sniffed || named).then_some(canonical)
 }
 
 /// The jobs to run (urls to fetch here, video files to make posters of in `media`): each is in
@@ -243,18 +271,26 @@ pub fn wait_bounded(child: &mut Child, backstop: Duration, name: &str) -> Result
     }
 }
 
-/// A finished download: refused when empty or over `MAX_BYTES`, else renamed from `part` to
-/// `dest` with the extension its first bytes show.
+/// A finished download: refused when empty, over `MAX_BYTES` or not an image by its first bytes
+/// (`sniff_extension`), and the part file removed; else renamed from `part` to `dest` with the
+/// extension those bytes show.
 fn land(part: &Path, dest: &Path) -> Result<PathBuf, String> {
-    let len = std::fs::metadata(part).map_err(|e| e.to_string())?.len();
-    if len == 0 || len > MAX_BYTES {
-        return Err(format!("{len} bytes, not an image of at most {MAX_BYTES} bytes"));
+    let landed = (|| {
+        let len = std::fs::metadata(part).map_err(|e| e.to_string())?.len();
+        if len == 0 || len > MAX_BYTES {
+            return Err(format!("{len} bytes, not an image of at most {MAX_BYTES} bytes"));
+        }
+        let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
+        std::fs::File::open(part).and_then(|f| f.take(SNIFF_BYTES).read_to_end(&mut head)).map_err(|e| e.to_string())?;
+        let ext = sniff_extension(&head).ok_or_else(|| "not an image (PNG, JPEG, GIF, WebP or SVG)".to_string())?;
+        let to = dest.with_extension(ext);
+        std::fs::rename(part, &to).map_err(|e| e.to_string())?;
+        Ok(to)
+    })();
+    if landed.is_err() {
+        let _ = std::fs::remove_file(part);
     }
-    let mut head = Vec::with_capacity(16);
-    std::fs::File::open(part).and_then(|f| f.take(16).read_to_end(&mut head)).map_err(|e| e.to_string())?;
-    let to = dest.with_extension(sniff_extension(&head));
-    std::fs::rename(part, &to).map_err(|e| e.to_string())?;
-    Ok(to)
+    landed
 }
 
 #[cfg(test)]
@@ -270,11 +306,14 @@ mod tests {
         assert_ne!(cache_path(Path::new("/c"), "https://x.y/a"), cache_path(Path::new("/c"), "https://x.y/b"));
         let a = curl_args("https://x.y/a.png", Path::new("/c/dest.1.part"));
         assert_eq!(a, ["--disable", "--fail", "--silent", "--show-error", "--location", "--max-redirs", "5", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-time", "15", "--max-filesize", "10485760", "--output", "/c/dest.1.part", "--", "https://x.y/a.png"]);
-        assert_eq!(sniff_extension(b"\x89PNG\r\n\x1a\n...."), "png");
-        assert_eq!(sniff_extension(b"\xff\xd8\xff\xe0"), "jpg");
-        assert_eq!(sniff_extension(b"GIF89a"), "gif");
-        assert_eq!(sniff_extension(b"RIFF....WEBPVP8 "), "webp");
-        assert_eq!(sniff_extension(b"<svg xmlns"), "svg");
+        assert_eq!(sniff_extension(b"\x89PNG\r\n\x1a\n...."), Some("png"));
+        assert_eq!(sniff_extension(b"\xff\xd8\xff\xe0"), Some("jpg"));
+        assert_eq!(sniff_extension(b"GIF89a"), Some("gif"));
+        assert_eq!(sniff_extension(b"RIFF....WEBPVP8 "), Some("webp"));
+        assert_eq!(sniff_extension(b"<svg xmlns"), Some("svg"));
+        assert_eq!(sniff_extension(b"\xef\xbb\xbf\n  <?xml version"), Some("svg"), "a byte order mark and white space first");
+        assert_eq!(sniff_extension(b"<!DOCTYPE html><html>"), None);
+        assert_eq!(sniff_extension(b""), None);
         assert_eq!(preview_args(Path::new("/c/abc.png")), ["-a", "Preview", "/c/abc.png"]);
     }
 
@@ -296,6 +335,59 @@ mod tests {
         std::fs::write(&landed, "<svg/>").unwrap();
         assert_eq!(advance(Some(&Remote::Fetching), new, at), Some(Remote::Ready(landed)));
         assert_eq!(advance(Some(&Remote::Failed), new, at), None, "a failed image is not fetched again in this view");
+    }
+
+    #[test]
+    fn a_page_that_is_not_an_image_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://portal.invalid/badge.png";
+        let dest = cache_path(dir.path(), url);
+        let part = dest.with_extension("1.part");
+        std::fs::write(&part, "<!DOCTYPE html>\n<html><body>Sign in to the Wi-Fi</body></html>\n").unwrap();
+        assert!(land(&part, &dest).is_err());
+        assert!(!part.exists(), "the part file is removed");
+        assert_eq!(cached(dir.path(), url), None, "nothing is cached under any extension");
+        queue().want(url.to_string());
+        queue().done(url);
+        assert_eq!(advance(Some(&Remote::Fetching), url, || dir.path().to_path_buf()), Some(Remote::Failed));
+        std::fs::write(&part, "\u{feff}\n  <svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
+        assert_eq!(land(&part, &dest), Ok(dest.with_extension("svg")), "an SVG after a byte order mark and white space lands");
+    }
+
+    #[test]
+    fn only_a_plain_image_file_is_shown_in_preview() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        // The canonical temp folder: on macOS `/var` is a link to `/private/var`.
+        let d = std::fs::canonicalize(dir.path()).unwrap();
+        let (png, tiff, page, script) = (d.join("a.png"), d.join("scan.tiff"), d.join("notes.txt"), d.join("run.sh"));
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(&tiff, b"II*\0").unwrap();
+        std::fs::write(&page, "plain text").unwrap();
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::create_dir(d.join("folder.png")).unwrap();
+        symlink(&script, d.join("evil.png")).unwrap();
+        symlink(&png, d.join("pic.dat")).unwrap();
+        assert_eq!(checked_preview_path(&png), Some(png.clone()));
+        assert_eq!(checked_preview_path(&tiff), Some(tiff.clone()), "an image's extension is enough");
+        assert_eq!(checked_preview_path(&d.join("pic.dat")), Some(png.clone()), "a link to an image: its target is opened");
+        assert_eq!(checked_preview_path(&d.join("evil.png")), None, "a link named like an image that leads to a script");
+        assert_eq!(checked_preview_path(&d.join("folder.png")), None, "a folder");
+        assert_eq!(checked_preview_path(&page), None, "not an image");
+        assert_eq!(checked_preview_path(&d.join("gone.png")), None, "missing");
+        assert_eq!(checked_preview_path(Path::new("a.png")), None, "not absolute");
+    }
+
+    #[test]
+    fn an_image_near_its_sweep_age_is_fetched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://old.invalid/a.png";
+        let file = cache_path(dir.path(), url).with_extension("png");
+        std::fs::write(&file, b"\x89PNG").unwrap();
+        assert_eq!(cached(dir.path(), url), Some(file.clone()));
+        let old = std::time::SystemTime::now() - (crate::cache::IMAGES_AGE - Duration::from_secs(3600));
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+        assert_eq!(cached(dir.path(), url), None, "within a day of the sweep: missing, so it is fetched again");
     }
 
     #[test]

@@ -1472,12 +1472,18 @@ fn alt_box(text: SharedString, dim: Hsla, border: Hsla) -> Div {
 }
 
 /// Shows an image in Preview through `/usr/bin/open` (`remote_image::preview_args`, the app
-/// named), on the background executor. A path that is not absolute is not opened.
+/// named), on the background executor. First the path is resolved and checked
+/// (`remote_image::checked_preview_path`): it must be absolute and lead to a plain file that is
+/// an image by its first bytes or its name, else a line goes to stderr and nothing is opened.
 fn open_in_preview(file: PathBuf, cx: &mut App) {
-    if !file.is_absolute() {
-        return;
-    }
-    cx.background_executor().spawn(async move { run_open(&file, remote_image::preview_args(&file)) }).detach();
+    cx.background_executor()
+        .spawn(async move {
+            match remote_image::checked_preview_path(&file) {
+                Some(canonical) => run_open(&canonical, remote_image::preview_args(&canonical)),
+                None => eprintln!("arkos: not opening {}: it is not a plain image file", file.display()),
+            }
+        })
+        .detach();
 }
 
 /// Opens a local video or audio file in QuickTime Player (`media::quicktime_args`) or shows a

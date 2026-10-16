@@ -1774,9 +1774,10 @@ impl Viewer {
         self.place_caret(p, extend, cx);
     }
 
-    /// Block `ix`'s index among the document's `<details>` sections, in document order.
+    /// Block `ix`'s index among the document's `<details>` sections, in document order
+    /// (`section_index`).
     pub fn details_index(&self, ix: usize) -> usize {
-        self.blocks[..ix.min(self.blocks.len())].iter().filter(|b| b.kind == md_blocks::BlockKind::Details).count()
+        section_index(&self.blocks, ix)
     }
 
     /// Whether `<details>` block `ix`, whose summary is `summary` and whose tag says `starts_open`,
@@ -2889,6 +2890,13 @@ pub fn section_shown_open(states: &BTreeMap<(String, usize), bool>, summary: &st
     states.iter().find(|((s, i), _)| *i == index && s == summary).map_or(starts_open, |(_, open)| *open)
 }
 
+/// Block `ix`'s index among the `<details>` sections in `blocks`, in document order: the sections
+/// before it. A section's state is kept by its summary and this index, never by its line, so a
+/// paragraph added above it keeps the state.
+pub fn section_index(blocks: &[md_blocks::Block], ix: usize) -> usize {
+    blocks[..ix.min(blocks.len())].iter().filter(|b| b.kind == md_blocks::BlockKind::Details).count()
+}
+
 /// Opens a shown-closed section or closes a shown-open one, recording the new state in `states`.
 pub fn flip_section(states: &mut BTreeMap<(String, usize), bool>, summary: &str, index: usize, starts_open: bool) {
     let open = section_shown_open(states, summary, index, starts_open);
@@ -2922,6 +2930,48 @@ mod tests {
         assert!(!section_shown_open(&restored, "Open", 0, true), "closed although its tag says open");
         assert!(section_shown_open(&restored, "Closed", 1, false), "opened although its tag does not say so");
         assert!(section_shown_open(&restored, "Other", 2, true) && !section_shown_open(&restored, "Other", 2, false), "no state: the tag decides");
+    }
+
+    #[test]
+    fn a_section_s_state_survives_a_paragraph_inserted_above_it() {
+        let section = "<details>\n<summary>Setup</summary>\n\nSteps.\n\n</details>\n";
+        let before = format!("# Title\n\n{section}\n{section}");
+        let blocks = md_blocks::split(edit::Document::from_text(&before).lines());
+        let sections: Vec<usize> = (0..blocks.len()).filter(|&i| blocks[i].kind == md_blocks::BlockKind::Details).collect();
+        assert_eq!(sections.len(), 2, "{blocks:?}");
+        // The second "Setup" is opened, and the state saved and read back.
+        let mut states = BTreeMap::new();
+        flip_section(&mut states, "Setup", section_index(&blocks, sections[1]), false);
+        let states = sections_from(&sections_saved(&states));
+        // A paragraph (and a list) above both: the sections move down a few lines and blocks.
+        let after = format!("# Title\n\nA new paragraph.\n\n- and\n- a list\n\n{section}\n{section}");
+        let moved = md_blocks::split(edit::Document::from_text(&after).lines());
+        let shifted: Vec<usize> = (0..moved.len()).filter(|&i| moved[i].kind == md_blocks::BlockKind::Details).collect();
+        assert_ne!(shifted, sections, "the blocks moved");
+        assert!(!section_shown_open(&states, "Setup", section_index(&moved, shifted[0]), false), "the first stays closed");
+        assert!(section_shown_open(&states, "Setup", section_index(&moved, shifted[1]), false), "the second stays open");
+    }
+
+    #[test]
+    fn tab_in_raw_mode_inserts_spaces_in_a_table_and_indents_a_list_item() {
+        // Raw mode gives `apply_action` no blocks (ruling A: the table keys are the rendered
+        // view's), so Tab in a table is a plain Tab.
+        let now = Instant::now();
+        let text = "| a | b |\n|---|---|\n| 1 | 2 |\n\n- item\n";
+        let mut d = edit::Document::from_text(text);
+        let mut c = edit::Caret::at(Pos { line: 0, ch: 2 });
+        assert_eq!(apply_action(&mut d, &mut c, &[], KeyAction::Tab, 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[0], "|     a | b |", "four spaces, not the next cell");
+        assert_eq!((c.head.line, c.head.ch), (0, 6));
+        let mut c = edit::Caret::at(Pos { line: 2, ch: 6 });
+        assert_eq!(apply_action(&mut d, &mut c, &[], KeyAction::Tab, 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[2], "| 1 |     2 |", "the last cell gets spaces too, and no row is added");
+        assert_eq!(d.lines().len(), 6);
+        let mut c = edit::Caret::at(Pos { line: 0, ch: 6 });
+        assert_eq!(apply_action(&mut d, &mut c, &[], KeyAction::ShiftTab, 20, now), Outcome::Nothing, "Shift+Tab in a table does nothing");
+        let mut c = edit::Caret::at(Pos { line: 4, ch: 3 });
+        apply_action(&mut d, &mut c, &[], KeyAction::Tab, 20, now);
+        assert_eq!(d.lines()[4], "  - item", "a list item still indents");
     }
 
     #[test]

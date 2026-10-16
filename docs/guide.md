@@ -137,8 +137,9 @@ swipe). A table over 500 rows shows as source.
 
 A remote image (`https://`) loads on its own: the block shows the alt text and "loading" until
 the file arrives. Arkos fetches it through `curl` into its cache, at most 10 MB per image, and
-keeps it 30 days. There is no switch for this. Badge rows wrap in a narrow pane, and an image
-wider than the view is scaled to the view.
+keeps it 30 days. A reply that is not an image (a Wi-Fi sign-in page, say) is not kept, and the
+image is fetched again the next time the file opens. There is no switch for this. Badge rows wrap
+in a narrow pane, and an image wider than the view is scaled to the view.
 
 An HTML block that is one `<img>` tag, alone or inside a `<p>`, `<div>` or `<a>`, renders as the
 image too, local or remote. Its `width` is honoured up to the view's width, and it is centred

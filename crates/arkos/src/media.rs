@@ -198,14 +198,16 @@ pub fn queue() -> MutexGuard<'static, FetchQueue<PathBuf>> {
 /// one not seen yet (`state` is `None`) is ready when an earlier run left it in the cache, failed
 /// when the file cannot be read, else queued and being made; one being made whose job has ended
 /// (the queue no longer has it) is ready or failed by what the cache holds. `dir` gives the
-/// cache's folder and is asked for only when it is looked in.
+/// cache's folder and is asked for only when it is looked in. A poster near its sweep
+/// (`cache::fresh`) counts as missing and is made again.
 pub fn advance(state: Option<&Poster>, file: &Path, dir: impl FnOnce() -> PathBuf) -> Option<Poster> {
-    let made = |dir: PathBuf| mtime_secs(file).map(|m| poster_path(&dir, file, m)).filter(|p| p.is_file());
+    let usable = |poster: &PathBuf| crate::cache::fresh(poster, crate::cache::POSTERS_AGE);
+    let made = |dir: PathBuf| mtime_secs(file).map(|m| poster_path(&dir, file, m)).filter(usable);
     match state {
         None => Some(match mtime_secs(file) {
             None => Poster::Failed,
             Some(m) => match poster_path(&dir(), file, m) {
-                poster if poster.is_file() => Poster::Ready(poster),
+                poster if usable(&poster) => Poster::Ready(poster),
                 _ => {
                     queue().want(file.to_path_buf());
                     Poster::Making
@@ -345,5 +347,18 @@ mod tests {
         std::fs::write(&made, "png").unwrap();
         assert_eq!(advance(Some(&Poster::Making), &new, at), Some(Poster::Ready(made)));
         assert_eq!(advance(Some(&Poster::Failed), &new, at), None, "a failed poster is not made again in this view");
+    }
+
+    #[test]
+    fn a_poster_near_its_sweep_age_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("aging.mov");
+        std::fs::write(&video, "v").unwrap();
+        let poster = poster_path(dir.path(), &video, mtime_secs(&video).unwrap());
+        std::fs::write(&poster, "png").unwrap();
+        let old = std::time::SystemTime::now() - (crate::cache::POSTERS_AGE - Duration::from_secs(3600));
+        std::fs::File::options().write(true).open(&poster).unwrap().set_modified(old).unwrap();
+        assert_eq!(advance(None, &video, || dir.path().to_path_buf()), Some(Poster::Making), "within a day of the sweep: missing, so it is made again");
+        queue().done(video.as_path());
     }
 }

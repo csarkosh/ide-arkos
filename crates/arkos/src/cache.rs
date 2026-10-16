@@ -19,6 +19,23 @@ const PART_AGE: Duration = Duration::from_secs(DAY);
 
 const DAY: u64 = 86_400;
 
+/// How long the launch sweep keeps each cache's entries: 30 days for images and diagrams, 90 for
+/// posters (a poster costs a Quick Look run to make again).
+pub const IMAGES_AGE: Duration = Duration::from_secs(30 * DAY);
+pub const MERMAID_AGE: Duration = Duration::from_secs(30 * DAY);
+pub const POSTERS_AGE: Duration = Duration::from_secs(90 * DAY);
+
+/// Whether the cache entry at `path` may be used: a plain file (a link is followed) modified at
+/// most `max_age` less a day ago. An older entry counts as missing, so it is fetched or made
+/// again: the launch sweep, on a thread of its own, removes the entries older than `max_age`, and
+/// one handed out just before it went would stay broken for the process, as gpui keeps a failed
+/// load per path. A modification time in the future is taken as now.
+pub fn fresh(path: &Path, max_age: Duration) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    let age = meta.modified().ok().and_then(|t| SystemTime::now().duration_since(t).ok()).unwrap_or(Duration::ZERO);
+    meta.is_file() && age <= max_age.saturating_sub(Duration::from_secs(DAY))
+}
+
 /// The folder the caches live in.
 pub fn root() -> PathBuf {
     paths::app_support().join("cache")
@@ -75,13 +92,12 @@ fn alive(pid: libc::pid_t) -> bool {
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
-/// Sweeps the three caches at their ages: 30 days for images and diagrams, 90 for posters (a
-/// poster costs a Quick Look run to make again); then the job folders and Chrome profiles of
-/// processes that ended.
+/// Sweeps the three caches at their ages (`IMAGES_AGE`, `MERMAID_AGE`, `POSTERS_AGE`); then the
+/// job folders and Chrome profiles of processes that ended.
 pub fn sweep_all() {
     let root = root();
-    for (folder, days) in [("images", 30), ("mermaid", 30), ("posters", 90)] {
-        sweep(&root.join(folder), Duration::from_secs(days * DAY));
+    for (folder, age) in [("images", IMAGES_AGE), ("mermaid", MERMAID_AGE), ("posters", POSTERS_AGE)] {
+        sweep(&root.join(folder), age);
     }
     sweep_ended(&root.join("posters"), "job.");
     sweep_ended(&root.join("mermaid"), "profile-");
@@ -112,6 +128,25 @@ mod tests {
         assert!(!old.exists() && new.exists() && other.exists() && dir.path().join("profile-1").is_dir());
         assert!(!stale.exists() && fresh.exists(), "a part file goes after a day, whatever the cache's age");
         assert_eq!(sweep(&dir.path().join("absent"), Duration::from_secs(1)), 0);
+    }
+
+    #[test]
+    fn an_entry_within_a_day_of_its_sweep_age_counts_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let age = Duration::from_secs(30 * DAY);
+        let set_age = |p: &Path, days: u64| std::fs::File::options().write(true).open(p).unwrap().set_modified(SystemTime::now() - Duration::from_secs(days * DAY)).unwrap();
+        let (young, edge, old, future) = (dir.path().join("young.png"), dir.path().join("edge.png"), dir.path().join("old.png"), dir.path().join("future.png"));
+        for p in [&young, &edge, &old, &future] {
+            std::fs::write(p, "x").unwrap();
+        }
+        set_age(&young, 28);
+        set_age(&edge, 29);
+        set_age(&old, 31);
+        std::fs::File::options().write(true).open(&future).unwrap().set_modified(SystemTime::now() + Duration::from_secs(DAY)).unwrap();
+        assert!(fresh(&young, age) && fresh(&future, age));
+        assert!(!fresh(&edge, age), "a day from the sweep: made again, so the sweep cannot remove it from under a view");
+        assert!(!fresh(&old, age));
+        assert!(!fresh(&dir.path().join("absent.png"), age) && !fresh(dir.path(), age), "missing, or not a file");
     }
 
     #[test]
