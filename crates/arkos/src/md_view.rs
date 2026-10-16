@@ -91,10 +91,55 @@ pub fn resolve_image(base_dir: &Path, path: &str) -> Option<PathBuf> {
 
 /// One block's rendering, cached in `Viewer.block_cache`: its inline content, and for a code block
 /// the colours of its lines with the highlighter that made them (a theme change makes a new
-/// highlighter, and the colours are made again).
+/// highlighter, and the colours are made again) and the text runs drawn from them.
 pub struct Rendered {
-    pub inlines: Vec<Inline>,
+    pieces: Vec<Piece>,
     pub code_spans: Option<(Arc<Highlighter>, Vec<Vec<Span>>)>,
+    code_runs: Option<CodeRuns>,
+}
+
+/// One inline as a row draws it: its runs and text behind `Rc` or in a `SharedString`, so a
+/// repaint clones handles, not strings.
+enum Piece {
+    Para(Rc<[Run]>),
+    Heading(u8, Rc<[Run]>),
+    Item { depth: u8, marker: String, task: Option<bool>, runs: Rc<[Run]> },
+    /// A code block: its text as parsed (for mapping a press back to the source) and as drawn
+    /// (tabs expanded, the trailing newline dropped).
+    Code { info: String, text: Rc<str>, drawn: SharedString },
+    Quote(Rc<[Run]>),
+    Rule,
+    Table(SharedString),
+    Html(SharedString),
+    Metadata(SharedString),
+    /// An image: its alt text (or its path when it has none) for the fallback box, and its path.
+    Image { label: SharedString, path: String },
+}
+
+impl From<Inline> for Piece {
+    fn from(inline: Inline) -> Piece {
+        match inline {
+            Inline::Para(runs) => Piece::Para(runs.into()),
+            Inline::Heading(level, runs) => Piece::Heading(level, runs.into()),
+            Inline::Item { depth, marker, task, runs } => Piece::Item { depth, marker, task, runs: runs.into() },
+            Inline::Code { info, text } => Piece::Code { info, drawn: code_lines(&text).join("\n").into(), text: text.into() },
+            Inline::Quote(runs) => Piece::Quote(runs.into()),
+            Inline::Rule => Piece::Rule,
+            Inline::Table(t) => Piece::Table(t.into()),
+            Inline::Html(t) => Piece::Html(t.into()),
+            Inline::Metadata(t) => Piece::Metadata(t.into()),
+            Inline::Image { alt, path } => Piece::Image { label: if alt.is_empty() { path.clone().into() } else { alt.into() }, path },
+        }
+    }
+}
+
+/// A code block's text runs, with what they were made from: whether the highlighter's colours
+/// were there, the terminal font and the text colour. Any of them changing makes them again.
+struct CodeRuns {
+    coloured: bool,
+    mono: SharedString,
+    text: Hsla,
+    runs: Rc<Vec<TextRun>>,
 }
 
 /// The most lines a code block may have and still be coloured: the highlighter runs on the UI
@@ -114,20 +159,28 @@ fn code_lines(text: &str) -> Vec<String> {
 }
 
 /// Fills block `ix`'s cache entry if it is empty, and colours a code block once the highlighter is
-/// there (again when it changed), unless it is over the highlight limit `limit` or
-/// `HIGHLIGHT_MAX_LINES` (`should_highlight`). Nothing is computed for a block already cached.
-pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, limit: usize) {
+/// there (again when it changed), unless it is over the highlight limit (`ctx.highlight_limit`)
+/// or `HIGHLIGHT_MAX_LINES` (`should_highlight`); a code block's runs are made again only when
+/// its colours, the font or the text colour changed. Nothing is computed for a block already
+/// cached.
+pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, ctx: &BlockCtx) {
     let (Some(doc), Some(block), Some(slot)) = (v.doc.as_ref(), v.blocks.get(ix), v.block_cache.get_mut(ix)) else { return };
     let r = slot.get_or_insert_with(|| {
         let lines = doc.lines();
         let end = block.lines.end.min(lines.len());
         let text = lines[block.lines.start.min(end)..end].join("\n");
-        Rendered { inlines: md_blocks::inline(&text, &block.kind), code_spans: None }
+        Rendered { pieces: md_blocks::inline(&text, &block.kind).into_iter().map(Piece::from).collect(), code_spans: None, code_runs: None }
     });
-    if let (Some(h), Some(Inline::Code { info, text })) = (highlighter, r.inlines.first()) {
-        if !r.code_spans.as_ref().is_some_and(|(by, _)| Arc::ptr_eq(by, h)) && should_highlight(text.len(), text.lines().count(), limit) {
+    let Some(Piece::Code { info, text, .. }) = r.pieces.first() else { return };
+    if let Some(h) = highlighter {
+        if !r.code_spans.as_ref().is_some_and(|(by, _)| Arc::ptr_eq(by, h)) && should_highlight(text.len(), text.lines().count(), ctx.highlight_limit) {
             r.code_spans = Some((h.clone(), h.highlight_token(info, &code_lines(text))));
         }
+    }
+    let coloured = r.code_spans.is_some();
+    if !r.code_runs.as_ref().is_some_and(|c| c.coloured == coloured && c.mono == ctx.mono && c.text == ctx.text) {
+        let spans = r.code_spans.as_ref().map(|(_, s)| s.as_slice());
+        r.code_runs = Some(CodeRuns { coloured, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(text), spans, ctx)) });
     }
 }
 
@@ -196,19 +249,20 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
             list(state, move |ix, window, cx| {
                 // The caret's block is raw only while the viewer has the focus: gpui redraws the
                 // window when the focus moves, so a blur turns it back to rendered.
-                let (count, raw) = {
+                let (count, raw, tail_caret) = {
                     let v = ctx.viewer.read(cx);
-                    (v.blocks.len(), v.renders_raw(ix, v.focus.is_focused(window)))
+                    let focused = v.focus.is_focused(window);
+                    (v.blocks.len(), v.renders_raw(ix, focused), focused && v.pending_append)
                 };
                 if ix >= count {
-                    return tail_element(&ctx);
+                    return tail_element(&ctx, tail_caret);
                 }
                 if raw {
                     return raw_row(ix, &ctx, window, cx);
                 }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
-                ctx.viewer.update(cx, |v, _| fill(v, ix, highlighter.as_ref(), ctx.highlight_limit));
+                ctx.viewer.update(cx, |v, _| fill(v, ix, highlighter.as_ref(), &ctx));
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
                     (Some(block), Some(r)) => block_element(ix, &block.kind, r, &ctx),
@@ -246,15 +300,19 @@ fn input_canvas(viewer: Entity<Viewer>) -> impl IntoElement {
     .size_full()
 }
 
-/// The row below the last block, two paragraph lines high: a press there starts a new paragraph
-/// at the end of the document and puts the caret in it.
-fn tail_element(ctx: &BlockCtx) -> AnyElement {
+/// The row below the last block, two paragraph lines high: a press there puts the caret in a new
+/// paragraph at the end of the document (`Viewer::append_paragraph`), drawn here at the row's top
+/// (`caret`) until the first edit writes the paragraph's blank lines.
+fn tail_element(ctx: &BlockCtx, caret: bool) -> AnyElement {
     let viewer = ctx.viewer.clone();
+    let line_h = ctx.font_size * PARA * PARA_LINE;
     div()
         .id("md-tail")
+        .relative()
         .w_full()
-        .h(px(ctx.font_size * PARA * PARA_LINE * 2.0))
+        .h(px(line_h * 2.0))
         .cursor_text()
+        .when(caret, |d| d.child(div().absolute().top_0().left(px(SIDE)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
         .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, cx| viewer.update(cx, |v, cx| v.append_paragraph(cx)))
         .into_any_element()
 }
@@ -299,8 +357,8 @@ struct Parts {
 
 /// The source behind one text element: inline runs, or a code block's text.
 enum Part {
-    Runs(Vec<Run>),
-    Code(String),
+    Runs(Rc<[Run]>),
+    Code(Rc<str>),
 }
 
 /// One block's row: its inlines in the block's type, 6 px of space below. A press puts the caret
@@ -318,30 +376,32 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
         .text_size(px(size))
         .line_height(relative(PARA_LINE));
     let mut parts = Parts { texts: Vec::new(), task_press: Rc::new(Cell::new(false)) };
-    let mut children: Vec<AnyElement> = Vec::with_capacity(r.inlines.len().max(1));
+    let mut children: Vec<AnyElement> = Vec::with_capacity(r.pieces.len().max(1));
     if *kind == BlockKind::Blank {
         children.push(div().h(px(BLANK_H)).into_any_element());
     }
-    for (j, inline) in r.inlines.iter().enumerate() {
-        let child = match inline {
-            Inline::Para(runs) => text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, &mut parts),
-            Inline::Heading(level, runs) => div()
+    for (j, piece) in r.pieces.iter().enumerate() {
+        let child = match piece {
+            Piece::Para(runs) => text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, &mut parts),
+            Piece::Heading(level, runs) => div()
                 .pt(px(HEADING_GAP))
                 .text_size(px(ctx.font_size * heading_scale(*level)))
                 .child(text_element(j, runs, FontWeight::SEMIBOLD, ctx.text, ctx, &mut parts))
                 .into_any_element(),
-            Inline::Quote(runs) => div()
+            Piece::Quote(runs) => div()
                 .border_l(px(QUOTE_BAR))
                 .border_color(ctx.border)
                 .pl(px(10.0))
                 .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, &mut parts))
                 .into_any_element(),
-            Inline::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut parts),
-            Inline::Code { text, .. } => code_element(text, r.code_spans.as_ref().map(|(_, s)| s.as_slice()), ctx, &mut parts),
-            Inline::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
-            Inline::Table(t) | Inline::Html(t) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
-            Inline::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
-            Inline::Image { alt, path } => image_element(alt, path, ctx),
+            Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut parts),
+            Piece::Code { text, drawn, .. } => code_element(text, drawn, r.code_runs.as_ref().map(|c| &c.runs), ctx, &mut parts),
+            Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
+            Piece::Table(t) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
+            // An HTML block is its source, dimmed (spec 5.2).
+            Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
+            Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
+            Piece::Image { label, path } => image_element(label, path, ctx),
         };
         children.push(child);
     }
@@ -467,10 +527,10 @@ fn styled_runs(runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx) ->
 }
 
 /// A run list as text: a `StyledText`, wrapped to open its links on Cmd+click when it has any.
-fn text_element(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+fn text_element(j: usize, runs: &Rc<[Run]>, weight: FontWeight, color: Hsla, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let (text, text_runs, links) = styled_runs(runs, weight, color, ctx);
     let styled = StyledText::new(text).with_runs(text_runs);
-    parts.texts.push((styled.layout().clone(), Part::Runs(runs.to_vec())));
+    parts.texts.push((styled.layout().clone(), Part::Runs(runs.clone())));
     if links.is_empty() {
         return styled.into_any_element();
     }
@@ -592,7 +652,7 @@ fn follow_link(action: LinkAction, viewer: &Entity<Viewer>, cx: &mut App) {
 /// A list item: the marker column (a bullet, or the number with its delimiter) indented by its
 /// depth, a task's box, and the item's text.
 #[allow(clippy::too_many_arguments)]
-fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &[Run], size: f32, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &Rc<[Run]>, size: f32, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let ch = size * CH_EM;
     let bullet = match marker {
         "-" | "*" | "+" | "" => "\u{2022}".to_string(),
@@ -655,12 +715,12 @@ fn toggle_item(v: &mut Viewer, ix: usize, offset: usize, cx: &mut Context<Viewer
 }
 
 /// A code block: its lines in the terminal font on the inactive tab colour, coloured by the
-/// highlighter's spans when they are there.
-fn code_element(text: &str, spans: Option<&[Vec<Span>]>, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
-    let lines = code_lines(text);
-    let runs = code_runs(&lines, spans, ctx);
-    let styled = StyledText::new(lines.join("\n")).with_runs(runs);
-    parts.texts.push((styled.layout().clone(), Part::Code(text.to_string())));
+/// highlighter's spans when they are there. `text` is the block's code as parsed, `drawn` as
+/// shown, `runs` its cached runs (`fill` makes them; made here only when missing).
+fn code_element(text: &Rc<str>, drawn: &SharedString, runs: Option<&Rc<Vec<TextRun>>>, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let runs = runs.map_or_else(|| code_runs(&code_lines(text), None, ctx), |r| r.as_ref().clone());
+    let styled = StyledText::new(drawn.clone()).with_runs(runs);
+    parts.texts.push((styled.layout().clone(), Part::Code(text.clone())));
     div()
         .bg(ctx.code_bg)
         .p(px(CODE_PAD))
@@ -705,22 +765,21 @@ fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, ctx: &BlockCtx) -> V
 
 /// A table, HTML or front matter block: its source in the terminal font, on a background when
 /// one is given.
-fn mono_box(text: &str, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) -> AnyElement {
+fn mono_box(text: &SharedString, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) -> AnyElement {
     div()
         .font_family(ctx.mono.clone())
         .text_size(px(ctx.font_size))
         .line_height(relative(ctx.mono_line_height))
         .text_color(color)
         .when_some(bg, |d, bg| d.bg(bg).p(px(CODE_PAD)).rounded(px(4.0)))
-        .child(text.to_string())
+        .child(text.clone())
         .into_any_element()
 }
 
-/// An image from disk at most the view's width; its alt text (or path) in a dashed box when it
-/// cannot be loaded or is on the web.
-fn image_element(alt: &str, path: &str, ctx: &BlockCtx) -> AnyElement {
-    let label: SharedString = if alt.is_empty() { path.to_string().into() } else { alt.to_string().into() };
-    let (dim, border) = (ctx.dim, ctx.border);
+/// An image from disk at most the view's width; its alt text (or path), `label`, in a dashed box
+/// when it cannot be loaded or is on the web.
+fn image_element(label: &SharedString, path: &str, ctx: &BlockCtx) -> AnyElement {
+    let (label, dim, border) = (label.clone(), ctx.dim, ctx.border);
     let alt_box = move || div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(label.clone()).into_any_element();
     match resolve_image(&ctx.base_dir, path) {
         Some(resolved) => img(resolved).max_w_full().with_fallback(alt_box).into_any_element(),
@@ -1004,13 +1063,24 @@ pub fn navigate(doc: &edit::Document, blocks: &[Block], caret: edit::Caret, dir:
 pub fn append_paragraph(doc: &mut edit::Document, now: Instant) -> edit::Caret {
     doc.break_coalescing();
     let lines = doc.lines();
-    let blank_tail = lines.iter().rev().take_while(|l| l.trim().is_empty()).count();
-    if blank_tail < 2 && blank_tail < lines.len() {
+    let breaks = breaks_for_paragraph(lines);
+    if breaks > 0 {
         let last = lines.len() - 1;
         let end = Pos { line: last, ch: lines[last].chars().count() };
-        doc.replace_range(end, end, &"\n".repeat(2 - blank_tail), now);
+        doc.replace_range(end, end, &"\n".repeat(breaks), now);
     }
     edit::Caret::at(Pos { line: doc.lines().len() - 1, ch: 0 })
+}
+
+/// The line breaks `append_paragraph` adds at the end of `lines`: as many as make them end in two
+/// blank lines, none when they already do or hold only blank lines.
+pub fn breaks_for_paragraph(lines: &[String]) -> usize {
+    let blank_tail = lines.iter().rev().take_while(|l| l.trim().is_empty()).count();
+    if blank_tail < 2 && blank_tail < lines.len() {
+        2 - blank_tail
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -1092,6 +1162,11 @@ mod tests {
         let c2 = append_paragraph(&mut d2, Instant::now());
         assert_eq!(d2.lines().len(), 3, "a document already ending in a blank line gets no second one");
         assert_eq!(c2.head.line, 2);
+        let lines = |t: &str| edit::Document::from_text(t).lines().to_vec();
+        assert_eq!(breaks_for_paragraph(&lines("one")), 2);
+        assert_eq!(breaks_for_paragraph(&lines("one\n")), 1);
+        assert_eq!(breaks_for_paragraph(&lines("one\n\n")), 0);
+        assert_eq!(breaks_for_paragraph(&lines("")), 0, "only blank lines");
     }
 
     /// The first block of `text` with its code text as `md_blocks::inline` gives it.

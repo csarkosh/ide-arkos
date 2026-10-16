@@ -47,7 +47,7 @@ pub const MAX_LINE_BYTES: usize = 8 * 1024;
 pub const AUTOSAVE_DELAY: Duration = Duration::from_secs(1);
 /// How long a close or a quit waits for a save already on its way before writing itself.
 pub const SAVE_WAIT: Duration = Duration::from_millis(500);
-/// Why a tab with a conflict does not close, until the banner says it (Task 7).
+/// Why a tab with a conflict does not close or a quit stops, beside the banner that says it.
 pub const CONFLICT_NOTICE: &str = "the file changed on disk; choose Reload or Keep mine first";
 
 /// Numbers the temp files of saves, so two saves in flight never share one.
@@ -438,6 +438,17 @@ pub fn find_hits(lines: &[String], needle: &str) -> Vec<Hit> {
     out
 }
 
+/// A find hit as a selection: the anchor at its start, the head at its end, in characters. `None`
+/// for a hit that does not fit the lines (found in lines an edit has since replaced).
+pub fn hit_selection(lines: &[String], h: Hit) -> Option<edit::Caret> {
+    let line = lines.get(h.line)?;
+    if h.start > h.end || h.end > line.len() || !line.is_char_boundary(h.start) || !line.is_char_boundary(h.end) {
+        return None;
+    }
+    let at = |byte: usize| edit::Pos { line: h.line, ch: line[..byte].chars().count() };
+    Some(edit::Caret { anchor: at(h.start), head: at(h.end), goal_col: None })
+}
+
 /// The next hit index, wrapping.
 pub fn step(current: usize, len: usize, delta: isize) -> usize {
     crate::keymap::tab_cycle(current, len, delta)
@@ -548,6 +559,10 @@ pub struct Viewer {
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
     caret_placed: bool,
+    /// A click on the rendered view's tail put the caret in a new paragraph that is not in the
+    /// document yet: its blank lines are added with the first edit (`take_pending_append`), so a
+    /// click alone leaves the file as it is. The caret sits at the document's end meanwhile.
+    pub pending_append: bool,
     /// The composition `marked` belongs to; `Some` exactly while `marked` is.
     compose: Option<Compose>,
     /// A left-button drag that started in the text is selecting.
@@ -605,6 +620,7 @@ impl Viewer {
             last_bounds: None,
             raw_blocks: Vec::new(),
             caret_placed: false,
+            pending_append: false,
             compose: None,
             selecting: false,
         }
@@ -687,10 +703,7 @@ impl Viewer {
                 self.blocks.clear();
             }
         }
-        // Every row is new; never `reset`, which would jump to the top. The row after the blocks is
-        // the tail, where a click starts a new paragraph.
-        self.list_state.splice(0..self.list_state.item_count(), list_rows(self.blocks.len()));
-        self.block_cache = std::iter::repeat_with(|| None).take(self.blocks.len()).collect();
+        reset_rows(&self.blocks, &mut self.block_cache, &self.list_state);
         if let Some(line) = old_top_line.filter(|_| !self.blocks.is_empty()) {
             self.list_state.scroll_to(ListOffset { item_ix: md_blocks::block_at(&self.blocks, line), offset_in_item: px(0.0) });
         }
@@ -702,6 +715,7 @@ impl Viewer {
         self.compose = None;
         self.selecting = false;
         self.caret_placed = false;
+        self.pending_append = false;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -717,6 +731,7 @@ impl Viewer {
     /// first, keeping its text, so the edit never lands between its marked step and its commit.
     pub fn edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
         self.finish_composition(cx);
+        self.take_pending_append(cx);
         self.edit_raw(f, cx);
     }
 
@@ -776,26 +791,7 @@ impl Viewer {
             cx.notify();
             return;
         }
-        // This needs the old text, so the edit above copied the lines once: the price of
-        // comparing blocks by their text.
-        let new_blocks = md_blocks::split(&new_lines);
-        let (range, count) = md_blocks::changed_blocks(&self.blocks, &old_lines, &new_blocks, &new_lines);
-        let tail = range.start + count;
-        self.blocks.splice(range.clone(), new_blocks[range.start..tail].iter().cloned());
-        // The rendered rows and their cache follow the same splice; never `reset`, which would
-        // jump to the top. gpui moves a top row inside the splice to the splice's start at its top,
-        // which would jump a long block being typed into back to its first line, so the row and
-        // the offset into it are kept.
-        let top = self.list_state.logical_scroll_top();
-        self.list_state.splice(range.clone(), count);
-        if range.contains(&top.item_ix) && count > 0 {
-            self.list_state.scroll_to(ListOffset { item_ix: top.item_ix.min(range.start + count - 1), offset_in_item: top.offset_in_item });
-        }
-        self.block_cache.splice(range.clone(), std::iter::repeat_with(|| None).take(count));
-        // The blocks after the change kept their kind and text but may have moved.
-        for (block, new) in self.blocks[tail..].iter_mut().zip(&new_blocks[tail..]) {
-            block.lines = new.lines.clone();
-        }
+        splice_rows(&mut self.blocks, &mut self.block_cache, &self.list_state, &old_lines, &new_lines);
         self.content = Content::Text { lines: new_lines, spans: Vec::new() };
         // The marks point at lines that may have moved; the next save computes them again.
         self.diff = None;
@@ -1046,6 +1042,7 @@ impl Viewer {
     }
 
     pub fn close_find(&mut self, cx: &mut Context<Self>) {
+        self.select_current_hit(cx);
         self.find = None;
         // A search still running lands in no later bar.
         self.find_seq += 1;
@@ -1104,6 +1101,7 @@ impl Viewer {
         if let Some(f) = &mut self.find {
             f.current = step(f.current, f.hits.len(), delta);
         }
+        self.select_current_hit(cx);
         self.show_current_hit();
         cx.notify();
     }
@@ -1127,6 +1125,21 @@ impl Viewer {
             f.query.insert_str(text);
         }
         self.refind(cx);
+    }
+
+    /// A document's selection becomes the current find hit (the anchor at its start, the head at
+    /// its end), so typing after the bar closes replaces it. The caret counts as placed.
+    fn select_current_hit(&mut self, cx: &mut Context<Self>) {
+        let Some(h) = self.find.as_ref().and_then(|f| f.hits.get(f.current)).copied() else { return };
+        if self.marked.is_some() {
+            self.finish_composition(cx);
+        }
+        let Some(doc) = self.doc.as_mut() else { return };
+        let Some(caret) = hit_selection(doc.lines(), h) else { return };
+        doc.break_coalescing();
+        self.caret = caret;
+        self.caret_placed = true;
+        self.pending_append = false;
     }
 
     /// Scrolls so the current hit's line is in view, a third of the way down.
@@ -1228,14 +1241,19 @@ impl Viewer {
     }
 
     /// The input handler's first step: in the rendered view before the caret has been placed, the
-    /// caret goes to the first block on screen. `true` when it moved, and a range the input method
-    /// gave against the old field no longer applies.
-    fn place_for_input(&mut self) -> bool {
+    /// caret goes to the first block on screen, and a paragraph a click on the tail promised is
+    /// written. `true` when the caret moved, and a range the input method gave against the old
+    /// field no longer applies.
+    fn place_for_input(&mut self, cx: &mut Context<Self>) -> bool {
         if self.rendered() && !self.caret_placed {
             self.place_at_first_visible();
             return true;
         }
         self.caret_placed = true;
+        if self.pending_append {
+            self.take_pending_append(cx);
+            return true;
+        }
         false
     }
 
@@ -1247,6 +1265,17 @@ impl Viewer {
         // A key the input method passed on ends its composition, keeping the text.
         if self.marked.is_some() {
             self.finish_composition(cx);
+        }
+        // A paragraph a click on the tail promised: an edit writes it first (before Enter reads
+        // the structure), a move or an undo lets it go.
+        if self.pending_append {
+            match action {
+                KeyAction::DeleteBack(_) | KeyAction::DeleteFwd(_) | KeyAction::Newline | KeyAction::Tab | KeyAction::ShiftTab | KeyAction::Cut | KeyAction::Paste => self.take_pending_append(cx),
+                KeyAction::Copy | KeyAction::Save | KeyAction::Escape | KeyAction::ScrollHome | KeyAction::ScrollEnd => {}
+                // The rendered view's page keys only scroll.
+                KeyAction::Move(edit::Move::PageUp(_) | edit::Move::PageDown(_), _) if self.rendered() => {}
+                KeyAction::Move(..) | KeyAction::SelectAll | KeyAction::Undo | KeyAction::Redo => self.pending_append = false,
+            }
         }
         if self.rendered() && self.rendered_key(action, cx) {
             return true;
@@ -1263,6 +1292,7 @@ impl Viewer {
                     cx.notify();
                 } else if self.rendered() {
                     self.caret_placed = false;
+                    self.pending_append = false;
                     cx.notify();
                 }
             }
@@ -1375,8 +1405,9 @@ impl Viewer {
     }
 
     /// Whether block `ix` is shown raw in the rendered view: every block the caret or the
-    /// selection touches, once the caret has been placed and while the viewer has the focus
-    /// (`focused`), and while the find bar is open the block holding the current hit.
+    /// selection touches, once the caret has been placed (and not in a paragraph a click on the
+    /// tail promised) and while the viewer has the focus (`focused`), and while the find bar is
+    /// open the block holding the current hit.
     pub fn renders_raw(&self, ix: usize, focused: bool) -> bool {
         if self.doc.is_none() {
             return false;
@@ -1384,7 +1415,7 @@ impl Viewer {
         let c = self.caret;
         let (lo, hi) = (c.head.min(c.anchor), c.head.max(c.anchor));
         let selected = md_blocks::block_at(&self.blocks, lo.line)..=md_blocks::block_at(&self.blocks, hi.line);
-        (self.caret_placed && focused && selected.contains(&ix)) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
+        (self.caret_placed && !self.pending_append && focused && selected.contains(&ix)) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
     }
 
     /// The lines a raw block shows: from its first line to its last line with text, or further
@@ -1460,10 +1491,34 @@ impl Viewer {
     }
 
     /// A click on the tail of the rendered view: the caret goes to a new paragraph after the last
-    /// block (`md_view::append_paragraph`).
+    /// block. The blank lines it needs (`md_view::append_paragraph`) are written with the first
+    /// edit there (`pending_append`), so a click alone leaves the file as it is; a document that
+    /// already ends in them takes the caret on its last line at once.
     pub fn append_paragraph(&mut self, cx: &mut Context<Self>) {
+        if self.marked.is_some() {
+            self.finish_composition(cx);
+        }
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.break_coalescing();
+        let lines = doc.lines();
+        let last = lines.len() - 1;
+        self.pending_append = md_view::breaks_for_paragraph(lines) > 0;
+        let ch = if self.pending_append { lines[last].chars().count() } else { 0 };
+        self.caret = edit::Caret::at(edit::Pos { line: last, ch });
         self.caret_placed = true;
-        self.edit(|doc, _caret, now| md_view::append_paragraph(doc, now), cx);
+        self.selecting = false;
+        if !self.pending_append {
+            self.reveal_caret();
+        }
+        cx.notify();
+    }
+
+    /// Writes the blank lines a click on the tail promised, as their own undo step, before the
+    /// first edit in the new paragraph.
+    fn take_pending_append(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.pending_append) {
+            self.run_edit(|doc, _caret, now| md_view::append_paragraph(doc, now), cx);
+        }
     }
 
     /// Ends a composition with its marked text kept: the marked step is taken back and the text
@@ -1575,6 +1630,7 @@ impl Viewer {
         self.caret = edit::Caret { head: p, anchor, goal_col: None };
         self.selecting = true;
         self.caret_placed = true;
+        self.pending_append = false;
         cx.notify();
     }
 
@@ -1647,7 +1703,7 @@ impl EntityInputHandler for Viewer {
         if self.field().is_none() {
             return;
         }
-        let range = if self.place_for_input() { None } else { range };
+        let range = if self.place_for_input(cx) { None } else { range };
         let target = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         if let (Some(m), Some(c)) = (self.marked.clone(), self.compose) {
             // The usual commit: the marked text becomes `text`, typed where the composition began.
@@ -1681,7 +1737,7 @@ impl EntityInputHandler for Viewer {
         if self.field().is_none() {
             return;
         }
-        let range = if self.place_for_input() { None } else { range };
+        let range = if self.place_for_input(cx) { None } else { range };
         let explicit = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         let at_range = |(a, b): (edit::Pos, edit::Pos)| edit::Caret { head: b, anchor: a, goal_col: None };
         // Where the marked text goes, in the text before the composition, and whether the marked
@@ -1928,6 +1984,38 @@ pub fn list_rows(blocks: usize) -> usize {
         0
     } else {
         blocks + 1
+    }
+}
+
+/// The rendered view's rows for a freshly loaded document: every row new, the tail after the
+/// blocks, every cache entry empty. Never `ListState::reset`, which would jump to the top.
+fn reset_rows(blocks: &[md_blocks::Block], cache: &mut Vec<Option<md_view::Rendered>>, list: &ListState) {
+    list.splice(0..list.item_count(), list_rows(blocks.len()));
+    *cache = std::iter::repeat_with(|| None).take(blocks.len()).collect();
+}
+
+/// After an edit from `old_lines` to `new_lines`: the blocks it changed are split again and
+/// spliced in, and the rendered rows and their cache follow the same splice, so the list keeps
+/// one row per block and the tail.
+fn splice_rows(blocks: &mut Vec<md_blocks::Block>, cache: &mut Vec<Option<md_view::Rendered>>, list: &ListState, old_lines: &[String], new_lines: &[String]) {
+    // This needs the old text, so the edit copied the lines once: the price of comparing blocks
+    // by their text.
+    let new_blocks = md_blocks::split(new_lines);
+    let (range, count) = md_blocks::changed_blocks(blocks, old_lines, &new_blocks, new_lines);
+    let tail = range.start + count;
+    blocks.splice(range.clone(), new_blocks[range.start..tail].iter().cloned());
+    // Never `reset`, which would jump to the top. gpui moves a top row inside the splice to the
+    // splice's start at its top, which would jump a long block being typed into back to its first
+    // line, so the row and the offset into it are kept.
+    let top = list.logical_scroll_top();
+    list.splice(range.clone(), count);
+    if range.contains(&top.item_ix) && count > 0 {
+        list.scroll_to(ListOffset { item_ix: top.item_ix.min(range.start + count - 1), offset_in_item: top.offset_in_item });
+    }
+    cache.splice(range, std::iter::repeat_with(|| None).take(count));
+    // The blocks after the change kept their kind and text but may have moved.
+    for (block, new) in blocks[tail..].iter_mut().zip(&new_blocks[tail..]) {
+        block.lines = new.lines.clone();
     }
 }
 
@@ -2759,6 +2847,46 @@ mod tests {
         assert_eq!(count_text(0, 0), "no matches");
         assert_eq!(count_text(2, 5), "3 of 5");
         assert_eq!(count_text(0, MAX_HITS), "1 of 10000+");
+    }
+
+    #[test]
+    fn the_rows_and_the_cache_follow_the_blocks_through_an_edit_an_undo_and_a_reload() {
+        let list = ListState::new(0, ListAlignment::Top, px(600.0));
+        let mut cache: Vec<Option<md_view::Rendered>> = Vec::new();
+        let mut doc = edit::Document::from_text("# T\n\npara\n\n- a\n- b\n");
+        let mut blocks = md_blocks::split(doc.lines());
+        reset_rows(&blocks, &mut cache, &list);
+        let check = |blocks: &[md_blocks::Block], cache: &[Option<md_view::Rendered>], step: &str| {
+            assert_eq!(list.item_count(), list_rows(blocks.len()), "{step}: a row per block and the tail");
+            assert_eq!(cache.len(), blocks.len(), "{step}: a cache entry per block");
+        };
+        check(&blocks, &cache, "load");
+        // An edit that adds a block in the middle.
+        let old = doc.shared_lines();
+        doc.insert(edit::Caret::at(Pos { line: 2, ch: 4 }), "\n\n```\ncode\n```", Instant::now());
+        splice_rows(&mut blocks, &mut cache, &list, &old, doc.lines());
+        assert_eq!(blocks, md_blocks::split(doc.lines()), "the spliced blocks are the document's");
+        check(&blocks, &cache, "edit");
+        let old = doc.shared_lines();
+        doc.undo().unwrap();
+        splice_rows(&mut blocks, &mut cache, &list, &old, doc.lines());
+        assert_eq!(blocks, md_blocks::split(doc.lines()));
+        check(&blocks, &cache, "undo");
+        // A reload with a shorter file.
+        blocks = md_blocks::split(edit::Document::from_text("one").lines());
+        reset_rows(&blocks, &mut cache, &list);
+        check(&blocks, &cache, "reload");
+    }
+
+    #[test]
+    fn a_find_hit_becomes_the_selection() {
+        let lines = vec!["caf\u{e9} cafe".to_string()];
+        let hits = find_hits(&lines, "cafe");
+        let c = hit_selection(&lines, hits[0]).unwrap();
+        assert_eq!((c.anchor, c.head), (Pos { line: 0, ch: 5 }, Pos { line: 0, ch: 9 }), "byte offsets become characters");
+        assert_eq!(hit_selection(&lines, Hit { line: 1, start: 0, end: 1 }), None, "a line that is gone");
+        assert_eq!(hit_selection(&lines, Hit { line: 0, start: 4, end: 5 }), None, "inside a character");
+        assert_eq!(hit_selection(&lines, Hit { line: 0, start: 0, end: 99 }), None, "past the line's end");
     }
 
     #[test]

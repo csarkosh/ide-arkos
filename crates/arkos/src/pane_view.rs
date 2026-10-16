@@ -916,6 +916,19 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
 
 /// The width of a markdown tab's mode pill: fixed, so the inline-diff chip can sit beside it.
 pub const PILL_W: f32 = 104.0;
+/// The width of the inline-diff chip: fixed, so a markdown tab's banners can keep clear of it.
+pub const CHIP_W: f32 = 100.0;
+
+/// How far from the pane's right edge a markdown tab's banners keep their text, clear of the mode
+/// pill (`pill`) and the inline-diff chip (`chip`) drawn over the top right.
+pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
+    match (pill, chip) {
+        (true, true) => 14.0 + PILL_W + 8.0 + CHIP_W + 8.0,
+        (true, false) => 14.0 + PILL_W + 8.0,
+        (false, true) => 14.0 + CHIP_W + 8.0,
+        (false, false) => 12.0,
+    }
+}
 
 /// The mode pill's text: it names the mode a click switches to.
 pub fn pill_label(mode: ViewMode) -> &'static str {
@@ -1001,7 +1014,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .child(label)
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
-    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0));
+    let right_pad = banner_right_pad(editable, has_changes);
+    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0));
     let mut banners: Vec<Div> = Vec::new();
     if kind_is_text {
         if conflict {
@@ -1037,7 +1051,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .absolute()
             .top(px(top))
             .right(px(right))
-            .px(px(8.0))
+            .w(px(CHIP_W))
+            .flex()
+            .justify_center()
             .py(px(3.0))
             .rounded(px(6.0))
             .bg(theme.chrome.banner.hsla())
@@ -1333,6 +1349,14 @@ mod tests {
     fn the_pill_names_the_other_mode() {
         assert_eq!(pill_label(ViewMode::Rendered), "show raw");
         assert_eq!(pill_label(ViewMode::Raw), "show rendered");
+    }
+
+    #[test]
+    fn a_markdown_tab_s_banners_keep_clear_of_the_pill_and_the_chip() {
+        assert_eq!(banner_right_pad(true, false), PILL_W + 8.0 + 14.0);
+        assert_eq!(banner_right_pad(true, true), PILL_W + 8.0 + 14.0 + CHIP_W + 8.0, "the chip sits left of the pill");
+        assert_eq!(banner_right_pad(false, true), CHIP_W + 8.0 + 14.0, "a read-only tab has the chip alone");
+        assert_eq!(banner_right_pad(false, false), 12.0, "nothing drawn over the banners: their usual padding");
     }
 
     #[test]
