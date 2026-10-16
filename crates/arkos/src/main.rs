@@ -261,6 +261,8 @@ pub struct Root {
     /// The last good config; `apply_config` replaces it.
     pub config: config::Config,
     pub theme: Arc<theme::Theme>,
+    /// The theme's fonts, less any family this Mac lacks (`ThemeFont::installed`).
+    pub fonts: theme::ThemeFont,
     /// Syntax colours for viewer tabs in the theme's `viewer` colours. `None` until the grammars
     /// finish loading on the background executor after launch; a theme change rethemes it.
     pub highlighter: Option<Arc<highlight::Highlighter>>,
@@ -570,6 +572,7 @@ impl Root {
             empty_anim: HashMap::new(),
             shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
             config,
+            fonts: installed_fonts(&theme, cx),
             theme: Arc::new(theme),
             highlighter: None,
             viewers: HashMap::new(),
@@ -1017,11 +1020,13 @@ impl Root {
 
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
         let palette = Arc::new(theme.palette());
+        let fonts = installed_fonts(&theme, cx);
         // A theme that brings its own terminal font changes the cell size (`family()` reads the
         // theme): panes re-measure before a restore trusts a grid, as a config change does.
-        if theme.font.terminal != self.theme.font.terminal {
+        if fonts.terminal != self.fonts.terminal {
             self.grids.clear();
         }
+        self.fonts = fonts;
         if let Some(h) = &self.highlighter {
             self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
         }
@@ -1112,7 +1117,7 @@ impl Root {
         if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
             self.apply_text_preset(&name, cx);
         }
-        if old.font.family != self.config.font.family && self.theme.font.terminal.is_none() {
+        if old.font.family != self.config.font.family && self.fonts.terminal.is_none() {
             // The cell size changes with the family (`family()` reads the config; the
             // `cx.notify()` below re-renders): panes re-measure before a restore trusts a grid.
             self.grids.clear();
@@ -1129,13 +1134,19 @@ impl Root {
 
     /// The terminal font: the theme's when it names one, else the config's.
     pub fn family(&self) -> gpui::SharedString {
-        self.theme.font.terminal.clone().unwrap_or_else(|| self.config.font.family.clone()).into()
+        self.fonts.terminal.clone().unwrap_or_else(|| self.config.font.family.clone()).into()
     }
 
     /// The font of the file tree, tabs, palette and banners: the theme's `ui` font when it
     /// names one, else the terminal font, as it always was.
     pub fn ui_family(&self) -> gpui::SharedString {
-        self.theme.font.ui.clone().map_or_else(|| self.family(), Into::into)
+        self.fonts.ui.clone().map_or_else(|| self.family(), Into::into)
+    }
+
+    /// The rendered markdown's font: the theme's prose font when it names one that is
+    /// installed, else the system's.
+    pub fn prose_family(&self) -> gpui::SharedString {
+        self.fonts.prose.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into)
     }
 
     /// Switches every terminal and viewer to a preset (spec 7). Per-tab nudges from Cmd+= are reset.
@@ -3382,6 +3393,7 @@ impl Render for Root {
             right,
             window.is_fullscreen(),
             &theme,
+            self.fonts.ui.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
         );
@@ -3566,6 +3578,17 @@ fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &th
         .font_family(family)
         .text_size(px(13.0))
         .child(text)
+}
+
+/// The theme's fonts that this Mac has; each missing one is said once on stderr and its slot
+/// falls back as if the theme had not named it.
+fn installed_fonts(theme: &theme::Theme, cx: &App) -> theme::ThemeFont {
+    let families: std::collections::HashSet<String> = cx.text_system().all_font_names().into_iter().collect();
+    let (fonts, missing) = theme.font.installed(&families);
+    for name in missing {
+        eprintln!("arkos: theme {}: the font {name:?} is not installed; using the default for that slot", theme.name);
+    }
+    fonts
 }
 
 /// `<name> <crate version> (<short git hash>)`, the same shape for both binaries.

@@ -100,7 +100,7 @@ Optional. The one table that is not colours.
 | `ui` | The family of the window's chrome: the title bar, file tree, tabs, palette and banners. Unset, the title bar is in the system font and the rest in the terminal font. `peach-light` sets Optima, `lavender-light` Avenir Next. |
 | `terminal` | The family of the shells, the raw and code views and the terminal's cell measurements; it must be monospaced. Unset, `[font] family` from `config.toml`. `peach-light` sets PT Mono, `lavender-light` Cascadia Code (installed with `brew install --cask font-cascadia-code`). |
 
-Every family must be installed on the Mac; a missing one falls back as macOS sees fit.
+A family that is not installed on the Mac is left out: that slot shows what it would without the theme naming a font, and the window's log says which font was missing.
 
 ## Adding a theme
 

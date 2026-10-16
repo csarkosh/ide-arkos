@@ -208,7 +208,8 @@ pub fn aux_title_bar(title: &str, theme: &Theme) -> Div {
 
 /// The bar. Dragging it moves the window and a double click zooms it, as the native bar did.
 /// In full screen the traffic lights are gone, so the text starts at the edge.
-pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
+/// `bar_font` is the theme's ui font when it names one this Mac has, else the system's.
+pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
     let c = &theme.chrome;
     drag_to_move(div())
         .h(px(TITLE_BAR_H))
@@ -221,7 +222,7 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
         .gap(px(10.0))
         .bg(c.title_bar.hsla())
         .text_color(c.text.hsla())
-        .font_family(theme.font.ui.clone().map_or(SharedString::from(UI_FONT), SharedString::from))
+        .font_family(bar_font)
         .text_size(px(13.0))
         .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Arkos IDE"))
         .child(

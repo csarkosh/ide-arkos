@@ -2,7 +2,6 @@
 //! tab's placeholder, a busy notice while a shell starts or a replay is parsed, or the empty
 //! state), and the URL prompt over the focused pane.
 
-use crate::chrome;
 use crate::drag;
 use crate::dock::DockState;
 use crate::find;
@@ -992,9 +991,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let kind_is_text = matches!(kind, Kind::Text { .. });
     let body = match kind {
         Kind::Text { .. } if rendered => {
-            // The prose in the theme's font when it names one, else the system's.
-            let prose: SharedString = theme.font.prose.clone().map_or(SharedString::from(chrome::UI_FONT), SharedString::from);
-            let element = md_view::render(&viewer, &theme, prose, family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, cx);
+            let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, cx);
             div().size_full().child(element)
         }
         Kind::Text { plain } => {

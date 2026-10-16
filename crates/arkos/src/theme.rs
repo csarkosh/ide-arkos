@@ -39,6 +39,22 @@ impl ThemeFont {
     fn is_default(&self) -> bool {
         *self == ThemeFont::default()
     }
+
+    /// The same fonts with every family that is not installed left out, and those families'
+    /// names: a theme asking for a font this Mac lacks falls back to what the slot shows
+    /// without one, rather than to whatever macOS substitutes.
+    pub fn installed(&self, families: &std::collections::HashSet<String>) -> (ThemeFont, Vec<String>) {
+        let mut missing = Vec::new();
+        let mut keep = |f: &Option<String>| match f {
+            Some(name) if !families.contains(name) => {
+                missing.push(name.clone());
+                None
+            }
+            other => other.clone(),
+        };
+        let fonts = ThemeFont { prose: keep(&self.prose), ui: keep(&self.ui), terminal: keep(&self.terminal) };
+        (fonts, missing)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -397,6 +413,16 @@ mod tests {
         assert_eq!(t.font.ui.as_deref(), Some("Optima"));
         assert_eq!(t.font.terminal.as_deref(), Some("PT Mono"));
         assert!(parse(&(BUILTIN[0].1.to_string() + "\n[font]\nchrome = \"Menlo\"\n")).is_err(), "only prose, ui and terminal are fonts a theme may name");
+    }
+
+    #[test]
+    fn a_font_that_is_not_installed_is_left_out() {
+        let fonts = ThemeFont { prose: Some("Baskerville".into()), ui: Some("Optima".into()), terminal: Some("PT Mono".into()) };
+        let have: std::collections::HashSet<String> = ["Baskerville", "Menlo"].iter().map(|s| s.to_string()).collect();
+        let (kept, missing) = fonts.installed(&have);
+        assert_eq!(kept, ThemeFont { prose: Some("Baskerville".into()), ui: None, terminal: None });
+        assert_eq!(missing, vec!["Optima".to_string(), "PT Mono".to_string()]);
+        assert_eq!(ThemeFont::default().installed(&have), (ThemeFont::default(), vec![]));
     }
 
     #[test]
