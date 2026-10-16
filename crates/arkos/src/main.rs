@@ -3834,6 +3834,15 @@ fn open_project_window(
                         .detach();
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, cx);
                         root.ns_window = ax::screen::ns_window_of(window);
+                        // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
+                        // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,
+                        // since macOS stops drawing a window another one covers entirely, and
+                        // a capture of it would then show its last frame.
+                        if std::env::var_os("ARKOS_WINDOW_LEVEL").is_some_and(|v| v == "floating") {
+                            if let Some(ns) = &root.ns_window {
+                                ns.setLevel(objc2_app_kit::NSFloatingWindowLevel);
+                            }
+                        }
                         root.save_queue = view_queue;
                         root.build_highlighter(cx);
                         root

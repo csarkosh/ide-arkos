@@ -895,6 +895,9 @@ fn start_window(bin: &Path, app: Option<&Path>, demo: &Path, dirs: &Dirs) -> Res
         .arg(format!("ARKOS_APP_SUPPORT={}", dirs.state.display()))
         .arg("--env")
         .arg(format!("XDG_CONFIG_HOME={}", dirs.config_home.display()))
+        // Above the other windows for the scene: a window covered entirely is not drawn, and
+        // its captures would repeat its last frame.
+        .args(["--env", "ARKOS_WINDOW_LEVEL=floating"])
         .arg("--stderr")
         .arg(dirs.state.join("window.log"))
         .arg("-a")
