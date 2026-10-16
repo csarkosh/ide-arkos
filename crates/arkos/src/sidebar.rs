@@ -800,14 +800,17 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
     if root.worktrees.not_git {
         // A repository whose filter config turned git status off says that instead.
         let why = root.explorer.status_off.unwrap_or("not a git repository");
-        list = list.child(div().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child(why));
+        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child(why));
     }
     for (i, row) in rows.into_iter().enumerate() {
+        // `flex_none`, or the capped column shrinks every row to fit and the rows overprint
+        // each other; the list scrolls instead.
         let base = div()
             .id(("worktree-row", i))
             .relative()
             .overflow_hidden()
             .w_full()
+            .flex_none()
             .h(px(ROW_H))
             .pr(px(8.0))
             .flex()
