@@ -81,7 +81,7 @@ Things only a person at the screen can check, in order of value:
 - open a README in Arkos: it renders; click a paragraph: it turns raw with the caret where you
   clicked; type, wait a second: `git diff` shows the change and the tab's " •" goes; press Enter in
   a list: the next bullet appears; tick a task checkbox: the file shows `[x]`
-- the "show raw" pill at the top right of the pane, or Cmd+Shift+M, shows the raw file and
+- the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
   back; the choice survives a relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
   Keep mine; Cmd+S means Keep mine; with nothing unsaved the file simply reloads
