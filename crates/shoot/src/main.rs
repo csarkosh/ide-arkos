@@ -718,9 +718,9 @@ fn claude_settings(arkos_exe: &Path) -> serde_json::Value {
     })
 }
 
-/// The dev binaries in the release's bundle shape (`packaging/bundle.sh` without the signing
-/// and the zip), at a fixed place: Launch Services starts a bundle, and a permission granted
-/// to it (Accessibility, for the browser pane) is granted to that path.
+/// The dev binaries in the release's bundle shape (`packaging/bundle.sh` without the zip), at a
+/// fixed place, with its own bundle id so macOS keeps its permissions apart from the installed
+/// app's: Launch Services starts a bundle, and the browser pane needs Accessibility.
 fn make_bundle(repo: &Path, bin: &Path, dir: &Path) -> Result<PathBuf> {
     let app = dir.join("Arkos IDE.app");
     let cargo = std::fs::read_to_string(repo.join("Cargo.toml")).with_context(|| format!("read {}", repo.join("Cargo.toml").display()))?;
@@ -746,17 +746,22 @@ fn make_bundle(repo: &Path, bin: &Path, dir: &Path) -> Result<PathBuf> {
     if icon.is_file() {
         std::fs::copy(icon, app.join("Contents/Resources/AppIcon.icns"))?;
     }
-    // Signed as "Arkos Shoot" when that identity exists (scripts/shoot/identity.sh): then the
-    // bundle's identity is the certificate, not the binary's hash, and macOS keeps the
-    // Accessibility grant across rebuilds. Unsigned otherwise, with the grant to redo each time.
+    // Signed with the Developer ID (the release's identity, hardened runtime and all) when the
+    // keychain holds one: then the bundle's identity is the certificate, not the binary's hash,
+    // and macOS keeps the Accessibility grant across rebuilds. Unsigned otherwise, with the
+    // grant to redo each time.
     let identities = Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    if identities.contains("\"Arkos Shoot\"") {
-        let status = Command::new("codesign").args(["--force", "--deep", "--sign", "Arkos Shoot", "--identifier", "sh.csarko.arkos.shoot"]).arg(&app).stdout(Stdio::null()).stderr(Stdio::null()).status().context("codesign")?;
-        if !status.success() {
-            bail!("codesign as \"Arkos Shoot\" failed for {}", app.display());
+    let identity = identities.lines().find_map(|l| l.split('"').nth(1).filter(|n| n.starts_with("Developer ID Application:")).map(str::to_string));
+    match identity {
+        Some(identity) => {
+            for target in [app.join("Contents/MacOS/arkosd"), app.join("Contents/MacOS/arkos"), app.clone()] {
+                let status = Command::new("codesign").args(["--force", "--options", "runtime", "--timestamp", "--sign", &identity, "--identifier", "sh.csarko.arkos.shoot"]).arg(&target).stdout(Stdio::null()).stderr(Stdio::null()).status().context("codesign")?;
+                if !status.success() {
+                    bail!("codesign as {identity:?} failed for {}", target.display());
+                }
+            }
         }
-    } else {
-        say("no \"Arkos Shoot\" signing identity: the bundle is unsigned, and macOS forgets its Accessibility grant at every rebuild (scripts/shoot/identity.sh makes one)");
+        None => say("no Developer ID Application identity in the keychain: the bundle is unsigned, and macOS forgets its Accessibility grant at every rebuild"),
     }
     Ok(app)
 }

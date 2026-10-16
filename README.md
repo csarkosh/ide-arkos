@@ -668,10 +668,9 @@ folder, under `~/Library/Caches/arkos-shoot`), so the Arkos in use is untouched.
 few minutes of your Claude Code account, needs the Screen Recording permission for the app it
 runs from, and does not need its window in front (it captures by window id). The browser pane
 needs the Accessibility permission for the shoot's own bundle
-(`~/Library/Caches/arkos-shoot/app/Arkos IDE.app`): run `scripts/shoot/identity.sh` once, which
-makes a self-signed "Arkos Shoot" certificate the bundle is signed with (an ad-hoc signature's
-identity is the binary's hash, and macOS would forget the grant at every rebuild), then add
-the bundle under System Settings > Privacy & Security > Accessibility once. Progress captures
+(`~/Library/Caches/arkos-shoot/app/Arkos IDE.app`, signed with the Developer ID from your
+keychain, so the grant survives rebuilds; an ad-hoc signature's identity is the binary's hash):
+add the bundle under System Settings > Privacy & Security > Accessibility once. Progress captures
 and the panes' states land in `docs/images/progress/` every 20 s while it runs, and a run whose
 Claude Code panes never start is ended after a minute.
 
