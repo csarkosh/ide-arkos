@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lantern</title>
 <style>
-  /* Light only: the page sits in a docked pane next to light editors in the pictures. */
-  :root { color-scheme: light; --bg: #f6f4ee; --ink: #1d1b16; --muted: #6b665b; --card: #ffffff; --accent: #c2410c; --line: rgba(29, 27, 22, 0.12); }
+  /* One look in both schemes: the page sits in a docked pane next to light editors in the
+     pictures. Declaring "light dark" tells a browser with auto dark mode on (Chrome's flag) that
+     the page handles dark itself, so it is not inverted; the dark branch is the same light. */
+  :root { color-scheme: light dark; --bg: #f6f4ee; --ink: #1d1b16; --muted: #6b665b; --card: #ffffff; --accent: #c2410c; --line: rgba(29, 27, 22, 0.12); }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 ui-sans-serif, system-ui, sans-serif; }
   main { max-width: 560px; margin: 0 auto; padding: 56px 24px 64px; }
