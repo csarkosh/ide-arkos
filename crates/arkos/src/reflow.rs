@@ -119,9 +119,10 @@ fn starts_structure(line: &str) -> bool {
 }
 
 /// Whether a line, without its indent, has a run of two or more spaces before its end: the
-/// columns of a table, which a program pads rather than wraps.
+/// columns of a table, which a program pads rather than wraps. Two spaces after a sentence's
+/// `.`, `!` or `?` are prose, not a column; `ps` pads after letters and digits.
 fn has_gap(line: &str) -> bool {
-    line.trim_end().contains("  ")
+    line.trim_end().match_indices("  ").any(|(i, _)| !line[..i].ends_with(['.', '!', '?', ' ']))
 }
 
 /// Whether a line starts with a rule: three or more of `=`, `-`, `_`, `*` or `~` in a row.
@@ -430,6 +431,18 @@ mod tests {
         assert_eq!(PS_AUX.map(cells), [80, 76, 80]);
         let text = lines(&PS_AUX);
         assert_eq!(reflow(&text, 80, 0), text);
+    }
+
+    #[test]
+    fn two_spaces_after_a_sentence_are_no_table() {
+        let text = lines(&[
+            "  The limiter is done.  Next I will wire it into the server routes, with a 429",
+            "  and a Retry-After header. Is that the shape you want?  Say so if it is not.",
+        ]);
+        assert_eq!(text.lines().map(cells).collect::<Vec<_>>(), [78, 77]);
+        let want = "  The limiter is done.  Next I will wire it into the server routes, with a 429 \
+                    and a Retry-After header. Is that the shape you want?  Say so if it is not.";
+        assert_eq!(reflow(&text, 80, 0), want);
     }
 
     #[test]

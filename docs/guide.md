@@ -304,14 +304,14 @@ Notes:
   there. Ctrl+letter keeps its control byte even then, so Ctrl+I, Ctrl+M and Ctrl+[ stay Tab,
   Enter and Esc. Everywhere else those keys keep their usual bytes: Shift+Enter in a shell is
   Enter. A program killed on the alternate screen can leave the protocol on; `reset` clears it.
-- Drag across terminal text to select it (double click a word, triple click a line); Cmd+C
-  copies it with a program's own line wraps joined (see the next item), Shift+Cmd+C copies it as
-  shown, and a click clears it. A selection keeps its place while you scroll, and dragging past
-  the pane's top or bottom edge scrolls the history, except in programs that take the mouse or
-  the whole screen, such as Claude Code's fullscreen renderer, vim or `less`. A program that asks for mouse reports, such as Claude Code's
-  fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and its
-  options can be clicked; a drag still selects locally and the program never sees it, though the
-  first click of a double click has already reached it. On the alternate screen without mouse
+- Drag across terminal text to select it (double click a word, triple click a line); Cmd+C copies
+  it with a program's own line wraps joined (see the next item), Shift+Cmd+C copies it as shown,
+  and a click clears it. A selection keeps its place while you scroll, and dragging past the
+  pane's top or bottom edge scrolls the history, except in programs that take the mouse or the
+  whole screen, such as vim or `less`. A program that asks for mouse reports, such as Claude
+  Code's fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and
+  its options can be clicked; a drag still selects locally and the program never sees it, though
+  the first click of a double click has already reached it. On the alternate screen without mouse
   reports (`less`, for one) the wheel sends arrow keys (xterm's alternate scroll, `?1007`, on by
   default), and Shift+wheel always scrolls Arkos's own history.
 - Claude Code wraps its own prose to the pane's width and ends each row with a real newline, so

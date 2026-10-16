@@ -161,9 +161,10 @@ Things only a person at the screen can check, in order of value:
   in `reflow.rs` needs revisiting); press, wheel-scroll, then drag: the selection starts at the text
   that was under the press; drag past the pane's bottom edge, and above its top edge: the history
   scrolls and the selection grows until the button comes up; auto-scroll stops when the pointer
-  comes back inside and when the button is released outside the pane; no auto-scroll in Claude
-  Code's fullscreen renderer, vim or `less`; a wheel notch while dragging moves the selection's end
-  with the text
+  comes back inside and when the button is released outside the pane; a right-click or a
+  Control-release in the middle of a drag ends the drag and stops any auto-scroll; no auto-scroll
+  in Claude Code's fullscreen renderer, vim or `less`; a wheel notch while dragging moves the
+  selection's end with the text
 - in Claude Code: Option+Enter and Shift+Enter each add a line to the prompt instead of sending
   it; Option+P opens the model picker; Esc still cancels; in zsh, Shift+Enter runs the line
 - `claude` with `/tui default`, a long answer, then a two-finger scroll: the text follows the
