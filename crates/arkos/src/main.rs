@@ -24,6 +24,7 @@ mod gitstatus;
 mod highlight;
 mod hook_cli;
 mod idle;
+mod keybindings;
 mod keys;
 mod keymap;
 mod launch;
@@ -2541,6 +2542,8 @@ impl Root {
             NewWindow => self.new_window(cx),
             About => aux::open_about(cx),
             OpenSettings => aux::open_settings(cx),
+            Keybindings => aux::open_keybindings(cx),
+            Documentation => aux::open_documentation(cx),
             NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
             NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
             DockChromeWindow => self.open_dock_list(cx),
@@ -3512,19 +3515,26 @@ fn rebind(cx: &mut App, keybindings: &BTreeMap<String, String>) {
     cx.set_menus(menus());
 }
 
-/// The menu bar: one menu. Set again when the key bindings change so it shows the bound keys.
-/// "New Window" is one item: the chooser offers the recent folders and the native picker both.
+/// The menu bar: the Arkos IDE menu and the Help menu. Set again when the key bindings change so
+/// it shows the bound keys. "New Window" is one item: the chooser offers the recent folders and
+/// the native picker both.
 fn menus() -> Vec<Menu> {
-    vec![Menu {
-        name: "Arkos IDE".into(),
-        items: vec![
-            MenuItem::action("About Arkos IDE", keymap::About),
-            MenuItem::separator(),
-            MenuItem::action("New Window", keymap::NewWindow),
-            MenuItem::action("Settings", keymap::OpenSettings),
-            MenuItem::action("Quit", Quit),
-        ],
-    }]
+    vec![
+        Menu {
+            name: "Arkos IDE".into(),
+            items: vec![
+                MenuItem::action("About Arkos IDE", keymap::About),
+                MenuItem::separator(),
+                MenuItem::action("New Window", keymap::NewWindow),
+                MenuItem::action("Settings", keymap::OpenSettings),
+                MenuItem::action("Quit", Quit),
+            ],
+        },
+        Menu {
+            name: "Help".into(),
+            items: vec![MenuItem::action("Keybindings", keymap::Keybindings), MenuItem::action("Documentation", keymap::Documentation)],
+        },
+    ]
 }
 
 fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme) -> Div {
@@ -3654,17 +3664,19 @@ fn main() {
                 cx.quit();
             }
         });
-        // About and Settings work in every state, so they are registered once, here, for the
-        // whole run. The project window's own handlers run the same functions, and an action one
-        // of them handles stops there.
+        // About, Settings and the Help menu's two items work in every state, so they are
+        // registered once, here, for the whole run. The project window's own handlers run the
+        // same functions, and an action one of them handles stops there.
         cx.on_action(|_: &keymap::About, cx| aux::open_about(cx));
         cx.on_action(|_: &keymap::OpenSettings, cx| aux::open_settings(cx));
+        cx.on_action(|_: &keymap::Keybindings, cx| aux::open_keybindings(cx));
+        cx.on_action(|_: &keymap::Documentation, cx| aux::open_documentation(cx));
         // Closing the launch chooser quits, the failure window's red button too; "Try again"
         // closes the failure window as its connect starts, which is no reason to quit.
         let closing = launch.clone();
         cx.on_window_closed(move |cx| {
             let windows = cx.windows();
-            // About and Settings never keep the app alive on their own.
+            // About, Settings and Keybindings never keep the app alive on their own.
             let left = startup::windows_without_aux(windows.len(), aux::aux_open(cx));
             // Still opening when its handle is not known yet: open, as long as any window is.
             let chooser_open = match closing.chooser.get() {
@@ -4078,24 +4090,32 @@ mod tests {
     use crate::keymap;
     use gpui::{Action, MenuItem};
 
-    #[test]
-    fn the_menu_bar_is_one_menu_with_about_new_window_settings_and_quit() {
-        let menus = menus();
-        assert_eq!(menus.len(), 1);
-        assert_eq!(menus[0].name.as_ref(), "Arkos IDE");
-        let want: [Option<(&str, &dyn Action)>; 5] =
-            [Some(("About Arkos IDE", &keymap::About)), None, Some(("New Window", &keymap::NewWindow)), Some(("Settings", &keymap::OpenSettings)), Some(("Quit", &Quit))];
-        assert_eq!(menus[0].items.len(), want.len());
-        for (ix, (item, want)) in menus[0].items.iter().zip(want).enumerate() {
+    /// Checks one menu's items against `want`: `None` for a separator, else the label and action.
+    fn assert_menu(menu: &gpui::Menu, name: &str, want: &[Option<(&str, &dyn Action)>]) {
+        assert_eq!(menu.name.as_ref(), name);
+        assert_eq!(menu.items.len(), want.len(), "{name}");
+        for (ix, (item, want)) in menu.items.iter().zip(want).enumerate() {
             match (item, want) {
                 (MenuItem::Separator, None) => {}
-                (MenuItem::Action { name, action, .. }, Some((want_name, want_action))) => {
-                    assert_eq!(name.as_ref(), want_name, "item {ix}");
-                    assert!(action.partial_eq(want_action), "item {ix}: {} runs {}", want_name, action.name());
+                (MenuItem::Action { name: label, action, .. }, Some((want_name, want_action))) => {
+                    assert_eq!(label.as_ref(), *want_name, "{name} item {ix}");
+                    assert!(action.partial_eq(*want_action), "{name} item {ix}: {} runs {}", want_name, action.name());
                 }
-                _ => panic!("item {ix} is not the expected kind"),
+                _ => panic!("{name} item {ix} is not the expected kind"),
             }
         }
+    }
+
+    #[test]
+    fn the_menu_bar_is_the_arkos_ide_menu_then_the_help_menu() {
+        let menus = menus();
+        assert_eq!(menus.len(), 2);
+        assert_menu(
+            &menus[0],
+            "Arkos IDE",
+            &[Some(("About Arkos IDE", &keymap::About)), None, Some(("New Window", &keymap::NewWindow)), Some(("Settings", &keymap::OpenSettings)), Some(("Quit", &Quit))],
+        );
+        assert_menu(&menus[1], "Help", &[Some(("Keybindings", &keymap::Keybindings)), Some(("Documentation", &keymap::Documentation))]);
     }
 
     #[test]

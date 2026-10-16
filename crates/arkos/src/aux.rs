@@ -1,8 +1,9 @@
-//! The auxiliary windows' registry: the About and Settings windows, one of each at most, and the
-//! project window's Root once it exists. A gpui global, so the actions registered once in `main()`
+//! The auxiliary windows' registry: the About, Settings and Keybindings windows, one of each at
+//! most, and the project window's Root once it exists. A gpui global, so the actions registered once in `main()`
 //! reach them in every state, the launch chooser's included, and the close rules can count them.
 use crate::about::{self, AboutWindow};
 use crate::config::{self, Config};
+use crate::keybindings::KeybindingsWindow;
 use crate::settings::{self, SettingsWindow, Shown};
 use crate::theme::Theme;
 use crate::{launch, paths, Root};
@@ -29,6 +30,7 @@ pub struct LaunchState {
 pub struct Aux {
     pub about: Option<WindowHandle<AboutWindow>>,
     pub settings: Option<WindowHandle<SettingsWindow>>,
+    pub keybindings: Option<WindowHandle<KeybindingsWindow>>,
     /// The project window's Root, once it exists.
     pub root: Option<WeakEntity<Root>>,
     /// Set by `init` before any window opens.
@@ -124,6 +126,20 @@ fn settings_state(cx: &App) -> Option<(Shown, Theme)> {
     Some((Shown { config, error, write_error: None, update_ready: None, active_preset: None }, launch.theme.clone()))
 }
 
+/// The Keybindings menu item and Cmd+/: will bring the Keybindings window forward, or open it.
+/// Until the window exists it only says it was asked for.
+pub fn open_keybindings(_cx: &mut App) {
+    eprintln!("arkos: the Keybindings window is not built yet");
+}
+
+/// Where the Documentation menu item and command go: the README on GitHub.
+pub const DOCS_URL: &str = "https://github.com/csarkosh/ide-arkos#readme";
+
+/// The Documentation menu item and command: opens `DOCS_URL` in the default browser.
+pub fn open_documentation(cx: &mut App) {
+    cx.open_url(DOCS_URL);
+}
+
 /// Shows `shown` in the Settings window when it is open.
 pub fn push_settings(cx: &mut App, shown: Shown) {
     let Some(handle) = cx.try_global::<Aux>().and_then(|aux| aux.settings) else { return };
@@ -204,28 +220,34 @@ fn settings_update_now(cx: &mut App) {
     }
 }
 
-/// How many of the About and Settings windows are open.
+/// How many of the About, Settings and Keybindings windows are open.
 pub fn aux_open(cx: &App) -> usize {
     let Some(aux) = cx.try_global::<Aux>() else { return 0 };
     // A window being updated is still listed by `windows()`, while `read` would fail on it.
     let windows = cx.windows();
     let open = |id: Option<gpui::WindowId>| id.is_some_and(|id| windows.iter().any(|w| w.window_id() == id));
-    usize::from(open(aux.about.map(|h| h.window_id()))) + usize::from(open(aux.settings.map(|h| h.window_id())))
+    usize::from(open(aux.about.map(|h| h.window_id())))
+        + usize::from(open(aux.settings.map(|h| h.window_id())))
+        + usize::from(open(aux.keybindings.map(|h| h.window_id())))
 }
 
-/// Closes the About and Settings windows and forgets their handles.
+/// Closes the About, Settings and Keybindings windows and forgets their handles.
 pub fn close_all(cx: &mut App) {
     let Some(aux) = cx.try_global::<Aux>() else { return };
-    let (about, settings) = (aux.about, aux.settings);
+    let (about, settings, keybindings) = (aux.about, aux.settings, aux.keybindings);
     if let Some(h) = about {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
     if let Some(h) = settings {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
+    if let Some(h) = keybindings {
+        let _ = h.update(cx, |_, window, _| window.remove_window());
+    }
     let aux = cx.global_mut::<Aux>();
     aux.about = None;
     aux.settings = None;
+    aux.keybindings = None;
 }
 
 /// New Window pressed in About or Settings: the project window's New Window when there is one;

@@ -19,7 +19,7 @@ actions!(
         CloseTab, ReopenClosedTab, CloseAllInPane,
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
-        About, OpenSettings, OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
+        About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
     ]
@@ -48,6 +48,10 @@ pub enum Command {
     About,
     /// Open the Settings window, or bring it forward when it is open.
     OpenSettings,
+    /// Open the Keybindings window, or bring it forward when it is open.
+    Keybindings,
+    /// Open the README in the browser.
+    Documentation,
     /// Open config.toml in the default text editor.
     OpenConfig,
     /// Switch every terminal to the named text preset (the palette runs it).
@@ -108,19 +112,54 @@ pub enum Command {
     UndockChromeWindow,
 }
 
+/// Where an action is listed in the Keybindings window, by what it acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Window,
+    Panes,
+    Tabs,
+    Terminal,
+    Sidebar,
+    Browser,
+    Markdown,
+    Maintenance,
+}
+
+impl Section {
+    /// Every section, in display order.
+    pub const ALL: [Section; 8] =
+        [Section::Window, Section::Panes, Section::Tabs, Section::Terminal, Section::Sidebar, Section::Browser, Section::Markdown, Section::Maintenance];
+
+    /// The section's heading in the Keybindings window.
+    #[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Window => "Window and app",
+            Section::Panes => "Panes",
+            Section::Tabs => "Tabs",
+            Section::Terminal => "Terminal",
+            Section::Sidebar => "Sidebar and files",
+            Section::Browser => "Browser",
+            Section::Markdown => "Markdown editing",
+            Section::Maintenance => "Updates and maintenance",
+        }
+    }
+}
+
 /// One row of the table: the config name, the default keystrokes (gpui syntax, chords space
-/// separated) and the key context the binding needs.
+/// separated), the key context the binding needs and the section it is listed under.
 pub struct ActionSpec {
     pub name: &'static str,
     pub keys: &'static str,
     pub context: Option<&'static str>,
+    pub section: Section,
 }
 
-const fn row(name: &'static str, keys: &'static str) -> ActionSpec {
-    ActionSpec { name, keys, context: None }
+const fn row(section: Section, name: &'static str, keys: &'static str) -> ActionSpec {
+    ActionSpec { name, keys, context: None, section }
 }
 
-/// The spec's table (section 4) plus about, settings, open config, the command palette, find, the
+/// The spec's table (section 4) plus about, settings, keybindings, documentation, open config, the command palette, find, the
 /// update commands and quit. The order is the registration order. "update now", "check for
 /// updates" and "retry update" have no default keys: they are palette commands unless the config
 /// binds them.
@@ -128,50 +167,52 @@ pub const ACTIONS: &[ActionSpec] = &[
     // First on purpose: gpui's bindings_for_input (keymap.rs:191-197) drops a pending chord
     // whose index is after the best exact match, so a later lone cmd-k would fire at once and
     // the Cmd+K chords would never complete. Terminal-only, so chords work elsewhere too.
-    ActionSpec { name: "clear to start", keys: "cmd-k", context: Some("Terminal") },
-    row("focus pane 1", "cmd-1"), row("focus pane 2", "cmd-2"), row("focus pane 3", "cmd-3"),
-    row("focus pane 4", "cmd-4"), row("focus pane 5", "cmd-5"), row("focus pane 6", "cmd-6"),
-    row("focus pane 7", "cmd-7"), row("focus pane 8", "cmd-8"), row("focus pane 9", "cmd-9"),
-    row("focus left", "cmd-k cmd-left"), row("focus right", "cmd-k cmd-right"),
-    row("focus up", "cmd-k cmd-up"), row("focus down", "cmd-k cmd-down"),
-    row("split right", "cmd-\\"), row("split down", "cmd-k cmd-\\"),
-    row("maximize pane", "cmd-k cmd-m"),
-    row("move tab to previous pane", "ctrl-cmd-left"), row("move tab to next pane", "ctrl-cmd-right"),
-    row("next tab", "alt-cmd-right"), row("previous tab", "alt-cmd-left"),
-    row("next tab alt", "cmd-shift-]"), row("previous tab alt", "cmd-shift-["),
-    row("most recently used tab", "ctrl-tab"),
-    row("close tab", "cmd-w"), row("reopen closed tab", "cmd-shift-t"), row("close all in pane", "cmd-k w"),
-    row("move tab left", "cmd-k cmd-shift-left"), row("move tab right", "cmd-k cmd-shift-right"),
-    row("new terminal tab", "ctrl-shift-`"),
-    row("font bigger", "cmd-="), row("font smaller", "cmd--"),
+    ActionSpec { name: "clear to start", keys: "cmd-k", context: Some("Terminal"), section: Section::Terminal },
+    row(Section::Panes, "focus pane 1", "cmd-1"), row(Section::Panes, "focus pane 2", "cmd-2"), row(Section::Panes, "focus pane 3", "cmd-3"),
+    row(Section::Panes, "focus pane 4", "cmd-4"), row(Section::Panes, "focus pane 5", "cmd-5"), row(Section::Panes, "focus pane 6", "cmd-6"),
+    row(Section::Panes, "focus pane 7", "cmd-7"), row(Section::Panes, "focus pane 8", "cmd-8"), row(Section::Panes, "focus pane 9", "cmd-9"),
+    row(Section::Panes, "focus left", "cmd-k cmd-left"), row(Section::Panes, "focus right", "cmd-k cmd-right"),
+    row(Section::Panes, "focus up", "cmd-k cmd-up"), row(Section::Panes, "focus down", "cmd-k cmd-down"),
+    row(Section::Panes, "split right", "cmd-\\"), row(Section::Panes, "split down", "cmd-k cmd-\\"),
+    row(Section::Panes, "maximize pane", "cmd-k cmd-m"),
+    row(Section::Tabs, "move tab to previous pane", "ctrl-cmd-left"), row(Section::Tabs, "move tab to next pane", "ctrl-cmd-right"),
+    row(Section::Tabs, "next tab", "alt-cmd-right"), row(Section::Tabs, "previous tab", "alt-cmd-left"),
+    row(Section::Tabs, "next tab alt", "cmd-shift-]"), row(Section::Tabs, "previous tab alt", "cmd-shift-["),
+    row(Section::Tabs, "most recently used tab", "ctrl-tab"),
+    row(Section::Tabs, "close tab", "cmd-w"), row(Section::Tabs, "reopen closed tab", "cmd-shift-t"), row(Section::Tabs, "close all in pane", "cmd-k w"),
+    row(Section::Tabs, "move tab left", "cmd-k cmd-shift-left"), row(Section::Tabs, "move tab right", "cmd-k cmd-shift-right"),
+    row(Section::Tabs, "new terminal tab", "ctrl-shift-`"),
+    row(Section::Terminal, "font bigger", "cmd-="), row(Section::Terminal, "font smaller", "cmd--"),
     // Before "open config" on purpose: gpui ranks bindings at the same depth later-first, so a
     // user's `"open config" = "cmd-,"` wins over Settings' default Cmd+,.
-    row("about", ""),
-    row("settings", "cmd-,"),
-    row("open config", ""),
-    row("command palette", "cmd-shift-p"),
-    row("find", "cmd-f"),
-    row("update now", ""),
-    row("check for updates", ""),
-    row("notifications", ""),
-    row("doctor", ""),
-    row("retry update", ""),
-    row("start at login", ""),
-    row("install claude code hooks", ""),
-    row("toggle sidebar", "cmd-b"),
-    row("focus file tree", "cmd-shift-e"),
-    row("show ignored files", ""),
-    row("focus worktrees", "ctrl-shift-g"),
-    ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer") },
-    ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer") },
-    ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer") },
-    row("open folder", "cmd-o"),
-    row("new window", "cmd-n"),
-    row("new browser tab", "cmd-shift-b"),
-    row("new single-page browser tab", ""),
-    row("dock a chrome window", ""),
-    row("undock chrome window", ""),
-    row("quit", "cmd-q"),
+    row(Section::Window, "about", ""),
+    row(Section::Window, "settings", "cmd-,"),
+    row(Section::Window, "keybindings", "cmd-/"),
+    row(Section::Window, "documentation", ""),
+    row(Section::Window, "open config", ""),
+    row(Section::Window, "command palette", "cmd-shift-p"),
+    row(Section::Terminal, "find", "cmd-f"),
+    row(Section::Maintenance, "update now", ""),
+    row(Section::Maintenance, "check for updates", ""),
+    row(Section::Maintenance, "notifications", ""),
+    row(Section::Maintenance, "doctor", ""),
+    row(Section::Maintenance, "retry update", ""),
+    row(Section::Maintenance, "start at login", ""),
+    row(Section::Maintenance, "install claude code hooks", ""),
+    row(Section::Sidebar, "toggle sidebar", "cmd-b"),
+    row(Section::Sidebar, "focus file tree", "cmd-shift-e"),
+    row(Section::Sidebar, "show ignored files", ""),
+    row(Section::Sidebar, "focus worktrees", "ctrl-shift-g"),
+    ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer"), section: Section::Sidebar },
+    ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer"), section: Section::Sidebar },
+    ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer"), section: Section::Sidebar },
+    row(Section::Window, "open folder", "cmd-o"),
+    row(Section::Window, "new window", "cmd-n"),
+    row(Section::Browser, "new browser tab", "cmd-shift-b"),
+    row(Section::Browser, "new single-page browser tab", ""),
+    row(Section::Browser, "dock a chrome window", ""),
+    row(Section::Browser, "undock chrome window", ""),
+    row(Section::Window, "quit", "cmd-q"),
 ];
 
 /// The US layout's shifted symbols. gpui on macOS reports a shifted symbol as the shifted
@@ -240,6 +281,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "font smaller" => KeyBinding::new(keys, FontSmaller, context),
         "about" => KeyBinding::new(keys, About, context),
         "settings" => KeyBinding::new(keys, OpenSettings, context),
+        "keybindings" => KeyBinding::new(keys, Keybindings, context),
+        "documentation" => KeyBinding::new(keys, Documentation, context),
         "open config" => KeyBinding::new(keys, OpenConfig, context),
         "command palette" => KeyBinding::new(keys, CommandPalette, context),
         "find" => KeyBinding::new(keys, Find, context),
@@ -393,6 +436,69 @@ pub fn label(name: &str) -> String {
     }
 }
 
+/// The document viewer's fixed keys, which no `[keybindings]` entry changes: the label and the
+/// keys in the Mac spelling. Each is one `viewer::key_action` maps, except Cmd+click, which the
+/// rendered view's links answer (`md_view`).
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
+pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
+    ("Save", "Cmd+S"),
+    ("Leave the block", "Escape"),
+    ("Continue a list", "Enter"),
+    ("Undo", "Cmd+Z"),
+    ("Redo", "Shift+Cmd+Z"),
+    ("Select all", "Cmd+A"),
+    ("Copy", "Cmd+C"),
+    ("Cut", "Cmd+X"),
+    ("Paste", "Cmd+V"),
+    ("Indent a list item", "Tab"),
+    ("Outdent a list item", "Shift+Tab"),
+    ("Open a link", "Cmd+click"),
+    ("Scroll to the top or end", "Home, End"),
+];
+
+/// One line of the Keybindings window: what the action is called and its keys in the Mac
+/// spelling, `None` when nothing is bound.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRow {
+    pub label: String,
+    pub keys: Option<String>,
+}
+
+/// Every action with its keys in force under `overrides`, grouped by section in display order (a
+/// section with no rows is left out), in `ACTIONS` order within a section. The nine "focus pane N"
+/// rows read as one row while every one of them keeps its default; the Markdown section lists
+/// `MARKDOWN_KEYS`.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
+pub fn grouped(overrides: &BTreeMap<String, String>) -> Vec<(Section, Vec<KeyRow>)> {
+    let focus_pane = |a: &ActionSpec| a.name.starts_with("focus pane ");
+    let collapse = ACTIONS.iter().filter(|a| focus_pane(a)).all(|a| keys_for(a.name, overrides).as_deref() == Some(a.keys));
+    Section::ALL
+        .iter()
+        .map(|&section| {
+            let rows: Vec<KeyRow> = if section == Section::Markdown {
+                MARKDOWN_KEYS.iter().map(|(label, keys)| KeyRow { label: label.to_string(), keys: Some(keys.to_string()) }).collect()
+            } else {
+                let mut rows = Vec::new();
+                for a in ACTIONS.iter().filter(|a| a.section == section) {
+                    if collapse && focus_pane(a) {
+                        // The first of the nine stands for them all; the rest add nothing.
+                        if a.name == "focus pane 1" {
+                            let keys = format!("{} to {}", pretty_keys("cmd-1"), pretty_keys("cmd-9"));
+                            rows.push(KeyRow { label: "Focus pane 1 to 9".to_string(), keys: Some(keys) });
+                        }
+                        continue;
+                    }
+                    rows.push(KeyRow { label: label(a.name), keys: keys_for(a.name, overrides).map(|k| pretty_keys(&k)) });
+                }
+                rows
+            };
+            (section, rows)
+        })
+        .filter(|(_, rows)| !rows.is_empty())
+        .collect()
+}
+
 /// The command an action name runs, for the palette. gpui's `on_action` needs a concrete action
 /// type per listener, so `attach` keeps its macro; this is the same mapping as a lookup. The
 /// palette itself and quit are not listed.
@@ -430,6 +536,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "font smaller" => Command::FontDelta(-1.0),
         "about" => Command::About,
         "settings" => Command::OpenSettings,
+        "keybindings" => Command::Keybindings,
+        "documentation" => Command::Documentation,
         "open config" => Command::OpenConfig,
         "find" => Command::Find,
         "update now" => Command::UpdateNow,
@@ -491,6 +599,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         NewTerminal => Command::NewTerminal, ClearToStart => Command::ClearToStart,
         FontBigger => Command::FontDelta(1.0), FontSmaller => Command::FontDelta(-1.0),
         About => Command::About, OpenSettings => Command::OpenSettings,
+        Keybindings => Command::Keybindings, Documentation => Command::Documentation,
         OpenConfig => Command::OpenConfig, CommandPalette => Command::CommandPalette, Find => Command::Find,
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
@@ -532,6 +641,8 @@ mod tests {
         ("cmd-=", "font bigger", "FontBigger"), ("cmd--", "font smaller", "FontSmaller"),
         ("", "about", "About"),
         ("cmd-,", "settings", "OpenSettings"),
+        ("cmd-/", "keybindings", "Keybindings"),
+        ("", "documentation", "Documentation"),
         ("", "open config", "OpenConfig"),
         ("cmd-shift-p", "command palette", "CommandPalette"),
         ("cmd-f", "find", "Find"),
@@ -617,7 +728,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 14, "an empty string unbinds, and about, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 15, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -626,7 +737,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 13, "only about, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 14, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
         assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
@@ -710,6 +821,49 @@ mod tests {
             let has = command_for(a.name).is_some();
             assert_eq!(has, a.name != "command palette" && a.name != "quit", "{}", a.name);
         }
+    }
+
+    #[test]
+    fn every_action_sits_in_one_section_and_the_rows_read_as_the_mac_writes_them() {
+        let g = grouped(&BTreeMap::new());
+        let order: Vec<Section> = g.iter().map(|(s, _)| *s).collect();
+        assert_eq!(order, Section::ALL.to_vec(), "every section, in display order");
+        let mut seen = 0;
+        for (section, rows) in &g {
+            for row in rows {
+                if *section == Section::Markdown {
+                    continue;
+                }
+                seen += if row.label == "Focus pane 1 to 9" { 9 } else { 1 };
+            }
+        }
+        assert_eq!(seen, ACTIONS.len(), "every action once; the nine focus rows through the collapsed row");
+        let panes = &g.iter().find(|(s, _)| *s == Section::Panes).unwrap().1;
+        assert_eq!(panes[0], KeyRow { label: "Focus pane 1 to 9".into(), keys: Some("Cmd+1 to Cmd+9".into()) });
+        let window = &g.iter().find(|(s, _)| *s == Section::Window).unwrap().1;
+        assert!(window.iter().any(|r| r.label == "Keybindings" && r.keys.as_deref() == Some("Cmd+/")));
+        assert!(window.iter().any(|r| r.label == "Documentation" && r.keys.is_none()));
+        let maint = &g.iter().find(|(s, _)| *s == Section::Maintenance).unwrap().1;
+        assert!(maint.iter().any(|r| r.label == "Doctor" && r.keys.is_none()));
+        let md = &g.iter().find(|(s, _)| *s == Section::Markdown).unwrap().1;
+        assert_eq!(md.len(), MARKDOWN_KEYS.len());
+        assert_eq!(md[0], KeyRow { label: "Save".into(), keys: Some("Cmd+S".into()) });
+        let mut o = BTreeMap::new();
+        o.insert("find".to_string(), "cmd-shift-f".to_string());
+        o.insert("focus pane 3".to_string(), "cmd-shift-3".to_string());
+        let g = grouped(&o);
+        let term = &g.iter().find(|(s, _)| *s == Section::Terminal).unwrap().1;
+        assert!(term.iter().any(|r| r.label == "Find" && r.keys.as_deref() == Some("Shift+Cmd+F")));
+        let panes = &g.iter().find(|(s, _)| *s == Section::Panes).unwrap().1;
+        assert_eq!(panes.iter().filter(|r| r.label.starts_with("Focus pane ")).count(), 9, "an override on one of the nine spreads them out");
+        assert_eq!(keys_for("keybindings", &BTreeMap::new()), Some("cmd-/".to_string()));
+        assert_eq!(command_for("documentation"), Some(Command::Documentation));
+    }
+
+    #[test]
+    fn the_sections_carry_the_window_s_headings() {
+        let titles: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
+        assert_eq!(titles, ["Window and app", "Panes", "Tabs", "Terminal", "Sidebar and files", "Browser", "Markdown editing", "Updates and maintenance"]);
     }
 
     #[test]

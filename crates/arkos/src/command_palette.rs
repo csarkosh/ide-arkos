@@ -286,6 +286,10 @@ mod tests {
         assert_eq!((open.detail.as_str(), &open.command), ("Cmd+O", &Command::OpenFolder));
         let about = items.iter().find(|i| i.label == "About Arkos IDE").unwrap();
         assert_eq!((about.detail.as_str(), &about.command), ("", &Command::About));
+        let keys = items.iter().find(|i| i.label == "Keybindings").unwrap();
+        assert_eq!((keys.detail.as_str(), &keys.command), ("Cmd+/", &Command::Keybindings));
+        let docs = items.iter().find(|i| i.label == "Documentation").unwrap();
+        assert_eq!((docs.detail.as_str(), &docs.command), ("", &Command::Documentation));
         let prefs = items.iter().find(|i| i.label == "Settings").unwrap();
         assert_eq!((prefs.detail.as_str(), &prefs.command), ("Cmd+,", &Command::OpenSettings));
         let config = items.iter().find(|i| i.label == "Open config").unwrap();
