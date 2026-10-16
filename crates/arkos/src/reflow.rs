@@ -58,14 +58,19 @@ pub fn reflow(text: &str, columns: usize, first_col: usize) -> String {
 /// What goes between `a` and `b` when `b` continues the line `a` was wrapped from (a space, or
 /// nothing inside a URL or a path broken mid-word), or None when `a` ends where its program ended
 /// it. `a` is trimmed on the right and `width` cells wide, `b_t` is `b` without its indent. The
-/// box-drawing stop on `a` ignores `a`'s leading spaces, so a table indented under a message
-/// counts as one.
+/// box-drawing, table and rule stops on `a` ignore `a`'s leading spaces, so a table indented
+/// under a message counts as one.
 fn join(a: &str, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize) -> Option<&'static str> {
     if a.is_empty() || b_t.is_empty() {
         return None;
     }
     let a_t = a.trim_start_matches(' ');
     if starts_structure(b_t) || starts_box(a_t) || starts_box(b_t) {
+        return None;
+    }
+    // Programs that cut their lines at the width rather than wrap them: tables such as `ps aux`,
+    // rules such as pytest's headers, and lines cut short with an ellipsis.
+    if has_gap(a_t) || has_gap(b_t) || starts_rule(a_t) || starts_rule(b_t) || a.ends_with("...") || a.ends_with('\u{2026}') {
         return None;
     }
     // Wider than the terminal: alacritty already joined the rows the terminal wrapped, so this
@@ -101,15 +106,27 @@ fn item_marker(line: &str) -> Option<usize> {
     numbered.then(|| line.len() - rest.len() + 2)
 }
 
-/// Whether a line opens a list item, a quote, a heading or a code fence, which never continue the
-/// line before them.
+/// Whether a line opens a list item, a quote, a heading, a code fence or a tool's result in Claude
+/// Code (`⎿`), which never continue the line before them.
 fn starts_structure(line: &str) -> bool {
     item_marker(line).is_some()
+        || line.starts_with("\u{23bf} ")
         || line.starts_with(['>', '#'])
         || line.starts_with("```")
         || line.starts_with("~~~")
         || line.starts_with("[ ]")
         || line.starts_with("[x]")
+}
+
+/// Whether a line, without its indent, has a run of two or more spaces before its end: the
+/// columns of a table, which a program pads rather than wraps.
+fn has_gap(line: &str) -> bool {
+    line.trim_end().contains("  ")
+}
+
+/// Whether a line starts with a rule: three or more of `=`, `-`, `_`, `*` or `~` in a row.
+fn starts_rule(line: &str) -> bool {
+    ["===", "---", "___", "***", "~~~"].iter().any(|r| line.starts_with(r))
 }
 
 /// Whether a line starts with a box-drawing or block character: a table, or a frame of Claude
@@ -398,6 +415,62 @@ mod tests {
                 let _ = reflow(s, cols, 3);
             }
         }
+    }
+
+    // `ps aux` at 80 columns: ps cuts each row at the terminal's edge, so two of the three fill
+    // it, and its columns are runs of spaces.
+    const PS_AUX: [&str; 3] = [
+        "csarko   48121   2.1  0.3 410933248  52144 s001  S+    9:14AM   0:01.82 node /Us",
+        "csarko   48119   0.0  0.1 410822912  10288 s001  Ss    9:14AM   0:00.04 -zsh",
+        "root       312   0.0  0.2 410781696  33600   ??  Ss    8:02AM   0:03.11 /usr/lib",
+    ];
+
+    #[test]
+    fn tabular_output_cut_at_the_width_is_left_as_it_is() {
+        assert_eq!(PS_AUX.map(cells), [80, 76, 80]);
+        let text = lines(&PS_AUX);
+        assert_eq!(reflow(&text, 80, 0), text);
+    }
+
+    #[test]
+    fn a_rule_across_the_width_never_joins_the_line_after_it() {
+        let header = format!("{} test session starts {}", "=".repeat(29), "=".repeat(30));
+        assert_eq!(cells(&header), 80);
+        let text = lines(&[&header, "platform darwin -- Python 3.12.4, pytest-8.2.2, pluggy-1.5.0"]);
+        assert_eq!(reflow(&text, 80, 0), text);
+        // A rule of any of the usual characters, on either side.
+        for c in ["-", "_", "*", "~"] {
+            let rule = c.repeat(80);
+            let after = lines(&[&rule, "platform darwin -- Python 3.12.4, pytest-8.2.2, pluggy-1.5.0"]);
+            assert_eq!(reflow(&after, 80, 0), after, "after a rule of {c}");
+        }
+        let before = lines(&[DECISION[0], &header]);
+        assert_eq!(reflow(&before, 80, 0), before);
+    }
+
+    #[test]
+    fn a_line_cut_short_with_an_ellipsis_is_a_break() {
+        let text = lines(&[
+            "FAILED tests/test_limiter.py::test_retry_after_is_a_whole_number - AssertionE...",
+            "FAILED tests/test_limiter.py::test_a_zero_limit_refuses_every_request - asser...",
+        ]);
+        assert!(text.lines().all(|l| cells(l) == 80));
+        assert_eq!(reflow(&text, 80, 0), text);
+        let unicode = lines(&["FAILED tests/test_limiter.py::test_retry_after_is_a_whole_number - AssertionErr\u{2026}", "FAILED tests/test_limiter.py::test_a_zero_limit_refuses_every_request"]);
+        assert_eq!(cells(unicode.lines().next().unwrap()), 80);
+        assert_eq!(reflow(&unicode, 80, 0), unicode);
+    }
+
+    #[test]
+    fn a_tool_result_never_joins_the_bullet_above_it() {
+        // Claude Code marks a tool's result with `⎿` under the call's bullet.
+        let call = "\u{25cf} Bash(npx jest src/limiter.test.js src/server.test.js --runInBand --ci --bail)";
+        assert_eq!(cells(call), 79);
+        let text = lines(&[call, "  \u{23bf}  PASS src/limiter.test.js", "     PASS src/server.test.js"]);
+        assert_eq!(reflow(&text, 80, 0), text);
+        // The marker alone keeps it apart, with one space after it as with two.
+        let single = lines(&[call, "  \u{23bf} Tests: 9 passed, 9 total"]);
+        assert_eq!(reflow(&single, 80, 0), single);
     }
 
     #[test]
