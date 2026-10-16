@@ -281,8 +281,13 @@ fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     let u = &opts.update;
     if !u.check_every.is_zero() {
         let keys = protocol::release_key::RELEASE_PUBLIC_KEYS.iter().map(|k| k.to_string()).chain(u.extra_keys.iter().cloned()).collect();
-        let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone() };
-        crate::updates::poll::start(state.clone(), fetcher, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running(), u.bundle.clone());
+        // The envelope runs `sw_vers` once, so it is a fork like any other.
+        let telemetry = {
+            let _no_open_pty_inheritable = crate::pty::spawn_lock();
+            crate::telemetry::Telemetry::new(&u.telemetry)
+        };
+        let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone(), user_agent: telemetry.user_agent() };
+        crate::updates::poll::start(state.clone(), fetcher, telemetry, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running(), u.bundle.clone());
     }
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     let dir = crate::recovery::sessions_dir(&opts.socket);

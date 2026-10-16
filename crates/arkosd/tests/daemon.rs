@@ -2404,3 +2404,23 @@ fn a_customize_id_in_flight_is_refused_and_a_window_that_leaves_is_not_waited_fo
     }
     assert!(t0.elapsed() < Duration::from_millis(1900), "answered when the window left, not at the deadline: {:?}", t0.elapsed());
 }
+
+/// The test-only `--telemetry-url` takes the collector or a `file://` folder and nothing else,
+/// like `--release-key` a flag no release passes, so no argument can send the check elsewhere.
+#[test]
+fn a_telemetry_url_off_the_collector_is_refused_and_a_file_site_is_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_arkosd"))
+        .arg("--socket")
+        .arg(dir.path().join("d.sock"))
+        .args(["--check-every-secs", "0", "--telemetry-url", "https://evil.example"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--telemetry-url takes https://apps.csarko.sh or a file:// folder"), "{out:?}");
+    let site = format!("file://{}/site", dir.path().display());
+    let tel = dir.path().join("tel");
+    let d = Daemon::start(&["--telemetry-dir", tel.to_str().unwrap(), "--telemetry-url", &site]);
+    let mut c = d.connect();
+    assert!(matches!(c.request(Request::ListSessions), Response::Sessions(_)));
+}

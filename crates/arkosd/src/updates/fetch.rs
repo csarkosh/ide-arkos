@@ -1,5 +1,6 @@
 //! Downloads through the system curl (TLS and proxies are macOS's business), never into memory
-//! past what the manifest says, and never from a host that is not GitHub's.
+//! past what the manifest says, and never from a host that is not GitHub's: the first-party
+//! check is only a start, whose redirect must end there.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -8,27 +9,47 @@ pub struct Fetcher {
     /// Ends with `/`; `manifest.json` and `manifest.json.sig` are appended.
     pub base: String,
     pub curl: PathBuf,
+    /// `arkos/<version>`, sent with every request; the first-party check requires it.
+    pub user_agent: String,
 }
 
 const MANIFEST_MAX: u64 = 64 * 1024;
 
+/// How long a manifest or signature fetch from GitHub may take.
+pub const MANIFEST_SECS: u64 = 20;
+
+/// How long the first-party check may take, its redirect to GitHub's manifest included: a slow
+/// collector costs the check at most this before the fetch falls back to GitHub.
+pub const FIRST_PARTY_SECS: u64 = 5;
+
+/// GitHub's hosts, where every download ends.
+const GITHUB_HOSTS: [&str; 3] = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
+
+/// The first-party check's host: a permitted start whose redirect must end on GitHub.
+const FIRST_PARTY_HOST: &str = "apps.csarko.sh";
+
 /// The url curl ended on must be GitHub's: a redirect anywhere else is refused, and the file
-/// curl wrote is deleted unread. A `file://` url (the tests' sites) is accepted only when the
+/// curl wrote is deleted unread. The request must have started on GitHub or at the first-party
+/// check, whose answer is a redirect to GitHub's manifest (one it answered itself, a `204`, is
+/// no manifest and is refused). A `file://` url (the tests' sites) is accepted only when the
 /// request itself was one; redirects are https only, so an https request cannot end on a file.
 pub fn allowed_final_url(requested: &str, url: &str) -> bool {
     if url.starts_with("file:///") {
         return requested.starts_with("file:///");
     }
-    let Some(rest) = url.strip_prefix("https://") else { return false };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if host.contains('@') || host.contains(':') {
-        return false;
-    }
-    matches!(host, "github.com" | "objects.githubusercontent.com" | "release-assets.githubusercontent.com")
+    let start = https_host(requested).is_some_and(|h| h == FIRST_PARTY_HOST || GITHUB_HOSTS.contains(&h));
+    start && https_host(url).is_some_and(|h| GITHUB_HOSTS.contains(&h))
 }
 
-pub fn curl_args(url: &str, dest: &Path, max_bytes: u64, max_secs: u64) -> Vec<String> {
+/// The host of an https url, None for any other scheme or a host with userinfo or a port.
+fn https_host(url: &str) -> Option<&str> {
+    let host = url.strip_prefix("https://")?.split(['/', '?', '#']).next().unwrap_or("");
+    (!host.contains('@') && !host.contains(':')).then_some(host)
+}
+
+pub fn curl_args(url: &str, dest: &Path, max_bytes: u64, max_secs: u64, user_agent: &str) -> Vec<String> {
     vec![
+        "--user-agent".into(), user_agent.into(),
         "--fail".into(), "--silent".into(), "--show-error".into(), "--location".into(),
         "--max-redirs".into(), "5".into(),
         "--proto".into(), "=https,file".into(),
@@ -65,7 +86,7 @@ impl Fetcher {
     fn run_curl(&self, url: &str, dest: &Path, max_bytes: u64, max_secs: u64) -> Result<(), (String, Option<i32>)> {
         let mut cmd = Command::new(&self.curl);
         // `--disable` must come first: no ~/.curlrc can add options to this call.
-        cmd.arg("--disable").args(curl_args(url, dest, max_bytes, max_secs));
+        cmd.arg("--disable").args(curl_args(url, dest, max_bytes, max_secs, &self.user_agent));
         // curl's own --max-time ends it first; this is the backstop should it hang regardless.
         let out = match super::run_bounded(&mut cmd, Duration::from_secs(max_secs + 10)) {
             Ok(out) => out,
@@ -86,16 +107,27 @@ impl Fetcher {
         Ok(())
     }
 
-    /// The manifest's bytes and its signature's text, both fetched into `dir`.
-    pub fn fetch_manifest(&self, dir: &Path) -> Result<(Vec<u8>, String), String> {
-        let read = |name: &str| -> Result<Vec<u8>, String> {
-            let dest = dir.join(name);
-            self.get(&format!("{}{name}", self.base), &dest, MANIFEST_MAX, 20).map_err(|e| format!("{name}: {e}"))?;
-            std::fs::read(&dest).map_err(|e| format!("{name}: {e}"))
-        };
-        let bytes = read("manifest.json")?;
-        let sig = read("manifest.json.sig")?;
-        Ok((bytes, String::from_utf8_lossy(&sig).trim().to_string()))
+    /// GitHub's manifest url, the one every check falls back to.
+    pub fn manifest_url(&self) -> String {
+        format!("{}manifest.json", self.base)
+    }
+
+    /// The manifest's bytes from `url` (GitHub's, or the first-party check that redirects to it),
+    /// fetched into `dir` within `max_secs`.
+    pub fn manifest(&self, url: &str, dir: &Path, max_secs: u64) -> Result<Vec<u8>, String> {
+        self.read(url, &dir.join("manifest.json"), max_secs).map_err(|e| format!("manifest.json: {e}"))
+    }
+
+    /// The signature's text, fetched into `dir`, always from GitHub.
+    pub fn signature(&self, dir: &Path) -> Result<String, String> {
+        let name = "manifest.json.sig";
+        let sig = self.read(&format!("{}{name}", self.base), &dir.join(name), MANIFEST_SECS).map_err(|e| format!("{name}: {e}"))?;
+        Ok(String::from_utf8_lossy(&sig).trim().to_string())
+    }
+
+    fn read(&self, url: &str, dest: &Path, max_secs: u64) -> Result<Vec<u8>, String> {
+        self.get(url, dest, MANIFEST_MAX, max_secs)?;
+        std::fs::read(dest).map_err(|e| e.to_string())
     }
 
     /// The release zip into `dest`, refused unless it is exactly `size` bytes.
@@ -134,9 +166,24 @@ mod tests {
     }
 
     #[test]
+    fn a_first_party_start_may_end_only_on_github() {
+        let fp = "https://apps.csarko.sh/a/check?v=2&app=arkos&ver=0.5.0&bin=daemon&os=macos&osv=15&arch=arm64&ch=release&k=check&rd=-1";
+        assert!(allowed_final_url(fp, "https://github.com/csarkosh/ide-arkos/releases/download/v0.5.0/manifest.json"));
+        assert!(allowed_final_url(fp, "https://release-assets.githubusercontent.com/x"));
+        assert!(!allowed_final_url(fp, fp), "a check answered without a redirect (a 204) is no manifest");
+        assert!(!allowed_final_url(fp, "https://evil.example/manifest.json"));
+        // GitHub and the collector are the only starts an https fetch may have.
+        assert!(!allowed_final_url("https://evil.example/a/check", "https://github.com/x"));
+        assert!(!allowed_final_url("https://apps.csarko.sh.evil.example/a/check", "https://github.com/x"));
+        assert!(!allowed_final_url("https://user@apps.csarko.sh/a/check", "https://github.com/x"));
+        assert!(!allowed_final_url("http://apps.csarko.sh/a/check", "https://github.com/x"));
+        assert!(!allowed_final_url("file:///tmp/site/a/check", "https://github.com/x"), "a file never redirects");
+    }
+
+    #[test]
     fn curl_is_told_to_fail_loudly_cap_the_size_and_report_the_final_url() {
-        let args = curl_args("https://github.com/x", Path::new("/tmp/out"), 1234, 20);
-        for want in ["--fail", "--silent", "--show-error", "--location", "--max-redirs", "--proto", "=https,file", "--proto-redir", "=https", "--max-time", "20", "--max-filesize", "1234", "--output", "/tmp/out", "--write-out", "%{url_effective}", "https://github.com/x"] {
+        let args = curl_args("https://github.com/x", Path::new("/tmp/out"), 1234, 20, "arkos/0.5.0");
+        for want in ["--user-agent", "arkos/0.5.0", "--fail", "--silent", "--show-error", "--location", "--max-redirs", "--proto", "=https,file", "--proto-redir", "=https", "--max-time", "20", "--max-filesize", "1234", "--output", "/tmp/out", "--write-out", "%{url_effective}", "https://github.com/x"] {
             assert!(args.iter().any(|a| a == want), "missing {want} in {args:?}");
         }
         assert_eq!(args.last().map(String::as_str), Some("https://github.com/x"), "the url is last so it cannot be read as an option");
@@ -147,20 +194,22 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         std::fs::write(src.path().join("manifest.json"), b"{}").unwrap();
         std::fs::write(src.path().join("manifest.json.sig"), b"c2ln\n").unwrap();
-        let f = Fetcher { base: format!("file://{}/", src.path().display()), curl: PathBuf::from("/usr/bin/curl") };
+        let f = Fetcher { base: format!("file://{}/", src.path().display()), curl: PathBuf::from("/usr/bin/curl"), user_agent: "arkos/0.5.0".into() };
         let dir = tempfile::tempdir().unwrap();
-        let (m, sig) = f.fetch_manifest(dir.path()).unwrap();
-        assert_eq!(m, b"{}");
-        assert_eq!(sig, "c2ln");
+        assert_eq!(f.manifest_url(), format!("file://{}/manifest.json", src.path().display()));
+        assert_eq!(f.manifest(&f.manifest_url(), dir.path(), MANIFEST_SECS).unwrap(), b"{}");
+        assert_eq!(f.signature(dir.path()).unwrap(), "c2ln");
         std::fs::remove_file(src.path().join("manifest.json.sig")).unwrap();
-        assert!(f.fetch_manifest(dir.path()).unwrap_err().contains("manifest.json.sig"));
+        assert!(f.signature(dir.path()).unwrap_err().contains("manifest.json.sig"));
+        let missing = format!("file://{}/a/check", src.path().display());
+        assert!(f.manifest(&missing, dir.path(), FIRST_PARTY_SECS).unwrap_err().starts_with("manifest.json: "));
     }
 
     #[test]
     fn a_download_is_capped_at_the_manifests_size() {
         let src = tempfile::tempdir().unwrap();
         std::fs::write(src.path().join("big.zip"), vec![0u8; 10_000]).unwrap();
-        let f = Fetcher { base: String::new(), curl: PathBuf::from("/usr/bin/curl") };
+        let f = Fetcher { base: String::new(), curl: PathBuf::from("/usr/bin/curl"), user_agent: "arkos/0.5.0".into() };
         let dir = tempfile::tempdir().unwrap();
         let url = format!("file://{}/big.zip", src.path().display());
         assert!(f.download(&url, 10_000, &dir.path().join("a.zip")).is_ok());

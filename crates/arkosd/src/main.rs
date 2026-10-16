@@ -6,6 +6,7 @@ mod recovery;
 mod ring;
 mod server;
 mod session;
+mod telemetry;
 mod upgrade;
 mod updates;
 mod watchdog;
@@ -49,6 +50,9 @@ fn main() {
     let mut bundle = None;
     let mut connect_grace_secs = None;
     let mut running_version = None;
+    // The telemetry folder's default follows `--socket` too, wherever it comes.
+    let mut telemetry_dir = None;
+    let mut telemetry_url = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--version" => {
@@ -116,6 +120,18 @@ fn main() {
                 assert!(updates::version::parse_semver(&v).is_some(), "--running-version needs <major>.<minor>.<patch>");
                 running_version = Some(v)
             }
+            // The telemetry folder (the state file, and later the journals and the queue).
+            "--telemetry-dir" => telemetry_dir = Some(PathBuf::from(args.next().expect("--telemetry-dir needs a path"))),
+            // Test only: where the day's first update check goes instead of the collector. Only
+            // the collector itself or a `file://` folder is taken, so no flag can send it elsewhere.
+            "--telemetry-url" => {
+                let url = args.next().expect("--telemetry-url needs a url");
+                if !telemetry::allowed_url(&url) {
+                    eprintln!("arkosd: --telemetry-url takes {} or a file:// folder", telemetry::DEFAULT_URL);
+                    std::process::exit(2);
+                }
+                telemetry_url = Some(url)
+            }
             other => {
                 eprintln!("arkosd: unknown argument {other}");
                 std::process::exit(2);
@@ -132,6 +148,8 @@ fn main() {
     update.bundle = bundle.or(update.bundle);
     update.connect_grace = connect_grace_secs.map(Duration::from_secs).unwrap_or(update.connect_grace);
     update.running_version = running_version;
+    update.telemetry.dir = telemetry_dir.unwrap_or(update.telemetry.dir);
+    update.telemetry.url = telemetry_url.unwrap_or(update.telemetry.url);
     journal::init(&update.dir, &socket);
     if let Some(path) = resume {
         let h = match handover::read(&path) {

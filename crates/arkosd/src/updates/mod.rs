@@ -42,6 +42,9 @@ pub struct UpdateOptions {
     /// Test only (`--running-version`): the semver the updater compares releases against instead
     /// of this binary's own, so a test can restart the daemon as a newer version.
     pub running_version: Option<String>,
+    /// The telemetry folder and the collector the day's first check goes through
+    /// (`--telemetry-dir`, test only `--telemetry-url`); kept here so the exec carries them.
+    pub telemetry: crate::telemetry::Options,
 }
 
 impl UpdateOptions {
@@ -56,6 +59,7 @@ impl UpdateOptions {
             bundle: std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)),
             connect_grace: apply::CONNECT_GRACE,
             running_version: None,
+            telemetry: crate::telemetry::Options::defaults(socket),
         }
     }
 
@@ -102,6 +106,7 @@ impl UpdateOptions {
         if let Some(v) = &self.running_version {
             out.extend(["--running-version".into(), v.clone()]);
         }
+        out.extend(self.telemetry.args(socket));
         out
     }
 }
@@ -315,6 +320,9 @@ mod tests {
         let o = UpdateOptions { running_version: Some("9.9.9".into()), ..UpdateOptions::defaults(socket) };
         assert_eq!(o.args(socket), ["--running-version", "9.9.9"], "a test's running version survives the exec");
         assert_eq!((o.running().major, o.running().minor, o.running().patch), (9, 9, 9));
+        let telemetry = crate::telemetry::Options { dir: PathBuf::from("/t/tel"), url: "file:///t/site".into() };
+        let o = UpdateOptions { telemetry, ..UpdateOptions::defaults(socket) };
+        assert_eq!(o.args(socket), ["--telemetry-dir", "/t/tel", "--telemetry-url", "file:///t/site"], "a test's telemetry folder and site survive the exec");
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! The check: manifest, signature, comparison, download, hash, stage. Pure apart from the
 //! processes it runs, so the tests drive it over `file://`.
-use super::fetch::{DownloadError, Fetcher};
+use super::fetch::{DownloadError, Fetcher, FIRST_PARTY_SECS, MANIFEST_SECS};
 use super::stage::{stage, Staged};
 use super::version::Version;
 use super::{manifest, verify, UpdateState, MAX_ZIP_BYTES};
 use crate::server::Shared;
+use crate::telemetry::{check::route, Telemetry};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -50,15 +51,39 @@ enum Failure {
     Release(String),
 }
 
+/// The manifest's bytes and its signature's text for one check, fetched into `dir`. With `t`,
+/// the day's first check asks the first-party path first (telemetry spec, section 2.1), within
+/// its own 5 s, and the day is recorded once it was asked, whatever it answered; any failure
+/// falls back to GitHub's manifest in the same check. The signature always comes from GitHub.
+pub fn fetch_manifest(f: &Fetcher, t: Option<&Telemetry>, dir: &Path, now: u64) -> Result<(Vec<u8>, String), String> {
+    let check = t.and_then(|t| t.next_check(now));
+    let urls = route(check, t.map(|t| t.check_url.as_str()), &f.manifest_url());
+    let (github, first_party) = urls.split_last().expect("route always ends with GitHub");
+    for url in first_party {
+        let got = f.manifest(url, dir, FIRST_PARTY_SECS);
+        if let Some(t) = t {
+            t.checked(now);
+        }
+        match got {
+            Ok(bytes) => return Ok((bytes, f.signature(dir)?)),
+            Err(e) => eprintln!("arkosd: the first-party check failed, GitHub's manifest instead: {e}"),
+        }
+    }
+    let bytes = f.manifest(github, dir, MANIFEST_SECS)?;
+    Ok((bytes, f.signature(dir)?))
+}
+
 /// One check. `staged` is the version already staged: a manifest must be newer than it and
 /// than `running`, so the same release is not fetched twice and a replayed older manifest
 /// cannot replace a newer staged one. A failure of the release itself (size, sha256, staging)
-/// marks it bad; a transport failure is retried at the next check.
-pub fn run_check(f: &Fetcher, dir: &Path, keys: &[&str], running: &Version, bad: &mut Bad, ditto: &Path, staged: Option<&Version>) -> Outcome {
+/// marks it bad; a transport failure is retried at the next check. With `t`, the day's first
+/// check fetches the manifest through the first-party path.
+#[allow(clippy::too_many_arguments)]
+pub fn run_check(f: &Fetcher, t: Option<&Telemetry>, dir: &Path, keys: &[&str], running: &Version, bad: &mut Bad, ditto: &Path, staged: Option<&Version>) -> Outcome {
     if let Err(e) = private_dir(dir) {
         return Outcome::Invalid(format!("updates dir: {e}"));
     }
-    let (bytes, sig) = match f.fetch_manifest(dir) {
+    let (bytes, sig) = match fetch_manifest(f, t, dir, super::apply::now_unix()) {
         Ok(x) => x,
         Err(e) => return Outcome::Transient(e),
     };
@@ -294,7 +319,9 @@ fn newest(a: Option<Version>, b: Option<Version>) -> Option<Version> {
 /// is never held across a check.
 /// `running` is this daemon's version; each check compares against the newer of it and the
 /// installed `bundle`'s (`super::floor`), read afresh, so a hand-installed newer app is seen.
-pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf, running: Version, bundle: Option<PathBuf>) {
+/// `telemetry` routes the first check of each UTC day through the first-party path.
+#[allow(clippy::too_many_arguments)]
+pub fn start(state: Shared, f: Fetcher, telemetry: Telemetry, dir: PathBuf, keys: Vec<String>, every: Duration, ditto: PathBuf, running: Version, bundle: Option<PathBuf>) {
     {
         let mut st = state.lock().unwrap();
         st.update.polling = true;
@@ -330,7 +357,7 @@ pub fn start(state: Shared, f: Fetcher, dir: PathBuf, keys: Vec<String>, every: 
                     let floor = super::floor(&running, bundle.as_deref());
                     super::drop_stale_staged(&state, &dir, &floor);
                     let staged = staged.filter(|s| s.is_newer_than(&floor));
-                    let outcome = run_check(&f, &dir, &keys, &floor, &mut bad, &ditto, staged.as_ref());
+                    let outcome = run_check(&f, Some(&telemetry), &dir, &keys, &floor, &mut bad, &ditto, staged.as_ref());
                     // Every outcome through the collapse: a change always writes the new first
                     // line, and a repeat of any outcome is counted.
                     let r = repeat_of(&outcome, &floor);
@@ -464,7 +491,7 @@ mod tests {
     }
 
     fn fetcher(s: &Site) -> Fetcher {
-        Fetcher { base: s.base.clone(), curl: PathBuf::from("/usr/bin/curl") }
+        Fetcher { base: s.base.clone(), curl: PathBuf::from("/usr/bin/curl"), user_agent: "arkos/0.5.0".into() }
     }
 
     fn ver(major: u64, minor: u64, patch: u64) -> Version {
@@ -472,7 +499,7 @@ mod tests {
     }
 
     fn check(s: &Site, dir: &Path, running: &Version, bad: &mut Bad, staged: Option<&Version>) -> Outcome {
-        run_check(&fetcher(s), dir, &[&s.pk], running, bad, Path::new("/usr/bin/ditto"), staged)
+        run_check(&fetcher(s), None, dir, &[&s.pk], running, bad, Path::new("/usr/bin/ditto"), staged)
     }
 
     #[test]
@@ -518,7 +545,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let running = Version { major: 0, minor: 1, patch: 0, git: "x".into() };
         let mut bad = Bad::new();
-        match run_check(&fetcher(&s), dir.path(), &[&other_pk], &running, &mut bad, Path::new("/usr/bin/ditto"), None) {
+        match run_check(&fetcher(&s), None, dir.path(), &[&other_pk], &running, &mut bad, Path::new("/usr/bin/ditto"), None) {
             Outcome::Invalid(e) => assert!(e.contains("signature"), "{e}"),
             other => panic!("{other:?}"),
         }
@@ -653,5 +680,159 @@ mod tests {
         let gh = "https://github.com/csarkosh/ide-arkos/releases/latest/download/manifest.json";
         assert!(!crate::updates::fetch::allowed_final_url(gh, "https://cdn.evil.example/Arkos.zip"));
         assert!(crate::updates::fetch::allowed_final_url(gh, "https://objects.githubusercontent.com/a"));
+    }
+
+    /// A curl that appends each call's arguments to `curl.log` in `dir`, one a line with a blank
+    /// line after, then runs the real one: the test sees what a check asked for, and the
+    /// `file://` site still answers.
+    fn logging_curl(dir: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join("curl.log");
+        let script = dir.join("curl");
+        let l = log.display();
+        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{l}'\necho >> '{l}'\nexec /usr/bin/curl \"$@\"\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script, log)
+    }
+
+    /// Each logged curl call's arguments, emptying the log.
+    fn calls(log: &Path) -> Vec<Vec<String>> {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        let _ = std::fs::remove_file(log);
+        text.split("\n\n").filter(|c| !c.trim().is_empty()).map(|c| c.lines().map(str::to_string).collect()).collect()
+    }
+
+    /// The value after `flag` in one call.
+    fn arg<'a>(call: &'a [String], flag: &str) -> &'a str {
+        let i = call.iter().position(|a| a == flag).unwrap_or_else(|| panic!("no {flag} in {call:?}"));
+        &call[i + 1]
+    }
+
+    /// The url each call fetched, which curl takes last.
+    fn urls(calls: &[Vec<String>]) -> Vec<String> {
+        calls.iter().map(|c| c.last().unwrap().clone()).collect()
+    }
+
+    /// The update site with a first-party path beside it, `<root>/fp/a/check`: a `file://` url
+    /// cannot redirect, so the check is a copy of the manifest, as the collector's redirect
+    /// would answer it. A test that removes it makes the first-party fetch fail.
+    struct Routed {
+        site: Site,
+        _tmp: tempfile::TempDir,
+        telemetry_dir: PathBuf,
+        updates: PathBuf,
+        log: PathBuf,
+        f: Fetcher,
+    }
+
+    impl Routed {
+        fn telemetry(&self, ch: ::telemetry::visits_app::Channel) -> Telemetry {
+            let o = crate::telemetry::Options { dir: self.telemetry_dir.clone(), url: format!("file://{}/fp", self.site.root.display()) };
+            Telemetry::with_env(&o, ::telemetry::visits_app::Envelope { ch, ..crate::telemetry::tests::release_env() })
+        }
+        fn check_url(&self) -> String {
+            format!("file://{}/fp/a/check?", self.site.root.display())
+        }
+    }
+
+    fn routed() -> Routed {
+        let site = site();
+        publish(&site, "0.2.1", "abc1234", false);
+        std::fs::create_dir_all(site.root.join("fp/a")).unwrap();
+        std::fs::copy(site.root.join("manifest.json"), site.root.join("fp/a/check")).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (curl, log) = logging_curl(tmp.path());
+        let f = Fetcher { base: site.base.clone(), curl, user_agent: "arkos/0.5.0".into() };
+        Routed { telemetry_dir: tmp.path().join("telemetry"), updates: tmp.path().join("updates"), log, f, site, _tmp: tmp }
+    }
+
+    /// A UTC midnight, pinned so two checks are on the same day or on days a known gap apart.
+    const DAY0: u64 = 20_000 * 86_400;
+
+    #[test]
+    fn the_first_check_of_a_day_goes_first_party_and_the_second_to_github() {
+        use ::telemetry::visits_app::{Channel, State};
+        let r = routed();
+        let t = r.telemetry(Channel::Release);
+        std::fs::create_dir_all(&r.updates).unwrap();
+        let published = std::fs::read(r.site.root.join("manifest.json")).unwrap();
+        let (bytes, sig) = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 3_600).unwrap();
+        assert_eq!(bytes, published);
+        assert!(!sig.is_empty());
+        let first = calls(&r.log);
+        assert_eq!(first.len(), 2, "the check and the signature: {first:?}");
+        assert!(first[0].last().unwrap().starts_with(&r.check_url()), "{first:?}");
+        assert_eq!(arg(&first[0], "--max-time"), "5", "the check's own timeout");
+        assert_eq!(arg(&first[0], "--user-agent"), "arkos/0.5.0");
+        assert_eq!(first[1].last().unwrap(), &format!("{}manifest.json.sig", r.site.base), "the signature always comes from GitHub");
+        assert_eq!(arg(&first[1], "--max-time"), "20");
+        assert_eq!(State::load(&r.telemetry_dir).last_check_day, Some(20_000));
+        // Later the same UTC day: straight to GitHub, as before the first-party path.
+        let (again, _) = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 86_399).unwrap();
+        assert_eq!(again, published);
+        assert_eq!(urls(&calls(&r.log)), [format!("{}manifest.json", r.site.base), format!("{}manifest.json.sig", r.site.base)]);
+        // A new daemon the same day reads the day from the state file.
+        let t = r.telemetry(Channel::Release);
+        fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 7_200).unwrap();
+        assert!(urls(&calls(&r.log)).iter().all(|u| !u.contains("/fp/")));
+    }
+
+    #[test]
+    fn the_query_carries_rd_minus_one_then_the_days_since_the_last_check() {
+        use ::telemetry::visits_app::Channel;
+        let r = routed();
+        let t = r.telemetry(Channel::Release);
+        std::fs::create_dir_all(&r.updates).unwrap();
+        let query = |now: u64| {
+            fetch_manifest(&r.f, Some(&t), &r.updates, now).unwrap();
+            let first = urls(&calls(&r.log)).remove(0);
+            first.strip_prefix(&r.check_url()).unwrap_or_else(|| panic!("not first-party: {first}")).to_string()
+        };
+        let q = query(DAY0);
+        assert_eq!(q, "v=2&app=arkos&ver=0.5.0&bin=daemon&os=macos&osv=15&arch=arm64&ch=release&k=check&rd=-1");
+        assert!(query(DAY0 + 3 * 86_400 + 5).ends_with("&k=check&rd=3"));
+        assert!(query(DAY0 + 4 * 86_400).ends_with("&rd=1"));
+    }
+
+    #[test]
+    fn a_first_party_failure_falls_back_to_github_in_the_same_check_and_the_day_is_still_recorded() {
+        use ::telemetry::visits_app::{Channel, State};
+        let r = routed();
+        std::fs::remove_file(r.site.root.join("fp/a/check")).unwrap();
+        let t = r.telemetry(Channel::Release);
+        std::fs::create_dir_all(&r.updates).unwrap();
+        let (bytes, _) = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0).unwrap();
+        assert_eq!(bytes, std::fs::read(r.site.root.join("manifest.json")).unwrap());
+        let got = urls(&calls(&r.log));
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got[0].starts_with(&r.check_url()));
+        assert_eq!(got[1..], [format!("{}manifest.json", r.site.base), format!("{}manifest.json.sig", r.site.base)]);
+        assert_eq!(State::load(&r.telemetry_dir).last_check_day, Some(20_000), "a failing collector costs one check a day");
+        fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 60).unwrap();
+        assert!(urls(&calls(&r.log)).iter().all(|u| !u.contains("/fp/")), "tried again tomorrow, not at the next check");
+    }
+
+    #[test]
+    fn a_source_build_never_goes_first_party() {
+        use ::telemetry::visits_app::Channel;
+        let r = routed();
+        let t = r.telemetry(Channel::Source);
+        std::fs::create_dir_all(&r.updates).unwrap();
+        for now in [DAY0, DAY0 + 86_400, DAY0 + 30 * 86_400] {
+            fetch_manifest(&r.f, Some(&t), &r.updates, now).unwrap();
+            assert_eq!(urls(&calls(&r.log)), [format!("{}manifest.json", r.site.base), format!("{}manifest.json.sig", r.site.base)]);
+        }
+        assert!(!r.telemetry_dir.join("state.toml").exists(), "nothing recorded either");
+    }
+
+    #[test]
+    fn a_whole_check_through_the_first_party_path_stages_the_release() {
+        use ::telemetry::visits_app::Channel;
+        let r = routed();
+        let t = r.telemetry(Channel::Release);
+        let mut bad = Bad::new();
+        let outcome = run_check(&r.f, Some(&t), &r.updates, &[&r.site.pk], &ver(0, 1, 0), &mut bad, Path::new("/usr/bin/ditto"), None);
+        assert!(matches!(&outcome, Outcome::Staged(st) if st.version == "0.2.1"), "{outcome:?}");
+        assert!(urls(&calls(&r.log))[0].starts_with(&r.check_url()));
     }
 }
