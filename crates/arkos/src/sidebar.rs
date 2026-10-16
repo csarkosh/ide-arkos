@@ -279,6 +279,8 @@ pub enum MenuAction {
     Reveal(PathBuf),
     CopyText(String),
     OpenDefault(PathBuf),
+    /// A link from the terminal, opened in the default browser.
+    OpenUrl(String),
 }
 
 /// The right-click menu for a tree entry (spec 6).
@@ -303,6 +305,7 @@ pub fn run_menu_action(action: &MenuAction, cx: &mut App) {
         MenuAction::Reveal(p) => cx.reveal_path(p),
         MenuAction::CopyText(s) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.clone())),
         MenuAction::OpenDefault(p) => cx.open_with_system(p),
+        MenuAction::OpenUrl(u) => cx.open_url(u),
     }
 }
 
@@ -390,6 +393,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                         let _ = w_menu.update(cx, |root, cx| {
                             let now = Instant::now();
                             root.wt_menu.hide(now);
+                            root.link_menu.hide(now);
                             root.context_menu.show(ContextMenu { path: p_menu.clone(), at: ev.position }, now);
                             cx.notify();
                         });
@@ -872,6 +876,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                                 cx.stop_propagation();
                                 let now = Instant::now();
                                 root.context_menu.hide(now);
+                                root.link_menu.hide(now);
                                 root.wt_menu.show((p_menu.clone(), ev.position), now);
                                 cx.notify();
                             }),
@@ -1092,15 +1097,16 @@ impl Root {
         cx.notify();
     }
 
-    /// Escape while a right-click menu (the tree's or a worktree's) or a title bar popover is
-    /// open closes it and nothing else.
+    /// Escape while a right-click menu (the tree's, a worktree's or a terminal link's) or a
+    /// title bar popover is open closes it and nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.popover.value().is_some()) {
+        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.popover.value().is_some()) {
             return false;
         }
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
+        self.link_menu.hide(now);
         self.close_popovers(now);
         cx.notify();
         true

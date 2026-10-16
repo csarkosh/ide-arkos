@@ -443,6 +443,20 @@ impl TerminalCore {
             .collect()
     }
 
+    /// The link covering a viewport cell, found on that row's characters the way the element
+    /// finds the hovered one. Read from the grid at the time of the call, not from the last
+    /// paint, so a right-click acts on what is under the press. Nothing changes: the selection
+    /// stays as it was.
+    pub fn link_at(&self, col: usize, row: usize) -> Option<HoveredLink> {
+        if row >= self.screen_lines() {
+            return None;
+        }
+        let chars: Vec<char> = self.row_cells(Line(row as i32 - self.display_offset() as i32)).iter().map(|c| c.0).collect();
+        let links = crate::links::links_in_row(&chars);
+        let l = crate::links::link_at(&links, col)?;
+        Some(HoveredLink { row, start: l.start, end: l.end, url: l.url.clone() })
+    }
+
     pub fn rows_for_paint(&self) -> RowsForPaint {
         let off = self.display_offset() as i32;
         let screen = self.term.screen_lines() as i32;
@@ -534,6 +548,13 @@ impl Terminal {
         let origin = self.origin?;
         let cell = self.cell?;
         Some(mouse::cell_under(f32::from(position.x), f32::from(position.y), origin, (cell.width, cell.height), self.frac, self.core.columns(), self.core.screen_lines()))
+    }
+
+    /// The link under a window position, if any (see `TerminalCore::link_at`); None before the
+    /// first paint.
+    pub fn link_at_position(&self, position: gpui::Point<gpui::Pixels>) -> Option<HoveredLink> {
+        let (col, row, _) = self.point_at(position)?;
+        self.core.link_at(col, row)
     }
 
     /// A wheel step of `lines` (positive is up); `precise` is a trackpad's pixel step rather than
@@ -924,6 +945,31 @@ mod tests {
         t.selection_clear();
         assert_eq!(t.selection_text(), None);
         assert!(t.selection_spans().is_empty());
+    }
+
+    #[test]
+    fn the_link_under_a_cell_is_found_and_the_selection_is_left_alone() {
+        let mut t = TerminalCore::new(30, 3, 100);
+        t.apply_output(b"see https://csarko.sh now\r\nplain text");
+        t.selection_start(0, 1, Side::Left, SelectionType::Simple);
+        t.selection_update(4, 1, Side::Right);
+        let link = HoveredLink { row: 0, start: 4, end: 21, url: "https://csarko.sh".into() };
+        assert_eq!(t.link_at(4, 0), Some(link.clone()), "the first cell of the URL");
+        assert_eq!(t.link_at(20, 0), Some(link), "the last cell of the URL");
+        assert_eq!(t.link_at(3, 0), None, "the space before it");
+        assert_eq!(t.link_at(21, 0), None, "the space after it");
+        assert_eq!(t.link_at(4, 1), None, "a row without a link");
+        assert_eq!(t.link_at(4, 7), None, "a row below the screen");
+        assert_eq!(t.selection_text().as_deref(), Some("plain"), "looking for a link never touches the selection");
+    }
+
+    #[test]
+    fn the_link_under_a_cell_follows_the_scrolled_view() {
+        let mut t = TerminalCore::new(30, 2, 100);
+        t.apply_output(b"https://a.io/x\r\none\r\ntwo\r\nthree");
+        assert_eq!(t.link_at(2, 0), None, "the link is in history");
+        t.set_display_offset(2);
+        assert_eq!(t.link_at(2, 0).map(|l| l.url), Some("https://a.io/x".to_string()), "scrolled up, it is on the top row");
     }
 
     #[test]

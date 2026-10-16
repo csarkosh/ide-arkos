@@ -7,6 +7,7 @@ use crate::dock::DockState;
 use crate::find;
 use crate::keymap::Command;
 use crate::line_edit::{self, Edit, LineEdit};
+use crate::link_menu::{press_kind, LinkMenu, PressKind};
 use crate::md_view;
 use crate::motion;
 use crate::pulse;
@@ -776,6 +777,34 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     bar
 }
 
+/// Opens the link menu when the press asks for it (see `link_menu::press_kind`) and returns
+/// whether it did. The link is the one under the press now, not the one the last paint saw. The
+/// event stops here, which skips the root's mouse-down, so the other menus and the popovers are
+/// closed here instead: one floating card at a time. A press that does not open the menu is left
+/// alone for the caller.
+fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEvent, cx: &mut Context<Root>) -> bool {
+    // Only a press that could open the menu looks for a link.
+    let link = if ev.button == MouseButton::Right || ev.modifiers.control { terminal.read(cx).link_at_position(ev.position) } else { None };
+    if press_kind(ev.button, ev.modifiers, link.is_some()) != PressKind::LinkMenu {
+        return false;
+    }
+    let Some(link) = link else { return false };
+    if ev.button == MouseButton::Left {
+        // Nothing is held for the program, and the selection stays.
+        terminal.update(cx, |t, _| t.mouse_cancelled());
+    }
+    cx.stop_propagation();
+    let now = std::time::Instant::now();
+    root.last_input = now;
+    root.context_menu.hide(now);
+    root.wt_menu.hide(now);
+    root.tab_menu.hide(now);
+    root.close_popovers(now);
+    root.link_menu.show(LinkMenu { url: link.url, at: ev.position }, now);
+    cx.notify();
+    true
+}
+
 fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let (font_size, line_height) = {
@@ -785,6 +814,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
     let t_keys = terminal.clone();
     let t_wheel = terminal.clone();
     let t_click = terminal.clone();
+    let t_menu = terminal.clone();
     let t_up = terminal.clone();
     let t_up_out = terminal.clone();
     let t_move = terminal.clone();
@@ -824,7 +854,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
         }))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |_root, ev: &MouseDownEvent, _window, cx| {
+            cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
                 // Cmd+click on a link opens it (Terminal.app's gesture); the plain click stays
                 // free for selection later.
                 if ev.modifiers.platform {
@@ -833,6 +863,11 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                         t_click.update(cx, |t, _| t.mouse_cancelled());
                         return;
                     }
+                }
+                // Control+click on a link is the Mac's right-click: the link menu opens, and the
+                // selection and the program are left as they were.
+                if open_link_menu(root, &t_click, ev, cx) {
+                    return;
                 }
                 // A click back into the terminal closes the find bar.
                 t_click.update(cx, |t, cx| {
@@ -843,6 +878,14 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                     // reporting the mouse hears a single click at the release.
                     t.mouse_pressed(ev.position, ev.click_count, ev.first_mouse, cx);
                 });
+            }),
+        )
+        // A right-click on a link opens its menu; anywhere else it does nothing and the event
+        // goes on to the root, which closes whatever menu was open.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+                open_link_menu(root, &t_menu, ev, cx);
             }),
         )
         .on_mouse_up(MouseButton::Left, cx.listener(move |_root, ev: &MouseUpEvent, _window, cx| t_up.update(cx, |t, _| t.mouse_released(ev.position))))

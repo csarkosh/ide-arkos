@@ -32,6 +32,7 @@ mod keys;
 mod keymap;
 mod launch;
 mod launch_link;
+mod link_menu;
 mod links;
 mod launch_agent;
 mod layout;
@@ -199,6 +200,8 @@ pub struct Root {
     pub preview_tab: Option<TabId>,
     /// The file tree's right-click menu while it is open, and while it fades out.
     pub context_menu: Transient<sidebar::ContextMenu>,
+    /// A terminal link's right-click menu while it is open, and while it fades out.
+    pub link_menu: Transient<link_menu::LinkMenu>,
     /// What the bell shows.
     pub notices: notices::Notices,
     /// The doctor's table as last probed.
@@ -556,6 +559,7 @@ impl Root {
             explorer,
             preview_tab: None,
             context_menu: Transient::Hidden,
+            link_menu: Transient::Hidden,
             notices: Default::default(),
             doctor_states: Vec::new(),
             doctor_busy: None,
@@ -663,6 +667,7 @@ impl Root {
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
+        self.link_menu.hide(now);
         self.tab_menu.hide(now);
         let next = self.popover.value().copied().unwrap_or_default().toggled(which);
         if next == chrome::Popover::Closed {
@@ -1023,6 +1028,7 @@ impl Root {
     pub fn any_motion(&self, now: Instant) -> bool {
         self.tab_menu.animating(now)
             || self.context_menu.animating(now)
+            || self.link_menu.animating(now)
             || self.popover.animating(now)
             || self.wt_menu.animating(now)
             || self.palette.animating(now)
@@ -1052,6 +1058,7 @@ impl Root {
         self.find_bars.settle(now, last_frame);
         self.tab_menu.settle(now);
         self.context_menu.settle(now);
+        self.link_menu.settle(now);
         self.popover.settle(now);
         self.wt_menu.settle(now);
         self.palette.settle(now);
@@ -2925,7 +2932,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.browser_drop.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -3592,13 +3599,13 @@ impl Render for Root {
                     root.commit_tab_rename(cx);
                 }),
             )
-            // A right-click menu (the tree's or a worktree's) or a popover (the bell or the doctor)
-            // closes on any press outside it (its rows stop theirs), and on Escape wherever the
-            // keys are.
+            // A right-click menu (the tree's, a worktree's or a terminal link's) or a popover (the
+            // bell or the doctor) closes on any press outside it (its rows stop theirs), and on
+            // Escape wherever the keys are.
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.wt_menu.hide(now) | root.close_popovers(now) {
+                if root.context_menu.hide(now) | root.wt_menu.hide(now) | root.link_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))
@@ -3645,6 +3652,7 @@ impl Render for Root {
             )
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))
+            .children(link_menu::render_link_menu(self, cx))
             .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx));
         // One request per frame while anything eases; an idle window asks for none.
