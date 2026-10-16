@@ -26,7 +26,6 @@ pub struct Table {
 
 /// A cell of a table block: `row` is the source line within the block (0 the header, 2 on the
 /// body; the delimiter row, 1, is never a cell) and `cell` the column.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellPos {
     pub row: usize,
@@ -62,7 +61,6 @@ pub fn parse(source: &str) -> Option<Table> {
 /// space inside each pipe, a leading and a trailing pipe always, the delimiter row keeping its
 /// colons with its dashes stretched to the column (at least three). What followed the last line
 /// with text (the trailing newline, or nothing) is kept as it was. `None` when `parse` fails.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn realign(source: &str) -> Option<String> {
     let t = parse(source)?;
     let widths: Vec<usize> = t
@@ -104,7 +102,6 @@ pub fn realign(source: &str) -> Option<String> {
 /// The cell holding char `ch` of line `line` of the block: a char on a pipe belongs to the cell on
 /// its left, one past the last cell to the last cell. `None` on the delimiter row, below the last
 /// row, or when the block is not a table.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn cell_at(source: &str, line: usize, ch: usize) -> Option<CellPos> {
     let (columns, last) = shape(source)?;
     if line == 1 || line > last {
@@ -128,7 +125,6 @@ pub fn cell_start(source: &str, pos: CellPos) -> Option<(usize, usize)> {
 
 /// The cell after `pos`: the next one in its row, or the next row's first, over the delimiter row.
 /// `None` from the last cell of the last row.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn next_cell(source: &str, pos: CellPos) -> Option<CellPos> {
     let (columns, _) = shape(source)?;
     if pos.cell + 1 < columns {
@@ -139,7 +135,6 @@ pub fn next_cell(source: &str, pos: CellPos) -> Option<CellPos> {
 
 /// The cell before `pos`: the previous one in its row, or the row above's last, over the delimiter
 /// row. `None` from the header's first cell.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn prev_cell(source: &str, pos: CellPos) -> Option<CellPos> {
     let (columns, _) = shape(source)?;
     if pos.cell > 0 {
@@ -149,14 +144,12 @@ pub fn prev_cell(source: &str, pos: CellPos) -> Option<CellPos> {
 }
 
 /// The same cell in the row above `pos`, over the delimiter row; `None` from the header.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn cell_above(source: &str, pos: CellPos) -> Option<CellPos> {
     shape(source)?;
     row_above(pos.row).map(|row| CellPos { row, cell: pos.cell })
 }
 
 /// The same cell in the row below `pos`, over the delimiter row; `None` from the last row.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn cell_below(source: &str, pos: CellPos) -> Option<CellPos> {
     row_below(source, pos.row).map(|row| CellPos { row, cell: pos.cell })
 }
@@ -164,7 +157,6 @@ pub fn cell_below(source: &str, pos: CellPos) -> Option<CellPos> {
 /// The text Tab from the last cell inserts after the block's last line with text: a new row of
 /// the header's count of empty cells, `|  |  |` for two columns, so each cell has a caret place
 /// after its "| ".
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 pub fn appended_row(source: &str) -> String {
     let columns = table_lines(source).first().map_or(1, |h| segments(h).len());
     format!("\n| {} |", vec![""; columns].join(" | "))
@@ -180,21 +172,18 @@ fn table_lines(source: &str) -> Vec<&str> {
 }
 
 /// What follows the block's last line with text: its trailing newline and blank lines, or nothing.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 fn tail(source: &str) -> &str {
     let content = table_lines(source).iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1);
     &source[content.min(source.len())..]
 }
 
 /// A table block's column count and its last row's line index, when it parses.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 fn shape(source: &str) -> Option<(usize, usize)> {
     let t = parse(source)?;
     Some((t.header.len(), 1 + t.rows.len()))
 }
 
 /// The row below line `row`, over the delimiter row; `None` from the last row.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 fn row_below(source: &str, row: usize) -> Option<usize> {
     let (_, last) = shape(source)?;
     let below = if row == 0 { 2 } else { row + 1 };
@@ -202,7 +191,6 @@ fn row_below(source: &str, row: usize) -> Option<usize> {
 }
 
 /// The row above line `row`, over the delimiter row; `None` from the header.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 fn row_above(row: usize) -> Option<usize> {
     match row {
         0 => None,
@@ -254,7 +242,6 @@ fn delimiter_align(cell: &str) -> Option<Align> {
 }
 
 /// A cell's text padded with spaces to display width `w` by its column's alignment.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 2 on.
 fn pad(text: &str, align: Align, w: usize) -> String {
     let room = w.saturating_sub(text.width());
     let (left, right) = match align {

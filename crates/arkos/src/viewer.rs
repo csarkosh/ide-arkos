@@ -568,6 +568,10 @@ pub struct Viewer {
     compose: Option<Compose>,
     /// A left-button drag that started in the text is selecting.
     selecting: bool,
+    /// The table block the caret is in, in the rendered view: its start line and its text when the
+    /// caret entered it (`table_text`). Leaving it realigns its pipes when the text differs
+    /// (`note_caret_moved`). Undo, redo and `edit_elsewhere` leave it as it is.
+    table_entry: Option<(usize, String)>,
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -624,6 +628,7 @@ impl Viewer {
             pending_append: false,
             compose: None,
             selecting: false,
+            table_entry: None,
         }
     }
 
@@ -717,6 +722,8 @@ impl Viewer {
         self.selecting = false;
         self.caret_placed = false;
         self.pending_append = false;
+        // A table changed on disk is not the user's edit: the caret enters anew.
+        self.table_entry = None;
         self.loaded = true;
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
@@ -767,6 +774,7 @@ impl Viewer {
             self.caret = caret;
             self.changed(old_lines, cx);
             self.reveal_caret();
+            self.note_caret_moved(cx);
         }
     }
 
@@ -778,6 +786,7 @@ impl Viewer {
             self.caret = caret;
             self.changed(old_lines, cx);
             self.reveal_caret();
+            self.note_caret_moved(cx);
         }
     }
 
@@ -1261,7 +1270,14 @@ impl Viewer {
         false
     }
 
+    /// A key's work (`run_key`), then the table the caret may have left is realigned.
     fn key_inner(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let handled = self.run_key(ks, cx);
+        self.note_caret_moved(cx);
+        handled
+    }
+
+    fn run_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
         if self.doc.is_none() {
             return false;
         }
@@ -1328,8 +1344,10 @@ impl Viewer {
             }
             _ => {
                 let rows = self.rows_visible.max(1);
-                // Only Enter reads the structure (the fence rule).
-                let blocks = if action == KeyAction::Newline { self.blocks.clone() } else { Vec::new() };
+                // Enter reads the structure (the fence rule), and in the rendered view so do Tab
+                // and Shift+Tab (a table's cells).
+                let reads_blocks = action == KeyAction::Newline || (self.rendered() && matches!(action, KeyAction::Tab | KeyAction::ShiftTab));
+                let blocks = if reads_blocks { self.blocks.clone() } else { Vec::new() };
                 let mut outcome = Outcome::Nothing;
                 self.edit(
                     |doc, caret, now| {
@@ -1514,6 +1532,7 @@ impl Viewer {
         if !self.pending_append {
             self.reveal_caret();
         }
+        self.note_caret_moved(cx);
         cx.notify();
     }
 
@@ -1635,6 +1654,7 @@ impl Viewer {
         self.selecting = true;
         self.caret_placed = true;
         self.pending_append = false;
+        self.note_caret_moved(cx);
         cx.notify();
     }
 
@@ -1646,6 +1666,50 @@ impl Viewer {
         let (Some(doc), Some(b)) = (self.doc.as_ref(), self.blocks.get(block)) else { return };
         let Some(p) = table_cell_pos(doc.lines(), b, md_table::CellPos { row, cell }, ch) else { return };
         self.place_caret(p, extend, cx);
+    }
+
+    /// After the caret moved (a key, a press, a click on the tail, an undo or a redo): in the
+    /// rendered view, when the caret and its selection have left the table block `table_entry`
+    /// holds, that table's pipes are realigned if its text differs from the text it had when the
+    /// caret entered (`realign_on_leave`, one undo step); then `table_entry` holds the caret's
+    /// block when it is a table. Comparing with the entry text rather than keeping an edited flag
+    /// means an undo that puts the caret back in the table and a leave again leave the restored
+    /// text alone. Outside the rendered view nothing is realigned and the entry is forgotten.
+    fn note_caret_moved(&mut self, cx: &mut Context<Self>) {
+        if !self.rendered() {
+            self.table_entry = None;
+            return;
+        }
+        let touches = |blocks: &[md_blocks::Block], c: edit::Caret, start: usize| {
+            [c.head.line, c.anchor.line].iter().any(|&l| blocks.get(md_blocks::block_at(blocks, l)).is_some_and(|b| b.lines.start == start))
+        };
+        if let Some((start, entry)) = self.table_entry.take() {
+            if touches(&self.blocks, self.caret, start) {
+                self.table_entry = Some((start, entry));
+                return;
+            }
+            let Some(doc) = self.doc.as_ref() else { return };
+            let range = self
+                .blocks
+                .get(md_blocks::block_at(&self.blocks, start))
+                .filter(|b| b.lines.start == start && b.kind == md_blocks::BlockKind::Table)
+                .map(|b| table_range(doc.lines(), b));
+            if let Some(range) = range {
+                self.edit_elsewhere(
+                    |doc, caret, now| {
+                        realign_on_leave(doc, range, &entry, now);
+                        caret
+                    },
+                    cx,
+                );
+            }
+        }
+        let Some(doc) = self.doc.as_ref() else { return };
+        self.table_entry = self
+            .blocks
+            .get(self.active_block())
+            .filter(|b| b.kind == md_blocks::BlockKind::Table)
+            .map(|b| (b.lines.start, table_text(doc.lines(), table_range(doc.lines(), b))));
     }
 
     /// The mouse moved with the left button down: a drag that began in the text moves the head.
@@ -2037,11 +2101,81 @@ fn splice_rows(blocks: &mut Vec<md_blocks::Block>, cache: &mut Vec<Option<md_vie
 /// start (`md_table::cell_start`, its first character or an empty cell's caret place) plus `ch`,
 /// at most the line's end. `None` when the block's source has no such row.
 fn table_cell_pos(lines: &[String], block: &md_blocks::Block, pos: md_table::CellPos, ch: usize) -> Option<edit::Pos> {
-    let end = block.lines.end.min(lines.len());
-    let source = lines[block.lines.start.min(end)..end].join("\n");
+    let source = md_view::block_source(lines, block);
     let (line, start) = md_table::cell_start(&source, pos)?;
     let line = block.lines.start + line;
     Some(edit::Pos { line, ch: (start + ch).min(lines.get(line)?.chars().count()) })
+}
+
+/// The lines of table block `block` down to its last line with text, the lines `realign` rewrites.
+fn table_range(lines: &[String], block: &md_blocks::Block) -> Range<usize> {
+    block.lines.start..md_blocks::pos_of_offset(block, lines, usize::MAX).line + 1
+}
+
+/// Lines `range`, each followed by a newline: a table's text as `table_entry` keeps it.
+fn table_text(lines: &[String], range: Range<usize>) -> String {
+    lines[range].iter().map(|l| format!("{l}\n")).collect()
+}
+
+/// The caret left a table whose lines are `lines` (down to its last line with text): when their
+/// text (`table_text`) differs from `entry_text`, the text they had when the caret entered, and
+/// `md_table::realign` makes something different of it, they are replaced with the realigned
+/// text as one undo step. A table that no longer parses is left as typed. `true` when it edited.
+fn realign_on_leave(doc: &mut edit::Document, lines: Range<usize>, entry_text: &str, now: Instant) -> bool {
+    if lines.is_empty() || lines.end > doc.lines().len() {
+        return false;
+    }
+    let text = table_text(doc.lines(), lines.clone());
+    if text == entry_text {
+        return false;
+    }
+    let Some(aligned) = md_table::realign(&text).filter(|a| *a != text) else { return false };
+    let last = lines.end - 1;
+    let end = edit::Pos { line: last, ch: doc.lines()[last].chars().count() };
+    doc.break_coalescing();
+    doc.replace_range(edit::Pos { line: lines.start, ch: 0 }, end, aligned.strip_suffix('\n').unwrap_or(&aligned), now);
+    true
+}
+
+/// Tab and Shift+Tab in a table block: the caret goes to the start of the next or the previous
+/// cell's text (`md_table::next_cell`, `prev_cell`), its selection cleared. On the delimiter row
+/// Tab goes to the first body row's first cell and Shift+Tab to the header's last; Shift+Tab from
+/// the header's first cell stays; Tab from the last cell of the last row (or the delimiter row of
+/// a table with no body) appends a row of empty cells after the block's last line with text, one
+/// undo step, and lands in its first cell. Spaces are never inserted. `None` when the caret is not
+/// in a table's rows (another block, a table that does not parse, the blank lines after it).
+fn table_tab(doc: &mut edit::Document, caret: &mut edit::Caret, blocks: &[md_blocks::Block], forward: bool, now: Instant) -> Option<Outcome> {
+    use md_table::CellPos;
+    let head = doc.clamp(caret.head);
+    let block = blocks.get(md_blocks::block_at(blocks, head.line)).filter(|b| b.kind == md_blocks::BlockKind::Table)?;
+    let source = md_view::block_source(doc.lines(), block);
+    md_table::parse(&source)?;
+    let end = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX);
+    let row = head.line.checked_sub(block.lines.start)?;
+    let to = match (md_table::cell_at(&source, row, head.ch), forward) {
+        (Some(pos), true) => md_table::next_cell(&source, pos),
+        (Some(pos), false) => md_table::prev_cell(&source, pos),
+        (None, true) if row == 1 => md_table::cell_below(&source, CellPos { row: 1, cell: 0 }),
+        (None, false) if row == 1 => md_table::prev_cell(&source, CellPos { row: 1, cell: 0 }),
+        (None, _) => return None,
+    };
+    doc.break_coalescing();
+    let at = match to {
+        Some(pos) => {
+            let (line, ch) = md_table::cell_start(&source, pos)?;
+            edit::Pos { line: block.lines.start + line, ch }
+        }
+        None if !forward => return Some(Outcome::Nothing),
+        None => {
+            doc.replace_range(end, end, &md_table::appended_row(&source), now);
+            let line = end.line + 1;
+            let (_, ch) = md_table::cell_start(&doc.lines()[line], CellPos { row: 0, cell: 0 })?;
+            *caret = edit::Caret::at(edit::Pos { line, ch });
+            return Some(Outcome::Edited);
+        }
+    };
+    *caret = edit::Caret::at(at);
+    Some(Outcome::Moved)
 }
 
 /// What an editing key asks of a document viewer, before it meets the document.
@@ -2277,7 +2411,8 @@ fn indent_item(doc: &mut edit::Document, caret: &mut edit::Caret, deeper: bool, 
 }
 
 /// Applies an action to the document and caret; `blocks_before` is the block structure before
-/// this action (the fence rule reads it). Pure: no gpui.
+/// this action (the fence rule and a table's Tab and Shift+Tab read it; empty, they do not apply).
+/// Pure: no gpui.
 pub fn apply_action(doc: &mut edit::Document, caret: &mut edit::Caret, blocks_before: &[md_blocks::Block], action: KeyAction, rows: usize, now: Instant) -> Outcome {
     use edit::Move as M;
     use KeyAction as K;
@@ -2310,11 +2445,12 @@ pub fn apply_action(doc: &mut edit::Document, caret: &mut edit::Caret, blocks_be
             *caret = newline(doc, *caret, blocks_before, now);
             Outcome::Edited
         }
-        K::Tab => indent_item(doc, caret, true, now).unwrap_or_else(|| {
+        // A table's cells come before a list item's indent.
+        K::Tab => table_tab(doc, caret, blocks_before, true, now).or_else(|| indent_item(doc, caret, true, now)).unwrap_or_else(|| {
             *caret = doc.insert(*caret, "    ", now);
             Outcome::Edited
         }),
-        K::ShiftTab => indent_item(doc, caret, false, now).unwrap_or(Outcome::Nothing),
+        K::ShiftTab => table_tab(doc, caret, blocks_before, false, now).or_else(|| indent_item(doc, caret, false, now)).unwrap_or(Outcome::Nothing),
         K::Undo | K::Redo => match if action == K::Undo { doc.undo() } else { doc.redo() } {
             Some(c) => {
                 *caret = c;
@@ -2597,6 +2733,49 @@ mod tests {
         assert_eq!(at(2, 1, 0), Some(Pos { line: 4, ch: 8 }), "an empty cell: after its pipe and a space, clamped to the next pipe");
         assert_eq!(at(0, 1, 5), Some(Pos { line: 2, ch: 9 }), "past the text: at most the line's end");
         assert_eq!(at(9, 0, 0), None, "no such row");
+    }
+
+    #[test]
+    fn tab_walks_the_cells_and_tab_at_the_end_adds_a_row() {
+        let text = "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let mut d = edit::Document::from_text(text);
+        let blocks = md_blocks::split(d.lines());
+        let mut c = edit::Caret::at(edit::Pos { line: 2, ch: 2 }); // In "a".
+        let now = Instant::now();
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!((c.head.line, c.head.ch), (2, 6), "the next cell's text");
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!((c.head.line, c.head.ch), (4, 2), "over the delimiter row");
+        apply_action(&mut d, &mut c, &blocks, KeyAction::ShiftTab, 20, now);
+        assert_eq!((c.head.line, c.head.ch), (2, 6));
+        let mut c = edit::Caret::at(edit::Pos { line: 2, ch: 2 });
+        apply_action(&mut d, &mut c, &blocks, KeyAction::ShiftTab, 20, now);
+        assert_eq!((c.head.line, c.head.ch), (2, 2), "Shift+Tab from the first cell stays");
+        let mut c = edit::Caret::at(edit::Pos { line: 3, ch: 2 }); // The delimiter row.
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!((c.head.line, c.head.ch), (4, 2), "Tab on the delimiter row goes to the next row's first cell, no spaces inserted");
+        assert_eq!(d.to_text(), text);
+        let mut c = edit::Caret::at(edit::Pos { line: 4, ch: 6 }); // The last cell.
+        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
+        assert_eq!(d.to_text(), "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n");
+        assert_eq!((c.head.line, c.head.ch), (5, 2));
+        d.undo();
+        assert_eq!(d.to_text(), text);
+    }
+
+    #[test]
+    fn leaving_an_edited_table_realigns_once_and_an_undo_is_not_realigned_again() {
+        let text = "|a|bb|\n|:-|-:|\n|ccc|d|\n";
+        let mut d = edit::Document::from_text(text);
+        let now = Instant::now();
+        assert!(!realign_on_leave(&mut d, 0..3, text, now), "unchanged since entry: nothing");
+        // The text when the caret entered; the user typed a "b".
+        let entered = "|a|b|\n|:-|-:|\n|ccc|d|\n";
+        assert!(realign_on_leave(&mut d, 0..3, entered, now));
+        assert_eq!(d.to_text(), "| a   | bb |\n|:----|---:|\n| ccc |  d |\n");
+        d.undo();
+        assert_eq!(d.to_text(), text);
+        assert!(!realign_on_leave(&mut d, 0..3, text, now), "after the undo the entry text is the restored text");
     }
 
     #[test]

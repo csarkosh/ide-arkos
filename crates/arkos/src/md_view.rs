@@ -1259,10 +1259,18 @@ pub enum Dir {
     Down,
 }
 
+/// The source of block `block`: its lines, the blank ones after it included, joined with a newline.
+pub fn block_source(lines: &[String], block: &Block) -> String {
+    let end = block.lines.end.min(lines.len());
+    lines[block.lines.start.min(end)..end].join("\n")
+}
+
 /// The caret after Up or Down in the rendered view, where the blank lines after a block are not a
 /// place for the caret: Down on the active block's last line with text (or below it) goes to the
 /// start of the next block, Up on its first line to the end of the previous block's last line with
-/// text, and any other move is a plain line move. At the document's ends the caret stays. With
+/// text, and any other move is a plain line move. In a table's rows a move without `select` goes
+/// to the start of the same cell's text in the row above or below (over the delimiter row), and
+/// the first or last row leaves the block as above. At the document's ends the caret stays. With
 /// `select` the anchor stays, so the selection grows across blocks.
 pub fn navigate(doc: &edit::Document, blocks: &[Block], caret: edit::Caret, dir: Dir, select: bool) -> edit::Caret {
     let m = match dir {
@@ -1273,9 +1281,24 @@ pub fn navigate(doc: &edit::Document, blocks: &[Block], caret: edit::Caret, dir:
     let head = doc.clamp(caret.head);
     let ix = md_blocks::block_at(blocks, head.line);
     let Some(block) = blocks.get(ix) else { return doc.move_by(caret, m, select) };
+    // A table's first or last row: the move leaves the block.
+    let mut table_edge = false;
+    if !select && block.kind == BlockKind::Table {
+        let source = block_source(lines, block);
+        if let Some(pos) = md_table::cell_at(&source, head.line.saturating_sub(block.lines.start), head.ch) {
+            let to = match dir {
+                Dir::Up => md_table::cell_above(&source, pos),
+                Dir::Down => md_table::cell_below(&source, pos),
+            };
+            match to.and_then(|to| md_table::cell_start(&source, to)) {
+                Some((line, ch)) => return edit::Caret::at(Pos { line: block.lines.start + line, ch }),
+                None => table_edge = true,
+            }
+        }
+    }
     let across = match dir {
-        Dir::Down if head.line >= md_blocks::pos_of_offset(block, lines, usize::MAX).line => Some(blocks.get(ix + 1).map(|next| Pos { line: next.lines.start, ch: 0 })),
-        Dir::Up if head.line <= block.lines.start => Some(ix.checked_sub(1).map(|prev| md_blocks::pos_of_offset(&blocks[prev], lines, usize::MAX))),
+        Dir::Down if table_edge || head.line >= md_blocks::pos_of_offset(block, lines, usize::MAX).line => Some(blocks.get(ix + 1).map(|next| Pos { line: next.lines.start, ch: 0 })),
+        Dir::Up if table_edge || head.line <= block.lines.start => Some(ix.checked_sub(1).map(|prev| md_blocks::pos_of_offset(&blocks[prev], lines, usize::MAX))),
         _ => None,
     };
     let anchor = |to: Pos| if select { doc.clamp(caret.anchor) } else { to };
@@ -1405,6 +1428,23 @@ mod tests {
         assert_eq!(navigate(&d, &blocks, at(2, 4), Dir::Down, false).head, Pos { line: 3, ch: 4 }, "inside a block: a plain line move");
         let c = navigate(&d, &blocks, at(3, 4), Dir::Down, true);
         assert_eq!((c.head, c.anchor), (Pos { line: 5, ch: 0 }, Pos { line: 3, ch: 4 }), "Shift keeps the anchor across blocks");
+    }
+
+    #[test]
+    fn up_and_down_move_by_cell_inside_a_table_and_leave_it_at_the_ends() {
+        let d = edit::Document::from_text("intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nafter\n");
+        let blocks = split(d.lines());
+        let at = |l, c| edit::Caret::at(Pos { line: l, ch: c });
+        assert_eq!(navigate(&d, &blocks, at(4, 6), Dir::Up, false).head, Pos { line: 2, ch: 6 }, "the same cell in the header, over the delimiter row");
+        assert_eq!(navigate(&d, &blocks, at(2, 6), Dir::Down, false).head, Pos { line: 4, ch: 6 }, "the same cell in the body");
+        assert_eq!(navigate(&d, &blocks, at(2, 3), Dir::Down, false).head, Pos { line: 4, ch: 2 }, "at the start of the cell's text");
+        assert_eq!(navigate(&d, &blocks, at(2, 2), Dir::Up, false).head, Pos { line: 0, ch: 5 }, "the header falls through to the block move and leaves the table");
+        assert_eq!(navigate(&d, &blocks, at(4, 2), Dir::Down, false).head, Pos { line: 6, ch: 0 }, "the last row leaves the table for the next block");
+        let c = navigate(&d, &blocks, at(4, 6), Dir::Up, true);
+        assert_eq!((c.head, c.anchor), (Pos { line: 3, ch: 6 }, Pos { line: 4, ch: 6 }), "a shifted arrow is a plain line move that selects");
+        let d = edit::Document::from_text("| a | b |\n|---|---|\n\nafter\n");
+        let blocks = split(d.lines());
+        assert_eq!(navigate(&d, &blocks, at(0, 2), Dir::Down, false).head, Pos { line: 3, ch: 0 }, "a table with no body: Down from the header leaves it, never onto the delimiter row");
     }
 
     #[test]

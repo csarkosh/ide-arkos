@@ -467,6 +467,10 @@ pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
     ("Paste", "Cmd+V"),
     ("Indent a list item", "Tab"),
     ("Outdent a list item", "Shift+Tab"),
+    ("Next cell (in a table)", "Tab"),
+    ("Previous cell (in a table)", "Shift+Tab"),
+    ("Cell above (in a table)", "Up"),
+    ("Cell below (in a table)", "Down"),
     ("Open a link", "Cmd+click"),
     ("Scroll to the top or end", "Home, End"),
 ];
@@ -867,6 +871,12 @@ mod tests {
         assert_eq!(md.len(), 3 + MARKDOWN_KEYS.len());
         assert_eq!(md[3], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
         assert!(md[3..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
+        let table: Vec<(&str, &str)> = MARKDOWN_KEYS.iter().copied().filter(|(label, _)| label.ends_with("(in a table)")).collect();
+        assert_eq!(
+            table,
+            [("Next cell (in a table)", "Tab"), ("Previous cell (in a table)", "Shift+Tab"), ("Cell above (in a table)", "Up"), ("Cell below (in a table)", "Down")],
+            "the table keys, in order"
+        );
         let mut o = BTreeMap::new();
         o.insert("find".to_string(), "cmd-shift-f".to_string());
         o.insert("focus pane 3".to_string(), "cmd-shift-3".to_string());
