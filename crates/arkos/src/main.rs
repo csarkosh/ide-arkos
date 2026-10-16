@@ -36,6 +36,7 @@ mod launch_agent;
 mod layout;
 mod line_edit;
 mod md_blocks;
+mod md_table;
 mod md_view;
 mod motion;
 mod mouse;

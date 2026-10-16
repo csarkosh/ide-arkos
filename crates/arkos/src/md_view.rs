@@ -1,8 +1,9 @@
 //! The rendered markdown view (spec 7): one row of a virtualised gpui `list` per top-level block,
 //! each block drawn from its inline runs (`md_blocks::inline`), cached per block in the viewer
-//! and dropped only for the blocks an edit changed. Paragraphs are in the UI font, code and tables
-//! in the terminal's; a task item's box toggles the item through an undoable edit, and a link
-//! opens on Cmd+click.
+//! and dropped only for the blocks an edit changed. Paragraphs are in the UI font, code in the
+//! terminal's, and a table is a grid of cells at the paragraph size (its source in the terminal
+//! font when it does not parse); a task item's box toggles the item through an undoable edit, and
+//! a link opens on Cmd+click.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -11,9 +12,11 @@
 //! handler sits on a canvas over the whole list, so typing reaches the document even when the
 //! caret's block is scrolled out of view.
 
+use crate::config::WideTables;
 use crate::edit::{self, Pos};
 use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
+use crate::md_table::{self, Align};
 use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::viewer::{self, Hit, Span, Viewer, ViewerEvent};
@@ -21,7 +24,7 @@ use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
     canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
     Entity, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
+    Pixels, Point, ScrollHandle, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
 };
 use std::cell::Cell;
 use std::ops::Range;
@@ -52,15 +55,24 @@ const SIDE: f32 = 20.0;
 /// The width of one character in the item marker column, as a multiple of the paragraph size:
 /// an approximation of the UI font's average advance.
 const CH_EM: f32 = 0.6;
+/// A table cell's padding, across and down.
+const CELL_PAD_X: f32 = 10.0;
+const CELL_PAD_Y: f32 = 6.0;
+/// The most of the view's width one table column takes.
+const COLUMN_CAP: f32 = 0.45;
+/// The rows a table's natural column widths are measured over; later rows take the widths found.
+const MEASURED_ROWS: usize = 200;
+/// A table with more body rows than this is drawn as its source, not as a grid.
+const GRID_MAX_ROWS: usize = 500;
 
-/// The size of a block's text as a multiple of the font size: paragraphs, lists and quotes at
-/// `PARA`, headings at `PARA` times their level's step, code, tables, HTML and front matter at the
-/// terminal's size.
+/// The size of a block's text as a multiple of the font size: paragraphs, lists, quotes and table
+/// grids at `PARA`, headings at `PARA` times their level's step, code, HTML and front matter at
+/// the terminal's size (a table drawn as its source sets the terminal's size itself).
 pub fn scale(kind: &BlockKind) -> f32 {
     match kind {
         BlockKind::Heading(level) => heading_scale(*level),
-        BlockKind::CodeBlock { .. } | BlockKind::Table | BlockKind::Html | BlockKind::Metadata => 1.0,
-        BlockKind::Paragraph | BlockKind::List | BlockKind::Quote | BlockKind::Rule | BlockKind::Blank => PARA,
+        BlockKind::CodeBlock { .. } | BlockKind::Html | BlockKind::Metadata => 1.0,
+        BlockKind::Paragraph | BlockKind::List | BlockKind::Quote | BlockKind::Table | BlockKind::Rule | BlockKind::Blank => PARA,
     }
 }
 
@@ -89,9 +101,10 @@ pub fn resolve_image(base_dir: &Path, path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-/// One block's rendering, cached in `Viewer.block_cache`: its inline content, and for a code block
-/// the colours of its lines with the highlighter that made them (a theme change makes a new
-/// highlighter, and the colours are made again) and the text runs drawn from them.
+/// One block's rendering, cached in `Viewer.block_cache`: its inline content (for a table its
+/// cells and measured column widths), and for a code block the colours of its lines with the
+/// highlighter that made them (a theme change makes a new highlighter, and the colours are made
+/// again) and the text runs drawn from them.
 pub struct Rendered {
     pieces: Vec<Piece>,
     pub code_spans: Option<(Arc<Highlighter>, Vec<Vec<Span>>)>,
@@ -109,7 +122,7 @@ enum Piece {
     Code { info: String, text: Rc<str>, drawn: SharedString },
     Quote(Rc<[Run]>),
     Rule,
-    Table(SharedString),
+    Table(TablePiece),
     Html(SharedString),
     Metadata(SharedString),
     /// An image: its alt text (or its path when it has none) for the fallback box, and its path.
@@ -125,12 +138,109 @@ impl From<Inline> for Piece {
             Inline::Code { info, text } => Piece::Code { info, drawn: code_lines(&text).join("\n").into(), text: text.into() },
             Inline::Quote(runs) => Piece::Quote(runs.into()),
             Inline::Rule => Piece::Rule,
-            Inline::Table(t) => Piece::Table(t.into()),
+            Inline::Table(t) => Piece::Table(TablePiece::new(t)),
             Inline::Html(t) => Piece::Html(t.into()),
             Inline::Metadata(t) => Piece::Metadata(t.into()),
             Inline::Image { alt, path } => Piece::Image { label: if alt.is_empty() { path.clone().into() } else { alt.into() }, path },
         }
     }
+}
+
+/// A table block as the view draws it: a grid of its cells when it parses and has at most
+/// `GRID_MAX_ROWS` body rows, else its source in the terminal font, as before tables were drawn.
+enum TablePiece {
+    Grid(Grid, Widths),
+    Source(SharedString),
+}
+
+impl TablePiece {
+    fn new(source: String) -> TablePiece {
+        match md_table::parse(&source) {
+            Some(t) if t.rows.len() <= GRID_MAX_ROWS => {
+                let rows = std::iter::once(t.header).chain(t.rows).map(|row| row.into_iter().map(GridCell::new).collect()).collect();
+                TablePiece::Grid(Grid { align: t.align, rows }, Widths { key: None, natural: Vec::new(), scroll: ScrollHandle::new() })
+            }
+            _ => TablePiece::Source(source.into()),
+        }
+    }
+}
+
+/// A parsed table's cells, the header first, every row as long as `align`.
+struct Grid {
+    align: Vec<Align>,
+    rows: Vec<Vec<GridCell>>,
+}
+
+/// One cell: its source text (trimmed, `\|` kept) and its inline runs, whose source ranges are
+/// bytes of that text.
+struct GridCell {
+    text: Rc<str>,
+    runs: Rc<[Run]>,
+}
+
+impl GridCell {
+    /// The cell's runs as a paragraph's: emphasis, code and links render, `\|` is drawn as `|`
+    /// (inside a code span too) and an image shows its alt text. Text that would parse as another
+    /// block (a list marker, a heading's hashes) is drawn as it is.
+    fn new(text: String) -> GridCell {
+        let plain = |shown: String| vec![Run { text: shown, style: md_blocks::Style::default(), source: 0..text.len() }];
+        let mut runs = match md_blocks::inline(&text, &BlockKind::Paragraph).as_slice() {
+            [] => Vec::new(),
+            [Inline::Para(runs)] => runs.clone(),
+            [Inline::Image { alt, .. }] => plain(alt.clone()),
+            _ => plain(text.replace("\\|", "|")),
+        };
+        for run in runs.iter_mut().filter(|r| r.style.code) {
+            run.text = run.text.replace("\\|", "|");
+        }
+        GridCell { runs: runs.into(), text: text.into() }
+    }
+}
+
+/// A table's measured widths: each column's natural width (its widest cell over the first
+/// `MEASURED_ROWS` rows, padding and hairline included) for the prose family and size in `key`,
+/// and the sideways scroll of a table in `WideTables::Scroll`. Measured once per block, again when
+/// the family or size changed; an edit makes a new entry, which is fine.
+struct Widths {
+    key: Option<(SharedString, f32)>,
+    natural: Vec<f32>,
+    scroll: ScrollHandle,
+}
+
+/// The columns' drawn widths from their natural widths in a view `view` wide: each at most
+/// `COLUMN_CAP` of the view; in `Wrap`, columns summing to more than the view shrink in proportion
+/// to fit it (their cells wrap); in `Scroll` they keep the capped widths and the table scrolls.
+pub fn column_widths(natural: &[f32], view: f32, mode: WideTables) -> Vec<f32> {
+    let capped: Vec<f32> = natural.iter().map(|w| w.min(view * COLUMN_CAP)).collect();
+    let sum: f32 = capped.iter().sum();
+    match mode {
+        WideTables::Wrap if sum > view && sum > 0.0 => capped.iter().map(|w| w * view / sum).collect(),
+        _ => capped,
+    }
+}
+
+/// Measures block `ix`'s table, when it is a grid not yet measured at the prose family and size:
+/// each column's widest cell over the first `MEASURED_ROWS` rows (the header semibold), its text's
+/// width plus the cell's padding and its 1 px hairline. The list's row closure calls it, the one
+/// place with a `Window` to measure text with.
+fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window) {
+    let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
+    let Some(Piece::Table(TablePiece::Grid(grid, widths))) = r.pieces.first_mut() else { return };
+    let size = ctx.font_size * PARA;
+    if widths.key.as_ref().is_some_and(|(family, at)| *family == ctx.ui && *at == size) {
+        return;
+    }
+    let mut natural = vec![0.0f32; grid.align.len()];
+    for (i, row) in grid.rows.iter().take(MEASURED_ROWS).enumerate() {
+        let weight = if i == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
+        for (w, cell) in natural.iter_mut().zip(row) {
+            let (text, runs, _) = styled_runs(&cell.runs, weight, ctx.text, ctx);
+            let text_w = if text.is_empty() { 0.0 } else { f32::from(window.text_system().layout_line(&text, px(size), &runs, None).width) };
+            *w = w.max(text_w + CELL_PAD_X * 2.0 + 1.0);
+        }
+    }
+    widths.key = Some((ctx.ui.clone(), size));
+    widths.natural = natural;
 }
 
 /// A code block's text runs, with what they were made from: whether the highlighter's colours
@@ -199,6 +309,13 @@ pub struct BlockCtx {
     pub base_dir: PathBuf,
     /// A code block over this many bytes is drawn plain (`viewer.highlight_limit_bytes`).
     pub highlight_limit: usize,
+    /// How a table wider than the view is drawn (`viewer.wide_tables`).
+    pub wide_tables: WideTables,
+    /// The width a block's content has: the list's width at the last frame less the side space.
+    /// Not positive before the list's first layout.
+    pub view_w: f32,
+    /// A table grid was drawn this frame, so the canvas checks the width it was drawn for.
+    pub drew_grid: Rc<Cell<bool>>,
     pub text: Hsla,
     pub dim: Hsla,
     pub link: Hsla,
@@ -217,13 +334,17 @@ pub struct BlockCtx {
 /// cached rendering (filled on demand) or drawn raw when the caret or the selection is in it, and
 /// a tail row below the last block. The list scrolls itself and keeps its place in
 /// `Viewer.list_state`. A canvas over the list takes the text input.
-/// A code block over `highlight_limit` bytes (`viewer.highlight_limit_bytes`) is drawn plain.
+/// A code block over `highlight_limit` bytes (`viewer.highlight_limit_bytes`) is drawn plain, and a
+/// table wider than the view wraps or scrolls by `wide_tables` (`viewer.wide_tables`).
 #[allow(clippy::too_many_arguments)]
-pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, highlight_limit: usize, cx: &mut App) -> AnyElement {
+pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, highlight_limit: usize, wide_tables: WideTables, cx: &mut App) -> AnyElement {
     // The raw blocks of this frame record their layouts as they are laid out.
     viewer.update(cx, |v, _| v.raw_blocks.clear());
     let v = viewer.read(cx);
     let state = v.list_state.clone();
+    // Read here, not in the row closure: the list holds its state while it lays the rows out.
+    let view_w = f32::from(v.list_state.viewport_bounds().size.width) - 2.0 * SIDE;
+    let drew_grid = Rc::new(Cell::new(false));
     let ctx = Rc::new(BlockCtx {
         viewer: viewer.clone(),
         ui: ui_family,
@@ -232,6 +353,9 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         mono_line_height: v.line_height,
         base_dir: v.path.parent().map(Path::to_path_buf).unwrap_or_default(),
         highlight_limit,
+        wide_tables,
+        view_w,
+        drew_grid: drew_grid.clone(),
         text: theme.chrome.text.hsla(),
         dim: theme.chrome.text_dim.hsla(),
         link: theme.chrome.focus_ring.hsla(),
@@ -243,7 +367,7 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         find_current: theme.semantic.find_current,
         caret: theme.chrome.text,
     });
-    let input = input_canvas(viewer.clone());
+    let input = input_canvas(viewer.clone(), view_w, drew_grid);
     div()
         .id(("md-view", viewer.entity_id()))
         .relative()
@@ -265,7 +389,10 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
                 }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
-                ctx.viewer.update(cx, |v, _| fill(v, ix, highlighter.as_ref(), &ctx));
+                ctx.viewer.update(cx, |v, _| {
+                    fill(v, ix, highlighter.as_ref(), &ctx);
+                    measure_table(v, ix, &ctx, window);
+                });
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
                     (Some(block), Some(r)) => block_element(ix, &block.kind, r, &ctx),
@@ -281,11 +408,16 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
 /// The canvas over the list that registers the document's input handler every frame, whatever
 /// rows are on screen, so typing reaches the active block even when it is scrolled away. It also
 /// ends a drag selection wherever the button comes up. It paints nothing and takes no mouse
-/// presses, so the rows below it get them.
-fn input_canvas(viewer: Entity<Viewer>) -> impl IntoElement {
+/// presses, so the rows below it get them. Its bounds are the list's: when a table grid was drawn
+/// for a width (`view_w`, the last frame's) the list no longer has, as on the first frame or in a
+/// resize, it asks for another frame, so the columns follow the view.
+fn input_canvas(viewer: Entity<Viewer>, view_w: f32, drew_grid: Rc<Cell<bool>>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, (), window, cx| {
+            if drew_grid.get() && (f32::from(bounds.size.width) - 2.0 * SIDE - view_w).abs() > 0.5 {
+                window.request_animation_frame();
+            }
             let focus = viewer.read(cx).focus.clone();
             window.handle_input(&focus, ElementInputHandler::new(bounds, viewer.clone()), cx);
             let v = viewer.clone();
@@ -400,7 +532,8 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, ctx: &BlockCtx) 
             Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut parts),
             Piece::Code { text, drawn, .. } => code_element(text, drawn, r.code_runs.as_ref().map(|c| &c.runs), ctx, &mut parts),
             Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
-            Piece::Table(t) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
+            Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, ctx, &parts.task_press),
+            Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
             // An HTML block is its source, dimmed (spec 5.2).
             Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
             Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
@@ -456,13 +589,19 @@ fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixel
     let Some((layout, part)) = texts.iter().min_by(|a, b| gap(&a.0).total_cmp(&gap(&b.0))) else {
         return Some(doc.clamp(Pos { line: block.lines.start, ch: 0 }));
     };
-    let b = layout.bounds();
-    let inside = point(at.x.max(b.left()).min((b.right() - px(1.0)).max(b.left())), at.y.max(b.top()).min((b.bottom() - px(1.0)).max(b.top())));
-    let byte = layout.index_for_position(inside).unwrap_or_else(|e| e);
+    let byte = index_near(layout, at);
     Some(match part {
         Part::Runs(runs) => md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte)),
         Part::Code(text) => code_pos(block, lines, text, byte),
     })
+}
+
+/// The byte of a text element's string nearest a window point: the point is moved inside the
+/// text's bounds first, so a point in the padding beside it lands on the nearest row's end.
+fn index_near(layout: &TextLayout, at: Point<Pixels>) -> usize {
+    let b = layout.bounds();
+    let inside = point(at.x.max(b.left()).min((b.right() - px(1.0)).max(b.left())), at.y.max(b.top()).min((b.bottom() - px(1.0)).max(b.top())));
+    layout.index_for_position(inside).unwrap_or_else(|e| e)
 }
 
 /// A byte of a code block's drawn text (its lines with tabs expanded, joined) to a document
@@ -529,17 +668,26 @@ fn styled_runs(runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx) ->
     (text, out, links)
 }
 
-/// A run list as text: a `StyledText`, wrapped to open its links on Cmd+click when it has any.
+/// A run list as text: a `StyledText`, wrapped to open its links on Cmd+click when it has any. Its
+/// layout goes into `parts`, so a press on the row maps through it.
 fn text_element(j: usize, runs: &Rc<[Run]>, weight: FontWeight, color: Hsla, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let (element, layout) = runs_text(j, runs, weight, color, ctx);
+    parts.texts.push((layout, Part::Runs(runs.clone())));
+    element
+}
+
+/// A run list as a `StyledText` (an `InteractiveText` with id `("md-text", j)` opening its links
+/// on Cmd+click, when it has any) and the layout it will have.
+fn runs_text(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx) -> (AnyElement, TextLayout) {
     let (text, text_runs, links) = styled_runs(runs, weight, color, ctx);
     let styled = StyledText::new(text).with_runs(text_runs);
-    parts.texts.push((styled.layout().clone(), Part::Runs(runs.clone())));
+    let layout = styled.layout().clone();
     if links.is_empty() {
-        return styled.into_any_element();
+        return (styled.into_any_element(), layout);
     }
     let (ranges, targets): (Vec<_>, Vec<_>) = links.into_iter().unzip();
     let (base_dir, viewer) = (ctx.base_dir.clone(), ctx.viewer.clone());
-    InteractiveText::new(("md-text", j), styled)
+    let element = InteractiveText::new(("md-text", j), styled)
         .on_click(ranges, move |i, window, cx| {
             // A plain click is for the text (the row put the caret there); Cmd+click follows the
             // link.
@@ -549,7 +697,8 @@ fn text_element(j: usize, runs: &Rc<[Run]>, weight: FontWeight, color: Hsla, ctx
                 }
             }
         })
-        .into_any_element()
+        .into_any_element();
+    (element, layout)
 }
 
 /// What Cmd+click on a link does. Nothing on disk is ever opened by the system, which could run
@@ -764,6 +913,85 @@ fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, ctx: &BlockCtx) -> V
         }
     }
     out
+}
+
+/// A table as a grid: the header row semibold on the inactive tab colour, the body rows alternating
+/// the window's background and a 4 percent tint of the text, 1 px hairlines between rows and
+/// columns, each cell padded and aligned by its column, the columns as wide as `column_widths`
+/// makes them for the view (a grid in `WideTables::Scroll` scrolls sideways in its block, the
+/// vertical wheel still scrolling the list). A press on a cell puts the caret at the matching
+/// source position (`Viewer::click_table_cell`), the block's own press standing aside through
+/// `press`, as for a task box.
+fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    ctx.drew_grid.set(true);
+    let columns = grid.align.len();
+    // The grid's own border takes 2 px of the view.
+    let view = if ctx.view_w > 0.0 { ctx.view_w - 2.0 } else { f32::INFINITY };
+    let natural = if widths.natural.len() == columns { widths.natural.clone() } else { vec![CELL_PAD_X * 2.0 + 1.0; columns] };
+    let drawn = column_widths(&natural, view, ctx.wide_tables);
+    let tint = ctx.text.opacity(0.04);
+    let rows = grid.rows.iter().enumerate().map(|(r, row)| {
+        let bg = match r {
+            0 => ctx.code_bg,
+            r if r % 2 == 1 => ctx.on_accent,
+            _ => tint,
+        };
+        // The header is the block's first line, the body rows start below the delimiter row.
+        let line = if r == 0 { 0 } else { r + 1 };
+        let cells = row.iter().zip(&grid.align).zip(&drawn).enumerate().map(|(c, ((cell, align), w))| {
+            let weight = if r == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
+            let (text, layout) = runs_text(r * columns + c, &cell.runs, weight, ctx.text, ctx);
+            let (viewer, press, cell_text, cell_runs) = (ctx.viewer.clone(), press.clone(), cell.text.clone(), cell.runs.clone());
+            div()
+                .flex_none()
+                .w(px(*w))
+                .min_w_0()
+                .when(c > 0, |d| d.border_l_1().border_color(ctx.border))
+                .px(px(CELL_PAD_X))
+                .py(px(CELL_PAD_Y))
+                .map(|d| match align {
+                    Align::Right => d.text_right(),
+                    Align::Center => d.text_center(),
+                    Align::Default | Align::Left => d,
+                })
+                .child(text)
+                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
+                    // Cmd+click is for a link: the row leaves the caret alone for it too.
+                    if ev.modifiers.platform {
+                        return;
+                    }
+                    press.set(true);
+                    let ch = if cell_text.is_empty() {
+                        0
+                    } else {
+                        let byte = md_blocks::source_offset_at(&cell_runs, index_near(&layout, ev.position)).min(cell_text.len());
+                        cell_text[..cell_text.floor_char_boundary(byte)].chars().count()
+                    };
+                    viewer.update(cx, |v, cx| v.click_table_cell(ix, line, c, ch, ev.modifiers.shift, cx));
+                })
+        });
+        div().flex().flex_row().bg(bg).when(r > 0, |d| d.border_t_1().border_color(ctx.border)).children(cells)
+    });
+    let table = div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .w(px(drawn.iter().sum::<f32>() + 2.0))
+        .border_1()
+        .border_color(ctx.border)
+        .font_family(ctx.ui.clone())
+        .text_size(px(ctx.font_size * PARA))
+        .line_height(relative(PARA_LINE))
+        .children(rows);
+    match ctx.wide_tables {
+        WideTables::Wrap => table.into_any_element(),
+        WideTables::Scroll => {
+            let mut scroller = div().id(("md-table", ix)).w_full().overflow_x_scroll().track_scroll(&widths.scroll).child(table);
+            // A vertical wheel over the table scrolls the list, not the table.
+            scroller.style().restrict_scroll_to_axis = Some(true);
+            scroller.into_any_element()
+        }
+    }
 }
 
 /// A table, HTML or front matter block: its source in the terminal font, on a background when
@@ -1090,6 +1318,31 @@ pub fn breaks_for_paragraph(lines: &[String]) -> usize {
 mod tests {
     use super::*;
     use crate::md_blocks::split;
+
+    #[test]
+    fn column_widths_cap_shrink_to_fit_in_wrap_mode_and_keep_natural_in_scroll_mode() {
+        let w = column_widths(&[100.0, 300.0, 800.0], 1000.0, WideTables::Wrap);
+        assert_eq!(w, vec![100.0, 300.0, 450.0], "the cap is 45 percent of the view");
+        let w = column_widths(&[600.0, 600.0, 600.0], 1000.0, WideTables::Wrap);
+        assert!((w.iter().sum::<f32>() - 1000.0).abs() < 0.01, "shrunk to fit: {w:?}");
+        assert!((w[0] - w[1]).abs() < 0.01);
+        let w = column_widths(&[600.0, 600.0, 600.0], 1000.0, WideTables::Scroll);
+        assert_eq!(w, vec![450.0, 450.0, 450.0], "scroll keeps the capped natural widths");
+    }
+
+    #[test]
+    fn a_table_cell_draws_its_escaped_pipes_and_an_image_s_alt_and_a_long_table_stays_source() {
+        let text = |cell: &str| GridCell::new(cell.to_string()).runs.iter().map(|r| r.text.as_str()).collect::<String>();
+        assert_eq!(text("y \\| z"), "y | z");
+        assert_eq!(text("`a\\|b`"), "a|b", "in a code span too");
+        assert_eq!(text("![logo](l.png)"), "logo");
+        assert_eq!(text("- x"), "- x", "not a list");
+        assert_eq!(text(""), "");
+        assert!(matches!(TablePiece::new("| a |\n|---|\n| 1 |".into()), TablePiece::Grid(..)));
+        assert!(matches!(TablePiece::new("| a |\n| 1 |".into()), TablePiece::Source(_)), "no delimiter row");
+        let long = format!("| a |\n|---|{}", "\n| 1 |".repeat(GRID_MAX_ROWS + 1));
+        assert!(matches!(TablePiece::new(long), TablePiece::Source(_)), "over the grid's rows");
+    }
 
     #[test]
     fn the_type_scale_follows_the_spec() {

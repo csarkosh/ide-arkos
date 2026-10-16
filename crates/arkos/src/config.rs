@@ -99,17 +99,29 @@ impl Default for SidebarConfig {
     }
 }
 
-/// The viewer's limits: a file larger than `highlight_limit_bytes` opens without syntax colours.
+/// The viewer's limits: a file larger than `highlight_limit_bytes` opens without syntax colours;
+/// and how the rendered markdown view draws a table wider than the view (`wide_tables`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ViewerConfig {
     pub highlight_limit_bytes: usize,
+    pub wide_tables: WideTables,
 }
 
 impl Default for ViewerConfig {
     fn default() -> Self {
-        Self { highlight_limit_bytes: 5 * 1024 * 1024 }
+        Self { highlight_limit_bytes: 5 * 1024 * 1024, wide_tables: WideTables::default() }
     }
+}
+
+/// A markdown table wider than the view: its columns shrink to fit and the cells wrap (`wrap`),
+/// or they keep their widths and the table scrolls sideways inside its block (`scroll`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WideTables {
+    #[default]
+    Wrap,
+    Scroll,
 }
 
 /// What "New browser tab" opens when its prompt is left empty, and how.
@@ -831,6 +843,16 @@ mod tests {
         let zero: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 0\n").unwrap();
         assert!(zero.validate().unwrap_err().contains("viewer.highlight_limit_bytes"));
         assert!(toml::from_str::<Config>(DEFAULT_CONFIG).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn wide_tables_wrap_by_default_and_read_wrap_or_scroll() {
+        assert_eq!(Config::default().viewer.wide_tables, WideTables::Wrap);
+        let c: Config = toml::from_str("[viewer]\nwide_tables = \"scroll\"\n").unwrap();
+        assert_eq!(c.viewer.wide_tables, WideTables::Scroll);
+        let c: Config = toml::from_str("[viewer]\nwide_tables = \"wrap\"\n").unwrap();
+        assert_eq!(c.viewer.wide_tables, WideTables::Wrap);
+        assert!(toml::from_str::<Config>("[viewer]\nwide_tables = \"sideways\"\n").is_err());
     }
 
     #[test]

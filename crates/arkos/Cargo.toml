@@ -29,6 +29,8 @@ similar = "2"
 pulldown-cmark.workspace = true
 # Already in the tree through gpui and others: grapheme boundaries for the editing core.
 unicode-segmentation = "1"
+# Already in the tree through other crates: display widths for re-aligning markdown tables.
+unicode-width = "0.2"
 # The browser pane (spec 8): Chrome's pid, the mouse, the screens and arkos's own window. Default
 # features off: the full AppKit binding is a long compile, and only these modules are used.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSGraphics", "NSView"] }

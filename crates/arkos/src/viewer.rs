@@ -15,6 +15,7 @@ use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
+use crate::md_table;
 use crate::md_view;
 use crate::motion::{self, Fades};
 use crate::palette::Rgb;
@@ -1637,6 +1638,16 @@ impl Viewer {
         cx.notify();
     }
 
+    /// A press on a cell of rendered table block `block`: the cell's source row (`row`, a line
+    /// within the block) and column (`cell`), and the char offset into its text the cell's layout
+    /// found under the pointer (`ch`). The caret goes there as for any press (Shift extends the
+    /// selection), so the block renders raw.
+    pub fn click_table_cell(&mut self, block: usize, row: usize, cell: usize, ch: usize, extend: bool, cx: &mut Context<Self>) {
+        let (Some(doc), Some(b)) = (self.doc.as_ref(), self.blocks.get(block)) else { return };
+        let Some(p) = table_cell_pos(doc.lines(), b, md_table::CellPos { row, cell }, ch) else { return };
+        self.place_caret(p, extend, cx);
+    }
+
     /// The mouse moved with the left button down: a drag that began in the text moves the head.
     pub fn mouse_drag(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selecting {
@@ -2020,6 +2031,17 @@ fn splice_rows(blocks: &mut Vec<md_blocks::Block>, cache: &mut Vec<Option<md_vie
     for (block, new) in blocks[tail..].iter_mut().zip(&new_blocks[tail..]) {
         block.lines = new.lines.clone();
     }
+}
+
+/// The document position `ch` chars into the text of cell `pos` of table block `block`: the cell's
+/// start (`md_table::cell_start`, its first character or an empty cell's caret place) plus `ch`,
+/// at most the line's end. `None` when the block's source has no such row.
+fn table_cell_pos(lines: &[String], block: &md_blocks::Block, pos: md_table::CellPos, ch: usize) -> Option<edit::Pos> {
+    let end = block.lines.end.min(lines.len());
+    let source = lines[block.lines.start.min(end)..end].join("\n");
+    let (line, start) = md_table::cell_start(&source, pos)?;
+    let line = block.lines.start + line;
+    Some(edit::Pos { line, ch: (start + ch).min(lines.get(line)?.chars().count()) })
 }
 
 /// What an editing key asks of a document viewer, before it meets the document.
@@ -2563,6 +2585,19 @@ impl Root {
 mod tests {
     use super::*;
     use crate::edit::{Move, Pos, Unit};
+
+    #[test]
+    fn a_press_on_a_table_cell_maps_to_the_cell_s_text_in_the_source() {
+        let d = edit::Document::from_text("intro\n\n| a | b |\n|---|---|\n| one | |\n");
+        let blocks = md_blocks::split(d.lines());
+        let table = &blocks[md_blocks::block_at(&blocks, 2)];
+        assert_eq!(table.kind, md_blocks::BlockKind::Table);
+        let at = |row, cell, ch| table_cell_pos(d.lines(), table, md_table::CellPos { row, cell }, ch);
+        assert_eq!(at(2, 0, 2), Some(Pos { line: 4, ch: 4 }), "two chars into \"one\"");
+        assert_eq!(at(2, 1, 0), Some(Pos { line: 4, ch: 8 }), "an empty cell: after its pipe and a space, clamped to the next pipe");
+        assert_eq!(at(0, 1, 5), Some(Pos { line: 2, ch: 9 }), "past the text: at most the line's end");
+        assert_eq!(at(9, 0, 0), None, "no such row");
+    }
 
     #[test]
     fn keystrokes_map_to_editor_actions_the_mac_way() {
