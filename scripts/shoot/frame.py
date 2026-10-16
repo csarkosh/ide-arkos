@@ -47,62 +47,62 @@ def framed(window):
 
 
 CAPTION_FONT = "/System/Library/Fonts/Menlo.ttc"
-# Sized for the README: GitHub shows the picture about 830 px wide, a third of its 2520 px
-# canvas, so a 68 px caption reads at about 22 px there, and the longest ("The web developer")
-# still fits the third of the width under its still.
-CAPTION_SIZE = 34 * SCALE
-CAPTION_PAD = (24 * SCALE, 11 * SCALE)
+# Sized for the README: GitHub shows the picture about 830 px wide, a third of its canvas, so
+# a 60 px caption reads at about 20 px there, and the longest ("The web developer") fits the
+# part of its still the front one leaves showing.
+CAPTION_SIZE = 30 * SCALE
+CAPTION_PAD = (20 * SCALE, 10 * SCALE)
 CANVAS_W = 1260 * SCALE
 OUT_W = 1800
 
 
-def caption_pill(text):
-    """A dark pill with light text, readable on light and dark pages alike."""
+def captioned(still, text, align, scale):
+    """The still with its caption hung on its lower border at the left, centre or right (the
+    side it shows from behind the front one): a dark pill with light text, readable on light
+    and dark pages alike. `scale` is the still's size against the framed original, whose
+    shadow padding the pill sits inside of."""
     font = ImageFont.truetype(CAPTION_FONT, CAPTION_SIZE)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     box = probe.textbbox((0, 0), text, font=font)
     tw, th = box[2] - box[0], box[3] - box[1]
     pw, ph = tw + 2 * CAPTION_PAD[0], th + 2 * CAPTION_PAD[1]
-    pill = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(pill)
-    draw.rounded_rectangle((0, 0, pw - 1, ph - 1), radius=ph // 2, fill=(17, 19, 24, 240), outline=(232, 234, 240, 70), width=SCALE)
-    draw.text((CAPTION_PAD[0] - box[0], CAPTION_PAD[1] - box[1]), text, font=font, fill=(232, 234, 240, 255))
-    return pill
+    pad = round(PAD * scale)
+    inset = 10 * SCALE
+    px = {"left": pad + inset, "center": (still.width - pw) // 2, "right": still.width - pad - inset - pw}[align]
+    py = still.height - pad - ph // 2
+    out = still.copy()
+    pill = Image.new("RGBA", out.size, (0, 0, 0, 0))
+    ImageDraw.Draw(pill).rounded_rectangle((px, py, px + pw, py + ph), radius=ph // 2, fill=(17, 19, 24, 240), outline=(232, 234, 240, 70), width=SCALE)
+    out.alpha_composite(pill)
+    ImageDraw.Draw(out).text((px + CAPTION_PAD[0] - box[0], py + CAPTION_PAD[1] - box[1]), text, font=font, fill=(232, 234, 240, 255))
+    return out
 
 
 def compose(out, pieces):
-    """pieces: [(path, caption)], the first in front. The backs stand half behind the front
-    one, a little higher and tilted, as Day Hike's postcards do; each caption sits in a band
-    under the stills, centred on the part of its still that shows, large enough to read at the
-    size a README shows the picture."""
+    """pieces: [(path, caption)], the first in front. The backs stand behind the front one,
+    a little higher and tilted, as Day Hike's postcards do, each showing most of itself so the
+    caption on its bottom edge stays in view; the front sits lower and centred."""
     W = CANVAS_W
-    front = Image.open(pieces[0][0]).convert("RGBA")
-    front_w = round(W * 0.58)
-    front = front.resize((front_w, round(front.height * front_w / front.width)), Image.Resampling.LANCZOS)
-    back_w = round(W * 0.44)
+    front_w = round(W * 0.46)
+    back_w = round(W * 0.38)
+    src = Image.open(pieces[0][0]).convert("RGBA")
+    front = src.resize((front_w, round(src.height * front_w / src.width)), Image.Resampling.LANCZOS)
+    front = captioned(front, pieces[0][1], "center", front_w / src.width)
     backs = []
-    for i, (path, _) in enumerate(pieces[1:]):
-        b = Image.open(path).convert("RGBA")
-        b = b.resize((back_w, round(b.height * back_w / b.width)), Image.Resampling.LANCZOS)
-        b = b.rotate(2.5 if i % 2 == 0 else -2.5, expand=True, resample=Image.Resampling.BICUBIC)
-        backs.append(b)
+    for i, (path, caption) in enumerate(pieces[1:]):
+        side = "left" if i % 2 == 0 else "right"
+        src = Image.open(path).convert("RGBA")
+        b = src.resize((back_w, round(src.height * back_w / src.width)), Image.Resampling.LANCZOS)
+        b = captioned(b, caption, side, back_w / src.width)
+        b = b.rotate(2.5 if side == "left" else -2.5, expand=True, resample=Image.Resampling.BICUBIC)
+        backs.append((side, b))
     front_x = (W - front_w) // 2
-    front_y = round(front.height * 0.08)
-    stills_bottom = max([front_y + front.height] + [b.height for b in backs])
-    pills = [caption_pill(c) for _, c in pieces]
-    band_y = stills_bottom + 6 * SCALE
-    height = band_y + max(p.height for p in pills) + 4 * SCALE
+    front_y = round(front.height * 0.10)
+    height = max([front_y + front.height] + [b.height for _, b in backs]) + 4 * SCALE
     canvas = Image.new("RGBA", (W, height), (0, 0, 0, 0))
-    centres = [W // 2]
-    for i, b in enumerate(backs):
-        x = 0 if i % 2 == 0 else W - b.width
-        canvas.alpha_composite(b, (x, 0))
-        # The part of the back the front leaves showing.
-        centres.append(front_x // 2 if i % 2 == 0 else (front_x + front_w + W) // 2)
+    for side, b in backs:
+        canvas.alpha_composite(b, (0 if side == "left" else W - b.width, 0))
     canvas.alpha_composite(front, (front_x, front_y))
-    for pill, cx in zip(pills, centres):
-        x = min(max(cx - pill.width // 2, 0), W - pill.width)
-        canvas.alpha_composite(pill, (x, band_y))
     canvas = canvas.crop(canvas.getbbox())
     canvas = canvas.resize((OUT_W, round(canvas.height * OUT_W / canvas.width)), Image.Resampling.LANCZOS)
     canvas.save(out, optimize=True)
