@@ -4,8 +4,8 @@
 //! terminal's, and a table is a grid of cells at the paragraph size (its source in the terminal
 //! font when it does not parse); a task item's box toggles the item through an undoable edit, and
 //! a link opens on Cmd+click. An image is drawn from disk, or from the cache once a web
-//! address's fetch has landed (`remote_image`), several in one paragraph in a row; Cmd+click shows
-//! it in Preview.
+//! address's fetch has landed (`remote_image`), several in one paragraph in a row; Cmd+click
+//! follows the link around it, or else shows it in Preview.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -127,30 +127,36 @@ enum Piece {
     Table(TablePiece),
     Html(SharedString),
     Metadata(SharedString),
-    /// An image: its alt text (or its path when it has none) for the fallback box, and its path.
-    Image { label: SharedString, path: String },
-    /// A paragraph of images only (a row of badges): each one's label and path, as for `Image`.
-    Images(Vec<(SharedString, String)>),
+    /// A paragraph that is one image.
+    Image(ImagePiece),
+    /// A paragraph of images only (a row of badges).
+    Images(Vec<ImagePiece>),
 }
 
 impl Piece {
     /// The paths of the images the piece shows.
     fn image_paths(&self) -> impl Iterator<Item = &String> {
-        let (one, row) = match self {
-            Piece::Image { path, .. } => (Some(path), &[][..]),
-            Piece::Images(images) => (None, images.as_slice()),
-            _ => (None, &[][..]),
+        let images = match self {
+            Piece::Image(image) => std::slice::from_ref(image),
+            Piece::Images(images) => images.as_slice(),
+            _ => &[],
         };
-        one.into_iter().chain(row.iter().map(|(_, path)| path))
+        images.iter().map(|i| &i.path)
     }
 }
 
-/// What an image's box says when it cannot be drawn: its alt text, or its path when it has none.
-fn image_label(alt: String, path: &str) -> SharedString {
-    if alt.is_empty() {
-        path.to_string().into()
-    } else {
-        alt.into()
+/// One image as a row draws it: its alt text (or its path when it has none) for the box shown
+/// when it cannot be drawn, its path, and the target of the link around it, if any.
+struct ImagePiece {
+    label: SharedString,
+    path: String,
+    link: Option<String>,
+}
+
+impl ImagePiece {
+    fn new(alt: String, path: String, link: Option<String>) -> ImagePiece {
+        let label = if alt.is_empty() { path.clone().into() } else { alt.into() };
+        ImagePiece { label, path, link }
     }
 }
 
@@ -166,8 +172,8 @@ impl From<Inline> for Piece {
             Inline::Table(t) => Piece::Table(TablePiece::new(t)),
             Inline::Html(t) => Piece::Html(t.into()),
             Inline::Metadata(t) => Piece::Metadata(t.into()),
-            Inline::Image { alt, path } => Piece::Image { label: image_label(alt, &path), path },
-            Inline::Images(images) => Piece::Images(images.into_iter().map(|(alt, path)| (image_label(alt, &path), path)).collect()),
+            Inline::Image { alt, path, link } => Piece::Image(ImagePiece::new(alt, path, link)),
+            Inline::Images(images) => Piece::Images(images.into_iter().map(|i| ImagePiece::new(i.alt, i.path, i.link)).collect()),
         }
     }
 }
@@ -215,7 +221,7 @@ impl GridCell {
             [] => Vec::new(),
             [Inline::Para(runs)] => runs.clone(),
             [Inline::Image { alt, .. }] => plain(alt.clone()),
-            [Inline::Images(images)] => plain(images.iter().map(|(alt, _)| alt.as_str()).collect::<Vec<_>>().join(" ")),
+            [Inline::Images(images)] => plain(images.iter().map(|i| i.alt.as_str()).collect::<Vec<_>>().join(" ")),
             _ => plain(text.replace("\\|", "|")),
         };
         for run in runs.iter_mut().filter(|r| r.style.code) {
@@ -377,8 +383,6 @@ pub struct BlockCtx {
     pub view_w: f32,
     /// A table grid was drawn this frame, so the canvas checks the width it was drawn for.
     pub drew_grid: Rc<Cell<bool>>,
-    /// Cmd is held as the rows are built, so an image shows the hand.
-    pub cmd_held: Cell<bool>,
     pub text: Hsla,
     pub dim: Hsla,
     pub link: Hsla,
@@ -419,7 +423,6 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         wide_tables,
         view_w,
         drew_grid: drew_grid.clone(),
-        cmd_held: Cell::new(false),
         text: theme.chrome.text.hsla(),
         dim: theme.chrome.text_dim.hsla(),
         link: theme.chrome.focus_ring.hsla(),
@@ -457,7 +460,6 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
                     fill(v, ix, highlighter.as_ref(), &ctx, cx);
                     measure_table(v, ix, &ctx, window);
                 });
-                ctx.cmd_held.set(window.modifiers().platform);
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
                     (Some(block), Some(r)) => block_element(ix, &block.kind, r, v, &ctx),
@@ -602,7 +604,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
             // An HTML block is its source, dimmed (spec 5.2).
             Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
             Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
-            Piece::Image { label, path } => image_element(label, path, v, ctx, &parts.task_press),
+            Piece::Image(image) => image_element(image, v, ctx, &parts.task_press),
             // Badges sit side by side, wrapping onto more lines when the view is narrow.
             Piece::Images(images) => div()
                 .flex()
@@ -610,7 +612,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
                 .flex_wrap()
                 .items_center()
                 .gap(px(4.0))
-                .children(images.iter().map(|(label, path)| image_element(label, path, v, ctx, &parts.task_press)))
+                .children(images.iter().map(|image| image_element(image, v, ctx, &parts.task_press)))
                 .into_any_element(),
         };
         children.push(child);
@@ -1086,37 +1088,49 @@ fn mono_box(text: &SharedString, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) 
 }
 
 /// An image at most the view's width (its natural size when smaller): from disk, or for a web
-/// address from the cache once its fetch has landed (`Viewer.remote`). Its alt text (or path),
-/// `label`, is shown in a dashed box instead while a fetch runs (with "loading"), after one failed
-/// (with the url), and when the file cannot be drawn. A plain press is the row's, which puts the
-/// caret in the block; Cmd+click shows the file in Preview, the row standing aside through
-/// `press`, and only with Cmd held does the pointer turn to the hand.
-fn image_element(label: &SharedString, path: &str, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+/// address from the cache once its fetch has landed (`Viewer.remote`). Its label (the alt text, or
+/// the path) is shown in a dashed box instead while a fetch runs (with "loading"), after one
+/// failed (with the url), and when the file cannot be drawn. A plain press is the row's, which puts
+/// the caret in the block. Cmd+click follows the link around the image when there is one, as a
+/// link's text does, and otherwise shows the file in Preview; the row stands aside through
+/// `press`. The pointer is the hand over anything Cmd+click opens, as over a link.
+fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    let (label, path) = (&image.label, image.path.as_str());
     let (dim, border) = (ctx.dim, ctx.border);
-    let alt_box = move |text: SharedString| move || div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(text.clone()).into_any_element();
-    let file = if remote_image::is_remote(path) {
+    let alt_box = move |text: SharedString| div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(text);
+    let (file, shown) = if remote_image::is_remote(path) {
         match v.remote.get(path) {
-            Some(Remote::Ready(file)) => Some(file.clone()),
-            Some(Remote::Failed) if label.as_ref() == path => return alt_box(label.clone())(),
-            Some(Remote::Failed) => return alt_box(format!("{label}: {path}").into())(),
-            Some(Remote::Fetching) | None => return alt_box(format!("{label} (loading)").into())(),
+            Some(Remote::Ready(file)) => (Some(file.clone()), label.clone()),
+            Some(Remote::Failed) if label.as_ref() == path => (None, label.clone()),
+            Some(Remote::Failed) => (None, format!("{label}: {path}").into()),
+            Some(Remote::Fetching) | None => (None, format!("{label} (loading)").into()),
         }
     } else {
-        resolve_image(&ctx.base_dir, path)
+        (resolve_image(&ctx.base_dir, path), label.clone())
     };
-    let Some(file) = file else { return alt_box(label.clone())() };
-    let press = press.clone();
-    img(file.clone())
-        .max_w_full()
-        .with_fallback(alt_box(label.clone()))
-        .when(ctx.cmd_held.get(), |i| i.cursor_pointer())
-        .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
-            if ev.modifiers.platform {
-                press.set(true);
-                open_in_preview(file.clone(), cx);
+    let on_press = {
+        let (press, link, file, base_dir, viewer) = (press.clone(), image.link.clone(), file.clone(), ctx.base_dir.clone(), ctx.viewer.clone());
+        move |ev: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
+            if !ev.modifiers.platform {
+                return;
             }
-        })
-        .into_any_element()
+            match (&link, &file) {
+                (Some(link), _) => follow_link(link_action(link, &base_dir), &viewer, cx),
+                (None, Some(file)) => open_in_preview(file.clone(), cx),
+                (None, None) => return,
+            }
+            press.set(true);
+        }
+    };
+    match file {
+        Some(file) => {
+            let fallback = label.clone();
+            img(file).max_w_full().with_fallback(move || alt_box(fallback.clone()).into_any_element()).cursor_pointer().on_mouse_down(MouseButton::Left, on_press).into_any_element()
+        }
+        // A linked image's box still follows the link while the image cannot be drawn.
+        None if image.link.is_some() => alt_box(shown).cursor_pointer().on_mouse_down(MouseButton::Left, on_press).into_any_element(),
+        None => alt_box(shown).into_any_element(),
+    }
 }
 
 /// Shows an image file in Preview (`/usr/bin/open -a Preview`, on the background executor), never

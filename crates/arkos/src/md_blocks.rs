@@ -150,10 +150,21 @@ pub enum Inline {
     Table(String),
     Html(String),
     Metadata(String),
-    Image { alt: String, path: String },
+    /// A paragraph that is one image: its alt text, its path, and the target of the link around
+    /// it, if any.
+    Image { alt: String, path: String, link: Option<String> },
     /// A paragraph of two or more images and nothing but whitespace between them (a row of
-    /// badges): each image's alt text and path.
-    Images(Vec<(String, String)>),
+    /// badges).
+    Images(Vec<ImageRef>),
+}
+
+/// One image of a row of them: its alt text, its path, and the target of the link around it, if
+/// any (a badge usually links to what it reports on).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef {
+    pub alt: String,
+    pub path: String,
+    pub link: Option<String>,
 }
 
 /// The inline content of one block's text. A soft break becomes a space, a hard break a newline,
@@ -205,9 +216,9 @@ struct Walker {
     containers: usize,
     items: Vec<usize>,
     image: Option<(String, String)>,
-    /// The images of the paragraph being walked, outside any container: alt text, path, and the
-    /// index of the run holding the alt text.
-    para_images: Vec<(String, String, usize)>,
+    /// The images of the paragraph being walked, outside any container, each with the index of
+    /// the run holding its alt text.
+    para_images: Vec<(ImageRef, usize)>,
 }
 
 impl Walker {
@@ -272,12 +283,12 @@ fn walk(src: &str) -> Vec<Inline> {
                         let runs = std::mem::take(&mut w.runs);
                         let images = std::mem::take(&mut w.para_images);
                         // Images with only spaces and line breaks between them render as images.
-                        let only_images = runs.iter().enumerate().all(|(i, r)| images.iter().any(|im| im.2 == i) || (r.text.trim().is_empty() && !r.style.code && !r.style.html));
-                        let mut images: Vec<(String, String)> = images.into_iter().map(|(alt, path, _)| (alt, path)).collect();
+                        let only_images = runs.iter().enumerate().all(|(i, r)| images.iter().any(|(_, at)| *at == i) || (r.text.trim().is_empty() && !r.style.code && !r.style.html));
+                        let mut images: Vec<ImageRef> = images.into_iter().map(|(image, _)| image).collect();
                         w.out.push(match images.len() {
                             1 if only_images => {
-                                let (alt, path) = images.remove(0);
-                                Inline::Image { alt, path }
+                                let ImageRef { alt, path, link } = images.remove(0);
+                                Inline::Image { alt, path, link }
                             }
                             2.. if only_images => Inline::Images(images),
                             _ => Inline::Para(runs),
@@ -311,7 +322,8 @@ fn walk(src: &str) -> Vec<Inline> {
                     if let Some((alt, path)) = w.image.take() {
                         if w.containers == 0 {
                             let at = w.runs.len();
-                            w.para_images.push((alt.clone(), path, at));
+                            // The style still has the link the image sits in, if any.
+                            w.para_images.push((ImageRef { alt: alt.clone(), path, link: w.style.link.clone() }, at));
                         }
                         w.push(alt, range);
                     }
@@ -626,9 +638,18 @@ mod tests {
     }
 
     #[test]
+    fn a_linked_image_and_each_linked_badge_keep_their_link() {
+        assert!(matches!(&inline("[![CI](b.svg)](https://ci)", &BlockKind::Paragraph)[0], Inline::Image { link: Some(l), .. } if l == "https://ci"));
+        let row = inline("[![a](a.svg)](https://a) [![b](b.svg)](https://b) ![c](c.png)", &BlockKind::Paragraph);
+        let Inline::Images(images) = &row[0] else { panic!("{row:?}") };
+        let links: Vec<Option<&str>> = images.iter().map(|i| i.link.as_deref()).collect();
+        assert_eq!(links, vec![Some("https://a"), Some("https://b"), None]);
+    }
+
+    #[test]
     fn code_images_tables_and_html_pass_through() {
         assert_eq!(inline("```py\nprint(1)\n```", &BlockKind::CodeBlock { info: "py".into() }), vec![Inline::Code { info: "py".into(), text: "print(1)\n".into() }]);
-        assert_eq!(inline("![alt text](img/a.png)", &BlockKind::Paragraph), vec![Inline::Image { alt: "alt text".into(), path: "img/a.png".into() }]);
+        assert_eq!(inline("![alt text](img/a.png)", &BlockKind::Paragraph), vec![Inline::Image { alt: "alt text".into(), path: "img/a.png".into(), link: None }]);
         assert!(matches!(&inline("see ![a](b.png) here", &BlockKind::Paragraph)[0], Inline::Para(_)), "an image inside text is text");
         assert_eq!(inline("| a |\n|---|", &BlockKind::Table), vec![Inline::Table("| a |\n|---|".into())]);
         assert_eq!(inline("<b>x</b>", &BlockKind::Html), vec![Inline::Html("<b>x</b>".into())]);

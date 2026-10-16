@@ -1176,9 +1176,6 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 });
             }))
         })
-        // Cmd turns the pointer over a rendered image to the hand (`md_view::image_element`): a
-        // frame when it is pressed or let go.
-        .when(rendered, |d| d.on_modifiers_changed(|_, window, _| window.refresh()))
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
         .child(body)
         .children(chip)
