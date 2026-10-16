@@ -667,7 +667,9 @@ fn claude_settings(arkos_exe: &Path) -> serde_json::Value {
     let cmd = |tail: &str| serde_json::json!({ "type": "command", "command": format!("'{exe}' notify {tail}"), "timeout": 5 });
     serde_json::json!({
         "permissions": {
-            "allow": ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "Bash(node *)", "Bash(npm *)", "Bash(git *)", "Bash(ls *)", "Bash(cat *)", "Bash(mkdir *)"],
+            // Every shell command: a pattern list still stops at one with a variable in it, and
+            // a session stopped at a permission question is not working. The demo is a copy.
+            "allow": ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "Bash"],
             "defaultMode": "acceptEdits"
         },
         "hooks": {
