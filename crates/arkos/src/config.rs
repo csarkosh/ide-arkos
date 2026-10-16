@@ -334,7 +334,9 @@ fn write_default(path: &Path) -> std::io::Result<()> {
 }
 
 /// Sets one value in the config file, keeping the file's comments (see `set_values`).
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+// The Settings window writes every change through `set_values`, one pair or two; this one-pair
+// form is the tests' shorthand.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_value(path: &Path, keys: &[&str], value: toml_edit::Value) -> Result<(), String> {
     set_values(path, &[(keys, value)])
 }
@@ -345,7 +347,6 @@ pub fn set_value(path: &Path, keys: &[&str], value: toml_edit::Value) -> Result<
 /// walk goes through inline and dotted tables too; a path segment that is not a table is an
 /// error. The temp file is written beside the symlink-resolved target and renamed over it, so a
 /// symlinked config stays a symlink. A file that does not parse is refused and left as it was.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn set_values(path: &Path, edits: &[(&[&str], toml_edit::Value)]) -> Result<(), String> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let text = std::fs::read_to_string(&target).map_err(|e| format!("cannot read {}: {e}", path.display()))?;

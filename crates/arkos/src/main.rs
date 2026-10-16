@@ -1066,7 +1066,14 @@ impl Root {
             self.apply_config(cfg, cx);
         }
         self.probe_doctor();
+        // The Settings window shows the reloaded file, or its problem.
+        aux::push_settings(cx, self.settings_shown());
         cx.notify();
+    }
+
+    /// What the Settings window shows from this window's state.
+    pub fn settings_shown(&self) -> settings::Shown {
+        settings::Shown { config: self.config.clone(), error: self.config_error.clone(), update_ready: self.update_ready.clone() }
     }
 
     /// Applies every live setting. The `[daemon]` section only matters when the window starts
@@ -2741,7 +2748,12 @@ impl Root {
     /// Reads the staged release into `update_ready` (the bell's update-ready notice) when there is
     /// one, else what the launch path holds.
     pub fn refresh_update_badge(&mut self, cx: &mut Context<Self>) {
-        self.update_ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref());
+        let ready = update_check::ready_text(self.staged.as_ref(), self.update_ready_on_disk.as_deref());
+        if ready != self.update_ready {
+            self.update_ready = ready;
+            // The Settings window's "Update now" line follows the badge.
+            aux::push_settings(cx, self.settings_shown());
+        }
         cx.notify();
     }
 
@@ -3953,6 +3965,8 @@ fn open_project_window(
             root.sync_docks(cx);
             cx.notify();
         });
+        // A Settings window opened from the chooser shows this window's state from now on.
+        aux::push_settings(cx, root.read(cx).settings_shown());
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
             // Goodbye here, while everything runs; the close this quit makes finds it said. Unsaved

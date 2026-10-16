@@ -1,13 +1,649 @@
-//! The Settings window: every change written to config.toml in place and applied at once.
-//! Filled in Task 4.
-use gpui::{div, prelude::*, Context, Window};
+//! The Settings window: every change written to config.toml in place through one
+//! `config::set_values` and applied at once by whoever handed the window its `on_change` (the
+//! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
+//! was last handed (`set_shown`), so an edit made in an editor shows here too.
+use crate::chrome::UI_FONT;
+use crate::config::{AppearanceMode, Config, FontConfig, StartAtLogin};
+use crate::theme::{self, Theme};
+use crate::{aux, keymap, paths};
+use gpui::{
+    div, prelude::*, px, size, AnyElement, App, Bounds, Context, ElementId, FocusHandle, Hsla, KeyDownEvent, PathPromptOptions, SharedString,
+    Stateful, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+};
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::OnceLock;
 
-/// The Settings window's root view. Filled in Task 4.
-#[allow(dead_code)] // Used from Task 4 on.
-pub struct SettingsWindow;
+/// Writes the edits to the config file and applies them; the window calls it for every change.
+pub type OnChange = Rc<dyn Fn(&[(&[&str], toml_edit::Value)], &mut App)>;
+/// The Updates section's "Update now".
+pub type OnUpdate = Rc<dyn Fn(&mut App)>;
+
+/// The window's opening size and its minimum.
+const WIDTH: f32 = 560.0;
+const HEIGHT: f32 = 480.0;
+const MIN_WIDTH: f32 = 480.0;
+const MIN_HEIGHT: f32 = 360.0;
+/// The width of the section column.
+const SECTIONS_W: f32 = 132.0;
+/// The size stepper's range and the line height stepper's, with their increments.
+const SIZE_RANGE: (f64, f64) = (10.0, 32.0);
+const LINE_RANGE: (f64, f64) = (1.2, 2.0);
+const SIZE_STEP: f64 = 1.0;
+const LINE_STEP: f64 = 0.1;
+
+/// Families that pass the advance check but draw symbols, and the font macOS draws missing glyphs
+/// with: never offered as a text font.
+const SYMBOL_FONTS: [&str; 5] = ["Wingdings", "Webdings", "Dingbats", "Symbol", "LastResort"];
+
+/// The name fragments of the common fixed-pitch families, for `monospace_families`.
+const MONO_HINTS: [&str; 26] = [
+    "Mono", "Menlo", "Monaco", "Courier", "Code", "Consolas", "Hack", "Inconsolata", "Source Code", "IBM Plex Mono", "Fira Code", "JetBrains",
+    "SF Mono", "Andale", "Ubuntu Mono", "Cascadia", "Iosevka", "Victor", "Hasklig", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono",
+    "Noto Sans Mono", "PT Mono", "Space Mono", "Anonymous Pro",
+];
+
+/// The installed families whose advances for "i" and "W" agree, found once per run on the
+/// background executor (loading every family takes a moment) and kept for later windows.
+static FIXED_PITCH: OnceLock<Vec<String>> = OnceLock::new();
+
+/// The sections of the left column, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Appearance,
+    Text,
+    Startup,
+    Updates,
+    Keyboard,
+}
+
+impl Section {
+    const ALL: [Section; 5] = [Section::Appearance, Section::Text, Section::Startup, Section::Updates, Section::Keyboard];
+
+    fn label(self) -> &'static str {
+        match self {
+            Section::Appearance => "Appearance",
+            Section::Text => "Text",
+            Section::Startup => "Startup",
+            Section::Updates => "Updates",
+            Section::Keyboard => "Keyboard",
+        }
+    }
+}
+
+/// What the window shows: the config in force, the config file's problem (which makes every
+/// control read-only), and the version an update would install.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shown {
+    pub config: Config,
+    pub error: Option<String>,
+    pub update_ready: Option<String>,
+}
+
+/// The Text section's presets: every name sorted, the chosen one, and its size and line height.
+/// A chosen name that is not among the presets reads as the first preset.
+pub fn preset_rows(cfg: &FontConfig) -> (Vec<String>, String, f32, f32) {
+    let names: Vec<String> = cfg.presets.keys().cloned().collect();
+    let chosen = cfg.presets.get_key_value(&cfg.preset).or_else(|| cfg.presets.iter().next());
+    match chosen {
+        Some((name, p)) => (names, name.clone(), p.size, p.line_height),
+        None => (names, cfg.preset.clone(), 16.0, 1.5),
+    }
+}
+
+/// The fixed-pitch families by name alone, sorted and without repeats: the fallback list, shown
+/// until the advance check has run.
+pub fn monospace_families(all: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = all.iter().filter(|n| offerable(n) && MONO_HINTS.iter().any(|h| n.contains(h))).cloned().collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Whether a family may be listed at all: not hidden (a leading dot) and not a symbol font.
+fn offerable(name: &str) -> bool {
+    !name.starts_with('.') && !SYMBOL_FONTS.iter().any(|s| name.contains(s))
+}
+
+/// `v` rounded to one decimal, so a stepped value written to the file reads 1.6, not
+/// 1.600000023841858.
+pub fn round_tenth(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+/// One stepper press: `value` moved by `delta`, kept within `range`, rounded to a tenth. A value
+/// outside the range is clamped by its first step.
+fn step(value: f64, delta: f64, range: (f64, f64)) -> f64 {
+    round_tenth((value + delta).clamp(range.0, range.1))
+}
+
+/// Which `[theme]` key an imported theme is selected under: the mode's, or with the mode System,
+/// the one for what macOS shows now.
+pub fn theme_key_for(mode: AppearanceMode, system_is_dark: bool) -> &'static str {
+    match (mode, system_is_dark) {
+        (AppearanceMode::Dark, _) | (AppearanceMode::System, true) => "dark",
+        (AppearanceMode::Light, _) | (AppearanceMode::System, false) => "light",
+    }
+}
+
+/// The installed families whose "i" and "W" advance the same, sorted. A family gpui cannot load
+/// resolves to a fallback, which is told apart by its name and left out.
+fn fixed_pitch(text: &gpui::TextSystem, all: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = all
+        .iter()
+        .filter(|name| offerable(name))
+        .filter(|name| {
+            let id = text.resolve_font(&gpui::font(name.to_string()));
+            if text.get_font_for_id(id).is_none_or(|f| f.family.as_ref() != name.as_str()) {
+                return false;
+            }
+            match (text.advance(id, px(16.0), 'i'), text.advance(id, px(16.0), 'W')) {
+                (Ok(i), Ok(w)) => i.width == w.width,
+                _ => false,
+            }
+        })
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The Settings window's view. One at most, kept in `aux::Aux`.
+pub struct SettingsWindow {
+    shown: Shown,
+    section: Section,
+    themes: Vec<(String, theme::Source)>,
+    fonts: Vec<String>,
+    /// Why the last "Add theme…" failed, shown under the button.
+    import_error: Option<String>,
+    /// A picked theme file whose name is already in the themes folder, and that name, while the
+    /// window asks whether to replace it.
+    pending_replace: Option<(PathBuf, String)>,
+    /// The file picker is up.
+    picking: bool,
+    focus: FocusHandle,
+    theme: Theme,
+    on_change: OnChange,
+    on_update: OnUpdate,
+}
+
+/// Opens the Settings window centred on the main display and gives it the keyboard. `fonts` is
+/// the list shown until the advance check has run. `None` when gpui could not open it, which the
+/// log records.
+pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_change: OnChange, on_update: OnUpdate) -> Option<WindowHandle<SettingsWindow>> {
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx))),
+        titlebar: Some(TitlebarOptions { title: Some("Settings".into()), appears_transparent: false, traffic_light_position: None }),
+        focus: true,
+        is_resizable: true,
+        window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
+        ..Default::default()
+    };
+    let opened = cx.open_window(options, move |window, cx| {
+        let view = cx.new(|cx| {
+            let fonts = FIXED_PITCH.get().filter(|f| !f.is_empty()).cloned().unwrap_or(fonts);
+            if FIXED_PITCH.get().is_none() {
+                let text = cx.text_system().clone();
+                cx.spawn(async move |view, cx| {
+                    let found = cx.background_executor().spawn(async move { fixed_pitch(&text, &text.all_font_names()) }).await;
+                    let found = FIXED_PITCH.get_or_init(|| found).clone();
+                    // An empty result means the check found nothing it could measure: keep the
+                    // names.
+                    if !found.is_empty() {
+                        let _ = view.update(cx, |w: &mut SettingsWindow, cx| {
+                            w.fonts = found;
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            }
+            SettingsWindow {
+                shown,
+                section: Section::Appearance,
+                themes: theme::list(&paths::themes_dir()),
+                fonts,
+                import_error: None,
+                pending_replace: None,
+                picking: false,
+                focus: cx.focus_handle(),
+                theme,
+                on_change,
+                on_update,
+            }
+        });
+        window.focus(&view.read(cx).focus);
+        view
+    });
+    match opened {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            eprintln!("arkos: the Settings window did not open: {e:#}");
+            None
+        }
+    }
+}
+
+/// An edit the window owns until the deferred call borrows it for `on_change`.
+type Edit = (Vec<String>, toml_edit::Value);
+
+fn edit(keys: &[&str], value: impl Into<toml_edit::Value>) -> Edit {
+    (keys.iter().map(|k| k.to_string()).collect(), value.into())
+}
+
+impl SettingsWindow {
+    /// Shows a newly loaded config (or its error) and the themes folder as it is now.
+    pub fn set_shown(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        self.shown = shown;
+        self.themes = theme::list(&paths::themes_dir());
+        cx.notify();
+    }
+
+    /// Hands `edits` to `on_change` once this update is over, so the push back into this window
+    /// that follows the write is not refused.
+    fn change(&self, edits: Vec<Edit>, cx: &mut Context<Self>) {
+        let on_change = self.on_change.clone();
+        cx.defer(move |cx| {
+            let keys: Vec<Vec<&str>> = edits.iter().map(|(k, _)| k.iter().map(String::as_str).collect()).collect();
+            let borrowed: Vec<(&[&str], toml_edit::Value)> = keys.iter().zip(&edits).map(|(k, (_, v))| (k.as_slice(), v.clone())).collect();
+            on_change(&borrowed, cx);
+        });
+    }
+
+    /// "Add theme…": the native picker for one file; the file chosen is imported.
+    fn add_theme(&mut self, system_is_dark: bool, cx: &mut Context<Self>) {
+        if self.picking {
+            return;
+        }
+        self.picking = true;
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add theme".into()) });
+        cx.spawn(async move |view, cx| {
+            let picked = rx.await;
+            let _ = view.update(cx, |w, cx| {
+                w.picking = false;
+                match picked {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(src) = paths.into_iter().next() {
+                            w.import(src, false, system_is_dark, cx);
+                        }
+                    }
+                    Ok(Err(e)) => w.import_error = Some(format!("cannot show the file picker: {e}")),
+                    _ => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Copies a theme file into the themes folder and selects it for the current mode; a name
+    /// already there asks first.
+    fn import(&mut self, src: PathBuf, replace: bool, system_is_dark: bool, cx: &mut Context<Self>) {
+        self.pending_replace = None;
+        self.import_error = None;
+        match theme::import_file(&src, &paths::themes_dir(), replace) {
+            Ok((name, _)) => {
+                self.themes = theme::list(&paths::themes_dir());
+                let key = theme_key_for(self.shown.config.appearance.mode, system_is_dark);
+                self.change(vec![edit(&["theme", key], name.as_str())], cx);
+            }
+            Err(e) if e == "exists" => match theme::validate_file(&src) {
+                Ok(name) => self.pending_replace = Some((src, name)),
+                Err(e) => self.import_error = Some(e),
+            },
+            Err(e) => self.import_error = Some(e),
+        }
+        cx.notify();
+    }
+}
+
+/// The theme's chrome colours, as the controls use them.
+#[derive(Clone, Copy)]
+struct Colors {
+    text: Hsla,
+    dim: Hsla,
+    border: Hsla,
+    accent: Hsla,
+    pill: Hsla,
+}
+
+/// A pill button, drawn like the terminal's "jump to bottom" pill. A selected one is outlined in
+/// the accent colour; a disabled one is dimmed and the caller attaches no click handler.
+fn pill(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
+    let p = div()
+        .id(id)
+        .flex_none()
+        .px(px(10.0))
+        .py(px(3.0))
+        .rounded(px(10.0))
+        .border_1()
+        .text_size(px(12.0))
+        .text_color(if enabled { c.text } else { c.dim })
+        .child(label.into());
+    let p = if selected { p.bg(c.pill).border_color(c.accent) } else { p.border_color(c.border) };
+    if enabled {
+        p.cursor_pointer()
+    } else {
+        p
+    }
+}
+
+/// A list row: a check mark column, then the name.
+fn list_row(id: impl Into<ElementId>, label: impl Into<SharedString>, current: bool, enabled: bool, c: Colors) -> Stateful<gpui::Div> {
+    let r = div()
+        .id(id)
+        .flex()
+        .gap(px(6.0))
+        .px(px(6.0))
+        .py(px(2.0))
+        .rounded(px(4.0))
+        .text_color(if enabled { c.text } else { c.dim })
+        .child(div().w(px(14.0)).flex_none().child(if current { "✓" } else { "" }))
+        .child(label.into());
+    if enabled && !current {
+        r.cursor_pointer().hover(move |s| s.bg(c.pill))
+    } else {
+        r
+    }
+}
+
+/// A control's label above it.
+fn heading(text: &'static str, c: Colors) -> gpui::Div {
+    div().pt(px(6.0)).text_color(c.dim).text_size(px(12.0)).child(text)
+}
+
+/// A number as the steppers show it: "16", "1.5".
+fn number(v: f64) -> String {
+    round_tenth(v).to_string()
+}
+
+impl SettingsWindow {
+    fn appearance(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let cfg = &self.shown.config;
+        let mut out = vec![heading("Mode", c).into_any_element()];
+        let mut modes = div().flex().gap(px(6.0));
+        for (ix, (label, mode, value)) in [("System", AppearanceMode::System, "system"), ("Dark", AppearanceMode::Dark, "dark"), ("Light", AppearanceMode::Light, "light")].into_iter().enumerate() {
+            let current = cfg.appearance.mode == mode;
+            let mut p = pill(("mode", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["appearance", "mode"], value)], cx)));
+            }
+            modes = modes.child(p);
+        }
+        out.push(modes.into_any_element());
+        for (key, title, list_id, current) in [("dark", "Dark theme", "theme-dark", &cfg.theme.dark), ("light", "Light theme", "theme-light", &cfg.theme.light)] {
+            out.push(heading(title, c).into_any_element());
+            let mut list = div().flex().flex_col();
+            for (ix, (name, source)) in self.themes.iter().enumerate() {
+                let id = (list_id, ix);
+                let row = match source {
+                    theme::Source::Invalid(_) => list_row(id, format!("{name} (invalid)"), false, false, c),
+                    _ => {
+                        let is_current = name == current;
+                        let mut row = list_row(id, name.clone(), is_current, enabled, c);
+                        if enabled && !is_current {
+                            let name = name.clone();
+                            row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
+                        }
+                        row
+                    }
+                };
+                list = list.child(row);
+            }
+            out.push(list.into_any_element());
+        }
+        let mut add = pill("add-theme", "Add theme…", false, enabled && !self.picking, c);
+        if enabled && !self.picking {
+            add = add.on_click(cx.listener(|w, _, window, cx| w.add_theme(theme::is_dark(window.appearance()), cx)));
+        }
+        let mut folder = pill("themes-folder", "Show themes folder", false, enabled, c);
+        if enabled {
+            folder = folder.on_click(|_, _, cx| {
+                let dir = paths::themes_dir();
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    eprintln!("arkos: cannot create {}: {e}", dir.display());
+                }
+                cx.reveal_path(&dir);
+            });
+        }
+        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(add).child(folder).into_any_element());
+        if let Some((src, name)) = &self.pending_replace {
+            let src = src.clone();
+            let (mut replace, mut keep) = (pill("replace", "Replace", false, enabled, c), pill("keep", "Keep", false, enabled, c));
+            if enabled {
+                replace = replace.on_click(cx.listener(move |w, _, window, cx| w.import(src.clone(), true, theme::is_dark(window.appearance()), cx)));
+                keep = keep.on_click(cx.listener(|w, _, _, cx| {
+                    w.pending_replace = None;
+                    cx.notify();
+                }));
+            }
+            out.push(div().flex().items_center().gap(px(6.0)).child(format!("Replace the existing {name}?")).child(replace).child(keep).into_any_element());
+        }
+        if let Some(e) = &self.import_error {
+            out.push(div().text_color(c.dim).child(e.clone()).into_any_element());
+        }
+        out
+    }
+
+    fn text(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let font = &self.shown.config.font;
+        let mut out = vec![heading("Font family", c).into_any_element()];
+        let mut families = div().flex().flex_col();
+        if !self.fonts.contains(&font.family) {
+            families = families.child(list_row("font-missing", format!("{} (not installed)", font.family), true, enabled, c));
+        }
+        for (ix, name) in self.fonts.iter().enumerate() {
+            let current = *name == font.family;
+            let mut row = list_row(("font", ix), name.clone(), current, enabled, c);
+            if enabled && !current {
+                let name = name.clone();
+                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["font", "family"], name.as_str())], cx)));
+            }
+            families = families.child(row);
+        }
+        out.push(families.into_any_element());
+        let (names, chosen, size, line_height) = preset_rows(font);
+        out.push(heading("Text preset", c).into_any_element());
+        let mut presets = div().flex().flex_col();
+        for (ix, name) in names.into_iter().enumerate() {
+            let current = name == chosen;
+            let mut row = list_row(("preset", ix), name.clone(), current, enabled, c);
+            if enabled && !current {
+                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["font", "preset"], name.as_str())], cx)));
+            }
+            presets = presets.child(row);
+        }
+        out.push(presets.into_any_element());
+        // Both steppers write the preset whole, since a preset needs its size and line height.
+        let (size, line_height) = (f64::from(size), f64::from(line_height));
+        let steppers = [("Size", "size-step", size, SIZE_STEP, SIZE_RANGE, true), ("Line height", "line-step", line_height, LINE_STEP, LINE_RANGE, false)];
+        for (title, id, value, increment, range, is_size) in steppers {
+            out.push(heading(title, c).into_any_element());
+            let press = |ix: usize, sign: &'static str, delta: f64| {
+                let mut p = pill((id, ix), sign, false, enabled, c);
+                if enabled {
+                    let name = chosen.clone();
+                    p = p.on_click(cx.listener(move |w, _, _, cx| {
+                        let next = step(value, delta, range);
+                        let (s, l) = if is_size { (next, round_tenth(line_height)) } else { (round_tenth(size), next) };
+                        w.change(vec![edit(&["font", "presets", &name, "size"], s), edit(&["font", "presets", &name, "line_height"], l)], cx);
+                    }));
+                }
+                p
+            };
+            let (minus, plus) = (press(0, "−", -increment), press(1, "+", increment));
+            let shown = div().min_w(px(28.0)).flex().justify_center().child(number(value));
+            out.push(div().flex().items_center().gap(px(8.0)).child(minus).child(shown).child(plus).into_any_element());
+        }
+        out
+    }
+
+    /// An On / Off switch writing `on` and `off` through `write`.
+    fn switch(&self, id: &'static str, on: Option<bool>, enabled: bool, c: Colors, cx: &mut Context<Self>, write: fn(bool) -> Edit) -> AnyElement {
+        let mut row = div().flex().gap(px(6.0));
+        for (label, value) in [("On", true), ("Off", false)] {
+            let current = on == Some(value);
+            let mut p = pill((id, usize::from(value)), label, current || (on.is_none() && !value), enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![write(value)], cx)));
+            }
+            row = row.child(p);
+        }
+        row.into_any_element()
+    }
+
+    fn startup(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let value = self.shown.config.recovery.start_at_login;
+        // While the config says "ask", the switch reads off and either press writes a value.
+        let on = match value {
+            StartAtLogin::On => Some(true),
+            StartAtLogin::Off => Some(false),
+            StartAtLogin::Ask => None,
+        };
+        let mut out = vec![heading("Start at login", c).into_any_element()];
+        out.push(self.switch("login", on, enabled, c, cx, |on| edit(&["recovery", "start_at_login"], if on { "on" } else { "off" })));
+        if value == StartAtLogin::Ask {
+            out.push(div().text_color(c.dim).text_size(px(12.0)).child("set by config to ask").into_any_element());
+        }
+        out
+    }
+
+    fn updates(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut out = vec![heading("Automatic updates", c).into_any_element()];
+        out.push(self.switch("auto-update", Some(self.shown.config.update.auto), enabled, c, cx, |on| edit(&["update", "auto"], on)));
+        if let Some(version) = &self.shown.update_ready {
+            let mut now = pill("update-now", "Update now", false, enabled, c);
+            if enabled {
+                let on_update = self.on_update.clone();
+                now = now.on_click(move |_, _, cx| {
+                    let on_update = on_update.clone();
+                    cx.defer(move |cx| on_update(cx));
+                });
+            }
+            out.push(div().pt(px(8.0)).flex().items_center().gap(px(8.0)).child(format!("{version} is ready")).child(now).into_any_element());
+        }
+        out
+    }
+
+    fn keyboard(&self, c: Colors) -> Vec<AnyElement> {
+        // Live even while the config has a problem: opening the file is how it gets fixed.
+        let open = pill("open-config", "Open config", false, true, c).on_click(|_, _, cx| {
+            let path = paths::config_file();
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(e) = std::process::Command::new("open").arg("-t").arg(&path).spawn() {
+                        eprintln!("arkos: cannot open {}: {e}", path.display());
+                    }
+                })
+                .detach();
+        });
+        vec![div().flex().items_center().gap(px(8.0)).child("Keybindings live in config.toml").child(open).into_any_element()]
+    }
+}
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = &self.theme.chrome;
+        let c = Colors { text: t.text.hsla(), dim: t.text_dim.hsla(), border: t.border.hsla(), accent: t.focus_ring.hsla(), pill: t.banner.hsla() };
+        let (bg, sidebar) = (t.window_bg.hsla(), t.sidebar.hsla());
+        let enabled = self.shown.error.is_none();
+        let mut sections = div().w(px(SECTIONS_W)).flex_none().flex().flex_col().gap(px(2.0)).p(px(10.0)).bg(sidebar).border_r_1().border_color(c.border);
+        for (ix, section) in Section::ALL.into_iter().enumerate() {
+            let current = section == self.section;
+            let row = div()
+                .id(("section", ix))
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_color(if current { c.text } else { c.dim })
+                .when(current, |d| d.bg(c.pill))
+                .on_click(cx.listener(move |w, _, _, cx| {
+                    w.section = section;
+                    cx.notify();
+                }))
+                .child(section.label());
+            sections = sections.child(row);
+        }
+        let controls = match self.section {
+            Section::Appearance => self.appearance(enabled, c, cx),
+            Section::Text => self.text(enabled, c, cx),
+            Section::Startup => self.startup(enabled, c, cx),
+            Section::Updates => self.updates(enabled, c, cx),
+            Section::Keyboard => self.keyboard(c),
+        };
+        let banner = self.shown.error.clone().map(|e| div().flex_none().px(px(10.0)).py(px(6.0)).rounded(px(4.0)).bg(c.pill).text_color(c.text).child(e));
+        let content = div().id("settings-controls").flex_1().min_w_0().overflow_y_scroll().p(px(16.0)).flex().flex_col().gap(px(4.0)).children(banner).children(controls);
         div()
+            .id("settings")
+            .key_context("Settings")
+            .track_focus(&self.focus)
+            .on_key_down(|ev: &KeyDownEvent, window, _| {
+                if ev.keystroke.key == "escape" && !ev.keystroke.modifiers.modified() {
+                    window.remove_window();
+                }
+            })
+            // Cmd+W arrives as the close-tab action.
+            .on_action(|_: &keymap::CloseTab, window, _| window.remove_window())
+            .on_action(|_: &keymap::NewWindow, _, cx| aux::forward_new_window(cx))
+            .size_full()
+            .flex()
+            .bg(bg)
+            .text_color(c.text)
+            .text_size(px(13.0))
+            .font_family(SharedString::from(UI_FONT))
+            .child(sections)
+            .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AppearanceMode, Config, DEFAULT_CONFIG};
+
+    #[test]
+    fn the_text_section_reads_the_presets_filters_fixed_pitch_families_and_rounds() {
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let (names, chosen, size, lh) = preset_rows(&cfg.font);
+        assert_eq!(names, vec!["comfortable", "compact", "relaxed"]);
+        assert_eq!((chosen.as_str(), size, lh), ("comfortable", 16.0, 1.5));
+        let fams = monospace_families(&["Helvetica".into(), "SF Mono".into(), "Menlo".into(), "Fira Code".into(), "JetBrains Mono".into(), "Menlo".into()]);
+        assert_eq!(fams, vec!["Fira Code", "JetBrains Mono", "Menlo", "SF Mono"]);
+        assert_eq!(round_tenth(1.6000000238), 1.6);
+        assert_eq!(theme_key_for(AppearanceMode::System, true), "dark");
+        assert_eq!(theme_key_for(AppearanceMode::System, false), "light");
+        assert_eq!(theme_key_for(AppearanceMode::Light, true), "light");
+    }
+
+    #[test]
+    fn a_step_moves_by_its_increment_and_clamps_a_value_outside_the_range() {
+        assert_eq!(step(16.0, 1.0, SIZE_RANGE), 17.0);
+        assert_eq!(step(32.0, 1.0, SIZE_RANGE), 32.0);
+        assert_eq!(step(40.0, -1.0, SIZE_RANGE), 32.0, "an out-of-range size is clamped on the first step");
+        assert_eq!(step(6.0, 1.0, SIZE_RANGE), 10.0);
+        assert_eq!(step(f64::from(1.5f32), 0.1, LINE_RANGE), 1.6);
+        assert_eq!(step(f64::from(1.6f32), 0.1, LINE_RANGE), 1.7, "f32 noise does not reach the file");
+        assert_eq!(step(2.0, 0.1, LINE_RANGE), 2.0);
+        assert_eq!(step(1.0, 0.1, LINE_RANGE), 1.2);
+    }
+
+    #[test]
+    fn a_missing_chosen_preset_reads_as_the_first_one() {
+        let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        cfg.font.preset = "gone".into();
+        let (_, chosen, size, lh) = preset_rows(&cfg.font);
+        assert_eq!((chosen.as_str(), size, lh), ("comfortable", 16.0, 1.5));
+    }
+
+    #[test]
+    fn symbol_and_hidden_fonts_are_not_offered_as_fixed_pitch() {
+        for name in ["Wingdings 2", "Webdings", "Zapf Dingbats", "Symbol", "LastResort", ".SF NS Mono"] {
+            assert!(!offerable(name), "{name}");
+        }
+        for name in ["Menlo", "Courier New", "PT Mono"] {
+            assert!(offerable(name), "{name}");
+        }
     }
 }

@@ -2,22 +2,21 @@
 //! project window's Root once it exists. A gpui global, so the actions registered once in `main()`
 //! reach them in every state, the launch chooser's included, and the close rules can count them.
 use crate::about::{self, AboutWindow};
-use crate::config::Config;
-use crate::settings::SettingsWindow;
+use crate::config::{self, Config};
+use crate::settings::{self, SettingsWindow, Shown};
 use crate::theme::Theme;
-use crate::{launch, Root};
+use crate::{launch, paths, Root};
 use gpui::{App, WeakEntity, WindowHandle};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::SystemTime;
 
 /// What `main()` read before any window existed: what About and Settings show until the project
 /// window's Root takes over, and the config file's fingerprint, so the project window can tell a
 /// change made from the chooser.
 pub struct LaunchState {
-    #[allow(dead_code)] // Used from Task 4 on.
     pub config: Config,
     pub theme: Theme,
-    #[allow(dead_code)] // Used from Task 4 on.
     pub config_path: PathBuf,
     /// When this install first ran (`startup::installed_since`).
     pub installed: SystemTime,
@@ -75,16 +74,95 @@ pub fn open_about(cx: &mut App) {
     });
 }
 
-/// The Settings menu item and Cmd+,: brings the Settings window forward, or opens it. Until Task 4
-/// fills the window in, this shows a notice on the project window, or says so in the log when
-/// there is none yet. Deferred, because the Root's own command runs this while the Root is being
-/// updated, and gpui refuses a second update of an entity meanwhile.
+/// The Settings menu item and Cmd+,: brings the Settings window forward with what is in force
+/// now, or opens it. The config comes from the project window's Root when there is one, else from
+/// the file as it is now. Deferred, because the Root's own command runs this while the Root is
+/// being updated, and gpui refuses a second update or read of an entity meanwhile.
 pub fn open_settings(cx: &mut App) {
-    let root = root(cx);
-    cx.defer(move |cx| match root {
-        Some(root) => root.update(cx, |root, cx| root.show_notice("Settings arrive in the next task".into(), cx)),
-        None => eprintln!("arkos: Settings asked for before the project window; they arrive in the next task"),
+    cx.defer(|cx| {
+        let Some(aux) = cx.try_global::<Aux>() else { return };
+        let handle = aux.settings;
+        let Some((shown, theme)) = settings_state(cx) else { return };
+        if let Some(handle) = handle {
+            // A window opened from the chooser shows the Root's state once there is a Root.
+            let pushed = shown.clone();
+            if handle
+                .update(cx, |w, window, cx| {
+                    w.set_shown(pushed, cx);
+                    window.activate_window();
+                })
+                .is_ok()
+            {
+                return;
+            }
+        }
+        let fonts = settings::monospace_families(&cx.text_system().all_font_names());
+        let handle = settings::open(cx, shown, theme, fonts, Rc::new(apply_settings_edits), Rc::new(settings_update_now));
+        cx.global_mut::<Aux>().settings = handle;
     });
+}
+
+/// What the Settings window shows and the theme it is drawn in: the Root's, or before the project
+/// window exists, the file read again (Settings may have changed it) and the launch theme.
+fn settings_state(cx: &App) -> Option<(Shown, Theme)> {
+    if let Some(root) = root(cx) {
+        let root = root.read(cx);
+        return Some((root.settings_shown(), (*root.theme).clone()));
+    }
+    let launch = cx.try_global::<Aux>()?.launch.as_ref()?;
+    let (config, error) = config::reload_decision(&launch.config, config::load(&launch.config_path));
+    Some((Shown { config, error, update_ready: None }, launch.theme.clone()))
+}
+
+/// Shows `shown` in the Settings window when it is open.
+pub fn push_settings(cx: &mut App, shown: Shown) {
+    let Some(handle) = cx.try_global::<Aux>().and_then(|aux| aux.settings) else { return };
+    let _ = handle.update(cx, |w, _window, cx| w.set_shown(shown, cx));
+}
+
+/// The Settings window's one write. With a project window, the Root reloads the config, which
+/// applies the change and shows it in the window. Before that, the write is the whole change: the
+/// file is read back so the window shows it, and the project window reads it when it opens. A
+/// refused write shows as the window's banner. Looked up at each call, so a window opened from
+/// the chooser writes through the Root once there is one.
+fn apply_settings_edits(edits: &[(&[&str], toml_edit::Value)], cx: &mut App) {
+    if let Some(root) = root(cx) {
+        let written = config::set_values(&paths::config_file(), edits);
+        root.update(cx, |root, cx| match written {
+            Ok(()) => root.reload_config(cx),
+            Err(e) => {
+                eprintln!("arkos: settings: {e}");
+                push_settings(cx, Shown { error: Some(e), ..root.settings_shown() });
+            }
+        });
+        return;
+    }
+    let Some(launch) = cx.try_global::<Aux>().and_then(|aux| aux.launch.as_ref()) else { return };
+    let (path, current) = (launch.config_path.clone(), launch.config.clone());
+    let shown = match config::set_values(&path, edits) {
+        Ok(()) => {
+            let (config, error) = config::reload_decision(&current, config::load(&path));
+            if error.is_none() {
+                if let Some(launch) = cx.global_mut::<Aux>().launch.as_mut() {
+                    launch.config = config.clone();
+                }
+            }
+            Shown { config, error, update_ready: None }
+        }
+        Err(e) => {
+            eprintln!("arkos: settings: {e}");
+            Shown { config: current, error: Some(e), update_ready: None }
+        }
+    };
+    push_settings(cx, shown);
+}
+
+/// The Settings window's "Update now": the bell's action on the project window. It is only shown
+/// with a version ready, which only the Root knows.
+fn settings_update_now(cx: &mut App) {
+    if let Some(root) = root(cx) {
+        root.update(cx, |root, cx| root.update_clicked(cx));
+    }
 }
 
 /// How many of the About and Settings windows are open.

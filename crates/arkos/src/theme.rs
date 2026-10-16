@@ -211,7 +211,6 @@ pub fn list(dir: &Path) -> Vec<(String, Source)> {
 /// Copies the theme file `src` into `dir` under the name the theme itself declares. Only `.toml`
 /// files are taken. Ok is the name and whether a file of that name was already there; without
 /// `replace` an existing file is left alone and the error is "exists".
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
 pub fn import_file(src: &Path, dir: &Path, replace: bool) -> Result<(String, bool), String> {
     if src.extension().and_then(|e| e.to_str()) != Some("toml") {
         return Err("only .toml theme files can be added".into());
