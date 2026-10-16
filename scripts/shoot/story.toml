@@ -26,7 +26,7 @@ expanded = ["src"]
 [[pane]]
 name = "rate limit"
 cwd = "rate-limit"
-claude = "Add rate limiting to POST /links: 20 requests a minute per client address, answered 429 with a Retry-After header. Put the limiter in src/limiter.js with its own tests in test/limiter.test.js, wire it into src/server.js with tests for the route in test/server.test.js (start the server on a free port in the tests), document the limit in README.md, then run npm test and fix anything that fails."
+claude = "Add rate limiting to POST /links: 20 requests a minute per client address, answered 429 with a Retry-After header. Put the limiter in src/limiter.js with its own tests in test/limiter.test.js, wire it into src/server.js with tests for the route in test/server.test.js (start the server on a free port in the tests), add a GET /stats route that reports how many links exist and how many requests the limiter refused (with a test), document both in README.md, then run npm test and fix anything that fails."
 
 [[pane]]
 name = "durations"
@@ -54,7 +54,7 @@ second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second
 name = "hero-dark"
 theme = "dark"
 wait = { "rate limit" = "working", durations = "waiting" }
-after_secs = 120
+after_secs = 60
 timeout_secs = 360
 chrome = true
 
