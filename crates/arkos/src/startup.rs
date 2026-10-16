@@ -100,8 +100,12 @@ pub fn updated_from(file: &Path, current: &str) -> Option<String> {
 /// and returned, so every later launch reads the same moment back.
 #[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
 pub fn installed_since(file: &Path, now: SystemTime) -> SystemTime {
-    if let Some(secs) = std::fs::read_to_string(file).ok().and_then(|s| s.trim().parse::<u64>().ok()) {
-        return SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+    let stored = std::fs::read_to_string(file)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)));
+    if let Some(at) = stored {
+        return at;
     }
     let secs = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     if let Some(parent) = file.parent() {
@@ -295,5 +299,8 @@ mod tests {
         std::fs::write(&file, "garbage").unwrap();
         let t1 = t0 + Duration::from_secs(5);
         assert_eq!(installed_since(&file, t1), t1, "garbage counts as missing and is replaced");
+        std::fs::write(&file, "18446744073709551615\n").unwrap();
+        let t2 = t1 + Duration::from_secs(5);
+        assert_eq!(installed_since(&file, t2), t2, "a number too big for a time counts as missing");
     }
 }

@@ -3492,7 +3492,7 @@ pub fn version_string() -> String {
 }
 
 /// The date this build's commit was made, `YYYY-MM-DD` (or `unknown`), recorded by `build.rs`.
-#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
+#[allow(dead_code)] // Used from Task 3b on.
 pub fn build_date() -> &'static str {
     env!("ARKOS_BUILD_DATE")
 }
