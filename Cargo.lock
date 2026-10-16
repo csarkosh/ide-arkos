@@ -152,6 +152,7 @@ name = "arkos-shoot"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "core-graphics 0.24.0",
  "libc",
  "objc2",
  "objc2-app-kit",

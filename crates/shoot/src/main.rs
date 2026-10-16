@@ -354,6 +354,12 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
+        if shot.click.is_some() || !shot.keys.is_empty() {
+            activate(window_pid);
+            pause(Duration::from_millis(400))?;
+            send_input(shot, frame)?;
+            pause(Duration::from_millis(800))?;
+        }
         // The captures themselves stay with the progress files; `out` gets the framed pictures.
         let picture = format!("{}-{}", story.scene.name, shot.name);
         let raw = progress.dir.join(format!("{picture}.raw.png"));
@@ -430,6 +436,74 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
         }
         pause(Duration::from_millis(500))?;
     }
+}
+
+/// A shot's click and keys as window-server events from this process: the click at the
+/// window's fraction (so the pane under it takes the keyboard focus and the caret lands
+/// there), then the keys in order. macOS asks once for the Accessibility permission for
+/// "Arkos Shoot"; until it is granted the events are dropped and the run says so.
+fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::geometry::CGPoint;
+    let allowed = trusted();
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| anyhow::anyhow!("no event source"))?;
+    let post = |e: Result<CGEvent, ()>| -> Result<()> {
+        e.map_err(|_| anyhow::anyhow!("could not make an event"))?.post(CGEventTapLocation::HID);
+        Ok(())
+    };
+    if let Some([fx, fy]) = shot.click {
+        let at = CGPoint::new(frame.0 + fx * frame.2, frame.1 + fy * frame.3);
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at, CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(80));
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseDown, at, CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(60));
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseUp, at, CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    for spec in &shot.keys {
+        let key = story::Key::parse(spec)?;
+        let mut flags = CGEventFlags::CGEventFlagNull;
+        for m in &key.modifiers {
+            flags |= match *m {
+                "command down" => CGEventFlags::CGEventFlagCommand,
+                "shift down" => CGEventFlags::CGEventFlagShift,
+                "option down" => CGEventFlags::CGEventFlagAlternate,
+                _ => CGEventFlags::CGEventFlagControl,
+            };
+        }
+        for _ in 0..key.times {
+            for down in [true, false] {
+                let e = match (key.code, &key.text) {
+                    (Some(code), _) => CGEvent::new_keyboard_event(source.clone(), code, down),
+                    (None, Some(text)) => {
+                        let e = CGEvent::new_keyboard_event(source.clone(), 0, down);
+                        if let Ok(e) = &e { e.set_string(text); }
+                        e
+                    }
+                    _ => unreachable!("a key has a code or a text"),
+                };
+                let e = e.map_err(|_| anyhow::anyhow!("could not make a key event"))?;
+                e.set_flags(flags);
+                e.post(CGEventTapLocation::HID);
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+    if !allowed {
+        say(&format!("{}: the click and keys need the Accessibility permission for Arkos Shoot (System Settings > Privacy & Security > Accessibility); they were not delivered", shot.name));
+    }
+    Ok(())
+}
+
+/// Whether this process may post events: `AXIsProcessTrusted`. The permission is granted by
+/// hand once (System Settings, Accessibility, "Arkos Shoot"); the Developer ID signature keeps
+/// it across rebuilds.
+fn trusted() -> bool {
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
 }
 
 /// Makes the window's process the active app. A process started from a shell opens its window

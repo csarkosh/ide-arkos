@@ -199,6 +199,56 @@ pub struct Shot {
     pub chrome: bool,
     #[serde(default, rename = "crop")]
     pub crops: Vec<Crop>,
+    /// A click at `[x, y]`, fractions of the window, before the keys: it gives a pane the
+    /// keyboard focus and places the caret, so a picture can show a file being edited.
+    #[serde(default)]
+    pub click: Option<[f64; 2]>,
+    /// Keys sent to the window after the wait and before the capture, in order: `down`,
+    /// `right*40`, `cmd+down`, `shift+end`, or a letter.
+    #[serde(default)]
+    pub keys: Vec<String>,
+}
+
+/// One key of a shot's `keys`: a virtual key code or a character, its modifiers, repeated
+/// `times`. `right*40` is forty presses; `cmd+down` is the command key held.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Key {
+    pub code: Option<u16>,
+    pub text: Option<String>,
+    pub modifiers: Vec<&'static str>,
+    pub times: usize,
+}
+
+impl Key {
+    pub fn parse(spec: &str) -> Result<Key> {
+        let (name, times) = match spec.rsplit_once('*') {
+            Some((n, t)) => (n, t.parse::<usize>().with_context(|| format!("key {spec:?}: the count after * is not a number"))?),
+            None => (spec, 1),
+        };
+        let mut parts: Vec<&str> = name.split('+').collect();
+        let last = parts.pop().filter(|k| !k.is_empty()).ok_or_else(|| anyhow::anyhow!("key {spec:?}: no key name"))?;
+        let mut modifiers = Vec::new();
+        for m in parts {
+            modifiers.push(match m {
+                "cmd" | "command" => "command down",
+                "shift" => "shift down",
+                "alt" | "option" => "option down",
+                "ctrl" | "control" => "control down",
+                other => bail!("key {spec:?}: unknown modifier {other:?}"),
+            });
+        }
+        let code = match last {
+            "left" => Some(123), "right" => Some(124), "down" => Some(125), "up" => Some(126),
+            "home" => Some(115), "end" => Some(119), "pageup" => Some(116), "pagedown" => Some(121),
+            "return" | "enter" => Some(36), "tab" => Some(48), "escape" | "esc" => Some(53), "delete" | "backspace" => Some(51),
+            _ => None,
+        };
+        let text = if code.is_none() {
+            if last.chars().count() != 1 { bail!("key {spec:?}: not a key name or a single character"); }
+            Some(last.to_string())
+        } else { None };
+        Ok(Key { code, text, modifiers, times })
+    }
 }
 
 fn default_theme() -> String {
@@ -228,6 +278,16 @@ impl Story {
         let mut seen = std::collections::BTreeSet::new();
         if !["auto", "dark", "light", "dark-ansi", "light-ansi", "dark-daltonized", "light-daltonized"].contains(&self.window.claude_theme.as_str()) {
             bail!("window.claude_theme must be one of Claude Code's themes (auto, dark, light, dark-ansi, light-ansi, dark-daltonized, light-daltonized)");
+        }
+        for shot in &self.shots {
+            for k in &shot.keys {
+                Key::parse(k).with_context(|| format!("shot {:?}", shot.name))?;
+            }
+            if let Some([x, y]) = shot.click {
+                if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                    bail!("shot {:?}: click is [x, y] as fractions of the window", shot.name);
+                }
+            }
         }
         for p in &self.panes {
             if !seen.insert(p.name.as_str()) {
@@ -562,5 +622,19 @@ theme = "light"
         assert_eq!(centred(1360.0, 860.0, 1470.0, 956.0, 38.0), (55.0, 48.0, 1360.0, 860.0));
         // Too tall for the screen: as tall as the space under the menu bar, starting there.
         assert_eq!(centred(1360.0, 1000.0, 1470.0, 956.0, 38.0), (55.0, 38.0, 1360.0, 918.0));
+    }
+
+    #[test]
+    fn keys_parse_to_codes_and_modifiers() {
+        let k = Key::parse("right*40").unwrap();
+        assert_eq!((k.code, k.times, k.modifiers.len()), (Some(124), 40, 0));
+        let k = Key::parse("cmd+shift+down").unwrap();
+        assert_eq!((k.code, k.modifiers.clone()), (Some(125), vec!["command down", "shift down"]));
+        let k = Key::parse("a").unwrap();
+        assert_eq!((k.code, k.text.as_deref()), (None, Some("a")));
+        assert!(Key::parse("meta+x").is_err());
+        assert!(Key::parse("rightt").is_err());
+        assert!(Key::parse("right*x").is_err());
+        assert!(Key::parse("cmd+").is_err());
     }
 }

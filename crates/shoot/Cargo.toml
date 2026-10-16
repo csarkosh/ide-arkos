@@ -19,6 +19,9 @@ toml = "0.8"
 # Bringing the shoot's window to the front: a process started from a shell opens behind the app in use.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSScreen"] }
+# A shot's click and keys are posted as window-server events from this process, so the
+# Accessibility permission macOS asks for is "Arkos Shoot"'s own.
+core-graphics = "0.24"
 
 [dev-dependencies]
 tempfile.workspace = true
