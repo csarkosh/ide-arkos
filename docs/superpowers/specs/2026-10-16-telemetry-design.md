@@ -64,7 +64,7 @@ The channel is `release` for a bundle the release workflow built (a `channel` fi
 
 `focus` accumulates foreground seconds per tab kind (`terminal`, `viewer`, `browser`) and `settings`, flushed by `Journal::mark` once a minute and at quit. The journey Cyrus asked for is the ordered events with their `t`; iteration on granularity comes after dogfooding, as a change to `events.toml` and one release note line.
 
-**Sealing.** The daemon seals the journal into `telemetry/queue/session-<sid>.json`: on `Goodbye` from the window with `end: quit`, on the window's socket closing without one with `end: lost`, and at its own start for any journal left behind with `end: unknown`. The daemon knows the `sid` because the window sends it in `Hello` (protocol 7 adds `sid: Option<String>`). The report's `iw` and `rd` come from the daemon's state file.
+**Sealing.** The daemon seals the journal into `telemetry/queue/session-<sid>.json` when the window's socket closes: with `end: quit` when a `Goodbye` (or an update relaunch) came first, else `end: lost`; and in its upload loop for any journal left behind by a window no longer connected, with `end: unknown`. The daemon knows the `sid` because the window sends it in a `Session` request right after `Hello` (protocol 7 appends that request; `Hello` keeps its shape, as the protocol's rule requires). The report's `iw` and `rd` come from the daemon's state file.
 
 **Uploading.** The daemon runs the queue every 15 minutes, posting with the system curl (`--proto =https`, the host pinned to `apps.csarko.sh`, `--max-time 10`, `--user-agent arkos/<version>`, the body from the file), only when the effective mode uploads. Success deletes the file; failure reschedules on the crate's backoff; a refusal other than `429` deletes and counts.
 
@@ -114,7 +114,7 @@ Rows: **Usage reports** (Off / Local only / On, with one line under it saying wh
 
 - `crates/arkos/src/telemetry.rs`: the app's recorder (the journal, the allowlist from `events.toml` via `include_str!`, the focus clock, the event sites), the invitation, the crash dialog, the Settings rows, the `telemetry` subcommand, the panic hook. Event sites are one call each at transitions the code already branches on: `pane_view`, `viewer`, `launch`, `command_palette`, `settings`, `theme`, `update`, `notices`, `main`.
 - `crates/arkosd/src/telemetry/`: the state file, sealing, the queue loop, the first-party check routing, the daemon's panic hook. The daemon is the only uploader.
-- `crates/protocol`: protocol 7 adds `sid` to `Hello` and a `TelemetryStatus` request for the `status` command and the doctor row.
+- `crates/protocol`: protocol 7 appends a `Session { sid }` request, sent after `Hello`, and a `TelemetryStatus` request for the `status` command and the doctor row.
 - `telemetry/events.toml`: the allowlist. `docs/telemetry.md`: the disclosure.
 - `visits-app` as a git dependency pinned by tag; `visits-core` comes with it.
 - The release workflow: the `channel` file, the dSYM archive, `--remap-path-prefix`.
