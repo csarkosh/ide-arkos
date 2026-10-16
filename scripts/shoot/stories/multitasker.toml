@@ -1,5 +1,8 @@
 # The multi tasker: one window, three Claude Code sessions on three unrelated workstreams,
-# each orchestrating its own subagents. No sidebar: just the sessions. This is the hero.
+# each orchestrating its own subagents, and behind two of them a shorter session on yet
+# another workstream that has finished and waits on you, so the tabs show both marks. No
+# sidebar: just the sessions.
+# This is the hero.
 
 [scene]
 name = "multitasker"
@@ -9,9 +12,9 @@ caption = "The multi tasker"
 name = "workbench"
 dir = "~/Projects/workbench"
 fixture = "scripts/shoot/demo"
-only = ["lantern", "mail", "trip"]
+only = ["lantern", "mail", "trip", "blog", "budget"]
 # Each folder becomes a repository of its own: three independent projects side by side.
-repos = ["lantern", "mail", "trip"]
+repos = ["lantern", "mail", "trip", "blog", "budget"]
 
 [window]
 width = 1320
@@ -32,6 +35,16 @@ cwd = "mail"
 claude = "Triage my inbox: the messages are in inbox/, one file each. Write triage.md grouping them by urgency (today, this week, ignore) with a one-line summary and the action each needs, then draft a reply for every message that needs one into replies/<same name>.md, short and plain, in my voice. Use a subagent per message for the drafts, then review them together for consistency."
 
 [[pane]]
+name = "blog"
+cwd = "blog"
+claude = "Look at the posts in posts/ and tell me in three short lines which one is newest, which one has no image, and which title is the weakest. Do not change any file."
+
+[[pane]]
+name = "budget"
+cwd = "budget"
+claude = "Read budget.csv and tell me in two lines which category grew the most from July to September and by how much. Do not change any file."
+
+[[pane]]
 name = "lisbon"
 cwd = "trip"
 claude = "Plan the trip in notes.md. Write itinerary.md day by day with times and how we get around, budget.md with a table that totals against the budget in the notes, and packing.md. Use one subagent for the itinerary and one for the budget, then reconcile them so the budget matches the plan."
@@ -39,16 +52,18 @@ claude = "Plan the trip in notes.md. Write itinerary.md day by day with times an
 [layout]
 split = "horizontal"
 ratio = 0.5
-first = { tabs = ["lantern"] }
-second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox"] }, second = { tabs = ["lisbon"] } }
+first = { tabs = ["lantern", "blog"] }
+second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox", "budget"] }, second = { tabs = ["lisbon"] } }
 
-# The moment: the sessions have fanned out their subagents and the first files are in. A
-# session waiting on its own background agents reports "waiting" (its prompt is idle), so the
-# states asked for are the inbox's alone; the work shows through the changed files.
+# The moment: the sessions have fanned out their subagents and the first files are in, and
+# the two short sessions behind them have answered and wait on you (the waiting mark on an
+# inactive tab). A session waiting on its own background agents reports "waiting" too (its
+# prompt is idle), so the working state asked for is the inbox's alone; the work shows
+# through the changed files.
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { inbox = "working" }
+wait = { inbox = "working", blog = "waiting", budget = "waiting" }
 changed = { inbox = 2, lantern = 3 }
 after_secs = 60
 timeout_secs = 420
@@ -60,5 +75,5 @@ rect = [0.0, 0.0, 1.0, 0.075]
 [[shot]]
 name = "light"
 theme = "light"
-wait = { lantern = "waiting", inbox = "waiting", lisbon = "waiting" }
+wait = { lantern = "waiting", inbox = "waiting", lisbon = "waiting", blog = "waiting", budget = "waiting" }
 timeout_secs = 480
