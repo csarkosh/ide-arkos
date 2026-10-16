@@ -38,7 +38,7 @@ window afterwards.
    window has it; write one of an allow-list of keys with `config::set_values`, keeping the
    user's comments, and confirm the reload.
 5. **The agent guide** (section 7): `docs/agent-guide.md` in the repo and in the bundle, printed
-   by `arkos guide`, written to be pasted into an agent's context.
+   by `arkos guide`, installable as a skill, and announced by the SessionStart hook (section 11).
 6. **The doctor** gains a Themes check (section 8).
 7. **README** documents the toolkit and the guide (section 9).
 
@@ -179,8 +179,8 @@ agent, about 150 lines, no em-dashes:
    never write `config.toml` by hand when a command exists, report the `arkos theme current`
    line to the user when you finish.
 
-README's Config section tells a human how to hand the guide to their agent: `arkos guide` into a
-file in the project (a Claude Code skill directory works), or the path from `arkos guide --path`.
+README's Config section tells a human how an agent finds the guide (section 11): the hook says
+so, `arkos guide --install` makes it a skill, and `arkos guide --path` gives the file.
 
 ## 8. The doctor
 
@@ -212,10 +212,44 @@ through the Root's pure helpers (`preview_theme(text) -> Result<Theme, String>`,
 after `EndPreview`); the watcher's second path; the doctor's Themes lines from a fixture folder.
 Windows and sockets on the real machine are hand checks in the README.
 
-## 11. Open questions for Cyrus
+## 11. Discovery: how an agent finds this when the user says "change the theme"
+
+The user types "make it purple" into a Claude Code or Codex session running inside Arkos. The
+agent has never heard of Arkos. Three layers, from no setup to one command, and the guide itself
+says how an agent can tell it is inside Arkos (`ARKOS_SESSION_ID` is set in every shell the daemon
+spawns).
+
+1. **The hook, no setup (Claude Code).** `arkos notify --event session-start` already runs as
+   the SessionStart hook once the hooks are installed (the doctor offers that and the palette has
+   "Install Claude Code hooks"). Claude Code adds a SessionStart hook's standard output to the
+   agent's context, so the hook prints two lines: "This session runs inside Arkos IDE. To change
+   its theme, fonts or settings, run `arkos guide` first and follow it." Nothing else; the guide
+   carries the rest. The line is printed only when `ARKOS_SESSION_ID` is set and the hook's
+   stdin names a SessionStart, so other hooks and other terminals see nothing. Codex has no hook
+   with that property today; it gets layer 2.
+2. **The skill, one command, every agent.** `arkos guide --install` writes the guide as a skill
+   that agents discover on their own by its description: `~/.claude/skills/arkos-ide/SKILL.md`
+   with the front matter `name: arkos-ide` and `description: Customize Arkos IDE: themes, fonts
+   and settings. Use when the user asks to change how Arkos looks or behaves.`, the guide as the
+   body, and a version stamp; and it prints the paragraph to paste into `AGENTS.md` or `CLAUDE.md`
+   for agents that read those ("Arkos IDE: run `arkos guide` before changing its theme or
+   settings."). The doctor's Themes section checks the skill: missing, or older than the shipped
+   guide, with Apply running the install; the palette gains "Install agent guide". The install
+   never touches a skill it did not write (a different first line refuses with the path).
+3. **The binary.** `arkos --help` lists `guide` first with the one-line description; `arkos
+   theme` with no arguments prints its usage and "see `arkos guide`"; `arkos guide` prints the
+   guide. An agent that only knows the binary name finds the rest.
+
+The README Status gains: a fresh Claude Code session inside Arkos, asked "change the theme to
+something warm", runs `arkos guide` without being told and ends with `arkos theme current`
+showing the new theme (the demo); the same with the skill installed and the hook removed.
+
+## 12. Open questions for Cyrus
 
 1. The command names: `arkos theme use` (chosen) against `apply` or `set`; `arkos guide` against
    `arkos agent-guide`.
+5. The skill's location: `~/.claude/skills/arkos-ide/` (user level, every project) as drafted,
+   or the project's `.claude/skills/` (per project, committed with the repo).
 2. Whether `arkos settings set` should also accept `keybindings.<action>` (the Keybindings window
    makes that visible now; it is off the list in this draft because a bad binding breaks a key
    until the next edit).
