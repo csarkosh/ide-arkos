@@ -40,6 +40,7 @@ mod md_blocks;
 mod md_table;
 mod md_view;
 mod media;
+mod mermaid;
 mod motion;
 mod mouse;
 mod notices;

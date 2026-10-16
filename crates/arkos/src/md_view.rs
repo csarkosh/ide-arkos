@@ -7,7 +7,9 @@
 //! address's fetch has landed (`remote_image`), several in one paragraph in a row; Cmd+click
 //! follows the link around it, or else shows it in Preview. An image whose path is a local video
 //! is its Quick Look poster with a play glyph, and local audio a box with its name and size
-//! (`media`): Cmd+click plays them. Remote video and audio, and a `webm`, are links.
+//! (`media`): Cmd+click plays them. Remote video and audio, and a `webm`, are links. A `mermaid`
+//! code block is its diagram, rendered by headless Chrome into a cache (`mermaid`); until the
+//! PNG is there, or when it cannot be made, the block is its source with a line saying why.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -22,6 +24,7 @@ use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
 use crate::md_table::{self, Align};
 use crate::media::{self, Media, Poster};
+use crate::mermaid::{self, Diagram, MermaidTheme};
 use crate::palette::Rgb;
 use crate::remote_image::{self, Remote};
 use crate::theme::Theme;
@@ -128,6 +131,8 @@ enum Piece {
     /// A code block: its text as parsed (for mapping a press back to the source) and as drawn
     /// (tabs expanded, the trailing newline dropped).
     Code { info: String, text: Rc<str>, drawn: SharedString },
+    /// A code block whose info string is `mermaid`: a diagram.
+    Diagram(DiagramPiece),
     Quote(Rc<[Run]>),
     Rule,
     Table(TablePiece),
@@ -166,6 +171,15 @@ impl ImagePiece {
         let label = if alt.is_empty() { path.clone().into() } else { alt.into() };
         ImagePiece { label, path, link }
     }
+}
+
+/// A diagram block as a row draws it: its source as parsed and as drawn (as a code block's, for
+/// the states that show it), and its cache key with the theme colours it was made for (made in
+/// `fill`, again when the theme changed).
+struct DiagramPiece {
+    text: Rc<str>,
+    drawn: SharedString,
+    key: Option<(MermaidTheme, String)>,
 }
 
 /// One video, audio file or media link as a row draws it: its label (as an image's), its path, the
@@ -219,6 +233,7 @@ impl From<Inline> for Piece {
             Inline::Para(runs) => Piece::Para(runs.into()),
             Inline::Heading(level, runs) => Piece::Heading(level, runs.into()),
             Inline::Item { depth, marker, task, runs } => Piece::Item { depth, marker, task, runs: runs.into() },
+            Inline::Code { text, info } if mermaid::is_diagram_info(&info) => Piece::Diagram(DiagramPiece { drawn: code_lines(&text).join("\n").into(), text: text.into(), key: None }),
             Inline::Code { info, text } => Piece::Code { info, drawn: code_lines(&text).join("\n").into(), text: text.into() },
             Inline::Quote(runs) => Piece::Quote(runs.into()),
             Inline::Rule => Piece::Rule,
@@ -356,13 +371,41 @@ fn code_lines(text: &str) -> Vec<String> {
     text.strip_suffix('\n').unwrap_or(text).split('\n').map(|l| l.replace('\t', "    ")).collect()
 }
 
-/// Fills block `ix`'s cache entry (`fill_cache`), moves its web images along (`track_remote`) and
-/// its videos' posters (`track_media`). The list calls it for each rendered row it draws, so a
-/// block shown raw fetches and makes nothing.
+/// Fills block `ix`'s cache entry (`fill_cache`), moves its web images along (`track_remote`),
+/// its videos' posters (`track_media`) and its diagram (`track_diagram`). The list calls it for
+/// each rendered row it draws, so a block shown raw (the one being typed in) fetches, makes and
+/// renders nothing.
 pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, ctx: &BlockCtx, cx: &mut Context<Viewer>) {
     fill_cache(v, ix, highlighter, ctx);
     track_remote(v, ix, cx);
     track_media(v, ix, &ctx.base_dir, cx);
+    track_diagram(v, ix, &ctx.mermaid, cx);
+}
+
+/// Block `ix`'s diagram: its cache key made for the frame's colours (again when they changed),
+/// then its state moved along once (`mermaid::advance`): one not seen yet is ready from the cache,
+/// not to be rendered without Chrome, or queued; one whose render ended is ready or failed. While
+/// it is still rendering, the render that has the turn starts (`Viewer::start_renders`); its end
+/// draws the window again, which brings each viewer showing the diagram here.
+fn track_diagram(v: &mut Viewer, ix: usize, theme: &MermaidTheme, cx: &mut Context<Viewer>) {
+    let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
+    let Some(Piece::Diagram(d)) = r.pieces.first_mut() else { return };
+    if !d.key.as_ref().is_some_and(|(made_for, _)| made_for == theme) {
+        d.key = Some((theme.clone(), mermaid::cache_key(&d.text, theme, mermaid::SCALE)));
+    }
+    let (Some((_, key)), text) = (d.key.as_ref(), &d.text) else { return };
+    let state = v.diagrams.get(key);
+    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoChrome)) {
+        return;
+    }
+    let next = mermaid::advance(state, key, || mermaid::page(text, theme), mermaid::cache_dir, || mermaid::chrome().is_some());
+    let rendering = next.as_ref().is_none_or(|n| *n == Diagram::Rendering);
+    if let Some(next) = next {
+        v.diagrams.insert(key.clone(), next);
+    }
+    if rendering {
+        Viewer::start_renders(cx);
+    }
 }
 
 /// Block `ix`'s local videos and audio: each video's poster moved along once (`media::advance`),
@@ -480,6 +523,10 @@ pub struct BlockCtx {
     pub code_bg: Hsla,
     pub border: Hsla,
     pub on_accent: Hsla,
+    /// The colour of a diagram's error line (the tree's deleted colour).
+    pub deleted: Hsla,
+    /// The colours diagrams are drawn in, from the chrome.
+    pub mermaid: MermaidTheme,
     /// The raw blocks' colours: the raw view's markdown colours, the selection (the find match
     /// colour, as in the raw view), the current find hit and the caret.
     pub raw: RawColors,
@@ -520,6 +567,8 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         code_bg: theme.chrome.tab_inactive.hsla(),
         border: theme.chrome.border.hsla(),
         on_accent: theme.chrome.window_bg.hsla(),
+        deleted: theme.tree.deleted.hsla(),
+        mermaid: MermaidTheme::from_chrome(&theme.chrome),
         raw: RawColors { text: theme.chrome.text, dim: theme.chrome.text_dim, code: theme.tree.modified, link: theme.chrome.focus_ring },
         selection: theme.semantic.find_match,
         find_current: theme.semantic.find_current,
@@ -688,7 +737,8 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
                 .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, &mut parts))
                 .into_any_element(),
             Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut parts),
-            Piece::Code { text, drawn, .. } => code_element(text, drawn, r.code_runs.as_ref().map(|c| &c.runs), ctx, &mut parts),
+            Piece::Code { text, drawn, .. } => code_element(text, drawn, r.code_runs.as_ref().map(|c| &c.runs), None, ctx, &mut parts),
+            Piece::Diagram(d) => diagram_element(d, v, ctx, &mut parts),
             Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
             Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, ctx, &parts.task_press),
             Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
@@ -1041,7 +1091,7 @@ fn toggle_item(v: &mut Viewer, ix: usize, offset: usize, cx: &mut Context<Viewer
 /// A code block: its lines in the terminal font on the inactive tab colour, coloured by the
 /// highlighter's spans when they are there. `text` is the block's code as parsed, `drawn` as
 /// shown, `runs` its cached runs (`fill` makes them; made here only when missing).
-fn code_element(text: &Rc<str>, drawn: &SharedString, runs: Option<&Rc<Vec<TextRun>>>, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+fn code_element(text: &Rc<str>, drawn: &SharedString, runs: Option<&Rc<Vec<TextRun>>>, info: Option<(SharedString, Hsla)>, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let runs = runs.map_or_else(|| code_runs(&code_lines(text), None, ctx), |r| r.as_ref().clone());
     let styled = StyledText::new(drawn.clone()).with_runs(runs);
     parts.texts.push((styled.layout().clone(), Part::Code(text.clone())));
@@ -1052,8 +1102,28 @@ fn code_element(text: &Rc<str>, drawn: &SharedString, runs: Option<&Rc<Vec<TextR
         .font_family(ctx.mono.clone())
         .text_size(px(ctx.font_size))
         .line_height(relative(ctx.mono_line_height))
+        .when_some(info, |d, (line, colour)| d.child(div().text_color(colour).child(line)))
         .child(styled)
         .into_any_element()
+}
+
+/// A diagram block: once rendered, its PNG at its size in CSS pixels (the PNG has twice the
+/// pixels) and at most the view's width; else its source in the code block style, uncoloured,
+/// under an info line: "rendering" while the render waits or runs, the error in the tree's
+/// deleted colour when it failed, and a word on installing Google Chrome when there is none.
+fn diagram_element(d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let state = d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key));
+    let info: SharedString = match state {
+        Some(Diagram::Ready { png, w, .. }) => {
+            let (dim, border) = (ctx.dim, ctx.border);
+            return img(png.clone()).w(px(*w as f32)).max_w_full().with_fallback(move || alt_box("diagram".into(), dim, border).into_any_element()).into_any_element();
+        }
+        Some(Diagram::Error(e)) => format!("diagram: {e}").into(),
+        Some(Diagram::NoChrome) => "diagram: install Google Chrome to render".into(),
+        Some(Diagram::Rendering) | None => "diagram: rendering".into(),
+    };
+    let colour = if matches!(state, Some(Diagram::Error(_))) { ctx.deleted } else { ctx.dim };
+    code_element(&d.text, &d.drawn, None, Some((info, colour)), ctx, parts)
 }
 
 /// The runs of a code block's joined lines: a span's colour where the spans run contiguously
@@ -1726,6 +1796,27 @@ mod tests {
         let row = pieces("![a](https://x/a.svg) ![v](https://x/v.mp4)");
         let fetched: Vec<&String> = row.iter().flat_map(Piece::image_paths).collect();
         assert_eq!(fetched, ["https://x/a.svg"], "remote media is never fetched");
+    }
+
+    #[test]
+    fn a_mermaid_block_is_a_diagram_and_other_code_stays_code() {
+        let shape = |info: &str| {
+            let mut out = Vec::new();
+            for inline in md_blocks::inline("```x\ngraph TD; A-->B\n```", &BlockKind::CodeBlock { info: info.into() }) {
+                push_pieces(inline, &mut out);
+            }
+            out.iter()
+                .map(|p| match p {
+                    Piece::Diagram(d) => format!("diagram {}", d.text.trim_end()),
+                    Piece::Code { info, .. } => format!("code {info}"),
+                    _ => "other".to_string(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape("mermaid"), ["diagram graph TD; A-->B"]);
+        assert_eq!(shape(" mermaid "), ["diagram graph TD; A-->B"]);
+        assert_eq!(shape("mermaidjs"), ["code mermaidjs"]);
+        assert_eq!(shape("rust"), ["code rust"]);
     }
 
     #[test]

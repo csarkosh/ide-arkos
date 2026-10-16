@@ -1,14 +1,16 @@
 //! The caches under Application Support: `cache/images` (remote images), `cache/posters` (video
 //! posters) and `cache/mermaid` (diagrams), each made on demand by what fills it and swept of
-//! old entries once at launch, on a thread of its own (`sweep_all`).
+//! old entries once at launch, on a thread of its own (`sweep_all`), with the work folders a
+//! process left behind when it ended mid-job (`posters/job.<pid>`, `mermaid/profile-<pid>`).
 
 use crate::paths;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// The suffixes of the files the caches keep: only these, and part files (`PART`), are ever
-/// swept, so a file of any other kind (one in a browser profile's folder, say) stays.
-const KNOWN: [&str; 7] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "html"];
+/// swept, so a file of any other kind (the mermaid script, say) stays. A diagram's size is in a
+/// `json` file beside its PNG.
+const KNOWN: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "html", "json"];
 
 /// The suffix of a download in progress (`remote_image::fetch`). One older than `PART_AGE` was
 /// left by a fetch that never ended (a crash, a quit), since a fetch takes 20 seconds at most.
@@ -45,13 +47,44 @@ pub fn sweep(dir: &Path, max_age: Duration) -> usize {
         .count()
 }
 
+/// Removes the folders in `dir` named `prefix` and a pid (`profile-123`) whose process has
+/// ended, with everything in them: a poster's job folder or a Chrome profile its process left
+/// when it ended mid-job. A folder of a running process (this one's too) stays. Returns how many
+/// went; a folder that is not there has none.
+pub fn sweep_ended(dir: &Path, prefix: &str) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let pid = name.to_str().and_then(|n| n.strip_prefix(prefix)).filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).and_then(|p| p.parse::<libc::pid_t>().ok());
+            // `DirEntry::metadata` does not follow a link, so a link is not a folder.
+            let ended = pid.is_some_and(|pid| !alive(pid)) && entry.metadata().is_ok_and(|m| m.is_dir());
+            ended && std::fs::remove_dir_all(entry.path()).is_ok()
+        })
+        .count()
+}
+
+/// Whether process `pid` is running: signal 0 checks without sending anything, and only "no such
+/// process" says it ended (a process of another user refuses the signal and is running).
+fn alive(pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 is never delivered; kill only checks that the process exists.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 /// Sweeps the three caches at their ages: 30 days for images and diagrams, 90 for posters (a
-/// poster costs a Quick Look run to make again).
+/// poster costs a Quick Look run to make again); then the job folders and Chrome profiles of
+/// processes that ended.
 pub fn sweep_all() {
     let root = root();
     for (folder, days) in [("images", 30), ("mermaid", 30), ("posters", 90)] {
         sweep(&root.join(folder), Duration::from_secs(days * DAY));
     }
+    sweep_ended(&root.join("posters"), "job.");
+    sweep_ended(&root.join("mermaid"), "profile-");
 }
 
 #[cfg(test)]
@@ -79,5 +112,24 @@ mod tests {
         assert!(!old.exists() && new.exists() && other.exists() && dir.path().join("profile-1").is_dir());
         assert!(!stale.exists() && fresh.exists(), "a part file goes after a day, whatever the cache's age");
         assert_eq!(sweep(&dir.path().join("absent"), Duration::from_secs(1)), 0);
+    }
+
+    #[test]
+    fn the_folders_of_processes_that_ended_are_swept_and_the_rest_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        // macOS pids stay below 100000, so this one is never a running process.
+        let ended = dir.path().join("profile-99999999");
+        let ours = dir.path().join(format!("profile-{}", std::process::id()));
+        let (job, other, file) = (dir.path().join("job.99999999"), dir.path().join("profile-x"), dir.path().join("profile-99999998"));
+        for d in [&ended, &ours, &job, &other] {
+            std::fs::create_dir(d).unwrap();
+            std::fs::write(d.join("Local State"), "x").unwrap();
+        }
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(sweep_ended(dir.path(), "profile-"), 1);
+        assert!(!ended.exists() && ours.is_dir() && job.is_dir() && other.is_dir() && file.is_file(), "only a folder of an ended process goes");
+        assert_eq!(sweep_ended(dir.path(), "job."), 1);
+        assert!(!job.exists());
+        assert_eq!(sweep_ended(&dir.path().join("absent"), "job."), 0);
     }
 }

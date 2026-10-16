@@ -53,6 +53,12 @@ cargo test
 sh packaging/test.sh   # a dev build bundled, a manifest signed with a throwaway key, verified
 ```
 
+The rendered view's Mermaid diagrams use mermaid 11.17.2, vendored as
+`crates/arkos/assets/mermaid.min.js` and bundled into the binary. `scripts/vendor-mermaid.sh`
+fetches it from the npm registry's tarball and checks it against the SHA-256 recorded there; to
+move to a new release, change the version in that script and in `crates/arkos/src/mermaid.rs`
+(`VERSION`), record the new hash, run the script and commit the file.
+
 ## Releasing
 
 Releases are built by the `release` workflow, which runs only when you start it:

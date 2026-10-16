@@ -20,6 +20,7 @@ use crate::md_view;
 use crate::motion::{self, Fades};
 use crate::palette::Rgb;
 use crate::media;
+use crate::mermaid;
 use crate::remote_image;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
@@ -587,6 +588,10 @@ pub struct Viewer {
     /// The sizes of the local audio files the rendered view has shown, read once in
     /// `md_view::fill`; `None` when the file cannot be read.
     pub sizes: HashMap<PathBuf, Option<u64>>,
+    /// The diagrams the rendered view has shown, by cache key: rendering, in the cache with their
+    /// size, failed, or not to be rendered without Chrome (`md_view::fill` moves them along; a
+    /// failed one is rendered again only in a new viewer, once its file is opened again).
+    pub diagrams: HashMap<String, mermaid::Diagram>,
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -647,6 +652,7 @@ impl Viewer {
             remote: HashMap::new(),
             posters: HashMap::new(),
             sizes: HashMap::new(),
+            diagrams: HashMap::new(),
         }
     }
 
@@ -669,6 +675,25 @@ impl Viewer {
                     .await;
                 let _ = this.update(cx, |_, cx| {
                     Viewer::start_thumbnails(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Starts the diagram render that has the turn in the process-wide queue (`mermaid::queue`,
+    /// one at a time), on the background executor (Chrome blocks its thread). The render frees
+    /// its turn itself, whether or not this viewer is still open; then this viewer starts the next
+    /// one and draws again, and every view showing the diagram finds it in the cache, or its
+    /// error (`md_view::fill`).
+    pub fn start_renders(cx: &mut Context<Self>) {
+        let ready = mermaid::queue().start_ready();
+        for job in ready {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().spawn(async move { mermaid::run_job(&mermaid::cache_dir(), &job) }).await;
+                let _ = this.update(cx, |_, cx| {
+                    Viewer::start_renders(cx);
                     cx.notify();
                 });
             })
