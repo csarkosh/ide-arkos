@@ -47,8 +47,8 @@ def framed(window):
 
 
 CAPTION_FONT = "/System/Library/Fonts/Menlo.ttc"
-CAPTION_SIZE = 15 * SCALE
-CAPTION_PAD = (14 * SCALE, 7 * SCALE)
+CAPTION_SIZE = 30 * SCALE
+CAPTION_PAD = (22 * SCALE, 11 * SCALE)
 CAPTION_GAP = 10 * SCALE
 
 
@@ -61,7 +61,7 @@ def captioned(still, text, align):
     box = probe.textbbox((0, 0), text, font=font)
     tw, th = box[2] - box[0], box[3] - box[1]
     pw, ph = tw + 2 * CAPTION_PAD[0], th + 2 * CAPTION_PAD[1]
-    inset = 36 * SCALE
+    inset = 44 * SCALE
     px = {"left": PAD + inset, "center": (still.width - pw) // 2, "right": still.width - PAD - inset - pw}[align]
     py = still.height - PAD - ph // 2
     out = still.copy()
