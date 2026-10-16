@@ -146,6 +146,8 @@ struct Running {
     chrome_url: Option<String>,
     /// The browser panes' pages, closed in Chrome at the end whatever happened.
     pages: Vec<String>,
+    /// The demo's folder once it exists: processes still working in it are ended at the end.
+    demo: Option<PathBuf>,
     /// Chrome's windows before the shoot opened its page: the docked one is the new one.
     chrome_before: Option<Vec<u32>>,
 }
@@ -164,9 +166,17 @@ fn run(opts: Opts) -> Result<()> {
     std::fs::create_dir_all(&opts.out)?;
     let out = opts.out.canonicalize()?;
     clean(&dirs)?;
-    // A previous run that was killed may have left its page open in Chrome.
+    // A previous run that was killed may have left its page open in Chrome, or a process in
+    // the demo folder (which is about to be remade).
     for url in story.panes.iter().filter_map(|p| p.browser.as_deref()) {
         close_chrome_windows(url);
+    }
+    let demo_dir = match &story.demo.dir {
+        Some(d) => PathBuf::from(expand_home(d)),
+        None => dirs.cache.join(&story.demo.name),
+    };
+    if let Ok(existing) = demo_dir.canonicalize() {
+        end_processes_in(&existing);
     }
     std::fs::create_dir_all(&dirs.state)?;
     std::fs::create_dir_all(dirs.config_home.join("arkos"))?;
@@ -198,6 +208,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     };
     let worktrees = prepare_demo(&repo.join(&story.demo.fixture), &demo, story, &bin.join("arkos"))?;
     let demo = demo.canonicalize()?;
+    running.demo = Some(demo.clone());
     say(&format!("demo project at {}", demo.display()));
 
     // 2. Its site, for the browser pane.
@@ -860,6 +871,11 @@ fn stop(running: &mut Running, dirs: &Dirs) {
     for url in running.pages.drain(..) {
         close_chrome_windows(&url);
     }
+    // Whatever a session left running in the demo (a server a Claude Code smoke test started in
+    // the background outlives its shell).
+    if let Some(demo) = running.demo.take() {
+        end_processes_in(&demo);
+    }
     for f in ["daemon.pid", "window.pid", "site.pid"] {
         let _ = std::fs::remove_file(dirs.state.join(f));
     }
@@ -922,6 +938,30 @@ fn start_window(bin: &Path, app: Option<&Path>, demo: &Path, dirs: &Dirs) -> Res
             bail!("the window did not start from {}", app.display());
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Ends every process whose working directory is inside `dir` (lsof lists them): the demo's
+/// own shells are gone by now, so these are what a session started and left behind.
+fn end_processes_in(dir: &Path) {
+    let Ok(out) = Command::new("lsof").args(["-d", "cwd", "-Fpn"]).output() else { return };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (mut pid, mut ended) = (None, 0);
+    let me = std::process::id();
+    for line in text.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.parse::<u32>().ok();
+        } else if let Some(cwd) = line.strip_prefix('n') {
+            if let Some(p) = pid.filter(|p| *p != me && *p > 1) {
+                if Path::new(cwd).starts_with(dir) {
+                    unsafe { libc::kill(p as libc::pid_t, libc::SIGTERM) };
+                    ended += 1;
+                }
+            }
+        }
+    }
+    if ended > 0 {
+        say(&format!("ended {ended} process(es) a session left running in {}", dir.display()));
     }
 }
 
