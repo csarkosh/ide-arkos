@@ -12,7 +12,8 @@ use unicode_width::UnicodeWidthStr;
 pub fn reflow(text: &str, columns: usize, first_col: usize) -> String {
     let body = text.strip_suffix('\n').unwrap_or(text);
     let lines: Vec<&str> = body.split('\n').collect();
-    if lines.len() < 2 {
+    // Twelve columns or fewer leave no room to tell a wrap from a break.
+    if lines.len() < 2 || columns <= 12 {
         return text.to_string();
     }
     // Each line's width without its trailing blanks; the first starts `first_col` cells in.
@@ -56,12 +57,15 @@ pub fn reflow(text: &str, columns: usize, first_col: usize) -> String {
 
 /// What goes between `a` and `b` when `b` continues the line `a` was wrapped from (a space, or
 /// nothing inside a URL or a path broken mid-word), or None when `a` ends where its program ended
-/// it. `a` is trimmed on the right and `width` cells wide, `b_t` is `b` without its indent.
+/// it. `a` is trimmed on the right and `width` cells wide, `b_t` is `b` without its indent. The
+/// box-drawing stop on `a` ignores `a`'s leading spaces, so a table indented under a message
+/// counts as one.
 fn join(a: &str, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize) -> Option<&'static str> {
     if a.is_empty() || b_t.is_empty() {
         return None;
     }
-    if starts_structure(b_t) || starts_box(a.trim_start()) || starts_box(b_t) {
+    let a_t = a.trim_start_matches(' ');
+    if starts_structure(b_t) || starts_box(a_t) || starts_box(b_t) {
         return None;
     }
     // Wider than the terminal: alacritty already joined the rows the terminal wrapped, so this
@@ -73,26 +77,39 @@ fn join(a: &str, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize) 
     if width.saturating_add(1).saturating_add(next) <= wrap {
         return None;
     }
+    // A program breaks a word only at the terminal's edge, and only a URL or a path is worth
+    // gluing back. `b` continues the word when nothing but the continuation indent comes before
+    // it: `a`'s own indent, plus its marker's width when `a` opens an item.
     let last = a.rsplit(' ').next().unwrap_or("");
-    let mid_word = width == wrap && !b.starts_with(' ') && last.contains('/');
+    let indent = a.len() - a_t.len() + item_marker(a_t).unwrap_or(0);
+    let rest = match b.get(..indent) {
+        Some(lead) if lead.bytes().all(|c| c == b' ') => &b[indent..],
+        _ => b,
+    };
+    let mid_word = width == columns && last.contains('/') && !rest.starts_with(' ');
     Some(if mid_word { "" } else { " " })
+}
+
+/// The width of the list marker a line opens with, its space included: a bullet or a number.
+fn item_marker(line: &str) -> Option<usize> {
+    const MARKERS: [&str; 8] = ["- ", "* ", "+ ", "\u{2022} ", "\u{25cf} ", "\u{25cb} ", "\u{25d0} ", "\u{23fa} "];
+    if let Some(m) = MARKERS.iter().find(|m| line.starts_with(**m)) {
+        return Some(m.width());
+    }
+    let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    let numbered = rest.len() < line.len() && (rest.starts_with(". ") || rest.starts_with(") "));
+    numbered.then(|| line.len() - rest.len() + 2)
 }
 
 /// Whether a line opens a list item, a quote, a heading or a code fence, which never continue the
 /// line before them.
 fn starts_structure(line: &str) -> bool {
-    const MARKERS: [&str; 8] = ["- ", "* ", "+ ", "\u{2022} ", "\u{25cf} ", "\u{25cb} ", "\u{25d0} ", "\u{23fa} "];
-    if MARKERS.iter().any(|m| line.starts_with(m)) {
-        return true;
-    }
-    if line.starts_with(['>', '#']) || line.starts_with("```") || line.starts_with("~~~") {
-        return true;
-    }
-    if line.starts_with("[ ]") || line.starts_with("[x]") {
-        return true;
-    }
-    let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
-    rest.len() < line.len() && (rest.starts_with(". ") || rest.starts_with(") "))
+    item_marker(line).is_some()
+        || line.starts_with(['>', '#'])
+        || line.starts_with("```")
+        || line.starts_with("~~~")
+        || line.starts_with("[ ]")
+        || line.starts_with("[x]")
 }
 
 /// Whether a line starts with a box-drawing or block character: a table, or a frame of Claude
@@ -286,6 +303,39 @@ mod tests {
     }
 
     #[test]
+    fn a_url_broken_at_the_edge_inside_a_claude_code_message_joins_without_a_space() {
+        // The continuation's indent is the bullet's width, so past it the URL goes on.
+        let opening = lines(&["\u{25cf} See https://github.com/csarkosh/ide-arkos/blob/main/docs/g", "  uide.md#keys for the keys."]);
+        assert_eq!(cells("\u{25cf} See https://github.com/csarkosh/ide-arkos/blob/main/docs/g"), 60);
+        assert_eq!(reflow(&opening, 60, 0), "\u{25cf} See https://github.com/csarkosh/ide-arkos/blob/main/docs/guide.md#keys for the keys.");
+        // A continuation row keeps the same indent as the row before it.
+        let continued = lines(&["  theme at https://github.com/csarkosh/ide-arkos/blob/main/d", "  ocs/themes.md."]);
+        assert_eq!(cells("  theme at https://github.com/csarkosh/ide-arkos/blob/main/d"), 60);
+        assert_eq!(reflow(&continued, 60, 0), "  theme at https://github.com/csarkosh/ide-arkos/blob/main/docs/themes.md.");
+        // An indent that does not match the row before it is a new word.
+        let deeper = lines(&["  theme at https://github.com/csarkosh/ide-arkos/blob/main/d", "    ocs/themes.md."]);
+        assert_eq!(reflow(&deeper, 60, 0), "  theme at https://github.com/csarkosh/ide-arkos/blob/main/d ocs/themes.md.");
+    }
+
+    #[test]
+    fn a_path_that_ends_short_of_the_terminal_s_edge_is_followed_by_a_space() {
+        // The widest line, 70 cells in 80 columns: the program wrapped before the next word, it
+        // did not break the path.
+        let text = lines(&["The re-flow is pure, so it lives in a module of its own: src/reflow.rs", "for the rules."]);
+        assert_eq!(cells("The re-flow is pure, so it lives in a module of its own: src/reflow.rs"), 70);
+        assert_eq!(reflow(&text, 80, 0), "The re-flow is pure, so it lives in a module of its own: src/reflow.rs for the rules.");
+    }
+
+    #[test]
+    fn twelve_columns_or_fewer_join_nothing() {
+        let twelve = lines(&["ab cd ef gh", "ij"]);
+        assert_eq!(reflow(&twelve, 12, 0), twelve);
+        let five = lines(&["ab cd", "ef"]);
+        assert_eq!(reflow(&five, 5, 0), five);
+        assert_eq!(reflow(&twelve, 13, 0), "ab cd ef gh ij", "13 columns is wide enough to re-flow");
+    }
+
+    #[test]
     fn an_unindented_paragraph_whose_widest_line_is_the_first_joins_with_a_space() {
         let text = lines(&["Each retry waits a random time between zero and the backoff,", "so a burst of refused clients does not come back at once."]);
         assert_eq!(reflow(&text, 60, 0), "Each retry waits a random time between zero and the backoff, so a burst of refused clients does not come back at once.");
@@ -353,6 +403,8 @@ mod tests {
     #[test]
     fn claude_code_s_prose_reaches_the_width_of_a_wide_terminal() {
         // Claude Code at 160 columns: prose runs to the last column, so the 12-cell margin holds.
+        // Typed the way Claude Code wraps, not captured from a session: a real capture at 160
+        // columns or more is still owed (Claude Code would not run in a headless pty here).
         let text = lines(&[
             "● I've started all three agents in parallel: the limiter and its tests, the server wiring with route tests, and the README. Once they've all reported back, I'll",
             "  review the changes, run npm test, and fix anything that fails. One thing to decide while they run: the limiter keeps its counts in memory, so a restart",
