@@ -398,8 +398,11 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
         if shot.chrome && chrome_url.is_none() && states.values().any(|s| *s == ClaudeState::Working) {
             if let Some(url) = story.panes.iter().find_map(|p| p.browser.clone()) {
                 *chrome_before = Some(window_list(repo)?.into_iter().filter(|w| w.owner == "Google Chrome").map(|w| w.id).collect());
-                // -g: Chrome does not come to the front, so the Arkos window keeps its place.
-                Command::new("open").args(["-g", "-na", "Google Chrome", "--args", &format!("--app={url}")]).status().context("open Chrome")?;
+                // -g: Chrome does not come to the front, so the Arkos window keeps its place. A
+                // query that differs each run keeps Chrome from showing a cached copy of the page
+                // (the demo is remade every run; the last run's page may have changed).
+                let fresh = format!("{url}{}t={}", if url.contains('?') { "&" } else { "?" }, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+                Command::new("open").args(["-g", "-na", "Google Chrome", "--args", &format!("--app={fresh}")]).status().context("open Chrome")?;
                 *chrome_url = Some(url);
                 settle_until = Some(Instant::now() + Duration::from_secs(4));
                 say("opened the page in Chrome for Arkos to dock");
