@@ -826,6 +826,12 @@ fn the_themes_section_lists_invalid_files_and_missing_names() {
 - `arkos theme preview` for one window only (`--pid`); today every window previews.
 - A `--watch` mode for `arkos theme contrast`.
 - `settings get` falling back to the effective (merged) config for keys absent from the file.
+- The daemon's wait record: flushing by record identity rather than age, and matching a window's
+  answer by its connection rather than the pid it claims (a stale duplicate connection of one pid
+  could print both "applied" and "no answer").
+- Splitting `settings_cli.rs` out of `agent_cli.rs` as a pure move.
+- The palette's "Install agent guide" rewriting a skill that is already current (harmless).
+- A cask `binary` stanza so `arkos` is on PATH outside Arkos shells too (a release-time change).
 
 ## Self-review notes
 
