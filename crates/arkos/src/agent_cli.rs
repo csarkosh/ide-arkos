@@ -393,10 +393,16 @@ fn use_theme(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     if let Err(e) = config::set_values(env.config, &[(&["theme", key], toml_edit::Value::from(name.as_str()))]) {
         return fail(err, &e);
     }
-    let judge = |r: &Report| match (&r.theme_error, &r.config_error) {
-        (Some(e), _) | (None, Some(e)) => Err(e.clone()),
-        _ if r.theme != name || r.preview.is_some() => Err(format!("shows {}", r.theme)),
-        _ => Ok(format!("{name} applied")),
+    let mode = cfg.appearance.mode;
+    let judge = |r: &Report| {
+        // A window in the other appearance keeps showing that appearance's theme, as it should.
+        let active = theme_key_for_use(None, mode, Some(r.system_is_dark));
+        match (&r.theme_error, &r.config_error) {
+            (Some(e), _) | (None, Some(e)) => Err(e.clone()),
+            _ if active != key => Ok(format!("saved for {key} mode; shows {} in {active} mode", r.theme)),
+            _ if r.theme != name || r.preview.is_some() => Err(format!("shows {}", r.theme)),
+            _ => Ok(format!("{name} applied")),
+        }
     };
     reload_after_save(env, a.has("--json"), json!({ "name": name, "key": key, "saved": true }), &judge, out, err)
 }
@@ -459,13 +465,17 @@ fn print_verdicts(answer: &Answer, judge: &Judge, json: bool, mut base: Json, ou
 
 /// After `use` or `settings set` wrote the file: asks every window to reload and judges each
 /// answer. No daemon or no window is `saved; no window running`, exit 0; silent and too old
-/// windows print their lines and do not fail the command.
+/// windows print their lines and do not fail the command, and when none answered at all
+/// `saved; no window answered` comes first.
 fn reload_after_save(env: &Env, json: bool, mut base: Json, judge: &Judge, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let none = Answer { outcomes: Vec::new(), missing: Vec::new(), too_old: Vec::new() };
     match customize(env.socket, CustomizeAction::ReloadConfig, env.wait) {
         Err(Reach::NoWindow) => saved_alone(json, base, &none, out),
         Ok(answer) if answer.nobody() => saved_alone(json, base, &answer, out),
         Ok(answer) => {
+            if !json && answer.outcomes.is_empty() {
+                let _ = writeln!(out, "saved; no window answered");
+            }
             let ok = print_verdicts(&answer, judge, json, base, out);
             if ok || answer.outcomes.is_empty() {
                 0
@@ -673,6 +683,9 @@ fn settings_get(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
                 let _ = writeln!(out, "{}", json!({ "file": text, "windows": windows }));
             } else {
                 let _ = out.write_all(text.as_bytes());
+                if !text.is_empty() && !text.ends_with('\n') {
+                    let _ = writeln!(out);
+                }
                 report_lines(shown, out);
             }
             match answer {
@@ -816,7 +829,7 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
                 .and_then(|doc| doc.get("font")?.get("presets")?.get(*name).map(toml::Value::is_table))
                 .unwrap_or(false);
             // A new preset takes its other field from comfortable.
-            let merged = presets.get(*name).copied().unwrap_or(config::BUILTIN_PRESETS[1].1);
+            let merged = config::resolve_preset(Some(name), "comfortable", &presets).1;
             preset_edits(&path, value.clone(), has_table, &merged)
         }
         _ => vec![(path.iter().map(|s| s.to_string()).collect(), value.clone())],
@@ -1063,7 +1076,7 @@ mod tests {
         let sock = dir.path().join("d.sock");
         let cfg = dir.path().join("config.toml");
         std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
-        let server = fake_daemon(&sock, vec![one_window(Report { theme: "navy".into(), ..Report::default() }, vec![8], vec![])]);
+        let server = fake_daemon(&sock, vec![one_window(Report { theme: "navy".into(), system_is_dark: true, ..Report::default() }, vec![8], vec![])]);
         let env = Env { socket: &sock, config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["use".into(), "timo-purple".into(), "--dark".into()], &env, &mut out, &mut err), 1);
@@ -1119,5 +1132,49 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!((v["key"].as_str(), v["value"].as_bool(), v["saved"].as_bool()), (Some("update.auto"), Some(false), Some(true)));
         assert!(config::load(&cfg).map(|c| !c.update.auto).unwrap(), "created from the defaults, then edited");
+    }
+
+    #[test]
+    fn use_counts_a_window_in_the_other_appearance_as_saved_and_says_what_it_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("d.sock");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
+        let light = Report { theme: "navy-light".into(), system_is_dark: false, ..Report::default() };
+        let silent = Response::Customized { outcomes: vec![], missing: vec![8], too_old: vec![9] };
+        let server = fake_daemon(&sock, vec![one_window(light.clone(), vec![], vec![]), one_window(light, vec![], vec![]), silent]);
+        let env = Env { socket: &sock, config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
+        let use_dark = |json: bool| {
+            let mut args: Vec<String> = vec!["use".into(), "timo-purple".into(), "--dark".into()];
+            if json {
+                args.push("--json".into());
+            }
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = theme_cli_to(&args, &env, &mut out, &mut err);
+            (code, String::from_utf8(out).unwrap())
+        };
+        assert_eq!(use_dark(false), (0, "window 7 (/p): saved for dark mode; shows navy-light in light mode\n".to_string()));
+        let (code, out) = use_dark(true);
+        assert_eq!(code, 0);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["windows"][0]["theme"].as_str(), Some("navy-light"));
+        assert!(v["windows"][0].get("error").is_none(), "{v}");
+        assert_eq!(use_dark(false), (0, "saved; no window answered\nwindow 8: no answer\nwindow 9: too old for this command\n".to_string()));
+        assert_eq!(server.join().unwrap(), vec![CustomizeAction::ReloadConfig; 3]);
+    }
+
+    #[test]
+    fn settings_get_ends_the_file_text_with_a_newline_before_the_window_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("d.sock");
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, "[font]\npreset = \"compact\"").unwrap();
+        let report = Report { theme: "navy".into(), dark: true, system_is_dark: true, preset: "compact".into(), family: "Menlo".into(), ..Report::default() };
+        let server = fake_daemon(&sock, vec![one_window(report, vec![], vec![])]);
+        let env = Env { socket: &sock, config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(settings_cli_to(&["get".into()], &env, &mut out, &mut err), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), "[font]\npreset = \"compact\"\nwindow 7 (/p): navy (dark, system is dark), preset compact, family Menlo\n");
+        server.join().unwrap();
     }
 }
