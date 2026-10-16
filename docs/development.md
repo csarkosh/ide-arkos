@@ -130,6 +130,9 @@ Things only a person at the screen can check, in order of value:
   realigns the pipes and one undo restores them; a wide table wraps, and with "Scroll" in Settings
   (or `arkos settings set viewer.wide_tables scroll`) it scrolls sideways with Shift+wheel, while a
   vertical wheel still scrolls the list; a table over 500 rows shows as source
+- markdown, Rendered: in a README whose table is followed by a blank line and reference links
+  (`[ref]: https://...`), edit the table and leave it: only the table is realigned, the definitions
+  stay as they were and every `[text][ref]` link still works; the grid shows no row for them
 - a remote image shows "loading" and then the image; a plain click places the caret and Cmd+click
   opens it in Preview; a `.mov` shows its poster and Cmd+click opens QuickTime Player; audio opens
   in QuickTime Player; a local `.webm` is shown in Finder; a badge row wraps in a narrow pane

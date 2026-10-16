@@ -33,7 +33,7 @@ pub struct CellPos {
 }
 
 /// The table in a block's source: the header row, the delimiter row (every cell `:?-+:?` after
-/// trimming, as many cells as the header) and the body rows down to the last line with text. A
+/// trimming, as many cells as the header) and the body rows down to the first blank line. A
 /// leading and a trailing pipe are optional and `\|` is a literal pipe; a short row is padded with
 /// empty cells and a long one truncated to the header's count. `None` without a well-formed
 /// delimiter row.
@@ -59,8 +59,9 @@ pub fn parse(source: &str) -> Option<Table> {
 /// The block's source with its pipes aligned: every cell padded with spaces to its column's display
 /// width (on the right for `Default` and `Left`, on the left for `Right`, split for `Center`), one
 /// space inside each pipe, a leading and a trailing pipe always, the delimiter row keeping its
-/// colons with its dashes stretched to the column (at least three). What followed the last line
-/// with text (the trailing newline, or nothing) is kept as it was. `None` when `parse` fails.
+/// colons with its dashes stretched to the column (at least three). What followed the table's
+/// last line (the trailing newline, the blank lines and the reference definitions the block holds
+/// after them, or nothing) is kept as it was. `None` when `parse` fails.
 ///
 /// The grid truncates a long row to the header's count, but `realign` never drops a cell: a short
 /// row is padded with empty cells, and a long row's cells past the header's count follow the
@@ -172,7 +173,7 @@ pub fn cell_below(source: &str, pos: CellPos) -> Option<CellPos> {
     row_below(source, pos.row).map(|row| CellPos { row, cell: pos.cell })
 }
 
-/// The text Tab from the last cell inserts after the block's last line with text: a new row of
+/// The text Tab from the last cell inserts after the table's last line (`line_count`): a new row of
 /// the header's count of empty cells, `|  |  |` for two columns, so each cell has a caret place
 /// after its "| ".
 pub fn appended_row(source: &str) -> String {
@@ -180,16 +181,21 @@ pub fn appended_row(source: &str) -> String {
     format!("\n| {} |", vec![""; columns].join(" | "))
 }
 
-/// The block's lines down to the last one with text.
-fn table_lines(source: &str) -> Vec<&str> {
-    let mut lines: Vec<&str> = source.split('\n').collect();
-    while lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines
+/// How many lines of the block's source the table holds: the lines `realign` rewrites and the grid
+/// draws, from the header down to the line before the first blank one (or the last line).
+pub fn line_count(source: &str) -> usize {
+    table_lines(source).len()
 }
 
-/// What follows the block's last line with text: its trailing newline and blank lines, or nothing.
+/// The table's lines: the block's lines down to the one before its first blank line, where GFM
+/// ends a table. The parser gives the lines after it that produce no event of their own (a link
+/// reference definition, a `[^1]:` note) to the table block, and they are not the table's.
+fn table_lines(source: &str) -> Vec<&str> {
+    source.split('\n').take_while(|l| !l.trim().is_empty()).collect()
+}
+
+/// What follows the table's last line: its newline, the blank lines and whatever the block holds
+/// after them (reference definitions), byte for byte, or nothing.
 fn tail(source: &str) -> &str {
     let content = table_lines(source).iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1);
     &source[content.min(source.len())..]
@@ -335,5 +341,20 @@ mod tests {
         assert_eq!(appended_row(src), "\n|  |  |");
         let empty = "| a |  |\n|---|---|\n";
         assert_eq!(cell_start(empty, CellPos { row: 0, cell: 1 }), Some((0, 6)), "an empty cell: after the pipe and its space");
+    }
+
+    #[test]
+    fn a_table_ends_at_its_first_blank_line_and_a_reference_definition_after_it_is_kept() {
+        // The parser gives a reference definition no event, so the table block's source runs on
+        // to it; GFM ends the table at the blank line.
+        let src = "|a|b|\n|---|---|\n|1|2|\n\n[ref]: https://x\n";
+        assert_eq!(parse(src).unwrap().rows, vec![vec!["1", "2"]], "one body row, no empty row and no definition row");
+        assert_eq!(realign(src).unwrap(), "| a | b |\n|---|---|\n| 1 | 2 |\n\n[ref]: https://x\n", "the definition is kept byte for byte");
+        assert_eq!(line_count(src), 3);
+        assert_eq!(cell_below(src, CellPos { row: 2, cell: 0 }), None, "Down stops at the last row");
+        assert_eq!(next_cell(src, CellPos { row: 2, cell: 1 }), None, "Tab from the last cell appends");
+        assert_eq!(cell_at(src, 4, 0), None, "the definition is not a cell");
+        let note = "| a |\n|---|\n| 1 |\n\n[^1]: a note\n\n[b]: https://y \"t\"\n";
+        assert_eq!(realign(note).unwrap(), note, "an aligned table and the definitions after it are left alone");
     }
 }

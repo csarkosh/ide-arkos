@@ -123,7 +123,8 @@ only; Raw mode is a plain text editor.
 
 When you leave an edited table, Arkos re-aligns its pipes so the source reads as a grid too. One
 undo takes the alignment back, and an undone table is not re-aligned again. Re-alignment never
-drops a cell: a row longer than the header keeps its extra cells after the aligned ones. In the
+drops a cell: a row longer than the header keeps its extra cells after the aligned ones. A table
+ends at its first blank line, so the link reference definitions below it are never touched. In the
 rare case that a table you deleted is replaced by another on the same start line, the new one can
 be re-aligned as well.
 

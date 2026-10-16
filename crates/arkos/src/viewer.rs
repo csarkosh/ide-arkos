@@ -2218,9 +2218,12 @@ fn table_cell_pos(lines: &[String], block: &md_blocks::Block, pos: md_table::Cel
     Some(edit::Pos { line, ch: (start + ch).min(lines.get(line)?.chars().count()) })
 }
 
-/// The lines of table block `block` down to its last line with text, the lines `realign` rewrites.
+/// The lines of table block `block` that hold the table (`md_table::line_count`: down to the line
+/// before its first blank one), the lines `realign` rewrites. The reference definitions the block
+/// holds after them are never in it.
 fn table_range(lines: &[String], block: &md_blocks::Block) -> Range<usize> {
-    block.lines.start..md_blocks::pos_of_offset(block, lines, usize::MAX).line + 1
+    let count = md_table::line_count(&md_view::block_source(lines, block));
+    block.lines.start..(block.lines.start + count).min(lines.len())
 }
 
 /// The leave check after a caret move, pure: `entry` is the snapshot (`table_entry`: a table's
@@ -2253,7 +2256,7 @@ fn table_text(lines: &[String], range: Range<usize>) -> String {
     lines[range].iter().map(|l| format!("{l}\n")).collect()
 }
 
-/// The caret left a table whose lines are `lines` (down to its last line with text): when their
+/// The caret left a table whose lines are `lines` (`table_range`): when their
 /// text (`table_text`) differs from `entry_text`, the text they had when the caret entered, and
 /// `md_table::realign` makes something different of it, they are replaced with the realigned
 /// text as one undo step. A table that no longer parses is left as typed. `true` when it edited.
@@ -2277,16 +2280,18 @@ fn realign_on_leave(doc: &mut edit::Document, lines: Range<usize>, entry_text: &
 /// cell's text (`md_table::next_cell`, `prev_cell`), its selection cleared. On the delimiter row
 /// Tab goes to the first body row's first cell and Shift+Tab to the header's last; Shift+Tab from
 /// the header's first cell stays; Tab from the last cell of the last row (or the delimiter row of
-/// a table with no body) appends a row of empty cells after the block's last line with text, one
-/// undo step, and lands in its first cell. Spaces are never inserted. `None` when the caret is not
-/// in a table's rows (another block, a table that does not parse, the blank lines after it).
+/// a table with no body) appends a row of empty cells after the table's last line (`table_range`,
+/// never after the reference definitions the block holds), one undo step, and lands in its first
+/// cell. Spaces are never inserted. `None` when the caret is not in a table's rows (another block,
+/// a table that does not parse, the blank lines and the definitions after it).
 fn table_tab(doc: &mut edit::Document, caret: &mut edit::Caret, blocks: &[md_blocks::Block], forward: bool, now: Instant) -> Option<Outcome> {
     use md_table::CellPos;
     let head = doc.clamp(caret.head);
     let block = blocks.get(md_blocks::block_at(blocks, head.line)).filter(|b| b.kind == md_blocks::BlockKind::Table)?;
     let source = md_view::block_source(doc.lines(), block);
     md_table::parse(&source)?;
-    let end = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX);
+    let last = table_range(doc.lines(), block).end.checked_sub(1)?;
+    let end = edit::Pos { line: last, ch: doc.lines()[last].chars().count() };
     let row = head.line.checked_sub(block.lines.start)?;
     let to = match (md_table::cell_at(&source, row, head.ch), forward) {
         (Some(pos), true) => md_table::next_cell(&source, pos),
@@ -3005,6 +3010,44 @@ mod tests {
         assert_eq!(d.to_text(), original);
         assert!(d.redo().is_some(), "the redo history is still there");
         assert_eq!(d.to_text(), typed);
+    }
+
+    #[test]
+    fn the_realign_range_and_the_appended_row_end_at_the_last_table_row_when_definitions_follow() {
+        let text = "intro\n\n|a|b|\n|---|---|\n|1|2|\n\n[ref]: https://x\n";
+        let mut d = edit::Document::from_text(text);
+        let now = Instant::now();
+        let blocks = md_blocks::split(d.lines());
+        let table = &blocks[md_blocks::block_at(&blocks, 2)];
+        assert_eq!(table.kind, md_blocks::BlockKind::Table);
+        assert!(table.lines.contains(&6), "the parser gives the definition to the table block");
+        assert_eq!(table_range(d.lines(), table), 2..5);
+        // Enter, type, leave: only the table's lines are realigned, the definition stays.
+        let in_table = edit::Caret::at(edit::Pos { line: 2, ch: 1 });
+        let away = edit::Caret::at(edit::Pos { line: 0, ch: 0 });
+        let (_, entry) = next_entry(&blocks, d.lines(), in_table, None, false);
+        d.insert(in_table, "x", now);
+        let blocks = md_blocks::split(d.lines());
+        let (realign, _) = next_entry(&blocks, d.lines(), away, entry, false);
+        let (range, snapshot) = realign.expect("the typed table is realigned on leave");
+        assert_eq!(range, 2..5);
+        assert!(realign_on_leave(&mut d, range, &snapshot, now));
+        assert_eq!(d.to_text(), "intro\n\n| xa | b |\n|----|---|\n| 1  | 2 |\n\n[ref]: https://x\n");
+        // Tab from the last cell appends the row after the last table row, not after the definition.
+        let mut d = edit::Document::from_text(text);
+        let blocks = md_blocks::split(d.lines());
+        let mut c = edit::Caret::at(edit::Pos { line: 4, ch: 3 });
+        assert_eq!(table_tab(&mut d, &mut c, &blocks, true, now), Some(Outcome::Edited));
+        assert_eq!(d.to_text(), "intro\n\n|a|b|\n|---|---|\n|1|2|\n|  |  |\n\n[ref]: https://x\n");
+        assert_eq!((c.head.line, c.head.ch), (5, 2));
+        // The blank line and the definition are not the table's rows: Tab there is a plain Tab.
+        let mut d = edit::Document::from_text(text);
+        let blocks = md_blocks::split(d.lines());
+        for line in [5, 6] {
+            let mut c = edit::Caret::at(edit::Pos { line, ch: 0 });
+            assert_eq!(table_tab(&mut d, &mut c, &blocks, true, now), None, "line {line}");
+        }
+        assert_eq!(d.to_text(), text);
     }
 
     #[test]
