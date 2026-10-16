@@ -69,7 +69,8 @@ const CELL_PAD_X: f32 = 10.0;
 const CELL_PAD_Y: f32 = 6.0;
 /// The most of the view's width one table column takes.
 const COLUMN_CAP: f32 = 0.45;
-/// The play glyph over a poster: a disc of this diameter around a triangle in a box of this side.
+/// The play glyph over a poster: a disc of this diameter around a triangle in a box of this side,
+/// painted together.
 const PLAY_DISC: f32 = 40.0;
 const PLAY_TRIANGLE: f32 = 16.0;
 /// The rows a table's natural column widths are measured over; later rows take the widths found.
@@ -1278,7 +1279,7 @@ fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell
             }
             match (&link, &file) {
                 (Some(link), _) => follow_link(link_action(link, &base_dir), &viewer, cx),
-                (None, Some(file)) => open_file(file.clone(), remote_image::preview_args, cx),
+                (None, Some(file)) => open_in_preview(file.clone(), cx),
                 (None, None) => return,
             }
             press.set(true);
@@ -1300,25 +1301,44 @@ fn alt_box(text: SharedString, dim: Hsla, border: Hsla) -> Div {
     div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(text)
 }
 
-/// Opens a file through `/usr/bin/open` with the arguments `args` gives for it, on the background
-/// executor: an image in Preview (`remote_image::preview_args`), a video in QuickTime Player
-/// (`media::quicktime_args`), audio or a `webm` with the system (`media::system_args`, only for
-/// the extensions `media` admitted). Never a bare `open` of anything else, which could run a
-/// program; a path that is not absolute is not opened.
-fn open_file(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
+/// Shows an image in Preview through `/usr/bin/open` (`remote_image::preview_args`, the app
+/// named), on the background executor. A path that is not absolute is not opened.
+fn open_in_preview(file: PathBuf, cx: &mut App) {
+    if !file.is_absolute() {
+        return;
+    }
+    cx.background_executor().spawn(async move { run_open(&file, remote_image::preview_args(&file)) }).detach();
+}
+
+/// Opens a local video or audio file in QuickTime Player (`media::quicktime_args`) or shows a
+/// local `webm` in Finder (`media::reveal_args`), on the background executor, never through a
+/// bare `open`. First the path is resolved and checked (`media::checked_open_path`): it must be a
+/// plain file of the kind its name says, so a link named like audio that leads to an app or a
+/// script is refused, with a line on stderr and nothing shown in the window. A path that is not
+/// absolute is not opened.
+fn open_media(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
     if !file.is_absolute() {
         return;
     }
     cx.background_executor()
         .spawn(async move {
-            let status = std::process::Command::new("/usr/bin/open").args(args(&file)).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-            match status {
-                Ok(s) if s.success() => {}
-                Ok(s) => eprintln!("arkos: cannot open {} ({s})", file.display()),
-                Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
+            match media::checked_open_path(&file) {
+                Some(canonical) => run_open(&canonical, args(&canonical)),
+                None => eprintln!("arkos: not opening {}: it is not a plain file of the kind its name says", file.display()),
             }
         })
         .detach();
+}
+
+/// Runs `/usr/bin/open` with `args` (made for `file`), blocking the calling thread, and reports a
+/// failure on stderr.
+fn run_open(file: &Path, args: Vec<String>) {
+    let status = std::process::Command::new("/usr/bin/open").args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("arkos: cannot open {} ({s})", file.display()),
+        Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
+    }
 }
 
 /// A video, an audio file or a media link. A video is its poster at most the view's width with a
@@ -1326,9 +1346,9 @@ fn open_file(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
 /// is made (with "loading") and when there is none; audio is a one-line box with a speaker, the
 /// file's name and its size (`Viewer.sizes`); a link (remote media, a `webm`) is its label and its
 /// path in the link colour. A plain press is the row's, which puts the caret in the block.
-/// Cmd+click follows the link around it when there is one, and otherwise plays a video in
-/// QuickTime Player, opens audio or a local `webm` with the system, or a web address in the
-/// browser; the row stands aside through `press`. The pointer is the hand over it, as over a link.
+/// Cmd+click follows the link around it when there is one, and otherwise plays a video or an audio
+/// file in QuickTime Player, shows a local `webm` in Finder (both through `open_media`'s check),
+/// or opens a web address in the browser; the row stands aside through `press`. The pointer is the hand over it, as over a link.
 fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
     let remote = remote_image::is_remote(&m.path);
     let file = resolve_image(&ctx.base_dir, &m.path);
@@ -1341,8 +1361,8 @@ fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<boo
             match (&link, kind, &file) {
                 (Some(link), _, _) => follow_link(link_action(link, &base_dir), &viewer, cx),
                 (None, _, None) if remote => cx.open_url(&path),
-                (None, Some(Media::Video), Some(file)) => open_file(file.clone(), media::quicktime_args, cx),
-                (None, _, Some(file)) => open_file(file.clone(), media::system_args, cx),
+                (None, Some(_), Some(file)) => open_media(file.clone(), media::quicktime_args, cx),
+                (None, None, Some(file)) => open_media(file.clone(), media::reveal_args, cx),
                 (None, _, None) => return,
             }
             press.set(true);
@@ -1384,13 +1404,33 @@ fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<boo
 
 /// A video's poster at most the view's width (its natural size when smaller), with the play glyph
 /// over its centre: a `PLAY_DISC` disc in the text colour at 60 percent around a triangle in the
-/// window's background colour. A poster that cannot be drawn shows the label in the dashed box.
+/// window's background colour. A poster that cannot be drawn shows the label in the dashed box,
+/// with no glyph over it, and so does one still loading (the glyph needs room for the disc).
 fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
     let (dim, border, disc, glyph) = (ctx.dim, ctx.border, ctx.text.opacity(0.6), ctx.on_accent);
-    let triangle = canvas(
+    // gpui asks for the fallback while it lays the image out, before anything is painted, so the
+    // glyph's paint knows whether the poster was drawn.
+    let failed = Rc::new(Cell::new(false));
+    let fallback = {
+        let failed = failed.clone();
+        move || {
+            failed.set(true);
+            alt_box(label.clone(), dim, border).into_any_element()
+        }
+    };
+    let play = canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            let at = |x: f32, y: f32| point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+            if failed.get() || bounds.size.width < px(PLAY_DISC) || bounds.size.height < px(PLAY_DISC) {
+                return;
+            }
+            let centre = bounds.center();
+            let half = px(PLAY_DISC / 2.0);
+            let ring = Bounds { origin: point(centre.x - half, centre.y - half), size: size(px(PLAY_DISC), px(PLAY_DISC)) };
+            window.paint_quad(gpui::fill(ring, disc).corner_radii(half));
+            // The triangle sits in a `PLAY_TRIANGLE` box at the disc's centre, its point to the right.
+            let corner = point(centre.x - px(PLAY_TRIANGLE / 2.0), centre.y - px(PLAY_TRIANGLE / 2.0));
+            let at = |x: f32, y: f32| point(corner.x + px(x), corner.y + px(y));
             let mut b = PathBuilder::fill();
             b.move_to(at(4.0, 2.0));
             b.line_to(at(4.0, PLAY_TRIANGLE - 2.0));
@@ -1400,22 +1440,13 @@ fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
                 window.paint_path(path, glyph);
             }
         },
-    )
-    .size(px(PLAY_TRIANGLE));
+    );
     div()
         .relative()
         .flex()
         .max_w_full()
-        .child(img(poster).max_w_full().with_fallback(move || alt_box(label.clone(), dim, border).into_any_element()))
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(div().size(px(PLAY_DISC)).rounded_full().bg(disc).flex().items_center().justify_center().child(triangle)),
-        )
+        .child(img(poster).max_w_full().with_fallback(fallback))
+        .child(play.absolute().inset_0())
 }
 
 /// Where a raw block was laid out in a frame, kept in `Viewer.raw_blocks` for the input handler

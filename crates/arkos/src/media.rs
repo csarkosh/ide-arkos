@@ -1,9 +1,11 @@
 //! Video and audio in the rendered view (spec 5). An image whose path is a local video (`mp4`,
 //! `mov`, `m4v`) is drawn as a poster that Quick Look's thumbnailer (`qlmanage`, part of macOS)
 //! makes once per file and version, cached at `<cache>/posters/<sha256 of the path and its
-//! mtime>.png`; local audio (`mp3`, `m4a`, `wav`, `aac`) is a one-line box. Cmd+click opens a video
-//! in QuickTime Player and audio with the system. A `webm` (which neither Quick Look nor QuickTime
-//! takes) and remote video or audio are links instead, and nothing is fetched. One poster is made
+//! mtime>.png`; local audio (`mp3`, `m4a`, `wav`, `aac`) is a one-line box. Cmd+click plays a video
+//! or an audio file in QuickTime Player, never through a bare `open`, and only once the path is
+//! found to be a plain file of the same kind (`checked_open_path`). A `webm` (which neither Quick
+//! Look nor QuickTime takes) and remote video or audio are links instead, and nothing is fetched;
+//! a local `webm` is shown in Finder. One poster is made
 //! at a time in the process (a window is a process), through the `queue()` gate; the folder is
 //! swept at launch (`cache::sweep_all`).
 
@@ -42,7 +44,30 @@ pub enum Poster {
 
 /// The extension of `path`'s last part, lowercased.
 fn extension(path: &str) -> Option<String> {
-    Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
+    path_extension(Path::new(path))
+}
+
+fn path_extension(path: &Path) -> Option<String> {
+    path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
+}
+
+/// What a local media file is, for the open guard: a video or audio file (`kind`), or a `webm`.
+#[derive(Debug, PartialEq, Eq)]
+enum Family {
+    Kind(Media),
+    Webm,
+}
+
+/// The family a local path's extension names, if any.
+fn family(path: &Path) -> Option<Family> {
+    let ext = path_extension(path)?;
+    if VIDEO.contains(&ext.as_str()) {
+        Some(Family::Kind(Media::Video))
+    } else if AUDIO.contains(&ext.as_str()) {
+        Some(Family::Kind(Media::Audio))
+    } else {
+        (ext == LINK_ONLY).then_some(Family::Webm)
+    }
 }
 
 /// What a local image path is drawn as when its extension (in any case) is video or audio; `None`
@@ -100,21 +125,45 @@ pub fn qlmanage_args(file: &Path, out_dir: &Path) -> Vec<String> {
     vec!["-t".into(), "-s".into(), POSTER_SIZE.into(), "-o".into(), out_dir.to_string_lossy().into_owned(), file.to_string_lossy().into_owned()]
 }
 
-/// `/usr/bin/open`'s arguments for playing a video in QuickTime Player: always named, never a
-/// bare `open`.
+/// `/usr/bin/open`'s arguments for playing a video or an audio file (QuickTime Player plays
+/// `mp3`, `m4a`, `wav` and `aac` too): the app always named, never a bare `open`, which could run
+/// a program. The path is absolute, so it is never taken for an option.
 pub fn quicktime_args(file: &Path) -> Vec<String> {
     vec!["-a".into(), "QuickTime Player".into(), file.to_string_lossy().into_owned()]
 }
 
-/// `/usr/bin/open`'s arguments for opening a media file with the app the system has for its
-/// type. Only a path `kind` or `is_link` admitted (an audio or `webm` extension) is opened this
-/// way, so it is never a program, and it is absolute, so it is never taken for an option.
-pub fn system_args(file: &Path) -> Vec<String> {
-    vec![file.to_string_lossy().into_owned()]
+/// `/usr/bin/open`'s arguments for showing a file in Finder (a local `webm`, which nothing on a
+/// Mac plays for certain): `-R` only selects it, it never opens it.
+pub fn reveal_args(file: &Path) -> Vec<String> {
+    vec!["-R".into(), file.to_string_lossy().into_owned()]
+}
+
+/// Whether a local media file may be opened: the path it resolves to (`canonical`, `None` when it
+/// cannot be resolved, as for a missing file) is a plain file (`plain_file`) whose extension names
+/// the same family (video, audio or `webm`) as the path written. So a link named `song.mp3` that
+/// resolves to an app, a script or a folder is refused.
+pub fn open_allowed(original: &Path, canonical: Option<&Path>, plain_file: bool) -> bool {
+    let Some(canonical) = canonical else { return false };
+    let written = family(original);
+    plain_file && written.is_some() && written == family(canonical)
+}
+
+/// The file to open for the local media path `original` (absolute): its canonical path when
+/// `open_allowed` passes, else `None`. It reads the disk, so the caller runs it on the background
+/// executor, and the canonical path is what is opened.
+pub fn checked_open_path(original: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(original).ok();
+    let plain_file = canonical.as_deref().is_some_and(Path::is_file);
+    if open_allowed(original, canonical.as_deref(), plain_file) {
+        canonical
+    } else {
+        None
+    }
 }
 
 /// A file size as the audio box shows it: bytes below a KB, else KB, MB or GB (of 1024) with one
-/// decimal.
+/// decimal, in the next unit up once the rounded value would reach 1024 (`1.0 MB`, never
+/// `1024.0 KB`).
 pub fn size_text(bytes: u64) -> String {
     const UNITS: [&str; 3] = ["KB", "MB", "GB"];
     if bytes < 1024 {
@@ -122,7 +171,7 @@ pub fn size_text(bytes: u64) -> String {
     }
     let mut value = bytes as f64 / 1024.0;
     let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
+    while (value * 10.0).round() >= 10240.0 && unit + 1 < UNITS.len() {
         value /= 1024.0;
         unit += 1;
     }
@@ -232,16 +281,47 @@ mod tests {
     }
 
     #[test]
-    fn remote_media_and_webm_are_links_and_audio_opens_with_the_system() {
+    fn remote_media_and_webm_are_links_and_a_local_webm_is_revealed() {
         assert!(is_link("https://x/a.MP4?t=3") && is_link("http://x/s.mp3#a") && is_link("https://x/a.webm") && is_link("clips/a.webm"));
         assert!(!is_link("clip.mov") && !is_link("https://x/a.png") && !is_link("https://x.com"));
-        assert_eq!(system_args(Path::new("/m/song.mp3")), ["/m/song.mp3"]);
+        assert_eq!(reveal_args(Path::new("/v/a.webm")), ["-R", "/v/a.webm"]);
         assert_eq!(size_text(1023), "1023 B");
+        assert_eq!(size_text(1_048_575), "1.0 MB", "a rounded 1024 KB is the next unit");
+        assert_eq!(size_text(1_048_523), "1023.9 KB");
         assert_eq!(size_text(3 * 1024 * 1024 * 1024), "3.0 GB");
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.png"), "x").unwrap();
         std::fs::write(dir.path().join("b.png"), "x").unwrap();
         assert!(thumbnail_in(dir.path()).is_none(), "two pngs: not the one Quick Look made");
+    }
+
+    #[test]
+    fn a_media_file_opens_only_when_it_resolves_to_a_plain_file_of_its_own_kind() {
+        let (song, webm) = (Path::new("/v/song.mp3"), Path::new("/v/a.webm"));
+        assert!(open_allowed(song, Some(Path::new("/w/real.M4A")), true), "audio to audio");
+        assert!(open_allowed(webm, Some(Path::new("/w/b.webm")), true));
+        assert!(!open_allowed(song, Some(Path::new("/Applications/Calculator.app")), false), "a link to an app");
+        assert!(!open_allowed(song, Some(Path::new("/v/run.command")), true), "a link to a script");
+        assert!(!open_allowed(song, Some(Path::new("/v/clip.mov")), true), "audio that is a video");
+        assert!(!open_allowed(song, Some(song), false), "a folder named like audio");
+        assert!(!open_allowed(song, None, false), "a missing file");
+        assert!(!open_allowed(Path::new("/v/run.command"), Some(Path::new("/v/run.command")), true), "not media at all");
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.mp3");
+        std::fs::write(&real, "a").unwrap();
+        let script = dir.path().join("run.command");
+        std::fs::write(&script, "#!/bin/sh").unwrap();
+        let (good, bad) = (dir.path().join("good.mp3"), dir.path().join("bad.mp3"));
+        std::os::unix::fs::symlink(&real, &good).unwrap();
+        std::os::unix::fs::symlink(&script, &bad).unwrap();
+        std::fs::create_dir(dir.path().join("folder.mov")).unwrap();
+        let canonical = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(checked_open_path(&real), Some(canonical.clone()));
+        assert_eq!(checked_open_path(&good), Some(canonical), "a link opens what it resolves to");
+        assert_eq!(checked_open_path(&bad), None);
+        assert_eq!(checked_open_path(&dir.path().join("folder.mov")), None);
+        assert_eq!(checked_open_path(&dir.path().join("gone.mp3")), None);
     }
 
     #[test]
