@@ -658,20 +658,19 @@ sh packaging/test.sh   # a dev build bundled, a manifest signed with a throwaway
 ## Screenshots
 
 The pictures in `docs/images/` (this README's and csarko.sh's) are taken of the real app by
-`scripts/shoot.sh`, run from Terminal.app (not from a shell inside Arkos: macOS attributes the
-capture to the app the shell runs in, and asks that app for the Screen Recording permission): a dev build opens a demo project (`scripts/shoot/demo`, a small link
-shortener) with the layout in `scripts/shoot/story.toml`, real Claude Code sessions get the
-prompts written there, and each shot is captured with `screencapture` once the tabs show the
-states it asks for. Nothing in them is staged afterwards; change the storyboard to change the
-pictures. The shoot runs a second arkosd of its own (`ARKOS_APP_SUPPORT` names its state
-folder, under `~/Library/Caches/arkos-shoot`), so the Arkos in use is untouched. It spends a
-few minutes of your Claude Code account, needs the Screen Recording permission for the app it
-runs from, and does not need its window in front (it captures by window id). The browser pane
-needs the Accessibility permission for the shoot's own bundle
-(`~/Library/Caches/arkos-shoot/app/Arkos IDE.app`, signed with the Developer ID from your
-keychain, so the grant survives rebuilds; an ad-hoc signature's identity is the binary's hash):
-add the bundle under System Settings > Privacy & Security > Accessibility once. Progress captures
-and the panes' states land in `docs/images/progress/` every 20 s while it runs, and a run whose
+`scripts/shoot.sh`: one scene per storyboard in `scripts/shoot/stories/` (the multi tasker, the
+web developer, the blogger), each a dev build on a demo project of its own (`scripts/shoot/demo`)
+with real Claude Code sessions given the prompts written there, captured once the tabs show the
+states the storyboard asks for, and the hero (`hero-dark.png`, `hero-light.png`) composed from
+the scenes' stills with the multi tasker in front. Nothing in them is staged afterwards; change a
+storyboard to change its picture, and `scripts/shoot.sh <scene>` redoes that scene alone
+(`compose` only remakes the hero). The shoot runs a second arkosd of its own (`ARKOS_APP_SUPPORT`
+names its state folder, under `~/Library/Caches/arkos-shoot`), so the Arkos in use is untouched,
+and runs as an app of its own ("Arkos Shoot", signed with the Developer ID from your keychain, as
+is the shoot's copy of Arkos), so macOS attributes its captures to it whatever shell starts it:
+grant it Screen Recording once, and the shoot's copy of Arkos Accessibility once (the browser
+pane). Each scene spends a few minutes of your Claude Code account. Progress captures and the
+panes' states land in `docs/images/progress/<scene>/` every 20 s while it runs, and a scene whose
 Claude Code panes never start is ended after a minute.
 
 ## If you get headaches

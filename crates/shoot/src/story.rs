@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Story {
+    pub scene: Scene,
     pub demo: Demo,
     pub window: WindowSpec,
     #[serde(rename = "pane")]
@@ -17,14 +18,31 @@ pub struct Story {
     pub shots: Vec<Shot>,
 }
 
-/// The project the window opens: a copy of `fixture` made into a git repository, with a
-/// worktree per name under `.worktrees/`, and its `site` folder served on `port`.
+/// The scene: its name is the pictures' (`<name>-dark.png`), its caption the words under it
+/// in the composed hero.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scene {
+    pub name: String,
+    /// Read by scripts/shoot.sh when it composes the hero.
+    #[allow(dead_code)]
+    pub caption: String,
+}
+
+/// The project the window opens: a copy of `fixture`, each of `repos` (folders of the copy;
+/// `.` is the copy itself) made a git repository, with a worktree per name under
+/// `.worktrees/` of the copy when it is one, and its `site` folder served on `port`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Demo {
     pub name: String,
     pub fixture: PathBuf,
-    pub port: u16,
+    /// Only these entries of the fixture are copied, when set.
+    #[serde(default)]
+    pub only: Vec<String>,
+    pub port: Option<u16>,
+    #[serde(default = "default_repos")]
+    pub repos: Vec<String>,
     #[serde(default)]
     pub worktrees: Vec<String>,
     #[serde(default = "default_site")]
@@ -36,6 +54,10 @@ pub struct Demo {
 
 fn default_site() -> String {
     "public".into()
+}
+
+fn default_repos() -> Vec<String> {
+    vec![".".into()]
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +72,16 @@ pub struct WindowSpec {
     /// Folders the file tree shows open, relative to the demo.
     #[serde(default)]
     pub expanded: Vec<String>,
+    #[serde(default)]
+    pub sidebar: Sidebar,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sidebar {
+    #[default]
+    Open,
+    Collapsed,
 }
 
 fn default_preset() -> String {
@@ -60,8 +92,9 @@ fn default_sidebar_width() -> f32 {
     240.0
 }
 
-/// A tab: a shell in the demo (or in one of its worktrees, `cwd`) that runs `claude` with a
-/// prompt or a plain command, or a browser tab waiting for a Chrome window on `browser`.
+/// A tab: a shell in the demo (or in a folder of it, `cwd`, a worktree's `.worktrees/<name>`
+/// included) that runs `claude` with a prompt or a plain command; a browser tab waiting for a
+/// Chrome window on `browser`; or a file of the demo open in the viewer (`view`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pane {
@@ -70,11 +103,25 @@ pub struct Pane {
     pub claude: Option<String>,
     pub run: Option<String>,
     pub browser: Option<String>,
+    pub view: Option<String>,
 }
 
 impl Pane {
     pub fn is_browser(&self) -> bool {
         self.browser.is_some()
+    }
+
+    /// A shell: a session is created for it.
+    pub fn is_terminal(&self) -> bool {
+        self.browser.is_none() && self.view.is_none()
+    }
+
+    /// The folder its shell starts in, or its file's folder.
+    pub fn dir(&self, demo: &Path) -> PathBuf {
+        match &self.cwd {
+            Some(c) => demo.join(c),
+            None => demo.to_path_buf(),
+        }
     }
 }
 
@@ -157,16 +204,17 @@ impl Story {
             if !seen.insert(p.name.as_str()) {
                 bail!("pane {:?} is listed twice", p.name);
             }
-            let kinds = [p.claude.is_some(), p.run.is_some(), p.browser.is_some()].iter().filter(|b| **b).count();
+            let kinds = [p.claude.is_some(), p.run.is_some(), p.browser.is_some(), p.view.is_some()].iter().filter(|b| **b).count();
             if kinds > 1 {
-                bail!("pane {:?}: one of claude, run or browser, not several", p.name);
+                bail!("pane {:?}: one of claude, run, browser or view, not several", p.name);
             }
-            if p.browser.is_some() && p.cwd.is_some() {
-                bail!("pane {:?}: a browser tab has no cwd", p.name);
+            if !p.is_terminal() && p.cwd.is_some() {
+                bail!("pane {:?}: only a shell has a cwd", p.name);
             }
-            if let Some(cwd) = &p.cwd {
-                if !self.demo.worktrees.contains(cwd) {
-                    bail!("pane {:?}: cwd {cwd:?} is not one of demo.worktrees", p.name);
+            for rel in p.cwd.iter().chain(p.view.iter()) {
+                let path = Path::new(rel);
+                if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    bail!("pane {:?}: {rel:?} must be a folder or file inside the demo", p.name);
                 }
             }
         }
@@ -181,6 +229,15 @@ impl Story {
             if placed.iter().filter(|n| n == name).count() != 1 {
                 bail!("pane {name:?} must appear exactly once in the layout");
             }
+        }
+        if self.scene.name.is_empty() || self.scene.name.contains('/') {
+            bail!("scene.name must be a plain name");
+        }
+        if self.demo.repos.is_empty() {
+            bail!("demo.repos must name at least one folder (\".\" for the demo itself)");
+        }
+        if !self.demo.worktrees.is_empty() && !self.demo.repos.iter().any(|r| r == ".") {
+            bail!("demo.worktrees needs the demo itself among demo.repos");
         }
         if self.shots.is_empty() {
             bail!("no [[shot]]");
@@ -198,9 +255,12 @@ impl Story {
                 }
             }
             for pane in s.changed.keys() {
-                if !seen.contains(pane.as_str()) || self.pane(pane).is_browser() {
-                    bail!("shot {:?}: changed names {pane:?}, which is not a terminal pane", s.name);
+                if !seen.contains(pane.as_str()) || !self.pane(pane).is_terminal() {
+                    bail!("shot {:?}: changed names {pane:?}, which is not a shell pane", s.name);
                 }
+            }
+            if s.chrome && !self.panes.iter().any(|p| p.is_browser()) {
+                bail!("shot {:?}: chrome = true, but no pane is a browser", s.name);
             }
             for c in &s.crops {
                 let [x, y, w, h] = c.rect;
@@ -261,7 +321,7 @@ pub fn workspace_json(story: &Story, project: &Path, sessions: &BTreeMap<String,
     let mut ids = 1u64;
     let mut names = Vec::new();
     let mut focused = None;
-    let root = node_json(&story.layout, story, project, sessions, worktree_dirs, &mut ids, &mut names, &mut focused);
+    let root = node_json(&story.layout, story, project, sessions, &mut ids, &mut names, &mut focused);
     let expanded: Vec<_> = story.window.expanded.iter().map(|d| project.join(d)).collect();
     let (x, y, w, h) = frame;
     serde_json::json!({
@@ -270,7 +330,7 @@ pub fn workspace_json(story: &Story, project: &Path, sessions: &BTreeMap<String,
         "tree": { "root": root, "next_id": ids, "focused": focused.unwrap_or(1), "maximized": null, "names": names },
         "text_preset": story.window.preset,
         "sidebar": {
-            "width": story.window.sidebar_width, "collapsed": false, "show_ignored": false,
+            "width": story.window.sidebar_width, "collapsed": story.window.sidebar == Sidebar::Collapsed, "show_ignored": false,
             "expanded": expanded, "worktrees_expanded": worktree_dirs.values().collect::<Vec<_>>(),
             "explorer_open": true, "worktrees_open": true
         },
@@ -279,8 +339,7 @@ pub fn workspace_json(story: &Story, project: &Path, sessions: &BTreeMap<String,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<String, u64>, worktree_dirs: &BTreeMap<String, PathBuf>, ids: &mut u64, names: &mut Vec<(u64, String)>, focused: &mut Option<u64>) -> serde_json::Value {
+fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<String, u64>, ids: &mut u64, names: &mut Vec<(u64, String)>, focused: &mut Option<u64>) -> serde_json::Value {
     let mut next = || {
         let id = *ids;
         *ids += 1;
@@ -297,12 +356,15 @@ fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<Str
                 let tab_id = next();
                 tab_ids.push(tab_id);
                 names.push((tab_id, name.clone()));
-                tab_json.push(match &pane.browser {
-                    Some(url) => serde_json::json!({ "Browser": { "url": url, "app_mode": true } }),
-                    None => {
-                        let cwd = pane.cwd.as_ref().map(|w| worktree_dirs[w].clone());
-                        serde_json::json!({ "Terminal": { "session": sessions[name], "cwd": cwd } })
-                    }
+                tab_json.push(if let Some(url) = &pane.browser {
+                    serde_json::json!({ "Browser": { "url": url, "app_mode": true } })
+                } else if let Some(file) = &pane.view {
+                    serde_json::json!({ "Viewer": { "path": project.join(file) } })
+                } else {
+                    // A shell elsewhere than the project names its folder, so a restart
+                    // reattaches it only where it lives.
+                    let cwd = pane.cwd.as_ref().map(|c| project.join(c));
+                    serde_json::json!({ "Terminal": { "session": sessions[name], "cwd": cwd } })
                 });
             }
             let n = tabs.len();
@@ -310,13 +372,12 @@ fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<Str
             let mut mru: Vec<usize> = (0..n).collect();
             mru.retain(|i| *i != active);
             mru.insert(0, active);
-            let _ = project;
             serde_json::json!({ "Leaf": { "id": pane_id, "tabs": tab_json, "active": active, "mru": mru, "ids": tab_ids } })
         }
         Node::Split { split, ratio, first, second } => {
             let id = next();
-            let first = node_json(first, story, project, sessions, worktree_dirs, ids, names, focused);
-            let second = node_json(second, story, project, sessions, worktree_dirs, ids, names, focused);
+            let first = node_json(first, story, project, sessions, ids, names, focused);
+            let second = node_json(second, story, project, sessions, ids, names, focused);
             let orientation = match split {
                 Orientation::Horizontal => "Horizontal",
                 Orientation::Vertical => "Vertical",
@@ -331,6 +392,10 @@ mod tests {
     use super::*;
 
     const STORY: &str = r#"
+[scene]
+name = "web-developer"
+caption = "The web developer"
+
 [demo]
 name = "lantern"
 fixture = "scripts/shoot/demo"
@@ -344,7 +409,7 @@ expanded = ["src"]
 
 [[pane]]
 name = "work"
-cwd = "rate-limit"
+cwd = ".worktrees/rate-limit"
 claude = "do the thing"
 
 [[pane]]
@@ -359,10 +424,14 @@ run = "npm test"
 name = "site"
 browser = "http://localhost:4173/"
 
+[[pane]]
+name = "readme"
+view = "README.md"
+
 [layout]
 split = "horizontal"
 ratio = 0.6
-first = { tabs = ["work", "tests"] }
+first = { tabs = ["work", "tests", "readme"] }
 second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second = { tabs = ["shell"] } }
 
 [[shot]]
@@ -386,7 +455,9 @@ theme = "light"
     #[test]
     fn a_story_parses_and_checks() {
         let s = Story::parse(STORY).unwrap();
-        assert_eq!(s.panes.len(), 4);
+        assert_eq!(s.panes.len(), 5);
+        assert_eq!(s.scene.name, "web-developer");
+        assert_eq!(s.window.sidebar, Sidebar::Open);
         assert_eq!(s.shots[0].crops[0].name, "tabs");
         assert_eq!(s.shots[1].theme, "light");
         assert_eq!(s.window.preset, "compact");
@@ -394,9 +465,16 @@ theme = "light"
 
     #[test]
     fn a_pane_missing_from_the_layout_is_refused() {
-        let text = STORY.replace(r#"first = { tabs = ["work", "tests"] }"#, r#"first = { tabs = ["work"] }"#);
+        let text = STORY.replace(r#"first = { tabs = ["work", "tests", "readme"] }"#, r#"first = { tabs = ["work", "readme"] }"#);
         let err = Story::parse(&text).unwrap_err().to_string();
         assert!(err.contains("\"tests\" must appear exactly once"), "{err}");
+    }
+
+    #[test]
+    fn a_folder_outside_the_demo_is_refused() {
+        let text = STORY.replace(r#"cwd = ".worktrees/rate-limit""#, r#"cwd = "../elsewhere""#);
+        let err = Story::parse(&text).unwrap_err().to_string();
+        assert!(err.contains("inside the demo"), "{err}");
     }
 
     #[test]
@@ -420,7 +498,9 @@ theme = "light"
         assert_eq!(left["tabs"][0]["Terminal"]["session"], 11);
         assert_eq!(left["tabs"][0]["Terminal"]["cwd"], "/tmp/lantern/.worktrees/rate-limit");
         assert_eq!(left["tabs"][1]["Terminal"]["cwd"], serde_json::Value::Null);
-        assert_eq!(left["mru"], serde_json::json!([0, 1]));
+        assert_eq!(left["tabs"][2]["Viewer"]["path"], "/tmp/lantern/README.md");
+        assert_eq!(left["mru"], serde_json::json!([0, 1, 2]));
+        assert_eq!(ws["sidebar"]["collapsed"], false);
         let right = &root["second"]["Split"];
         assert_eq!(right["orientation"], "Vertical");
         assert_eq!(right["first"]["Leaf"]["tabs"][0]["Browser"], serde_json::json!({ "url": "http://localhost:4173/", "app_mode": true }));
@@ -428,7 +508,7 @@ theme = "light"
         // Every pane, split and tab id is distinct and below next_id; the names follow the tab ids.
         let next = ws["tree"]["next_id"].as_u64().unwrap();
         let names = ws["tree"]["names"].as_array().unwrap();
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 5);
         for n in names {
             assert!(n[0].as_u64().unwrap() < next);
         }

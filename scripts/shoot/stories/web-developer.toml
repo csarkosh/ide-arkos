@@ -1,0 +1,58 @@
+# The web developer: a project with a worktree, Claude Code on a feature branch and on the
+# main checkout, the app's page docked in Chrome, tests in a shell.
+
+[scene]
+name = "web-developer"
+caption = "The web developer"
+
+[demo]
+name = "lantern"
+dir = "~/Projects/lantern"
+fixture = "scripts/shoot/demo/lantern"
+port = 4173
+worktrees = ["rate-limit"]
+
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar_width = 240
+expanded = ["src"]
+
+[[pane]]
+name = "rate limit"
+cwd = ".worktrees/rate-limit"
+claude = "Add rate limiting to POST /links: 20 requests a minute per client address, answered 429 with a Retry-After header. Put the limiter in src/limiter.js with its own tests in test/limiter.test.js, wire it into src/server.js with tests for the route in test/server.test.js (start the server on a free port in the tests), add a GET /stats route that reports how many links exist and how many requests the limiter refused (with a test), document both in README.md, then run npm test and fix anything that fails."
+
+[[pane]]
+name = "durations"
+claude = "Add tests for parseDuration in src/time.js to test/time.test.js: 30s, 5m, 2h, 1h30m, an empty string and junk. Run them."
+
+[[pane]]
+name = "shell"
+run = "npm test"
+
+[[pane]]
+name = "site"
+browser = "http://localhost:4173/"
+
+[layout]
+split = "horizontal"
+ratio = 0.6
+first = { tabs = ["rate limit", "durations"] }
+second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second = { tabs = ["shell"] } }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { "rate limit" = "working", durations = "waiting" }
+changed = { "rate limit" = 3 }
+after_secs = 30
+timeout_secs = 360
+chrome = true
+
+[[shot]]
+name = "light"
+theme = "light"
+wait = { "rate limit" = "waiting", durations = "waiting" }
+timeout_secs = 360

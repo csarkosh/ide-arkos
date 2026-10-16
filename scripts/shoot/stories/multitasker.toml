@@ -1,0 +1,59 @@
+# The multi tasker: one window, three Claude Code sessions on three unrelated workstreams,
+# each orchestrating its own subagents. No sidebar: just the sessions. This is the hero.
+
+[scene]
+name = "multitasker"
+caption = "The multi tasker"
+
+[demo]
+name = "workbench"
+dir = "~/Projects/workbench"
+fixture = "scripts/shoot/demo"
+only = ["lantern", "mail", "trip"]
+# Each folder becomes a repository of its own: three independent projects side by side.
+repos = ["lantern", "mail", "trip"]
+
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar = "collapsed"
+
+[[pane]]
+name = "lantern"
+cwd = "lantern"
+claude = "Add rate limiting to POST /links: 20 requests a minute per client address, answered 429 with a Retry-After header. Split the work across subagents: one writes src/limiter.js with its tests, one wires it into src/server.js with route tests that start the server on a free port, one documents it in README.md. Then run npm test and fix anything that fails."
+
+[[pane]]
+name = "inbox"
+cwd = "mail"
+claude = "Triage my inbox: the messages are in inbox/, one file each. Write triage.md grouping them by urgency (today, this week, ignore) with a one-line summary and the action each needs, then draft a reply for every message that needs one into replies/<same name>.md, short and plain, in my voice. Use a subagent per message for the drafts, then review them together for consistency."
+
+[[pane]]
+name = "lisbon"
+cwd = "trip"
+claude = "Plan the trip in notes.md. Write itinerary.md day by day with times and how we get around, budget.md with a table that totals against the budget in the notes, and packing.md. Use one subagent for the itinerary and one for the budget, then reconcile them so the budget matches the plan."
+
+[layout]
+split = "horizontal"
+ratio = 0.5
+first = { tabs = ["lantern"] }
+second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox"] }, second = { tabs = ["lisbon"] } }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { lantern = "working", inbox = "working" }
+changed = { inbox = 2, lisbon = 1 }
+after_secs = 45
+timeout_secs = 420
+
+[[shot.crop]]
+name = "tabs"
+rect = [0.0, 0.0, 1.0, 0.075]
+
+[[shot]]
+name = "light"
+theme = "light"
+wait = { lantern = "waiting", inbox = "waiting", lisbon = "waiting" }
+timeout_secs = 480

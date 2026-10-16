@@ -1,0 +1,50 @@
+# The blogger: a writer, not an engineer. The posts in the file tree, two of them open in the
+# markdown editor, and a Claude Code session drafting the next one from the notes.
+
+[scene]
+name = "blogger"
+caption = "The blogger"
+
+[demo]
+name = "field-notes"
+dir = "~/Projects/field-notes"
+fixture = "scripts/shoot/demo/blog"
+
+[window]
+width = 1320
+height = 860
+preset = "comfortable"
+sidebar_width = 240
+expanded = ["posts", "notes"]
+
+[[pane]]
+name = "decision logs"
+view = "posts/2026-10-02-decision-logs.md"
+
+[[pane]]
+name = "saying no"
+view = "posts/2026-09-18-saying-no-in-writing.md"
+
+[[pane]]
+name = "assistant"
+claude = "Read notes/metrics-that-lie.md and the four posts in posts/, then draft the new post as posts/2026-10-16-metrics-that-lie.md in the same voice and shape as the others: a one-line opening, three or four short sections with plain headings, about 500 words, no em-dashes. Keep every example from the notes. When it is written, read it back once and tighten anything that sounds like a slide."
+
+[layout]
+split = "horizontal"
+ratio = 0.58
+first = { tabs = ["decision logs", "saying no"] }
+second = { tabs = ["assistant"] }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { assistant = "working" }
+changed = { assistant = 1 }
+after_secs = 20
+timeout_secs = 300
+
+[[shot]]
+name = "light"
+theme = "light"
+wait = { assistant = "waiting" }
+timeout_secs = 300

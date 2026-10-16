@@ -92,11 +92,16 @@ fn main() {
 fn bundle_only(opts: Opts) -> Result<()> {
     let dirs = Dirs::new()?;
     let story_path = opts.story.canonicalize().with_context(|| format!("story {}", opts.story.display()))?;
-    let repo = story_path.parent().and_then(Path::parent).and_then(Path::parent).context("the story's repository")?.to_path_buf();
+    let repo = repo_of(&story_path)?;
     let bin = opts.bin.canonicalize().with_context(|| format!("binaries in {}", opts.bin.display()))?;
     let app = make_bundle(&repo, &bin, &dirs.cache.join("app"))?;
     println!("{}", app.display());
     Ok(())
+}
+
+/// The repository a story belongs to: the nearest folder above it with a Cargo.toml.
+fn repo_of(story: &Path) -> Result<PathBuf> {
+    story.ancestors().skip(1).find(|d| d.join("Cargo.toml").is_file()).map(Path::to_path_buf).with_context(|| format!("no Cargo.toml above {}", story.display()))
 }
 
 fn say(msg: &str) {
@@ -149,8 +154,7 @@ fn run(opts: Opts) -> Result<()> {
     let dirs = Dirs::new()?;
     let story_path = opts.story.canonicalize().with_context(|| format!("story {}", opts.story.display()))?;
     let story = Story::parse(&std::fs::read_to_string(&story_path)?)?;
-    // scripts/shoot/story.toml: the repository is two folders up.
-    let repo = story_path.parent().and_then(Path::parent).and_then(Path::parent).context("the story's repository")?.to_path_buf();
+    let repo = repo_of(&story_path)?;
     let bin = opts.bin.canonicalize().with_context(|| format!("binaries in {}", opts.bin.display()))?;
     for name in ["arkos", "arkosd"] {
         if !bin.join(name).is_file() {
@@ -175,6 +179,14 @@ fn run(opts: Opts) -> Result<()> {
     let mut running = Running { pages: story.panes.iter().filter_map(|p| p.browser.clone()).collect(), ..Running::default() };
     let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, &mut running);
     stop(&mut running, &dirs);
+    // The verdict as a file too: started through Launch Services (scripts/shoot.sh), the
+    // process has no exit code anyone sees.
+    let progress = out.join("progress").join(&story.scene.name);
+    let _ = std::fs::create_dir_all(&progress);
+    let _ = std::fs::write(progress.join("result.txt"), match &result {
+        Ok(()) => "ok\n".to_string(),
+        Err(e) => format!("failed: {e:#}\n"),
+    });
     result
 }
 
@@ -190,10 +202,10 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 2. Its site, for the browser pane.
     let site = demo.join(&story.demo.site);
-    if site.is_dir() {
+    if let (Some(port), true) = (story.demo.port, site.is_dir()) {
         running.site = Some(
             Command::new("python3")
-                .args(["-m", "http.server", &story.demo.port.to_string(), "--bind", "127.0.0.1", "--directory"])
+                .args(["-m", "http.server", &port.to_string(), "--bind", "127.0.0.1", "--directory"])
                 .arg(&site)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -238,11 +250,8 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 5. A shell per terminal pane, before the window exists, so the layout can name them.
     let mut sessions = BTreeMap::new();
-    for pane in story.panes.iter().filter(|p| !p.is_browser()) {
-        let cwd = match &pane.cwd {
-            Some(w) => worktrees[w].clone(),
-            None => demo.clone(),
-        };
+    for pane in story.panes.iter().filter(|p| p.is_terminal()) {
+        let cwd = pane.dir(&demo);
         let id = client.create(&cwd)?;
         running.sessions.push(id);
         sessions.insert(pane.name.clone(), id.0);
@@ -285,9 +294,9 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     }
     pause(Duration::from_secs(2))?;
     let window_id = arkos_window_id(repo, window_pid)?;
-    let progress = Progress { dir: out.join("progress"), window_id, started: Instant::now(), last: Some(std::cell::Cell::new(Instant::now() - Duration::from_secs(60))) };
+    let progress = Progress { dir: out.join("progress").join(&story.scene.name), window_id, started: Instant::now(), last: Some(std::cell::Cell::new(Instant::now() - Duration::from_secs(60))) };
+    let _ = std::fs::remove_dir_all(&progress.dir);
     std::fs::create_dir_all(&progress.dir)?;
-    let _ = std::fs::remove_file(progress.dir.join("log.txt"));
 
     // 8. Type into the panes: plain commands at once; `claude`, then the prompt once it has
     //    drawn. A folder with pre-approved permissions in .claude/settings.json gets Claude
@@ -329,26 +338,27 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             theme = shot.theme.clone();
             pause(Duration::from_millis(1500))?;
         }
-        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress, &demo, &worktrees)?;
+        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress, &demo)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
         // The captures themselves stay with the progress files; `out` gets the framed pictures.
-        let raw = progress.dir.join(format!("{}.raw.png", shot.name));
+        let picture = format!("{}-{}", story.scene.name, shot.name);
+        let raw = progress.dir.join(format!("{picture}.raw.png"));
         capture_window(window_id, &raw)?;
         // The Chrome window Arkos docked is another app's window: captured on its own and laid
         // over the pane it sits on.
         let overlay = match running.chrome_before.as_deref().map(|before| docked_chrome(repo, frame, before)).transpose()?.flatten() {
             Some((id, x, y)) => {
-                let path = progress.dir.join(format!("{}.chrome.png", shot.name));
+                let path = progress.dir.join(format!("{picture}.chrome.png"));
                 capture_window(id, &path)?;
                 Some((path, x - frame.0, y - frame.1))
             }
             None => None,
         };
-        frame_image(repo, &raw, &out.join(format!("{}.png", shot.name)), shot, overlay.as_ref())?;
-        say(&format!("{}: {}", shot.name, out.join(format!("{}.png", shot.name)).display()));
+        frame_image(repo, &raw, &out.join(format!("{picture}.png")), shot, overlay.as_ref())?;
+        say(&format!("{}: {}", shot.name, out.join(format!("{picture}.png")).display()));
     }
     if !failures.is_empty() {
         bail!("taken, but not as the story asked: {}", failures.join("; "));
@@ -360,7 +370,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 /// opens the browser pane's page in Chrome the first time a session works, which is when
 /// Arkos docks a new Chrome window. Returns what was not as asked.
 #[allow(clippy::too_many_arguments)]
-fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>, chrome_before: &mut Option<Vec<u32>>, repo: &Path, progress: &Progress, demo: &Path, worktrees: &BTreeMap<String, PathBuf>) -> Result<Vec<String>> {
+fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>, chrome_before: &mut Option<Vec<u32>>, repo: &Path, progress: &Progress, demo: &Path) -> Result<Vec<String>> {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(shot.timeout_secs);
     let mut settle_until = None;
@@ -368,7 +378,7 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
     loop {
         let states = client.states()?;
         let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
-        progress.note(&shot.name, &story.panes.iter().filter(|p| !p.is_browser()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "), chrome_url.is_some());
+        progress.note(&shot.name, &story.panes.iter().filter(|p| p.is_terminal()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "), chrome_url.is_some());
         // Claude Code says it is working within seconds of a prompt (its UserPromptSubmit
         // hook). Every pane still idle a minute on: it never started, and waiting is waste.
         if !claude_panes.is_empty() && started.elapsed() > Duration::from_secs(60) && claude_panes.iter().all(|p| state_of(p) == ClaudeState::Idle) {
@@ -386,11 +396,7 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
         }
         let mut unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
         for (pane, want) in &shot.changed {
-            let dir = match &story.pane(pane).cwd {
-                Some(w) => worktrees[w].clone(),
-                None => demo.to_path_buf(),
-            };
-            let n = changed_files(&dir);
+            let n = changed_files(&story.pane(pane).dir(demo));
             if n < *want {
                 unmet.push(format!("{pane} has changed {n} files, not {want}"));
             }
@@ -638,12 +644,13 @@ fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
     let text = format!(
         "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\
          [font]\npreset = \"{preset}\"\n\n\
-         [sidebar]\nwidth = {sidebar:.1}\ncollapsed = false\n\n\
+         [sidebar]\nwidth = {sidebar:.1}\ncollapsed = {collapsed}\n\n\
          [appearance]\nmode = \"{theme}\"\n\n\
          [recovery]\nstart_at_login = \"off\"\n\n\
          [update]\nauto = false\ncheck_every_secs = 0\n",
         preset = story.window.preset,
         sidebar = story.window.sidebar_width,
+        collapsed = story.window.sidebar == story::Sidebar::Collapsed,
     );
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }
@@ -656,44 +663,82 @@ fn prepare_demo(fixture: &Path, demo: &Path, story: &Story, arkos_exe: &Path) ->
     if !fixture.is_dir() {
         bail!("fixture {} is not a folder", fixture.display());
     }
+    // The copy is remade every run; a folder that is not ours is never touched.
+    if demo.exists() && !demo.join(".arkos-shoot").exists() && demo.read_dir().map(|mut d| d.next().is_some()).unwrap_or(true) {
+        bail!("{} exists and was not made by the shoot; remove it or point demo.dir elsewhere", demo.display());
+    }
     if demo.exists() {
         std::fs::remove_dir_all(demo)?;
     }
-    copy_dir(fixture, demo)?;
-    let git = |args: &[&str]| -> Result<()> {
+    if story.demo.only.is_empty() {
+        copy_dir(fixture, demo)?;
+    } else {
+        std::fs::create_dir_all(demo)?;
+        for entry in &story.demo.only {
+            let from = fixture.join(entry);
+            if !from.is_dir() {
+                bail!("demo.only names {entry:?}, which the fixture does not have");
+            }
+            copy_dir(&from, &demo.join(entry))?;
+        }
+    }
+    std::fs::write(demo.join(".arkos-shoot"), "made by arkos-shoot; deleted and remade on each run\n")?;
+    let git = |dir: &Path, args: &[&str]| -> Result<()> {
         let status = Command::new("git")
             .args(["-c", "user.name=Demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"])
             .args(args)
-            .current_dir(demo)
+            .current_dir(dir)
             .stdout(Stdio::null())
             .status()
             .context("git")?;
         if !status.success() {
-            bail!("git {} failed in {}", args.join(" "), demo.display());
+            bail!("git {} failed in {}", args.join(" "), dir.display());
         }
         Ok(())
     };
-    git(&["init", "-q"])?;
-    // Two commits, so the history reads as a project's rather than an import's.
-    let site = story.demo.site.as_str();
-    git(&["add", "-A", "--", ".", &format!(":!{site}")])?;
-    git(&["commit", "-q", "-m", "Lantern: a link shortener in one process"])?;
-    git(&["add", "-A"])?;
-    git(&["commit", "-q", "-m", "Serve the landing page"])?;
+    for repo in &story.demo.repos {
+        let dir = demo.join(repo);
+        if !dir.is_dir() {
+            bail!("demo.repos names {repo:?}, which the fixture does not have");
+        }
+        git(&dir, &["init", "-q"])?;
+        // Two commits when there is a site to add, so the history reads as a project's
+        // rather than an import's; one otherwise.
+        let site = &story.demo.site;
+        let title = first_heading(&dir.join("README.md")).unwrap_or_else(|| "Initial import".into());
+        if dir.join(site).is_dir() {
+            git(&dir, &["add", "-A", "--", ".", &format!(":!{site}")])?;
+            git(&dir, &["commit", "-q", "-m", &title])?;
+            git(&dir, &["add", "-A"])?;
+            git(&dir, &["commit", "-q", "-m", "Serve the landing page"])?;
+        } else {
+            git(&dir, &["add", "-A"])?;
+            git(&dir, &["commit", "-q", "-m", &title])?;
+        }
+    }
     let mut worktrees = BTreeMap::new();
     for name in &story.demo.worktrees {
         let dir = demo.join(".worktrees").join(name);
-        git(&["worktree", "add", "-q", "-b", name, dir.to_str().context("worktree path")?])?;
+        git(demo, &["worktree", "add", "-q", "-b", name, dir.to_str().context("worktree path")?])?;
         worktrees.insert(name.clone(), dir.canonicalize()?);
     }
-    // Claude Code reads .claude/settings.json in the folder it runs in: the worktree has its
-    // own copy.
+    // Claude Code reads .claude/settings.json in the folder it runs in: every pane's folder
+    // gets one (the worktree's is its own; a worktree's checkout does not carry the main one's).
     let settings = claude_settings(arkos_exe);
-    for dir in std::iter::once(demo.to_path_buf()).chain(worktrees.values().cloned()) {
+    let mut dirs: Vec<PathBuf> = story.panes.iter().filter(|p| p.is_terminal()).map(|p| p.dir(demo)).collect();
+    dirs.push(demo.to_path_buf());
+    dirs.sort();
+    dirs.dedup();
+    for dir in dirs {
         std::fs::create_dir_all(dir.join(".claude"))?;
         std::fs::write(dir.join(".claude/settings.json"), serde_json::to_string_pretty(&settings)?)?;
     }
     Ok(worktrees)
+}
+
+/// A README's first heading, for the first commit's message.
+fn first_heading(readme: &Path) -> Option<String> {
+    std::fs::read_to_string(readme).ok()?.lines().find_map(|l| l.strip_prefix("# ").map(|t| t.trim().to_string()))
 }
 
 /// The hooks `arkos hooks install` writes (hook_cli.rs), for the dev binary, and permissions.

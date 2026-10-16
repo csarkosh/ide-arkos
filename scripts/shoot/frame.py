@@ -7,6 +7,11 @@ another capture (the Chrome window Arkos docked) over the window at those pixels
 
     python3 -I scripts/shoot/frame.py <raw.png> <out.png> [--overlay chrome.png:1810,70] [--crop tabs:0,0,0.6,0.12]...
 
+`compose` lays framed stills out as the hero: the first large in front, the others fanned
+behind it, a caption under each (the scene's words), on a transparent ground:
+
+    python3 -I scripts/shoot/frame.py compose <out.png> <front.png>:"The multi tasker" <back.png>:"The web developer" [<back2.png>:"The blogger"]
+
 Needs Pillow."""
 import sys
 from pathlib import Path
@@ -41,7 +46,70 @@ def framed(window):
     return canvas.crop(canvas.getbbox())
 
 
+CAPTION_FONT = "/System/Library/Fonts/Menlo.ttc"
+CAPTION_SIZE = 15 * SCALE
+CAPTION_PAD = (14 * SCALE, 7 * SCALE)
+CAPTION_GAP = 10 * SCALE
+
+
+def captioned(still, text):
+    """The still with its caption centred under it: a dark pill with light text, readable on
+    light and dark pages alike."""
+    font = ImageFont.truetype(CAPTION_FONT, CAPTION_SIZE)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    box = probe.textbbox((0, 0), text, font=font)
+    tw, th = box[2] - box[0], box[3] - box[1]
+    pw, ph = tw + 2 * CAPTION_PAD[0], th + 2 * CAPTION_PAD[1]
+    out = Image.new("RGBA", (max(still.width, pw), still.height + CAPTION_GAP + ph), (0, 0, 0, 0))
+    out.alpha_composite(still, ((out.width - still.width) // 2, 0))
+    px, py = (out.width - pw) // 2, still.height + CAPTION_GAP
+    pill = Image.new("RGBA", out.size, (0, 0, 0, 0))
+    ImageDraw.Draw(pill).rounded_rectangle((px, py, px + pw, py + ph), radius=ph // 2, fill=(17, 19, 24, 235))
+    out.alpha_composite(pill)
+    ImageDraw.Draw(out).text((px + CAPTION_PAD[0] - box[0], py + CAPTION_PAD[1] - box[1]), text, font=font, fill=(232, 234, 240, 255))
+    return out
+
+
+def compose(out, pieces):
+    """pieces: [(path, caption)], the first in front. The backs are scaled down and tilted a
+    little, set behind and to the sides; the front sits lower and centred, as Day Hike's
+    postcards do."""
+    stills = [captioned(Image.open(p).convert("RGBA"), c) for p, c in pieces]
+    front, backs = stills[0], stills[1:]
+    front_w = 1520 * SCALE // 2
+    front = front.resize((front_w, round(front.height * front_w / front.width)), Image.Resampling.LANCZOS)
+    back_w = round(front_w * 0.66)
+    tilts = [3.2, -3.2, 2.0]
+    placed = []
+    for i, b in enumerate(backs):
+        b = b.resize((back_w, round(b.height * back_w / b.width)), Image.Resampling.LANCZOS)
+        b = b.rotate(tilts[i % len(tilts)], expand=True, resample=Image.Resampling.BICUBIC)
+        placed.append(b)
+    # The canvas: the backs peek out by about a third of their width on each side of the front.
+    peek = round(back_w * 0.36)
+    width = front.width + 2 * peek
+    top_drop = round(front.height * 0.09)
+    height = max([front.height + top_drop] + [top_drop // 2 + b.height for b in placed]) + 8 * SCALE
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    for i, b in enumerate(placed):
+        x = 0 if i % 2 == 0 else width - b.width
+        y = top_drop // 2 if i < 2 else top_drop
+        canvas.alpha_composite(b, (x, y))
+    canvas.alpha_composite(front, ((width - front.width) // 2, top_drop))
+    canvas = canvas.crop(canvas.getbbox())
+    canvas.save(out, optimize=True)
+    print(f"{out}: {canvas.width}x{canvas.height}")
+
+
 def main(argv):
+    if argv and argv[0] == "compose":
+        if len(argv) < 4:
+            sys.exit(__doc__)
+        pieces = []
+        for arg in argv[2:]:
+            path, _, caption = arg.rpartition(":")
+            pieces.append((Path(path), caption))
+        return compose(Path(argv[1]), pieces)
     if len(argv) < 2:
         sys.exit(__doc__)
     raw, out = Path(argv[0]), Path(argv[1])
