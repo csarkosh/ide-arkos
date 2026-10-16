@@ -33,7 +33,7 @@ use gpui::{
     div, prelude::*, px, App, Bounds, ClickEvent, ClipboardItem, Context, Div, Entity, EntityId, EntityInputHandler, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, ListAlignment,
     ListOffset, ListState, MouseButton, MouseDownEvent, Pixels, Point, SharedString, UTF16Selection, Window,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -85,7 +85,7 @@ pub enum ViewerEvent {
     SaveFailed,
     /// A link to a markdown file was Cmd+clicked: it opens in a viewer tab of its own.
     OpenPath(PathBuf),
-    /// A `<details>` section was opened or closed: the file's open sections now, for the
+    /// A `<details>` section was opened or closed: the file's section states now, for the
     /// workspace file.
     DetailsToggled(Vec<DetailsOpen>),
 }
@@ -596,10 +596,11 @@ pub struct Viewer {
     /// size, failed, or not to be rendered without Chrome (`md_view::fill` moves them along; a
     /// failed one is rendered again only in a new viewer, once its file is opened again).
     pub diagrams: HashMap<String, mermaid::Diagram>,
-    /// The `<details>` sections shown open, each by its summary and its index among the file's
-    /// sections, so an edit elsewhere in the file keeps it open. Taken from the workspace when the
-    /// viewer is made and saved there on every toggle (`ViewerEvent::DetailsToggled`).
-    pub open_details: BTreeSet<(String, usize)>,
+    /// Whether each `<details>` section the user opened or closed is open, by its summary and its
+    /// index among the file's sections, so an edit elsewhere in the file keeps the state. A
+    /// section with no state here is shown as its `open` attribute says. Taken from the workspace
+    /// when the viewer is made and saved there on every toggle (`ViewerEvent::DetailsToggled`).
+    pub open_details: BTreeMap<(String, usize), bool>,
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -661,7 +662,7 @@ impl Viewer {
             posters: HashMap::new(),
             sizes: HashMap::new(),
             diagrams: HashMap::new(),
-            open_details: BTreeSet::new(),
+            open_details: BTreeMap::new(),
         }
     }
 
@@ -1777,20 +1778,18 @@ impl Viewer {
         self.blocks[..ix.min(self.blocks.len())].iter().filter(|b| b.kind == md_blocks::BlockKind::Details).count()
     }
 
-    /// Whether `<details>` block `ix`, whose summary is `summary`, is shown open.
-    pub fn details_open(&self, ix: usize, summary: &str) -> bool {
-        let index = self.details_index(ix);
-        self.open_details.iter().any(|(s, i)| *i == index && s == summary)
+    /// Whether `<details>` block `ix`, whose summary is `summary` and whose tag says `starts_open`,
+    /// is shown open (`section_shown_open`).
+    pub fn details_open(&self, ix: usize, summary: &str, starts_open: bool) -> bool {
+        section_shown_open(&self.open_details, summary, self.details_index(ix), starts_open)
     }
 
-    /// Opens or closes `<details>` block `ix`, whose summary is `summary`, and tells `Root`, which
-    /// saves the file's open sections in the workspace. The document is not touched.
-    pub fn toggle_details(&mut self, ix: usize, summary: &str, cx: &mut Context<Self>) {
-        let key = (summary.to_string(), self.details_index(ix));
-        if !self.open_details.remove(&key) {
-            self.open_details.insert(key);
-        }
-        cx.emit(ViewerEvent::DetailsToggled(self.open_details.iter().map(|(summary, index)| DetailsOpen { summary: summary.clone(), index: *index }).collect()));
+    /// Opens or closes `<details>` block `ix` (`flip_section`) and tells `Root`, which saves the
+    /// file's section states in the workspace. The document is not touched.
+    pub fn toggle_details(&mut self, ix: usize, summary: &str, starts_open: bool, cx: &mut Context<Self>) {
+        let index = self.details_index(ix);
+        flip_section(&mut self.open_details, summary, index, starts_open);
+        cx.emit(ViewerEvent::DetailsToggled(sections_saved(&self.open_details)));
         cx.notify();
     }
 
@@ -2637,7 +2636,7 @@ impl Root {
             Some(Tab::Viewer { mode, .. }) => *mode,
             _ => ViewMode::default(),
         };
-        let open_details = self.details_open.get(path).map(|open| open.iter().map(|d| (d.summary.clone(), d.index)).collect()).unwrap_or_default();
+        let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
         let v = cx.new(|cx| {
             let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
             v.mode = mode;
@@ -2660,7 +2659,7 @@ impl Root {
                 ViewerEvent::DetailsToggled(open) => {
                     let path = v.read(cx).path.clone();
                     workspace::set_details_open(&mut root.details_open, &path, open.clone());
-                    let shown: BTreeSet<(String, usize)> = open.iter().map(|d| (d.summary.clone(), d.index)).collect();
+                    let shown = sections_from(open);
                     for other in root.viewers.values().filter(|o| o.entity_id() != v.entity_id()) {
                         other.update(cx, |o, cx| {
                             if o.path == path {
@@ -2871,10 +2870,47 @@ impl Root {
     }
 }
 
+/// Whether a `<details>` section is shown open: the state `states` holds for it (by its summary
+/// and its index among the file's sections) when there is one, else `starts_open`, its tag's
+/// `open` attribute.
+pub fn section_shown_open(states: &BTreeMap<(String, usize), bool>, summary: &str, index: usize, starts_open: bool) -> bool {
+    states.iter().find(|((s, i), _)| *i == index && s == summary).map_or(starts_open, |(_, open)| *open)
+}
+
+/// Opens a shown-closed section or closes a shown-open one, recording the new state in `states`.
+pub fn flip_section(states: &mut BTreeMap<(String, usize), bool>, summary: &str, index: usize, starts_open: bool) {
+    let open = section_shown_open(states, summary, index, starts_open);
+    states.insert((summary.to_string(), index), !open);
+}
+
+/// A viewer's section states as the workspace file keeps them.
+pub fn sections_saved(states: &BTreeMap<(String, usize), bool>) -> Vec<DetailsOpen> {
+    states.iter().map(|((summary, index), open)| DetailsOpen { summary: summary.clone(), index: *index, open: *open }).collect()
+}
+
+/// The section states the workspace file keeps for a file, as a viewer holds them.
+pub fn sections_from(saved: &[DetailsOpen]) -> BTreeMap<(String, usize), bool> {
+    saved.iter().map(|d| ((d.summary.clone(), d.index), d.open)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::edit::{Move, Pos, Unit};
+
+    #[test]
+    fn a_section_s_saved_state_wins_over_its_open_attribute_across_a_save() {
+        let mut states = BTreeMap::new();
+        flip_section(&mut states, "Open", 0, true);
+        flip_section(&mut states, "Closed", 1, false);
+        let mut ws = workspace::Workspace::default();
+        workspace::set_details_open(&mut ws.details_open, Path::new("/a.md"), sections_saved(&states));
+        let back: workspace::Workspace = serde_json::from_str(&serde_json::to_string(&ws).unwrap()).unwrap();
+        let restored = sections_from(&back.details_open[Path::new("/a.md")]);
+        assert!(!section_shown_open(&restored, "Open", 0, true), "closed although its tag says open");
+        assert!(section_shown_open(&restored, "Closed", 1, false), "opened although its tag does not say so");
+        assert!(section_shown_open(&restored, "Other", 2, true) && !section_shown_open(&restored, "Other", 2, false), "no state: the tag decides");
+    }
 
     #[test]
     fn a_press_on_a_table_cell_maps_to_the_cell_s_text_in_the_source() {

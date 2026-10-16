@@ -30,9 +30,9 @@ pub struct Workspace {
     /// from before 0.2.14.
     #[serde(default)]
     pub window: Option<WindowSaved>,
-    /// The `<details>` sections open in each markdown file (spec 7, ruling 8): per file, so every
-    /// tab on it opens them. Only files with an open section are named; absent in files from
-    /// before milestone 9 and when none is open.
+    /// The `<details>` sections opened or closed in each markdown file (spec 7, ruling 8): per
+    /// file, so every tab on it shows them so. Only files with a section state are named; absent
+    /// in files from before milestone 9 and when there is none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub details_open: BTreeMap<PathBuf, Vec<DetailsOpen>>,
 }
@@ -44,15 +44,19 @@ impl Default for Workspace {
     }
 }
 
-/// An open `<details>` section of a markdown file: its summary's text and its index among the
-/// file's sections, in document order.
+/// The state of a `<details>` section of a markdown file the user opened or closed: its
+/// summary's text, its index among the file's sections in document order, and whether it is
+/// open. `open` is absent in files written before a section could be saved closed, which held
+/// only open ones.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetailsOpen {
     pub summary: String,
     pub index: usize,
+    #[serde(default = "default_true")]
+    pub open: bool,
 }
 
-/// Records `file`'s open `<details>` sections in `map`: an empty list takes the file out.
+/// Records the states of `file`'s `<details>` sections in `map`: a file with none is taken out.
 pub fn set_details_open(map: &mut BTreeMap<PathBuf, Vec<DetailsOpen>>, file: &Path, open: Vec<DetailsOpen>) {
     if open.is_empty() {
         map.remove(file);
@@ -324,17 +328,18 @@ mod tests {
     #[test]
     fn the_open_details_round_trip_per_file_and_an_old_file_has_none() {
         let mut w = Workspace::default();
-        w.details_open.insert("/a.md".into(), vec![DetailsOpen { summary: "More".into(), index: 0 }]);
+        w.details_open.insert("/a.md".into(), vec![DetailsOpen { summary: "More".into(), index: 0, open: true }]);
         let text = serde_json::to_string(&w).unwrap();
         assert_eq!(serde_json::from_str::<Workspace>(&text).unwrap().details_open, w.details_open);
         let old = serde_json::to_string(&Workspace::default()).unwrap();
         assert!(!old.contains("details_open"), "skipped when empty");
+        assert!(serde_json::from_str::<DetailsOpen>(r#"{"summary":"More","index":0}"#).unwrap().open, "a state saved before closed ones were kept is open");
     }
 
     #[test]
     fn closing_a_file_s_last_open_section_takes_the_file_out() {
         let mut map = BTreeMap::new();
-        set_details_open(&mut map, Path::new("/a.md"), vec![DetailsOpen { summary: "More".into(), index: 1 }]);
+        set_details_open(&mut map, Path::new("/a.md"), vec![DetailsOpen { summary: "More".into(), index: 1, open: false }]);
         assert_eq!(map.len(), 1);
         set_details_open(&mut map, Path::new("/a.md"), Vec::new());
         assert!(map.is_empty());

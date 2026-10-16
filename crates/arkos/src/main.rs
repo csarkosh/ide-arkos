@@ -349,8 +349,9 @@ pub struct Root {
     /// Where the window is (display, frame), as last saved with the layout; a relaunch opens
     /// it there.
     pub window_saved: Option<workspace::WindowSaved>,
-    /// The `<details>` sections open in each markdown file, as saved with the layout: a viewer
-    /// takes its file's when it is made, and a toggle in any of them updates it.
+    /// The states of the `<details>` sections opened or closed in each markdown file, as saved
+    /// with the layout: a viewer takes its file's when it is made, and a toggle in any of them
+    /// updates it.
     pub details_open: BTreeMap<PathBuf, Vec<workspace::DetailsOpen>>,
     /// The windows the palette's dock list offers, by row (`Command::DockChromeWindowAt`).
     pub dock_choices: Vec<ax::AxWindow>,

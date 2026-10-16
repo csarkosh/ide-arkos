@@ -12,8 +12,8 @@
 //! PNG is there, or when it cannot be made, the block is its source with a line saying why. An
 //! HTML block that is one `<img>` tag is an image by the same rules, at its `width` and centred
 //! when its wrapper says so; a `<details>` section is its summary behind a disclosure triangle,
-//! which a click opens and closes (remembered per file in the workspace), its content drawn
-//! read-only below while it is open. Every other HTML block is its source, dimmed.
+//! which a click opens and closes (remembered per file in the workspace; until then it is open
+//! when its tag says `open`), its content drawn read-only below while it is open. Every other HTML block is its source, dimmed.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -194,22 +194,24 @@ impl ImagePiece {
         ImagePiece { label, path, link, width: None, center: false }
     }
 
-    /// An `<img>` tag's image, labelled with its path.
+    /// An `<img>` tag's image, with its `alt` (or its path) as the label and its `<a>`'s link.
     fn html(image: md_blocks::HtmlImage) -> ImagePiece {
-        ImagePiece { width: image.width, center: image.center, ..ImagePiece::new(String::new(), image.src, None) }
+        ImagePiece { width: image.width, center: image.center, ..ImagePiece::new(image.alt, image.src, image.link) }
     }
 }
 
-/// A `<details>` section as a row draws it: its summary, and its content's blocks with their
-/// pieces, drawn when it is open. A diagram in the content is drawn as its source, since only a
-/// block's own diagram is rendered.
+/// A `<details>` section as a row draws it: its summary, whether it starts open (its `open`
+/// attribute, shown until the file has a state of its own for it), and its content's blocks with
+/// their pieces, drawn when it is open. A diagram in the content is drawn as its source, since
+/// only a block's own diagram is rendered.
 struct DetailsPiece {
     summary: SharedString,
+    open: bool,
     blocks: Vec<(BlockKind, Vec<Piece>)>,
 }
 
 impl DetailsPiece {
-    fn new(summary: String, blocks: Vec<(BlockKind, Vec<Inline>)>) -> DetailsPiece {
+    fn new(summary: String, open: bool, blocks: Vec<(BlockKind, Vec<Inline>)>) -> DetailsPiece {
         let blocks = blocks
             .into_iter()
             .map(|(kind, inlines)| {
@@ -227,7 +229,7 @@ impl DetailsPiece {
                 (kind, pieces)
             })
             .collect();
-        DetailsPiece { summary: summary.into(), blocks }
+        DetailsPiece { summary: summary.into(), open, blocks }
     }
 }
 
@@ -304,7 +306,7 @@ impl From<Inline> for Piece {
             Inline::Image { alt, path, link } => Piece::Image(ImagePiece::new(alt, path, link)),
             Inline::Images(images) => Piece::Images(images.into_iter().map(|i| ImagePiece::new(i.alt, i.path, i.link)).collect()),
             Inline::HtmlImage(image) => Piece::Image(ImagePiece::html(image)),
-            Inline::Details { summary, blocks } => Piece::Details(DetailsPiece::new(summary, blocks)),
+            Inline::Details { summary, open, blocks } => Piece::Details(DetailsPiece::new(summary, open, blocks)),
         }
     }
 }
@@ -406,7 +408,7 @@ fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window)
 /// Whether block `ix` is a `<details>` section that is open (`Viewer::details_open`).
 fn section_open(v: &Viewer, ix: usize) -> bool {
     match v.block_cache.get(ix) {
-        Some(Some(r)) => matches!(r.pieces.first(), Some(Piece::Details(d)) if v.details_open(ix, &d.summary)),
+        Some(Some(r)) => matches!(r.pieces.first(), Some(Piece::Details(d)) if v.details_open(ix, &d.summary, d.open)),
         _ => false,
     }
 }
@@ -916,8 +918,8 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
 /// stands aside through the press flag, as for a task box, so the block stays rendered; a press
 /// on the content is the row's, which puts the caret in the block and so turns it raw.
 fn details_element(ix: usize, d: &DetailsPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
-    let open = v.details_open(ix, &d.summary);
-    let (viewer, press, summary) = (ctx.viewer.clone(), parts.task_press.clone(), d.summary.clone());
+    let open = v.details_open(ix, &d.summary, d.open);
+    let (viewer, press, summary, starts_open) = (ctx.viewer.clone(), parts.task_press.clone(), d.summary.clone(), d.open);
     let head = div()
         .id(("md-details", ix))
         .flex()
@@ -927,7 +929,7 @@ fn details_element(ix: usize, d: &DetailsPiece, v: &Viewer, ctx: &BlockCtx, part
         .child(div().flex_none().w(px(ctx.font_size * PARA * 1.2)).text_color(ctx.dim).child(if open { "\u{25be}" } else { "\u{25b8}" }))
         .child(div().flex_1().min_w_0().child(d.summary.clone()))
         .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
-        .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.toggle_details(ix, &summary, cx)));
+        .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.toggle_details(ix, &summary, starts_open, cx)));
     let mut section = div().flex().flex_col().child(head);
     if open {
         // The summary is piece 0; the content's pieces follow it, so their ids stay apart.
@@ -1186,7 +1188,7 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
     let line_h = size * PARA_LINE;
     // The item's line is found when the box is clicked, from where its text starts in the block:
     // the block may have moved since this frame.
-    let offset = runs.first().map(|r| r.source.start).filter(|_| toggle);
+    let offset = runs.first().map(|r| r.source.start);
     let check = task.map(|done| {
         let viewer = ctx.viewer.clone();
         let press = parts.task_press.clone();
@@ -1207,11 +1209,11 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
             .line_height(px(CHECKBOX))
             .text_color(ctx.on_accent)
             // The row's press handler runs next and leaves the caret alone for this press, so the
-            // block stays rendered and the box's click lands.
-            .when_some(offset, move |d, offset| {
+            // block stays rendered and the box's click lands. A read-only box takes no press.
+            .when(toggle, move |d| {
                 d.cursor_pointer()
                     .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
-                    .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| toggle_item(v, ix, offset, cx)))
+                    .when_some(offset, move |d, offset| d.on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| toggle_item(v, ix, offset, cx))))
             })
     });
     div()
@@ -2004,6 +2006,11 @@ mod tests {
             push_pieces(inline, &mut pieces);
         }
         assert!(matches!(&pieces[..], [Piece::Image(i)] if i.path == "a.png" && i.width == Some(40) && i.center));
+        let mut linked = Vec::new();
+        for inline in md_blocks::inline("<a href=\"https://x\"><img alt=\"Logo\" src=\"a.png\"></a>", &BlockKind::Html) {
+            push_pieces(inline, &mut linked);
+        }
+        assert!(matches!(&linked[..], [Piece::Image(i)] if i.label.as_ref() == "Logo" && i.link.as_deref() == Some("https://x")), "Cmd+click follows the link and the alt box shows the alt");
         let text = "<details>\n<summary>D</summary>\n\n```mermaid\ngraph TD\n```\n\n![x](https://x/a.png)\n</details>";
         let section = [Piece::from(md_blocks::inline(text, &BlockKind::Details).remove(0))];
         let Piece::Details(d) = &section[0] else { panic!("not a section") };
