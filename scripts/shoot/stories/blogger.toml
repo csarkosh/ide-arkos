@@ -1,5 +1,6 @@
-# The blogger: a writer, not an engineer. The posts in the file tree, two of them open in the
-# markdown editor, and a Claude Code session drafting the next one from the notes.
+# The blogger: a product person who lives in markdown. The launch plan rendered in the editor
+# (a status table as a grid, a Mermaid flow, a checklist, an open-questions section, a chart),
+# another post behind it, and a Claude Code session bringing the plan up to date from the notes.
 
 [scene]
 name = "blogger"
@@ -22,21 +23,21 @@ theme = { dark = "peach-light", light = "peach-light" }
 claude_theme = "light-ansi"
 
 [[pane]]
+name = "launch plan"
+view = "posts/2026-10-16-launch-plan.md"
+
+[[pane]]
 name = "decision logs"
 view = "posts/2026-10-02-decision-logs.md"
 
 [[pane]]
-name = "saying no"
-view = "posts/2026-09-18-saying-no-in-writing.md"
-
-[[pane]]
 name = "assistant"
-claude = "Read notes/metrics-that-lie.md and the four posts in posts/, then draft the new post as posts/2026-10-16-metrics-that-lie.md in the same voice and shape as the others: a one-line opening, three or four short sections with plain headings, about 500 words, no em-dashes. Keep every example from the notes. When it is written, read it back once and tighten anything that sounds like a slide."
+claude = "Read notes/launch-review.md and bring posts/2026-10-16-launch-plan.md up to date with it: change the status table rows the notes mention (keep the table's columns and the pipes aligned), tick the checklist item that is done, and add the new open question to the Open questions section. Keep the file's shape and voice, change nothing else, no em-dashes. When it is written, read it back once."
 
 [layout]
 split = "horizontal"
-ratio = 0.58
-first = { tabs = ["decision logs", "saying no"] }
+ratio = 0.6
+first = { tabs = ["launch plan", "decision logs"] }
 second = { tabs = ["assistant"] }
 
 [[shot]]
