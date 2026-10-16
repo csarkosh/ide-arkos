@@ -9,7 +9,11 @@
 //! is its Quick Look poster with a play glyph, and local audio a box with its name and size
 //! (`media`): Cmd+click plays them. Remote video and audio, and a `webm`, are links. A `mermaid`
 //! code block is its diagram, rendered by headless Chrome into a cache (`mermaid`); until the
-//! PNG is there, or when it cannot be made, the block is its source with a line saying why.
+//! PNG is there, or when it cannot be made, the block is its source with a line saying why. An
+//! HTML block that is one `<img>` tag is an image by the same rules, at its `width` and centred
+//! when its wrapper says so; a `<details>` section is its summary behind a disclosure triangle,
+//! which a click opens and closes (remembered per file in the workspace), its content drawn
+//! read-only below while it is open. Every other HTML block is its source, dimmed.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -85,7 +89,7 @@ pub fn scale(kind: &BlockKind) -> f32 {
     match kind {
         BlockKind::Heading(level) => heading_scale(*level),
         BlockKind::CodeBlock { .. } | BlockKind::Html | BlockKind::Metadata => 1.0,
-        BlockKind::Paragraph | BlockKind::List | BlockKind::Quote | BlockKind::Table | BlockKind::Rule | BlockKind::Blank => PARA,
+        BlockKind::Paragraph | BlockKind::List | BlockKind::Quote | BlockKind::Table | BlockKind::Details | BlockKind::Rule | BlockKind::Blank => PARA,
     }
 }
 
@@ -145,6 +149,8 @@ enum Piece {
     Images(Vec<ImagePiece>),
     /// An image whose path is video or audio, or media drawn as a link.
     Media(MediaPiece),
+    /// A `<details>` section.
+    Details(DetailsPiece),
 }
 
 impl Piece {
@@ -159,18 +165,69 @@ impl Piece {
     }
 }
 
+/// The pieces a block shows, in order: its own, each followed by its section's content when the
+/// block is a `<details>` section and `open` says it is open.
+fn shown_pieces(pieces: &[Piece], open: bool) -> impl Iterator<Item = &Piece> {
+    pieces.iter().flat_map(move |p| {
+        let inner: &[(BlockKind, Vec<Piece>)] = match p {
+            Piece::Details(d) if open => &d.blocks,
+            _ => &[],
+        };
+        std::iter::once(p).chain(inner.iter().flat_map(|(_, pieces)| pieces))
+    })
+}
+
 /// One image as a row draws it: its alt text (or its path when it has none) for the box shown
-/// when it cannot be drawn, its path, and the target of the link around it, if any.
+/// when it cannot be drawn, its path, the target of the link around it, if any, and for an
+/// `<img>` tag its width and whether it is centred.
 struct ImagePiece {
     label: SharedString,
     path: String,
     link: Option<String>,
+    width: Option<u32>,
+    center: bool,
 }
 
 impl ImagePiece {
     fn new(alt: String, path: String, link: Option<String>) -> ImagePiece {
         let label = if alt.is_empty() { path.clone().into() } else { alt.into() };
-        ImagePiece { label, path, link }
+        ImagePiece { label, path, link, width: None, center: false }
+    }
+
+    /// An `<img>` tag's image, labelled with its path.
+    fn html(image: md_blocks::HtmlImage) -> ImagePiece {
+        ImagePiece { width: image.width, center: image.center, ..ImagePiece::new(String::new(), image.src, None) }
+    }
+}
+
+/// A `<details>` section as a row draws it: its summary, and its content's blocks with their
+/// pieces, drawn when it is open. A diagram in the content is drawn as its source, since only a
+/// block's own diagram is rendered.
+struct DetailsPiece {
+    summary: SharedString,
+    blocks: Vec<(BlockKind, Vec<Piece>)>,
+}
+
+impl DetailsPiece {
+    fn new(summary: String, blocks: Vec<(BlockKind, Vec<Inline>)>) -> DetailsPiece {
+        let blocks = blocks
+            .into_iter()
+            .map(|(kind, inlines)| {
+                let mut pieces = Vec::new();
+                for inline in inlines {
+                    push_pieces(inline, &mut pieces);
+                }
+                let pieces = pieces
+                    .into_iter()
+                    .map(|p| match p {
+                        Piece::Diagram(d) => Piece::Code { info: "mermaid".into(), text: d.text, drawn: d.drawn },
+                        p => p,
+                    })
+                    .collect();
+                (kind, pieces)
+            })
+            .collect();
+        DetailsPiece { summary: summary.into(), blocks }
     }
 }
 
@@ -208,6 +265,7 @@ fn push_pieces(inline: Inline, out: &mut Vec<Piece>) {
     let images = match inline {
         Inline::Image { alt, path, link } => vec![ImagePiece::new(alt, path, link)],
         Inline::Images(images) => images.into_iter().map(|i| ImagePiece::new(i.alt, i.path, i.link)).collect(),
+        Inline::HtmlImage(image) => vec![ImagePiece::html(image)],
         other => return out.push(Piece::from(other)),
     };
     let mut row: Vec<ImagePiece> = Vec::new();
@@ -243,6 +301,8 @@ impl From<Inline> for Piece {
             Inline::Metadata(t) => Piece::Metadata(t.into()),
             Inline::Image { alt, path, link } => Piece::Image(ImagePiece::new(alt, path, link)),
             Inline::Images(images) => Piece::Images(images.into_iter().map(|i| ImagePiece::new(i.alt, i.path, i.link)).collect()),
+            Inline::HtmlImage(image) => Piece::Image(ImagePiece::html(image)),
+            Inline::Details { summary, blocks } => Piece::Details(DetailsPiece::new(summary, blocks)),
         }
     }
 }
@@ -322,13 +382,37 @@ pub fn column_widths(natural: &[f32], view: f32, mode: WideTables) -> Vec<f32> {
     }
 }
 
-/// Measures block `ix`'s table, when it is a grid not yet measured at the frame's families and size:
-/// each column's widest cell over the first `MEASURED_ROWS` rows (the header semibold), its text's
-/// width plus the cell's padding and its 1 px hairline. The list's row closure calls it, the one
-/// place with a `Window` to measure text with.
+/// Measures block `ix`'s table grids not yet measured at the frame's families and size
+/// (`measure_grid`): a table block's, or the tables in an open `<details>` section. The list's row
+/// closure calls it, the one place with a `Window` to measure text with.
 fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window) {
+    let open = section_open(v, ix);
     let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
-    let Some(Piece::Table(TablePiece::Grid(grid, widths))) = r.pieces.first_mut() else { return };
+    match r.pieces.first_mut() {
+        Some(Piece::Table(TablePiece::Grid(grid, widths))) => measure_grid(grid, widths, ctx, window),
+        Some(Piece::Details(d)) if open => {
+            for piece in d.blocks.iter_mut().flat_map(|(_, pieces)| pieces) {
+                if let Piece::Table(TablePiece::Grid(grid, widths)) = piece {
+                    measure_grid(grid, widths, ctx, window);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether block `ix` is a `<details>` section that is open (`Viewer::details_open`).
+fn section_open(v: &Viewer, ix: usize) -> bool {
+    match v.block_cache.get(ix) {
+        Some(Some(r)) => matches!(r.pieces.first(), Some(Piece::Details(d)) if v.details_open(ix, &d.summary)),
+        _ => false,
+    }
+}
+
+/// Measures a grid when it is not yet measured at the frame's families and size: each column's
+/// widest cell over the first `MEASURED_ROWS` rows (the header semibold), its text's width plus
+/// the cell's padding and its 1 px hairline.
+fn measure_grid(grid: &Grid, widths: &mut Widths, ctx: &BlockCtx, window: &mut Window) {
     let size = ctx.font_size * PARA;
     // A code span in a cell is measured in the terminal family, so it is in the key too.
     if widths.key.as_ref().is_some_and(|(ui, mono, at)| *ui == ctx.ui && *mono == ctx.mono && *at == size) {
@@ -409,15 +493,17 @@ fn track_diagram(v: &mut Viewer, ix: usize, theme: &MermaidTheme, cx: &mut Conte
     }
 }
 
-/// Block `ix`'s local videos and audio: each video's poster moved along once (`media::advance`),
-/// which reads the file's mtime; each audio file's size read the first time it is shown. While
-/// any poster is still being made, the job that has the turn starts (`Viewer::start_thumbnails`);
-/// its end draws the window again, which brings each viewer showing the video here.
+/// Block `ix`'s local videos and audio, an open section's included: each video's poster moved
+/// along once (`media::advance`), which reads the file's mtime; each audio file's size read the
+/// first time it is shown. While any poster is still being made, the job that has the turn starts
+/// (`Viewer::start_thumbnails`); its end draws the window again, which brings each viewer showing
+/// the video here.
 fn track_media(v: &mut Viewer, ix: usize, base_dir: &Path, cx: &mut Context<Viewer>) {
+    let open = section_open(v, ix);
     let Some(Some(r)) = v.block_cache.get(ix) else { return };
     let mut dir = None;
     let mut making = false;
-    for m in r.pieces.iter().filter_map(|p| if let Piece::Media(m) = p { Some(m) } else { None }) {
+    for m in shown_pieces(&r.pieces, open).filter_map(|p| if let Piece::Media(m) = p { Some(m) } else { None }) {
         let Some(file) = resolve_image(base_dir, &m.path) else { continue };
         match m.kind {
             Some(Media::Video) => {
@@ -442,15 +528,17 @@ fn track_media(v: &mut Viewer, ix: usize, base_dir: &Path, cx: &mut Context<View
     }
 }
 
-/// Block `ix`'s web images, each moved along once (`remote_image::advance`): one not seen yet is
-/// ready from the cache or queued, one whose fetch ended is ready or failed. While any is still
-/// fetching, the fetches that now have a slot start (`Viewer::start_fetches`); a fetch's end
-/// draws the window again, which brings each viewer showing the image here.
+/// Block `ix`'s web images, an open section's included, each moved along once
+/// (`remote_image::advance`): one not seen yet is ready from the cache or queued, one whose fetch
+/// ended is ready or failed. While any is still fetching, the fetches that now have a slot start
+/// (`Viewer::start_fetches`); a fetch's end draws the window again, which brings each viewer
+/// showing the image here.
 fn track_remote(v: &mut Viewer, ix: usize, cx: &mut Context<Viewer>) {
+    let open = section_open(v, ix);
     let Some(Some(r)) = v.block_cache.get(ix) else { return };
     let mut dir = None;
     let mut fetching = false;
-    for url in r.pieces.iter().flat_map(Piece::image_paths).filter(|p| remote_image::is_remote(p)) {
+    for url in shown_pieces(&r.pieces, open).flat_map(Piece::image_paths).filter(|p| remote_image::is_remote(p)) {
         let state = v.remote.get(url);
         if matches!(state, Some(Remote::Ready(_) | Remote::Failed)) {
             continue;
@@ -723,42 +811,9 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     if *kind == BlockKind::Blank {
         children.push(div().h(px(BLANK_H)).into_any_element());
     }
+    let code_runs = r.code_runs.as_ref().map(|c| &c.runs);
     for (j, piece) in r.pieces.iter().enumerate() {
-        let child = match piece {
-            Piece::Para(runs) => text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, &mut parts),
-            Piece::Heading(level, runs) => div()
-                .pt(px(HEADING_GAP))
-                .text_size(px(ctx.font_size * heading_scale(*level)))
-                .child(text_element(j, runs, FontWeight::SEMIBOLD, ctx.text, ctx, &mut parts))
-                .into_any_element(),
-            Piece::Quote(runs) => div()
-                .border_l(px(QUOTE_BAR))
-                .border_color(ctx.border)
-                .pl(px(10.0))
-                .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, &mut parts))
-                .into_any_element(),
-            Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, ctx, &mut parts),
-            Piece::Code { text, drawn, .. } => code_element(text, drawn, r.code_runs.as_ref().map(|c| &c.runs), None, ctx, &mut parts),
-            Piece::Diagram(d) => diagram_element(d, v, ctx, &mut parts),
-            Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
-            Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, ctx, &parts.task_press),
-            Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
-            // An HTML block is its source, dimmed (spec 5.2).
-            Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
-            Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
-            Piece::Image(image) => image_element(image, v, ctx, &parts.task_press),
-            Piece::Media(m) => media_element(m, v, ctx, &parts.task_press),
-            // Badges sit side by side, wrapping onto more lines when the view is narrow.
-            Piece::Images(images) => div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(4.0))
-                .children(images.iter().map(|image| image_element(image, v, ctx, &parts.task_press)))
-                .into_any_element(),
-        };
-        children.push(child);
+        children.push(piece_element(ix, j, piece, size, code_runs, false, v, ctx, &mut parts));
     }
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
@@ -793,6 +848,93 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
             });
         })
         .into_any_element()
+}
+
+/// One piece of block `ix`'s row: `j` is its place among the row's pieces (the id of its text,
+/// its task box), `size` the block's text size and `code_runs` the block's cached code runs, if
+/// any. A piece inside a `<details>` section (`inner`) is read-only: a task box does not toggle
+/// and a table's cells take no press (a press is the row's, which makes the block raw), and a code
+/// block gives a press no text to map through, since its lines are the section's, not the block's.
+#[allow(clippy::too_many_arguments)]
+fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Option<&Rc<Vec<TextRun>>>, inner: bool, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    match piece {
+        Piece::Para(runs) => text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts),
+        Piece::Heading(level, runs) => div()
+            .pt(px(HEADING_GAP))
+            .text_size(px(ctx.font_size * heading_scale(*level)))
+            .child(text_element(j, runs, FontWeight::SEMIBOLD, ctx.text, ctx, parts))
+            .into_any_element(),
+        Piece::Quote(runs) => div()
+            .border_l(px(QUOTE_BAR))
+            .border_color(ctx.border)
+            .pl(px(10.0))
+            .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, parts))
+            .into_any_element(),
+        Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, !inner, ctx, parts),
+        Piece::Code { text, drawn, .. } => {
+            let texts = parts.texts.len();
+            let code = code_element(text, drawn, code_runs, None, ctx, parts);
+            if inner {
+                parts.texts.truncate(texts);
+            }
+            code
+        }
+        Piece::Diagram(d) => diagram_element(d, v, ctx, parts),
+        Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
+        Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, ctx, (!inner).then_some(&parts.task_press)),
+        Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
+        // An HTML block is its source, dimmed (spec 5.2).
+        Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
+        Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
+        Piece::Image(image) => image_element(image, v, ctx, &parts.task_press),
+        Piece::Media(m) => media_element(m, v, ctx, &parts.task_press),
+        // Badges sit side by side, wrapping onto more lines when the view is narrow.
+        Piece::Images(images) => div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.0))
+            .children(images.iter().map(|image| image_element(image, v, ctx, &parts.task_press)))
+            .into_any_element(),
+        Piece::Details(d) => details_element(ix, d, v, ctx, parts),
+    }
+}
+
+/// A `<details>` section: a row with the disclosure triangle (pointing right when closed, down
+/// when open) and the summary, and below it, when the section is open (`Viewer::details_open`),
+/// its content's blocks read-only (`piece_element`'s `inner`), each with a block's space above. A
+/// press on the summary row toggles the section (`Viewer::toggle_details`) and the block's row
+/// stands aside through the press flag, as for a task box, so the block stays rendered; a press
+/// on the content is the row's, which puts the caret in the block and so turns it raw.
+fn details_element(ix: usize, d: &DetailsPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let open = v.details_open(ix, &d.summary);
+    let (viewer, press, summary) = (ctx.viewer.clone(), parts.task_press.clone(), d.summary.clone());
+    let head = div()
+        .id(("md-details", ix))
+        .flex()
+        .flex_row()
+        .items_start()
+        .cursor_pointer()
+        .child(div().flex_none().w(px(ctx.font_size * PARA * 1.2)).text_color(ctx.dim).child(if open { "\u{25be}" } else { "\u{25b8}" }))
+        .child(div().flex_1().min_w_0().child(d.summary.clone()))
+        .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
+        .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.toggle_details(ix, &summary, cx)));
+    let mut section = div().flex().flex_col().child(head);
+    if open {
+        // The summary is piece 0; the content's pieces follow it, so their ids stay apart.
+        let mut j = 1;
+        for (k, (kind, pieces)) in d.blocks.iter().enumerate() {
+            let size = ctx.font_size * scale(kind);
+            let mut children = Vec::with_capacity(pieces.len());
+            for piece in pieces {
+                children.push(piece_element(ix, j, piece, size, None, true, v, ctx, parts));
+                j += 1;
+            }
+            section = section.child(div().id(("md-details-block", k)).pt(px(BLOCK_GAP)).text_size(px(size)).children(children));
+        }
+    }
+    section.into_any_element()
 }
 
 /// The source position under a window point in rendered block `ix`, read when the press comes:
@@ -1025,9 +1167,9 @@ fn follow_link(action: LinkAction, viewer: &Entity<Viewer>, cx: &mut App) {
 }
 
 /// A list item: the marker column (a bullet, or the number with its delimiter) indented by its
-/// depth, a task's box, and the item's text.
+/// depth, a task's box (a click flips it when `toggle`), and the item's text.
 #[allow(clippy::too_many_arguments)]
-fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &Rc<[Run]>, size: f32, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &Rc<[Run]>, size: f32, toggle: bool, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let ch = size * CH_EM;
     let bullet = match marker {
         "-" | "*" | "+" | "" => "\u{2022}".to_string(),
@@ -1036,7 +1178,7 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
     let line_h = size * PARA_LINE;
     // The item's line is found when the box is clicked, from where its text starts in the block:
     // the block may have moved since this frame.
-    let offset = runs.first().map(|r| r.source.start);
+    let offset = runs.first().map(|r| r.source.start).filter(|_| toggle);
     let check = task.map(|done| {
         let viewer = ctx.viewer.clone();
         let press = parts.task_press.clone();
@@ -1056,11 +1198,13 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
             .text_size(px(CHECKBOX - 2.0))
             .line_height(px(CHECKBOX))
             .text_color(ctx.on_accent)
-            .cursor_pointer()
             // The row's press handler runs next and leaves the caret alone for this press, so the
             // block stays rendered and the box's click lands.
-            .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
-            .when_some(offset, move |d, offset| d.on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| toggle_item(v, ix, offset, cx))))
+            .when_some(offset, move |d, offset| {
+                d.cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
+                    .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| toggle_item(v, ix, offset, cx)))
+            })
     });
     div()
         .flex()
@@ -1164,8 +1308,9 @@ fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, ctx: &BlockCtx) -> V
 /// makes them for the view (a grid in `WideTables::Scroll` scrolls sideways in its block, the
 /// vertical wheel still scrolling the list). A press on a cell puts the caret at the matching
 /// source position (`Viewer::click_table_cell`), the block's own press standing aside through
-/// `press`, as for a task box.
-fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+/// `press`, as for a task box; with no `press` (a table inside a `<details>` section) the cells
+/// take no press and the row's places the caret.
+fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: Option<&Rc<Cell<bool>>>) -> AnyElement {
     ctx.drew_grid.set(true);
     let columns = grid.align.len();
     // The grid's own border takes 2 px of the view.
@@ -1184,7 +1329,7 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
         let cells = row.iter().zip(&grid.align).zip(&drawn).enumerate().map(|(c, ((cell, align), w))| {
             let weight = if r == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
             let (text, layout) = runs_text(r * columns + c, &cell.runs, weight, ctx.text, ctx);
-            let (viewer, press, cell_text, cell_runs) = (ctx.viewer.clone(), press.clone(), cell.text.clone(), cell.runs.clone());
+            let (viewer, press, cell_text, cell_runs) = (ctx.viewer.clone(), press.cloned(), cell.text.clone(), cell.runs.clone());
             div()
                 .flex_none()
                 .w(px(*w))
@@ -1198,19 +1343,21 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
                     Align::Default | Align::Left => d,
                 })
                 .child(text)
-                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
-                    // Cmd+click is for a link: the row leaves the caret alone for it too.
-                    if ev.modifiers.platform {
-                        return;
-                    }
-                    press.set(true);
-                    let ch = if cell_text.is_empty() {
-                        0
-                    } else {
-                        let byte = md_blocks::source_offset_at(&cell_runs, index_near(&layout, ev.position)).min(cell_text.len());
-                        cell_text[..cell_text.floor_char_boundary(byte)].chars().count()
-                    };
-                    viewer.update(cx, |v, cx| v.click_table_cell(ix, line, c, ch, ev.modifiers.shift, cx));
+                .when_some(press, move |d, press| {
+                    d.on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
+                        // Cmd+click is for a link: the row leaves the caret alone for it too.
+                        if ev.modifiers.platform {
+                            return;
+                        }
+                        press.set(true);
+                        let ch = if cell_text.is_empty() {
+                            0
+                        } else {
+                            let byte = md_blocks::source_offset_at(&cell_runs, index_near(&layout, ev.position)).min(cell_text.len());
+                            cell_text[..cell_text.floor_char_boundary(byte)].chars().count()
+                        };
+                        viewer.update(cx, |v, cx| v.click_table_cell(ix, line, c, ch, ev.modifiers.shift, cx));
+                    })
                 })
         });
         div().flex().flex_row().bg(bg).when(r > 0, |d| d.border_t_1().border_color(ctx.border)).children(cells)
@@ -1256,7 +1403,9 @@ fn mono_box(text: &SharedString, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) 
 /// failed (with the url), and when the file cannot be drawn. A plain press is the row's, which puts
 /// the caret in the block. Cmd+click follows the link around the image when there is one, as a
 /// link's text does, and otherwise shows the file in Preview; the row stands aside through
-/// `press`. The pointer is the hand over anything Cmd+click opens, as over a link.
+/// `press`. The pointer is the hand over anything Cmd+click opens, as over a link. An `<img>`
+/// tag's `width` is the image's width (still at most the view's), and its wrapper's centring
+/// centres it.
 fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
     let (label, path) = (&image.label, image.path.as_str());
     let (dim, border) = (ctx.dim, ctx.border);
@@ -1285,14 +1434,25 @@ fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell
             press.set(true);
         }
     };
-    match file {
+    let drawn = match file {
         Some(file) => {
             let fallback = label.clone();
-            img(file).max_w_full().with_fallback(move || alt_box(fallback.clone()).into_any_element()).cursor_pointer().on_mouse_down(MouseButton::Left, on_press).into_any_element()
+            img(file)
+                .when_some(image.width, |i, w| i.w(px(w as f32)))
+                .max_w_full()
+                .with_fallback(move || alt_box(fallback.clone()).into_any_element())
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, on_press)
+                .into_any_element()
         }
         // A linked image's box still follows the link while the image cannot be drawn.
         None if image.link.is_some() => alt_box(shown).cursor_pointer().on_mouse_down(MouseButton::Left, on_press).into_any_element(),
         None => alt_box(shown).into_any_element(),
+    };
+    if image.center {
+        div().flex().justify_center().child(drawn).into_any_element()
+    } else {
+        drawn
     }
 }
 
@@ -1827,6 +1987,21 @@ mod tests {
         let row = pieces("![a](https://x/a.svg) ![v](https://x/v.mp4)");
         let fetched: Vec<&String> = row.iter().flat_map(Piece::image_paths).collect();
         assert_eq!(fetched, ["https://x/a.svg"], "remote media is never fetched");
+    }
+
+    #[test]
+    fn an_img_tag_is_an_image_and_a_diagram_inside_details_is_its_source() {
+        let mut pieces = Vec::new();
+        for inline in md_blocks::inline("<p align=\"center\"><img src=\"a.png\" width=\"40\"></p>", &BlockKind::Html) {
+            push_pieces(inline, &mut pieces);
+        }
+        assert!(matches!(&pieces[..], [Piece::Image(i)] if i.path == "a.png" && i.width == Some(40) && i.center));
+        let text = "<details>\n<summary>D</summary>\n\n```mermaid\ngraph TD\n```\n\n![x](https://x/a.png)\n</details>";
+        let section = [Piece::from(md_blocks::inline(text, &BlockKind::Details).remove(0))];
+        let Piece::Details(d) = &section[0] else { panic!("not a section") };
+        assert!(matches!(&d.blocks[0].1[..], [Piece::Code { info, .. }] if info == "mermaid"));
+        let urls = |open: bool| shown_pieces(&section, open).flat_map(Piece::image_paths).count();
+        assert_eq!((urls(false), urls(true)), (0, 1), "a closed section's images are not fetched");
     }
 
     #[test]

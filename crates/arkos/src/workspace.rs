@@ -5,6 +5,7 @@ use crate::tree::{Tab, Tree};
 use gpui::App;
 use protocol::SessionId;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,35 @@ pub struct Workspace {
     /// from before 0.2.14.
     #[serde(default)]
     pub window: Option<WindowSaved>,
+    /// The `<details>` sections open in each markdown file (spec 7, ruling 8): per file, so every
+    /// tab on it opens them. Only files with an open section are named; absent in files from
+    /// before milestone 9 and when none is open.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub details_open: BTreeMap<PathBuf, Vec<DetailsOpen>>,
+}
+
+/// An empty layout for no project, with nothing saved beside it.
+impl Default for Workspace {
+    fn default() -> Workspace {
+        Workspace { version: FORMAT_VERSION, project: PathBuf::new(), tree: Tree::empty(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() }
+    }
+}
+
+/// An open `<details>` section of a markdown file: its summary's text and its index among the
+/// file's sections, in document order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetailsOpen {
+    pub summary: String,
+    pub index: usize,
+}
+
+/// Records `file`'s open `<details>` sections in `map`: an empty list takes the file out.
+pub fn set_details_open(map: &mut BTreeMap<PathBuf, Vec<DetailsOpen>>, file: &Path, open: Vec<DetailsOpen>) {
+    if open.is_empty() {
+        map.remove(file);
+    } else {
+        map.insert(file.to_path_buf(), open);
+    }
 }
 
 /// The project window's place: its display and its frame on it, in points, `x` and `y` being
@@ -149,7 +179,7 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
         Ok(v1) => {
             let session = v1.sessions.first().map(|id| SessionId(*id))?;
             eprintln!("arkos: migrating milestone 1 workspace {}", file.display());
-            Some(Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session, cwd: None }), text_preset: None, sidebar: None, window: None })
+            Some(Workspace { project: project.to_path_buf(), tree: Tree::new(Tab::Terminal { session, cwd: None }), ..Workspace::default() })
         }
         Err(e) => {
             eprintln!("arkos: ignoring corrupt workspace {}: {e}", file.display());
@@ -292,11 +322,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_open_details_round_trip_per_file_and_an_old_file_has_none() {
+        let mut w = Workspace::default();
+        w.details_open.insert("/a.md".into(), vec![DetailsOpen { summary: "More".into(), index: 0 }]);
+        let text = serde_json::to_string(&w).unwrap();
+        assert_eq!(serde_json::from_str::<Workspace>(&text).unwrap().details_open, w.details_open);
+        let old = serde_json::to_string(&Workspace::default()).unwrap();
+        assert!(!old.contains("details_open"), "skipped when empty");
+    }
+
+    #[test]
+    fn closing_a_file_s_last_open_section_takes_the_file_out() {
+        let mut map = BTreeMap::new();
+        set_details_open(&mut map, Path::new("/a.md"), vec![DetailsOpen { summary: "More".into(), index: 1 }]);
+        assert_eq!(map.len(), 1);
+        set_details_open(&mut map, Path::new("/a.md"), Vec::new());
+        assert!(map.is_empty());
+    }
+
+    #[test]
     fn the_text_preset_is_saved_and_a_v2_file_has_none() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: Some("relaxed".into()), sidebar: None, window: None };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: Some("relaxed".into()), sidebar: None, window: None, details_open: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws.clone()));
         let text = std::fs::read_to_string(&file).unwrap();
@@ -332,7 +381,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         ws.window = Some(WindowSaved { display: "37D8832A-2D66-02CA-B9F7-8F30A301B230".into(), x: 40.0, y: 22.5, w: 1440.0, h: 860.0 });
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws));
@@ -343,7 +392,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ws.json");
         let project = Path::new("/p");
-        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
+        let mut ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         assert_eq!(load_from(&file, project), Some(ws.clone()));
         ws.sidebar = Some(SidebarSaved { width: 300.0, collapsed: true, show_ignored: true, expanded: vec![PathBuf::from("/p/src")], worktrees_expanded: vec![PathBuf::from("/p-f")], explorer_open: true, worktrees_open: false });
@@ -371,7 +420,7 @@ mod tests {
         tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some(PathBuf::from("/projects/x-feat")) });
         tree.add_tab(pane, Tab::Browser { url: Some("https://example.com/docs".into()), app_mode: true });
         tree.add_tab(pane, Tab::Browser { url: None, app_mode: false });
-        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, text_preset: None, sidebar: None, window: None };
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         let loaded = load_from(&file, project).unwrap();
         let tabs = &loaded.tree.pane(loaded.tree.focused).unwrap().tabs;
@@ -449,7 +498,7 @@ mod tests {
     fn save_leaves_no_temp_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("workspaces").join("ws.json");
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         save_to(&file, &ws).unwrap();
         let names: Vec<String> = std::fs::read_dir(file.parent().unwrap())
@@ -464,15 +513,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, "").unwrap();
-        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
+        let ws = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/p"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         assert!(save_to(&blocker.join("ws.json"), &ws).is_err());
     }
 
     #[test]
     fn save_queue_coalesces_until_taken() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         assert!(q.offer(a.clone()), "first offer schedules a flush");
         assert!(!q.offer(b.clone()), "a flush is already pending");
         assert_eq!(q.take().map(|j| j.ws), Some(b.clone()), "the latest offer wins");
@@ -486,8 +535,8 @@ mod tests {
     #[test]
     fn writes_never_go_back_a_generation() {
         let mut q = SaveQueue::default();
-        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
-        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None };
+        let a = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/a"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
+        let b = Workspace { version: FORMAT_VERSION, project: PathBuf::from("/b"), tree: tree_with_two(), text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         q.offer(a);
         let old = q.take().unwrap();
         q.offer(b);

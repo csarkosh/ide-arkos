@@ -349,6 +349,9 @@ pub struct Root {
     /// Where the window is (display, frame), as last saved with the layout; a relaunch opens
     /// it there.
     pub window_saved: Option<workspace::WindowSaved>,
+    /// The `<details>` sections open in each markdown file, as saved with the layout: a viewer
+    /// takes its file's when it is made, and a toggle in any of them updates it.
+    pub details_open: BTreeMap<PathBuf, Vec<workspace::DetailsOpen>>,
     /// The windows the palette's dock list offers, by row (`Command::DockChromeWindowAt`).
     pub dock_choices: Vec<ax::AxWindow>,
     /// Each pane's body as laid out by the last render, in window points: where a Chrome window
@@ -513,6 +516,7 @@ impl Root {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
         let reconcile_with_note = saved.is_some();
         let window_saved = saved.as_ref().and_then(|w| w.window.clone());
+        let details_open = saved.as_ref().map(|w| w.details_open.clone()).unwrap_or_default();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
             Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
@@ -618,6 +622,7 @@ impl Root {
             chrome_windows: Vec::new(),
             ns_window: None,
             window_saved,
+            details_open,
             dock_choices: Vec::new(),
             pane_rects: Vec::new(),
             browser_drop: None,
@@ -1307,7 +1312,7 @@ impl Root {
 
     pub fn save(&mut self, cx: &mut App) {
         let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open };
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 

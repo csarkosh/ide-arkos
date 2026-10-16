@@ -21,6 +21,9 @@ pub enum BlockKind {
     Rule,
     Table,
     Html,
+    /// A `<details>` HTML block with everything up to its closing tag, blank lines included
+    /// (`split` joins the HTML blocks CommonMark cuts it into).
+    Details,
     Metadata,
     Blank,
 }
@@ -35,7 +38,7 @@ pub struct Block {
 
 /// Splits the document into top-level blocks: block i covers its start line up to block i+1's
 /// start, so every line is in exactly one block. An empty slice has no blocks; a document with
-/// no content is one `Blank` block.
+/// no content is one `Blank` block. A `<details>` section is one block (`merge_details`).
 pub fn split(lines: &[String]) -> Vec<Block> {
     if lines.is_empty() {
         return Vec::new();
@@ -92,7 +95,254 @@ pub fn split(lines: &[String]) -> Vec<Block> {
         let end = found.get(i + 1).map_or(lines.len(), |(next, _)| *next);
         blocks.push(Block { lines: *start..end, kind: kind.clone() });
     }
-    blocks
+    merge_details(blocks, lines)
+}
+
+/// Whether an HTML block starts a `<details>` section: its first line does, after its indent.
+fn opens_details(block: &Block, lines: &[String]) -> bool {
+    block.kind == BlockKind::Html && lines.get(block.lines.start).is_some_and(|l| starts_tag(l.trim_start(), "<details"))
+}
+
+/// Joins each HTML block that starts a `<details>` section with the blocks after it, up to and
+/// including the one holding its closing tag, into one `Details` block: CommonMark ends an HTML
+/// block at a blank line, so a section with blank lines inside arrives in pieces. The tags are
+/// matched as brackets (an inner `<details>` closes before the outer one does), outside code
+/// blocks, which show tags as text. A section that is never closed stays the blocks it was.
+fn merge_details(blocks: Vec<Block>, lines: &[String]) -> Vec<Block> {
+    if !blocks.iter().any(|b| opens_details(b, lines)) {
+        return blocks;
+    }
+    // For each block that starts a section, the index and the end line of the block that closes it.
+    let mut closes: Vec<Option<(usize, usize)>> = vec![None; blocks.len()];
+    // The open tags, innermost last: the block a tag starts, or `None` for a tag inside a block.
+    let mut open: Vec<Option<usize>> = Vec::new();
+    for (j, block) in blocks.iter().enumerate() {
+        if matches!(block.kind, BlockKind::CodeBlock { .. }) {
+            continue;
+        }
+        let mut leads = opens_details(block, lines);
+        for line in block_lines(lines, block.lines.clone()) {
+            for (_, opens) in details_tags(line) {
+                if opens {
+                    open.push(leads.then_some(j));
+                    leads = false;
+                } else if let Some(Some(i)) = open.pop() {
+                    closes[i] = Some((j, block.lines.end));
+                }
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(blocks.len());
+    // Blocks before this index are inside a section already joined.
+    let mut until = 0;
+    for (i, block) in blocks.into_iter().enumerate() {
+        if i < until {
+            continue;
+        }
+        match closes[i] {
+            Some((j, end)) => {
+                until = j + 1;
+                out.push(Block { lines: block.lines.start..end, kind: BlockKind::Details });
+            }
+            None => out.push(block),
+        }
+    }
+    out
+}
+
+/// Whether `s` starts with the tag opening `tag` (`<details`, `</details`), in any case, followed
+/// by the end of the tag's name.
+fn starts_tag(s: &str, tag: &str) -> bool {
+    s.len() >= tag.len() && s.as_bytes()[..tag.len()].eq_ignore_ascii_case(tag.as_bytes()) && s[tag.len()..].chars().next().is_none_or(|c| c == '>' || c == '/' || c.is_whitespace())
+}
+
+/// The `<details` and `</details` tags of `text` in order: each one's byte offset and whether it
+/// opens a section.
+fn details_tags(text: &str) -> impl Iterator<Item = (usize, bool)> + '_ {
+    text.match_indices('<').filter_map(|(at, _)| {
+        let rest = &text[at..];
+        if starts_tag(rest, "<details") {
+            Some((at, true))
+        } else if starts_tag(rest, "</details") {
+            Some((at, false))
+        } else {
+            None
+        }
+    })
+}
+
+/// The byte offset of the `</details` that closes the first `<details` of `text`, counting the
+/// sections inside it; `None` when it is never closed.
+fn closing_details(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, opens) in details_tags(text) {
+        if opens {
+            depth += 1;
+        } else if depth > 0 {
+            depth -= 1;
+            if depth == 0 {
+                return Some(at);
+            }
+        }
+    }
+    None
+}
+
+/// The byte offset of the `>` ending the tag `s` starts with, outside quoted attribute values.
+fn tag_end(s: &str) -> Option<usize> {
+    let mut quote = None;
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '>') => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The byte offset of `needle` in `hay`, in any ASCII case.
+fn find_ascii_ci(hay: &str, needle: &str) -> Option<usize> {
+    hay.as_bytes().windows(needle.len()).position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// A tag's attributes (the text after its name): each name in lower case with its value, in
+/// double quotes, single quotes or none; a name alone has an empty value.
+fn attributes(s: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = s.trim_start();
+    while !rest.is_empty() {
+        let name_end = rest.find(|c: char| c == '=' || c.is_whitespace()).unwrap_or(rest.len());
+        let name = rest[..name_end].to_ascii_lowercase();
+        rest = rest[name_end..].trim_start();
+        let mut value = String::new();
+        if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            match after.chars().next() {
+                Some(q @ ('"' | '\'')) => {
+                    let body = &after[1..];
+                    let end = body.find(q).unwrap_or(body.len());
+                    value = body[..end].to_string();
+                    rest = body.get(end + 1..).unwrap_or("");
+                }
+                _ => {
+                    let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                    value = after[..end].to_string();
+                    rest = &after[end..];
+                }
+            }
+        }
+        if !name.is_empty() {
+            out.push((name, value));
+        }
+        rest = rest.trim_start();
+    }
+    out
+}
+
+/// The value of attribute `name` among `attrs`.
+fn attribute<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attrs.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+}
+
+/// An HTML block that is one `<img>` tag: its `src`, its `width` in pixels when it gives one, and
+/// whether a wrapper around it asks for it centred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HtmlImage {
+    pub src: String,
+    pub width: Option<u32>,
+    pub center: bool,
+}
+
+/// The image an HTML block shows when it is one `<img>` tag with a `src` (its attributes in any
+/// order, in either quotes, `/>` or `>`), alone or inside `<p>`, `<div>` or `<a>` tags with no
+/// text between them; `center` when one of those has `align="center"`. Anything else (text, a
+/// second image, another tag) is `None`: the block stays its source.
+pub fn html_image(block: &str) -> Option<HtmlImage> {
+    let mut rest = block.trim();
+    let mut image = None;
+    let mut center = false;
+    while !rest.is_empty() {
+        if !rest.starts_with('<') {
+            return None;
+        }
+        let end = tag_end(rest)?;
+        let tag = rest[1..end].trim_end();
+        rest = rest[end + 1..].trim_start();
+        let tag = tag.strip_suffix('/').unwrap_or(tag);
+        let (name, attrs) = tag.split_once(char::is_whitespace).unwrap_or((tag, ""));
+        match name.to_ascii_lowercase().as_str() {
+            "img" if image.is_none() => {
+                let attrs = attributes(attrs);
+                let src = attribute(&attrs, "src").filter(|s| !s.is_empty())?.to_string();
+                let width = attribute(&attrs, "width").and_then(|w| w.strip_suffix("px").unwrap_or(w).trim().parse().ok());
+                image = Some((src, width));
+            }
+            "p" | "div" | "a" => center |= attribute(&attributes(attrs), "align").is_some_and(|a| a.eq_ignore_ascii_case("center")),
+            "/p" | "/div" | "/a" => {}
+            _ => return None,
+        }
+    }
+    let (src, width) = image?;
+    Some(HtmlImage { src, width, center })
+}
+
+/// A `<details>` block's parts: the text of its `<summary>` ("Details" when it has none), its
+/// content (the text after the summary's line, or the opening tag's, up to the closing tag), and
+/// the byte offset in the block where the content starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Details {
+    pub summary: String,
+    pub inner: String,
+    pub at: usize,
+}
+
+/// The summary and content of a block that starts with `<details` and holds its closing tag;
+/// `None` for any other block. The `<summary>` counts on the opening tag's line or the next.
+pub fn html_details(block: &str) -> Option<Details> {
+    let start = block.len() - block.trim_start().len();
+    if !starts_tag(&block[start..], "<details") {
+        return None;
+    }
+    let close = closing_details(block)?;
+    let mut from = start + tag_end(&block[start..close])? + 1;
+    let mut summary = String::new();
+    let after = &block[from..close];
+    let lead = after.len() - after.trim_start().len();
+    if after[..lead].matches('\n').count() <= 1 && starts_tag(&after[lead..], "<summary") {
+        let open = from + lead;
+        let body = open + tag_end(&block[open..close]).map_or(close - open, |t| t + 1);
+        if let Some(end) = find_ascii_ci(&block[body..close], "</summary") {
+            summary = plain_summary(&block[body..body + end]);
+            from = body + end + tag_end(&block[body + end..close]).map_or(close - body - end, |t| t + 1);
+        }
+    }
+    // The rest of the line the summary (or the opening tag) ends is not content when it is blank.
+    let line_end = block[from..close].find('\n').map_or(close, |n| from + n);
+    if block[from..line_end].trim().is_empty() {
+        from = (line_end + 1).min(close);
+    }
+    if summary.is_empty() {
+        summary = "Details".into();
+    }
+    Some(Details { summary, inner: block[from..close].to_string(), at: from })
+}
+
+/// A summary's text with its tags taken out and its spaces collapsed.
+fn plain_summary(s: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            c if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The index of the block holding `line`; past the end, the last block.
@@ -156,6 +406,11 @@ pub enum Inline {
     /// A paragraph of two or more images and nothing but whitespace between them (a row of
     /// badges).
     Images(Vec<ImageRef>),
+    /// An HTML block that is one `<img>` tag (`html_image`).
+    HtmlImage(HtmlImage),
+    /// A `<details>` section: its summary and its content's blocks, each with its kind and its
+    /// inlines, blank blocks left out. A `<details>` inside it is its source, as other HTML is.
+    Details { summary: String, blocks: Vec<(BlockKind, Vec<Inline>)> },
 }
 
 /// One image of a row of them: its alt text, its path, and the target of the link around it, if
@@ -174,10 +429,46 @@ pub fn inline(block_text: &str, kind: &BlockKind) -> Vec<Inline> {
         BlockKind::Blank => Vec::new(),
         BlockKind::Rule => vec![Inline::Rule],
         BlockKind::Table => vec![Inline::Table(block_text.trim_end().to_string())],
-        BlockKind::Html => vec![Inline::Html(block_text.trim_end().to_string())],
+        BlockKind::Html => vec![match html_image(block_text) {
+            Some(image) => Inline::HtmlImage(image),
+            None => Inline::Html(block_text.trim_end().to_string()),
+        }],
+        BlockKind::Details => details_inline(block_text),
         BlockKind::CodeBlock { info } => vec![Inline::Code { info: info.clone(), text: plain_text(block_text) }],
         BlockKind::Metadata => vec![Inline::Metadata(plain_text(block_text))],
         BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote => walk(block_text),
+    }
+}
+
+/// A `<details>` block's one inline: its summary and its content split into blocks, each with its
+/// inlines, whose runs' source ranges are bytes of the whole block's text (so a press on the
+/// content maps into the block). A block that is not a whole section is its source.
+fn details_inline(block_text: &str) -> Vec<Inline> {
+    let Some(Details { summary, inner, at }) = html_details(block_text) else { return vec![Inline::Html(block_text.trim_end().to_string())] };
+    let lines: Vec<String> = inner.split('\n').map(String::from).collect();
+    let mut line_starts = Vec::with_capacity(lines.len());
+    let mut at = at;
+    for l in &lines {
+        line_starts.push(at);
+        at += l.len() + 1;
+    }
+    let mut blocks = Vec::new();
+    for b in split(&lines).into_iter().filter(|b| b.kind != BlockKind::Blank) {
+        let text = lines[b.lines.clone()].join("\n");
+        let mut inlines = inline(&text, if b.kind == BlockKind::Details { &BlockKind::Html } else { &b.kind });
+        for i in &mut inlines {
+            shift_sources(i, line_starts[b.lines.start]);
+        }
+        blocks.push((b.kind, inlines));
+    }
+    vec![Inline::Details { summary, blocks }]
+}
+
+/// Moves the source ranges of an inline's runs `by` bytes on.
+fn shift_sources(inline: &mut Inline, by: usize) {
+    let (Inline::Para(runs) | Inline::Heading(_, runs) | Inline::Quote(runs) | Inline::Item { runs, .. }) = inline else { return };
+    for run in runs {
+        run.source = run.source.start + by..run.source.end + by;
     }
 }
 
@@ -644,6 +935,46 @@ mod tests {
         let Inline::Images(images) = &row[0] else { panic!("{row:?}") };
         let links: Vec<Option<&str>> = images.iter().map(|i| i.link.as_deref()).collect();
         assert_eq!(links, vec![Some("https://a"), Some("https://b"), None]);
+    }
+
+    #[test]
+    fn a_details_block_with_blank_lines_is_one_block_and_img_and_details_are_recognised() {
+        let lines: Vec<String> = "<details>\n<summary>More</summary>\n\nSome *text*\n\n- a\n</details>\n\nafter\n".lines().map(String::from).collect();
+        let blocks = split(&lines);
+        assert_eq!(blocks.iter().map(|b| &b.kind).collect::<Vec<_>>()[0], &BlockKind::Details);
+        assert_eq!(blocks.iter().filter(|b| b.kind == BlockKind::Details).count(), 1);
+        let nested: Vec<String> = "<details><summary>O</summary>\n<details>\n<summary>I</summary>\nx\n</details>\n\ny\n</details>\n".lines().map(String::from).collect();
+        assert_eq!(split(&nested).iter().filter(|b| b.kind == BlockKind::Details).count(), 1, "the inner details does not close the outer");
+        let open: Vec<String> = "<details>\nno end\n\npara\n".lines().map(String::from).collect();
+        assert!(split(&open).iter().all(|b| b.kind != BlockKind::Details), "no closing tag: the blocks stay as they were");
+        assert_eq!(html_image("<img src=\"a.png\" width=\"300\">"), Some(HtmlImage { src: "a.png".into(), width: Some(300), center: false }));
+        assert_eq!(html_image("<p align=\"center\"><img width='3' src='http://x/a.png' /></p>"), Some(HtmlImage { src: "http://x/a.png".into(), width: Some(3), center: true }));
+        assert!(html_image("<img src=\"a.png\"><p>x</p>").is_none(), "text beside the tag");
+        let d = html_details("<details>\n<summary>More</summary>\n\nSome *text*\n\n- a\n</details>").unwrap();
+        assert_eq!((d.summary.as_str(), d.inner.as_str()), ("More", "\nSome *text*\n\n- a\n"));
+        assert_eq!(html_details("<details><summary>Same line</summary>\nx\n</details>").unwrap().summary, "Same line");
+        assert_eq!(html_details("<details>\nplain\n</details>").unwrap().summary, "Details");
+        let inl = inline("<details>\n<summary>S</summary>\n\n| a |\n|---|\n| 1 |\n</details>", &BlockKind::Details);
+        assert!(matches!(&inl[0], Inline::Details { summary, blocks } if summary == "S" && blocks.len() == 1), "the leading blank block is dropped");
+    }
+
+    #[test]
+    fn a_details_section_s_content_maps_into_the_block_and_tags_in_code_do_not_count() {
+        let doc = lines("<details>\n<summary>S</summary>\n\nSome *text*\n</details>");
+        let text = doc.join("\n");
+        let Inline::Details { blocks: inner, .. } = &inline(&text, &BlockKind::Details)[0] else { panic!("not a section") };
+        let Inline::Para(runs) = &inner[0].1[0] else { panic!("not a paragraph") };
+        assert_eq!(&text[runs[0].source.clone()], "Some ");
+        assert_eq!(pos_of_offset(&split(&doc)[0], &doc, runs[0].source.start), edit::Pos { line: 3, ch: 0 });
+        let nested = "<details>\n<summary>O</summary>\n<details>\n<summary>I</summary>\nx\n</details>\n</details>";
+        let Inline::Details { blocks: inner, .. } = &inline(nested, &BlockKind::Details)[0] else { panic!("not a section") };
+        assert!(matches!(&inner[..], [(BlockKind::Details, i)] if matches!(&i[..], [Inline::Html(_)])), "the inner section is its source");
+        let code = lines("<details>\n\n```\n</details>\n```\n\n</details>\n\nafter");
+        let blocks = split(&code);
+        assert_eq!((blocks[0].kind.clone(), blocks[0].lines.clone()), (BlockKind::Details, 0..8), "the tag in the code block does not close it");
+        assert_eq!(html_image("<a href=\"x\">\n  <img alt='a > b' src=b.png>\n</a>"), Some(HtmlImage { src: "b.png".into(), width: None, center: false }));
+        assert!(html_image("<div align=\"CENTER\"><img src=\"b.png\" width=\"50%\"></div>").is_some_and(|i| i.center && i.width.is_none()));
+        assert!(html_image("<img src=\"a.png\"><img src=\"b.png\">").is_none(), "two images");
     }
 
     #[test]

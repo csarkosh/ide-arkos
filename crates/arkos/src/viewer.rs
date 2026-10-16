@@ -25,6 +25,7 @@ use crate::remote_image;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
 use crate::tree::{PaneId, Tab, TabId, ViewMode};
+use crate::workspace::{self, DetailsOpen};
 use crate::viewer;
 use crate::viewer_element::{self as element, RawLayout};
 use crate::Root;
@@ -32,7 +33,7 @@ use gpui::{
     div, prelude::*, px, App, Bounds, ClickEvent, ClipboardItem, Context, Div, Entity, EntityId, EntityInputHandler, EventEmitter, FocusHandle, KeyDownEvent, Keystroke, ListAlignment,
     ListOffset, ListState, MouseButton, MouseDownEvent, Pixels, Point, SharedString, UTF16Selection, Window,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -84,6 +85,9 @@ pub enum ViewerEvent {
     SaveFailed,
     /// A link to a markdown file was Cmd+clicked: it opens in a viewer tab of its own.
     OpenPath(PathBuf),
+    /// A `<details>` section was opened or closed: the file's open sections now, for the
+    /// workspace file.
+    DetailsToggled(Vec<DetailsOpen>),
 }
 
 /// What a load that found the file changed does to a viewer holding a document.
@@ -592,6 +596,10 @@ pub struct Viewer {
     /// size, failed, or not to be rendered without Chrome (`md_view::fill` moves them along; a
     /// failed one is rendered again only in a new viewer, once its file is opened again).
     pub diagrams: HashMap<String, mermaid::Diagram>,
+    /// The `<details>` sections shown open, each by its summary and its index among the file's
+    /// sections, so an edit elsewhere in the file keeps it open. Taken from the workspace when the
+    /// viewer is made and saved there on every toggle (`ViewerEvent::DetailsToggled`).
+    pub open_details: BTreeSet<(String, usize)>,
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -653,6 +661,7 @@ impl Viewer {
             posters: HashMap::new(),
             sizes: HashMap::new(),
             diagrams: HashMap::new(),
+            open_details: BTreeSet::new(),
         }
     }
 
@@ -1763,6 +1772,28 @@ impl Viewer {
         self.place_caret(p, extend, cx);
     }
 
+    /// Block `ix`'s index among the document's `<details>` sections, in document order.
+    pub fn details_index(&self, ix: usize) -> usize {
+        self.blocks[..ix.min(self.blocks.len())].iter().filter(|b| b.kind == md_blocks::BlockKind::Details).count()
+    }
+
+    /// Whether `<details>` block `ix`, whose summary is `summary`, is shown open.
+    pub fn details_open(&self, ix: usize, summary: &str) -> bool {
+        let index = self.details_index(ix);
+        self.open_details.iter().any(|(s, i)| *i == index && s == summary)
+    }
+
+    /// Opens or closes `<details>` block `ix`, whose summary is `summary`, and tells `Root`, which
+    /// saves the file's open sections in the workspace. The document is not touched.
+    pub fn toggle_details(&mut self, ix: usize, summary: &str, cx: &mut Context<Self>) {
+        let key = (summary.to_string(), self.details_index(ix));
+        if !self.open_details.remove(&key) {
+            self.open_details.insert(key);
+        }
+        cx.emit(ViewerEvent::DetailsToggled(self.open_details.iter().map(|(summary, index)| DetailsOpen { summary: summary.clone(), index: *index }).collect()));
+        cx.notify();
+    }
+
     /// After the caret moved (a key, a press, a click on the tail, an undo or a redo): in the
     /// rendered view, `next_entry` decides whether the table block `table_entry` holds was left
     /// with its text changed since the snapshot, and that table's pipes are realigned
@@ -2606,9 +2637,11 @@ impl Root {
             Some(Tab::Viewer { mode, .. }) => *mode,
             _ => ViewMode::default(),
         };
+        let open_details = self.details_open.get(path).map(|open| open.iter().map(|d| (d.summary.clone(), d.index)).collect()).unwrap_or_default();
         let v = cx.new(|cx| {
             let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
             v.mode = mode;
+            v.open_details = open_details;
             v
         });
         cx.subscribe(&v, move |root, v, event: &ViewerEvent, cx| {
@@ -2623,6 +2656,21 @@ impl Root {
                     }
                 }
                 ViewerEvent::OpenPath(path) => root.open_viewer(path, true, cx),
+                // The state is the file's: every other tab on it shows the same sections open.
+                ViewerEvent::DetailsToggled(open) => {
+                    let path = v.read(cx).path.clone();
+                    workspace::set_details_open(&mut root.details_open, &path, open.clone());
+                    let shown: BTreeSet<(String, usize)> = open.iter().map(|d| (d.summary.clone(), d.index)).collect();
+                    for other in root.viewers.values().filter(|o| o.entity_id() != v.entity_id()) {
+                        other.update(cx, |o, cx| {
+                            if o.path == path {
+                                o.open_details = shown.clone();
+                                cx.notify();
+                            }
+                        });
+                    }
+                    root.save(cx);
+                }
             }
             // The tab's label shows whether it is dirty.
             cx.notify();
