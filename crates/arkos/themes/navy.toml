@@ -1,3 +1,4 @@
+# The schema of every key is in docs/themes.md.
 # Navy: the default dark theme (spec 7, 7.1). A lifted navy, not black; a bright grey text, not
 # a dim one; every colour at least 4.5:1 against its background. The chrome and the terminal
 # background are sampled from docs/reference/ and lifted 12 per channel to the #11161f floor.

@@ -1,3 +1,4 @@
+# The schema of every key is in docs/themes.md.
 # Navy Light: the light counterpart with the same hue relationships (spec 7). Text is dark on a
 # soft blue-white; the ANSI colours are deepened so each clears 4.5:1 on the light background.
 name = "navy-light"

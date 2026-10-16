@@ -3504,6 +3504,9 @@ fn main() {
         std::process::exit(hook_cli::run(&args[1..]));
     }
     // Read-only diagnostics for a failed update: no window, no daemon start, nothing written.
+    if args.get(1).map(String::as_str) == Some("theme") {
+        std::process::exit(theme::theme_cli(&args[2..]));
+    }
     if args.get(1).map(String::as_str) == Some("doctor") {
         std::process::exit(doctor::run());
     }

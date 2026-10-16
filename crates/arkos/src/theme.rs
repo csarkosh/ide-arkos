@@ -101,9 +101,10 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 2] = [
+pub const BUILTIN: [(&str, &str); 3] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("navy-light", include_str!("../themes/navy-light.toml")),
+    ("timo-purple", include_str!("../themes/timo-purple.toml")),
 ];
 
 pub fn parse(text: &str) -> Result<Theme, String> {
@@ -117,7 +118,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
 }
 
 /// True for a name that is a bare file stem: no separators, no parent references, not empty.
-fn is_bare_name(name: &str) -> bool {
+pub(crate) fn is_bare_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
 
@@ -169,6 +170,103 @@ pub fn extract(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         wrote.push(file);
     }
     Ok(wrote)
+}
+
+/// Parses the theme file at `path`. Ok is the theme's own `name`; a missing or unreadable file is
+/// an error like any other.
+pub fn validate_file(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    parse(&text).map(|t| t.name)
+}
+
+/// Where a listed theme comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    BuiltIn,
+    File,
+    Invalid(String),
+}
+
+/// Every theme by name: the built-ins first, then the folder's other files sorted. A file that
+/// shadows a built-in is listed once, in the built-in's place, as a file.
+pub fn list(dir: &Path) -> Vec<(String, Source)> {
+    let from_file = |name: &str| -> Option<Source> {
+        let file = dir.join(format!("{name}.toml"));
+        if !file.is_file() {
+            return None;
+        }
+        Some(match validate_file(&file) {
+            Ok(_) => Source::File,
+            Err(e) => Source::Invalid(e),
+        })
+    };
+    let mut out: Vec<(String, Source)> =
+        BUILTIN.iter().map(|(n, _)| (n.to_string(), from_file(n).unwrap_or(Source::BuiltIn))).collect();
+    let mut stems: Vec<String> = names(dir).into_iter().filter(|n| !BUILTIN.iter().any(|(b, _)| b == n)).collect();
+    stems.sort();
+    out.extend(stems.into_iter().filter_map(|n| from_file(&n).map(|s| (n, s))));
+    out
+}
+
+/// Copies the theme file `src` into `dir` under the name the theme itself declares. Only `.toml`
+/// files are taken. Ok is the name and whether a file of that name was already there; without
+/// `replace` an existing file is left alone and the error is "exists".
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+pub fn import_file(src: &Path, dir: &Path, replace: bool) -> Result<(String, bool), String> {
+    if src.extension().and_then(|e| e.to_str()) != Some("toml") {
+        return Err("only .toml theme files can be added".into());
+    }
+    let text = std::fs::read_to_string(src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+    let name = parse(&text)?.name;
+    if !is_bare_name(&name) || name.starts_with('.') {
+        return Err(format!("theme name {name:?} must be a bare file name that does not start with a dot"));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let dest = dir.join(format!("{name}.toml"));
+    let existed = dest.exists();
+    if existed && !replace {
+        return Err("exists".into());
+    }
+    std::fs::write(&dest, text).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+    Ok((name, existed))
+}
+
+const THEME_USAGE: &str = "usage: arkos theme list\n       arkos theme validate <file>\n";
+
+/// The `arkos theme` subcommand against an explicit folder and streams. Returns the exit code:
+/// 0 on success, 1 when `validate` finds a problem, 2 for a usage error.
+pub fn theme_cli_to(args: &[String], dir: &Path, out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> i32 {
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["list"] => {
+            for (name, source) in list(dir) {
+                let _ = match source {
+                    Source::BuiltIn => writeln!(out, "{name} (built in)"),
+                    Source::File => writeln!(out, "{name} (file)"),
+                    Source::Invalid(e) => writeln!(out, "{name} (file, invalid: {e})"),
+                };
+            }
+            0
+        }
+        ["validate", file] => match validate_file(Path::new(file)) {
+            Ok(name) => {
+                let _ = writeln!(out, "ok: {name}");
+                0
+            }
+            Err(e) => {
+                let _ = writeln!(err, "{e}");
+                1
+            }
+        },
+        _ => {
+            let _ = err.write_all(THEME_USAGE.as_bytes());
+            2
+        }
+    }
+}
+
+/// `arkos theme ...` with the real themes folder and the process's stdout and stderr.
+pub fn theme_cli(args: &[String]) -> i32 {
+    theme_cli_to(args, &crate::paths::themes_dir(), &mut std::io::stdout(), &mut std::io::stderr())
 }
 
 impl Theme {
@@ -332,7 +430,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"navy-light\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["mine".to_string(), "navy".to_string(), "navy-light".to_string()]);
+        assert_eq!(names(dir.path()), vec!["mine".to_string(), "navy".to_string(), "navy-light".to_string(), "timo-purple".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -347,11 +445,78 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 2);
+        assert_eq!(wrote.len(), 3);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), "edited");
+    }
+
+    #[test]
+    fn timo_purple_is_built_in_and_reads_on_the_surfaces_the_general_test_skips() {
+        let t = builtin("timo-purple").expect("ships");
+        assert_eq!(t.name, "timo-purple");
+        assert_eq!(BUILTIN.len(), 3);
+        let c = &t.chrome;
+        // The general contrast test covers every foreground on window_bg; these are the other surfaces.
+        let pairs = [(c.text_dim, c.banner), (c.text_dim, c.sidebar), (c.text_dim, c.tab_inactive), (c.text, c.tab_inactive), (t.terminal.foreground, t.terminal.selection), (t.terminal.foreground, t.semantic.find_match), (t.terminal.foreground, t.semantic.find_current)];
+        for (fg, bg) in pairs {
+            assert!(crate::palette::contrast(fg, bg) >= 4.5, "{fg:?} on {bg:?} is {:.2}", crate::palette::contrast(fg, bg));
+        }
+        assert_eq!(c.focus_ring, t.terminal.cyan, "the accent is the cyan");
+        assert_eq!(t.terminal.cursor, t.terminal.cyan);
+    }
+
+    #[test]
+    fn the_list_and_the_validator_name_every_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mine.toml"), BUILTIN[0].1.replace("name = \"navy\"", "name = \"mine\"")).unwrap();
+        std::fs::write(dir.path().join("broken.toml"), "name = \"broken\"\n[chrome]\nwindow_bg = 1\n").unwrap();
+        std::fs::write(dir.path().join("navy.toml"), BUILTIN[0].1).unwrap();
+        let l = list(dir.path());
+        assert_eq!(l[0], ("navy".into(), Source::File), "a file shadows the built-in and is listed once");
+        assert_eq!(l[1], ("navy-light".into(), Source::BuiltIn));
+        assert_eq!(l[2], ("timo-purple".into(), Source::BuiltIn));
+        assert!(matches!(&l[3], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[4], ("mine".into(), Source::File));
+        assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
+        assert!(validate_file(&dir.path().join("broken.toml")).is_err());
+        assert!(validate_file(&dir.path().join("none.toml")).is_err());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["list".into()], dir.path(), &mut out, &mut err), 0);
+        let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
+        assert_eq!(lines[0], "navy (file)");
+        assert_eq!(lines[1], "navy-light (built in)");
+        assert_eq!(lines[2], "timo-purple (built in)");
+        assert!(lines[3].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[4], "mine (file)");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
+        assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string()], dir.path(), &mut out, &mut err), 1);
+        assert!(!err.is_empty());
+        assert_eq!(theme_cli_to(&["frob".into()], dir.path(), &mut Vec::new(), &mut Vec::new()), 2);
+    }
+
+    #[test]
+    fn import_uses_the_theme_s_own_name_and_asks_before_replacing() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap().path().join("themes"); // created on demand
+        let src = src_dir.path().join("whatever.toml");
+        std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \"ocean\"")).unwrap();
+        assert_eq!(import_file(&src, &dir, false), Ok(("ocean".into(), false)));
+        assert!(dir.join("ocean.toml").is_file());
+        assert_eq!(import_file(&src, &dir, false), Err("exists".into()));
+        assert_eq!(import_file(&src, &dir, true), Ok(("ocean".into(), true)));
+        std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \"../../x\"")).unwrap();
+        assert!(import_file(&src, &dir, true).is_err(), "a name that leaves the folder");
+        assert!(!dir.parent().unwrap().join("x.toml").exists());
+        std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", "name = \".hidden\"")).unwrap();
+        assert!(import_file(&src, &dir, true).is_err());
+        std::fs::write(&src, "nope").unwrap();
+        assert!(!import_file(&src, &dir, true).unwrap_err().is_empty());
+        assert!(import_file(&src_dir.path().join("x.txt"), &dir, true).is_err(), "only .toml");
     }
 
     #[test]
