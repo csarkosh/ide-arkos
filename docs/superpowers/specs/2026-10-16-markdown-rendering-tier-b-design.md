@@ -1,7 +1,7 @@
 # Arkos IDE: markdown rendering Tier B (milestone 9)
 
-Date: 2026-10-16. Status: draft for Cyrus's review; the rulings below were taken in chat on
-2026-10-16. Builds on the markdown editing design (`2026-10-15-markdown-editing-design.md`, shipped
+Date: 2026-10-16. Status: reviewed by Cyrus on 2026-10-16 (the three open questions answered, folded
+into sections 4, 7 and 8); the plan follows. The rulings below were taken in chat on 2026-10-16. Builds on the markdown editing design (`2026-10-15-markdown-editing-design.md`, shipped
 in 0.3.0: Tier A rendering, click-to-caret raw blocks, autosave) and the agent theme interface
 (`2026-10-16-agent-theme-interface-design.md`, merged for the same release). Written against main
 at `e8d8642`. Ships with milestone 8b and the analytics milestone in one release.
@@ -18,6 +18,9 @@ at `e8d8642`. Ships with milestone 8b and the analytics milestone in one release
 5. HTML blocks stay source except `<img>` (rendered as an image) and `<details>` (a collapsible
    section).
 6. Math is excluded.
+7. Remote images are always on; there is no switch.
+8. A `<details>` section remembers whether it is open across relaunches.
+9. Wide tables wrap by default, with a Settings option to scroll sideways instead.
 
 ## 2. Scope
 
@@ -50,9 +53,11 @@ cases; images inside table cells (they show as their alt text).
   alternating `window_bg` and a 4 percent tint of `chrome.text`, a 1 px `chrome.border` hairline
   between rows and columns, 6 px by 10 px cell padding, text aligned per column. Column widths:
   each column takes the widest cell's natural width, capped at 45 percent of the view's width;
-  when the sum exceeds the view, columns shrink proportionally to fit and cells wrap; a table never
-  scrolls sideways. The grid's total height is measured like any other block for the virtualised
-  layout.
+  when the sum exceeds the view, the default is to shrink the columns proportionally to fit and
+  wrap the cells; with `[viewer] wide_tables = "scroll"` the columns keep their natural widths and
+  the table scrolls sideways inside its block (a horizontal scroll handle per table, the wheel's
+  horizontal axis and Shift+wheel scroll it). The grid's total height is measured like any other
+  block for the virtualised layout.
 - **Caret and clicks.** A click on a cell makes the block raw with the caret at the matching
   position in the source: the click's cell index maps to the cell's text in the row's source line,
   and the x offset within the cell maps to a column within that text (the same hit-testing the
@@ -88,9 +93,8 @@ cases; images inside table cells (they show as their alt text).
   text and "loading" until the file lands, then the image at most the view's width; a failed fetch
   shows the alt text and the url, retried only when the file is reopened. The cache is reused
   across sessions and entries older than 30 days are removed at launch.
-- `[viewer] remote_images = true` in `config.toml` (default true, per the ruling); `false` shows
-  the alt text and the url and fetches nothing. The agent guide and the user guide say what is
-  fetched and when, since a markdown file can make Arkos contact any host it names.
+- Remote images are always on (ruling 7): there is no switch. The agent guide and the user guide
+  say what is fetched and when, since a markdown file can make Arkos contact any host it names.
 - Local images are unchanged. A click on any rendered image opens it with the system (Preview for
   a local file; the cached file for a remote one).
 
@@ -141,27 +145,33 @@ cases; images inside table cells (they show as their alt text).
   honoured when smaller than the view.
 - An HTML block that starts with `<details>` and ends with `</details>` renders as a collapsible
   section: the `<summary>` text (or "Details") on a row with a disclosure triangle, collapsed
-  by default, a click toggles (view state per block, kept while the tab is open, not written to
-  the file); the content between the summary and the closing tag is parsed as markdown blocks
+  by default, a click toggles; the open state is remembered per file and block in the workspace
+  file (ruling 8), keyed by the file's path and the block's summary text plus its index among the
+  file's `<details>` blocks, so an edit elsewhere in the file does not forget it; the state is
+  never written to the markdown file; the content between the summary and the closing tag is parsed as markdown blocks
   and rendered read-only inside the section; a click on that content makes the whole `<details>`
   block raw, as any block.
 - Every other HTML block stays as it is: dimmed source.
 
 ## 8. Config, keys and docs
 
-- `[viewer] remote_images` (bool, default true) is the one new key; `arkos settings set
-  viewer.remote_images false` joins the allow-list (the Settings window gets a switch "Remote
-  images" under a new Viewer line in the Text section: deferred unless Cyrus asks).
+- `[viewer] wide_tables = "wrap" | "scroll"` (default `wrap`) is the one new key (ruling 9);
+  `arkos settings set viewer.wide_tables scroll` joins the allow-list; the Settings window's Text
+  section gains a "Wide tables" row with segments "Wrap" and "Scroll"; the key is watched like the
+  rest of the config and applies live.
+- The `<details>` open state lives in the workspace file (`workspace.rs`) under the tab's entry as
+  a list of `(summary, index)` pairs that are open; absent means closed.
 - No new keymap rows: Tab, Shift+Tab, Up and Down gain meanings inside a table block only.
 - Docs: `docs/guide.md`'s "Editing markdown" section gains tables (the grid, the keys, the
   re-alignment), remote images and the off switch, video and audio, Mermaid and its Chrome
   requirement, `<img>` and `<details>`; `docs/development.md` Status rows: a table renders as a
   grid and a click lands in the cell; Tab, Shift+Tab, Up, Down move by cell; leaving the block
-  realigns the pipes and undo restores them; Tab at the end adds a row; a remote image loads and
-  shows "loading" first; `remote_images = false` shows the url instead; a `.mov` shows its poster
+  realigns the pipes and undo restores them; Tab at the end adds a row; a wide table wraps, and
+  with "Scroll" in Settings it scrolls sideways; a remote image loads and shows "loading" first;
+  a `.mov` shows its poster
   and opens in QuickTime; a Mermaid block renders within two seconds and re-renders after an
   edit; the source shows with a message when Chrome is missing; a `<details>` block opens and
-  closes; a 5 MB file with a large table stays responsive (the milestone 7 gate).
+  closes and is still open after a relaunch; a 5 MB file with a large table stays responsive (the milestone 7 gate).
 
 ## 9. Tests
 
@@ -169,16 +179,14 @@ Headless: `md_table::parse` (leading and trailing pipes, escaped pipes, short an
 malformed delimiter), `realign` (idempotent, keeps alignment colons, `None` on a broken table),
 the cell navigation helpers (`next_cell`, `prev_cell`, `cell_above`, `cell_below`, `append_row` as
 pure functions over the block's source and a caret), the remote-image cache path and the url
-rule, the `curl` argument builder, the poster and mermaid cache keys, the mermaid page builder
+rule, the `curl` argument builder, the `<details>` state key and its workspace round trip, the
+`wide_tables` key's parse and the Settings row's write, the poster and mermaid cache keys, the mermaid page builder
 (the theme variables land in the HTML, the source is escaped), the Chrome argument builder, the
 `<img>` and `<details>` recognisers and the details' inner split. Chrome, curl and qlmanage are
 never run by tests; the renders are hand checks.
 
-## 10. Open questions for Cyrus
+## 10. Questions answered
 
-1. Remote images on by default (per the ruling) with the off switch, or off until the first
-   remote image is seen and a one-time notice offers to turn them on? The draft says on.
-2. Should `<details>` remember its open state in the workspace file across relaunches? The draft
-   says no (view state while the tab is open).
-3. Column widths: the 45 percent cap and proportional shrink, or a horizontal scroll inside the
-   table for very wide ones? The draft never scrolls sideways.
+1. Remote images: always on, no switch (ruling 7).
+2. `<details>` remembers its open state across relaunches, in the workspace file (ruling 8).
+3. Wide tables wrap by default; a Settings option switches to sideways scrolling (ruling 9).
