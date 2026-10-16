@@ -5,6 +5,11 @@ terminal panes with tabs, a docked Chrome pane, a file tree and git worktree exp
 window that stays light on memory, scrolls smoothly, and keeps every session alive in a
 separate daemon so a frozen UI never loses work.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
+  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/hero-light.png" width="760">
+</picture>
+
 Written in Rust with GPUI. The design is in
 [docs/superpowers/specs/2026-10-13-arkos-design.md](docs/superpowers/specs/2026-10-13-arkos-design.md).
 
@@ -653,7 +658,8 @@ sh packaging/test.sh   # a dev build bundled, a manifest signed with a throwaway
 ## Screenshots
 
 The pictures in `docs/images/` (this README's and csarko.sh's) are taken of the real app by
-`scripts/shoot.sh`: a dev build opens a demo project (`scripts/shoot/demo`, a small link
+`scripts/shoot.sh`, run from Terminal.app (not from a shell inside Arkos: macOS attributes the
+capture to the app the shell runs in, and asks that app for the Screen Recording permission): a dev build opens a demo project (`scripts/shoot/demo`, a small link
 shortener) with the layout in `scripts/shoot/story.toml`, real Claude Code sessions get the
 prompts written there, and each shot is captured with `screencapture` once the tabs show the
 states it asks for. Nothing in them is staged afterwards; change the storyboard to change the
