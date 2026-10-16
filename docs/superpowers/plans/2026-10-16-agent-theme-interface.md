@@ -204,10 +204,12 @@ channel.
   `guide::TEXT`; `arkos guide` prints it (exit 0); `arkos guide --path` writes it to `<app
   support>/agent-guide.md` when the file is missing or differs and prints that path; `arkos guide
   --install` writes `<skills dir>/arkos-ide/SKILL.md` through `guide::install_skill(dir)`: the
-  front matter `---\nname: arkos-ide\ndescription: Customize Arkos IDE: themes, fonts and
-  settings. Use when the user asks to change how Arkos looks or behaves.\n---\n`, then one line
-  `<!-- arkos-guide: {stamp} -->` where `stamp` is `guide::STAMP`, the first 16 hex digits of the
-  SHA-256 of `TEXT` (the `sha2` crate is already a dependency of the workspace: check; else a
+  front matter `---\nname: arkos-ide\ndescription: "Customize Arkos IDE: themes, fonts and
+  settings. Use when the user asks to change how Arkos looks or behaves."\n---\n` (the description
+  is a double-quoted YAML scalar: unquoted, its second ": " makes the front matter invalid YAML),
+  then one line `<!-- arkos-guide: {stamp} -->` where `stamp` is `guide::stamp()`, the first 16 hex
+  digits of the SHA-256 of the front matter plus `TEXT` (everything in the file except the stamp
+  line) (the `sha2` crate is already a dependency of the workspace: check; else a
   simple FNV-1a 64 in `guide.rs` with a test), then `TEXT`; refuses (exit 1, the path on stderr) a
   file there whose first line is not `---` followed by `name: arkos-ide`; then prints the paragraph
   for `AGENTS.md` or `CLAUDE.md`: `Arkos IDE: run \`arkos guide\` before changing its theme or
@@ -690,7 +692,7 @@ pub const TEXT: &str = include_str!("../../../docs/agent-guide.md");
 pub const SKILL_NAME: &str = "arkos-ide";
 pub const SKILL_DESCRIPTION: &str = "Customize Arkos IDE: themes, fonts and settings. Use when the user asks to change how Arkos looks or behaves.";
 pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before changing its theme or settings.";
-pub fn stamp() -> String; // 16 hex digits over TEXT
+pub fn stamp() -> String; // 16 hex digits over the front matter plus TEXT
 pub fn skill_text() -> String;
 #[derive(Debug, Clone, PartialEq, Eq)] pub enum SkillState { Missing, Current, Outdated(String), Foreign }
 pub fn skill_state(dir: &Path) -> SkillState; // dir is the skills folder
@@ -720,7 +722,7 @@ fn the_skill_is_installed_once_refreshed_when_stale_and_never_over_a_stranger() 
     assert_eq!(i.path, dir.path().join("arkos-ide").join("SKILL.md"));
     assert!(!i.replaced);
     let text = std::fs::read_to_string(&i.path).unwrap();
-    assert!(text.starts_with("---\nname: arkos-ide\ndescription: Customize Arkos IDE"), "{text}");
+    assert!(text.starts_with("---\nname: arkos-ide\ndescription: \"Customize Arkos IDE"), "{text}");
     assert!(text.contains(&format!("<!-- arkos-guide: {} -->\n", stamp())));
     assert!(text.ends_with(TEXT));
     assert_eq!(skill_state(dir.path()), SkillState::Current);
