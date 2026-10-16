@@ -7,10 +7,11 @@
 //! session and is swept at launch (`cache::sweep_all`).
 
 use sha2::{Digest, Sha256};
+use std::borrow::Borrow;
 use std::collections::{BTreeSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -100,54 +101,63 @@ pub fn preview_args(file: &Path) -> Vec<String> {
     vec!["-a".into(), "Preview".into(), file.to_string_lossy().into_owned()]
 }
 
-/// The urls to fetch: each is in the queue once from its `want` to its `done`, waiting in order
-/// until a slot is free, then in flight, at most `MAX_IN_FLIGHT` at once.
-#[derive(Debug, Default)]
-pub struct FetchQueue {
-    seen: BTreeSet<String>,
-    waiting: VecDeque<String>,
-    flying: BTreeSet<String>,
+/// The jobs to run (urls to fetch here, video files to make posters of in `media`): each is in
+/// the queue once from its `want` to its `done`, waiting in order until a slot is free, then in
+/// flight, at most `limit` at once.
+#[derive(Debug)]
+pub struct FetchQueue<T = String> {
+    limit: usize,
+    seen: BTreeSet<T>,
+    waiting: VecDeque<T>,
+    flying: BTreeSet<T>,
 }
 
-impl FetchQueue {
-    pub const fn new() -> FetchQueue {
-        FetchQueue { seen: BTreeSet::new(), waiting: VecDeque::new(), flying: BTreeSet::new() }
+impl<T: Ord + Clone> FetchQueue<T> {
+    /// An empty queue that runs at most `limit` jobs at once.
+    pub const fn new(limit: usize) -> FetchQueue<T> {
+        FetchQueue { limit, seen: BTreeSet::new(), waiting: VecDeque::new(), flying: BTreeSet::new() }
     }
 
-    /// Queues `url`, unless it is already waiting or in flight.
-    pub fn want(&mut self, url: String) {
-        if self.seen.insert(url.clone()) {
-            self.waiting.push_back(url);
+    /// Queues `job`, unless it is already waiting or in flight.
+    pub fn want(&mut self, job: T) {
+        if self.seen.insert(job.clone()) {
+            self.waiting.push_back(job);
         }
     }
 
-    /// The waiting urls that now have a slot, moved to in flight: the caller fetches them.
-    pub fn start_ready(&mut self) -> Vec<String> {
-        let free = MAX_IN_FLIGHT.saturating_sub(self.in_flight()).min(self.waiting.len());
-        let ready: Vec<String> = self.waiting.drain(..free).collect();
+    /// The waiting jobs that now have a slot, moved to in flight: the caller runs them.
+    pub fn start_ready(&mut self) -> Vec<T> {
+        let free = self.limit.saturating_sub(self.in_flight()).min(self.waiting.len());
+        let ready: Vec<T> = self.waiting.drain(..free).collect();
         self.flying.extend(ready.iter().cloned());
         ready
     }
 
-    /// How many fetches are running.
+    /// How many jobs are running.
     pub fn in_flight(&self) -> usize {
         self.flying.len()
     }
 
-    /// `url`'s fetch ended, either way: its slot is free, and wanting it again fetches it again.
-    pub fn done(&mut self, url: &str) {
-        self.flying.remove(url);
-        self.seen.remove(url);
+    /// `job` ended, either way: its slot is free, and wanting it again runs it again.
+    pub fn done<Q: Ord + ?Sized>(&mut self, job: &Q)
+    where
+        T: Borrow<Q>,
+    {
+        self.flying.remove(job);
+        self.seen.remove(job);
     }
 
-    /// Whether `url` is waiting or in flight.
-    pub fn is_pending(&self, url: &str) -> bool {
-        self.seen.contains(url)
+    /// Whether `job` is waiting or in flight.
+    pub fn is_pending<Q: Ord + ?Sized>(&self, job: &Q) -> bool
+    where
+        T: Borrow<Q>,
+    {
+        self.seen.contains(job)
     }
 }
 
 /// The process's fetches, shared by every viewer in the window.
-static FETCHES: Mutex<FetchQueue> = Mutex::new(FetchQueue::new());
+static FETCHES: Mutex<FetchQueue> = Mutex::new(FetchQueue::new(MAX_IN_FLIGHT));
 
 /// The process-wide fetch queue, locked. A panic while it was held leaves it as it was.
 pub fn queue() -> MutexGuard<'static, FetchQueue> {
@@ -200,23 +210,7 @@ fn run_curl(url: &str, part: &Path) -> Result<(), String> {
     // stderr is one line at most (`--silent --show-error`), so the pipe cannot fill while the
     // loop below waits.
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).process_group(0).spawn().map_err(|e| format!("cannot run /usr/bin/curl: {e}"))?;
-    let group = child.id() as libc::pid_t;
-    let deadline = Instant::now() + BACKSTOP;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            waited => {
-                // SAFETY: killpg only signals; the group is the child's own, made at spawn.
-                unsafe { libc::killpg(group, libc::SIGKILL) };
-                let _ = child.wait();
-                return Err(match waited {
-                    Err(e) => e.to_string(),
-                    _ => format!("curl timed out after {} s", BACKSTOP.as_secs()),
-                });
-            }
-        }
-    };
+    let status = wait_bounded(&mut child, BACKSTOP, "curl")?;
     if status.success() {
         return Ok(());
     }
@@ -225,6 +219,28 @@ fn run_curl(url: &str, part: &Path) -> Result<(), String> {
         let _ = pipe.read_to_string(&mut err);
     }
     Err(format!("curl: {} ({status})", err.trim()))
+}
+
+/// Waits for `child`, spawned in a process group of its own (`process_group(0)`), until it exits
+/// or `backstop` passes; then the group is killed and the wait is an error naming `name`.
+pub fn wait_bounded(child: &mut Child, backstop: Duration, name: &str) -> Result<ExitStatus, String> {
+    let group = child.id() as libc::pid_t;
+    let deadline = Instant::now() + backstop;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            waited => {
+                // SAFETY: killpg only signals; the group is the child's own, made at spawn.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+                let _ = child.wait();
+                return Err(match waited {
+                    Err(e) => e.to_string(),
+                    _ => format!("{name} timed out after {} s", backstop.as_secs()),
+                });
+            }
+        }
+    }
 }
 
 /// A finished download: refused when empty or over `MAX_BYTES`, else renamed from `part` to
@@ -284,7 +300,7 @@ mod tests {
 
     #[test]
     fn the_fetch_queue_holds_four_in_flight_and_never_repeats_a_url() {
-        let mut q = FetchQueue::default();
+        let mut q = FetchQueue::new(MAX_IN_FLIGHT);
         for i in 0..6 {
             q.want(format!("https://x/{i}"));
         }

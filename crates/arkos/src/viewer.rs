@@ -19,6 +19,7 @@ use crate::md_table;
 use crate::md_view;
 use crate::motion::{self, Fades};
 use crate::palette::Rgb;
+use crate::media;
 use crate::remote_image;
 use crate::scroll::ScrollAnimator;
 use crate::theme::Theme;
@@ -579,6 +580,13 @@ pub struct Viewer {
     /// (`md_view::fill` moves them along; a failed one is fetched again only when the file is
     /// opened again, in a new viewer).
     pub remote: HashMap<String, remote_image::Remote>,
+    /// The posters of the local videos the rendered view has shown, by file: being made, in the
+    /// cache, or failed (`md_view::fill` moves them along, reading each file's mtime there and not
+    /// at every frame).
+    pub posters: HashMap<PathBuf, media::Poster>,
+    /// The sizes of the local audio files the rendered view has shown, read once in
+    /// `md_view::fill`; `None` when the file cannot be read.
+    pub sizes: HashMap<PathBuf, Option<u64>>,
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -637,6 +645,34 @@ impl Viewer {
             selecting: false,
             table_entry: None,
             remote: HashMap::new(),
+            posters: HashMap::new(),
+            sizes: HashMap::new(),
+        }
+    }
+
+    /// Starts the poster job that has the turn in the process-wide queue (`media::queue`, one at
+    /// a time), on the background executor (qlmanage blocks its thread). The job frees its turn
+    /// itself, whether or not this viewer is still open; then this viewer starts the next one and
+    /// draws again, and every view showing the video finds the poster in the cache
+    /// (`md_view::fill`).
+    pub fn start_thumbnails(cx: &mut Context<Self>) {
+        let ready = media::queue().start_ready();
+        for file in ready {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Err(e) = media::make_poster(&media::poster_dir(), &file) {
+                            eprintln!("arkos: cannot make a poster for {}: {e}", file.display());
+                        }
+                        media::queue().done(file.as_path());
+                    })
+                    .await;
+                let _ = this.update(cx, |_, cx| {
+                    Viewer::start_thumbnails(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
         }
     }
 

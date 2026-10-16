@@ -5,7 +5,9 @@
 //! font when it does not parse); a task item's box toggles the item through an undoable edit, and
 //! a link opens on Cmd+click. An image is drawn from disk, or from the cache once a web
 //! address's fetch has landed (`remote_image`), several in one paragraph in a row; Cmd+click
-//! follows the link around it, or else shows it in Preview.
+//! follows the link around it, or else shows it in Preview. An image whose path is a local video
+//! is its Quick Look poster with a play glyph, and local audio a box with its name and size
+//! (`media`): Cmd+click plays them. Remote video and audio, and a `webm`, are links.
 //!
 //! The block holding the caret (and every block a selection touches) is drawn raw instead, by
 //! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
@@ -19,15 +21,16 @@ use crate::edit::{self, Pos};
 use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
 use crate::md_table::{self, Align};
+use crate::media::{self, Media, Poster};
 use crate::palette::Rgb;
 use crate::remote_image::{self, Remote};
 use crate::theme::Theme;
 use crate::viewer::{self, Hit, Span, Viewer, ViewerEvent};
 use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
-    canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
+    canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Div, Element, ElementId, ElementInputHandler,
     Entity, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollHandle, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
+    PathBuilder, Pixels, Point, ScrollHandle, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
 };
 use std::cell::Cell;
 use std::ops::Range;
@@ -63,6 +66,9 @@ const CELL_PAD_X: f32 = 10.0;
 const CELL_PAD_Y: f32 = 6.0;
 /// The most of the view's width one table column takes.
 const COLUMN_CAP: f32 = 0.45;
+/// The play glyph over a poster: a disc of this diameter around a triangle in a box of this side.
+const PLAY_DISC: f32 = 40.0;
+const PLAY_TRIANGLE: f32 = 16.0;
 /// The rows a table's natural column widths are measured over; later rows take the widths found.
 const MEASURED_ROWS: usize = 200;
 /// A table with more body rows than this is drawn as its source, not as a grid.
@@ -131,6 +137,8 @@ enum Piece {
     Image(ImagePiece),
     /// A paragraph of images only (a row of badges).
     Images(Vec<ImagePiece>),
+    /// An image whose path is video or audio, or media drawn as a link.
+    Media(MediaPiece),
 }
 
 impl Piece {
@@ -158,6 +166,51 @@ impl ImagePiece {
         let label = if alt.is_empty() { path.clone().into() } else { alt.into() };
         ImagePiece { label, path, link }
     }
+}
+
+/// One video, audio file or media link as a row draws it: its label (as an image's), its path, the
+/// target of the link around it, and what it is drawn as (`None`: a link, for a web address or a
+/// `webm`).
+struct MediaPiece {
+    label: SharedString,
+    path: String,
+    link: Option<String>,
+    kind: Option<Media>,
+}
+
+impl MediaPiece {
+    /// The media an image path names, or `None` when it is an image to draw.
+    fn of(image: &ImagePiece) -> Option<MediaPiece> {
+        let kind = media::kind(&image.path);
+        (kind.is_some() || media::is_link(&image.path)).then(|| MediaPiece { label: image.label.clone(), path: image.path.clone(), link: image.link.clone(), kind })
+    }
+}
+
+/// Adds the pieces `inline` is drawn as to `out`: one, except that an image whose path is media
+/// is drawn as media, and a row of images is split around the media in it (each on its own line,
+/// the images on either side still in rows).
+fn push_pieces(inline: Inline, out: &mut Vec<Piece>) {
+    let images = match inline {
+        Inline::Image { alt, path, link } => vec![ImagePiece::new(alt, path, link)],
+        Inline::Images(images) => images.into_iter().map(|i| ImagePiece::new(i.alt, i.path, i.link)).collect(),
+        other => return out.push(Piece::from(other)),
+    };
+    let mut row: Vec<ImagePiece> = Vec::new();
+    let flush = |row: &mut Vec<ImagePiece>, out: &mut Vec<Piece>| match row.len() {
+        0 => {}
+        1 => out.extend(row.pop().map(Piece::Image)),
+        _ => out.push(Piece::Images(std::mem::take(row))),
+    };
+    for image in images {
+        match MediaPiece::of(&image) {
+            Some(m) => {
+                flush(&mut row, out);
+                out.push(Piece::Media(m));
+            }
+            None => row.push(image),
+        }
+    }
+    flush(&mut row, out);
 }
 
 impl From<Inline> for Piece {
@@ -303,12 +356,46 @@ fn code_lines(text: &str) -> Vec<String> {
     text.strip_suffix('\n').unwrap_or(text).split('\n').map(|l| l.replace('\t', "    ")).collect()
 }
 
-/// Fills block `ix`'s cache entry (`fill_cache`) and moves its web images along
-/// (`track_remote`). The list calls it for each rendered row it draws, so a block shown raw
-/// fetches nothing.
+/// Fills block `ix`'s cache entry (`fill_cache`), moves its web images along (`track_remote`) and
+/// its videos' posters (`track_media`). The list calls it for each rendered row it draws, so a
+/// block shown raw fetches and makes nothing.
 pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, ctx: &BlockCtx, cx: &mut Context<Viewer>) {
     fill_cache(v, ix, highlighter, ctx);
     track_remote(v, ix, cx);
+    track_media(v, ix, &ctx.base_dir, cx);
+}
+
+/// Block `ix`'s local videos and audio: each video's poster moved along once (`media::advance`),
+/// which reads the file's mtime; each audio file's size read the first time it is shown. While
+/// any poster is still being made, the job that has the turn starts (`Viewer::start_thumbnails`);
+/// its end draws the window again, which brings each viewer showing the video here.
+fn track_media(v: &mut Viewer, ix: usize, base_dir: &Path, cx: &mut Context<Viewer>) {
+    let Some(Some(r)) = v.block_cache.get(ix) else { return };
+    let mut dir = None;
+    let mut making = false;
+    for m in r.pieces.iter().filter_map(|p| if let Piece::Media(m) = p { Some(m) } else { None }) {
+        let Some(file) = resolve_image(base_dir, &m.path) else { continue };
+        match m.kind {
+            Some(Media::Video) => {
+                let state = v.posters.get(&file);
+                if matches!(state, Some(Poster::Ready(_) | Poster::Failed)) {
+                    continue;
+                }
+                let next = media::advance(state, &file, || dir.get_or_insert_with(media::poster_dir).clone());
+                making |= next.as_ref().is_none_or(|n| *n == Poster::Making);
+                if let Some(next) = next {
+                    v.posters.insert(file, next);
+                }
+            }
+            Some(Media::Audio) => {
+                v.sizes.entry(file).or_insert_with_key(|file| std::fs::metadata(file).ok().map(|m| m.len()));
+            }
+            None => {}
+        }
+    }
+    if making {
+        Viewer::start_thumbnails(cx);
+    }
 }
 
 /// Block `ix`'s web images, each moved along once (`remote_image::advance`): one not seen yet is
@@ -346,7 +433,11 @@ fn fill_cache(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>,
         let lines = doc.lines();
         let end = block.lines.end.min(lines.len());
         let text = lines[block.lines.start.min(end)..end].join("\n");
-        Rendered { pieces: md_blocks::inline(&text, &block.kind).into_iter().map(Piece::from).collect(), code_spans: None, code_runs: None }
+        let mut pieces = Vec::new();
+        for inline in md_blocks::inline(&text, &block.kind) {
+            push_pieces(inline, &mut pieces);
+        }
+        Rendered { pieces, code_spans: None, code_runs: None }
     });
     let Some(Piece::Code { info, text, .. }) = r.pieces.first() else { return };
     if let Some(h) = highlighter {
@@ -605,6 +696,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
             Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
             Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
             Piece::Image(image) => image_element(image, v, ctx, &parts.task_press),
+            Piece::Media(m) => media_element(m, v, ctx, &parts.task_press),
             // Badges sit side by side, wrapping onto more lines when the view is narrow.
             Piece::Images(images) => div()
                 .flex()
@@ -1097,7 +1189,7 @@ fn mono_box(text: &SharedString, color: Hsla, bg: Option<Hsla>, ctx: &BlockCtx) 
 fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
     let (label, path) = (&image.label, image.path.as_str());
     let (dim, border) = (ctx.dim, ctx.border);
-    let alt_box = move |text: SharedString| div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(text);
+    let alt_box = move |text: SharedString| alt_box(text, dim, border);
     let (file, shown) = if remote_image::is_remote(path) {
         match v.remote.get(path) {
             Some(Remote::Ready(file)) => (Some(file.clone()), label.clone()),
@@ -1116,7 +1208,7 @@ fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell
             }
             match (&link, &file) {
                 (Some(link), _) => follow_link(link_action(link, &base_dir), &viewer, cx),
-                (None, Some(file)) => open_in_preview(file.clone(), cx),
+                (None, Some(file)) => open_file(file.clone(), remote_image::preview_args, cx),
                 (None, None) => return,
             }
             press.set(true);
@@ -1133,22 +1225,127 @@ fn image_element(image: &ImagePiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell
     }
 }
 
-/// Shows an image file in Preview (`/usr/bin/open -a Preview`, on the background executor), never
-/// through a bare `open`, which could run a program. A path that is not absolute is not opened.
-fn open_in_preview(file: PathBuf, cx: &mut App) {
+/// The dashed box an image, poster or media file's label is shown in when it cannot be drawn.
+fn alt_box(text: SharedString, dim: Hsla, border: Hsla) -> Div {
+    div().border_1().border_dashed().border_color(border).px(px(8.0)).py(px(4.0)).text_color(dim).child(text)
+}
+
+/// Opens a file through `/usr/bin/open` with the arguments `args` gives for it, on the background
+/// executor: an image in Preview (`remote_image::preview_args`), a video in QuickTime Player
+/// (`media::quicktime_args`), audio or a `webm` with the system (`media::system_args`, only for
+/// the extensions `media` admitted). Never a bare `open` of anything else, which could run a
+/// program; a path that is not absolute is not opened.
+fn open_file(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
     if !file.is_absolute() {
         return;
     }
     cx.background_executor()
         .spawn(async move {
-            let status = std::process::Command::new("/usr/bin/open").args(remote_image::preview_args(&file)).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            let status = std::process::Command::new("/usr/bin/open").args(args(&file)).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
             match status {
                 Ok(s) if s.success() => {}
-                Ok(s) => eprintln!("arkos: cannot show {} in Preview ({s})", file.display()),
+                Ok(s) => eprintln!("arkos: cannot open {} ({s})", file.display()),
                 Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
             }
         })
         .detach();
+}
+
+/// A video, an audio file or a media link. A video is its poster at most the view's width with a
+/// play glyph over its centre (`Viewer.posters`), or its label in the dashed box while the poster
+/// is made (with "loading") and when there is none; audio is a one-line box with a speaker, the
+/// file's name and its size (`Viewer.sizes`); a link (remote media, a `webm`) is its label and its
+/// path in the link colour. A plain press is the row's, which puts the caret in the block.
+/// Cmd+click follows the link around it when there is one, and otherwise plays a video in
+/// QuickTime Player, opens audio or a local `webm` with the system, or a web address in the
+/// browser; the row stands aside through `press`. The pointer is the hand over it, as over a link.
+fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    let remote = remote_image::is_remote(&m.path);
+    let file = resolve_image(&ctx.base_dir, &m.path);
+    let on_press = {
+        let (press, link, kind, path, file, base_dir, viewer) = (press.clone(), m.link.clone(), m.kind, m.path.clone(), file.clone(), ctx.base_dir.clone(), ctx.viewer.clone());
+        move |ev: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
+            if !ev.modifiers.platform {
+                return;
+            }
+            match (&link, kind, &file) {
+                (Some(link), _, _) => follow_link(link_action(link, &base_dir), &viewer, cx),
+                (None, _, None) if remote => cx.open_url(&path),
+                (None, Some(Media::Video), Some(file)) => open_file(file.clone(), media::quicktime_args, cx),
+                (None, _, Some(file)) => open_file(file.clone(), media::system_args, cx),
+                (None, _, None) => return,
+            }
+            press.set(true);
+        }
+    };
+    let shown: AnyElement = match (m.kind, &file) {
+        (Some(Media::Video), Some(file)) => match v.posters.get(file) {
+            Some(Poster::Ready(poster)) => poster_element(poster.clone(), m.label.clone(), ctx).into_any_element(),
+            Some(Poster::Failed) => alt_box(m.label.clone(), ctx.dim, ctx.border).into_any_element(),
+            Some(Poster::Making) | None => alt_box(format!("{} (loading)", m.label).into(), ctx.dim, ctx.border).into_any_element(),
+        },
+        (Some(Media::Audio), Some(file)) => {
+            let name = file.file_name().map_or_else(|| m.path.clone(), |n| n.to_string_lossy().into_owned());
+            let size = v.sizes.get(file).copied().flatten().map(media::size_text);
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .border_1()
+                .border_color(ctx.border)
+                .rounded(px(4.0))
+                .px(px(8.0))
+                .py(px(4.0))
+                .child(div().font_family(ctx.ui.clone()).child("\u{1F50A}"))
+                .child(name)
+                .when_some(size, |d, size| d.child(div().text_color(ctx.dim).child(size)))
+                .into_any_element()
+        }
+        _ => {
+            let text: SharedString = if m.label.as_ref() == m.path { m.label.clone() } else { format!("{} ({})", m.label, m.path).into() };
+            div().text_color(ctx.link).underline().child(text).into_any_element()
+        }
+    };
+    // The flex row keeps the box, the poster and the link as wide as they are, so the hand and
+    // Cmd+click cover only them, not the rest of the line.
+    div().flex().child(div().max_w_full().cursor_pointer().on_mouse_down(MouseButton::Left, on_press).child(shown)).into_any_element()
+}
+
+/// A video's poster at most the view's width (its natural size when smaller), with the play glyph
+/// over its centre: a `PLAY_DISC` disc in the text colour at 60 percent around a triangle in the
+/// window's background colour. A poster that cannot be drawn shows the label in the dashed box.
+fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
+    let (dim, border, disc, glyph) = (ctx.dim, ctx.border, ctx.text.opacity(0.6), ctx.on_accent);
+    let triangle = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let at = |x: f32, y: f32| point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+            let mut b = PathBuilder::fill();
+            b.move_to(at(4.0, 2.0));
+            b.line_to(at(4.0, PLAY_TRIANGLE - 2.0));
+            b.line_to(at(PLAY_TRIANGLE - 2.0, PLAY_TRIANGLE / 2.0));
+            b.close();
+            if let Ok(path) = b.build() {
+                window.paint_path(path, glyph);
+            }
+        },
+    )
+    .size(px(PLAY_TRIANGLE));
+    div()
+        .relative()
+        .flex()
+        .max_w_full()
+        .child(img(poster).max_w_full().with_fallback(move || alt_box(label.clone(), dim, border).into_any_element()))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().size(px(PLAY_DISC)).rounded_full().bg(disc).flex().items_center().justify_center().child(triangle)),
+        )
 }
 
 /// Where a raw block was laid out in a frame, kept in `Viewer.raw_blocks` for the input handler
@@ -1499,6 +1696,36 @@ mod tests {
         assert!(matches!(TablePiece::new("| a |\n| 1 |".into()), TablePiece::Source(_)), "no delimiter row");
         let long = format!("| a |\n|---|{}", "\n| 1 |".repeat(GRID_MAX_ROWS + 1));
         assert!(matches!(TablePiece::new(long), TablePiece::Source(_)), "over the grid's rows");
+    }
+
+    #[test]
+    fn video_audio_and_media_links_are_drawn_as_media_and_split_a_badge_row() {
+        let pieces = |text: &str| {
+            let mut out = Vec::new();
+            for inline in md_blocks::inline(text, &BlockKind::Paragraph) {
+                push_pieces(inline, &mut out);
+            }
+            out
+        };
+        let shape = |text: &str| {
+            pieces(text)
+                .iter()
+                .map(|p| match p {
+                    Piece::Image(i) => format!("image {}", i.path),
+                    Piece::Images(row) => format!("row {}", row.len()),
+                    Piece::Media(m) => format!("{:?} {}", m.kind, m.path),
+                    _ => "other".to_string(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape("![clip](v/clip.MOV)"), ["Some(Video) v/clip.MOV"]);
+        assert_eq!(shape("![song](s.m4a)"), ["Some(Audio) s.m4a"]);
+        assert_eq!(shape("![a](a.webm)"), ["None a.webm"], "a webm is a link");
+        assert_eq!(shape("![a](a.png)"), ["image a.png"]);
+        assert_eq!(shape("![a](a.svg) ![v](https://x/v.mp4) ![b](b.svg) ![c](c.svg)"), ["image a.svg", "None https://x/v.mp4", "row 2"]);
+        let row = pieces("![a](https://x/a.svg) ![v](https://x/v.mp4)");
+        let fetched: Vec<&String> = row.iter().flat_map(Piece::image_paths).collect();
+        assert_eq!(fetched, ["https://x/a.svg"], "remote media is never fetched");
     }
 
     #[test]

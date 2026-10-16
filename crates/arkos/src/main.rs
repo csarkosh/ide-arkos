@@ -39,6 +39,7 @@ mod line_edit;
 mod md_blocks;
 mod md_table;
 mod md_view;
+mod media;
 mod motion;
 mod mouse;
 mod notices;
