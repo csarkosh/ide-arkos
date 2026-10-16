@@ -50,7 +50,7 @@ pub enum Command {
     OpenSettings,
     /// Open the Keybindings window, or bring it forward when it is open.
     Keybindings,
-    /// Open the README in the browser.
+    /// Open the guide in the browser.
     Documentation,
     /// Open config.toml in the default text editor.
     OpenConfig,

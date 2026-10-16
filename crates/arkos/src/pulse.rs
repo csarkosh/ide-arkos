@@ -10,7 +10,7 @@ pub const CYCLE: Duration = Duration::from_secs(2);
 /// How often the active window repaints for its motion (the focus glow's breath, the working
 /// glyphs): ten frames a second, which the eye cannot tell at these speeds. A repaint is the
 /// whole window, every terminal's visible rows included, so this is the window's idle cost
-/// while it is in front; the README's idle check notes the figure.
+/// while it is in front; the idle check in docs/development.md notes the figure.
 pub const TICK: Duration = Duration::from_millis(100);
 /// While the window is not in front, or Reduce Motion is on: a slow check for either changing.
 const IDLE_TICK: Duration = Duration::from_millis(500);

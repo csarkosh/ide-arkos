@@ -169,8 +169,9 @@ fn keybindings_state(cx: &App) -> Option<(BTreeMap<String, String>, Theme, Share
     Some((launch.config.keybindings.clone(), launch.theme.clone(), launch.config.font.family.clone().into()))
 }
 
-/// Where the Documentation menu item and command go: the README on GitHub.
-pub const DOCS_URL: &str = "https://github.com/csarkosh/ide-arkos#readme";
+/// Where the Documentation menu item and command go: the guide on GitHub (the README is the
+/// short overview; the guide has every section).
+pub const DOCS_URL: &str = "https://github.com/csarkosh/ide-arkos/blob/main/docs/guide.md";
 
 /// The Documentation menu item and command: opens `DOCS_URL` in the default browser.
 pub fn open_documentation(cx: &mut App) {
