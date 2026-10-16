@@ -243,10 +243,14 @@ channel.
   row; the label comes from `keymap::label_for`'s default), handled in `Root::run`'s exhaustive
   `match cmd` next to `InstallHooks` (~2504) with the same install and notice. DEFAULT_CONFIG's
   keybinding comments gain `# "install agent guide" = ""`.
-- **README**: a "Themes for agents" subsection under Config with the command table (command, what
-  it does, exit codes), the live reload of the active theme file, `arkos settings`, `arkos guide`,
-  the three discovery layers, the folder-name note; Status rows from spec sections 9 and 11; the
-  Updating section notes that 0.4.0 moves the daemon and every window together.
+- **Docs** (main `d1cc38b` moved the user guide to `docs/guide.md` and the hand-check Status
+  rows to `docs/development.md`; `README.md` is short): a "Themes for agents" subsection in
+  `docs/guide.md`'s Config section with the command table (command, what it does, exit codes), the
+  live reload of the active theme file, `arkos settings`, `arkos guide`, the three discovery
+  layers, the folder-name note; the Status rows from spec sections 9 and 11 in
+  `docs/development.md`; the Updating section of the guide notes that 0.4.0 moves the daemon and
+  every window together; `README.md`'s "Learn more" list gains one line pointing agents at `arkos
+  guide`.
 
 ## Review Focus
 
@@ -272,7 +276,7 @@ channel.
   `crates/protocol/Cargo.toml`, `crates/arkosd/src/server.rs` (+ `tests/daemon.rs`),
   `crates/arkos/src/main.rs`, `sessions.rs`, `config_watch.rs`, `theme.rs`, `palette.rs` (a
   comment), `config.rs` (`apply_edits`), `hook_cli.rs`, `doctor.rs`, `doctor_panel.rs`,
-  `keymap.rs`, `command_palette.rs`, `README.md`, `docs/themes.md` (a pointer to the toolkit).
+  `keymap.rs`, `command_palette.rs`, `docs/guide.md`, `docs/development.md`, `README.md`, `docs/themes.md` (a pointer to the toolkit).
 
 ---
 
@@ -766,17 +770,17 @@ fn the_themes_section_lists_invalid_files_and_missing_names() {
 
 ---
 
-### Task 5: README, docs, and the gates
+### Task 5: Docs and the gates
 
 **Files:**
-- Modify: `README.md`, `docs/themes.md` (the toolkit pointer, if Task 4 left it), `crates/*/src`
-  (remove any "Used from Task" attribute left)
+- Modify: `docs/guide.md`, `docs/development.md`, `README.md`, `docs/themes.md` (the toolkit
+  pointer, if Task 4 left it), `crates/*/src` (remove any "Used from Task" attribute left)
 
-- [ ] **Step 1: README** per the README constraint, written against the code's actual output
-  lines (read `agent_cli.rs`'s strings; run nothing).
+- [ ] **Step 1: Docs** per the Docs constraint, written against the code's actual output lines
+  (read `agent_cli.rs`'s strings; run nothing).
 - [ ] **Step 2: Gates**: `grep -rn "Used from Task" crates/` empty; no em-dash in README.md,
-  docs/agent-guide.md, docs/themes.md or `crates/*/src/**/*.rs`; the warning check; the workspace
-  suite. `git commit -m "README: themes for agents, the guide, the discovery layers"`.
+  docs/*.md or `crates/*/src/**/*.rs`; the warning check; the workspace suite.
+  `git commit -m "Docs: themes for agents, the guide, the discovery layers"`.
 
 ---
 
