@@ -10,6 +10,7 @@ use gpui::{div, prelude::*, px, size, App, Bounds, ClickEvent, Context, FocusHan
 use protocol::ServerMessage;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, SystemTime};
 
 pub const FAILURE_TITLE: &str = "Arkos cannot reach its daemon";
 const WIDTH: f32 = 480.0;
@@ -92,6 +93,25 @@ pub fn updated_from(file: &Path, current: &str) -> Option<String> {
         (Some(p), Some(n)) if p < n => Some(current.to_string()),
         _ => None,
     }
+}
+
+/// When this install first ran: the unix seconds `file` holds. A missing or unreadable file (or
+/// garbage in it) counts as missing: `now` is written there, through a temp file and a rename,
+/// and returned, so every later launch reads the same moment back.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
+pub fn installed_since(file: &Path, now: SystemTime) -> SystemTime {
+    if let Some(secs) = std::fs::read_to_string(file).ok().and_then(|s| s.trim().parse::<u64>().ok()) {
+        return SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+    }
+    let secs = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = file.with_extension("tmp");
+    if std::fs::write(&tmp, format!("{secs}\n")).and_then(|_| std::fs::rename(&tmp, file)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    now
 }
 
 /// "major.minor.patch" as a tuple; anything else is None.
@@ -262,5 +282,18 @@ mod tests {
         std::fs::write(&file, "garbage").unwrap();
         assert_eq!(updated_from(&file, "0.2.14"), None, "an unreadable version is no version");
         assert!(!dir.path().join("last_version.tmp").exists(), "no temp file left behind");
+    }
+
+    #[test]
+    fn the_install_marker_is_written_once_and_read_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("installed");
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        assert_eq!(installed_since(&file, t0), t0, "missing: written now");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "1800000000\n");
+        assert_eq!(installed_since(&file, t0 + Duration::from_secs(99)), t0, "read back, not rewritten");
+        std::fs::write(&file, "garbage").unwrap();
+        let t1 = t0 + Duration::from_secs(5);
+        assert_eq!(installed_since(&file, t1), t1, "garbage counts as missing and is replaced");
     }
 }

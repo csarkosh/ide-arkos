@@ -3491,6 +3491,12 @@ pub fn version_string() -> String {
     format!("{} {} ({})", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"), env!("ARKOS_GIT_HASH"))
 }
 
+/// The date this build's commit was made, `YYYY-MM-DD` (or `unknown`), recorded by `build.rs`.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
+pub fn build_date() -> &'static str {
+    env!("ARKOS_BUILD_DATE")
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // The hook CLI: no window, no daemon start, no QoS. `claude` runs these on every event.

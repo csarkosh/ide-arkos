@@ -333,6 +333,65 @@ fn write_default(path: &Path) -> std::io::Result<()> {
     std::fs::OpenOptions::new().write(true).create_new(true).open(path)?.write_all(DEFAULT_CONFIG.as_bytes())
 }
 
+/// Sets one value in the config file, keeping the file's comments (see `set_values`).
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+pub fn set_value(path: &Path, keys: &[&str], value: toml_edit::Value) -> Result<(), String> {
+    set_values(path, &[(keys, value)])
+}
+
+/// Applies `edits` (a key path and its new value each) to the config file in one write. Comments,
+/// order, formatting and a line's trailing comment are kept: the old value's decor is copied onto
+/// the new one. A key goes at the end of its table, a missing table at the end of the file. The
+/// walk goes through inline and dotted tables too; a path segment that is not a table is an
+/// error. The temp file is written beside the symlink-resolved target and renamed over it, so a
+/// symlinked config stays a symlink. A file that does not parse is refused and left as it was.
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 4 on.
+pub fn set_values(path: &Path, edits: &[(&[&str], toml_edit::Value)]) -> Result<(), String> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = std::fs::read_to_string(&target).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string().lines().next().unwrap_or("parse error").to_string())?;
+    for (keys, value) in edits {
+        let Some((leaf, parents)) = keys.split_last() else { return Err("empty key path".to_string()) };
+        let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+        for (i, key) in parents.iter().enumerate() {
+            if table.get(key).is_none() {
+                let mut created = toml_edit::Table::new();
+                // Only the table that holds the value prints a header of its own.
+                created.set_implicit(i + 1 < parents.len());
+                table.insert(key, toml_edit::Item::Table(created));
+            }
+            table = table
+                .get_mut(key)
+                .and_then(|item| item.as_table_like_mut())
+                .ok_or_else(|| format!("{} is not a table", keys[..=i].join(".")))?;
+        }
+        let mut value = value.clone();
+        if let Some(old) = table.get(leaf).and_then(|item| item.as_value()) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        // Assigning through the existing item keeps the key's own decor (the comment lines above it).
+        match table.get_mut(leaf) {
+            Some(item) => *item = toml_edit::value(value),
+            None => {
+                table.insert(leaf, toml_edit::value(value));
+            }
+        }
+    }
+    let mut tmp = target.clone().into_os_string();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    let written = std::fs::write(&tmp, doc.to_string())
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot write {}: {e}", target.display())
+    })
+}
+
 /// A reload keeps the last good config when the new one does not parse (spec 7).
 pub fn reload_decision(current: &Config, loaded: Result<Config, ConfigError>) -> (Config, Option<String>) {
     match loaded {
@@ -758,5 +817,53 @@ mod tests {
         let zero: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 0\n").unwrap();
         assert!(zero.validate().unwrap_err().contains("viewer.highlight_limit_bytes"));
         assert!(toml::from_str::<Config>(DEFAULT_CONFIG).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn set_value_keeps_comments_and_adds_what_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# top comment\n[font]\n# the family\nfamily = \"Menlo\" # trailing\npreset = \"comfortable\"\n\n[font.presets.comfortable]\nsize = 16.0\nline_height = 1.5\n\n[update]\nauto = true\n").unwrap();
+        set_value(&path, &["font", "presets", "comfortable", "size"], toml_edit::Value::from(18.0)).unwrap();
+        set_value(&path, &["appearance", "mode"], toml_edit::Value::from("dark")).unwrap();
+        set_value(&path, &["font", "family"], toml_edit::Value::from("SF Mono")).unwrap();
+        set_value(&path, &["update", "idle_after_secs"], toml_edit::Value::from(30)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# top comment\n[font]\n# the family\nfamily = \"SF Mono\" # trailing\n"), "comments and a trailing comment survive: {text}");
+        assert!(text.contains("size = 18.0\nline_height = 1.5\n"), "{text}");
+        assert!(text.contains("[update]\nauto = true\nidle_after_secs = 30\n"), "a key lands at the end of its table: {text}");
+        assert!(text.ends_with("[appearance]\nmode = \"dark\"\n"), "a missing table is appended: {text}");
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.font.family, "SF Mono");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left");
+    }
+
+    #[test]
+    fn set_values_writes_a_preset_whole_and_refuses_a_bad_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[font]\npreset = \"big\"\n").unwrap();
+        set_values(&path, &[(&["font", "presets", "big", "size"], toml_edit::Value::from(20.0)), (&["font", "presets", "big", "line_height"], toml_edit::Value::from(1.6))]).unwrap();
+        let parsed: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.font.presets["big"].size, 20.0);
+        assert!(set_values(&path, &[(&["font", "preset", "x"], toml_edit::Value::from(1))]).is_err(), "a value is not a table");
+    }
+
+    #[test]
+    fn set_value_refuses_a_file_it_cannot_parse_follows_a_symlink_and_round_trips_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[font\nfamily = 1\n").unwrap();
+        let err = set_value(&path, &["font", "family"], toml_edit::Value::from("x")).unwrap_err();
+        assert!(!err.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[font\nfamily = 1\n", "left as it was");
+        std::fs::write(&path, DEFAULT_CONFIG).unwrap();
+        let link = dir.path().join("link.toml");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        set_value(&link, &["update", "auto"], toml_edit::Value::from(false)).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches('#').count(), DEFAULT_CONFIG.matches('#').count(), "every comment survives");
+        assert!(toml::from_str::<Config>(&text).is_ok());
     }
 }

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 toml = "0.8"
+toml_edit.workspace = true
 protocol.workspace = true
 serde.workspace = true
 postcard.workspace = true

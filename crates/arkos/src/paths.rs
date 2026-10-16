@@ -40,6 +40,12 @@ pub fn app_support_from(override_dir: Option<&std::ffi::OsStr>, home: &Path) -> 
     }
 }
 
+/// Holds the unix seconds of this install's first run (`startup::installed_since`).
+#[cfg_attr(not(test), allow(dead_code))] // Used from Task 3b on.
+pub fn installed_file() -> PathBuf {
+    app_support().join("installed")
+}
+
 /// The folders opened recently, for the launch chooser (`recent.rs`).
 pub fn recent_file() -> PathBuf {
     app_support().join("recent.json")
@@ -161,5 +167,10 @@ mod tests {
     #[test]
     fn recovered_edits_live_in_app_support() {
         assert!(recovered_dir().ends_with("arkos/recovered"));
+    }
+
+    #[test]
+    fn the_install_marker_lives_in_app_support() {
+        assert_eq!(installed_file(), app_support().join("installed"));
     }
 }
