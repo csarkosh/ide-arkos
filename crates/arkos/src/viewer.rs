@@ -1408,7 +1408,8 @@ impl Viewer {
         match action {
             KeyAction::Save => self.save_command(cx),
             // Escape undoes one thing at a time: the find bar closes, a selection collapses, and
-            // in the rendered view the active block renders again until the caret is placed anew.
+            // in the rendered view the active block renders again until the caret is placed anew
+            // (an edited table it was is realigned by `note_caret_moved` after the key).
             KeyAction::Escape => {
                 if self.find.is_some() {
                     self.close_find(cx);
@@ -1799,7 +1800,8 @@ impl Viewer {
     /// (`realign_on_leave`, one undo step); then `table_entry` takes the snapshot `next_entry`
     /// gives. `refresh` (an undo or a redo) takes a new snapshot of the table the caret is in even
     /// when it never left, so the snapshot always holds the text at the last entry or history
-    /// step, and undoing back to the original text and leaving realigns nothing. Outside the
+    /// step, and undoing back to the original text and leaving realigns nothing. A caret that is
+    /// not placed (after Escape, where the grid draws again) has left the table. Outside the
     /// rendered view nothing is realigned and the entry is forgotten.
     fn note_caret_moved(&mut self, refresh: bool, cx: &mut Context<Self>) {
         if !self.rendered() {
@@ -1807,7 +1809,7 @@ impl Viewer {
             return;
         }
         let Some(doc) = self.doc.as_ref() else { return };
-        let (realign, next) = next_entry(&self.blocks, doc.lines(), self.caret, self.table_entry.take(), refresh);
+        let (realign, next) = next_entry(&self.blocks, doc.lines(), self.caret, self.table_entry.take(), refresh, !self.caret_placed);
         if let Some((range, entry)) = realign {
             self.edit_elsewhere(
                 |doc, caret, now| {
@@ -2233,17 +2235,22 @@ fn table_range(lines: &[String], block: &md_blocks::Block) -> Range<usize> {
 /// still in the table, the same one, or with `refresh` (an undo or a redo) the text now of the
 /// table the caret is in; otherwise the table the caret is in, as it is now, or `None`.
 ///
+/// `left` (the caret is not placed, after Escape in the rendered view, where the grid draws
+/// again) puts the caret in no table: the snapshot's table is left, and no new snapshot is taken.
+///
 /// The snapshot knows its table by the start line. When the block on that line no longer is a
 /// table starting there, the snapshot is dropped and nothing is realigned: an edit that moves
 /// the table's start while the caret is inside it (Enter before the header) forgets the
 /// snapshot, and the table is then taken as entered with that edit, never realigned for it.
-fn next_entry(blocks: &[md_blocks::Block], lines: &[String], caret: edit::Caret, entry: Option<(usize, String)>, refresh: bool) -> (Option<(Range<usize>, String)>, Option<(usize, String)>) {
+fn next_entry(blocks: &[md_blocks::Block], lines: &[String], caret: edit::Caret, entry: Option<(usize, String)>, refresh: bool, left: bool) -> (Option<(Range<usize>, String)>, Option<(usize, String)>) {
     let block_of = |line: usize| blocks.get(md_blocks::block_at(blocks, line));
+    // The block holding line `line` of the caret or its selection: none for an unplaced caret.
+    let caret_block = |line: usize| block_of(line).filter(|_| !left);
     let table_at = |start: usize| block_of(start).filter(|b| b.lines.start == start && b.kind == md_blocks::BlockKind::Table);
     let snapshot = |b: &md_blocks::Block| (b.lines.start, table_text(lines, table_range(lines, b)));
-    let caret_table = || block_of(caret.head.line).filter(|b| b.kind == md_blocks::BlockKind::Table).map(snapshot);
+    let caret_table = || caret_block(caret.head.line).filter(|b| b.kind == md_blocks::BlockKind::Table).map(snapshot);
     let Some((start, text)) = entry else { return (None, caret_table()) };
-    if [caret.head.line, caret.anchor.line].iter().any(|&l| block_of(l).is_some_and(|b| b.lines.start == start)) {
+    if [caret.head.line, caret.anchor.line].iter().any(|&l| caret_block(l).is_some_and(|b| b.lines.start == start)) {
         let next = if refresh { caret_table().or_else(|| table_at(start).map(snapshot)) } else { Some((start, text)) };
         return (None, next);
     }
@@ -2980,7 +2987,7 @@ mod tests {
         let now = Instant::now();
         let in_table = edit::Caret::at(edit::Pos { line: 2, ch: 2 });
         let away = edit::Caret::at(edit::Pos { line: 0, ch: 0 });
-        let step = |d: &edit::Document, caret, entry, refresh| next_entry(&md_blocks::split(d.lines()), d.lines(), caret, entry, refresh);
+        let step = |d: &edit::Document, caret, entry, refresh| next_entry(&md_blocks::split(d.lines()), d.lines(), caret, entry, refresh, false);
         // The caret enters: the snapshot is the original text.
         let (realign, entry) = step(&d, in_table, None, false);
         assert!(realign.is_none());
@@ -3025,10 +3032,10 @@ mod tests {
         // Enter, type, leave: only the table's lines are realigned, the definition stays.
         let in_table = edit::Caret::at(edit::Pos { line: 2, ch: 1 });
         let away = edit::Caret::at(edit::Pos { line: 0, ch: 0 });
-        let (_, entry) = next_entry(&blocks, d.lines(), in_table, None, false);
+        let (_, entry) = next_entry(&blocks, d.lines(), in_table, None, false, false);
         d.insert(in_table, "x", now);
         let blocks = md_blocks::split(d.lines());
-        let (realign, _) = next_entry(&blocks, d.lines(), away, entry, false);
+        let (realign, _) = next_entry(&blocks, d.lines(), away, entry, false, false);
         let (range, snapshot) = realign.expect("the typed table is realigned on leave");
         assert_eq!(range, 2..5);
         assert!(realign_on_leave(&mut d, range, &snapshot, now));
@@ -3051,18 +3058,41 @@ mod tests {
     }
 
     #[test]
+    fn escape_out_of_an_edited_table_realigns() {
+        let now = Instant::now();
+        let mut d = edit::Document::from_text("intro\n\n|a|b|\n|-|-|\n|1|2|\n");
+        let in_table = edit::Caret::at(edit::Pos { line: 2, ch: 1 });
+        let (_, entry) = next_entry(&md_blocks::split(d.lines()), d.lines(), in_table, None, false, false);
+        d.insert(in_table, "x", now);
+        // Escape: the caret stays on the table's line but is no longer placed, and the grid draws
+        // again, so the table counts as left.
+        let (realign, entry) = next_entry(&md_blocks::split(d.lines()), d.lines(), in_table, entry, false, true);
+        let (range, snapshot) = realign.expect("Escape realigns the edited table");
+        assert_eq!(range, 2..5);
+        assert!(entry.is_none(), "an unplaced caret is in no table");
+        assert!(realign_on_leave(&mut d, range, &snapshot, now));
+        assert_eq!(d.to_text(), "intro\n\n| xa | b |\n|----|---|\n| 1  | 2 |\n");
+        // Placed again in the realigned table: a fresh snapshot, nothing to realign.
+        let (realign, entry) = next_entry(&md_blocks::split(d.lines()), d.lines(), in_table, None, false, false);
+        assert!(realign.is_none());
+        assert_eq!(entry.map(|(start, _)| start), Some(2));
+        // An unplaced caret takes no snapshot either.
+        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), in_table, None, false, true), (None, None));
+    }
+
+    #[test]
     fn next_entry_forgets_a_snapshot_whose_start_line_no_longer_starts_a_table() {
         let snapshot = Some((2, "|a|b|\n|-|-|\n|1|2|\n".to_string()));
         let away = edit::Caret::at(edit::Pos { line: 0, ch: 0 });
         // Enter before the header moved the table down a line, and the caret left it.
         let d = edit::Document::from_text("intro\n\n\n|a|b|\n|-|-|\n|1|2|\n");
-        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot.clone(), false), (None, None));
+        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot.clone(), false, false), (None, None));
         // The delimiter row was broken: the block is a paragraph now, left as typed.
         let d = edit::Document::from_text("intro\n\n|a|b|\n|-x-|\n|1|2|\n");
-        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot.clone(), false), (None, None));
+        assert_eq!(next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot.clone(), false, false), (None, None));
         // The same table still there and changed: it is realigned.
         let d = edit::Document::from_text("intro\n\n|a|bc|\n|-|-|\n|1|2|\n");
-        let (realign, _) = next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot, false);
+        let (realign, _) = next_entry(&md_blocks::split(d.lines()), d.lines(), away, snapshot, false, false);
         assert_eq!(realign.map(|(range, _)| range), Some(2..5));
     }
 

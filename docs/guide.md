@@ -121,12 +121,12 @@ one, Up and Down move to the cell above and below, and Tab in the last cell adds
 move has nowhere to go, the key does what it does in any block. These keys work in Rendered mode
 only; Raw mode is a plain text editor.
 
-When you leave an edited table, Arkos re-aligns its pipes so the source reads as a grid too. One
-undo takes the alignment back, and an undone table is not re-aligned again. Re-alignment never
-drops a cell: a row longer than the header keeps its extra cells after the aligned ones. A table
-ends at its first blank line, so the link reference definitions below it are never touched. In the
-rare case that a table you deleted is replaced by another on the same start line, the new one can
-be re-aligned as well.
+When you leave an edited table, or press Escape in it, Arkos re-aligns its pipes so the source
+reads as a grid too. One undo takes the alignment back, and an undone table is not re-aligned
+again. Re-alignment never drops a cell: a row longer than the header keeps its extra cells after
+the aligned ones. A table ends at its first blank line, so the link reference definitions below it
+are never touched. In the rare case that a table you deleted is replaced by another on the same
+start line, the new one can be re-aligned as well.
 
 A table wider than the view wraps by default: the columns shrink and the cells wrap. Pick
 "Scroll" under "Wide tables" in Settings, or run `arkos settings set viewer.wide_tables scroll`,
