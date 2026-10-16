@@ -275,12 +275,31 @@ pub fn import_file(src: &Path, dir: &Path, replace: bool) -> Result<(String, boo
     Ok((name, existed))
 }
 
-const THEME_USAGE: &str = "usage: arkos theme list\n       arkos theme validate <file>\n";
+const THEME_USAGE: &str = "usage: arkos theme list [--json]\n       arkos theme validate <file> [--json]\n";
 
-/// The `arkos theme` subcommand against an explicit folder and streams. Returns the exit code:
-/// 0 on success, 1 when `validate` finds a problem, 2 for a usage error.
+/// `arkos theme list` and `arkos theme validate` against an explicit folder and streams (the
+/// other subcommands live in `agent_cli.rs`, which hands these two here). Returns the exit code:
+/// 0 on success, 1 when `validate` finds a problem, 2 for a usage error. `--json` anywhere prints
+/// one JSON value instead of lines.
 pub fn theme_cli_to(args: &[String], dir: &Path, out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> i32 {
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let json = args.iter().any(|a| a == "--json");
+    let rest: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--json").collect();
+    match rest.as_slice() {
+        ["list"] if json => {
+            let rows: Vec<serde_json::Value> = list(dir)
+                .into_iter()
+                .map(|(name, source)| {
+                    let path = dir.join(format!("{name}.toml")).display().to_string();
+                    match source {
+                        Source::BuiltIn => serde_json::json!({ "name": name, "source": "built-in" }),
+                        Source::File => serde_json::json!({ "name": name, "source": "file", "path": path }),
+                        Source::Invalid(e) => serde_json::json!({ "name": name, "source": "invalid", "error": e, "path": path }),
+                    }
+                })
+                .collect();
+            let _ = writeln!(out, "{}", serde_json::Value::Array(rows));
+            0
+        }
         ["list"] => {
             for (name, source) in list(dir) {
                 let _ = match source {
@@ -291,16 +310,30 @@ pub fn theme_cli_to(args: &[String], dir: &Path, out: &mut dyn std::io::Write, e
             }
             0
         }
-        ["validate", file] => match validate_file(Path::new(file)) {
-            Ok(name) => {
-                let _ = writeln!(out, "ok: {name}");
-                0
+        ["validate", file] => {
+            let result = validate_file(Path::new(file));
+            if json {
+                let v = match &result {
+                    Ok(name) => serde_json::json!({ "ok": true, "name": name }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                };
+                let _ = writeln!(out, "{v}");
             }
-            Err(e) => {
-                let _ = writeln!(err, "{e}");
-                1
+            match result {
+                Ok(name) => {
+                    if !json {
+                        let _ = writeln!(out, "ok: {name}");
+                    }
+                    0
+                }
+                Err(e) => {
+                    if !json {
+                        let _ = writeln!(err, "{e}");
+                    }
+                    1
+                }
             }
-        },
+        }
         _ => {
             let _ = err.write_all(THEME_USAGE.as_bytes());
             2
@@ -308,9 +341,209 @@ pub fn theme_cli_to(args: &[String], dir: &Path, out: &mut dyn std::io::Write, e
     }
 }
 
-/// `arkos theme ...` with the real themes folder and the process's stdout and stderr.
-pub fn theme_cli(args: &[String]) -> i32 {
-    theme_cli_to(args, &crate::paths::themes_dir(), &mut std::io::stdout(), &mut std::io::stderr())
+/// One colour drawn as text or a mark, the surface it sits on, and the contrast ratio it needs.
+/// `what` reads `{table}.{key} on {surface}` (chrome surfaces are named bare, as `window_bg`), or
+/// `ansi {i} on terminal.background` for the sixteen terminal colours.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pair {
+    pub what: String,
+    pub fg: Rgb,
+    pub bg: Rgb,
+    pub needs: f64,
+}
+
+/// Every pair the contrast check holds a theme to: 4.5:1 for text and marks, 7:1 for the chrome
+/// text on the window, 11:1 for the terminal text. Black is a background by convention on a dark
+/// theme and a text colour on a light one, so ANSI 0 is checked only on a light theme.
+pub fn contrast_pairs(t: &Theme) -> Vec<Pair> {
+    let (c, term) = (&t.chrome, &t.terminal);
+    let mut v = Vec::new();
+    let mut add = |what: String, fg: Rgb, bg: Rgb, needs: f64| v.push(Pair { what, fg, bg, needs });
+    add("chrome.text on window_bg".into(), c.text, c.window_bg, 7.0);
+    add("chrome.text_dim on window_bg".into(), c.text_dim, c.window_bg, 4.5);
+    add("chrome.text on title_bar".into(), c.text, c.title_bar, 4.5);
+    add("chrome.text_dim on status_bar".into(), c.text_dim, c.status_bar, 4.5);
+    add("chrome.text_dim on tab_bar".into(), c.text_dim, c.tab_bar, 4.5);
+    add("chrome.text on banner".into(), c.text, c.banner, 4.5);
+    let s = &t.semantic;
+    for (key, fg) in [("working", s.working), ("waiting", s.waiting), ("bell", s.bell)] {
+        add(format!("semantic.{key} on terminal.background"), fg, term.background, 4.5);
+    }
+    let tr = &t.tree;
+    for (key, fg) in [("added", tr.added), ("modified", tr.modified), ("deleted", tr.deleted), ("untracked", tr.untracked), ("ignored", tr.ignored)] {
+        add(format!("tree.{key} on window_bg"), fg, c.window_bg, 4.5);
+    }
+    let vw = &t.viewer;
+    let viewer = [
+        ("keyword", vw.keyword),
+        ("string", vw.string),
+        ("comment", vw.comment),
+        ("number", vw.number),
+        ("function", vw.function),
+        ("type_name", vw.type_name),
+        ("constant", vw.constant),
+        ("operator", vw.operator),
+        ("punctuation", vw.punctuation),
+    ];
+    for (key, fg) in viewer {
+        add(format!("viewer.{key} on window_bg"), fg, c.window_bg, 4.5);
+    }
+    add("terminal.foreground on terminal.background".into(), term.foreground, term.background, 11.0);
+    for (i, fg) in t.palette().ansi.iter().enumerate() {
+        if i == 0 && !t.is_light() {
+            continue;
+        }
+        add(format!("ansi {i} on terminal.background"), *fg, term.background, 4.5);
+    }
+    // The other surfaces text sits on, first checked for Timo Purple in milestone 8a.
+    add("chrome.text_dim on banner".into(), c.text_dim, c.banner, 4.5);
+    add("chrome.text_dim on sidebar".into(), c.text_dim, c.sidebar, 4.5);
+    add("chrome.text_dim on tab_inactive".into(), c.text_dim, c.tab_inactive, 4.5);
+    add("chrome.text on tab_inactive".into(), c.text, c.tab_inactive, 4.5);
+    add("terminal.foreground on terminal.selection".into(), term.foreground, term.selection, 4.5);
+    add("terminal.foreground on semantic.find_match".into(), term.foreground, s.find_match, 4.5);
+    add("terminal.foreground on semantic.find_current".into(), term.foreground, s.find_current, 4.5);
+    v
+}
+
+/// Every pair of `contrast_pairs` with its ratio, and whether all of them reach what they need.
+pub fn contrast_report(t: &Theme) -> (bool, Vec<(Pair, f64)>) {
+    let rows: Vec<(Pair, f64)> = contrast_pairs(t)
+        .into_iter()
+        .map(|p| {
+            let ratio = crate::palette::contrast(p.fg, p.bg);
+            (p, ratio)
+        })
+        .collect();
+    (rows.iter().all(|(p, r)| *r >= p.needs), rows)
+}
+
+/// One key of a theme file, for `arkos theme template --json`: what it paints and, for a colour
+/// drawn as text or a mark, the surfaces it must contrast with (comma separated, named as in
+/// `contrast_pairs`) and the strictest ratio it needs there.
+pub struct KeyDoc {
+    pub key: &'static str,
+    pub meaning: &'static str,
+    pub contrast_with: Option<&'static str>,
+    pub needs: Option<f64>,
+}
+
+/// One table of a theme file; the top-level `name` is the table named "".
+pub struct TableDoc {
+    pub name: &'static str,
+    pub keys: &'static [KeyDoc],
+}
+
+const fn surface(key: &'static str, meaning: &'static str) -> KeyDoc {
+    KeyDoc { key, meaning, contrast_with: None, needs: None }
+}
+
+const fn ink(key: &'static str, meaning: &'static str, contrast_with: &'static str, needs: f64) -> KeyDoc {
+    KeyDoc { key, meaning, contrast_with: Some(contrast_with), needs: Some(needs) }
+}
+
+const ANSI_BG: &str = "terminal.background";
+
+const SCHEMA: &[TableDoc] = &[
+    TableDoc { name: "", keys: &[surface("name", "The theme's own name, a bare file stem; stored as <name>.toml and named in [theme] dark or light")] },
+    TableDoc {
+        name: "chrome",
+        keys: &[
+            surface("window_bg", "The window background behind everything"),
+            surface("title_bar", "The title bar"),
+            surface("status_bar", "The status bar at the bottom"),
+            surface("sidebar", "The file tree and project sidebar"),
+            surface("tab_bar", "The strip behind the tabs"),
+            surface("tab_active", "The selected tab"),
+            surface("tab_inactive", "The other tabs"),
+            surface("border", "Lines between panes and panels (a divider, not text)"),
+            surface("split_handle", "Unused (a handle at rest paints nothing); kept so files that name it still load"),
+            surface("split_handle_hover", "The stripe over a split divider under the pointer or being dragged"),
+            surface("focus_ring", "The outline and accent on the focused item"),
+            ink("text", "Primary interface text (7:1 on window_bg, 4.5:1 on the others)", "window_bg, title_bar, banner, tab_inactive", 7.0),
+            ink("text_dim", "Secondary text such as hints and paths", "window_bg, status_bar, tab_bar, banner, sidebar, tab_inactive", 4.5),
+            surface("banner", "The background of notice banners"),
+        ],
+    },
+    TableDoc {
+        name: "terminal",
+        keys: &[
+            surface("background", "The terminal background"),
+            ink(
+                "foreground",
+                "Default terminal text (11:1 on the background, 4.5:1 on the others)",
+                "terminal.background, terminal.selection, semantic.find_match, semantic.find_current",
+                11.0,
+            ),
+            surface("cursor", "The cursor block"),
+            surface("selection", "The background of selected text"),
+            ink("black", "ANSI colour 0 (checked only on a light theme, where it is a text colour)", ANSI_BG, 4.5),
+            ink("red", "ANSI colour 1", ANSI_BG, 4.5),
+            ink("green", "ANSI colour 2", ANSI_BG, 4.5),
+            ink("yellow", "ANSI colour 3", ANSI_BG, 4.5),
+            ink("blue", "ANSI colour 4", ANSI_BG, 4.5),
+            ink("magenta", "ANSI colour 5", ANSI_BG, 4.5),
+            ink("cyan", "ANSI colour 6", ANSI_BG, 4.5),
+            ink("white", "ANSI colour 7", ANSI_BG, 4.5),
+            ink("bright_black", "ANSI colour 8, also used for dimmed text", ANSI_BG, 4.5),
+            ink("bright_red", "ANSI colour 9", ANSI_BG, 4.5),
+            ink("bright_green", "ANSI colour 10", ANSI_BG, 4.5),
+            ink("bright_yellow", "ANSI colour 11", ANSI_BG, 4.5),
+            ink("bright_blue", "ANSI colour 12", ANSI_BG, 4.5),
+            ink("bright_magenta", "ANSI colour 13", ANSI_BG, 4.5),
+            ink("bright_cyan", "ANSI colour 14", ANSI_BG, 4.5),
+            ink("bright_white", "ANSI colour 15", ANSI_BG, 4.5),
+        ],
+    },
+    TableDoc {
+        name: "semantic",
+        keys: &[
+            ink("working", "The mark on a tab whose agent is working", ANSI_BG, 4.5),
+            ink("waiting", "The mark on a tab waiting for you", ANSI_BG, 4.5),
+            ink("bell", "The mark on a tab that rang the bell", ANSI_BG, 4.5),
+            surface("error_banner", "The background of an error banner"),
+            surface("find_match", "The background of a search match in the terminal"),
+            surface("find_current", "The background of the current search match"),
+        ],
+    },
+    TableDoc {
+        name: "tree",
+        keys: &[
+            ink("added", "Files added to the index, in the file tree", "window_bg", 4.5),
+            ink("modified", "Files changed in the working tree", "window_bg", 4.5),
+            ink("deleted", "Files removed", "window_bg", 4.5),
+            ink("untracked", "Files git does not know yet", "window_bg", 4.5),
+            ink("ignored", "Files matched by an ignore rule", "window_bg", 4.5),
+        ],
+    },
+    TableDoc {
+        name: "viewer",
+        keys: &[
+            ink("keyword", "Language keywords in the file viewer", "window_bg", 4.5),
+            ink("string", "String literals", "window_bg", 4.5),
+            ink("comment", "Comments", "window_bg", 4.5),
+            ink("number", "Number literals", "window_bg", 4.5),
+            ink("function", "Function names", "window_bg", 4.5),
+            ink("type_name", "Type names", "window_bg", 4.5),
+            ink("constant", "Constants", "window_bg", 4.5),
+            ink("operator", "Operators", "window_bg", 4.5),
+            ink("punctuation", "Brackets, commas and other punctuation", "window_bg", 4.5),
+        ],
+    },
+    TableDoc {
+        name: "font",
+        keys: &[
+            surface("prose", "Optional: the installed family for rendered markdown text; unset, the system UI font"),
+            surface("ui", "Optional: the installed family for the window's chrome; unset, the terminal font"),
+            surface("terminal", "Optional: the installed monospaced family for the shells and code views; unset, [font] family"),
+        ],
+    },
+];
+
+/// The theme file's tables and keys as data: the top-level `name` (a table named ""), then
+/// chrome, terminal, semantic, tree, viewer and the optional font.
+pub fn schema() -> &'static [TableDoc] {
+    SCHEMA
 }
 
 impl Theme {
@@ -365,44 +598,6 @@ mod tests {
     use super::*;
     use crate::palette::{contrast, rgb};
 
-    /// Every colour drawn as text or a mark, with the background it sits on. Black is a
-    /// background by convention on a dark theme and a text colour on a light one.
-    fn foregrounds(t: &Theme) -> Vec<(String, Rgb, Rgb)> {
-        let mut v = vec![
-            ("chrome.text on window_bg".to_string(), t.chrome.text, t.chrome.window_bg),
-            ("chrome.text_dim on window_bg".to_string(), t.chrome.text_dim, t.chrome.window_bg),
-            ("chrome.text on title_bar".to_string(), t.chrome.text, t.chrome.title_bar),
-            ("chrome.text_dim on status_bar".to_string(), t.chrome.text_dim, t.chrome.status_bar),
-            ("chrome.text_dim on tab_bar".to_string(), t.chrome.text_dim, t.chrome.tab_bar),
-            ("chrome.text on banner".to_string(), t.chrome.text, t.chrome.banner),
-            ("semantic.working".to_string(), t.semantic.working, t.terminal.background),
-            ("semantic.waiting".to_string(), t.semantic.waiting, t.terminal.background),
-            ("semantic.bell".to_string(), t.semantic.bell, t.terminal.background),
-            ("tree.added".to_string(), t.tree.added, t.chrome.window_bg),
-            ("tree.modified".to_string(), t.tree.modified, t.chrome.window_bg),
-            ("tree.deleted".to_string(), t.tree.deleted, t.chrome.window_bg),
-            ("tree.untracked".to_string(), t.tree.untracked, t.chrome.window_bg),
-            ("tree.ignored".to_string(), t.tree.ignored, t.chrome.window_bg),
-            ("viewer.keyword".to_string(), t.viewer.keyword, t.chrome.window_bg),
-            ("viewer.string".to_string(), t.viewer.string, t.chrome.window_bg),
-            ("viewer.comment".to_string(), t.viewer.comment, t.chrome.window_bg),
-            ("viewer.number".to_string(), t.viewer.number, t.chrome.window_bg),
-            ("viewer.function".to_string(), t.viewer.function, t.chrome.window_bg),
-            ("viewer.type_name".to_string(), t.viewer.type_name, t.chrome.window_bg),
-            ("viewer.constant".to_string(), t.viewer.constant, t.chrome.window_bg),
-            ("viewer.operator".to_string(), t.viewer.operator, t.chrome.window_bg),
-            ("viewer.punctuation".to_string(), t.viewer.punctuation, t.chrome.window_bg),
-        ];
-        let p = t.palette();
-        for (i, c) in p.ansi.iter().enumerate() {
-            if i == 0 && !t.is_light() {
-                continue;
-            }
-            v.push((format!("ansi {i}"), *c, t.terminal.background));
-        }
-        v
-    }
-
     #[test]
     fn a_theme_may_name_a_prose_font() {
         let t = builtin("peach-light").unwrap();
@@ -440,17 +635,38 @@ mod tests {
     }
 
     #[test]
-    fn every_foreground_clears_4_5_to_1_and_the_terminal_text_12_to_1() {
+    fn every_contrast_pair_of_every_builtin_clears_what_it_needs() {
         for (name, _) in BUILTIN {
             let t = builtin(name).unwrap();
-            for (what, fg, bg) in foregrounds(&t) {
-                let c = contrast(fg, bg);
-                assert!(c >= 4.5, "{name}: {what} ({}) on {} is {c:.2}:1", fg.hex(), bg.hex());
+            for p in contrast_pairs(&t) {
+                let c = contrast(p.fg, p.bg);
+                assert!(c >= p.needs, "{name}: {} ({} on {}) is {c:.2}:1, needs {}", p.what, p.fg.hex(), p.bg.hex(), p.needs);
             }
-            let c = contrast(t.terminal.foreground, t.terminal.background);
-            assert!(c >= 11.0, "{name}: terminal text is {c:.1}:1, spec 7.1 wants about 12:1");
-            let c = contrast(t.chrome.text, t.chrome.window_bg);
-            assert!(c >= 7.0, "{name}: chrome text is {c:.1}:1");
+        }
+    }
+
+    #[test]
+    fn the_schema_names_the_surfaces_the_contrast_check_uses() {
+        let doc = |key: &str| {
+            let (table, key) = key.split_once('.').unwrap();
+            schema().iter().find(|t| t.name == table).and_then(|t| t.keys.iter().find(|k| k.key == key)).unwrap_or_else(|| panic!("{table}.{key}"))
+        };
+        let pairs = contrast_pairs(&builtin("navy-light").unwrap());
+        for p in pairs.iter().filter(|p| !p.what.starts_with("ansi ")) {
+            let (key, on) = p.what.split_once(" on ").unwrap();
+            let k = doc(key);
+            assert!(k.contrast_with.unwrap().split(", ").any(|s| s == on), "{}", p.what);
+            assert!(k.needs.unwrap() >= p.needs, "{}", p.what);
+        }
+        for t in schema() {
+            for k in t.keys {
+                for on in k.contrast_with.into_iter().flat_map(|c| c.split(", ")) {
+                    let label = format!("{}.{} on {on}", t.name, k.key);
+                    let ansi = t.name == "terminal" && on == "terminal.background" && k.key != "foreground";
+                    assert!(ansi || pairs.iter().any(|p| p.what == label), "{label} is not checked");
+                }
+                assert_eq!(k.contrast_with.is_some(), k.needs.is_some(), "{}", k.key);
+            }
         }
     }
 
@@ -521,17 +737,13 @@ mod tests {
     }
 
     #[test]
-    fn timo_purple_is_built_in_and_reads_on_the_surfaces_the_general_test_skips() {
+    fn timo_purple_is_built_in_and_its_accent_is_the_cyan() {
+        // Its other surfaces (banner, sidebar, inactive tabs, selection, find) are checked for
+        // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
         assert_eq!(BUILTIN.len(), 5);
-        let c = &t.chrome;
-        // The general contrast test covers every foreground on window_bg; these are the other surfaces.
-        let pairs = [(c.text_dim, c.banner), (c.text_dim, c.sidebar), (c.text_dim, c.tab_inactive), (c.text, c.tab_inactive), (t.terminal.foreground, t.terminal.selection), (t.terminal.foreground, t.semantic.find_match), (t.terminal.foreground, t.semantic.find_current)];
-        for (fg, bg) in pairs {
-            assert!(crate::palette::contrast(fg, bg) >= 4.5, "{fg:?} on {bg:?} is {:.2}", crate::palette::contrast(fg, bg));
-        }
-        assert_eq!(c.focus_ring, t.terminal.cyan, "the accent is the cyan");
+        assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
 
@@ -569,6 +781,19 @@ mod tests {
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string()], dir.path(), &mut out, &mut err), 1);
         assert!(!err.is_empty());
         assert_eq!(theme_cli_to(&["frob".into()], dir.path(), &mut Vec::new(), &mut Vec::new()), 2);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["--json".into(), "list".into()], dir.path(), &mut out, &mut err), 0);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v[0], serde_json::json!({ "name": "navy", "source": "file", "path": dir.path().join("navy.toml").display().to_string() }));
+        assert_eq!(v[1], serde_json::json!({ "name": "navy-light", "source": "built-in" }));
+        assert_eq!((v[5]["source"].as_str(), v[5]["error"].is_string()), (Some("invalid"), true));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!((v["ok"].as_bool(), v["error"].is_string(), err.is_empty()), (Some(false), true, true));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 0);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&out).unwrap(), serde_json::json!({ "ok": true, "name": "mine" }));
     }
 
     #[test]

@@ -341,15 +341,35 @@ pub fn set_value(path: &Path, keys: &[&str], value: toml_edit::Value) -> Result<
     set_values(path, &[(keys, value)])
 }
 
-/// Applies `edits` (a key path and its new value each) to the config file in one write. Comments,
-/// order, formatting and a line's trailing comment are kept: the old value's decor is copied onto
-/// the new one. A key goes at the end of its table, a missing table at the end of the file. The
-/// walk goes through inline and dotted tables too; a path segment that is not a table is an
-/// error. The temp file is written beside the symlink-resolved target and renamed over it, so a
-/// symlinked config stays a symlink. A file that does not parse is refused and left as it was.
+/// Applies `edits` (a key path and its new value each) to the config file in one write, through
+/// `apply_edits`. The temp file is written beside the symlink-resolved target and renamed over
+/// it, so a symlinked config stays a symlink. A file that does not parse is refused and left as
+/// it was.
 pub fn set_values(path: &Path, edits: &[(&[&str], toml_edit::Value)]) -> Result<(), String> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let text = std::fs::read_to_string(&target).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let edited = apply_edits(&text, edits)?;
+    let mut tmp = target.clone().into_os_string();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    let written = std::fs::write(&tmp, edited)
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot write {}: {e}", target.display())
+    })
+}
+
+/// Applies `edits` to a config file's `text` in memory and returns the new text. Comments, order,
+/// formatting and a line's trailing comment are kept: the old value's decor is copied onto the
+/// new one. A key goes at the end of its table, a missing table at the end of the file. The walk
+/// goes through inline and dotted tables too; a path segment that is not a table is an error, as
+/// is text that is not TOML. The result is not validated: `parse` it to check it would load.
+pub fn apply_edits(text: &str, edits: &[(&[&str], toml_edit::Value)]) -> Result<String, String> {
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string().lines().next().unwrap_or("parse error").to_string())?;
     for (keys, value) in edits {
         let Some((leaf, parents)) = keys.split_last() else { return Err("empty key path".to_string()) };
@@ -378,19 +398,7 @@ pub fn set_values(path: &Path, edits: &[(&[&str], toml_edit::Value)]) -> Result<
             }
         }
     }
-    let mut tmp = target.clone().into_os_string();
-    tmp.push(format!(".{}.tmp", std::process::id()));
-    let tmp = std::path::PathBuf::from(tmp);
-    let written = std::fs::write(&tmp, doc.to_string())
-        .and_then(|()| match std::fs::metadata(&target) {
-            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
-            Err(_) => Ok(()),
-        })
-        .and_then(|()| std::fs::rename(&tmp, &target));
-    written.map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("cannot write {}: {e}", target.display())
-    })
+    Ok(doc.to_string())
 }
 
 /// A reload keeps the last good config when the new one does not parse (spec 7).
@@ -822,6 +830,18 @@ mod tests {
         let zero: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 0\n").unwrap();
         assert!(zero.validate().unwrap_err().contains("viewer.highlight_limit_bytes"));
         assert!(toml::from_str::<Config>(DEFAULT_CONFIG).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn apply_edits_changes_the_text_in_memory_and_keeps_its_comments() {
+        let text = "# top\n[theme]\ndark = \"navy\" # d\n";
+        let edits: [(&[&str], toml_edit::Value); 2] = [(&["theme", "dark"], "ocean".into()), (&["font", "presets", "big", "size"], 18.0.into())];
+        let out = apply_edits(text, &edits).unwrap();
+        assert!(out.starts_with("# top\n[theme]\ndark = \"ocean\" # d\n"), "{out}");
+        assert!(out.contains("[font.presets.big]\nsize = 18.0\n"), "{out}");
+        assert!(!out.contains("[font]\n"), "the parent tables stay implicit: {out}");
+        assert!(apply_edits(text, &[(&["theme", "dark", "x"], 1.into())]).unwrap_err().contains("theme.dark"));
+        assert!(apply_edits("[[", &[(&["a"], 1.into())]).is_err());
     }
 
     #[test]

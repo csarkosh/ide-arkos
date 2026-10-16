@@ -1,4 +1,5 @@
 mod about;
+mod agent_cli;
 mod app_nap;
 mod aux;
 mod ax;
@@ -3694,9 +3695,18 @@ fn main() {
     if matches!(args.get(1).map(String::as_str), Some("notify") | Some("hooks")) {
         std::process::exit(hook_cli::run(&args[1..]));
     }
-    // The theme CLI: no window and no daemon start; it lists and checks theme files.
-    if args.get(1).map(String::as_str) == Some("theme") {
-        std::process::exit(theme::theme_cli(&args[2..]));
+    // The agent theme interface: no window and no daemon start. Each command reads and writes
+    // the files itself and asks running windows through the daemon when one is up. These come
+    // before the folder argument below, so a folder named `config` opens as `arkos ./config`.
+    match args.get(1).map(String::as_str) {
+        Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
+        Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
+        Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
+        Some("--help") | Some("-h") | Some("help") => {
+            print!("{}", agent_cli::USAGE);
+            return;
+        }
+        _ => {}
     }
     // Read-only diagnostics for a failed update: no window, no daemon start, nothing written.
     if args.get(1).map(String::as_str) == Some("doctor") {

@@ -85,9 +85,15 @@ pub fn request_for(notify: &Notify, session: SessionId, input: Option<&HookInput
 /// One request on a fresh connection, with no Hello: the daemon must not take a hook for a
 /// window. Events the daemon pushes meanwhile are skipped until the answer arrives.
 pub fn send_one(socket: &Path, request: Request) -> std::io::Result<Response> {
+    send_one_with(socket, request, TIMEOUT)
+}
+
+/// `send_one` with its own read and write timeout, for a request whose answer takes longer than
+/// a hook may wait (`arkos theme` and friends wait for the windows' answers).
+pub fn send_one_with(socket: &Path, request: Request, timeout: Duration) -> std::io::Result<Response> {
     let stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(TIMEOUT))?;
-    stream.set_write_timeout(Some(TIMEOUT))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
     let mut w = BufWriter::new(stream.try_clone()?);
     let mut r = BufReader::new(stream);
     write_frame(&mut w, &ClientMessage { id: 1, request })?;
