@@ -68,8 +68,10 @@ rect = [0.0, 0.0, 0.6, 0.12]
 name = "sidebar"
 rect = [0.0, 0.0, 0.18, 0.7]
 
+# The light picture is the finished scene: a terminal mid-redraw (Claude Code repaints while
+# it works) can be caught between frames, and a theme switch makes that likelier.
 [[shot]]
 name = "hero-light"
 theme = "light"
-wait = { "rate limit" = "working" }
-timeout_secs = 60
+wait = { "rate limit" = "waiting", durations = "waiting" }
+timeout_secs = 360

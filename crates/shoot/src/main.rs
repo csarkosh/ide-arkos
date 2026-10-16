@@ -320,13 +320,14 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
-        let raw = out.join(format!("{}.raw.png", shot.name));
+        // The captures themselves stay with the progress files; `out` gets the framed pictures.
+        let raw = progress.dir.join(format!("{}.raw.png", shot.name));
         capture_window(window_id, &raw)?;
         // The Chrome window Arkos docked is another app's window: captured on its own and laid
         // over the pane it sits on.
         let overlay = match running.chrome_before.as_deref().map(|before| docked_chrome(repo, frame, before)).transpose()?.flatten() {
             Some((id, x, y)) => {
-                let path = out.join(format!("{}.chrome.png", shot.name));
+                let path = progress.dir.join(format!("{}.chrome.png", shot.name));
                 capture_window(id, &path)?;
                 Some((path, x - frame.0, y - frame.1))
             }

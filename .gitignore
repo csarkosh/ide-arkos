@@ -1,3 +1,5 @@
 .worktrees/
 .superpowers/
 target/
+# The screenshot shoot's captures and progress log (scripts/shoot.sh); the framed pictures beside them are kept.
+docs/images/progress/
