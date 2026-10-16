@@ -151,6 +151,13 @@ Things only a person at the screen can check, in order of value:
   selects a word, triple click a line, a click clears it; a drag inside Claude Code's fullscreen
   selects without the program reacting; `less` on a long file: the wheel moves the file;
   Shift+wheel on a mouse, in a shell with history: wheel up shows older lines, not newer
+- terminal selection and links: a right-click on a link in Claude Code's output shows "Open Link" and
+  "Copy Link" and nothing elsewhere; Cmd+C on a wrapped Claude Code paragraph pastes one line while a
+  bulleted list keeps its lines, and Cmd+Shift+C pastes it as shown; in a terminal 160 columns or
+  wider, Claude Code's prose should reach within 12 cells of the width (the re-flow's margin; if it
+  caps its width there, the margin in `reflow.rs` needs revisiting); press, wheel-scroll, then drag:
+  the selection starts at the text that was under the press; drag past the pane's bottom edge: the
+  history scrolls and the selection grows until the button comes up
 - in Claude Code: Option+Enter and Shift+Enter each add a line to the prompt instead of sending
   it; Option+P opens the model picker; Esc still cancels; in zsh, Shift+Enter runs the line
 - `claude` with `/tui default`, a long answer, then a two-finger scroll: the text follows the
