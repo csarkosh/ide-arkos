@@ -779,9 +779,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
 
 /// Opens the link menu when the press asks for it (see `link_menu::press_kind`) and returns
 /// whether it did. The link is the one under the press now, not the one the last paint saw. The
-/// event stops here, which skips the root's mouse-down, so the other menus and the popovers are
-/// closed here instead: one floating card at a time. A press that does not open the menu is left
-/// alone for the caller.
+/// event stops here, which skips the root's mouse-downs, so what they would close is closed here
+/// instead: the other menus and the popovers (one floating card at a time), the URL prompt, and
+/// a tab rename, which keeps what was typed. A press that does not open the menu is left alone
+/// for the caller.
 fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEvent, cx: &mut Context<Root>) -> bool {
     // Only a press that could open the menu looks for a link.
     let link = if ev.button == MouseButton::Right || ev.modifiers.control { terminal.read(cx).link_at_position(ev.position) } else { None };
@@ -800,6 +801,8 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.wt_menu.hide(now);
     root.tab_menu.hide(now);
     root.close_popovers(now);
+    root.url_prompt.hide(now);
+    root.commit_tab_rename(cx);
     root.link_menu.show(LinkMenu { url: link.url, at: ev.position }, now);
     cx.notify();
     true

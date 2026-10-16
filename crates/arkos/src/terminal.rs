@@ -466,6 +466,13 @@ impl TerminalCore {
     }
 }
 
+/// Whether a window position is on the grid painted from `origin`: `cols` cells across and
+/// `rows` down, nothing of the padding past them.
+pub(crate) fn inside_grid(x: f32, y: f32, origin: (f32, f32), cell: CellMetrics, cols: usize, rows: usize) -> bool {
+    let (right, bottom) = (origin.0 + cols as f32 * cell.width, origin.1 + rows as f32 * cell.height);
+    x >= origin.0 && x < right && y >= origin.1 && y < bottom
+}
+
 /// Drops every control character except tab, newline and carriage return (this removes ESC and
 /// the C1 range), so pasted text can neither end the bracketed paste nor inject escape sequences.
 pub(crate) fn sanitize_paste(text: &str) -> String {
@@ -551,8 +558,13 @@ impl Terminal {
     }
 
     /// The link under a window position, if any (see `TerminalCore::link_at`); None before the
-    /// first paint.
+    /// first paint, and None off the grid, where `point_at` would clamp to the nearest cell: the
+    /// padding past the last row or column shows no underline, so it opens no menu either.
     pub fn link_at_position(&self, position: gpui::Point<gpui::Pixels>) -> Option<HoveredLink> {
+        let (origin, cell) = (self.origin?, self.cell?);
+        if !inside_grid(f32::from(position.x), f32::from(position.y), origin, cell, self.core.columns(), self.core.screen_lines()) {
+            return None;
+        }
         let (col, row, _) = self.point_at(position)?;
         self.core.link_at(col, row)
     }
@@ -611,8 +623,8 @@ impl Terminal {
         }
     }
 
-    /// The button came up somewhere else, or the press was a Cmd+click on a link: nothing is
-    /// held for the program.
+    /// The button came up somewhere else, or the press was a Cmd+click on a link or a
+    /// Control+click that opened the link menu: nothing is held for the program.
     pub fn mouse_cancelled(&mut self) {
         self.clicks.cancel();
     }
@@ -961,6 +973,18 @@ mod tests {
         assert_eq!(t.link_at(4, 1), None, "a row without a link");
         assert_eq!(t.link_at(4, 7), None, "a row below the screen");
         assert_eq!(t.selection_text().as_deref(), Some("plain"), "looking for a link never touches the selection");
+    }
+
+    #[test]
+    fn only_a_position_on_the_grid_can_find_a_link() {
+        // 10 columns of 8 by 3 rows of 16 from (100, 50): the grid ends at x 180 and y 98.
+        let cell = CellMetrics { width: 8.0, height: 16.0 };
+        let on = |x: f32, y: f32| inside_grid(x, y, (100.0, 50.0), cell, 10, 3);
+        assert!(on(100.0, 50.0), "the top left corner");
+        assert!(on(179.9, 97.9), "the last cell of the last row");
+        assert!(!on(120.0, 98.0), "just below the last row, in the padding");
+        assert!(!on(180.0, 60.0), "just right of the last column");
+        assert!(!on(99.9, 60.0) && !on(120.0, 49.9), "left of and above the grid");
     }
 
     #[test]
