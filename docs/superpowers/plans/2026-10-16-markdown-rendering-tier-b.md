@@ -683,6 +683,15 @@ works a lot with markdown (like a tech product manager) would be excited to use 
 - Math.
 - The 5 MB incremental splitter (milestone 7's Task 2b) and tables over 500 rows (shown as
   source) stay gated on the hand check.
+- After the whole-branch review: the three `start_*` and three `run_*` near-duplicates (a
+  `start_jobs`/`spawn_bounded` refactor) and the `md_view.rs` split (`md_table_view`,
+  `md_media_view`) at the next milestone that touches `md_view.rs`; keeping the previous PNG on
+  screen while a theme change re-renders a diagram; an SVG that starts with a comment or a
+  `<!DOCTYPE svg>` is refused by the sniff; the launch sweep can remove a file a refetch has just
+  written (fetched again on the next open); the start-line table identity; the one-char caret
+  offset after an escaped pipe in a code span; no floor on proportional shrink; waiting fetches
+  stalling when the starting viewer closes; a code span crossing lines; the details-state entries
+  of deleted files.
 
 ## Self-review notes
 
