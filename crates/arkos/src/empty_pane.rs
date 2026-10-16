@@ -60,7 +60,7 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
         let size = 18.0 + 4.0 * i as f32;
         view = view.child(div().absolute().left(px(x - size / 2.0)).top(px(y - size / 2.0)).size(px(size)).rounded_full().bg(theme.semantic.working.alpha(0.2)));
     }
-    let mut hints = div().flex().flex_col().gap(px(6.0)).text_color(theme.chrome.text_dim.hsla()).font_family(root.family()).text_size(px(13.0));
+    let mut hints = div().flex().flex_col().gap(px(6.0)).text_color(theme.chrome.text_dim.hsla()).font_family(root.ui_family()).text_size(px(13.0));
     for (keys, what) in self::hints(last_pane) {
         hints = hints.child(div().flex().flex_row().gap(px(12.0)).child(div().w(px(150.0)).text_color(theme.chrome.text.hsla()).child(keys)).child(what));
     }
@@ -74,7 +74,7 @@ pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle,
             .flex_col()
             .items_center()
             .gap(px(14.0))
-            .child(div().text_color(theme.chrome.text.hsla()).font_family(root.family()).text_size(px(15.0)).child("This pane is empty. Nothing is lost."))
+            .child(div().text_color(theme.chrome.text.hsla()).font_family(root.ui_family()).text_size(px(15.0)).child("This pane is empty. Nothing is lost."))
             .child(hints),
     ))
 }

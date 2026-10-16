@@ -656,12 +656,15 @@ fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
         "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\
          [font]\npreset = \"{preset}\"\n\n\
          [sidebar]\nwidth = {sidebar:.1}\ncollapsed = {collapsed}\n\n\
+         [theme]\ndark = \"{dark}\"\nlight = \"{light}\"\n\n\
          [appearance]\nmode = \"{theme}\"\n\n\
          [recovery]\nstart_at_login = \"off\"\n\n\
          [update]\nauto = false\ncheck_every_secs = 0\n",
         preset = story.window.preset,
         sidebar = story.window.sidebar_width,
         collapsed = story.window.sidebar == story::Sidebar::Collapsed,
+        dark = story.window.theme.dark,
+        light = story.window.theme.light,
     );
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }

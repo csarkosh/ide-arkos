@@ -1,0 +1,74 @@
+# The schema of every key is in docs/themes.md.
+# Lavender Light: a VS Code "lavender" look, a near-white editor under lavender chrome with a
+# lavender title and status bar; purple keywords, rose identifiers, blue functions and gold
+# strings, each deepened to clear 4.5:1 on the editor.
+name = "lavender-light"
+
+[font]
+prose = "Avenir Next"
+ui = "Avenir Next"
+terminal = "Cascadia Code"
+
+[chrome]
+window_bg = "#f9f7fb"
+title_bar = "#d6cce9"
+status_bar = "#d6cce9"
+sidebar = "#e2dbee"
+tab_bar = "#ece8f3"
+tab_active = "#f9f7fb"
+tab_inactive = "#ece8f3"
+border = "#cfc4e0"
+split_handle = "#cfc4e0"
+split_handle_hover = "#a992c4"
+focus_ring = "#6a4a9c"
+text = "#2d2340"
+text_dim = "#5e5276"
+banner = "#e6dff0"
+
+[terminal]
+background = "#f9f7fb"
+foreground = "#2d2340"
+cursor = "#6a4a9c"
+selection = "#d5cce6"
+black = "#2d2340"
+red = "#c23c4e"
+green = "#197a31"
+yellow = "#875c00"
+blue = "#2a63c7"
+magenta = "#7a4bb3"
+cyan = "#0e7c88"
+white = "#5e5276"
+bright_black = "#6b5f84"
+bright_red = "#c2394c"
+bright_green = "#1d7f36"
+bright_yellow = "#8a6000"
+bright_blue = "#2f6bd0"
+bright_magenta = "#8150bd"
+bright_cyan = "#0d727d"
+bright_white = "#4f4466"
+
+[semantic]
+working = "#2a63c7"
+waiting = "#b0500a"
+bell = "#875c00"
+error_banner = "#f6d9df"
+find_match = "#e6dff0"
+find_current = "#f5e3a1"
+
+[tree]
+added = "#197a31"
+modified = "#875c00"
+deleted = "#c23c4e"
+untracked = "#7a4bb3"
+ignored = "#6b6080"
+
+[viewer]
+keyword = "#7a4bb3"
+string = "#875c00"
+comment = "#736886"
+number = "#b0500a"
+function = "#2a63c7"
+type_name = "#0e7c88"
+constant = "#c23c4e"
+operator = "#0e7c88"
+punctuation = "#5e5276"

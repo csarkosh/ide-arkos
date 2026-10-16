@@ -1,0 +1,74 @@
+# The schema of every key is in docs/themes.md.
+# Peach Light: a warm light theme, cream and peach, for writing more than coding. Text is a soft
+# dark brown (the terminal's a shade darker, for its 11:1), prose is set in Baskerville, and the
+# ANSI colours are deepened so each clears 4.5:1 on the cream.
+name = "peach-light"
+
+[font]
+prose = "Baskerville"
+ui = "Optima"
+terminal = "PT Mono"
+
+[chrome]
+window_bg = "#fff6ef"
+title_bar = "#fbe3d3"
+status_bar = "#fbe3d3"
+sidebar = "#fdeadf"
+tab_bar = "#fbe3d3"
+tab_active = "#fff6ef"
+tab_inactive = "#fbe3d3"
+border = "#efcdb8"
+split_handle = "#efcdb8"
+split_handle_hover = "#dca98a"
+focus_ring = "#c2410c"
+text = "#5a3e32"
+text_dim = "#7a5a4a"
+banner = "#f9dcc8"
+
+[terminal]
+background = "#fff6ef"
+foreground = "#4a3028"
+cursor = "#c2410c"
+selection = "#f8cfb4"
+black = "#4a3028"
+red = "#b3261e"
+green = "#2f7a3a"
+yellow = "#8a5a00"
+blue = "#1d5fbf"
+magenta = "#9a3a86"
+cyan = "#0f6e72"
+white = "#7a5a4a"
+bright_black = "#7a5a4a"
+bright_red = "#c42b2b"
+bright_green = "#2f7f3f"
+bright_yellow = "#8a6200"
+bright_blue = "#2b66c4"
+bright_magenta = "#a3419a"
+bright_cyan = "#0f7076"
+bright_white = "#6a4a3a"
+
+[semantic]
+working = "#c2410c"
+waiting = "#8a5a00"
+bell = "#8a5a00"
+error_banner = "#f7d4d0"
+find_match = "#f8dcc8"
+find_current = "#f5e3a1"
+
+[tree]
+added = "#2f7a3a"
+modified = "#8a5a00"
+deleted = "#b3261e"
+untracked = "#7a3fa8"
+ignored = "#8a6a5a"
+
+[viewer]
+keyword = "#9a3a86"
+string = "#2f7a3a"
+comment = "#8a6a5a"
+number = "#8a5a00"
+function = "#c2410c"
+type_name = "#0f6e72"
+constant = "#b3261e"
+operator = "#5a3e32"
+punctuation = "#7a5a4a"

@@ -857,7 +857,7 @@ impl Root {
         let which = *which;
         let live = self.popover.value().is_some();
         let w = f32::from(window.viewport_size().width);
-        let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.family());
+        let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.ui_family());
         let c = &self.theme.chrome;
         let (text_c, dim_c) = (c.text.hsla(), c.text_dim.hsla());
         if which != chrome::Popover::Bell {
@@ -1017,6 +1017,11 @@ impl Root {
 
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
         let palette = Arc::new(theme.palette());
+        // A theme that brings its own terminal font changes the cell size (`family()` reads the
+        // theme): panes re-measure before a restore trusts a grid, as a config change does.
+        if theme.font.terminal != self.theme.font.terminal {
+            self.grids.clear();
+        }
         if let Some(h) = &self.highlighter {
             self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
         }
@@ -1107,7 +1112,7 @@ impl Root {
         if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
             self.apply_text_preset(&name, cx);
         }
-        if old.font.family != self.config.font.family {
+        if old.font.family != self.config.font.family && self.theme.font.terminal.is_none() {
             // The cell size changes with the family (`family()` reads the config; the
             // `cx.notify()` below re-renders): panes re-measure before a restore trusts a grid.
             self.grids.clear();
@@ -1122,8 +1127,15 @@ impl Root {
         cx.notify();
     }
 
+    /// The terminal font: the theme's when it names one, else the config's.
     pub fn family(&self) -> gpui::SharedString {
-        self.config.font.family.clone().into()
+        self.theme.font.terminal.clone().unwrap_or_else(|| self.config.font.family.clone()).into()
+    }
+
+    /// The font of the file tree, tabs, palette and banners: the theme's `ui` font when it
+    /// names one, else the terminal font, as it always was.
+    pub fn ui_family(&self) -> gpui::SharedString {
+        self.theme.font.ui.clone().map_or_else(|| self.family(), Into::into)
     }
 
     /// Switches every terminal and viewer to a preset (spec 7). Per-tab nudges from Cmd+= are reset.
@@ -3373,7 +3385,7 @@ impl Render for Root {
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
         );
-        let family = self.family();
+        let family = self.ui_family();
         let root_div = div()
             .relative()
             .size_full()

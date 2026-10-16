@@ -123,11 +123,32 @@ impl TerminalCore {
                 TermEvent::ResetTitle => w.title = Some(String::new()),
                 TermEvent::Bell => w.bell = true,
                 TermEvent::PtyWrite(s) => w.pty_write.extend_from_slice(s.as_bytes()),
+                // OSC 4/10/11/12 queries ("what colour is the background?"): answered from the
+                // palette, so a program that adapts to a light or dark terminal (Claude Code,
+                // vim, bat) sees the theme it runs in rather than guessing dark.
+                TermEvent::ColorRequest(index, format) => {
+                    if let Some(c) = self.query_color(index) {
+                        w.pty_write.extend_from_slice(format(c).as_bytes());
+                    }
+                }
                 _ => {}
             }
         }
         self.scroll.clamp_max(self.history_size() as f32);
         w
+    }
+
+    /// The colour a program's OSC query asks about: 0 to 255 the indexed colours, 256 the
+    /// foreground, 257 the background, 258 the cursor; nothing for the rest.
+    fn query_color(&self, index: usize) -> Option<alacritty_terminal::vte::ansi::Rgb> {
+        let c = match index {
+            0..=255 => self.palette.indexed(index as u8),
+            256 => self.palette.fg,
+            257 => self.palette.bg,
+            258 => self.palette.cursor,
+            _ => return None,
+        };
+        Some(alacritty_terminal::vte::ansi::Rgb { r: c.r, g: c.g, b: c.b })
     }
 
     /// Swaps the colours every cell resolves against at paint. Nothing is re-parsed.
@@ -1037,6 +1058,25 @@ mod tests {
         assert_eq!(after.visible[0][4].1.fg, rgb(0x1e2633));
         assert_eq!(after.visible[0][4].1.bg, rgb(0xf4f6fa));
         assert_eq!(core.palette().bg, rgb(0xf4f6fa));
+    }
+
+    #[test]
+    fn a_background_colour_query_is_answered_from_the_palette() {
+        use crate::palette::{rgb, Palette, NAVY};
+        let mut core = TerminalCore::new(10, 2, 100);
+        let w = core.apply_output(b"\x1b]11;?\x1b\\");
+        let reply = String::from_utf8(w.pty_write).unwrap();
+        assert_eq!(reply, "\x1b]11;rgb:1111/1616/1f1f\x1b\\", "navy's background, 16 bits a channel");
+        let mut light = Palette { ..NAVY };
+        light.bg = rgb(0xfff6ef);
+        light.fg = rgb(0x3b2418);
+        core.set_palette(std::sync::Arc::new(light));
+        let w = core.apply_output(b"\x1b]10;?\x07\x1b]11;?\x07");
+        let reply = String::from_utf8(w.pty_write).unwrap();
+        assert!(reply.contains("rgb:3b3b/2424/1818") && reply.contains("rgb:ffff/f6f6/efef"), "{reply:?}");
+        // An index with no colour gets no answer, and nothing else is written.
+        let w = core.apply_output(b"\x1b]4;999;?\x07");
+        assert!(w.pty_write.is_empty());
     }
 
     #[test]

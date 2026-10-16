@@ -142,7 +142,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let width = root.sidebar.width;
-    let family = root.family();
+    let family = root.ui_family();
     let header = |id: &'static str, title: &str, open: bool| -> Stateful<Div> {
         div()
             .id(id)
@@ -334,7 +334,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
     let rows = Rc::new(root.explorer.rows());
     let selected = root.explorer.selected.clone();
     let weak = cx.weak_entity();
-    let family = root.family();
+    let family = root.ui_family();
     let (selected_bg, hover_bg, dim, dot) = (theme.chrome.tab_active.hsla(), theme.chrome.tab_inactive.hsla(), theme.chrome.text_dim.hsla(), theme.tree.modified.hsla());
     let theme = theme.clone();
     let (drag_bg, drag_fg) = (theme.chrome.banner, theme.chrome.text);
@@ -433,7 +433,7 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         .bg(c.banner.hsla())
         .border_1()
         .border_color(c.border.hsla())
-        .font_family(root.family())
+        .font_family(root.ui_family())
         .text_size(px(12.0))
         .text_color(c.text.hsla())
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
@@ -738,7 +738,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<
     let (p, opacity) = root.wt_prompt.current(root.frame_now)?;
     // Drawn while it fades out too; only the open prompt holds focus and takes clicks.
     let live = root.wt_prompt.value().is_some();
-    let family = root.family();
+    let family = root.ui_family();
     let label = |text: &'static str| div().flex_none().w(px(44.0)).text_color(theme.chrome.text_dim.hsla()).child(text);
     let field = |edit: &LineEdit, placeholder: &str, active: bool| -> Div {
         if active {
@@ -931,7 +931,7 @@ pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<D
         .bg(c.banner.hsla())
         .border_1()
         .border_color(c.border.hsla())
-        .font_family(root.family())
+        .font_family(root.ui_family())
         .text_size(px(12.0))
         .text_color(c.text.hsla())
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));

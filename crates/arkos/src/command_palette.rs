@@ -149,7 +149,7 @@ impl Palette {
 /// focus, no keys, no clicks, nothing hidden from the pointer.
 pub fn render(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     let theme = root.theme.clone();
-    let family = root.family();
+    let family = root.ui_family();
     let (p, opacity) = root.palette.current(root.frame_now)?;
     let live = root.palette.value().is_some();
     let focus = p.focus.clone()?;

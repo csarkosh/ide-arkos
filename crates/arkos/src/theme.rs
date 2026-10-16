@@ -14,6 +14,31 @@ pub struct Theme {
     pub semantic: Semantic,
     pub tree: TreeColors,
     pub viewer: ViewerColors,
+    /// Optional: the fonts a look asks for. Absent in files from before 0.3.3.
+    #[serde(default, skip_serializing_if = "ThemeFont::is_default")]
+    pub font: ThemeFont,
+}
+
+/// The fonts a theme may name, each a family installed on the Mac. `prose`: the rendered
+/// markdown's text (headings, paragraphs, lists; unset, the system UI font). `ui`: the window's
+/// chrome, the file tree, tabs, palette and banners (unset, the terminal font, as before; the
+/// title bar the system font). `terminal`: the shells, the raw and code views and the
+/// terminal's measurements (unset, `[font] family` in the config); it must be monospaced.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeFont {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
+}
+
+impl ThemeFont {
+    fn is_default(&self) -> bool {
+        *self == ThemeFont::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,10 +126,12 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 3] = [
+pub const BUILTIN: [(&str, &str); 5] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("navy-light", include_str!("../themes/navy-light.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
+    ("peach-light", include_str!("../themes/peach-light.toml")),
+    ("lavender-light", include_str!("../themes/lavender-light.toml")),
 ];
 
 pub fn parse(text: &str) -> Result<Theme, String> {
@@ -361,6 +388,18 @@ mod tests {
     }
 
     #[test]
+    fn a_theme_may_name_a_prose_font() {
+        let t = builtin("peach-light").unwrap();
+        assert_eq!(t.font.prose.as_deref(), Some("Baskerville"));
+        assert_eq!(builtin("navy").unwrap().font, ThemeFont::default(), "the others leave it to the system font");
+        let text = BUILTIN[0].1.to_string() + "\n[font]\nprose = \"Georgia\"\n";
+        assert_eq!(parse(&text).unwrap().font.prose.as_deref(), Some("Georgia"));
+        assert_eq!(t.font.ui.as_deref(), Some("Optima"));
+        assert_eq!(t.font.terminal.as_deref(), Some("PT Mono"));
+        assert!(parse(&(BUILTIN[0].1.to_string() + "\n[font]\nchrome = \"Menlo\"\n")).is_err(), "only prose, ui and terminal are fonts a theme may name");
+    }
+
+    #[test]
     fn both_builtins_parse_and_name_themselves() {
         for (name, text) in BUILTIN {
             let t = parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -370,6 +409,8 @@ mod tests {
         assert!(builtin("nvay").is_none());
         assert!(!builtin("navy").unwrap().is_light());
         assert!(builtin("navy-light").unwrap().is_light());
+        assert!(builtin("peach-light").unwrap().is_light());
+        assert!(builtin("lavender-light").unwrap().is_light());
     }
 
     #[test]
@@ -431,7 +472,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"navy-light\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["mine".to_string(), "navy".to_string(), "navy-light".to_string(), "timo-purple".to_string()]);
+        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "mine".to_string(), "navy".to_string(), "navy-light".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -446,7 +487,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 3);
+        assert_eq!(wrote.len(), 5);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -457,7 +498,7 @@ mod tests {
     fn timo_purple_is_built_in_and_reads_on_the_surfaces_the_general_test_skips() {
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 3);
+        assert_eq!(BUILTIN.len(), 5);
         let c = &t.chrome;
         // The general contrast test covers every foreground on window_bg; these are the other surfaces.
         let pairs = [(c.text_dim, c.banner), (c.text_dim, c.sidebar), (c.text_dim, c.tab_inactive), (c.text, c.tab_inactive), (t.terminal.foreground, t.terminal.selection), (t.terminal.foreground, t.semantic.find_match), (t.terminal.foreground, t.semantic.find_current)];
@@ -478,8 +519,10 @@ mod tests {
         assert_eq!(l[0], ("navy".into(), Source::File), "a file shadows the built-in and is listed once");
         assert_eq!(l[1], ("navy-light".into(), Source::BuiltIn));
         assert_eq!(l[2], ("timo-purple".into(), Source::BuiltIn));
-        assert!(matches!(&l[3], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[4], ("mine".into(), Source::File));
+        assert_eq!(l[3], ("peach-light".into(), Source::BuiltIn));
+        assert_eq!(l[4], ("lavender-light".into(), Source::BuiltIn));
+        assert!(matches!(&l[5], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[6], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -489,8 +532,10 @@ mod tests {
         assert_eq!(lines[0], "navy (file)");
         assert_eq!(lines[1], "navy-light (built in)");
         assert_eq!(lines[2], "timo-purple (built in)");
-        assert!(lines[3].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[4], "mine (file)");
+        assert_eq!(lines[3], "peach-light (built in)");
+        assert_eq!(lines[4], "lavender-light (built in)");
+        assert!(lines[5].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[6], "mine (file)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");

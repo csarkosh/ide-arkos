@@ -186,7 +186,7 @@ Things only a person at the screen can check, in order of value:
 - Settings: Dark theme or Mode switches the window at once and `config.toml` keeps its comments;
   "Add theme…" with a broken file shows the error and copies nothing, and with a file named
   like an installed theme asks "Replace the existing ..." first
-- `arkos theme list` shows `navy`, `navy-light` and `timo-purple` as built in; with Timo Purple
+- `arkos theme list` shows `navy`, `navy-light`, `timo-purple`, `peach-light` and `lavender-light` as built in; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window
@@ -610,8 +610,8 @@ Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
 wrench at the right of the title bar) sets it for you.
 
-Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light` and
-`timo-purple` are built in. [docs/themes.md](docs/themes.md) documents every key;
+Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light`,
+`timo-purple`, `peach-light` (warm cream and peach) and `lavender-light` (a VS Code lavender look) are built in. [docs/themes.md](docs/themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen

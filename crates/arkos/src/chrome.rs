@@ -221,7 +221,7 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
         .gap(px(10.0))
         .bg(c.title_bar.hsla())
         .text_color(c.text.hsla())
-        .font_family(SharedString::from(UI_FONT))
+        .font_family(theme.font.ui.clone().map_or(SharedString::from(UI_FONT), SharedString::from))
         .text_size(px(13.0))
         .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Arkos IDE"))
         .child(

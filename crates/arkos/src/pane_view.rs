@@ -489,7 +489,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             .bg(theme.chrome.banner.hsla())
             .border_1()
             .border_color(theme.chrome.border.hsla())
-            .font_family(root.family())
+            .font_family(root.ui_family())
             .text_size(px(12.0))
             .when(live, |m| m.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
         for (idx, label, active) in menu_rows(&p, &labels) {
@@ -579,7 +579,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .items_center()
         .bg(c.tab_bar.hsla())
         .text_color(fg.hsla())
-        .font_family(root.family())
+        .font_family(root.ui_family())
         .text_size(px(if slim { 10.0 } else { 12.0 }))
         .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -608,7 +608,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     let handle = root.bar_scroll.entry(pane).or_default().clone();
     let rename = root.tab_rename.as_ref().filter(|r| r.pane == pane).map(|r| (r.tab, r.edit.clone()));
     let rename_focus = root.tab_rename_focus.clone();
-    let family = root.family();
+    let family = root.ui_family();
     let mut strip = div().id(("tabs", pane)).flex_1().min_w_0().h_full().flex().flex_row().overflow_x_scroll().track_scroll(&handle);
     // A tab dragged within this bar: the gap follows the drop target's insertion point.
     let now = root.frame_now;
@@ -656,7 +656,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
             position: Default::default(),
             bg: c.banner,
             fg,
-            family: root.family(),
+            family: root.ui_family(),
         });
         let tab = div()
             .id(tab_id("tab", pane, idx))
@@ -975,7 +975,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let kind_is_text = matches!(kind, Kind::Text { .. });
     let body = match kind {
         Kind::Text { .. } if rendered => {
-            let element = md_view::render(&viewer, &theme, SharedString::from(chrome::UI_FONT), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, cx);
+            // The prose in the theme's font when it names one, else the system's.
+            let prose: SharedString = theme.font.prose.clone().map_or(SharedString::from(chrome::UI_FONT), SharedString::from);
+            let element = md_view::render(&viewer, &theme, prose, family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, cx);
             div().size_full().child(element)
         }
         Kind::Text { plain } => {
@@ -1171,7 +1173,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
 fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>, app_mode: bool, cx: &mut Context<Root>) -> Div {
     let focus = pane_focus(root, pane, cx);
     let theme = root.theme.clone();
-    let family = root.family();
+    let family = root.ui_family();
     let c = &theme.chrome;
     let weak = cx.weak_entity();
     let report = canvas(
@@ -1276,7 +1278,7 @@ fn render_url_prompt(root: &mut Root, pane: PaneId, bar_h: f32, cx: &mut Context
     let (p, opacity) = root.url_prompt.current(root.frame_now)?;
     let live = root.url_prompt.value().is_some();
     let theme = root.theme.clone();
-    let family = root.family();
+    let family = root.ui_family();
     let c = &theme.chrome;
     let hint = if p.app_mode { "Enter opens it as a single page; empty opens [browser] url; Escape cancels" } else { "Enter opens it; empty opens [browser] url; Escape cancels" };
     let field = line_edit::render(&p.edit, "a URL, like example.com", &theme, family.clone(), 13.0);
@@ -1326,7 +1328,7 @@ fn render_busy(root: &mut Root, pane: PaneId, tab: Option<TabId>, cx: &mut Conte
         .size_full()
         .relative()
         .track_focus(&focus)
-        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(dim.hsla()).font_family(root.family()).text_size(px(font_size)).child(text))
+        .child(div().absolute().top(px(8.0)).left(px(12.0)).text_color(dim.hsla()).font_family(root.ui_family()).text_size(px(font_size)).child(text))
 }
 
 /// The friendly empty state (spec 4).

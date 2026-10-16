@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`. Every key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships three themes built in (`navy`, `navy-light`, `timo-purple`); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships five themes built in (`navy`, `navy-light`, `timo-purple`, `peach-light`, `lavender-light`); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 
@@ -89,6 +89,18 @@ Syntax colours in the file viewer. Each is text on `chrome.window_bg` and must r
 | `constant` | Constants |
 | `operator` | Operators |
 | `punctuation` | Brackets, commas and other punctuation |
+
+## [font]
+
+Optional. The one table that is not colours.
+
+| Key | What it sets |
+| --- | --- |
+| `prose` | The family the rendered markdown's text is set in (headings, paragraphs, lists, quotes); code stays in the terminal font. Unset, the system UI font. `peach-light` sets Baskerville. |
+| `ui` | The family of the window's chrome: the title bar, file tree, tabs, palette and banners. Unset, the title bar is in the system font and the rest in the terminal font. `peach-light` sets Optima, `lavender-light` Avenir Next. |
+| `terminal` | The family of the shells, the raw and code views and the terminal's cell measurements; it must be monospaced. Unset, `[font] family` from `config.toml`. `peach-light` sets PT Mono, `lavender-light` Cascadia Code (installed with `brew install --cask font-cascadia-code`). |
+
+Every family must be installed on the Mac; a missing one falls back as macOS sees fit.
 
 ## Adding a theme
 
