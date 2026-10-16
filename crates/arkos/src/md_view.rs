@@ -175,6 +175,9 @@ pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, c
     if let Some(h) = highlighter {
         if !r.code_spans.as_ref().is_some_and(|(by, _)| Arc::ptr_eq(by, h)) && should_highlight(text.len(), text.lines().count(), ctx.highlight_limit) {
             r.code_spans = Some((h.clone(), h.highlight_token(info, &code_lines(text))));
+            // New colours (a theme change made a new highlighter): the runs drawn from the old
+            // ones go too.
+            r.code_runs = None;
         }
     }
     let coloured = r.code_spans.is_some();

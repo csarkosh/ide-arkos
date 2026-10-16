@@ -3912,6 +3912,16 @@ fn open_project_window(
             }
         })
         .detach();
+        // macOS's own terminate (logout, shutdown, the Dock's Quit, AppleScript) runs gpui's
+        // shutdown, which clears the windows without `on_window_closed`: the quit observer is the
+        // only hook it runs, so it flushes too. Every other quit flushed already, and a second
+        // flush finds clean viewers and edits already recovered.
+        let quit_flush = root.downgrade();
+        cx.on_app_quit(move |cx| {
+            let _ = quit_flush.update(cx, |root, cx| root.flush_for_quit(false, cx));
+            std::future::ready(())
+        })
+        .detach();
         config_watch::start(root.clone(), config_path.clone(), cx);
         explorer_watch::start(root.clone(), cx);
         // The same client the root was built with; reconnects replace it from here on.

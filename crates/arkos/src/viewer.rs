@@ -830,6 +830,9 @@ impl Viewer {
             return;
         }
         self.mode = mode;
+        // The paragraph a click on the rendered view's tail promised belongs to that view: the
+        // raw view's first keystroke must not add blank lines before it.
+        self.pending_append = false;
         if let Some(doc) = &mut self.doc {
             doc.break_coalescing();
         }

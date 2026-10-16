@@ -268,7 +268,7 @@ keys, focus or clicks.
 A `.md` file opens as a document you can edit. Two modes: Rendered shows headings, lists, task
 lists, quotes, code blocks, links and images as they read; Raw shows the file's own text with
 Arkos's light markdown colouring (not a TextMate grammar, so a 5 MB file stays quick). The pill at
-the top right of the pane, or Cmd+Shift+M, switches between them, and each tab remembers its mode
+the top right of the pane, or Shift+Cmd+M, switches between them, and each tab remembers its mode
 across a relaunch.
 
 In Rendered mode one block is active at a time. Click a paragraph, heading or list and that block
