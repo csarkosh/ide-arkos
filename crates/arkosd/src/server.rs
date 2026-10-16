@@ -47,8 +47,9 @@ pub struct ClientRecord {
     pub protocol: u32,
     /// The window and directory `RelaunchClient` asked for, launched when this client goes.
     pub relaunch: Option<(PathBuf, PathBuf)>,
-    /// The usage session id its `Session` named, whose journal is sealed when it goes; None for
-    /// a client that sent none (a protocol 6 window, a tool, a window keeping no journal).
+    /// The usage session id its `Session` named, whose journal will be sealed when it goes
+    /// (Task 4); None for a client that sent none (a protocol 6 window, a tool, a window keeping
+    /// no journal).
     pub sid: Option<String>,
 }
 
@@ -599,7 +600,9 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             Response::Ok
         }
         // Kept on the record alone: the record leaves the table when the window goes, and the
-        // journal is sealed from what it held. A later one replaces it.
+        // journal will be sealed from what it held (Task 4). A later one replaces it. An id that
+        // is not hex is refused and never named back, and the record keeps the one it had.
+        Request::Session { sid } if !telemetry::is_sid(&sid) => Response::Error("invalid session id".into()),
         Request::Session { sid } => {
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
                 rec.sid = Some(sid);
@@ -1031,6 +1034,11 @@ mod tests {
         // A second Hello on the same connection (the chooser naming its project) keeps it.
         dispatch(&state, 1, &tx, 4, hello(7), &opts);
         assert_eq!(state.lock().unwrap().clients[&1].sid.as_deref(), Some(second));
+        // An id that is not hex is refused without being named back, and changes nothing.
+        for bad in ["../../journal/0123456789abcdef", "0123456789ABCDEF0123456789ABCDEF", "0123", ""] {
+            assert_eq!(dispatch(&state, 1, &tx, 5, Request::Session { sid: bad.into() }, &opts), Some(Response::Error("invalid session id".into())));
+            assert_eq!(state.lock().unwrap().clients[&1].sid.as_deref(), Some(second), "{bad:?}");
+        }
     }
 
     /// `TelemetryStatus` is not gated on the Hello's protocol: the command line and the doctor

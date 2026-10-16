@@ -134,10 +134,27 @@ pub fn second_launch(installed: &Path, now: u64) -> bool {
     text.trim().parse::<u64>().is_ok_and(|at| now / DAY > at / DAY)
 }
 
+/// Whether `s` can be a session id: 16 to 32 lowercase hex characters. It mirrors visits-core's
+/// hex rule, which `seal` applies and which `visits_app` does not re-export, so the daemon can
+/// refuse a bad id when a window sends it rather than when the journal is sealed.
+pub fn is_sid(s: &str) -> bool {
+    (16..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_sid_is_16_to_32_lowercase_hex_characters() {
+        assert!(is_sid(&visits_app::new_id()));
+        assert!(is_sid("0123456789abcdef"));
+        assert!(is_sid("0123456789abcdef0123456789abcdef"));
+        for bad in ["", "0123456789abcde", "0123456789abcdef0123456789abcdef0", "0123456789ABCDEF", "0123456789abcdeg", "../../0123456789ab", "0123456789abcdé"] {
+            assert!(!is_sid(bad), "{bad:?}");
+        }
+    }
     use visits_app::{DValue, Event, Rejected};
 
     /// The spec's section 2.2 table, but for the two lists that come from the app's own code
