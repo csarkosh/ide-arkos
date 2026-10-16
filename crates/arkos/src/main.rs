@@ -65,11 +65,11 @@ use gpui::{
     div, point, prelude::*, px, size, App, Application, AsyncApp, Bounds, Context, Div, DragMoveEvent, Entity, FocusHandle,
     KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Task, Window, WindowBounds, WindowHandle, WindowOptions,
 };
-use protocol::{Event, Request, SessionId, StagedUpdate};
+use protocol::{CustomizeAction, CustomizeOutcome, Event, Request, SessionId, StagedUpdate};
 use sessions::{reconcile, Outcome, Reconcile, SessionManager};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -278,6 +278,10 @@ pub struct Root {
     /// The theme that did not load, shown under `config_error`. Set and cleared by whatever last
     /// tried to switch theme, so a config reload and a theme problem never clobber each other.
     pub theme_error: Option<String>,
+    /// The name of the theme an agent is previewing (`CustomizeAction::PreviewTheme`), shown
+    /// in place of the configured one until the next config reload, `EndPreview` or macOS
+    /// appearance change. The config is untouched.
+    pub preview: Option<String>,
     /// A one-off result (themes extracted, the editor failed to open), shown under `theme_error`
     /// until the next command or for `NOTICE_FOR`. Never in `status`, which is the connection's.
     pub notice: Transient<String>,
@@ -580,6 +584,7 @@ impl Root {
             installed,
             config_error: None,
             theme_error: None,
+            preview: None,
             notice: Transient::Hidden,
             notice_seq: 0,
             palette: Transient::Hidden,
@@ -734,8 +739,7 @@ impl Root {
     /// Opens the configured theme's file in the default text editor, else the themes folder.
     pub fn open_theme(&mut self, cx: &mut Context<Self>) {
         let dir = paths::themes_dir();
-        let name = theme::pick_name(self.config.appearance.mode, self.system_is_dark, &self.config.theme);
-        let file = dir.join(format!("{name}.toml"));
+        let file = self.theme_file();
         let mut cmd = std::process::Command::new("open");
         let target = if file.is_file() {
             cmd.arg("-t");
@@ -1045,10 +1049,12 @@ impl Root {
     }
 
     /// macOS switched between light and dark. In "system" mode the theme follows; a theme that
-    /// fails to load leaves the current one and says why in the banner.
+    /// fails to load leaves the current one and says why in the banner. A preview ends here, in
+    /// any mode, so the screen shows what the config names.
     pub fn set_system_appearance(&mut self, dark: bool, cx: &mut Context<Self>) {
         self.system_is_dark = dark;
-        if self.config.appearance.mode != config::AppearanceMode::System {
+        let previewing = self.preview.take().is_some();
+        if self.config.appearance.mode != config::AppearanceMode::System && !previewing {
             return;
         }
         self.switch_theme(cx);
@@ -1075,12 +1081,19 @@ impl Root {
     }
 
     /// The file changed (or was deleted and recreated): parse it, keep the last good config on
-    /// an error, apply what changed. Called by the watcher and by the palette's "Reload config".
+    /// an error, apply what changed. Called by the watcher (for the config file and the
+    /// configured theme's file), by the palette's "Reload config" and by
+    /// `CustomizeAction::ReloadConfig`. A preview ends here, whether or not the file loads.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
+        let previewing = self.preview.take().is_some();
         let (cfg, banner) = config::reload_decision(&self.config, config::load(&paths::config_file()));
         self.config_error = banner;
         if let Some(e) = &self.config_error {
             eprintln!("arkos: {e}");
+            // The last good config still names a theme: show it, not the ended preview.
+            if previewing {
+                self.switch_theme(cx);
+            }
         } else {
             eprintln!("arkos: config reloaded");
             self.apply_config(cfg, cx);
@@ -1130,6 +1143,61 @@ impl Root {
         // `[update] auto` may have just been turned on with a release already staged.
         self.start_idle_timer(cx);
         cx.notify();
+    }
+
+    /// The configured theme's file, `themes_dir/<name>.toml`, whether or not it exists. The
+    /// watcher polls it; a preview or a failed load never moves it.
+    pub fn theme_file(&self) -> PathBuf {
+        theme_file_for(self.config.appearance.mode, self.system_is_dark, &self.config.theme, &paths::themes_dir())
+    }
+
+    /// What this window shows, for an agent's `Customize` (spec 5).
+    pub fn report(&self) -> protocol::Report {
+        protocol::Report {
+            theme: self.theme.name.clone(),
+            dark: !self.theme.is_light(),
+            system_is_dark: self.system_is_dark,
+            preset: self.text_preset.clone(),
+            family: self.family().to_string(),
+            preview: self.preview.clone(),
+            config_error: self.config_error.clone(),
+            theme_error: self.theme_error.clone(),
+        }
+    }
+
+    /// Applies an agent's `Event::Customize` and answers the daemon with `CustomizeDone`. Never
+    /// writes a file: a preview lives in this window only.
+    fn customize(&mut self, id: u64, action: CustomizeAction, cx: &mut Context<Self>) {
+        // Only a preview parses anything; the other actions cannot fail.
+        let parsed = match &action {
+            CustomizeAction::PreviewTheme { toml } => {
+                let parsed = theme::parse(toml);
+                if let Ok(t) = &parsed {
+                    self.preview = Some(t.name.clone());
+                    self.set_theme(t.clone(), cx);
+                }
+                parsed
+            }
+            CustomizeAction::EndPreview => {
+                self.preview = None;
+                self.switch_theme(cx);
+                Err(String::new())
+            }
+            CustomizeAction::ReloadConfig => {
+                self.reload_config(cx);
+                Err(String::new())
+            }
+            CustomizeAction::ReportState => Err(String::new()),
+        };
+        let outcome = CustomizeOutcome {
+            pid: std::process::id(),
+            project: self.project.clone(),
+            result: customize_outcome(&action, parsed, self.report()),
+        };
+        // The event came through the client, so there is one; the daemon matches the pid.
+        if let Some(client) = &self.sessions.client {
+            client.send(Request::CustomizeDone { id, outcome });
+        }
     }
 
     /// The terminal font: the theme's when it names one, else the config's.
@@ -2913,16 +2981,21 @@ impl Root {
         self.sessions.apply_update(version);
     }
 
-    /// A batch of daemon events: the window's own (`UpdateStaged`) first, then the sessions'.
+    /// A batch of daemon events: the window's own (`UpdateStaged`, `Customize`) first, then the
+    /// sessions'.
     pub fn route_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
         for ev in events {
-            if let Event::UpdateStaged { update } = ev {
-                self.staged = Some(update.clone());
-                self.update_error = None;
-                // The manifest was reached.
-                self.update_unreachable = None;
-                self.refresh_update_badge(cx);
-                self.start_idle_timer(cx);
+            match ev {
+                Event::UpdateStaged { update } => {
+                    self.staged = Some(update.clone());
+                    self.update_error = None;
+                    // The manifest was reached.
+                    self.update_unreachable = None;
+                    self.refresh_update_badge(cx);
+                    self.start_idle_timer(cx);
+                }
+                Event::Customize { id, action } => self.customize(*id, action.clone(), cx),
+                _ => {}
             }
         }
         self.sessions.route_events(events, cx);
@@ -3536,6 +3609,20 @@ impl Render for Root {
 
 /// Replaces the key bindings with the defaults plus `keybindings`, and sets the menu bar again:
 /// it shows (and on macOS answers) the keys bound when it was set.
+/// One window's answer to a `Customize`: a preview whose TOML did not parse is its error, every
+/// other action reports the state `after` it ran. `parsed` is read only for a preview.
+pub fn customize_outcome(action: &CustomizeAction, parsed: Result<theme::Theme, String>, after: protocol::Report) -> Result<protocol::Report, String> {
+    match (action, parsed) {
+        (CustomizeAction::PreviewTheme { .. }, Err(e)) => Err(e),
+        _ => Ok(after),
+    }
+}
+
+/// `themes/<name>.toml` for the theme `cfg` names under `mode` and the system appearance.
+pub fn theme_file_for(mode: config::AppearanceMode, system_is_dark: bool, cfg: &config::ThemeConfig, themes: &Path) -> PathBuf {
+    themes.join(format!("{}.toml", theme::pick_name(mode, system_is_dark, cfg)))
+}
+
 fn rebind(cx: &mut App, keybindings: &BTreeMap<String, String>) {
     cx.clear_key_bindings();
     cx.bind_keys(keymap::bindings_for(keybindings));
@@ -4280,6 +4367,23 @@ mod tests {
         assert_eq!(shell_folder(Some(dir.path().to_path_buf())), Some(dir.path().to_path_buf()));
         assert_eq!(shell_folder(Some(dir.path().join("gone"))), None, "a removed worktree: the project");
         assert_eq!(shell_folder(None), None);
+    }
+
+    #[test]
+    fn a_bad_preview_reports_its_error_and_the_watched_file_is_the_configured_theme() {
+        use super::{customize_outcome, theme_file_for};
+        use crate::{config, theme};
+        use protocol::{CustomizeAction, Report};
+        use std::path::{Path, PathBuf};
+        let after = Report { theme: "x".into(), preview: Some("x".into()), ..Report::default() };
+        let bad = customize_outcome(&CustomizeAction::PreviewTheme { toml: "nope".into() }, Err("expected an equals".into()), after.clone());
+        assert_eq!(bad, Err("expected an equals".into()));
+        let good = customize_outcome(&CustomizeAction::PreviewTheme { toml: "...".into() }, Ok(theme::builtin("navy").unwrap()), after.clone());
+        assert_eq!(good.unwrap().preview.as_deref(), Some("x"));
+        assert!(customize_outcome(&CustomizeAction::ReportState, Err("unused".into()), after).is_ok(), "only a preview can fail");
+        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "navy-light".into() };
+        assert_eq!(theme_file_for(config::AppearanceMode::System, true, &cfg, Path::new("/t")), PathBuf::from("/t/timo-purple.toml"));
+        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/navy-light.toml"));
     }
 
     #[test]
