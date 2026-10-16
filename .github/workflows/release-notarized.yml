@@ -1,0 +1,112 @@
+name: release-notarized
+# The release workflow with a Developer ID signature and notarization: macOS opens the download
+# without the quarantine step, and updates keep the app's permissions. Manual only (the user's
+# rule): nothing builds on push. Secrets: APPLE_CERT_P12 (base64 of a .p12 holding the
+# "Developer ID Application" identity and Apple's Developer ID G2 intermediate),
+# APPLE_CERT_PASSWORD, APPLE_API_KEY (the App Store Connect API key, .p8, base64),
+# APPLE_API_KEY_ID, APPLE_API_ISSUER, and ARKOS_RELEASE_KEY as in release.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, like 0.2.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    # The input reaches the scripts only through this variable, never pasted into them.
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Release from main only
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "run this workflow on main, not $GITHUB_REF"
+          exit 1
+      # Actions pinned to full commit SHAs (looked up with `gh api`); the comment names the tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+        with:
+          fetch-depth: 0
+      - name: Check the version
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not major.minor.patch"; exit 1; }
+          git rev-parse -q --verify "refs/tags/v$VERSION" && { echo "tag exists"; exit 1; } || true
+      # Pinned by SHA, so the toolchain is named here rather than by the ref.
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable, 2026-10-09
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (v2)
+      - name: Bump the version and tag
+        run: |
+          sed -i '' -E "s/^version = \"[0-9.]+\"\$/version = \"$VERSION\"/" Cargo.toml
+          grep -q "version = \"$VERSION\"" Cargo.toml
+          cargo update -w -q
+          git config user.name "release workflow"
+          git config user.email "release@csarko.sh"
+          git commit -am "Release $VERSION"
+          git tag "v$VERSION"
+      - name: Build
+        run: cargo build --release --locked -p arkos -p arkosd -p release-tool
+      - name: Signing identity
+        # A keychain of its own for the run, the identity imported into it, and codesign allowed
+        # to use the key without a prompt. The runner is thrown away afterwards.
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          echo "$APPLE_CERT_P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/identity.p12" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/identity.p12"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          [ -n "$IDENTITY" ] || { echo "no valid Developer ID Application identity in the imported .p12"; exit 1; }
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+      - name: Bundle, sign, notarize
+        env:
+          ARKOS_RELEASE_KEY: ${{ secrets.ARKOS_RELEASE_KEY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p dist
+          ZIP=$(sh packaging/bundle.sh "$VERSION" target/release dist)
+          echo "$APPLE_API_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ZIP=$(NOTARY_KEY="$RUNNER_TEMP/notary.p8" sh packaging/notarize.sh "$ZIP")
+          rm -f "$RUNNER_TEMP/notary.p8"
+          URL="https://github.com/$REPO/releases/download/v$VERSION/$(basename "$ZIP")"
+          sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "$URL" dist
+          target/release/release-tool sign --key-env ARKOS_RELEASE_KEY dist/manifest.json > dist/manifest.json.sig
+      - name: Check what will be published
+        run: |
+          # The signature checks against the first key the IDE trusts, as an installed IDE would.
+          KEY=$(sed -n 's/^ *"\(.*\)",$/\1/p' crates/protocol/src/release_key.rs | head -1)
+          target/release/release-tool verify --public "$KEY" dist/manifest.json dist/manifest.json.sig
+          GOT=$("dist/Arkos IDE.app/Contents/MacOS/arkosd" --version)
+          echo "$GOT"
+          case "$GOT" in
+            "arkosd $VERSION "*) ;;
+            *) echo "the bundled arkosd is not $VERSION"; exit 1 ;;
+          esac
+          spctl -a -t exec -vv "dist/Arkos IDE.app" 2>&1 | tee /dev/stderr | grep -q 'source=Notarized Developer ID'
+      - name: Push the release commit and tag
+        # Both or neither: a tag without its commit on main (or the reverse) is never published.
+        run: git push --atomic origin HEAD:main "v$VERSION"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
+          if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
+          gh release create "v$VERSION" dist/Arkos-IDE-*.zip dist/manifest.json dist/manifest.json.sig --title "Arkos IDE $VERSION" --notes "$NOTES"

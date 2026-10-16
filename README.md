@@ -580,6 +580,26 @@ sees it within five minutes. `release-tool verify --public <key> manifest.json m
 checks a published manifest by hand. `packaging/test.sh` runs the same packaging steps locally on
 a dev build.
 
+A release that macOS opens without the quarantine step, and whose updates keep the app's
+permissions (Accessibility for the browser pane; an ad-hoc signature's identity is the binary's
+hash, so macOS forgets them at every update), is signed with a Developer ID and notarized. Two
+ways, the same steps:
+
+- **`release-notarized` workflow**: `gh workflow run release-notarized -f version=0.3.1`. It
+  needs the secrets `APPLE_CERT_P12` (base64 of a `.p12` holding the "Developer ID Application"
+  identity and Apple's Developer ID G2 intermediate), `APPLE_CERT_PASSWORD`, `APPLE_API_KEY` (an
+  App Store Connect API key, the `.p8`, base64), `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`,
+  besides `ARKOS_RELEASE_KEY`.
+- **`packaging/release.sh 0.3.1`** on a Mac that holds the identity in its keychain and a
+  notary profile `arkos-notary` (`xcrun notarytool store-credentials arkos-notary --key <.p8>
+  --key-id <id> --issuer <id>`, once), with `ARKOS_RELEASE_KEY` in the environment.
+
+`packaging/bundle.sh` signs with `CODESIGN_IDENTITY` when it is set (hardened runtime, timestamp)
+and ad-hoc otherwise; `packaging/notarize.sh` submits the zip, staples the ticket and rewrites the
+zip, and runs before `manifest.sh`, which records the final zip. The key, the certificate and the
+`.p8` live outside the repository (`~/.config/arkos-release/`): back them up; a lost key means a
+new identity and reset permissions on every Mac.
+
 ## Build and run
 
 ```bash
