@@ -45,6 +45,7 @@ use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 /// The paragraph size as a multiple of the font size.
 pub const PARA: f32 = 1.1;
@@ -323,7 +324,7 @@ impl TablePiece {
         match md_table::parse(&source) {
             Some(t) if t.rows.len() <= GRID_MAX_ROWS => {
                 let rows = std::iter::once(t.header).chain(t.rows).map(|row| row.into_iter().map(GridCell::new).collect()).collect();
-                TablePiece::Grid(Grid { align: t.align, rows }, Widths { key: None, natural: Vec::new(), scroll: ScrollHandle::new() })
+                TablePiece::Grid(Grid { align: t.align, rows }, Widths { key: None, natural: Vec::new(), floors: Vec::new(), scroll: ScrollHandle::new() })
             }
             _ => TablePiece::Source(source.into()),
         }
@@ -365,25 +366,63 @@ impl GridCell {
 }
 
 /// A table's measured widths: each column's natural width (its widest cell over the first
-/// `MEASURED_ROWS` rows, padding and hairline included) for the prose family, the terminal family and the size in `key`,
-/// and the sideways scroll of a table in `WideTables::Scroll`. Measured once per block, again when
-/// the family or size changed; an edit makes a new entry, which is fine.
+/// `MEASURED_ROWS` rows, padding and hairline included) and its floor (its widest single word over
+/// the same rows, with the same padding and hairline) for the prose family, the terminal family and
+/// the size in `key`, and the sideways scroll of a table in `WideTables::Scroll`. Measured once per
+/// block, again when the family or size changed; an edit makes a new entry, which is fine.
 struct Widths {
     key: Option<(SharedString, SharedString, f32)>,
     natural: Vec<f32>,
+    floors: Vec<f32>,
     scroll: ScrollHandle,
 }
 
-/// The columns' drawn widths from their natural widths in a view `view` wide: each at most
-/// `COLUMN_CAP` of the view; in `Wrap`, columns summing to more than the view shrink in proportion
-/// to fit it (their cells wrap); in `Scroll` they keep the capped widths and the table scrolls.
-pub fn column_widths(natural: &[f32], view: f32, mode: WideTables) -> Vec<f32> {
-    let capped: Vec<f32> = natural.iter().map(|w| w.min(view * COLUMN_CAP)).collect();
+/// The columns' drawn widths from their natural widths and their floors (each column's widest
+/// word) in a view `view` wide. Each column is at most `COLUMN_CAP` of the view, but never below
+/// its floor, which wins over the cap. In `Wrap`, columns summing to more than the view start at
+/// their floors and share the rest of the view in proportion to their slack (capped width less
+/// floor), so a column at its floor keeps it, the widest give up the most, and no word breaks;
+/// only when the floors alone exceed the view do they scale down to it. In `Scroll` the columns
+/// keep the capped widths raised to their floors and the table scrolls.
+pub fn column_widths(natural: &[f32], floors: &[f32], view: f32, mode: WideTables) -> Vec<f32> {
+    let floor = |i: usize| floors.get(i).copied().unwrap_or(0.0);
+    let capped: Vec<f32> = natural.iter().enumerate().map(|(i, w)| w.min(view * COLUMN_CAP).max(floor(i))).collect();
     let sum: f32 = capped.iter().sum();
-    match mode {
-        WideTables::Wrap if sum > view && sum > 0.0 => capped.iter().map(|w| w * view / sum).collect(),
-        _ => capped,
+    if mode != WideTables::Wrap || sum <= view || sum <= 0.0 {
+        return capped;
     }
+    let floors: Vec<f32> = (0..capped.len()).map(floor).collect();
+    let floor_sum: f32 = floors.iter().sum();
+    if floor_sum >= view {
+        // The floors alone are too wide, so words have to break; they shrink in proportion.
+        return floors.iter().map(|f| f * view / floor_sum).collect();
+    }
+    // The slack's sum is the capped sum less the floors', more than the view's room left.
+    let slack: f32 = sum - floor_sum;
+    let room = view - floor_sum;
+    capped.iter().zip(&floors).map(|(c, f)| f + (c - f) * room / slack).collect()
+}
+
+/// A cell's widest word by display width, the narrowest the cell can be without breaking one; an
+/// empty or blank cell has none.
+fn widest_word(text: &str) -> &str {
+    text.split_whitespace().fold("", |widest, word| if word.width() > widest.width() { word } else { widest })
+}
+
+/// The text runs of a line cut to the bytes in `range`: the runs it overlaps, each shortened to its
+/// overlap, for laying out one word of a cell in the cell's own styles.
+fn runs_in(runs: &[TextRun], range: Range<usize>) -> Vec<TextRun> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for run in runs {
+        let end = start + run.len;
+        let (from, to) = (start.max(range.start), end.min(range.end));
+        if from < to {
+            out.push(TextRun { len: to - from, ..run.clone() });
+        }
+        start = end;
+    }
+    out
 }
 
 /// Measures block `ix`'s table grids not yet measured at the frame's families and size
@@ -415,7 +454,9 @@ fn section_open(v: &Viewer, ix: usize) -> bool {
 
 /// Measures a grid when it is not yet measured at the frame's families and size: each column's
 /// widest cell over the first `MEASURED_ROWS` rows (the header semibold), its text's width plus
-/// the cell's padding and its 1 px hairline.
+/// the cell's padding and its 1 px hairline, and the column's floor, its cells' widest words
+/// (`widest_word`) measured in their own styles with the same padding and hairline. A column with
+/// no words has a floor of 0.
 fn measure_grid(grid: &Grid, widths: &mut Widths, ctx: &BlockCtx, window: &mut Window) {
     let size = ctx.font_size * PARA;
     // A code span in a cell is measured in the terminal family, so it is in the key too.
@@ -423,16 +464,26 @@ fn measure_grid(grid: &Grid, widths: &mut Widths, ctx: &BlockCtx, window: &mut W
         return;
     }
     let mut natural = vec![0.0f32; grid.align.len()];
+    let mut floors = vec![0.0f32; grid.align.len()];
     for (i, row) in grid.rows.iter().take(MEASURED_ROWS).enumerate() {
         let weight = if i == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
-        for (w, cell) in natural.iter_mut().zip(row) {
+        for ((w, floor), cell) in natural.iter_mut().zip(floors.iter_mut()).zip(row) {
             let (text, runs, _) = styled_runs(&cell.runs, weight, ctx.text, ctx);
             let text_w = if text.is_empty() { 0.0 } else { f32::from(window.text_system().layout_line(&text, px(size), &runs, None).width) };
             *w = w.max(text_w + CELL_PAD_X * 2.0 + 1.0);
+            let word = widest_word(&text);
+            if !word.is_empty() {
+                // The word is a slice of the cell's text, so its offset in it is the pointers' difference.
+                let at = word.as_ptr() as usize - text.as_ptr() as usize;
+                let word_runs = runs_in(&runs, at..at + word.len());
+                let word_w = f32::from(window.text_system().layout_line(word, px(size), &word_runs, None).width);
+                *floor = floor.max(word_w + CELL_PAD_X * 2.0 + 1.0);
+            }
         }
     }
     widths.key = Some((ctx.ui.clone(), ctx.mono.clone(), size));
     widths.natural = natural;
+    widths.floors = floors;
 }
 
 /// A code block's text runs, with what they were made from: whether the highlighter's colours
@@ -1326,7 +1377,9 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
     // The grid's own border takes 2 px of the view.
     let view = if ctx.view_w > 0.0 { ctx.view_w - 2.0 } else { f32::INFINITY };
     let natural = if widths.natural.len() == columns { widths.natural.clone() } else { vec![CELL_PAD_X * 2.0 + 1.0; columns] };
-    let drawn = column_widths(&natural, view, ctx.wide_tables);
+    // Floors not measured for these columns yet are 0, which is the cap and shrink alone.
+    let floors = if widths.floors.len() == columns { widths.floors.clone() } else { vec![0.0; columns] };
+    let drawn = column_widths(&natural, &floors, view, ctx.wide_tables);
     let tint = ctx.text.opacity(0.04);
     let rows = grid.rows.iter().enumerate().map(|(r, row)| {
         let bg = match r {
@@ -1951,13 +2004,77 @@ mod tests {
 
     #[test]
     fn column_widths_cap_shrink_to_fit_in_wrap_mode_and_keep_natural_in_scroll_mode() {
-        let w = column_widths(&[100.0, 300.0, 800.0], 1000.0, WideTables::Wrap);
+        // Floors of zero reproduce the widths from before there were floors.
+        let none = [0.0; 3];
+        let w = column_widths(&[100.0, 300.0, 800.0], &none, 1000.0, WideTables::Wrap);
         assert_eq!(w, vec![100.0, 300.0, 450.0], "the cap is 45 percent of the view");
-        let w = column_widths(&[600.0, 600.0, 600.0], 1000.0, WideTables::Wrap);
+        let w = column_widths(&[600.0, 600.0, 600.0], &none, 1000.0, WideTables::Wrap);
         assert!((w.iter().sum::<f32>() - 1000.0).abs() < 0.01, "shrunk to fit: {w:?}");
         assert!((w[0] - w[1]).abs() < 0.01);
-        let w = column_widths(&[600.0, 600.0, 600.0], 1000.0, WideTables::Scroll);
+        let w = column_widths(&[200.0, 400.0, 600.0], &none, 1000.0, WideTables::Wrap);
+        let old: Vec<f32> = [200.0f32, 400.0, 450.0].iter().map(|w| w * 1000.0 / 1050.0).collect();
+        assert!(w.iter().zip(&old).all(|(a, b)| (a - b).abs() < 0.01), "the old proportional shrink: {w:?}");
+        let w = column_widths(&[600.0, 600.0, 600.0], &none, 1000.0, WideTables::Scroll);
         assert_eq!(w, vec![450.0, 450.0, 450.0], "scroll keeps the capped natural widths");
+    }
+
+    #[test]
+    fn a_column_never_shrinks_below_its_widest_word() {
+        let natural = [190.0, 70.0, 110.0, 80.0, 330.0];
+        let floors = [90.0, 60.0, 70.0, 60.0, 120.0];
+        let w = column_widths(&natural, &floors, 620.0, WideTables::Wrap);
+        assert!((w.iter().sum::<f32>() - 620.0).abs() < 0.01, "shrunk to fit the view: {w:?}");
+        assert!(w.iter().zip(&floors).all(|(w, f)| *w >= *f), "no column below its floor: {w:?}");
+        // The capped natural widths are what each column gives up from; the fifth is capped at 279.
+        let capped = [190.0, 70.0, 110.0, 80.0, 279.0];
+        let given: Vec<f32> = capped.iter().zip(&w).map(|(c, w)| c - w).collect();
+        assert!(given.iter().all(|g| *g >= -0.01), "no column grows past its capped width: {w:?}");
+        assert!(given[..4].iter().all(|g| *g < given[4]), "the fifth gives up the most: {given:?}");
+
+        // Floors that alone exceed the view scale down to it, which breaks words but cannot be helped.
+        let w = column_widths(&[500.0, 500.0], &[400.0, 400.0], 600.0, WideTables::Wrap);
+        assert!((w[0] - 300.0).abs() < 0.01 && (w[1] - 300.0).abs() < 0.01, "the floors scaled: {w:?}");
+
+        // A floor wider than the cap wins over the cap, and a table that fits keeps its widths.
+        let w = column_widths(&[500.0, 100.0], &[480.0, 50.0], 1000.0, WideTables::Wrap);
+        assert_eq!(w, vec![480.0, 100.0], "the floor wins over the cap");
+
+        // In scroll mode the capped natural widths are raised to the floors.
+        let w = column_widths(&natural, &floors, 620.0, WideTables::Scroll);
+        assert_eq!(w, vec![190.0, 70.0, 110.0, 80.0, 279.0]);
+        let w = column_widths(&[500.0, 100.0], &[480.0, 50.0], 1000.0, WideTables::Scroll);
+        assert_eq!(w, vec![480.0, 100.0], "scroll raises a capped column to its floor");
+    }
+
+    #[test]
+    fn a_cell_s_floor_is_its_widest_word() {
+        assert_eq!(widest_word("not started"), "started");
+        assert_eq!(widest_word("  in   progress "), "progress");
+        assert_eq!(widest_word("Owner"), "Owner");
+        assert_eq!(widest_word(""), "");
+        assert_eq!(widest_word("   "), "");
+        // Display width, not bytes: a wide CJK word of two characters is four columns wide.
+        assert_eq!(widest_word("abc \u{65e5}\u{672c}"), "\u{65e5}\u{672c}");
+        assert_eq!(widest_word("\u{e9}\u{e9}\u{e9} abcd"), "abcd", "three accented letters are three columns, not six bytes");
+    }
+
+    #[test]
+    fn a_word_s_runs_are_the_cell_s_runs_cut_to_its_bytes() {
+        let run = |len: usize, weight: FontWeight| TextRun {
+            len,
+            font: gpui::Font { weight, ..font("x") },
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        // "ab **cd**ef gh": a plain run of 3, a bold run of 2, a plain run of 5.
+        let runs = vec![run(3, FontWeight::NORMAL), run(2, FontWeight::BOLD), run(5, FontWeight::NORMAL)];
+        let cut = runs_in(&runs, 3..7);
+        assert_eq!(cut.iter().map(|r| (r.len, r.font.weight)).collect::<Vec<_>>(), vec![(2, FontWeight::BOLD), (2, FontWeight::NORMAL)]);
+        let cut = runs_in(&runs, 0..2);
+        assert_eq!(cut.iter().map(|r| r.len).collect::<Vec<_>>(), vec![2]);
+        assert!(runs_in(&runs, 4..4).is_empty());
     }
 
     #[test]
