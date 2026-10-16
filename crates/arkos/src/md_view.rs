@@ -232,12 +232,14 @@ impl DetailsPiece {
 }
 
 /// A diagram block as a row draws it: its source as parsed and as drawn (as a code block's, for
-/// the states that show it), and its cache key with the theme colours it was made for (made in
-/// `fill`, again when the theme changed).
+/// the states that show it), its cache key with the theme colours it was made for (made in
+/// `fill`, again when the theme changed), and the source's text runs while it is shown (made in
+/// `fill`, again when the font or the text colour changed).
 struct DiagramPiece {
     text: Rc<str>,
     drawn: SharedString,
     key: Option<(MermaidTheme, String)>,
+    runs: Option<CodeRuns>,
 }
 
 /// One video, audio file or media link as a row draws it: its label (as an image's), its path, the
@@ -292,7 +294,7 @@ impl From<Inline> for Piece {
             Inline::Para(runs) => Piece::Para(runs.into()),
             Inline::Heading(level, runs) => Piece::Heading(level, runs.into()),
             Inline::Item { depth, marker, task, runs } => Piece::Item { depth, marker, task, runs: runs.into() },
-            Inline::Code { text, info } if mermaid::is_diagram_info(&info) => Piece::Diagram(DiagramPiece { drawn: code_lines(&text).join("\n").into(), text: text.into(), key: None }),
+            Inline::Code { text, info } if mermaid::is_diagram_info(&info) => Piece::Diagram(DiagramPiece { drawn: code_lines(&text).join("\n").into(), text: text.into(), key: None, runs: None }),
             Inline::Code { info, text } => Piece::Code { info, drawn: code_lines(&text).join("\n").into(), text: text.into() },
             Inline::Quote(runs) => Piece::Quote(runs.into()),
             Inline::Rule => Piece::Rule,
@@ -464,19 +466,25 @@ pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, c
     fill_cache(v, ix, highlighter, ctx);
     track_remote(v, ix, cx);
     track_media(v, ix, &ctx.base_dir, cx);
-    track_diagram(v, ix, &ctx.mermaid, cx);
+    track_diagram(v, ix, ctx, cx);
 }
 
 /// Block `ix`'s diagram: its cache key made for the frame's colours (again when they changed),
 /// then its state moved along once (`mermaid::advance`): one not seen yet is ready from the cache,
 /// not to be rendered without Chrome, or queued; one whose render ended is ready or failed. While
 /// it is still rendering, the render that has the turn starts (`Viewer::start_renders`); its end
-/// draws the window again, which brings each viewer showing the diagram here.
-fn track_diagram(v: &mut Viewer, ix: usize, theme: &MermaidTheme, cx: &mut Context<Viewer>) {
+/// draws the window again, which brings each viewer showing the diagram here. While the source
+/// is shown (any state but ready), its text runs are made once for the frame's font and colour.
+fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Viewer>) {
+    let theme = &ctx.mermaid;
     let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
     let Some(Piece::Diagram(d)) = r.pieces.first_mut() else { return };
     if !d.key.as_ref().is_some_and(|(made_for, _)| made_for == theme) {
         d.key = Some((theme.clone(), mermaid::cache_key(&d.text, theme, mermaid::SCALE)));
+    }
+    let shown = !matches!(d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key)), Some(Diagram::Ready { .. }));
+    if shown && !d.runs.as_ref().is_some_and(|c| c.mono == ctx.mono && c.text == ctx.text) {
+        d.runs = Some(CodeRuns { coloured: false, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(&d.text), None, ctx)) });
     }
     let (Some((_, key)), text) = (d.key.as_ref(), &d.text) else { return };
     let state = v.diagrams.get(key);
@@ -1268,7 +1276,7 @@ fn diagram_element(d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Par
         Some(Diagram::Rendering) | None => "diagram: rendering".into(),
     };
     let colour = if matches!(state, Some(Diagram::Error(_))) { ctx.deleted } else { ctx.dim };
-    code_element(&d.text, &d.drawn, None, Some((info, colour)), ctx, parts)
+    code_element(&d.text, &d.drawn, d.runs.as_ref().map(|c| &c.runs), Some((info, colour)), ctx, parts)
 }
 
 /// The runs of a code block's joined lines: a span's colour where the spans run contiguously

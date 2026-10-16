@@ -42,9 +42,15 @@ const SCRIPT: &[u8] = include_bytes!("../assets/mermaid.min.js");
 pub const SCALE: u32 = 2;
 /// The widest a diagram is drawn, in CSS pixels; a wider one is scaled down to it.
 const MAX_W: u32 = 2000;
-/// The tallest diagram that is rendered, in CSS pixels: a taller one is an error rather than a
-/// screenshot of hundreds of megabytes.
-const MAX_H: u32 = 10_000;
+/// The longest side, in pixels, of an image gpui can draw (its Metal atlas's limit): a PNG with
+/// a longer side would be ready and draw nothing.
+const MAX_SIDE: u32 = 16_384;
+/// The tallest diagram that is rendered, in CSS pixels, so its PNG fits `MAX_SIDE`: a taller one
+/// is an error.
+const MAX_H: u32 = MAX_SIDE / SCALE;
+/// The most pixels a diagram's PNG may have (64 million, 256 MB decoded): a bigger one is an
+/// error rather than a screenshot Chrome and the view both have to hold.
+const MAX_PIXELS: u64 = 64_000_000;
 /// The wall clock after which a Chrome run that is still going is killed.
 const BACKSTOP: Duration = Duration::from_secs(20);
 /// How long the DOM is waited for once the first Chrome run has ended.
@@ -221,8 +227,8 @@ fn file_url(path: &Path) -> String {
 }
 
 /// The flags of both Chrome runs: headless, with the user data in `profile`, and nothing that
-/// reaches out: no background networking, component updates, sync, default apps or extensions,
-/// every host name resolving to nothing, and no keychain prompt. Virtual time lets the page's
+/// reaches out: no background networking, component updates, sync, default apps, extensions or
+/// crash reports, every host name resolving to nothing, and no keychain prompt. Virtual time lets the page's
 /// script finish before Chrome reads the page, and `--timeout` ends a page that never settles.
 pub fn common_args(profile: &Path) -> Vec<String> {
     [
@@ -236,6 +242,7 @@ pub fn common_args(profile: &Path) -> Vec<String> {
         "--disable-default-apps",
         "--disable-extensions",
         "--no-default-browser-check",
+        "--disable-breakpad",
         "--host-resolver-rules=MAP * ~NOTFOUND",
     ]
     .into_iter()
@@ -406,17 +413,23 @@ fn errors() -> MutexGuard<'static, BTreeMap<String, String>> {
 /// cache holds. `page`, `dir` and `has_chrome` are asked for only when they are needed.
 pub fn advance(state: Option<&Diagram>, key: &str, page: impl FnOnce() -> String, dir: impl FnOnce() -> PathBuf, has_chrome: impl FnOnce() -> bool) -> Option<Diagram> {
     match state {
-        None => Some(match cached(&dir(), key) {
-            Some(ready) => ready,
-            None if !has_chrome() => Diagram::NoChrome,
-            None => {
-                if !queue().is_pending(key) {
-                    errors().remove(key);
-                    queue().want(Job { key: key.to_string(), page: page() });
-                }
-                Diagram::Rendering
+        None => {
+            // One guard from the pending check to the want: a render that lands in between is
+            // seen in the cache, never started a second time.
+            let mut queue = queue();
+            if queue.is_pending(key) {
+                return Some(Diagram::Rendering);
             }
-        }),
+            Some(match cached(&dir(), key) {
+                Some(ready) => ready,
+                None if !has_chrome() => Diagram::NoChrome,
+                None => {
+                    errors().remove(key);
+                    queue.want(Job { key: key.to_string(), page: page() });
+                    Diagram::Rendering
+                }
+            })
+        }
         Some(Diagram::Rendering) if !queue().is_pending(key) => Some(cached(&dir(), key).unwrap_or_else(|| Diagram::Error(errors().get(key).cloned().unwrap_or_else(|| FAILED.to_string())))),
         Some(_) => None,
     }
@@ -455,7 +468,7 @@ pub fn render(dir: &Path, chrome: &Path, job: &Job) -> Result<(u32, u32), String
         .map_err(|e| e.to_string())
         .and_then(|()| run_chrome(&dump_args(chrome, &profile, &page), true))
         .and_then(|dom| size_from_dom(&dom))
-        .and_then(|(w, h)| if h > MAX_H { Err(format!("the diagram is {h} pixels tall, more than {MAX_H}")) } else { Ok((w, h)) })
+        .and_then(|(w, h)| fits(w, h).map(|()| (w, h)))
         .and_then(|(w, h)| run_chrome(&shot_args(chrome, &profile, &page, &shot, w, h), false).map(|_| (w, h)))
         .and_then(|(w, h)| {
             if !std::fs::metadata(&shot).is_ok_and(|m| m.len() > 0) {
@@ -474,8 +487,21 @@ pub fn render(dir: &Path, chrome: &Path, job: &Job) -> Result<(u32, u32), String
     rendered
 }
 
+/// Whether a diagram of `w` by `h` CSS pixels can be screenshot and drawn: its PNG's sides at
+/// most `MAX_SIDE` and its pixels at most `MAX_PIXELS`; else the error the block shows.
+fn fits(w: u32, h: u32) -> Result<(), String> {
+    if w.max(h) > MAX_H {
+        return Err(format!("the diagram is {w} by {h} pixels, more than {MAX_H} on a side"));
+    }
+    if u64::from(w) * u64::from(h) * u64::from(SCALE * SCALE) > MAX_PIXELS {
+        return Err(format!("the diagram is {w} by {h} pixels, too large to draw"));
+    }
+    Ok(())
+}
+
 /// Writes the bundled script into `dir` as `SCRIPT_NAME` unless it is there: through a file of
-/// the process's own and a rename, so a page never loads half a script.
+/// the process's own and a rename, so a page never loads half a script. Writing it removes the
+/// scripts of other versions (`old_scripts`), which no page loads any more.
 fn write_script(dir: &Path) -> Result<(), String> {
     let script = dir.join(SCRIPT_NAME);
     if script.is_file() {
@@ -486,7 +512,22 @@ fn write_script(dir: &Path) -> Result<(), String> {
     if written.is_err() {
         let _ = std::fs::remove_file(&part);
     }
+    for old in old_scripts(dir) {
+        let _ = std::fs::remove_file(old);
+    }
     written
+}
+
+/// The plain files in `dir` named as a mermaid script (`mermaid-<version>.min.js`) of a version
+/// other than this one's.
+fn old_scripts(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| e.metadata().is_ok_and(|m| m.is_file()))
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n != SCRIPT_NAME && n.starts_with("mermaid-") && n.ends_with(".min.js")))
+        .map(|e| e.path())
+        .collect()
 }
 
 /// Runs one Chrome command line (`dump_args` or `shot_args`, the program first) with a minimal
@@ -543,7 +584,7 @@ mod tests {
         assert_ne!(cache_key("a", &t, 2), cache_key("a", &t2, 2), "the values, not a name");
         let c = Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
         let common = common_args(Path::new("/p"));
-        for flag in ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps", "--disable-extensions", "--no-default-browser-check", "--host-resolver-rules=MAP * ~NOTFOUND", "--user-data-dir=/p", "--virtual-time-budget=5000", "--timeout=15000"] {
+        for flag in ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps", "--disable-extensions", "--no-default-browser-check", "--disable-breakpad", "--host-resolver-rules=MAP * ~NOTFOUND", "--user-data-dir=/p", "--virtual-time-budget=5000", "--timeout=15000"] {
             assert!(common.contains(&flag.to_string()), "{flag}");
         }
         let d = dump_args(c, Path::new("/p"), Path::new("/k.html"));
@@ -598,5 +639,19 @@ mod tests {
         assert!(!page("a", &MermaidTheme { primary: "#fff'); alert(1); ('".into(), ..t }).contains("alert(1)"), "a colour cannot end its string");
         assert_eq!(size_from_dom("<title>ok 0 10</title>"), Err("mermaid did not finish".into()));
         assert_eq!(size_from_dom("<title>error a &amp; b &#39;c&#x27;</title>"), Err("a & b 'c'".into()));
+    }
+
+    #[test]
+    fn a_diagram_too_large_to_draw_is_refused_and_old_scripts_go() {
+        assert!(MAX_H * SCALE <= 16384, "a PNG fits gpui's atlas");
+        assert_eq!(fits(2000, MAX_H), Err(format!("the diagram is 2000 by {MAX_H} pixels, too large to draw")), "the area is capped too");
+        assert!(fits(2000, 4000).is_ok() && fits(100, MAX_H).is_ok());
+        assert!(fits(100, MAX_H + 1).is_err() && fits(MAX_H + 1, 10).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["mermaid-10.0.0.min.js", SCRIPT_NAME, "mermaid-x.js", "k.png"] {
+            std::fs::write(dir.path().join(name), "x").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("mermaid-9.min.js")).unwrap();
+        assert_eq!(old_scripts(dir.path()), [dir.path().join("mermaid-10.0.0.min.js")], "only another version's script file");
     }
 }

@@ -2,7 +2,7 @@
 //! Chrome application's windows, their frames, moving and raising them. Behind a trait so the
 //! docking engine is tested with a fake; nothing in `cargo test` touches the real API.
 
-use objc2_app_kit::{NSApplicationActivationOptions, NSEvent, NSRunningApplication};
+use objc2_app_kit::{NSApplicationActivationOptions, NSApplicationActivationPolicy, NSEvent, NSRunningApplication};
 use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGSize};
 use objc2_foundation::ns_string;
 #[cfg(test)]
@@ -253,6 +253,24 @@ fn same_size(s: CGSize, r: Rect) -> bool {
     (s.width - r.w).abs() < 0.5 && (s.height - r.h).abs() < 0.5
 }
 
+/// One running process with Chrome's bundle identifier, as `pick_chrome` sees it: its pid,
+/// whether it finished launching, and whether it is a regular app (with a Dock icon and windows).
+#[derive(Debug, Clone, Copy)]
+struct ChromeApp {
+    pid: i32,
+    launched: bool,
+    regular: bool,
+}
+
+/// The Chrome to dock, among the processes with its bundle identifier: only regular apps count
+/// (a headless Chrome, such as the one the diagram renderer runs, is not the browser); of those,
+/// the lowest pid that finished launching, else the lowest pid.
+fn pick_chrome(apps: impl Iterator<Item = ChromeApp>) -> Option<i32> {
+    let regular: Vec<ChromeApp> = apps.filter(|a| a.regular).collect();
+    let launched = regular.iter().filter(|a| a.launched).map(|a| a.pid).min();
+    launched.or_else(|| regular.iter().map(|a| a.pid).min())
+}
+
 impl Ax for RealAx {
     fn trusted(&self, prompt: bool) -> bool {
         // SAFETY: a constant `CFStringRef` exported by the framework, valid for the process.
@@ -268,9 +286,7 @@ impl Ax for RealAx {
         // window to the running one and exits: the one that finished launching first (the
         // lowest pid among the launched ones) is Chrome.
         let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(ns_string!("com.google.Chrome"));
-        let all: Vec<_> = apps.iter().collect();
-        let launched = all.iter().filter(|a| a.isFinishedLaunching()).map(|a| a.processIdentifier()).min();
-        launched.or_else(|| all.iter().map(|a| a.processIdentifier()).min())
+        pick_chrome(apps.iter().map(|a| ChromeApp { pid: a.processIdentifier(), launched: a.isFinishedLaunching(), regular: a.activationPolicy() == NSApplicationActivationPolicy::Regular }))
     }
 
     fn windows(&self, pid: i32) -> Result<Vec<AxWindow>, AxError> {
@@ -322,8 +338,9 @@ impl Ax for RealAx {
     fn focus(&self, w: &AxWindow) -> Result<(), AxError> {
         self.raise(w)?;
         // Without "all windows": only the raised window (now Chrome's main one) comes forward.
+        // Only a regular app: a headless Chrome the diagram renderer runs is not the docked one.
         let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(ns_string!("com.google.Chrome"));
-        if let Some(app) = apps.firstObject() {
+        if let Some(app) = apps.iter().find(|a| a.activationPolicy() == NSApplicationActivationPolicy::Regular) {
             app.activateWithOptions(NSApplicationActivationOptions(0));
         }
         Ok(())
@@ -720,6 +737,14 @@ pub mod probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_docked_chrome_is_a_regular_app_never_a_headless_one() {
+        let app = |pid, launched, regular| ChromeApp { pid, launched, regular };
+        assert_eq!(pick_chrome([app(300, true, true), app(200, true, false), app(250, false, true)].into_iter()), Some(300), "the headless renderer's lower pid is passed over");
+        assert_eq!(pick_chrome([app(200, true, false)].into_iter()), None, "a headless Chrome alone is no Chrome to dock");
+        assert_eq!(pick_chrome([app(400, false, true), app(350, false, true)].into_iter()), Some(350), "none launched yet: the lowest regular pid");
+    }
 
     #[test]
     fn rects_contain_measure_distance_and_move_off_screen() {
