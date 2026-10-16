@@ -543,6 +543,9 @@ collapsed = false
 [viewer]
 # Files larger than this open in the viewer without syntax colours; binaries show a notice.
 highlight_limit_bytes = 5242880
+# A markdown table wider than the rendered view: "wrap" shrinks its columns and wraps the cells;
+# "scroll" keeps the column widths and scrolls the table sideways (Shift+wheel).
+# wide_tables = "wrap"
 
 [browser]
 # A browser tab is a placeholder a real Chrome window docks onto. "New browser tab" (Cmd+Shift+B)

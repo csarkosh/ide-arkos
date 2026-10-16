@@ -57,7 +57,8 @@ The rendered view's Mermaid diagrams use mermaid 11.17.2, vendored as
 `crates/arkos/assets/mermaid.min.js` and bundled into the binary. `scripts/vendor-mermaid.sh`
 fetches it from the npm registry's tarball and checks it against the SHA-256 recorded there; to
 move to a new release, change the version in that script and in `crates/arkos/src/mermaid.rs`
-(`VERSION`), record the new hash, run the script and commit the file.
+(`VERSION`), record the new hash, run the script and commit the file. The recorded SHA-256 for 11.17.2 is
+`581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8`.
 
 ## Releasing
 
@@ -124,6 +125,22 @@ Milestones 6b and 6c are next.
 
 Things only a person at the screen can check, in order of value:
 
+- markdown, Rendered: a table draws as a grid and a click lands in the cell with the caret there;
+  Tab, Shift+Tab, Up and Down move by cell; Tab in the last cell adds a row; leaving the block
+  realigns the pipes and one undo restores them; a wide table wraps, and with "Scroll" in Settings
+  (or `arkos settings set viewer.wide_tables scroll`) it scrolls sideways with Shift+wheel, while a
+  vertical wheel still scrolls the list; a table over 500 rows shows as source
+- a remote image shows "loading" and then the image; a plain click places the caret and Cmd+click
+  opens it in Preview; a `.mov` shows its poster and Cmd+click opens QuickTime Player; audio opens
+  in QuickTime Player; a local `.webm` is shown in Finder; a badge row wraps in a narrow pane
+- a `mermaid` block renders within two seconds and again after an edit; with Google Chrome
+  missing, the source shows with a message; the docking check: start a slow render (a large
+  diagram) and run `lsappinfo list | grep -B2 -A8 com.google.Chrome` to see how the headless child
+  registers ("Foreground" is a regular app; "UIElement" or "BackgroundOnly" is not), then quit the
+  real Chrome and dock the browser pane during a render: the pane must not grab the headless child
+- a `<details>` block opens and closes and is still open after a relaunch; `<details open>` starts
+  open until you close it
+- a 5 MB markdown file with a large table stays responsive (the milestone 7 gate)
 - `claude` in a tab with `/tui fullscreen`, a long answer: the wheel and the trackpad scroll the
   conversation; a question with options: clicking one picks it; Option+Delete at the prompt
   deletes the word before the cursor

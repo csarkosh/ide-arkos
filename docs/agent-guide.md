@@ -121,7 +121,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 - `arkos settings set <key> <value> [--json]`: the keys are `appearance.mode`
   (system, dark, light), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
-  `update.auto` (true, false) and `recovery.start_at_login` (ask, on, off). Another key exits 2
+  `viewer.wide_tables` (wrap, scroll), `update.auto` (true, false) and
+  `recovery.start_at_login` (ask, on, off). Another key exits 2
   with the list. A bad value is refused before anything is written. Then every window reloads:
   `window {pid} ({project}): {key} applied` or its config error (exit 1), or, for
   `appearance.mode`, `theme.dark` and `theme.light`, its theme error (exit 1); `saved; no window running`

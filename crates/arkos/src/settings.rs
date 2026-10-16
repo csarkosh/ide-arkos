@@ -3,7 +3,7 @@
 //! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
 //! was last handed (`set_shown`), so an edit made in an editor shows here too.
 use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
-use crate::config::{self, AppearanceMode, Config, FontConfig, StartAtLogin};
+use crate::config::{self, AppearanceMode, Config, FontConfig, StartAtLogin, WideTables};
 use crate::theme::{self, Theme};
 use crate::{aux, keymap, paths};
 use gpui::{
@@ -291,6 +291,14 @@ fn edit(keys: &[&str], value: impl Into<toml_edit::Value>) -> Edit {
     (keys.iter().map(|k| k.to_string()).collect(), value.into())
 }
 
+/// The edit for the "Wide tables" row: `viewer.wide_tables` as the config spells it.
+fn wide_tables_edit(mode: WideTables) -> Edit {
+    edit(&["viewer", "wide_tables"], match mode {
+        WideTables::Wrap => "wrap",
+        WideTables::Scroll => "scroll",
+    })
+}
+
 impl SettingsWindow {
     /// Redraws the window in the project window's new theme.
     pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
@@ -565,6 +573,17 @@ impl SettingsWindow {
             let shown = div().min_w(px(28.0)).flex().justify_center().child(number(value));
             out.push(div().flex().items_center().gap(px(8.0)).child(minus).child(shown).child(plus).into_any_element());
         }
+        out.push(heading("Wide tables", c).into_any_element());
+        let mut modes = div().flex().gap(px(6.0));
+        for (ix, (label, mode)) in [("Wrap", WideTables::Wrap), ("Scroll", WideTables::Scroll)].into_iter().enumerate() {
+            let current = self.shown.config.viewer.wide_tables == mode;
+            let mut p = pill(("wide-tables", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![wide_tables_edit(mode)], cx)));
+            }
+            modes = modes.child(p);
+        }
+        out.push(modes.into_any_element());
         out
     }
 
@@ -702,6 +721,22 @@ impl Render for SettingsWindow {
 mod tests {
     use super::*;
     use crate::config::{AppearanceMode, Config, DEFAULT_CONFIG};
+
+    #[test]
+    fn wide_tables_edit_writes_the_viewer_key() {
+        use crate::config::WideTables;
+        let (keys, value) = wide_tables_edit(WideTables::Scroll);
+        assert_eq!(keys, vec!["viewer".to_string(), "wide_tables".to_string()]);
+        assert_eq!(value.as_str(), Some("scroll"));
+        assert_eq!(wide_tables_edit(WideTables::Wrap).1.as_str(), Some("wrap"));
+    }
+
+    #[test]
+    fn the_default_file_documents_wide_tables_and_still_parses() {
+        assert!(DEFAULT_CONFIG.contains("# wide_tables = \"wrap\""));
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(cfg.viewer.wide_tables, crate::config::WideTables::Wrap);
+    }
 
     #[test]
     fn the_text_section_reads_the_presets_filters_fixed_pitch_families_and_rounds() {

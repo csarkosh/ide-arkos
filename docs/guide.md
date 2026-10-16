@@ -110,9 +110,69 @@ with Reload (take the disk's version) and Keep mine (your text wins and the next
 the disk). Cmd+S means Keep mine. With nothing unsaved the file reloads on its own. A failed save
 shows its reason in a banner with Retry.
 
-Not editable yet: tables render read-only, and every other file type stays a read-only viewer.
-Images render when their path resolves, relative to the file or absolute; otherwise the alt text
-shows.
+Every other file type stays a read-only viewer.
+
+### Tables
+
+A table renders as a grid: a bold header row, rules between the cells, the column alignment from
+the delimiter row. A click lands in the cell, with the caret where you clicked, and the block
+turns into its raw text. In that block, Tab moves to the next cell and Shift+Tab to the previous
+one, Up and Down move to the cell above and below, and Tab in the last cell adds a row. Where a
+move has nowhere to go, the key does what it does in any block. These keys work in Rendered mode
+only; Raw mode is a plain text editor.
+
+When you leave an edited table, Arkos re-aligns its pipes so the source reads as a grid too. One
+undo takes the alignment back, and an undone table is not re-aligned again. Re-alignment never
+drops a cell: a row longer than the header keeps its extra cells after the aligned ones. In the
+rare case that a table you deleted is replaced by another on the same start line, the new one can
+be re-aligned as well.
+
+A table wider than the view wraps by default: the columns shrink and the cells wrap. Pick
+"Scroll" under "Wide tables" in Settings, or run `arkos settings set viewer.wide_tables scroll`,
+and the columns keep their widths and the table scrolls sideways (Shift+wheel, or a horizontal
+swipe). A table over 500 rows shows as source.
+
+### Images and media
+
+A remote image (`https://`) loads on its own: the block shows the alt text and "loading" until
+the file arrives. Arkos fetches it through `curl` into its cache, at most 10 MB per image, and
+keeps it 30 days. There is no switch for this. Badge rows wrap in a narrow pane, and an image
+wider than the view is scaled to the view.
+
+An HTML block that is one `<img>` tag, alone or inside a `<p>`, `<div>` or `<a>`, renders as the
+image too, local or remote. Its `width` is honoured up to the view's width, and it is centred
+when the wrapper has `align="center"`. Inside an `<a href>` it follows the link, and its `alt`
+shows when the image cannot be drawn.
+
+A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
+opens it: an image in Preview, or the link for a linked image. A video (`.mp4`, `.mov` and the
+like) shows a poster frame made by Quick Look, with "loading" first, and Cmd+click plays it in
+QuickTime Player. Audio shows as a one-line box and plays in QuickTime Player. A local `.webm`
+is shown in Finder instead, and remote media are links. Every local open resolves symlinks and
+checks the file type first.
+
+### Diagrams
+
+A code block fenced as `mermaid` renders as a diagram. Arkos draws it with its bundled mermaid
+in headless Google Chrome, which must be in `/Applications` or `~/Applications`. The page is
+local, nothing is fetched, and Chrome runs with a throwaway profile, so your own Chrome is left
+alone. The block shows its source until the diagram is ready (about two seconds) and again if you
+edit it, then the new diagram replaces it. Results are cached. Without Chrome the source shows
+with a message saying so, and so does a diagram over 8192 CSS px on a side or 64 million pixels.
+
+### Collapsible sections
+
+A `<details>` block, with blank lines inside if you like, renders as its `<summary>` (or
+"Details") behind a triangle. A click on the summary opens and closes it. `<details open>` starts
+open; once you open or close a section, your choice wins, in either direction. The choice is kept
+per file in the workspace file, keyed by the summary and its place among the file's sections. It
+survives a relaunch, is shared by every tab on the file, and is never written to the markdown.
+
+The content is read-only: a click in it turns the whole block into raw text. A Mermaid block in a
+section shows as code, a table as a plain grid without the editing keys, and a task box does not
+toggle. A section inside another shows as source. A `</details>` inside inline code or a code
+block does not close a section. HTML after the closing tag shows as dimmed source, and so does
+every other HTML.
 
 ## Browser pane
 
@@ -202,7 +262,9 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+Fn+Delete | in a markdown file: delete to the line end |
 | Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
-| Tab, Shift+Tab | in a markdown list: indent or outdent the item |
+| Tab, Shift+Tab | in a markdown list: indent or outdent the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
+| Up, Down | in a table: the cell above or below |
+| Cmd+click | in a markdown file: open a link, or an image, poster, video or audio |
 | Enter | in a markdown list: start the next item; on an empty item, end the list |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
@@ -329,7 +391,7 @@ Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
-whether it starts collapsed), `viewer` (`highlight_limit_bytes`), and `browser` (`url`, the page a new
+whether it starts collapsed), `viewer` (`highlight_limit_bytes`, and `wide_tables`: `wrap` or `scroll`), and `browser` (`url`, the page a new
 browser tab opens when its prompt is left empty, and `app_mode`, which opens user URLs as a single
 page).
 
@@ -406,8 +468,8 @@ the preview's colours with the error shown.
 
 `arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
-`font.presets.<name>.line_height` (1.0 to 2.5), `update.auto` (true, false) and
-`recovery.start_at_login` (ask, on, off). Any other key exits 2 and lists these. A bad value is
+`font.presets.<name>.line_height` (1.0 to 2.5), `viewer.wide_tables` (wrap, scroll),
+`update.auto` (true, false) and `recovery.start_at_login` (ask, on, off). Any other key exits 2 and lists these. A bad value is
 refused before anything is written. `settings get <key>` reads the file only, so a key left at its
 default answers `no such key`.
 

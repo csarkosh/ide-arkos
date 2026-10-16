@@ -58,6 +58,7 @@ pub const SETTABLE: &[&str] = &[
     "font.preset",
     "font.presets.*.size",
     "font.presets.*.line_height",
+    "viewer.wide_tables",
     "update.auto",
     "recovery.start_at_login",
 ];
@@ -754,6 +755,7 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
             _ => Err(format!("update.auto must be true or false, not {raw:?}")),
         },
         "appearance.mode" => one_of(key, raw, &["system", "dark", "light"]),
+        "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
         "recovery.start_at_login" => one_of(key, raw, &["ask", "on", "off"]),
         _ if key.ends_with(".size") => number(key, raw, 8.0..=48.0, "8 to 48"),
         _ if key.ends_with(".line_height") => number(key, raw, 1.0..=2.5, "1.0 to 2.5"),
@@ -949,6 +951,9 @@ mod tests {
     fn settings_set_keeps_to_the_allow_list_types_the_value_and_refuses_bad_ones_before_writing() {
         assert!(settable("theme.dark") && settable("font.presets.big.size") && settable("update.auto"));
         assert!(!settable("keybindings.find") && !settable("font.presets.big.other") && !settable("font.presets.a.b.size"));
+        assert!(settable("viewer.wide_tables"));
+        assert_eq!(typed_value("viewer.wide_tables", "scroll").unwrap().as_str(), Some("scroll"));
+        assert!(typed_value("viewer.wide_tables", "sideways").is_err());
         assert_eq!(typed_value("update.auto", "true").unwrap().as_bool(), Some(true));
         assert_eq!(typed_value("font.presets.big.size", "18").unwrap().as_float(), Some(18.0));
         assert!(typed_value("font.presets.big.size", "60").is_err(), "the config allows 8 to 48");
