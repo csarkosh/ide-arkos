@@ -48,10 +48,10 @@ def framed(window):
 
 CAPTION_FONT = "/System/Library/Fonts/Menlo.ttc"
 # Sized for the README: GitHub shows the picture about 830 px wide, a third of its canvas, so
-# a 60 px caption reads at about 20 px there, and the longest ("The web developer") fits the
+# a 46 px caption reads at about 15 px there, and the longest ("The web developer") fits the
 # part of its still the front one leaves showing.
-CAPTION_SIZE = 30 * SCALE
-CAPTION_PAD = (20 * SCALE, 10 * SCALE)
+CAPTION_SIZE = 23 * SCALE
+CAPTION_PAD = (16 * SCALE, 8 * SCALE)
 CANVAS_W = 1260 * SCALE
 OUT_W = 1800
 
