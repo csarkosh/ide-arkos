@@ -112,7 +112,8 @@ Things only a person at the screen can check, in order of value:
   shell and tab where it was; `arkos --version` in a tab prints X
 - `[update] auto = false`: the bell's dot stays and "Update now" applies it
 - a relaunched window opens without taking focus from the app in use (verify by eye)
-- the File menu shows "New Window" and nothing else; Cmd+N or the menu opens the chooser with
+- the menu bar has one menu, "Arkos IDE": About Arkos IDE, a line, New Window, Settings, Quit, in
+  that order, and no File menu; Cmd+N or "New Window" opens the chooser with
   the recent folders and "Open folder..."; picking one opens it in a new window; `"open recent"
   = "cmd-shift-n"` left in config.toml binds the chooser to that key with no config error
 - open a README in Arkos: it renders; click a paragraph: it turns raw with the caret where you
@@ -157,7 +158,20 @@ Things only a person at the screen can check, in order of value:
 - a pane with eight tabs: the bar scrolls, Option+Cmd+Right keeps the active tab in view, and
   the ⋯ menu lists them all
 - closing a tab whose shell has ended, then Shift+Cmd+T: a new shell opens
-- Cmd+, opens the config file in the default text editor
+- Cmd+, opens Settings; "Open config" in the palette opens the config file in the default text
+  editor
+- About: Version, Build and Protocol match `arkos --version`; the Config, Themes, App Support,
+  Window log and Daemon log paths exist; "Copy details" then paste gives "Arkos IDE {version}"
+  and one `label: value` line per row; the "Buy me more tokens" line is hidden while
+  `DONATE_URL` is empty
+- Settings: Dark theme or Mode switches the window at once and `config.toml` keeps its comments;
+  "Add theme..." with a broken file shows the error and copies nothing, and with a file named
+  like an installed theme asks "Replace the existing ..." first
+- `arkos theme list` shows `navy`, `navy-light` and `timo-purple` as built in; with Timo Purple
+  chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
+- About open, close the project window with the red button: the app quits
+- Settings opened from the chooser, a theme or text change, then a folder: the project window
+  opens with the change in effect
 - typing in each pane, and that Cmd combinations never reach the shell
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
 - drag a tab across a pane's zones and on into another pane: the tint glides and fades,
@@ -419,8 +433,9 @@ The VS Code map, in a terminal-friendly form.
 | Enter | in a markdown list: start the next item; on an empty item, end the list |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
-| Cmd+N | new window: the project chooser in its own window (also the File menu's only item); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
-| Cmd+, | open config file |
+| Cmd+N | new window: the project chooser in its own window (also the menu's "New Window"); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
+| Cmd+, | settings |
+| (unbound) | about, open config |
 | Shift+Cmd+P | command palette |
 
 Notes:
@@ -470,10 +485,50 @@ Notes:
   as Shift plus the plain key (`ctrl-shift-\``) or as the character itself (`ctrl-~`): macOS
   reports the character, and both spellings are the same binding.
 
+## Menu, About and Settings
+
+The menu bar has one menu, "Arkos IDE": About Arkos IDE, a line, New Window, Settings, Quit. It
+works from the chooser, the project window, About and Settings alike. Each Arkos process has its
+own About and Settings windows, so two open projects mean two of each. Closing the project window
+closes them and quits the app. New Window from About or Settings goes to the project window, or
+brings the chooser forward.
+
+About (menu, or "About Arkos IDE" in the palette; no key) shows these rows: Version, Build (hash
+and date), Last updated, First installed, Daemon, Protocol, macOS, Config, Themes, App Support,
+Window log and Daemon log. Daemon reads "{version} (hash), pid N", or "not connected". Dates read
+"today HH:MM" for the current day, else YYYY-MM-DD. Asking for About again refreshes the rows.
+"Copy details" puts "Arkos IDE {version}" and one `label: value` line per row on the clipboard.
+Below are "Made by Cyrus Sarkosh" (a link to his GitHub); a "Buy me more tokens" line shows only
+once a donation URL is set in the build.
+
+Settings (menu or Cmd+,) has five sections.
+
+- Appearance: Mode (System, Dark, Light), the dark and light theme, "Add theme..." and "Show themes
+  folder". "Add theme..." takes a `.toml` file (anything else is refused), names the copy after
+  the file's own `name`, shows the error under the button for a bad file, and asks "Replace the
+  existing {name}?" before overwriting. A new theme is set as the dark or light theme by the mode
+  in force. "Show themes folder" creates the folder, then reveals it. A configured theme that is
+  neither built in nor a file is listed first as "(not installed)".
+- Text: the font family (installed monospace families; a configured family that is missing is
+  listed first as "(not installed)"), the text preset, and Size and Line height steppers that
+  write both values of the preset together and show the file's values as they are.
+- Startup: "Start at login" on or off; it reads "set by config to ask" while the file says `ask`.
+- Updates: the automatic-updates switch; "{version} is ready" with "Update now" when a build
+  waits.
+- Keyboard: "Keybindings live in config.toml" and an "Open config" button.
+
+Every change is written to `config.toml` in place, keeping its comments, order and formatting,
+and applies at once; Settings and About follow a live theme change. Other Arkos windows are other
+processes and follow within a second through the config watcher. A change made in the chooser is
+written and takes effect when the project window opens. While the config has an error, Settings
+shows the error in a banner and its controls are read-only, except "Open config". Keybindings
+stay in the file. A user's `"open config" = "cmd-,"` makes the key open the config file instead
+of Settings; the menu still shows the shortcut next to Settings, a known limit.
+
 ## Config
 
 `~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with
-commented defaults on first run and opened by Cmd+, in your text editor. It is watched: a saved
+commented defaults on first run and opened from Settings' Keyboard section ("Open config") or the palette's "Open config", in your text editor. It is watched: a saved
 edit applies within a second. A bad edit shows a banner with the line number and keeps the last
 good settings. Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
@@ -503,8 +558,11 @@ Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
 wrench at the right of the title bar) sets it for you.
 
-Themes are one TOML file each in `~/.config/arkos/themes/`; `navy` and `navy-light` are built
-in, and "Extract built-in themes" in the palette writes them there to copy from. A theme chosen
+Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light` and
+`timo-purple` are built in. [docs/themes.md](docs/themes.md) documents every key;
+`arkos theme list` names the available themes and `arkos theme validate <file>` checks one
+(`ok: {name}`, or the error and exit status 1).
+"Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen
 from the palette lasts until the config reloads or the app relaunches; the config file decides
 otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
