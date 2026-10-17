@@ -2,8 +2,9 @@
 //! installed app and its leftovers, the daemon (asked over its socket with a Hello that names no
 //! window, so it confirms nothing and is never relaunched), the update marker and the rejected
 //! versions, the end of the daemon's update journal and of `window.log`, and the crash reports
-//! from the last day, and the themes with the agent guide skill. It starts no daemon, opens no
-//! window and changes no file.
+//! from the last day, the themes with the agent guide skill, and the telemetry mode with its
+//! queue (as `arkos telemetry status` finds them). It starts no daemon, opens no window and
+//! changes no file.
 use crate::guide::SkillState;
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, PROTOCOL_VERSION};
@@ -82,6 +83,11 @@ pub fn report(w: &Where, now: SystemTime) -> String {
         let _ = writeln!(out, "  {}: {}", p.display(), if p.exists() { format!("present ({what})") } else { "absent".into() });
     }
     let _ = writeln!(out, "daemon on {}: {}", w.socket.display(), daemon(&w.socket));
+    // The daemon's answer when it gives one, else the folder beside the socket, read here.
+    let unix = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let real = crate::telemetry_cli::real_mode();
+    let mode = || crate::telemetry_cli::mode_of_file(&w.config, &real);
+    let _ = writeln!(out, "{}", crate::telemetry_cli::row(&crate::telemetry_cli::status(&w.socket, &w.socket.with_file_name("telemetry"), &mode, unix)));
     let updates = w.app_support.join("updates");
     let marker = updates.join("applied.json");
     let _ = writeln!(
@@ -304,6 +310,10 @@ mod tests {
         assert!(text.contains("Arkos IDE.app.old: present"), "{text}");
         assert!(text.contains("Arkos IDE.app.new: absent"), "{text}");
         assert!(text.contains("arkosd.sock: not running"), "no daemon is started: {text}");
+        // A dev build is a source build, whatever the environment says.
+        let row = text.lines().find(|l| l.starts_with("telemetry: usage reports ")).unwrap_or_else(|| panic!("a telemetry row: {text}"));
+        assert!(row.contains("; this copy was built from source and sends nothing; 0 queued, not draining: no daemon running"), "{row}");
+        assert!(!support.join("telemetry").exists(), "the folder is read, never created");
         assert!(!support.join("arkosd.sock").exists());
         assert!(text.contains(r#"present: {"version":"0.2.4"}"#), "{text}");
         assert!(text.contains("rejected versions: 0.2.4"), "{text}");

@@ -59,6 +59,7 @@ mod startup;
 mod sessions;
 mod sidebar;
 mod telemetry;
+mod telemetry_cli;
 mod terminal;
 mod terminal_element;
 mod theme;
@@ -3849,6 +3850,7 @@ fn main() {
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
+        Some("telemetry") => std::process::exit(telemetry_cli::telemetry_cli(&args[2..])),
         Some("--help") | Some("-h") | Some("help") => {
             print!("{}", agent_cli::USAGE);
             return;

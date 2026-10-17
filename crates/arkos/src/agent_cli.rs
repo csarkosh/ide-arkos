@@ -8,6 +8,7 @@
 
 use crate::config::{self, AppearanceMode, TextPreset};
 use crate::{hook_cli, theme};
+use ::telemetry::visits_app::{Queue, Usage};
 use protocol::{CustomizeAction, CustomizeOutcome, Report, Request, Response};
 use serde_json::{json, Value as Json};
 use std::io::Write;
@@ -21,6 +22,7 @@ usage: arkos guide                  how an agent changes the theme and settings;
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current
        arkos settings get|set ...   read the config, or set a key on the allow-list
        arkos config reload          ask every window to read its config again now
+       arkos telemetry <command>    status, on, off, local, view, crashes: what Arkos sends
        arkos doctor                 read-only diagnostics
        arkos hooks print|install    the Claude Code hook entries
        arkos --version
@@ -61,6 +63,8 @@ pub const SETTABLE: &[&str] = &[
     "viewer.wide_tables",
     "update.auto",
     "recovery.start_at_login",
+    "telemetry.usage",
+    "telemetry.crashes",
 ];
 
 /// The daemon's answer to one `Customize`: the windows that answered, the pids of those asked
@@ -128,6 +132,14 @@ pub struct Env<'a> {
     pub config: &'a Path,
     pub themes: &'a Path,
     pub wait: Duration,
+}
+
+impl Env<'_> {
+    /// The telemetry folder: the socket folder's `telemetry/`, the daemon's own rule, which is
+    /// `paths::telemetry_dir()` in practice.
+    pub fn telemetry_dir(&self) -> PathBuf {
+        self.socket.parent().unwrap_or(Path::new(".")).join("telemetry")
+    }
 }
 
 type Command = fn(&[String], &Env, &mut dyn Write, &mut dyn Write) -> i32;
@@ -757,6 +769,8 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         "appearance.mode" => one_of(key, raw, &["system", "dark", "light"]),
         "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
         "recovery.start_at_login" => one_of(key, raw, &["ask", "on", "off"]),
+        "telemetry.usage" => one_of(key, raw, &["off", "local", "on"]),
+        "telemetry.crashes" => one_of(key, raw, &["never", "ask", "always"]),
         _ if key.ends_with(".size") => number(key, raw, 8.0..=48.0, "8 to 48"),
         _ if key.ends_with(".line_height") => number(key, raw, 1.0..=2.5, "1.0 to 2.5"),
         _ if raw.trim().is_empty() => Err(format!("{key} must not be empty")),
@@ -844,11 +858,28 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
     if let Err(e) = config::apply_edits(&text, &edits).and_then(|t| config::parse(&t).map_err(|e| e.to_string())) {
         return fail(err, &e);
     }
+    // Turning usage reports on deletes the session reports queued before, first, so nothing
+    // recorded before the consent is sent (the opt-in rule); a failure writes nothing. Only a
+    // change counts: what is queued while usage is already on was recorded under the consent.
+    let turns_on = *key == "telemetry.usage" && *raw == "on" && ::telemetry::parse_table(&text).map_or(true, |t| t.usage != Usage::On);
+    let cleared = if turns_on {
+        match Queue::new(&env.telemetry_dir()).clear_sessions() {
+            Ok(n) => n,
+            Err(e) => return fail(err, &format!("cannot delete the queued session reports: {e}")),
+        }
+    } else {
+        0
+    };
     // Writes the defaults when the file is missing; a config that does not load is still edited,
     // since the edit was just shown to fix it.
     let _ = config::load(env.config);
     if let Err(e) = config::set_values(env.config, &edits) {
         return fail(err, &e);
+    }
+    let json = a.has("--json");
+    if cleared > 0 && !json {
+        let s = if cleared == 1 { "" } else { "s" };
+        let _ = writeln!(out, "deleted {cleared} queued session report{s} recorded before usage reports were on");
     }
     // A key that picks the theme fails on a theme error too; the others only on a config error.
     let picks_theme = matches!(*key, "appearance.mode" | "theme.dark" | "theme.light");
@@ -857,7 +888,11 @@ fn settings_set(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn W
         (None, Some(e)) if picks_theme => Err(e.clone()),
         _ => Ok(format!("{key} applied")),
     };
-    reload_after_save(env, a.has("--json"), json!({ "key": key, "value": value_json(&value), "saved": true }), &judge, out, err)
+    let mut base = json!({ "key": key, "value": value_json(&value), "saved": true });
+    if *key == "telemetry.usage" {
+        base["cleared"] = json!(cleared);
+    }
+    reload_after_save(env, json, base, &judge, out, err)
 }
 
 /// `arkos config reload` against `env`.
@@ -1211,5 +1246,57 @@ mod tests {
         assert_eq!(settings_cli_to(&["get".into()], &env, &mut out, &mut err), 0);
         assert_eq!(String::from_utf8(out).unwrap(), "[font]\npreset = \"compact\"\nwindow 7 (/p): navy (dark, system is dark), preset compact, family Menlo\n");
         server.join().unwrap();
+    }
+
+    /// The two telemetry keys are on the allow-list with their choices, and turning usage on
+    /// through the writer deletes the session reports queued before, first and only on the
+    /// change, while crash reports stay (the opt-in rule). A write that is refused deletes
+    /// nothing.
+    #[test]
+    fn settings_set_telemetry_usage_on_clears_the_queued_sessions_through_the_writer() {
+        assert!(settable("telemetry.usage") && settable("telemetry.crashes"));
+        assert!(typed_value("telemetry.usage", "on").is_ok() && typed_value("telemetry.usage", "always").is_err());
+        assert!(typed_value("telemetry.crashes", "never").is_ok() && typed_value("telemetry.crashes", "on").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
+        let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
+        assert_eq!(env.telemetry_dir(), dir.path().join("telemetry"), "the socket folder's, as the daemon's");
+        let queue = dir.path().join("telemetry").join("queue");
+        std::fs::create_dir_all(&queue).unwrap();
+        for f in ["session-0123456789abcdef.json", "session-0123456789abcdef.retry", "crash-fedcba9876543210.json", "crash-fedcba9876543210.retry"] {
+            std::fs::write(queue.join(f), "{}").unwrap();
+        }
+        let set = |key: &str, value: &str| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = settings_cli_to(&["set".into(), key.into(), value.into()], &env, &mut out, &mut err);
+            (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+        };
+        let (code, _, err) = set("telemetry.usage", "always");
+        assert_eq!((code, err.as_str()), (1, "telemetry.usage must be one of off, local, on, not \"always\"\n"));
+        assert!(queue.join("session-0123456789abcdef.json").exists(), "a refused value deletes nothing");
+        // A table the app would refuse after the edit is refused before anything is deleted.
+        std::fs::write(&cfg, "[telemetry]\nusage = \"local\"\nbogus = 1\n").unwrap();
+        assert_eq!(set("telemetry.usage", "on").0, 1);
+        assert!(queue.join("session-0123456789abcdef.json").exists(), "a refused write deletes nothing");
+        std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
+        assert_eq!(set("telemetry.usage", "on"), (0, "deleted 1 queued session report recorded before usage reports were on\nsaved; no window running\n".into(), String::new()));
+        assert!(!queue.join("session-0123456789abcdef.json").exists() && !queue.join("session-0123456789abcdef.retry").exists());
+        assert!(queue.join("crash-fedcba9876543210.json").exists() && queue.join("crash-fedcba9876543210.retry").exists(), "crash reports stay");
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(::telemetry::parse_table(&text).unwrap().usage, ::telemetry::visits_app::Usage::On);
+        assert_eq!(text.matches('#').count(), config::DEFAULT_CONFIG.matches('#').count(), "comments kept");
+        // Already on: what is queued now was recorded under the consent and stays.
+        std::fs::write(queue.join("session-00000000000000000000000000000001.json"), "{}").unwrap();
+        assert_eq!(set("telemetry.usage", "on"), (0, "saved; no window running\n".into(), String::new()));
+        assert!(queue.join("session-00000000000000000000000000000001.json").exists());
+        assert_eq!(set("telemetry.crashes", "always").0, 0);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(settings_cli_to(&["get".into(), "telemetry.crashes".into()], &env, &mut out, &mut err), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), "always\n");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(settings_cli_to(&["set".into(), "telemetry.usage".into(), "on".into(), "--json".into()], &env, &mut out, &mut err), 0);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!((v["key"].as_str(), v["value"].as_str(), v["cleared"].as_u64()), (Some("telemetry.usage"), Some("on"), Some(0)));
     }
 }
