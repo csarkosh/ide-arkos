@@ -28,10 +28,14 @@ toml_edit = "0.22"
 
 # Line tables only, and on macOS packed into target/release/<bin>.dSYM beside each binary: the
 # release paths publish the two dSYMs with the app, so a crash report's frame offsets
-# symbolicate with `atos` (docs/development.md). The code built is the same either way.
+# symbolicate with `atos` (docs/development.md). The code built is the same either way. The
+# binaries are then stripped of their debug map (rustc runs dsymutil first, so the dSYMs keep the
+# DWARF), which held the build machine's paths to its object files and toolchain; the symbol
+# table and LC_UUID stay.
 [profile.release]
 debug = 1
 split-debuginfo = "packed"
+strip = "debuginfo"
 
 [profile.dev.package.pulldown-cmark]
 opt-level = 3

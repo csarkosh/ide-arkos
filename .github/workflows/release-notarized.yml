@@ -59,8 +59,11 @@ jobs:
         run: |
           export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=crates=/src/crates"
           cargo build --release --locked -p arkos -p arkosd -p release-tool
+          # The version is read first, so a binary that crashes or prints nothing fails here too.
           for BIN in arkos arkosd; do
-            case "$("target/release/$BIN" --version)" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
+            V=$("target/release/$BIN" --version)
+            case "$V" in "$BIN "*" ("*")") ;; *) echo "$BIN --version said '$V'"; exit 1 ;; esac
+            case "$V" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
           done
       - name: Signing identity
         # A keychain of its own for the run, the identity imported into it, and codesign allowed

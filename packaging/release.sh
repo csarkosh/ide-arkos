@@ -31,8 +31,11 @@ RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=${CARGO_HOME:-$HOME
   nice -n 10 "$CARGO" build --release --locked -p arkos -p arkosd -p release-tool
 TARGET=$("$CARGO" metadata -q --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 # A crash report names the build by its commit; a build that could not read it would say 0000000.
+# The version is read first, so a binary that crashes or prints nothing fails here too.
 for BIN in arkos arkosd; do
-  case "$("$TARGET/release/$BIN" --version)" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
+  V=$("$TARGET/release/$BIN" --version)
+  case "$V" in "$BIN "*" ("*")") ;; *) echo "$BIN --version said '$V'"; exit 1 ;; esac
+  case "$V" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
 done
 DIST=$(mktemp -d)
 ZIP=$(ARKOS_CHANNEL=release CODESIGN_IDENTITY="$IDENTITY" sh packaging/bundle.sh "$VERSION" "$TARGET/release" "$DIST")

@@ -92,8 +92,8 @@ zip, and runs before `manifest.sh`, which records the final zip. The key, the ce
 `.p8` live outside the repository (`~/.config/arkos-release/`): back them up; a lost key means a
 new identity and reset permissions on every Mac.
 
-All three release paths also do what makes a build a release for telemetry
-([what Arkos sends](telemetry.md)). `bundle.sh` run with `ARKOS_CHANNEL=release` writes
+All three release paths also do what makes a build a release for telemetry ([what Arkos
+sends](telemetry.md)). `bundle.sh` run with `ARKOS_CHANNEL=release` writes
 `Contents/Resources/channel` saying `release` before signing, and only such a bundle can ever
 upload; `packaging/test.sh`, the shoot and every dev build have no channel file and are `source`,
 which never sends anything. The build passes `--remap-path-prefix` for the checkout (`/src`), the
@@ -101,17 +101,18 @@ Cargo home (`/cargo`) and the workspace's relative `crates/` paths (`/src/crates
 `file` reads `/src/crates/arkos/src/md_view.rs` and never a home folder (the toolchain's own files
 already read `/rustc/<hash>`), and the release fails when the binaries were built without their
 commit hash. The release profile's `split-debuginfo = "packed"` leaves `arkos.dSYM` and
-`arkosd.dSYM` beside the binaries in `target/release`; `packaging/dsym.sh` checks that each
-carries its binary's UUID and zips both to `Arkos-IDE-<version>-dSYM.zip`, published with the
-release beside the app zip.
+`arkosd.dSYM` beside the binaries in `target/release` (cargo's are symlinks into `deps/`), and
+`strip = "debuginfo"` takes the build machine's paths out of the binaries once dsymutil has run;
+`packaging/dsym.sh` checks that each carries its binary's UUID and zips both to
+`Arkos-IDE-<version>-dSYM.zip`, published with the release beside the app zip.
 
-To symbolicate a crash report, download the dSYM zip of the report's `ver` from its GitHub
-Release and unzip it. The report's `images` names the binary (`arkos` or `arkosd`) and its UUID,
-which `dwarfdump --uuid arkos.dSYM` shows too (upper case, with dashes); a different one means
-another build's symbols. Each of `frames` is `[image, offset]`: the offset of a return address
-from the binary's load address, in decimal. `atos` takes the dSYM, the binary's link address
-`0x100000000` as the load address, and per frame that address plus the offset minus one (a return
-address points just after its call):
+To symbolicate a crash report, download the dSYM zip of the report's `ver` from its GitHub Release
+and unzip it. The report's `images` names the binary (`arkos` or `arkosd`) and its UUID, which
+`dwarfdump --uuid arkos.dSYM` shows too: the report has the same 32 hex digits in lower case
+without dashes, and a different one means another build's symbols. Each of `frames` is
+`[image, offset]`: the offset of a return address from the binary's load address, in decimal.
+`atos` takes the dSYM, the binary's link address `0x100000000` as the load address, and per
+frame that address plus the offset minus one (a return address points just after its call):
 
 ```bash
 unzip Arkos-IDE-0.5.0-dSYM.zip    # arkos.dSYM and arkosd.dSYM

@@ -13,11 +13,17 @@ for NAME in arkos arkosd; do
   WANT=$(dwarfdump --uuid "$BIN/$NAME" | awk '{print $2}')
   GOT=$(dwarfdump --uuid "$BIN/$NAME.dSYM" | awk '{print $2}')
   [ -n "$WANT" ] && [ "$WANT" = "$GOT" ] || { echo "dsym.sh: $NAME is $WANT, its dSYM $GOT" >&2; exit 1; }
-  cp -R "$BIN/$NAME.dSYM" "$STAGE/"
+  # Cargo's target/release/<bin>.dSYM is a relative symlink into deps/: copy what it points to.
+  cp -RL "$BIN/$NAME.dSYM" "$STAGE/"
 done
 ZIP="$OUT/Arkos-IDE-$VERSION-dSYM.zip"
 rm -f "$ZIP"
 # The two dSYMs at the zip's top level, as `unzip` should give them back, without the AppleDouble
 # files a copy's extended attributes would add.
 ditto -c -k --norsrc --noextattr --noacl "$STAGE" "$ZIP"
+# The zip must hold the DWARF itself, not a link or an empty bundle: atos needs the file.
+for NAME in arkos arkosd; do
+  unzip -Z1 "$ZIP" | grep -q "^$NAME\.dSYM/Contents/Resources/DWARF/[^/]" ||
+    { echo "dsym.sh: $ZIP has no $NAME.dSYM/Contents/Resources/DWARF/ file" >&2; exit 1; }
+done
 echo "$ZIP"
