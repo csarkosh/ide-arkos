@@ -288,7 +288,7 @@ fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
             let _no_open_pty_inheritable = crate::pty::spawn_lock();
             crate::telemetry::Telemetry::new(&u.telemetry)
         };
-        let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone(), user_agent: telemetry.user_agent() };
+        let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone(), user_agent: ::telemetry::user_agent() };
         crate::updates::poll::start(state.clone(), fetcher, telemetry, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running(), u.bundle.clone());
     }
     crate::telemetry::upload::start(state.clone(), u.telemetry.clone(), u.curl.clone());
@@ -1068,8 +1068,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (state, opts) = (test_state(), test_options(dir.path()));
         let t = &opts.update.telemetry;
-        let journal = telemetry::visits_app::Journal::open(&t.dir, SID, &crate::telemetry::tests::release_env(), telemetry::allowlist().clone(), now());
-        journal.unwrap();
+        telemetry::visits_app::Journal::open(&t.dir, SID, &crate::telemetry::tests::release_env(), telemetry::allowlist().clone(), now()).unwrap();
         let want = crate::telemetry::status(&t.dir, crate::telemetry::mode_now(&t.config), now());
         assert!(matches!(&want, Response::TelemetryStatus { journals: 1, queued: 0, uploads: false, reason: Some(r), .. } if r == "source build"), "{want:?}");
         let old = add_client(&state, 1);

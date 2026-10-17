@@ -56,7 +56,7 @@ impl UpdateOptions {
             ditto: PathBuf::from("/usr/bin/ditto"),
             dir: socket.parent().unwrap_or(Path::new("/")).join("updates"),
             extra_keys: Vec::new(),
-            bundle: std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)),
+            bundle: std::env::current_exe().ok().and_then(|exe| ::telemetry::bundle_of(&exe)),
             connect_grace: apply::CONNECT_GRACE,
             running_version: None,
             telemetry: crate::telemetry::Options::defaults(socket),
@@ -109,15 +109,6 @@ impl UpdateOptions {
         out.extend(self.telemetry.args(socket));
         out
     }
-}
-
-/// The app bundle holding `exe` when it runs from one (`<bundle>.app/Contents/MacOS/<exe>`).
-pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
-    let macos = exe.parent()?;
-    let contents = macos.parent()?;
-    let bundle = contents.parent()?;
-    let is_app = bundle.extension().is_some_and(|e| e == "app");
-    (is_app && macos.file_name()? == "MacOS" && contents.file_name()? == "Contents").then(|| bundle.to_path_buf())
 }
 
 /// What the poll thread knows, kept in the daemon's shared state.
@@ -346,9 +337,9 @@ mod tests {
 
     #[test]
     fn the_bundle_is_found_only_for_an_executable_inside_an_app() {
-        assert_eq!(bundle_of(Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkosd")), Some(PathBuf::from("/Applications/Arkos IDE.app")));
-        assert_eq!(bundle_of(Path::new("/x/target/debug/arkosd")), None);
-        assert_eq!(bundle_of(Path::new("/x/Arkos IDE.app/Contents/Resources/arkosd")), None);
+        // The shared crate's `bundle_of`, which its own tests pin case by case.
+        assert_eq!(::telemetry::bundle_of(Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkosd")), Some(PathBuf::from("/Applications/Arkos IDE.app")));
+        assert_eq!(::telemetry::bundle_of(Path::new("/x/Arkos IDE.app/Contents/Resources/arkosd")), None);
         let socket = Path::new("/s/arkosd.sock");
         let o = UpdateOptions { bundle: Some(PathBuf::from("/t/Arkos IDE.app")), ..UpdateOptions::defaults(socket) };
         assert_eq!(o.args(socket), ["--bundle", "/t/Arkos IDE.app"], "a non-default bundle passes through the exec");

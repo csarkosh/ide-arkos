@@ -95,7 +95,7 @@ pub fn usage_seen(dir: &Path) -> Usage {
 fn write_usage_seen(dir: &Path, usage: Usage) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!("{USAGE_SEEN}.tmp"));
-    std::fs::write(&tmp, format!("{}\n", super::usage_name(usage)))?;
+    std::fs::write(&tmp, format!("{}\n", ::telemetry::usage_name(usage)))?;
     std::fs::rename(&tmp, dir.join(USAGE_SEEN))
 }
 
@@ -126,7 +126,7 @@ pub fn consent_check(dir: &Path, config: &Path, usage: Usage, connected: &[&str]
         }
     }
     let recorded = std::fs::read_to_string(dir.join(USAGE_SEEN)).ok();
-    if recorded.as_deref().map(str::trim) != Some(super::usage_name(usage)) {
+    if recorded.as_deref().map(str::trim) != Some(::telemetry::usage_name(usage)) {
         if let Err(e) = write_usage_seen(dir, usage) {
             eprintln!("arkosd: cannot record the usage setting seen: {e}");
         }
@@ -169,7 +169,7 @@ pub fn pass(dir: &Path, t: &dyn Transport, url: &str, user_agent: &str, mode: &M
 pub fn start(state: crate::server::Shared, o: super::Options, curl: PathBuf) {
     let spawned = std::thread::Builder::new().name("telemetry-upload".into()).spawn(move || {
         let transport = Curl { curl };
-        let (url, user_agent) = (o.reports_url(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
+        let (url, user_agent) = (o.reports_url(), ::telemetry::user_agent());
         loop {
             std::thread::sleep(EVERY);
             let mode = super::mode_now(&o.config);

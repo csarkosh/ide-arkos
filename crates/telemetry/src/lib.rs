@@ -79,13 +79,38 @@ pub fn channel() -> Channel {
         .clone()
 }
 
-/// The app bundle holding `exe` when it runs from one (`<bundle>.app/Contents/MacOS/<exe>`).
-fn bundle_of(exe: &Path) -> Option<PathBuf> {
+/// The app bundle holding `exe` when it runs from one (`<bundle>.app/Contents/MacOS/<exe>`): the
+/// channel's bundle here, and the bundle the daemon's updater swaps.
+pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;
     let is_app = bundle.extension().is_some_and(|e| e == "app");
     (is_app && macos.file_name()? == "MacOS" && contents.file_name()? == "Contents").then(|| bundle.to_path_buf())
+}
+
+/// `arkos/<version>`, the user agent of everything the daemon sends: the day's update check (the
+/// collector requires it) and the reports it posts.
+pub fn user_agent() -> String {
+    format!("arkos/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The config spelling of a usage setting: `off`, `local` or `on`.
+pub fn usage_name(u: Usage) -> &'static str {
+    match u {
+        Usage::Off => "off",
+        Usage::Local => "local",
+        Usage::On => "on",
+    }
+}
+
+/// The config spelling of a crash setting: `never`, `ask` or `always`.
+pub fn crashes_name(c: Crashes) -> &'static str {
+    match c {
+        Crashes::Never => "never",
+        Crashes::Ask => "ask",
+        Crashes::Always => "always",
+    }
 }
 
 /// The major of `sw_vers -productVersion`, read once; 0 when it cannot be read.
@@ -197,7 +222,7 @@ mod tests {
     }
 
     fn file() -> toml::Table {
-        include_str!("../../../telemetry/events.toml").parse().unwrap()
+        EVENTS_TOML.parse().unwrap()
     }
 
     #[test]
@@ -227,8 +252,7 @@ mod tests {
 
     #[test]
     fn the_allowlist_parses_through_the_crate_and_refuses_what_it_does_not_list() {
-        let text = include_str!("../../../telemetry/events.toml");
-        assert_eq!(&Allowlist::from_toml(text).unwrap(), allowlist());
+        assert_eq!(&Allowlist::from_toml(EVENTS_TOML).unwrap(), allowlist());
         let a = allowlist();
         assert_eq!(a.check(&event("window_open", &[])), Ok(()));
         assert_eq!(a.check(&event("theme", &[("builtin", DValue::Bool(true))])), Ok(()));
@@ -319,9 +343,27 @@ mod tests {
         assert_eq!(bundle_of(exe), Some(PathBuf::from("/Applications/Arkos IDE.app")));
         assert_eq!(bundle_of(Path::new("/Users/me/ide-arkos/target/debug/arkos")), None);
         assert_eq!(bundle_of(Path::new("/x/Contents/MacOS/arkos")), None, "not an .app");
+        assert_eq!(bundle_of(Path::new("/x/Arkos IDE.app/Contents/Resources/arkosd")), None, "not in Contents/MacOS");
         assert_eq!(bundle_of(Path::new("arkos")), None);
         // The test binary runs from target/, so this process is a source build.
         assert_eq!(channel(), Channel::Source);
+    }
+
+    /// The names are the config file's spellings, which `parse_table` reads back, and the user
+    /// agent names Arkos and this version.
+    #[test]
+    fn the_settings_names_are_the_config_spellings_and_the_user_agent_names_the_version() {
+        for usage in [Usage::Off, Usage::Local, Usage::On] {
+            let table = parse_table(&format!("[telemetry]\nusage = \"{}\"\n", usage_name(usage))).unwrap();
+            assert_eq!(table.usage, usage);
+        }
+        for crashes in [Crashes::Never, Crashes::Ask, Crashes::Always] {
+            let table = parse_table(&format!("[telemetry]\ncrashes = \"{}\"\n", crashes_name(crashes))).unwrap();
+            assert_eq!(table.crashes, crashes);
+        }
+        assert_eq!((usage_name(Usage::Local), crashes_name(Crashes::Ask)), ("local", "ask"));
+        assert_eq!(user_agent(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(user_agent(), format!("arkos/{}", envelope(Bin::Daemon).ver), "the envelope's version");
     }
 
     #[test]

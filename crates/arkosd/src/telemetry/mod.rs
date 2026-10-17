@@ -9,7 +9,7 @@ pub mod check;
 pub mod seal;
 pub mod upload;
 
-use ::telemetry::visits_app::{view, Check, Crashes, Envelope, Mode, State, Usage};
+use ::telemetry::visits_app::{view, Check, Envelope, Mode, State};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -90,11 +90,6 @@ impl Telemetry {
         Self { dir: o.dir.clone(), env, check_url: format!("{base}/a/check"), attempted: Cell::new(None) }
     }
 
-    /// `arkos/<version>`, the user agent the collector requires of the check.
-    pub fn user_agent(&self) -> String {
-        format!("arkos/{}", self.env.ver)
-    }
-
     /// The day's check when the update fetch about to happen is it, from the state file loaded
     /// just before: `None` on a day that had one, and always for a `source` build.
     pub fn next_check(&self, now: u64) -> Option<Check> {
@@ -110,7 +105,7 @@ impl Telemetry {
     pub fn checked(&self, now: u64) {
         self.attempted.set(Some(now / DAY));
         if let Err(e) = update_state(&self.dir, |s| s.checked(now)) {
-            eprintln!("arkosd: cannot save the telemetry state in {}: {e}", self.dir.display());
+            eprintln!("arkosd: cannot save the telemetry state: {e}");
         }
     }
 }
@@ -144,32 +139,14 @@ pub fn mode_now(config: &Path) -> Mode {
     ::telemetry::mode_for(config.as_ref(), true)
 }
 
-/// The config spelling of a usage setting.
-pub(crate) fn usage_name(u: Usage) -> &'static str {
-    match u {
-        Usage::Off => "off",
-        Usage::Local => "local",
-        Usage::On => "on",
-    }
-}
-
-/// The config spelling of a crash setting.
-fn crashes_name(c: Crashes) -> &'static str {
-    match c {
-        Crashes::Never => "never",
-        Crashes::Ask => "ask",
-        Crashes::Always => "always",
-    }
-}
-
 /// The answer to `TelemetryStatus`: the mode as given and the folder as it stands at `now`,
 /// through the crate's `view`, so the command line shows what is on disk.
 pub fn status(dir: &Path, mode: Mode, now: u64) -> protocol::Response {
     let v = view(dir, mode, now);
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
     protocol::Response::TelemetryStatus {
-        usage: usage_name(v.mode.usage).into(),
-        crashes: crashes_name(v.mode.crashes).into(),
+        usage: ::telemetry::usage_name(v.mode.usage).into(),
+        crashes: ::telemetry::crashes_name(v.mode.crashes).into(),
         uploads: v.mode.uploads,
         reason: v.mode.reason.map(str::to_string),
         queued: count(v.queued.len()),
@@ -193,7 +170,7 @@ fn config_of(read: std::io::Result<String>) -> Result<::telemetry::TelemetryConf
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use ::telemetry::visits_app::{Arch, Channel, Os};
+    use ::telemetry::visits_app::{Arch, Channel, Crashes, Os, Usage};
 
     pub fn release_env() -> Envelope {
         Envelope { app: "arkos".into(), ver: "0.5.0".into(), bin: "daemon".into(), os: Os::Macos, osv: 15, arch: Arch::Arm64, ch: Channel::Release }
@@ -225,15 +202,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_check_goes_to_the_collectors_check_path_with_the_arkos_user_agent() {
+    fn the_check_goes_to_the_collectors_check_path() {
         let o = Options { dir: PathBuf::from("/t"), url: "https://apps.csarko.sh/".into(), config: PathBuf::from("/t/config.toml") };
         let t = Telemetry::with_env(&o, release_env());
         assert_eq!(t.check_url, "https://apps.csarko.sh/a/check");
-        assert_eq!(t.user_agent(), "arkos/0.5.0");
-        let t = Telemetry::new(&Options { dir: PathBuf::from("/t"), url: "file:///t/site".into(), config: PathBuf::from("/t/config.toml") });
+        // `Telemetry::new` reads the envelope, whose `osv` runs `sw_vers` the first time: under the
+        // spawn lock, so no other test's fork inherits a descriptor it holds open.
+        let t = {
+            let _no_fork = crate::pty::spawn_lock();
+            Telemetry::new(&Options { dir: PathBuf::from("/t"), url: "file:///t/site".into(), config: PathBuf::from("/t/config.toml") })
+        };
         assert_eq!(t.check_url, "file:///t/site/a/check");
         assert_eq!(t.env.bin, "daemon");
-        assert_eq!(t.user_agent(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(::telemetry::user_agent(), format!("arkos/{}", t.env.ver), "the check's user agent names the envelope's version");
     }
 
     #[test]

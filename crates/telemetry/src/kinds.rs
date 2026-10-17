@@ -10,18 +10,23 @@
 /// A failure point Arkos names in a crash report.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
-    /// Not raised anywhere: it keeps the enum and its downcast in place until the first site
-    /// that matters gets its own variant.
+    /// Raised only by the panic hook's tests: it keeps the enum and its downcast tested until the
+    /// first site that matters gets its own variant. A build that ships has no variant at all.
+    #[cfg(test)]
     Placeholder,
 }
 
 impl Kind {
     /// Every variant, so a test can check each name.
-    pub const ALL: &'static [Kind] = &[Kind::Placeholder];
+    pub const ALL: &'static [Kind] = &[
+        #[cfg(test)]
+        Kind::Placeholder,
+    ];
 
     /// The `pk` a report carries for this failure point: the variant's name in snake case.
     pub fn name(self) -> &'static str {
         match self {
+            #[cfg(test)]
             Kind::Placeholder => "placeholder",
         }
     }
