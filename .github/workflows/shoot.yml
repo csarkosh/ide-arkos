@@ -1,0 +1,70 @@
+name: shoot
+# Takes the README's pictures on a macOS runner (scripts/shoot.sh): a real Arkos window per scene,
+# its Claude Code sessions running for real, captured in both themes, then the hero composed. The
+# stills come back as an artifact; nothing is committed here. `probe` needs no Claude Code and
+# checks that the runner can draw, capture and click. The other scenes sign Claude Code in with
+# the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`), so they use the account's
+# subscription, not an API bill.
+on:
+  workflow_dispatch:
+    inputs:
+      scenes:
+        description: "Scenes to shoot, space-separated: probe, multitasker, web-developer, blogger"
+        required: true
+        default: probe
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  shoot:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      SCENES: ${{ inputs.scenes }}
+      SHOOT_DIRECT: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      - name: The machine
+        run: |
+          sw_vers
+          system_profiler SPDisplaysDataType | sed -n '/Displays:/,$p'
+          for f in Baskerville Optima "PT Mono"; do
+            system_profiler SPFontsDataType 2>/dev/null | grep -q "Full Name: $f" && echo "font: $f" || echo "font missing: $f"
+          done
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable, 2026-10-09
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (v2)
+        with:
+          shared-key: shoot
+      - name: Pillow and git for the frames and the demo
+        run: |
+          python3 -m pip install --break-system-packages --quiet pillow
+          git config --global user.name "shoot workflow"
+          git config --global user.email "shoot@csarko.sh"
+          git config --global init.defaultBranch main
+      - name: Claude Code
+        if: inputs.scenes != 'probe'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || { echo "set the CLAUDE_CODE_OAUTH_TOKEN secret (claude setup-token) first"; exit 1; }
+          npm install -g --silent @anthropic-ai/claude-code
+          # A first start would ask for a theme and a login: the scenes expect a set-up account.
+          printf '{"hasCompletedOnboarding": true, "lastOnboardingVersion": "%s"}\n' "$(claude --version | cut -d' ' -f1)" > "$HOME/.claude.json"
+          claude --version
+      - name: Shoot
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: scripts/shoot.sh $SCENES
+      - name: Keep the pictures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (v4)
+        with:
+          name: shoot-${{ github.run_number }}
+          path: |
+            docs/images/*.png
+            docs/images/progress/**
+          if-no-files-found: warn

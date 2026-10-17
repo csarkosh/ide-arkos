@@ -1,0 +1,42 @@
+# The probe: no Claude Code, only what a shoot needs from the machine it runs on. The window
+# draws a markdown file and a shell, a click places the caret, and both themes are captured. A
+# CI runner proves with it that it can draw, capture and click before a real scene is spent there.
+
+[scene]
+name = "probe"
+caption = "The probe"
+
+[demo]
+name = "field-notes"
+dir = "~/Projects/field-notes"
+fixture = "scripts/shoot/demo/blog"
+
+[window]
+width = 960
+height = 1000
+preset = "comfortable"
+sidebar_width = 240
+expanded = ["posts", "notes"]
+theme = { dark = "peach-light", light = "peach-light" }
+claude_theme = "light-ansi"
+
+[[pane]]
+name = "launch plan"
+view = "posts/2026-10-16-launch-plan.md"
+
+[[pane]]
+name = "shell"
+run = "echo the probe is drawing; ls"
+
+[layout]
+split = "vertical"
+ratio = 0.52
+first = { tabs = ["launch plan"] }
+second = { tabs = ["shell"] }
+
+[[shot]]
+name = "light"
+theme = "light"
+after_secs = 10
+timeout_secs = 60
+click = [0.42, 0.17]

@@ -237,10 +237,11 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     // The daemon's environment is every shell's, and so every demo Claude Code's: nothing of
     // the session this runs from may reach them (a CLAUDE_CODE_* marker makes Claude Code
     // treat the demo as a child session; ARKOS_SESSION_ID would aim its hooks at the
-    // wrong tab).
+    // wrong tab). CLAUDE_CODE_OAUTH_TOKEN goes along: on a CI runner it is how the demo's
+    // Claude Code signs in.
     for (key, _) in std::env::vars_os() {
         let k = key.to_string_lossy();
-        if k.starts_with("CLAUDE") || k.starts_with("ARKOS_") {
+        if (k.starts_with("CLAUDE") && k != "CLAUDE_CODE_OAUTH_TOKEN") || k.starts_with("ARKOS_") {
             daemon.env_remove(&key);
         }
     }

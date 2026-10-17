@@ -26,6 +26,26 @@ if [ "${1:-}" = "--release" ]; then PROFILE=release; FLAGS="--release"; shift; f
 OUT="${OUT:-$ROOT/docs/images}"
 STORIES="$ROOT/scripts/shoot/stories"
 SCENES="$*"
+
+# A locked screen (or a sleeping display) stops macOS from drawing the window, so every capture
+# would show its first frame. Refuse up front rather than take pictures of a frozen window.
+if [ "$SCENES" != "compose" ] && python3 -I -c '
+import ctypes, ctypes.util, sys
+cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
+cg.CGSessionCopyCurrentDictionary.restype = ctypes.c_void_p
+cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+cf.CFBooleanGetValue.argtypes = [ctypes.c_void_p]
+d = cg.CGSessionCopyCurrentDictionary()
+v = d and cf.CFDictionaryGetValue(d, cf.CFStringCreateWithCString(None, b"CGSSessionScreenIsLocked", 0x08000100))
+sys.exit(0 if v and cf.CFBooleanGetValue(v) else 1)
+' 2>/dev/null; then
+  echo "shoot.sh: the screen is locked, so the window would never draw; unlock the Mac and run again" >&2
+  exit 1
+fi
 [ -n "$SCENES" ] || SCENES=$(ls "$STORIES" | sed 's/\.toml$//')
 
 if [ "$SCENES" != compose ]; then
@@ -35,7 +55,8 @@ if [ "$SCENES" != compose ]; then
 
   # The tool as an app, started through Launch Services: macOS attributes its screen captures to
   # "Arkos Shoot", whatever shell this runs from, and the Developer ID signature keeps that
-  # grant across rebuilds.
+  # grant across rebuilds. SHOOT_DIRECT=1 (a CI runner, whose shell already holds the grants and
+  # has no Developer ID) runs the tool straight from this shell instead.
   TOOL="$HOME/Library/Caches/arkos-shoot/tool/Arkos Shoot.app"
   rm -rf "$TOOL"
   mkdir -p "$TOOL/Contents/MacOS"
@@ -70,8 +91,12 @@ PLIST
     echo "== $SCENE"
     # -W waits; the environment this shell has (PATH for python3 with Pillow, git, swift; SHELL for
     # the demo's shells) goes along, since a Launch Services start has only launchd's.
-    open -W -n -a "$TOOL" --env "PATH=$PATH" --env "SHELL=${SHELL:-/bin/zsh}" --stdout "$LOG" --stderr "$LOG" \
-      --args run --story "$STORY" --out "$OUT" --bin "$BIN"
+    if [ "${SHOOT_DIRECT:-}" = 1 ]; then
+      "$BIN/arkos-shoot" run --story "$STORY" --out "$OUT" --bin "$BIN" > "$LOG" 2>&1 || true
+    else
+      open -W -n -a "$TOOL" --env "PATH=$PATH" --env "SHELL=${SHELL:-/bin/zsh}" --stdout "$LOG" --stderr "$LOG" \
+        --args run --story "$STORY" --out "$OUT" --bin "$BIN"
+    fi
     cat "$LOG" | grep -v '^/Users' || true
     RESULT=$(cat "$OUT/progress/$SCENE/result.txt" 2>/dev/null || echo "failed: no result written")
     case "$RESULT" in ok*) ;; *) echo "$SCENE: $RESULT" >&2; exit 1 ;; esac
