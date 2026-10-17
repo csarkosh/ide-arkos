@@ -5,6 +5,7 @@
 //! reports can carry (`Kind`). The crate opens no connection and starts no thread; the daemon is
 //! the only process that uploads.
 mod config;
+pub mod disclosure;
 mod kinds;
 pub mod panic;
 mod paths;

@@ -17,3 +17,5 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The disclosure's tests read the keys of real reports.
+serde_json.workspace = true

@@ -1695,6 +1695,20 @@ impl Root {
         about::Details::gather(self.installed, daemon)
     }
 
+    /// The Help menu's "What Arkos Sends" in the project window: writes the disclosure page into
+    /// the telemetry folder and opens it pinned in the focused pane, as a link to a file would.
+    /// A page that cannot be written is a notice.
+    fn open_disclosure(&mut self, cx: &mut Context<Self>) {
+        telemetry::help(telemetry::Help::Telemetry);
+        match ::telemetry::disclosure::write_page(&paths::telemetry_dir()) {
+            Ok(path) => {
+                let _via = telemetry::opened_via(telemetry::Opened::Click);
+                self.open_viewer(&path, true, cx);
+            }
+            Err(e) => self.show_notice(format!("cannot write the disclosure page: {e}"), cx),
+        }
+    }
+
     /// Shows a one-off notice as its own banner and takes it down after `NOTICE_FOR`, unless a
     /// newer notice or a command has replaced or cleared it by then.
     pub fn show_notice(&mut self, text: String, cx: &mut Context<Self>) {
@@ -3719,6 +3733,7 @@ impl Render for Root {
         if self.any_motion(now) {
             window.request_animation_frame();
         }
+        let root_div = root_div.on_action(cx.listener(|root: &mut Root, _: &keymap::WhatArkosSends, _window, cx| root.open_disclosure(cx)));
         keymap::attach(root_div, cx)
     }
 }
@@ -3758,7 +3773,8 @@ fn rebind(cx: &mut App, keybindings: &BTreeMap<String, String>) {
 
 /// The menu bar: the Arkos IDE menu and the Help menu. Set again when the key bindings change so
 /// it shows the bound keys. "New Window" is one item: the chooser offers the recent folders and
-/// the native picker both.
+/// the native picker both. "What Arkos Sends" opens the telemetry disclosure (telemetry spec,
+/// section 3.4).
 fn menus() -> Vec<Menu> {
     vec![
         Menu {
@@ -3773,7 +3789,11 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "Help".into(),
-            items: vec![MenuItem::action("Keybindings", keymap::Keybindings), MenuItem::action("Documentation", keymap::Documentation)],
+            items: vec![
+                MenuItem::action("Keybindings", keymap::Keybindings),
+                MenuItem::action("Documentation", keymap::Documentation),
+                MenuItem::action("What Arkos Sends", keymap::WhatArkosSends),
+            ],
         },
     ]
 }
@@ -3936,13 +3956,15 @@ fn main() {
                 cx.quit();
             }
         });
-        // About, Settings and the Help menu's two items work in every state, so they are
-        // registered once, here, for the whole run. The project window's own handlers run the
-        // same functions, and an action one of them handles stops there.
+        // About, Settings and the Help menu's items work in every state, so they are registered
+        // once, here, for the whole run. The project window's own handlers run the same
+        // functions, and an action one of them handles stops there: "What Arkos Sends" opens the
+        // page in a viewer tab there, and from the chooser or Settings in the default app.
         cx.on_action(|_: &keymap::About, cx| aux::open_about(cx));
         cx.on_action(|_: &keymap::OpenSettings, cx| aux::open_settings(cx));
         cx.on_action(|_: &keymap::Keybindings, cx| aux::open_keybindings(cx));
         cx.on_action(|_: &keymap::Documentation, cx| aux::open_documentation(cx));
+        cx.on_action(|_: &keymap::WhatArkosSends, cx| aux::open_disclosure(cx));
         // Closing the launch chooser quits, the failure window's red button too; "Try again"
         // closes the failure window as its connect starts, which is no reason to quit.
         let closing = launch.clone();
@@ -4400,7 +4422,11 @@ mod tests {
             "Arkos IDE",
             &[Some(("About Arkos IDE", &keymap::About)), None, Some(("New Window", &keymap::NewWindow)), Some(("Settings", &keymap::OpenSettings)), Some(("Quit", &Quit))],
         );
-        assert_menu(&menus[1], "Help", &[Some(("Keybindings", &keymap::Keybindings)), Some(("Documentation", &keymap::Documentation))]);
+        assert_menu(
+            &menus[1],
+            "Help",
+            &[Some(("Keybindings", &keymap::Keybindings)), Some(("Documentation", &keymap::Documentation)), Some(("What Arkos Sends", &keymap::WhatArkosSends))],
+        );
     }
 
     #[test]

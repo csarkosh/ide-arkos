@@ -173,10 +173,25 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
   enough for the foreground to keep 5.7:1, 7.7:1 and 4.6:1 on them; the accent was too light to
   carry white text, so it is not used as a background.
 
-## 7. Rules
+## 7. What Arkos sends
+
+When the user asks what Arkos sends, whether it collects data, or how to turn that off, answer
+from the disclosure page and not from memory. It is `docs/telemetry.md` in the Arkos source
+(<https://github.com/csarkosh/ide-arkos/blob/main/docs/telemetry.md>); the app writes the copy
+it ships to `~/Library/Application Support/arkos/telemetry/what-arkos-sends.md` when the user
+opens Help > What Arkos Sends. `arkos telemetry status` prints the mode in force and why, and
+`arkos telemetry view` shows what is waiting to be sent.
+
+Never change the setting on your own: not with `arkos telemetry`, not with
+`arkos settings set telemetry.usage` or `telemetry.crashes`, and not by editing the `[telemetry]`
+table. Whether Arkos records or sends anything is the user's choice. Tell them the command and
+let them run it, or run it only when they have asked you to in so many words.
+
+## 8. Rules
 
 - Validate before you preview, and preview before you use.
 - Never leave a preview running: end it, or make it permanent with `use`.
 - Never write `config.toml` by hand when a command exists; never edit the app bundle.
+- Never turn usage or crash reports on or off unless the user asked you to.
 - Prefer `--json` when you parse output, and branch on the exit code.
 - When you finish, run `arkos theme current` and report its lines to the user.

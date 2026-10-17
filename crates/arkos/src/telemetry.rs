@@ -106,8 +106,6 @@ values! {
         Keybindings => "keybindings",
         Documentation => "documentation",
         About => "about",
-        // No call site yet: the disclosure comes with the Help menu's telemetry item.
-        #[allow(dead_code)]
         Telemetry => "telemetry",
     }
 }

@@ -21,7 +21,9 @@ actions!(
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
-        NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit
+        NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit,
+        // The Help menu's "What Arkos Sends": no key, no palette entry, handled outside `Command`.
+        WhatArkosSends
     ]
 );
 

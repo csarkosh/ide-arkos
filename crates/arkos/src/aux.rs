@@ -181,6 +181,17 @@ pub fn open_documentation(cx: &mut App) {
     cx.open_url(DOCS_URL);
 }
 
+/// The Help menu's "What Arkos Sends" outside the project window (the chooser, Settings, or
+/// before any window): writes the disclosure page into the telemetry folder and opens it in the
+/// default app for Markdown. The project window's own handler opens it in a viewer tab instead.
+pub fn open_disclosure(cx: &mut App) {
+    crate::telemetry::help(crate::telemetry::Help::Telemetry);
+    match ::telemetry::disclosure::write_page(&paths::telemetry_dir()) {
+        Ok(path) => cx.open_with_system(&path),
+        Err(e) => eprintln!("arkos: cannot write the disclosure page: {e}"),
+    }
+}
+
 /// Shows `shown` in the Settings window when it is open.
 pub fn push_settings(cx: &mut App, shown: Shown) {
     let Some(handle) = cx.try_global::<Aux>().and_then(|aux| aux.settings) else { return };
