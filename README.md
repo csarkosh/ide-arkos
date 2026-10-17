@@ -3,8 +3,7 @@
 <p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with a docked browser and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-light.png" width="900">
+  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with a docked browser and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-dark.png" width="900">
 </picture>
 
 <p align="center">
@@ -43,8 +42,7 @@ behind two of them a blog and a household budget whose sessions have finished. T
 which session is working and which is waiting on you.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/multitasker-dark.png">
-  <img alt="One Arkos IDE window, no sidebar, three panes: a rate limiter being built by three background agents, an inbox triaged by four, and a trip being planned. The first two panes each have a second tab, a blog and a household budget, marked as waiting on you" src="docs/images/multitasker-light.png" width="760">
+  <img alt="One Arkos IDE window, no sidebar, three panes: a rate limiter being built by three background agents, an inbox triaged by four, and a trip being planned. The first two panes each have a second tab, a blog and a household budget, marked as waiting on you" src="docs/images/multitasker-dark.png" width="760">
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
@@ -52,8 +50,7 @@ checkout, the app's page docked in Chrome next to the code, and the tests in a s
 tree and the worktree list show what changed.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/web-developer-dark.png">
-  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/web-developer-light.png" width="760">
+  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/web-developer-dark.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
@@ -64,8 +61,7 @@ The same work stacked, one pane above the other: the file on top with the caret 
 the rendered view is also where you edit, and the session below.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-dark.png">
-  <img alt="An Arkos IDE window with two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid, with the caret in a heading showing its markdown source; below it a Claude Code session updating the plan from the notes" src="docs/images/blogger-light.png" width="620">
+  <img alt="An Arkos IDE window with two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid, with the caret in a heading showing its markdown source; below it a Claude Code session updating the plan from the notes" src="docs/images/blogger-dark.png" width="620">
 </picture>
 
 ## Privacy

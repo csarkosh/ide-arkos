@@ -18,7 +18,7 @@ height = 860
 preset = "compact"
 sidebar_width = 240
 expanded = ["src"]
-# The built-in lavender-light theme, Visual Studio's modern light look, in both pictures.
+# The built-in lavender-light theme, Visual Studio's modern light look, in the picture.
 theme = { dark = "lavender-light", light = "lavender-light" }
 # Claude Code draws itself in the terminal's sixteen colours, which the theme sets.
 claude_theme = "light-ansi"
@@ -54,9 +54,3 @@ changed = { "rate limit" = 3 }
 after_secs = 30
 timeout_secs = 360
 chrome = true
-
-[[shot]]
-name = "light"
-theme = "light"
-wait = { "rate limit" = "waiting", durations = "waiting" }
-timeout_secs = 360

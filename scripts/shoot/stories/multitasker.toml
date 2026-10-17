@@ -71,9 +71,3 @@ timeout_secs = 420
 [[shot.crop]]
 name = "tabs"
 rect = [0.0, 0.0, 1.0, 0.075]
-
-[[shot]]
-name = "light"
-theme = "light"
-wait = { lantern = "waiting", inbox = "waiting", lisbon = "waiting", blog = "waiting", budget = "waiting" }
-timeout_secs = 480

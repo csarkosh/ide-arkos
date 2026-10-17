@@ -18,7 +18,7 @@ height = 1000
 preset = "comfortable"
 sidebar_width = 240
 expanded = ["posts", "notes"]
-# A writer's look: the built-in peach-light theme, cream and peach, in both pictures.
+# A writer's look: the built-in peach-light theme, cream and peach, in the picture.
 theme = { dark = "peach-light", light = "peach-light" }
 # Claude Code draws itself in the terminal's sixteen colours, which the theme sets.
 claude_theme = "light-ansi"
@@ -47,12 +47,5 @@ theme = "dark"
 wait = { assistant = "working" }
 changed = { assistant = 1 }
 after_secs = 20
-timeout_secs = 300
-click = [0.42, 0.17]
-
-[[shot]]
-name = "light"
-theme = "light"
-wait = { assistant = "waiting" }
 timeout_secs = 300
 click = [0.42, 0.17]

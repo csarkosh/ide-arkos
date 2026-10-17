@@ -1,6 +1,6 @@
 name: shoot
 # Takes the README's pictures on a macOS runner (scripts/shoot.sh): a real Arkos window per scene,
-# its Claude Code sessions running for real, captured in both themes, then the hero composed. The
+# its Claude Code sessions running for real, captured in the dark theme, then the hero composed. The
 # stills come back as an artifact; nothing is committed here. `probe` needs no Claude Code and
 # checks that the runner can draw, capture and click. The other scenes sign Claude Code in with
 # the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`), so they use the account's

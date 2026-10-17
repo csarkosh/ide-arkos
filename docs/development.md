@@ -131,7 +131,7 @@ The pictures in `docs/images/` (the README's and csarko.sh's) are taken of the r
 `scripts/shoot.sh`: one scene per storyboard in `scripts/shoot/stories/` (the multi tasker, the
 web developer, the blogger), each a dev build on a demo project of its own (`scripts/shoot/demo`)
 with real Claude Code sessions given the prompts written there, captured once the tabs show the
-states the storyboard asks for, and the hero (`hero-dark.png`, `hero-light.png`) composed from
+states the storyboard asks for, and the hero (`hero-dark.png`) composed from
 the scenes' stills with the multi tasker in front. Nothing in them is staged afterwards; change a
 storyboard to change its picture, and `scripts/shoot.sh <scene>` redoes that scene alone
 (`compose` only remakes the hero). The shoot runs a second arkosd of its own (`ARKOS_APP_SUPPORT`
@@ -142,6 +142,13 @@ grant it Screen Recording once, and the shoot's copy of Arkos Accessibility once
 pane). Each scene spends a few minutes of your Claude Code account. Progress captures and the
 panes' states land in `docs/images/progress/<scene>/` every 20 s while it runs, and a scene whose
 Claude Code panes never start is ended after a minute.
+
+The pictures are shot in the cloud: the `shoot` workflow runs `scripts/shoot.sh` on a GitHub
+macOS runner, Claude Code signed in with the `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude
+setup-token`). `gh workflow run shoot -f scenes="blogger"` (scenes space-separated; `probe`
+checks the runner without Claude Code), then `gh run download <run id> -D <dir>` and copy the
+stills it changed into `docs/images/`; the hero is recomposed on the runner with them. Only the
+dark stills are taken (each storyboard has one `dark` shot) and the README shows those alone.
 
 ## Status
 

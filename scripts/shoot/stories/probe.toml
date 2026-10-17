@@ -1,5 +1,5 @@
 # The probe: no Claude Code, only what a shoot needs from the machine it runs on. The window
-# draws a markdown file and a shell, a click places the caret, and both themes are captured. A
+# draws a markdown file and a shell, a click places the caret, and the still is captured. A
 # CI runner proves with it that it can draw, capture and click before a real scene is spent there.
 
 [scene]
@@ -35,8 +35,8 @@ first = { tabs = ["launch plan"] }
 second = { tabs = ["shell"] }
 
 [[shot]]
-name = "light"
-theme = "light"
+name = "dark"
+theme = "dark"
 after_secs = 10
 timeout_secs = 60
 click = [0.42, 0.17]

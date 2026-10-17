@@ -103,8 +103,9 @@ PLIST
   done
 fi
 
-# The hero, from the stills that exist: the multi tasker in front, the others behind.
-for THEME in dark light; do
+# The hero, from the stills that exist: the multi tasker in front, the others behind. Only the
+# dark stills are kept, so only the dark hero is made.
+for THEME in dark; do
   set --
   for SCENE in multitasker web-developer blogger; do
     STILL="$OUT/$SCENE-$THEME.png"
