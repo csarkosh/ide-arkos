@@ -154,7 +154,11 @@ worktrees, and the viewer marks a file's changes against HEAD. The browser pane 
 window into a pane (Accessibility permission needed). Milestone 6a made the update path and the
 launcher trustworthy: "Check for updates" waits for the check and says what it found, the chooser
 opens before the daemon answers and reconnects, and a closed tab's minute is kept by the daemon.
-Milestones 6b and 6c are next.
+Milestones 6b and 6c are next. Milestone telemetry added anonymous usage reports and crash reports,
+both off until turned on (Settings > Privacy, or `arkos telemetry`), a crash dialog that shows the
+exact bytes before a report is sent, an invitation strip on the second day, the update check once
+a day through the project's own server, and published dSYMs for release builds. What is sent is in
+[telemetry.md](telemetry.md).
 
 Things only a person at the screen can check, in order of value:
 
@@ -392,3 +396,13 @@ Things only a person at the screen can check, in order of value:
   Stop all, then Confirm: the row says "stopping…" and the count goes; `ps` shows the shells
   gone; a folder with no sessions shows nothing on the right; Delete on a selected row arms it
   and Escape disarms it without closing the chooser
+- telemetry, the crash dialog (a release build only): its size is right, Show report resizes it,
+  two restored windows show one dialog, Send with Always checked flips Settings to Always, and
+  closing it without a choice puts the claims back
+- telemetry, the invitation: on the second day the strip shows under the tab bar and keeps one
+  line in a narrow pane; What Arkos sends in Settings opens a viewer tab
+- telemetry, the release run: the first one leaves `target/release/*.dSYM` and publishes a dSYM zip
+  with DWARF in it; a real panic in a release build symbolicates against that zip and reads
+  `/src/...`
+- telemetry, the collector: the first-party check row is seen in BigQuery, with `rd` right on the
+  second day; the shoot's source build sends nothing

@@ -484,7 +484,8 @@ the preview's colours with the error shown.
 `arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
 `font.presets.<name>.line_height` (1.0 to 2.5), `viewer.wide_tables` (wrap, scroll),
-`update.auto` (true, false) and `recovery.start_at_login` (ask, on, off). Any other key exits 2 and lists these. A bad value is
+`update.auto` (true, false), `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
+`telemetry.crashes` (never, ask, always). Any other key exits 2 and lists these. A bad value is
 refused before anything is written. `settings get <key>` reads the file only, so a key left at its
 default answers `no such key`.
 

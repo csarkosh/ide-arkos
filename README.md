@@ -63,6 +63,13 @@ markdown editor, and a Claude Code session drafting the next one from the notes.
   <img alt="An Arkos IDE window with a folder of markdown posts in the file tree, a post rendered in the editor and a Claude Code session drafting a new post beside it" src="docs/images/blogger-light.png" width="760">
 </picture>
 
+## Privacy
+
+Arkos can send anonymous usage reports and crash reports. Both are off until you turn them on,
+in Settings (Privacy) or with `arkos telemetry on`. Once a day the update check goes through the
+project's own server so installs can be counted, with nothing that identifies you or your Mac.
+[What Arkos sends](docs/telemetry.md) lists every key.
+
 ## Learn more
 
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the

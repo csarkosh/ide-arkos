@@ -199,6 +199,10 @@ Everything Arkos would send is a file on your Mac first, in
   never sent; reports older than seven days are deleted.
 - `last-session.json` is the session sealed last, kept after it was sent.
 - `incidents/` holds crash reports waiting for the dialog.
+- `receipts` has one line per crash report you have decided on: its id, the date, and whether it
+  was queued or declined. Settings > Privacy > Reports lists it.
+- `usage-seen` holds the usage setting the daemon last saw, one word: `off`, `local` or `on`. It
+  lets the daemon notice a turn-on made while it was not running.
 
 To read them:
 
