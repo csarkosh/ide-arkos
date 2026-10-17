@@ -60,17 +60,12 @@ tree and the worktree list show what changed.
 as a grid, a Mermaid diagram, a checklist and a folded open-questions section, and a Claude Code
 session beside it bringing the plan up to date from the review notes.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-dark.png">
-  <img alt="An Arkos IDE window: a launch plan rendered in the markdown editor with a status table drawn as a grid, a flow diagram, a checklist and an open questions section, and a Claude Code session on the right updating the plan from the notes" src="docs/images/blogger-light.png" width="760">
-</picture>
-
 The same work stacked, one pane above the other: the file on top with the caret in it, since
 the rendered view is also where you edit, and the session below.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-stacked-dark.png">
-  <img alt="The same launch plan and Claude Code session arranged one above the other: the rendered plan on top with the caret in a heading showing its markdown source, the session underneath" src="docs/images/blogger-stacked-light.png" width="760">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-dark.png">
+  <img alt="An Arkos IDE window with two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid, with the caret in a heading showing its markdown source; below it a Claude Code session updating the plan from the notes" src="docs/images/blogger-light.png" width="620">
 </picture>
 
 ## Privacy

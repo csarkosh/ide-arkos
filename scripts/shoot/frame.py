@@ -90,11 +90,17 @@ def compose(out, pieces):
     front = src.resize((front_w, round(src.height * front_w / src.width)), Image.Resampling.LANCZOS)
     front = captioned(front, pieces[0][1], "center", front_w / src.width)
     backs = []
+    back_h = None
     for i, (path, caption) in enumerate(pieces[1:]):
         side = "left" if i % 2 == 0 else "right"
         src = Image.open(path).convert("RGBA")
-        b = src.resize((back_w, round(src.height * back_w / src.width)), Image.Resampling.LANCZOS)
-        b = captioned(b, caption, side, back_w / src.width)
+        # The backs share one height, the first one's at the back width, so a narrower still
+        # (the blogger's stacked panes) is drawn narrower rather than taller; each stays against
+        # its own edge, so the group keeps its width.
+        bw = back_w if back_h is None else round(src.width * back_h / src.height)
+        b = src.resize((bw, round(src.height * bw / src.width)), Image.Resampling.LANCZOS)
+        back_h = back_h or b.height
+        b = captioned(b, caption, side, bw / src.width)
         b = b.rotate(2.5 if side == "left" else -2.5, expand=True, resample=Image.Resampling.BICUBIC)
         backs.append((side, b))
     front_x = (W - front_w) // 2
@@ -125,13 +131,18 @@ def compose_portrait(out, pieces):
     front = src.resize((front_w, round(src.height * front_w / src.width)), Image.Resampling.LANCZOS)
     front = captioned(front, pieces[0][1], "center", front_w / src.width)
     backs = []
+    back_h = None
     for i, (path, caption) in enumerate(pieces[1:3]):
         src = Image.open(path).convert("RGBA")
-        b = src.resize((back_w, round(src.height * back_w / src.width)), Image.Resampling.LANCZOS)
+        # As in `compose`: the backs share the first one's height, so a narrower still is
+        # narrower, not taller.
+        bw = back_w if back_h is None else round(src.width * back_h / src.height)
+        b = src.resize((bw, round(src.height * bw / src.width)), Image.Resampling.LANCZOS)
+        back_h = back_h or b.height
         if i == 0:
-            b = captioned(b, caption, "left", back_w / src.width, edge="top").rotate(2.5, expand=True, resample=Image.Resampling.BICUBIC)
+            b = captioned(b, caption, "left", bw / src.width, edge="top").rotate(2.5, expand=True, resample=Image.Resampling.BICUBIC)
         else:
-            b = captioned(b, caption, "right", back_w / src.width).rotate(-2.5, expand=True, resample=Image.Resampling.BICUBIC)
+            b = captioned(b, caption, "right", bw / src.width).rotate(-2.5, expand=True, resample=Image.Resampling.BICUBIC)
         backs.append(b)
     top = backs[0]
     front_y = round(top.height * 0.45)

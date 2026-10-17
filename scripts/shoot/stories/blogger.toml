@@ -1,9 +1,10 @@
-# The blogger, stacked: the same launch plan and session as blogger.toml, one above the other,
-# the file being edited on top (a click puts the caret in its first paragraph) and the Claude
-# Code session below. Shows another arrangement the grid supports.
+# The blogger: a product person who lives in markdown. The launch plan rendered on top (a status
+# table as a grid, a Mermaid flow, a checklist, an open-questions section, a chart) with the caret
+# in it, since the rendered view is also where you edit, and below it a Claude Code session
+# bringing the plan up to date from the notes. Narrow and tall, so the page has no empty right side.
 
 [scene]
-name = "blogger-stacked"
+name = "blogger"
 caption = "The blogger"
 
 [demo]
@@ -12,7 +13,7 @@ dir = "~/Projects/field-notes"
 fixture = "scripts/shoot/demo/blog"
 
 [window]
-width = 1200
+width = 960
 height = 1000
 preset = "comfortable"
 sidebar_width = 240
