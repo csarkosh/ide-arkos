@@ -79,12 +79,12 @@ An event is one of these names, with only these keys, each taking only the value
 
 | Event | Keys and allowed values | When |
 |---|---|---|
-| `launch` | `how`: `normal`, `relaunch`, `updated`, `recovered` | The window started; `recovered` when the last window had died. |
+| `launch` | `how`: `normal`, `relaunch`, `updated`, `recovered` | The window started, and how. `recovered` is reserved, not sent yet: it would mark a start after the last window died. |
 | `window_open` | none | A project window opened. |
 | `window_close` | none | A project window closed. |
 | `pane_open` | `kind`: `terminal`, `viewer`, `browser`; `how`: `palette`, `key`, `click`, `explorer`, `link`, `restore` | A tab was opened, and how. |
 | `pane_close` | `kind`: `terminal`, `viewer`, `browser` | A tab was closed. |
-| `view` | `format`: `markdown`, `code`, `plain`, `image`, `video`, `binary`, `too_large`; `mode`: `rendered`, `raw` | The viewer showed a file, by its kind, never its name. |
+| `view` | `format`: `markdown`, `code`, `plain`, `image`, `video`, `binary`, `too_large`; `mode`: `rendered`, `raw` | The viewer showed a file, by its kind, never its name. `image` and `video` are reserved, not sent yet. |
 | `md` | `feature`: `table_edit`, `mermaid`, `details`, `checklist`, `remote_image`, `video`, `inline_diff` | A markdown feature was used for the first time in this report, once per feature. |
 | `agent_launch` | `agent`: `claude`, `other`; `how`: `new`, `resume` | A coding agent started in a terminal. |
 | `agent_state` | `agent`: `claude`, `other`; `state`: `waiting` | An agent first asked for input, once per terminal. |
@@ -200,7 +200,9 @@ Everything Arkos would send is a file on your Mac first, in
 - `last-session.json` is the session sealed last, kept after it was sent.
 - `incidents/` holds crash reports waiting for the dialog.
 - `receipts` has one line per crash report you have decided on: its id, the date, and whether it
-  was queued or declined. Settings > Privacy > Reports lists it.
+  was queued or declined. Settings > Privacy > Reports lists each report by date with its id as
+  `waiting` (not decided yet), `queued`, `declined`, or `left the queue`: sent, or refused by the
+  collector or older than seven days and deleted, which Arkos cannot tell apart.
 - `usage-seen` holds the usage setting the daemon last saw, one word: `off`, `local` or `on`. It
   lets the daemon notice a turn-on made while it was not running.
 

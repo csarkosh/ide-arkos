@@ -1118,7 +1118,8 @@ mod tests {
     }
 
     /// The Reports list is named as the page names it, and lists each receipt by date with its
-    /// `inc`, a queued report as sent once its file has left the queue, and what still waits.
+    /// `inc`, a queued report as having left the queue once its file is gone, and what still
+    /// waits.
     #[test]
     fn the_reports_list_shows_the_receipts_by_date_with_the_inc() {
         assert_eq!(REPORTS_ROW, "Reports");
@@ -1129,7 +1130,7 @@ mod tests {
         let line = |date: &str, inc: &str, status| ReportLine { label: format!("{date}  {inc}"), inc: inc.to_string(), status };
         let (a, b) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
         std::fs::write(dir.path().join(crate::crash_dialog::RECEIPTS), format!("{a} 2026-10-01 queued\n{b} 2026-10-02 declined\n")).unwrap();
-        assert_eq!(report_lines(dir.path()), vec![line("2026-10-02", b, "declined"), line("2026-10-01", a, "sent")]);
+        assert_eq!(report_lines(dir.path()), vec![line("2026-10-02", b, "declined"), line("2026-10-01", a, "left the queue")]);
         std::fs::create_dir_all(dir.path().join("queue")).unwrap();
         std::fs::write(dir.path().join("queue").join(format!("crash-{a}.json")), "{}").unwrap();
         assert_eq!(report_lines(dir.path())[1], line("2026-10-01", a, "queued"));

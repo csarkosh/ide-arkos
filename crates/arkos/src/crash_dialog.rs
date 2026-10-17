@@ -323,13 +323,15 @@ pub struct Row {
     /// The incident's local day, "YYYY-MM-DD".
     pub date: String,
     pub inc: String,
-    /// `waiting` (not decided yet), `queued`, `sent` (queued, and its file has left the queue)
-    /// or `declined`.
+    /// `waiting` (not decided yet), `queued`, `left the queue` (queued, and its file is gone:
+    /// sent, or refused or expired and deleted, which this window cannot tell apart) or
+    /// `declined`.
     pub status: &'static str,
 }
 
-/// The Reports list for the telemetry folder `dir`: every receipt, a queued one read as `sent`
-/// once `queue/crash-<inc>.json` is gone, and every incident still waiting (a dialog may be
+/// The Reports list for the telemetry folder `dir`: every receipt, a queued one read as `left the
+/// queue` once `queue/crash-<inc>.json` is gone (the crate deletes a refused or expired report
+/// too, so it never says `sent`), and every incident still waiting (a dialog may be
 /// showing it now), newest first. A line of `receipts` that is not a receipt is skipped.
 pub fn reports(dir: &Path) -> Vec<Row> {
     let mut rows = Vec::new();
@@ -338,7 +340,7 @@ pub fn reports(dir: &Path) -> Vec<Row> {
         let (Some(inc), Some(date), Some(outcome), None) = (fields.next(), fields.next(), fields.next(), fields.next()) else { continue };
         let status = match outcome {
             "queued" if dir.join("queue").join(format!("crash-{inc}.json")).exists() => "queued",
-            "queued" => "sent",
+            "queued" => "left the queue",
             "declined" => "declined",
             _ => continue,
         };
@@ -917,6 +919,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&config).unwrap(), "[telemetry]\nusage = \"maybe\"\n");
     }
 
+    /// A queued report whose file is gone has left the queue: sent, or refused or expired and
+    /// deleted by the crate, which this window cannot tell apart, so it never says `sent`.
     #[test]
     fn the_reports_list_reads_the_receipts_and_the_queue_and_adds_what_waits() {
         let dir = tempfile::tempdir().unwrap();
@@ -941,7 +945,7 @@ mod tests {
         assert_eq!(&rows[2..], &[
             ("2026-10-03".to_string(), declined.clone(), "declined"),
             ("2026-10-02".to_string(), queued.clone(), "queued"),
-            ("2026-10-01".to_string(), sent.clone(), "sent"),
+            ("2026-10-01".to_string(), sent.clone(), "left the queue"),
         ], "newest first: {rows:?}");
         let mut first: Vec<_> = rows[..2].to_vec();
         first.sort();

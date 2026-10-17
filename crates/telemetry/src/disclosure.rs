@@ -159,12 +159,12 @@ pub const TABLES: &[&Table] = &[&ENVELOPE, &CHECK, &SESSION, &EVENT, &CRASH];
 /// When each event of `telemetry/events.toml` is recorded, in plain words. A test holds this list
 /// to the file, so an event added there needs its sentence here before the page can render.
 pub const EVENT_WHEN: &[(&str, &str)] = &[
-    ("launch", "The window started; `recovered` when the last window had died."),
+    ("launch", "The window started, and how. `recovered` is reserved, not sent yet: it would mark a start after the last window died."),
     ("window_open", "A project window opened."),
     ("window_close", "A project window closed."),
     ("pane_open", "A tab was opened, and how."),
     ("pane_close", "A tab was closed."),
-    ("view", "The viewer showed a file, by its kind, never its name."),
+    ("view", "The viewer showed a file, by its kind, never its name. `image` and `video` are reserved, not sent yet."),
     ("md", "A markdown feature was used for the first time in this report, once per feature."),
     ("agent_launch", "A coding agent started in a terminal."),
     ("agent_state", "An agent first asked for input, once per terminal."),
@@ -364,6 +364,20 @@ mod tests {
         }
         for case in ["launch chooser", "logout or restart", "crash or a force quit", "daemon restarted"] {
             assert!(reason.contains(case), "{case} in {reason}");
+        }
+    }
+
+    /// The values the allowlist holds for later, which no call site writes yet, are said to be
+    /// reserved where the page lists them, so nobody reads them as sent.
+    #[test]
+    fn the_values_no_call_site_writes_yet_are_marked_reserved() {
+        let when = |name: &str| EVENT_WHEN.iter().find(|(n, _)| *n == name).map(|(_, w)| *w).expect(name);
+        assert!(when("launch").contains("`recovered` is reserved, not sent yet"), "{}", when("launch"));
+        assert!(when("view").contains("`image` and `video` are reserved, not sent yet"), "{}", when("view"));
+        let render = render_tables();
+        for (event, value) in [("launch", "recovered"), ("view", "image"), ("view", "video")] {
+            let row = render.lines().find(|l| l.starts_with(&format!("| `{event}` |"))).expect(event);
+            assert!(row.contains(&format!("`{value}`")) && row.contains("reserved, not sent yet"), "{row}");
         }
     }
 
