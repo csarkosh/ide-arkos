@@ -85,9 +85,9 @@ pub fn report(w: &Where, now: SystemTime) -> String {
     let _ = writeln!(out, "daemon on {}: {}", w.socket.display(), daemon(&w.socket));
     // The daemon's answer when it gives one, else the folder beside the socket, read here.
     let unix = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let real = crate::telemetry_cli::real_mode();
-    let mode = || crate::telemetry_cli::mode_of_file(&w.config, &real);
-    let _ = writeln!(out, "{}", crate::telemetry_cli::row(&crate::telemetry_cli::status(&w.socket, &w.socket.with_file_name("telemetry"), &mode, unix)));
+    let mode = || crate::telemetry_cli::mode_of_file(&w.config, &crate::telemetry_cli::real_mode);
+    let dir = crate::paths::telemetry_dir_beside(&w.socket);
+    let _ = writeln!(out, "{}", crate::telemetry_cli::row(&crate::telemetry_cli::status(&w.socket, &dir, &mode, unix)));
     let updates = w.app_support.join("updates");
     let marker = updates.join("applied.json");
     let _ = writeln!(

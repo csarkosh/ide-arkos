@@ -7,12 +7,12 @@
 //! answers `TelemetryStatus`, and reads the folder itself otherwise; the doctor's telemetry row
 //! comes from the same place. No gpui here, and nothing is sent. Exit codes as `agent_cli`'s: 0
 //! done, 1 refused or failed, 2 usage.
-use crate::agent_cli::{self, Env};
+use crate::agent_cli::{self, fail, usage, Env};
 use ::telemetry::visits_app::{payload_of, view, Crashes, Mode, Usage};
 use ::telemetry::TelemetryConfig;
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, PROTOCOL_VERSION, TELEMETRY_FROM};
-use std::io::{BufReader, BufWriter, IsTerminal, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -73,20 +73,19 @@ pub struct Status {
     pub source: Source,
 }
 
-/// `arkos telemetry ...` with the real paths, the process's environment and its streams. A
-/// command run with no terminal is not interactive (the shared definition), so its mode says so.
+/// `arkos telemetry ...` with the real paths, the process's environment and its streams.
 pub fn telemetry_cli(args: &[String]) -> i32 {
     let (socket, config, themes) = (crate::paths::socket_path(), crate::paths::config_file(), crate::paths::themes_dir());
     let env = Env { socket: &socket, config: &config, themes: &themes, wait: protocol::CUSTOMIZE_WAIT };
-    let mode = real_mode();
-    let ctx = Ctx { env: &env, mode: &mode, now: unix_now() };
+    let ctx = Ctx { env: &env, mode: &real_mode, now: unix_now() };
     telemetry_cli_to(args, &ctx, &mut std::io::stdout(), &mut std::io::stderr())
 }
 
-/// The mode with this process's environment: interactive when stdin is a terminal.
-pub fn real_mode() -> impl Fn(Result<&TelemetryConfig, &String>) -> Mode {
-    let interactive = std::io::stdin().is_terminal();
-    move |config| ::telemetry::mode_for(config, interactive)
+/// The mode with this process's environment and channel, as the daemon the app starts would
+/// have it: that daemon is the process that sends, and it is interactive, so the folder read
+/// with no daemon running shows the mode a daemon would run in, not this command's own.
+pub fn real_mode(config: Result<&TelemetryConfig, &String>) -> Mode {
+    ::telemetry::mode_for(config, true)
 }
 
 pub fn unix_now() -> u64 {
@@ -110,25 +109,21 @@ pub fn telemetry_cli_to(args: &[String], ctx: &Ctx, out: &mut dyn Write, err: &m
         ["view"] => view_queue(&dir, ctx, out),
         ["view", "--last"] => {
             let last = dir.join(LAST_SESSION);
-            if !last.is_file() {
+            // A link in its place counts as there, so the folder check below refuses it.
+            if last.symlink_metadata().is_err() {
                 return fail(err, "no session sealed yet");
             }
-            print_bytes(&last, out, err)
+            match report_in(&dir, &last.display().to_string()) {
+                Ok(file) => print_bytes(&file, out, err),
+                Err(e) => fail(err, &e),
+            }
         }
         ["view", path] if !path.starts_with("--") => match report_in(&dir, path) {
             Ok(file) => print_bytes(&file, out, err),
             Err(e) => fail(err, &e),
         },
-        _ => {
-            let _ = err.write_all(USAGE.as_bytes());
-            2
-        }
+        _ => usage(err, USAGE),
     }
-}
-
-fn fail(err: &mut dyn Write, text: &str) -> i32 {
-    let _ = writeln!(err, "{text}");
-    1
 }
 
 /// Writes `key` through `arkos settings set`, the one writer: it checks the value and the
@@ -149,12 +144,13 @@ pub fn mode_of_file(path: &Path, mode: ModeOf) -> Mode {
     mode(config.as_ref())
 }
 
-/// The file `raw` names when it is in the telemetry folder `dir`: a path as given, or a bare
-/// name that is not a file here, which names a queued report. Both sides are resolved first, so
-/// neither `..` nor a link leads out of the folder.
+/// The file `raw` names when it is in the telemetry folder `dir`: a bare name is a queued report
+/// when the queue has one by that name, and anything else is a path as given. Both sides are
+/// resolved first, so neither `..` nor a link leads out of the folder.
 fn report_in(dir: &Path, raw: &str) -> Result<PathBuf, String> {
     let given = PathBuf::from(raw);
-    let named = if !given.exists() && given.components().count() == 1 { dir.join("queue").join(&given) } else { given };
+    let queued = dir.join("queue").join(&given);
+    let named = if given.components().count() == 1 && queued.symlink_metadata().is_ok() { queued } else { given };
     let file = named.canonicalize().map_err(|_| format!("no such report: {raw}"))?;
     let inside = dir.canonicalize().is_ok_and(|root| file.starts_with(root));
     if !inside {
@@ -457,6 +453,14 @@ mod tests {
         let bytes = b"{\"v\":2,\"k\":\"session\"}\n\xff no newline at the end".to_vec();
         std::fs::write(t.join("last-session.json"), &bytes).unwrap();
         assert_eq!(run(dir.path(), &["view", "--last"]), (0, bytes, String::new()));
+        // A link planted in its place is refused like any path outside the folder.
+        let outside = dir.path().join("secret.json");
+        std::fs::write(&outside, "not a report").unwrap();
+        std::fs::remove_file(t.join("last-session.json")).unwrap();
+        std::os::unix::fs::symlink(&outside, t.join("last-session.json")).unwrap();
+        let (code, out, err) = run(dir.path(), &["view", "--last"]);
+        assert_eq!((code, out.is_empty()), (1, true));
+        assert!(err.contains(" is not in the telemetry folder "), "{err}");
     }
 
     #[test]
@@ -481,6 +485,11 @@ mod tests {
         }
         assert_eq!(run(dir.path(), &["view", outside.to_str().unwrap()]).2, refused);
         assert_eq!(run(dir.path(), &["view", t.join("queue").to_str().unwrap()]).0, 1, "a folder is not a report");
+        // A bare name is a queued report first, even when the working folder has a file of that
+        // name (the tests run in the crate's folder, which has a Cargo.toml).
+        assert!(Path::new("Cargo.toml").is_file());
+        std::fs::write(t.join("queue").join("Cargo.toml"), "queued").unwrap();
+        assert_eq!(run(dir.path(), &["view", "Cargo.toml"]), (0, b"queued".to_vec(), String::new()));
         let (code, _, err) = run(dir.path(), &["view", "session-gone.json"]);
         assert_eq!((code, err.as_str()), (1, "no such report: session-gone.json\n"));
     }

@@ -135,10 +135,9 @@ pub struct Env<'a> {
 }
 
 impl Env<'_> {
-    /// The telemetry folder: the socket folder's `telemetry/`, the daemon's own rule, which is
-    /// `paths::telemetry_dir()` in practice.
+    /// The telemetry folder beside the socket (`paths::telemetry_dir_beside`).
     pub fn telemetry_dir(&self) -> PathBuf {
-        self.socket.parent().unwrap_or(Path::new(".")).join("telemetry")
+        crate::paths::telemetry_dir_beside(self.socket)
     }
 }
 
@@ -201,12 +200,12 @@ fn subcommand(args: &[String]) -> (Option<&str>, Vec<String>) {
     }
 }
 
-fn usage(err: &mut dyn Write, text: &str) -> i32 {
+pub(crate) fn usage(err: &mut dyn Write, text: &str) -> i32 {
     let _ = err.write_all(text.as_bytes());
     2
 }
 
-fn fail(err: &mut dyn Write, text: &str) -> i32 {
+pub(crate) fn fail(err: &mut dyn Write, text: &str) -> i32 {
     let _ = writeln!(err, "{text}");
     1
 }

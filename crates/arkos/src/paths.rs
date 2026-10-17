@@ -36,6 +36,13 @@ pub fn telemetry_dir() -> PathBuf {
     app_support().join("telemetry")
 }
 
+/// The telemetry folder of the daemon on `socket`: the socket folder's `telemetry/`, the
+/// daemon's own rule, which is `telemetry_dir()` for the real socket. The command line and the
+/// doctor read it there, so a test's socket in a temporary folder brings its own.
+pub fn telemetry_dir_beside(socket: &Path) -> PathBuf {
+    socket.parent().unwrap_or(Path::new(".")).join("telemetry")
+}
+
 pub fn socket_path() -> PathBuf {
     app_support().join("arkosd.sock")
 }
