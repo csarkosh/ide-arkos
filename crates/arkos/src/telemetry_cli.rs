@@ -8,14 +8,14 @@
 //! comes from the same place. No gpui here, and nothing is sent. Exit codes as `agent_cli`'s: 0
 //! done, 1 refused or failed, 2 usage.
 use crate::agent_cli::{self, fail, usage, Env};
-use ::telemetry::visits_app::{payload_of, view, Crashes, Mode, Usage};
+use ::telemetry::visits_app::{payload_of, view, Mode};
 use ::telemetry::TelemetryConfig;
 use protocol::codec::{read_frame, write_frame};
 use protocol::{ClientMessage, Request, Response, ServerMessage, PROTOCOL_VERSION, TELEMETRY_FROM};
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const USAGE: &str = "\
 usage: arkos telemetry status
@@ -77,7 +77,7 @@ pub struct Status {
 pub fn telemetry_cli(args: &[String]) -> i32 {
     let (socket, config, themes) = (crate::paths::socket_path(), crate::paths::config_file(), crate::paths::themes_dir());
     let env = Env { socket: &socket, config: &config, themes: &themes, wait: protocol::CUSTOMIZE_WAIT };
-    let ctx = Ctx { env: &env, mode: &real_mode, now: unix_now() };
+    let ctx = Ctx { env: &env, mode: &real_mode, now: crate::telemetry::unix_now() };
     telemetry_cli_to(args, &ctx, &mut std::io::stdout(), &mut std::io::stderr())
 }
 
@@ -86,10 +86,6 @@ pub fn telemetry_cli(args: &[String]) -> i32 {
 /// with no daemon running shows the mode a daemon would run in, not this command's own.
 pub fn real_mode(config: Result<&TelemetryConfig, &String>) -> Mode {
     ::telemetry::mode_for(config, true)
-}
-
-pub fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// `arkos telemetry ...` against `ctx`.
@@ -104,8 +100,8 @@ pub fn telemetry_cli_to(args: &[String], ctx: &Ctx, out: &mut dyn Write, err: &m
             }
             0
         }
-        [usage @ ("on" | "off" | "local")] => set(ctx, "telemetry.usage", usage, out, err),
-        ["crashes", crashes @ ("never" | "ask" | "always")] => set(ctx, "telemetry.crashes", crashes, out, err),
+        [usage] if ::telemetry::parse_usage(usage).is_some() => set(ctx, "telemetry.usage", usage, out, err),
+        ["crashes", crashes] if ::telemetry::parse_crashes(crashes).is_some() => set(ctx, "telemetry.crashes", crashes, out, err),
         ["view"] => view_queue(&dir, ctx, out),
         ["view", "--last"] => {
             let last = dir.join(LAST_SESSION);
@@ -204,8 +200,8 @@ fn local(dir: &Path, mode: &Mode, now: u64, source: Source) -> Status {
     let v = view(dir, mode.clone(), now);
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
     Status {
-        usage: usage_name(mode.usage).into(),
-        crashes: crashes_name(mode.crashes).into(),
+        usage: ::telemetry::usage_name(mode.usage).into(),
+        crashes: ::telemetry::crashes_name(mode.crashes).into(),
         uploads: mode.uploads,
         reason: mode.reason.map(str::to_string),
         queued: count(v.queued.len()),
@@ -214,23 +210,6 @@ fn local(dir: &Path, mode: &Mode, now: u64, source: Source) -> Status {
         sent: v.state.sent,
         rejected: v.state.rejected,
         source,
-    }
-}
-
-/// A usage as the config spells it.
-pub fn usage_name(u: Usage) -> &'static str {
-    match u {
-        Usage::Off => "off",
-        Usage::Local => "local",
-        Usage::On => "on",
-    }
-}
-
-fn crashes_name(c: Crashes) -> &'static str {
-    match c {
-        Crashes::Never => "never",
-        Crashes::Ask => "ask",
-        Crashes::Always => "always",
     }
 }
 

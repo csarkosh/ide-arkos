@@ -125,8 +125,14 @@ pub struct Now {
 impl Now {
     /// The system's clocks.
     pub fn system() -> Now {
-        Now { unix: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs()), at: Instant::now() }
+        Now { unix: unix_now(), at: Instant::now() }
     }
+}
+
+/// The wall clock in unix seconds, as every telemetry file and receipt records it; a clock before
+/// 1970 is 0.
+pub fn unix_now() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// How often the focus totals are flushed to the journal while the window runs.
@@ -1027,13 +1033,21 @@ pub fn asked(dir: &Path) -> bool {
     dir.join(ASKED).symlink_metadata().is_ok()
 }
 
-/// The mode for `usage` in a build of `channel`, with one environment variable set (or none) and
-/// the session interactive or not: for the tests here and in Settings.
+/// The mode for `usage` and `crashes` in a build of `channel`, with one environment variable set
+/// (or none) and the session interactive or not: for the tests here, in Settings and in the
+/// crash dialog.
 #[cfg(test)]
-pub fn mode_of(usage: Usage, channel: ::telemetry::visits_app::Channel, var: Option<(&'static str, &'static str)>, interactive: bool) -> ::telemetry::visits_app::Mode {
-    let config = ::telemetry::TelemetryConfig { usage, crashes: ::telemetry::visits_app::Crashes::Ask };
+pub fn mode_of(usage: Usage, crashes: ::telemetry::visits_app::Crashes, channel: ::telemetry::visits_app::Channel, var: Option<(&'static str, &'static str)>, interactive: bool) -> ::telemetry::visits_app::Mode {
+    let config = ::telemetry::TelemetryConfig { usage, crashes };
     let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
     ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&config), &env, &channel, interactive)
+}
+
+/// The mode an interactive release build gets from a config file that did not load: for the
+/// same tests.
+#[cfg(test)]
+pub fn mode_of_broken_config() -> ::telemetry::visits_app::Mode {
+    ::telemetry::mode_with(Err::<&::telemetry::TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &::telemetry::visits_app::Channel::Release, true)
 }
 
 /// Writes `asked` into the telemetry folder `dir`, creating the folder when it is missing.
@@ -1049,7 +1063,7 @@ pub fn answer_invitation(dir: &Path, answer: Answer) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::telemetry::visits_app::{Arch, Channel, Os};
+    use ::telemetry::visits_app::{Arch, Channel, Crashes, Os};
     use std::time::Duration;
 
     fn env() -> Envelope {
@@ -1628,30 +1642,30 @@ mod tests {
     fn the_invitation_is_due_only_on_a_later_day_in_a_release_with_usage_local_and_never_once_asked() {
         // 2026-10-16, as days since 1970.
         let installed = 20_742;
-        let yes = mode_of(Usage::Local, Channel::Release, None, true);
+        let yes = mode_of(Usage::Local, Crashes::Ask, Channel::Release, None, true);
         assert!(invitation_due(&yes, installed, installed + 1, false), "the second day, everything right");
         assert!(invitation_due(&yes, installed, installed + 30, false), "any later day");
         assert!(!invitation_due(&yes, installed, installed, false), "never on the install day");
         assert!(!invitation_due(&yes, installed, installed - 1, false), "a clock set back is not a later day");
         assert!(!invitation_due(&yes, installed, installed + 1, true), "never again once answered");
         let hidden: [(&str, ::telemetry::visits_app::Mode); 9] = [
-            ("a source build", mode_of(Usage::Local, Channel::Source, None, true)),
-            ("not interactive", mode_of(Usage::Local, Channel::Release, None, false)),
-            ("usage on", mode_of(Usage::On, Channel::Release, None, true)),
-            ("usage off", mode_of(Usage::Off, Channel::Release, None, true)),
-            ("DO_NOT_TRACK", mode_of(Usage::Local, Channel::Release, Some(("DO_NOT_TRACK", "1")), true)),
-            ("ARKOS_TELEMETRY=off", mode_of(Usage::Local, Channel::Release, Some(("ARKOS_TELEMETRY", "off")), true)),
-            ("ARKOS_TELEMETRY=log", mode_of(Usage::Local, Channel::Release, Some(("ARKOS_TELEMETRY", "log")), true)),
-            ("CI", mode_of(Usage::Local, Channel::Release, Some(("CI", "true")), true)),
+            ("a source build", mode_of(Usage::Local, Crashes::Ask, Channel::Source, None, true)),
+            ("not interactive", mode_of(Usage::Local, Crashes::Ask, Channel::Release, None, false)),
+            ("usage on", mode_of(Usage::On, Crashes::Ask, Channel::Release, None, true)),
+            ("usage off", mode_of(Usage::Off, Crashes::Ask, Channel::Release, None, true)),
+            ("DO_NOT_TRACK", mode_of(Usage::Local, Crashes::Ask, Channel::Release, Some(("DO_NOT_TRACK", "1")), true)),
+            ("ARKOS_TELEMETRY=off", mode_of(Usage::Local, Crashes::Ask, Channel::Release, Some(("ARKOS_TELEMETRY", "off")), true)),
+            ("ARKOS_TELEMETRY=log", mode_of(Usage::Local, Crashes::Ask, Channel::Release, Some(("ARKOS_TELEMETRY", "log")), true)),
+            ("CI", mode_of(Usage::Local, Crashes::Ask, Channel::Release, Some(("CI", "true")), true)),
             (
                 "a config error",
-                ::telemetry::mode_with(Err::<&::telemetry::TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &Channel::Release, true),
+                mode_of_broken_config(),
             ),
         ];
         for (why, mode) in &hidden {
             assert!(!invitation_due(mode, installed, installed + 1, false), "hidden: {why}");
         }
-        let unrelated = mode_of(Usage::Local, Channel::Release, Some(("HOME", "/Users/x")), true);
+        let unrelated = mode_of(Usage::Local, Crashes::Ask, Channel::Release, Some(("HOME", "/Users/x")), true);
         assert!(invitation_due(&unrelated, installed, installed + 1, false), "an unrelated variable changes nothing");
     }
 
@@ -1667,7 +1681,7 @@ mod tests {
             reads.set(reads.get() + 1);
             answered.get()
         };
-        let mut inv = Invitation::new(Some((installed, installed + 1)), mode_of(Usage::Local, Channel::Release, None, true));
+        let mut inv = Invitation::new(Some((installed, installed + 1)), mode_of(Usage::Local, Crashes::Ask, Channel::Release, None, true));
         for _ in 0..100 {
             assert!(inv.shows(look));
         }
@@ -1687,15 +1701,15 @@ mod tests {
         assert_eq!(reads.get(), 3, "nothing is read once it cannot show");
         // A mode that does not invite hides the strip without reading the folder.
         let reads_before = reads.get();
-        let mut inv = Invitation::new(Some((installed, installed + 1)), mode_of(Usage::On, Channel::Release, None, true));
+        let mut inv = Invitation::new(Some((installed, installed + 1)), mode_of(Usage::On, Crashes::Ask, Channel::Release, None, true));
         inv.recheck();
         assert!(!inv.shows(look));
         assert_eq!(reads.get(), reads_before);
         answered.set(false);
-        inv.set_mode(mode_of(Usage::Local, Channel::Release, None, true));
+        inv.set_mode(mode_of(Usage::Local, Crashes::Ask, Channel::Release, None, true));
         assert!(inv.shows(look), "the config changed back to local");
         // The install day, and either answer in this window, show nothing.
-        assert!(!Invitation::new(None, mode_of(Usage::Local, Channel::Release, None, true)).shows(look));
+        assert!(!Invitation::new(None, mode_of(Usage::Local, Crashes::Ask, Channel::Release, None, true)).shows(look));
         inv.answered();
         assert!(!inv.shows(look));
         assert!(!inv.possible());

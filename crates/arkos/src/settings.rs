@@ -337,22 +337,18 @@ const CRASH_CHOICES: [(&str, Crashes); 3] = [("Never", Crashes::Never), ("Ask ea
 /// any other setting; the project window's reload hands a change to `on` to the Recorder, which
 /// deletes the session reports queued before the consent (the opt-in rule), as the daemon does.
 fn usage_edit(usage: Usage) -> Edit {
-    edit(&["telemetry", "usage"], telemetry_cli::usage_name(usage))
+    edit(&["telemetry", "usage"], ::telemetry::usage_name(usage))
 }
 
 /// The edit for the "Crash reports" row: `telemetry.crashes` as the config spells it.
 fn crashes_edit(crashes: Crashes) -> Edit {
-    edit(&["telemetry", "crashes"], match crashes {
-        Crashes::Never => "never",
-        Crashes::Ask => "ask",
-        Crashes::Always => "always",
-    })
+    edit(&["telemetry", "crashes"], ::telemetry::crashes_name(crashes))
 }
 
 /// The line under Usage reports: what the mode means, or the rule that forces it, in the words
 /// `arkos telemetry status` and the disclosure page use.
 fn usage_line(mode: &Mode) -> String {
-    telemetry_cli::mode_words(mode.reason, telemetry_cli::usage_name(mode.usage))
+    telemetry_cli::mode_words(mode.reason, ::telemetry::usage_name(mode.usage))
 }
 
 /// The mode the shown config gives this app: a person's, so interactive. A config file that does
@@ -1056,7 +1052,7 @@ mod tests {
         let old: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
         let (_, on) = usage_edit(Usage::On);
         let new = config::parse(&config::apply_edits(DEFAULT_CONFIG, &[(&["telemetry", "usage"], on)]).unwrap()).unwrap();
-        let usage = ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&new.telemetry), &|_: &str| None, &Channel::Release, true).usage;
+        let usage = crate::telemetry::mode_of(new.telemetry.usage, new.telemetry.crashes, Channel::Release, None, true).usage;
         assert!(r.config_changed(&old, &new, usage, now).is_some(), "a fresh journal");
         assert!(!session.exists(), "the sessions queued before the consent are gone");
         assert!(crash.exists(), "a crash report stays");
@@ -1067,18 +1063,18 @@ mod tests {
     #[test]
     fn the_usage_line_says_what_the_mode_means_and_why() {
         use crate::telemetry::mode_of as mode;
-        use ::telemetry::visits_app::{Channel, Usage};
-        let release = |usage| mode(usage, Channel::Release, None, true);
+        use ::telemetry::visits_app::{Channel, Crashes, Usage};
+        let release = |usage| mode(usage, Crashes::Ask, Channel::Release, None, true);
         assert_eq!(usage_line(&release(Usage::Off)), "usage reports are off: nothing is recorded");
         assert_eq!(usage_line(&release(Usage::Local)), "usage reports are local: recorded on this Mac, never sent");
         assert_eq!(usage_line(&release(Usage::On)), "usage reports are on: recorded and sent");
-        assert_eq!(usage_line(&mode(Usage::On, Channel::Source, None, true)), "this copy was built from source and sends nothing");
-        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("DO_NOT_TRACK", "1")), true)), "DO_NOT_TRACK is set: nothing is recorded and nothing is sent");
-        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("ARKOS_TELEMETRY", "off")), true)), "ARKOS_TELEMETRY=off: nothing is recorded and nothing is sent");
-        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("ARKOS_TELEMETRY", "log")), true)), "ARKOS_TELEMETRY=log: Arkos records as your settings say and sends nothing");
-        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("CI", "1")), true)), "CI is set: Arkos records as your settings say and sends nothing");
-        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, None, false)), "arkos run from a script, with no terminal, never sends and never asks");
-        let broken = ::telemetry::mode_with(Err::<&::telemetry::TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &Channel::Release, true);
+        assert_eq!(usage_line(&mode(Usage::On, Crashes::Ask, Channel::Source, None, true)), "this copy was built from source and sends nothing");
+        assert_eq!(usage_line(&mode(Usage::On, Crashes::Ask, Channel::Release, Some(("DO_NOT_TRACK", "1")), true)), "DO_NOT_TRACK is set: nothing is recorded and nothing is sent");
+        assert_eq!(usage_line(&mode(Usage::On, Crashes::Ask, Channel::Release, Some(("ARKOS_TELEMETRY", "off")), true)), "ARKOS_TELEMETRY=off: nothing is recorded and nothing is sent");
+        assert_eq!(usage_line(&mode(Usage::On, Crashes::Ask, Channel::Release, Some(("ARKOS_TELEMETRY", "log")), true)), "ARKOS_TELEMETRY=log: Arkos records as your settings say and sends nothing");
+        assert_eq!(usage_line(&mode(Usage::On, Crashes::Ask, Channel::Release, Some(("CI", "1")), true)), "CI is set: Arkos records as your settings say and sends nothing");
+        assert_eq!(usage_line(&mode(Usage::On, Crashes::Ask, Channel::Release, None, false)), "arkos run from a script, with no terminal, never sends and never asks");
+        let broken = crate::telemetry::mode_of_broken_config();
         assert_eq!(usage_line(&broken), "the config file cannot be read, so nothing is recorded or sent for that run");
     }
 

@@ -113,6 +113,17 @@ pub fn crashes_name(c: Crashes) -> &'static str {
     }
 }
 
+/// The usage setting a config spelling names (`usage_name` read back); `None` for any other word.
+pub fn parse_usage(word: &str) -> Option<Usage> {
+    [Usage::Off, Usage::Local, Usage::On].into_iter().find(|u| usage_name(*u) == word)
+}
+
+/// The crash setting a config spelling names (`crashes_name` read back); `None` for any other
+/// word.
+pub fn parse_crashes(word: &str) -> Option<Crashes> {
+    [Crashes::Never, Crashes::Ask, Crashes::Always].into_iter().find(|c| crashes_name(*c) == word)
+}
+
 /// The major of `sw_vers -productVersion`, read once; 0 when it cannot be read.
 pub fn osv() -> u32 {
     static OSV: OnceLock<u32> = OnceLock::new();
@@ -364,6 +375,23 @@ mod tests {
         assert_eq!((usage_name(Usage::Local), crashes_name(Crashes::Ask)), ("local", "ask"));
         assert_eq!(user_agent(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
         assert_eq!(user_agent(), format!("arkos/{}", envelope(Bin::Daemon).ver), "the envelope's version");
+    }
+
+    /// `parse_usage` and `parse_crashes` read back exactly the names, and nothing else.
+    #[test]
+    fn each_settings_name_parses_back_and_nothing_else_does() {
+        for usage in [Usage::Off, Usage::Local, Usage::On] {
+            assert_eq!(parse_usage(usage_name(usage)), Some(usage));
+        }
+        for crashes in [Crashes::Never, Crashes::Ask, Crashes::Always] {
+            assert_eq!(parse_crashes(crashes_name(crashes)), Some(crashes));
+        }
+        for other in ["", "On", "true", "always", "ask "] {
+            assert_eq!(parse_usage(other), None, "{other:?}");
+        }
+        for other in ["", "Never", "on", "off", " ask"] {
+            assert_eq!(parse_crashes(other), None, "{other:?}");
+        }
     }
 
     #[test]

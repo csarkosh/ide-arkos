@@ -388,7 +388,7 @@ pub fn at_launch(crashes: Crashes, mode: &Mode, theme: Theme, mono: SharedString
             }
         }
         Decision::QueueAll => {
-            claims.send(unix_now());
+            claims.send(crate::telemetry::unix_now());
             aux::reports_changed(cx);
         }
         Decision::DeleteAll => {
@@ -397,10 +397,6 @@ pub fn at_launch(crashes: Crashes, mode: &Mode, theme: Theme, mono: SharedString
         }
         Decision::Wait => claims.put_back(),
     }
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// What the dialog shows and the state of its two controls.
@@ -453,7 +449,7 @@ impl CrashDialog {
     /// Send: the reports go to the queue, and with the box checked, `crashes` becomes `always`.
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(claims) = self.claims.take() {
-            claims.send(unix_now());
+            claims.send(crate::telemetry::unix_now());
         }
         if self.state.always {
             match always_send(&crate::paths::config_file()) {
@@ -609,15 +605,13 @@ impl Render for CrashDialog {
 mod tests {
     use super::*;
     use ::telemetry::visits_app::{new_id, Channel, Crash, CrashKind, Crashes, Envelope, Uptime, Usage};
-    use ::telemetry::{Bin, Error, TelemetryConfig};
+    use ::telemetry::Bin;
     use std::time::Duration;
 
-    /// The mode a release build gives `crashes` with one environment variable set (or none),
-    /// interactive or not.
+    /// The mode a build of `channel` gives `crashes` under usage `local`, with one environment
+    /// variable set (or none), interactive or not.
     fn mode(crashes: Crashes, var: Option<(&'static str, &'static str)>, channel: Channel, interactive: bool) -> Mode {
-        let config = TelemetryConfig { usage: Usage::Local, crashes };
-        let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
-        ::telemetry::mode_with(Ok::<_, Error>(&config), &env, &channel, interactive)
+        crate::telemetry::mode_of(Usage::Local, crashes, channel, var, interactive)
     }
 
     /// Review Focus 6: the dialog shows only under `ask` with no rule of the environment and
@@ -641,7 +635,7 @@ mod tests {
                 mode(crashes, Some(("ARKOS_TELEMETRY", "log")), Channel::Release, true),
                 mode(crashes, Some(("CI", "true")), Channel::Release, true),
                 mode(crashes, None, Channel::Release, false),
-                ::telemetry::mode_with(Err::<&TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &Channel::Release, true),
+                crate::telemetry::mode_of_broken_config(),
             ];
             for m in &ruled {
                 assert!(m.reason.is_some());
