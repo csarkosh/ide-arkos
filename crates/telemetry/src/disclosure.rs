@@ -71,31 +71,31 @@ pub const CHECK: Table = Table {
 /// The session report's keys beyond the envelope (section 6.4).
 pub const SESSION: Table = Table {
     title: "The session report",
-    intro: "One report for one run of a window, recorded only while usage reports are `local` or `on`, and sent only when they are `on`.",
+    intro: "One report per journal, which is one run of a window, recorded only while usage reports are `local` or `on` and sent only when they are `on`. A run that reconnects to the daemon, or in which you turn usage reports on, starts a new report under a new id.",
     fields: &[
         field(
             "sid",
             "`9f2c4e1a7b3d5f60a1c2e3f4b5d6e7f8`",
-            "A random number made when the window starts and forgotten when it ends. It ties one run's events together; no two runs share it.",
+            "A random number made for one report and never used again. It ties that report's events together.",
         ),
-        field("len", "`5400`", "How long the run lasted, in seconds."),
+        field("len", "`5400`", "How long the report covers, in seconds."),
         field(
             "end",
             "`quit`",
-            "How the run ended: `quit`, `lost` when the window went away without quitting (a crash or a force quit), or `unknown` when it was found left behind. The share of `lost` runs is the crash rate.",
+            "How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash or a force quit), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate.",
         ),
         field(
             "iw",
             "`20370`",
-            "The week Arkos was first used on this Mac, as days since 1 January 1970 rounded down to a multiple of 7. It shows how long people keep using Arkos; everyone who started that week sends the same number.",
+            "The week the first session was recorded on this Mac, as days since 1 January 1970 rounded down to a multiple of 7. It shows how long people keep using Arkos; everyone who started that week sends the same number.",
         ),
         field("rd", "`2`", "Days since the last session report from this copy, or `-1` for the first. It shows how often Arkos is used, without an id."),
         field(
             "focus",
             "`{\"terminal\": 3100, \"viewer\": 900}`",
-            "Seconds the window was in front, per kind of tab and for Settings, to see which parts of Arkos are used.",
+            "Seconds the window was in front during the report, per kind of tab and for Settings, to see which parts of Arkos are used.",
         ),
-        field("ev", "`[{\"n\": \"launch\", \"t\": 0, \"d\": {\"how\": \"normal\"}}]`", "The run's events in order, at most 200. Each one is in the events table below."),
+        field("ev", "`[{\"n\": \"launch\", \"t\": 0, \"d\": {\"how\": \"normal\"}}]`", "The report's events in order, at most 200. Each one is in the events table below."),
         field("ev_dropped", "`0`", "How many events came after the 200th, counted and not kept."),
         field("ev_rejected", "`0`", "How many events the allowlist refused, counted so a mistake in Arkos shows up. The events themselves are never written."),
     ],
@@ -107,7 +107,7 @@ pub const EVENT: Table = Table {
     intro: "Each entry of `ev` has these keys.",
     fields: &[
         field("n", "`pane_open`", "The event's name, one of the events table below."),
-        field("t", "`42`", "Seconds since the window started."),
+        field("t", "`42`", "Seconds since the report started."),
         field("d", "`{\"kind\": \"terminal\", \"how\": \"key\"}`", "The event's details: only the keys and values the events table allows, never a name, a path or anything typed."),
     ],
 };
@@ -165,7 +165,7 @@ pub const EVENT_WHEN: &[(&str, &str)] = &[
     ("pane_open", "A tab was opened, and how."),
     ("pane_close", "A tab was closed."),
     ("view", "The viewer showed a file, by its kind, never its name."),
-    ("md", "A markdown feature was used for the first time in this run, once per feature."),
+    ("md", "A markdown feature was used for the first time in this report, once per feature."),
     ("agent_launch", "A coding agent started in a terminal."),
     ("agent_state", "An agent first asked for input, once per terminal."),
     ("palette", "A command ran from the command palette."),

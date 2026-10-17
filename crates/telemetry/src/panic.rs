@@ -13,7 +13,9 @@
 //! `trace`, takes the backtrace crate's global lock), and it reads no config, no recorder and no
 //! gpui state. It allocates only on that thread, and writes the report with one `write` to a file
 //! it creates with `openat` on the kept folder, so no path is resolved after the panic either. A
-//! `source` build's hook returns at once and writes nothing.
+//! `source` build's hook returns at once and writes nothing, and so does the hook of a process
+//! whose environment turned crash reports off (`DO_NOT_TRACK`, `ARKOS_TELEMETRY=off`), read once
+//! at `install`.
 use crate::Kind;
 use sha2::{Digest, Sha256};
 use std::ffi::CString;
@@ -25,7 +27,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
-use visits_app::{Crash, CrashKind, Envelope, Uptime};
+use visits_app::{Channel, Crash, CrashKind, Crashes, Envelope, Settings, Uptime};
 
 /// At most this many frames go in a report: the wire's cap.
 const MAX_FRAMES: usize = 64;
@@ -46,6 +48,8 @@ const MAX_REPORTS: u32 = 4;
 /// What `install` worked out, for the hook to read without a lock.
 struct Installed {
     env: Envelope,
+    /// Whether the environment turned crash reports off when the hook was installed.
+    off: bool,
     commit: String,
     /// The incidents folder, open: `None` for a source build, or when it could not be made.
     incidents: Option<File>,
@@ -69,14 +73,18 @@ static WRITTEN: AtomicU32 = AtomicU32::new(0);
 /// Installs the hook for this process, once. `env` is the envelope its reports carry (`main`
 /// passes `envelope(..)`, a test a release one), `commit` the binary's `ARKOS_GIT_HASH`, and `dir`
 /// its telemetry folder, whose `incidents/` is made and opened here. For a source build nothing
-/// is made or opened, and the hook only passes the panic on. A second call changes nothing.
+/// is made or opened, and the hook only passes the panic on; the same when the environment turns
+/// crash reports off (`env_turns_crashes_off`), which is read here, once, since the hook may not
+/// read it after a panic. A second call changes nothing.
 pub fn install(env: Envelope, commit: &str, dir: &Path) {
-    let source = env.ch.is_source();
+    let off = env_turns_crashes_off(&|k| std::env::var(k).ok());
+    let quiet = off || env.ch.is_source();
     let installed = Installed {
         commit: if is_commit(commit) { commit.to_string() } else { NO_COMMIT.to_string() },
-        incidents: if source { None } else { open_incidents(&dir.join("incidents")) },
-        image: if source { None } else { main_image(image_name(&env.bin)) },
+        incidents: if quiet { None } else { open_incidents(&dir.join("incidents")) },
+        image: if quiet { None } else { main_image(image_name(&env.bin)) },
         env,
+        off,
         start: Instant::now(),
     };
     if INSTALLED.set(installed).is_err() {
@@ -89,6 +97,14 @@ pub fn install(env: Envelope, commit: &str, dir: &Path) {
     }));
 }
 
+/// Whether the environment `env` reads turns crash reports off: `DO_NOT_TRACK` set to anything
+/// but empty, `0` or `false`, or `ARKOS_TELEMETRY` saying `off`, `0`, `false` or `no` in any case.
+/// The rule is the crate's own (`visits_app::mode` gives crashes `Never` for exactly these), so it
+/// is asked rather than copied.
+pub fn env_turns_crashes_off(env: &dyn Fn(&str) -> Option<String>) -> bool {
+    visits_app::mode(&Settings::default(), env, crate::ENV_VAR, &Channel::Release, true).crashes == Crashes::Never
+}
+
 /// Makes the incidents folder (only its owner may read it) and opens it for `openat`.
 fn open_incidents(path: &Path) -> Option<File> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -99,7 +115,7 @@ fn open_incidents(path: &Path) -> Option<File> {
 /// The hook's own work: the report of this panic, written to the incidents folder.
 fn record(info: &PanicHookInfo<'_>) {
     let Some(at) = INSTALLED.get() else { return };
-    if at.env.ch.is_source() {
+    if at.off || at.env.ch.is_source() {
         return;
     }
     if WRITTEN.fetch_add(1, Ordering::Relaxed) >= MAX_REPORTS {
@@ -383,6 +399,7 @@ mod tests {
     use std::process::{Command, Output, Stdio};
     use std::time::{Duration, Instant};
     use visits_app::{Channel, Crash, CrashKind};
+    use std::collections::HashMap;
 
     /// Set in a child run to `release`, `source` or `kind`: how the child installs and panics.
     const CHILD: &str = "ARKOS_PANIC_TEST_CHILD";
@@ -539,12 +556,21 @@ mod tests {
     /// into with what it printed. A child that does not end within a minute is killed: the hook
     /// hung.
     fn run_child(how: &str) -> (tempfile::TempDir, Output) {
+        run_child_with(how, &[])
+    }
+
+    /// `run_child` with `vars` set in the child's environment. The variables that turn crash
+    /// reports off are removed first, so the developer's own environment cannot change a result.
+    fn run_child_with(how: &str, vars: &[(&str, &str)]) -> (tempfile::TempDir, Output) {
         let dir = tempfile::tempdir().unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "panic::tests::child", "--ignored", "--nocapture", "--test-threads=1"])
             .env(CHILD, how)
             .env(DIR, dir.path())
             .env_remove("RUST_BACKTRACE")
+            .env_remove("DO_NOT_TRACK")
+            .env_remove(crate::ENV_VAR)
+            .envs(vars.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -645,6 +671,35 @@ mod tests {
         let crash = Crash::from_bytes(&bytes).unwrap();
         assert_eq!(crash.pk, "placeholder");
         assert_eq!(crash.mh, None);
+    }
+
+    #[test]
+    fn do_not_track_keeps_a_release_panic_from_writing_anything() {
+        let (dir, _) = run_child_with("release", &[("DO_NOT_TRACK", "1")]);
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(left.is_empty(), "not even the incidents folder: {left:?}");
+    }
+
+    #[test]
+    fn the_environment_turns_crash_reports_off_by_the_crates_rule() {
+        let off = |vars: &[(&str, &str)]| {
+            let vars: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            env_turns_crashes_off(&move |k| vars.get(k).cloned())
+        };
+        assert!(!off(&[]), "nothing set");
+        for v in ["1", "true", "yes"] {
+            assert!(off(&[("DO_NOT_TRACK", v)]), "DO_NOT_TRACK={v}");
+        }
+        for v in ["", "0", "false"] {
+            assert!(!off(&[("DO_NOT_TRACK", v)]), "DO_NOT_TRACK={v:?}");
+        }
+        for v in ["off", "OFF", "0", "false", "No"] {
+            assert!(off(&[("ARKOS_TELEMETRY", v)]), "ARKOS_TELEMETRY={v}");
+        }
+        for v in ["log", "on", ""] {
+            assert!(!off(&[("ARKOS_TELEMETRY", v)]), "ARKOS_TELEMETRY={v:?}");
+        }
+        assert!(!off(&[("CI", "true")]), "CI keeps recording; it only stops uploads");
     }
 
     #[test]

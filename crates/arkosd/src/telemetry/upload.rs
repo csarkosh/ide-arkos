@@ -3,7 +3,7 @@
 //! connected, and posts what the mode lets leave through the system curl. The crate's
 //! `Queue::drain` decides what leaves and what a status means; this module gives it the
 //! transport and the folder.
-use ::telemetry::visits_app::{seal_stale_except, Mode, Outcome, Queue, Transport};
+use ::telemetry::visits_app::{seal_stale_except, Mode, Outcome, Queue, Transport, Usage};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -50,6 +50,29 @@ impl Transport for Curl {
     }
 }
 
+/// Opt-in's clean start for the journals this loop seals: when usage was not `On` at the last
+/// pass (`previous`) and is now, deletes the journal of every window not among `connected`, so
+/// nothing recorded before the consent is sealed and sent. A connected window restarts its own
+/// journal under a new id when it sees the change (`config_watch`). Returns how many it deleted.
+pub fn forget_before_consent(dir: &Path, previous: Usage, usage: Usage, connected: &[&str]) -> usize {
+    if previous == Usage::On || usage != Usage::On {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(dir.join("journal")) else { return 0 };
+    let mut deleted = 0;
+    for path in entries.flatten().map(|e| e.path()) {
+        let is_journal = path.extension().is_some_and(|e| e == "jsonl");
+        let sid = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        if is_journal && !connected.contains(&sid) {
+            match std::fs::remove_file(&path) {
+                Ok(()) => deleted += 1,
+                Err(e) => eprintln!("arkosd: cannot delete a usage journal recorded before consent: {e}"),
+            }
+        }
+    }
+    deleted
+}
+
 /// One pass of the loop at `now`: seals as `unknown` every journal quiet for `STALE_SECS` whose
 /// window is not among `connected` (a sleeping machine makes a live journal look stale), drains
 /// the queue through `t` to `url` under `mode`, and adds the drain's sent and refused counts to
@@ -79,15 +102,20 @@ pub fn pass(dir: &Path, t: &dyn Transport, url: &str, user_agent: &str, mode: &M
 /// `EVERY` after the start), reads the mode afresh from the config file, so `arkos telemetry on`
 /// takes effect without a restart, and takes the sids of the windows still in the table, which
 /// the stale seal leaves alone. A window leaving meanwhile seals its own journal on the way out.
+/// The usage of the last pass is kept, so a change to `On` first deletes what was left behind
+/// before the consent (`forget_before_consent`).
 pub fn start(state: crate::server::Shared, o: super::Options, curl: PathBuf) {
     let spawned = std::thread::Builder::new().name("telemetry-upload".into()).spawn(move || {
         let transport = Curl { curl };
         let (url, user_agent) = (o.reports_url(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
+        let mut previous = super::mode_now(&o.config).usage;
         loop {
             std::thread::sleep(EVERY);
             let mode = super::mode_now(&o.config);
             let sids: Vec<String> = state.lock().unwrap().clients.values().filter_map(|r| r.sid.clone()).collect();
             let connected: Vec<&str> = sids.iter().map(String::as_str).collect();
+            forget_before_consent(&o.dir, previous, mode.usage, &connected);
+            previous = mode.usage;
             pass(&o.dir, &transport, &url, &user_agent, &mode, &connected, crate::updates::apply::now_unix());
         }
     });
@@ -374,5 +402,33 @@ mod tests {
         pass(dir.path(), &t, URL, UA, &mode(Ok(&TelemetryConfig::default()), &[], true), &[], NOW);
         assert!(!journal(live).exists());
         assert_eq!(t.calls(), 0, "and under the default config nothing was sent");
+    }
+
+    /// Nothing recorded before the consent is sent: when usage turns `On`, the journals of the
+    /// windows that are gone are deleted before the pass could seal them, and a connected
+    /// window's journal is left for that window to restart.
+    #[test]
+    fn turning_usage_on_deletes_what_gone_windows_recorded_before_the_consent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (live, gone) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
+        let allow = ::telemetry::allowlist();
+        Journal::open(dir.path(), live, &release_env(), allow.clone(), NOW - 2 * STALE_SECS).unwrap();
+        Journal::open(dir.path(), gone, &release_env(), allow.clone(), NOW - 2 * STALE_SECS).unwrap();
+        std::fs::write(dir.path().join("journal").join("notes.txt"), "not a journal").unwrap();
+        let journal = |sid: &str| dir.path().join("journal").join(format!("{sid}.jsonl"));
+        // No change to `On`: nothing is deleted.
+        for (previous, usage) in [(Usage::Local, Usage::Local), (Usage::On, Usage::On), (Usage::Off, Usage::Local), (Usage::On, Usage::Local)] {
+            assert_eq!(forget_before_consent(dir.path(), previous, usage, &[]), 0, "{previous:?} to {usage:?}");
+        }
+        assert!(journal(gone).exists() && journal(live).exists());
+        assert_eq!(forget_before_consent(dir.path(), Usage::Local, Usage::On, &[live]), 1);
+        assert!(!journal(gone).exists(), "a gone window's journal from before the consent");
+        assert!(journal(live).exists(), "a connected window restarts its own");
+        assert!(dir.path().join("journal").join("notes.txt").exists(), "only journals are touched");
+        let t = Recorder::answering(204);
+        pass(dir.path(), &t, URL, UA, &mode(Ok(&CONSENTED), &[], true), &[live], NOW);
+        assert!(queued(dir.path()).is_empty(), "nothing from before the consent was sealed");
+        assert_eq!(t.calls(), 0, "or sent");
+        assert_eq!(forget_before_consent(dir.path(), Usage::Off, Usage::On, &[]), 1, "from off too");
     }
 }

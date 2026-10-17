@@ -5,14 +5,14 @@ Arkos IDE can send three things, and each has its own consent:
 - **The update check.** Once a day, the background daemon says that a copy of Arkos with this
   version, macOS version and processor exists. No consent is asked: an update check is what a
   self-updating program sends.
-- **Session reports.** What one run of a window did: which kinds of tab were opened and for how
-  long, which agents were started, which markdown features were used, how the run ended. They
+- **Session reports.** What a window did while it ran: which kinds of tab were opened and for
+  how long, which agents were started, which markdown features were used, how it ended. They
   are recorded on your Mac by default and sent only after you turn usage reports on.
 - **Crash reports.** Where a panic happened, in which build, with a stack of offsets. Each one is
   sent only after a dialog that shows its exact bytes, unless you chose to always send them.
 
 Nothing in them identifies you or your Mac. This page is true of the code: its tables below are
-made from the files Arkos itself uses, and a test fails the build when the two differ. The same
+made from the files Arkos itself uses, and a test fails when the two differ. The same
 page is in the app, under Help > What Arkos Sends, and on the website.
 
 ## 1. What is sent and why
@@ -49,17 +49,17 @@ Sent by the daemon once a day at most, as the query of the first update check of
 
 ### The session report
 
-One report for one run of a window, recorded only while usage reports are `local` or `on`, and sent only when they are `on`.
+One report per journal, which is one run of a window, recorded only while usage reports are `local` or `on` and sent only when they are `on`. A run that reconnects to the daemon, or in which you turn usage reports on, starts a new report under a new id.
 
 | Key | Example | Why it is there |
 |---|---|---|
-| `sid` | `9f2c4e1a7b3d5f60a1c2e3f4b5d6e7f8` | A random number made when the window starts and forgotten when it ends. It ties one run's events together; no two runs share it. |
-| `len` | `5400` | How long the run lasted, in seconds. |
-| `end` | `quit` | How the run ended: `quit`, `lost` when the window went away without quitting (a crash or a force quit), or `unknown` when it was found left behind. The share of `lost` runs is the crash rate. |
-| `iw` | `20370` | The week Arkos was first used on this Mac, as days since 1 January 1970 rounded down to a multiple of 7. It shows how long people keep using Arkos; everyone who started that week sends the same number. |
+| `sid` | `9f2c4e1a7b3d5f60a1c2e3f4b5d6e7f8` | A random number made for one report and never used again. It ties that report's events together. |
+| `len` | `5400` | How long the report covers, in seconds. |
+| `end` | `quit` | How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash or a force quit), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate. |
+| `iw` | `20370` | The week the first session was recorded on this Mac, as days since 1 January 1970 rounded down to a multiple of 7. It shows how long people keep using Arkos; everyone who started that week sends the same number. |
 | `rd` | `2` | Days since the last session report from this copy, or `-1` for the first. It shows how often Arkos is used, without an id. |
-| `focus` | `{"terminal": 3100, "viewer": 900}` | Seconds the window was in front, per kind of tab and for Settings, to see which parts of Arkos are used. |
-| `ev` | `[{"n": "launch", "t": 0, "d": {"how": "normal"}}]` | The run's events in order, at most 200. Each one is in the events table below. |
+| `focus` | `{"terminal": 3100, "viewer": 900}` | Seconds the window was in front during the report, per kind of tab and for Settings, to see which parts of Arkos are used. |
+| `ev` | `[{"n": "launch", "t": 0, "d": {"how": "normal"}}]` | The report's events in order, at most 200. Each one is in the events table below. |
 | `ev_dropped` | `0` | How many events came after the 200th, counted and not kept. |
 | `ev_rejected` | `0` | How many events the allowlist refused, counted so a mistake in Arkos shows up. The events themselves are never written. |
 
@@ -70,7 +70,7 @@ Each entry of `ev` has these keys.
 | Key | Example | Why it is there |
 |---|---|---|
 | `n` | `pane_open` | The event's name, one of the events table below. |
-| `t` | `42` | Seconds since the window started. |
+| `t` | `42` | Seconds since the report started. |
 | `d` | `{"kind": "terminal", "how": "key"}` | The event's details: only the keys and values the events table allows, never a name, a path or anything typed. |
 
 ### The events
@@ -85,7 +85,7 @@ An event is one of these names, with only these keys, each taking only the value
 | `pane_open` | `kind`: `terminal`, `viewer`, `browser`; `how`: `palette`, `key`, `click`, `explorer`, `link`, `restore` | A tab was opened, and how. |
 | `pane_close` | `kind`: `terminal`, `viewer`, `browser` | A tab was closed. |
 | `view` | `format`: `markdown`, `code`, `plain`, `image`, `video`, `binary`, `too_large`; `mode`: `rendered`, `raw` | The viewer showed a file, by its kind, never its name. |
-| `md` | `feature`: `table_edit`, `mermaid`, `details`, `checklist`, `remote_image`, `video`, `inline_diff` | A markdown feature was used for the first time in this run, once per feature. |
+| `md` | `feature`: `table_edit`, `mermaid`, `details`, `checklist`, `remote_image`, `video`, `inline_diff` | A markdown feature was used for the first time in this report, once per feature. |
 | `agent_launch` | `agent`: `claude`, `other`; `how`: `new`, `resume` | A coding agent started in a terminal. |
 | `agent_state` | `agent`: `claude`, `other`; `state`: `waiting` | An agent first asked for input, once per terminal. |
 | `palette` | `command`: `focus_pane`, `focus_dir`, `split`, `toggle_maximize`, `move_tab_to_pane`, `cycle_tab`, `mru_tab`, `close_tab`, `reopen_closed_tab`, `close_all_in_pane`, `move_tab_within`, `new_terminal`, `clear_to_start`, `font_delta`, `about`, `open_settings`, `keybindings`, `documentation`, `open_config`, `text_preset`, `reload_config`, `extract_themes`, `command_palette`, `set_theme`, `find`, `copy_as_shown`, `update_now`, `check_for_updates`, `notifications`, `doctor`, `retry_update`, `start_at_login`, `install_hooks`, `install_agent_guide`, `toggle_sidebar`, `focus_file_tree`, `show_ignored_files`, `focus_worktrees`, `toggle_inline_diff`, `toggle_markdown_view`, `save_file`, `open_folder`, `new_window`, `new_browser_tab`, `new_browser_tab_single_page`, `dock_chrome_window`, `dock_chrome_window_at`, `undock_chrome_window` | A command ran from the command palette. |
@@ -129,7 +129,8 @@ Written when Arkos panics, and sent only after you agree: in the dialog for that
 - The contents of a file, a document, a setting's value or a theme's name.
 - Environment variables.
 - Your IP address. The collector does not write it (see section 5).
-- A persistent id. The session id lives for one run of a window; a crash id names one crash.
+- A persistent id. A session id is made for one report and never used again; a crash id names
+  one crash.
 
 A source build, which is every copy built from the code rather than downloaded as a release,
 sends nothing to the maintainer: its update checks go straight to GitHub.
@@ -156,7 +157,7 @@ The ways to change it, all equal:
 - **The command line**: `arkos telemetry on`, `arkos telemetry off`, `arkos telemetry local`,
   `arkos telemetry crashes never|ask|always`, and `arkos telemetry status` to see the mode in
   force and the reason for it.
-- **The config file**, `~/.config/arkos/config.toml`:
+- **The config file**, `~/.config/arkos/config.toml` (or under `$XDG_CONFIG_HOME`):
 
   ```toml
   [telemetry]
@@ -164,13 +165,14 @@ The ways to change it, all equal:
   crashes = "ask"     # "never" | "ask" | "always"
   ```
 
-  `arkos settings set telemetry.usage off` writes the same key. A config file Arkos cannot read
-  turns usage and crash reports off for that run; it never falls back to the defaults.
+  `arkos settings set telemetry.usage off` writes the same key. A config file the window cannot
+  read stops it recording for that run, never falling back to the defaults; the daemon sends only
+  what the `[telemetry]` table, as written, allows.
 
 Environment variables take precedence over the settings:
 
 - `DO_NOT_TRACK` set to anything but empty, `0` or `false`: nothing is recorded and nothing is
-  sent, usage and crashes alike.
+  sent, crash reports included.
 - `ARKOS_TELEMETRY=off`: the same.
 - `ARKOS_TELEMETRY=log`: Arkos records as your settings say and sends nothing. Every 15 minutes
   the daemon prints each report waiting in the queue to its log instead (section 4). The
@@ -190,7 +192,9 @@ None of these switches stops the update check. It carries only the envelope and 
 Everything Arkos would send is a file on your Mac first, in
 `~/Library/Application Support/arkos/telemetry/`:
 
-- `journal/` holds the running window's session, one line per event, as it is recorded.
+- `journal/` holds each running window's session, one line per event, as it is recorded. A run
+  that reconnects to the daemon, or in which you turn usage reports on, starts a new report under
+  a new id.
 - `queue/` holds the reports waiting to leave. Under `local`, every session waits here and is
   never sent; reports older than seven days are deleted.
 - `last-session.json` is the session sealed last, kept after it was sent.
@@ -209,32 +213,33 @@ To read them:
 ## 5. How it travels, where it is kept, and for how long
 
 Only the daemon sends. It uses the system's `curl`, over HTTPS only, to `apps.csarko.sh`, the
-maintainer's own address, with the user agent `arkos/<version>`. Reports go up every 15 minutes
+maintainer's own address, with the user agent `arkos/<version>`. Firebase Hosting serves that
+address and passes each request on to the collector. Reports go up every 15 minutes
 with a 10 second limit; the update check has its own 5 second limit and falls back to GitHub
 straight away if it fails, so a collector outage never delays an update. A report that fails is
 tried again after 15 minutes, an hour, four hours, then daily, and is deleted after seven days.
 The day's other update checks, the update manifest's signature and every update download go
-straight to GitHub and carry nothing from this page.
+straight to GitHub and carry only the user agent.
 
 The collector is lib-visits's open source `visits` server. It runs on Google Cloud Run in the
 United States (`us-west1`), in the maintainer's own Google Cloud project. It writes each report
 and each check it accepts as one row, with only their keys and the time they arrived. The rows
 are kept in a Cloud Logging bucket in that project, whose location is Google's `global`, and read
-through BigQuery. Rows are kept for two years (730 days), so a year can be compared with the one before.
+through BigQuery. Rows are kept for two years (730 days), so a year can be compared with the one
+before.
 
 The collector sees your IP address to answer the request and to limit how often one address may
-post. It never writes it. Google Cloud's request log for the collector drops every request it
-answered with success, so no address is kept for an accepted report or a check. A request the
-collector refuses (a malformed report, too many requests) keeps its request log entry, address
-included, for Google Cloud's default of 30 days.
+post. It never writes it, and Google Cloud keeps no request-log entry for a report or a check,
+accepted or refused, so no address is kept.
 
 ## 6. Who reads it, and what is published
 
-One person, the maintainer, reads the raw rows. Crash offsets are turned into function names
+Two can read the raw rows: the maintainer, and the service account of his own admin service,
+which runs in the same Google Cloud project. Crash offsets are turned into function names
 with the debug symbols published beside each release (`Arkos-IDE-<version>-dSYM.zip`), which say
 nothing the source code does not.
 
-Nothing is published yet. When it is, it will be daily totals by Arkos version, macOS version,
+Nothing is published yet. When it is, it will be totals by Arkos version, macOS version,
 processor and channel, with any group of fewer than ten merged into "other". Raw rows are never
 published.
 
