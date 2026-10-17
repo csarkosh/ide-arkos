@@ -36,7 +36,7 @@ The check, the session report and the crash report all start with these keys. Th
 | `os` | `macos` | The operating system. Arkos runs on macOS only, so it is always `macos`. |
 | `osv` | `15` | The major macOS version, to know which versions to keep supporting. The minor version is not sent. |
 | `arch` | `arm64` | The processor type, `arm64` for Apple silicon or `x86_64` for Intel, to know which builds matter. |
-| `ch` | `release` | How this copy was built: `release` for the published app. A copy built from source says `source` and sends nothing. |
+| `ch` | `release` | How this copy was built: `release` for the published app. A copy built from source says `source` and sends nothing. The maintainer's own Macs say `dogfood`, so his use is counted apart from yours. |
 | `k` | `session` | The kind of report: `check`, `session` or `crash`. |
 
 ### The update check
@@ -235,8 +235,9 @@ through BigQuery. Rows are kept for two years (730 days), so a year can be compa
 before.
 
 The collector sees your IP address to answer the request and to limit how often one address may
-post. It never writes it, and Google Cloud keeps no request-log entry for a report or a check,
-accepted or refused, so no address is kept.
+post, and to tell whether it is one of the maintainer's own, whose rows it marks `own` so his
+use is counted apart. It never writes the address, and Google Cloud keeps no request-log entry
+for a report or a check, accepted or refused, so no address is kept.
 
 ## 6. Who reads it, and what is published
 

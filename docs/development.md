@@ -96,7 +96,10 @@ All three release paths also do what makes a build a release for telemetry ([wha
 sends](telemetry.md)). `bundle.sh` run with `ARKOS_CHANNEL=release` writes
 `Contents/Resources/channel` saying `release` before signing, and only such a bundle can ever
 upload; `packaging/test.sh`, the shoot and every dev build have no channel file and are `source`,
-which never sends anything. The build passes `--remap-path-prefix` for the checkout (`/src`), the
+which never sends anything. On the maintainer's own Macs, an empty `~/.config/arkos/dogfood`
+(`touch` it once per Mac; the daemon reads it when it next starts, after an update or a log-out) makes a release
+say `dogfood` instead, and the admin dashboard (`admin.csarko.sh/ide-arkos/`) shows that use apart
+from everyone else's; the collector also marks rows from the addresses it ignores `own`. The build passes `--remap-path-prefix` for the checkout (`/src`), the
 Cargo home (`/cargo`) and the workspace's relative `crates/` paths (`/src/crates`), so a panic's
 `file` reads `/src/crates/arkos/src/md_view.rs` and never a home folder (the toolchain's own files
 already read `/rustc/<hash>`), and the release fails when the binaries were built without their

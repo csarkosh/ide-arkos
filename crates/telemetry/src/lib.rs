@@ -67,14 +67,29 @@ pub fn channel_of(bundle: &Path) -> Channel {
     }
 }
 
-/// The channel of the bundle this process runs from, read once. A binary outside a bundle (a dev
-/// build in `target/`) is `source`.
+/// The channel a release copy says instead on a Mac holding `<config dir>/dogfood`: the
+/// maintainer's own, whose use the admin dashboard keeps apart from everyone else's.
+pub const DOGFOOD: &str = "dogfood";
+
+/// `release` becomes `dogfood` when `marker` exists; `source` stays `source` and sends nothing.
+pub fn dogfooded(ch: Channel, marker: &Path) -> Channel {
+    match ch {
+        Channel::Release if marker.exists() => Channel::Named(DOGFOOD.into()),
+        ch => ch,
+    }
+}
+
+/// The channel of the bundle this process runs from, `dogfood` on a maintainer's Mac, read once.
+/// A binary outside a bundle (a dev build in `target/`) is `source`.
 pub fn channel() -> Channel {
     static CHANNEL: OnceLock<Channel> = OnceLock::new();
     CHANNEL
-        .get_or_init(|| match std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)) {
-            Some(bundle) => channel_of(&bundle),
-            None => Channel::Source,
+        .get_or_init(|| {
+            let ch = match std::env::current_exe().ok().and_then(|exe| bundle_of(&exe)) {
+                Some(bundle) => channel_of(&bundle),
+                None => Channel::Source,
+            };
+            dogfooded(ch, &config_dir().join(DOGFOOD))
         })
         .clone()
 }
@@ -269,6 +284,19 @@ mod tests {
         std::fs::write(bundle.join("Contents/Resources/channel"), "").unwrap();
         assert_eq!(channel_of(&bundle), Channel::Source);
         assert_eq!(channel_of(&dir.path().join("missing.app")), Channel::Source);
+    }
+
+    #[test]
+    fn a_release_on_a_marked_mac_says_dogfood_and_a_source_build_stays_quiet() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(DOGFOOD);
+        assert_eq!(dogfooded(Channel::Release, &marker), Channel::Release, "no marker");
+        std::fs::write(&marker, "").unwrap();
+        assert_eq!(dogfooded(Channel::Release, &marker), Channel::Named("dogfood".into()));
+        assert_eq!(dogfooded(Channel::Source, &marker), Channel::Source, "a source build still sends nothing");
+        let env = Envelope { ch: dogfooded(Channel::Release, &marker), ..envelope(Bin::App) };
+        assert_eq!(env.ch.as_str(), "dogfood");
+        assert!(!env.ch.is_source());
     }
 
     /// `packaging/bundle.sh` run as a release path runs it, on a fake `target/release` (two empty

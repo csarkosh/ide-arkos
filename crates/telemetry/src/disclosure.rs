@@ -52,7 +52,7 @@ pub const ENVELOPE: Table = Table {
         field("os", "`macos`", "The operating system. Arkos runs on macOS only, so it is always `macos`."),
         field("osv", "`15`", "The major macOS version, to know which versions to keep supporting. The minor version is not sent."),
         field("arch", "`arm64`", "The processor type, `arm64` for Apple silicon or `x86_64` for Intel, to know which builds matter."),
-        field("ch", "`release`", "How this copy was built: `release` for the published app. A copy built from source says `source` and sends nothing."),
+        field("ch", "`release`", "How this copy was built: `release` for the published app. A copy built from source says `source` and sends nothing. The maintainer's own Macs say `dogfood`, so his use is counted apart from yours."),
         field("k", "`session`", "The kind of report: `check`, `session` or `crash`."),
     ],
 };
