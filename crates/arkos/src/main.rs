@@ -285,6 +285,14 @@ pub struct Root {
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
     pub installed: SystemTime,
+    /// The invitation to turn usage reports on (telemetry spec, section 3.3): the install's UTC
+    /// day and this launch's, while the strip may still show in this run. `None` once it was
+    /// answered, here or in another window, and from the start when it never can: a launch on
+    /// the install day, or a source build.
+    pub invite: Option<(u64, u64)>,
+    /// The pane the invitation hangs under the tab bar of this frame: the first pane drawn, while
+    /// the invitation is due.
+    pub invite_pane: Option<PaneId>,
     /// The config file's problem shown under the connection banner; `None` when all is well.
     /// Kept apart from `status`, which belongs to the connection and clears when it answers.
     pub config_error: Option<String>,
@@ -609,6 +617,8 @@ impl Root {
             viewers: HashMap::new(),
             system_is_dark,
             installed,
+            invite: invite_days(installed, SystemTime::now(), ::telemetry::channel().is_source()),
+            invite_pane: None,
             config_error: None,
             theme_error: None,
             preview: None,
@@ -1708,6 +1718,44 @@ impl Root {
             }
             Err(e) => self.show_notice(format!("cannot write the disclosure page: {e}"), cx),
         }
+    }
+
+    /// Whether the invitation shows this frame (`telemetry::invitation_due`). `asked` is read
+    /// right before the strip is drawn, every frame it would be, since another window may have
+    /// had its answer meanwhile; once it is there, this run never asks again.
+    fn invitation_shows(&mut self) -> bool {
+        let Some((installed, today)) = self.invite else { return false };
+        let config = if self.config_error.is_some() { Err(()) } else { Ok(&self.config.telemetry) };
+        let mode = ::telemetry::mode_for(config, true);
+        // The file is read only when nothing else hides the strip.
+        if !telemetry::invitation_due(&mode, installed, today, false) {
+            return false;
+        }
+        let due = telemetry::invitation_due(&mode, installed, today, telemetry::asked(&paths::telemetry_dir()));
+        if !due {
+            self.invite = None;
+        }
+        due
+    }
+
+    /// The invitation's Turn on or Not now: writes `asked`, so no window asks again, and takes
+    /// the strip down. Turn on writes `telemetry.usage = "on"` through the config writer and
+    /// reloads, as the watcher would: the reload hands the change to the Recorder, which deletes
+    /// the session reports queued before the consent, and the daemon does the same when it next
+    /// reads the file.
+    fn answer_invitation(&mut self, answer: telemetry::Answer, cx: &mut Context<Self>) {
+        self.invite = None;
+        self.invite_pane = None;
+        if let Err(e) = telemetry::answer_invitation(&paths::telemetry_dir(), answer) {
+            eprintln!("arkos: cannot write the invitation's answer: {e}");
+        }
+        if answer == telemetry::Answer::TurnOn {
+            match config::set_values(&paths::config_file(), &[(&["telemetry", "usage"], "on".into())]) {
+                Ok(()) => self.reload_config(cx),
+                Err(e) => self.show_notice(format!("cannot turn usage reports on: {e}"), cx),
+            }
+        }
+        cx.notify();
     }
 
     /// Shows a one-off notice as its own banner and takes it down after `NOTICE_FOR`, unless a
@@ -3543,6 +3591,8 @@ impl Render for Root {
             self.grids.clear();
             self.content = content;
         }
+        // The invitation hangs under the first pane drawn, while it is due.
+        self.invite_pane = if self.invitation_shows() { self.layout().panes.first().map(|(pane, _)| *pane) } else { None };
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
         let side_col = sidebar::render(self, window, cx);
@@ -3797,6 +3847,14 @@ fn menus() -> Vec<Menu> {
             ],
         },
     ]
+}
+
+/// The install's UTC day and this launch's, for the invitation, when it can show in this run at
+/// all: the days and the channel are fixed for the run, so a launch on the install day or a source
+/// build never looks at the mode or at `asked` again.
+fn invite_days(installed: SystemTime, now: SystemTime, source: bool) -> Option<(u64, u64)> {
+    let days = (telemetry::utc_day(installed), telemetry::utc_day(now));
+    (days.1 > days.0 && !source).then_some(days)
 }
 
 fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme) -> Div {
@@ -4512,6 +4570,20 @@ mod tests {
         assert_eq!(grid_choice(Some((100, 30)), Some((80, 24))), Some((100, 30)));
         assert_eq!(grid_choice(None, Some((80, 24))), Some((80, 24)));
         assert_eq!(grid_choice(None, None), None);
+    }
+
+    /// The invitation is looked for only on a later UTC day than the install, and never in a
+    /// source build; the rest (the mode, `asked`) is `telemetry::invitation_due`'s, each frame.
+    #[test]
+    fn the_invitation_is_never_looked_for_on_the_install_day_or_in_a_source_build() {
+        use super::invite_days;
+        use std::time::{Duration, SystemTime};
+        // 2026-10-16 09:00 UTC, day 20742.
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_792_141_200);
+        assert_eq!(invite_days(at, at + Duration::from_secs(14 * 3600), false), None, "later on the install day");
+        assert_eq!(invite_days(at, at + Duration::from_secs(15 * 3600), false), Some((20_742, 20_743)), "the next UTC day");
+        assert_eq!(invite_days(at, at + Duration::from_secs(15 * 3600), true), None, "a source build");
+        assert_eq!(invite_days(at, at - Duration::from_secs(86_400), false), None, "a clock set back");
     }
 
     #[test]

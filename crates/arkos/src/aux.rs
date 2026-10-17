@@ -192,6 +192,27 @@ pub fn open_disclosure(cx: &mut App) {
     }
 }
 
+/// Settings' "Last report": the session the daemon sealed last, `file`, in a viewer tab of the
+/// project window, which comes forward; before there is one, in the default app for JSON, as the
+/// chooser's "What Arkos Sends" does. Deferred, as `open_settings` is.
+pub fn open_last_report(cx: &mut App, file: PathBuf) {
+    cx.defer(move |cx| {
+        let project = cx.windows().into_iter().find_map(|w| w.downcast::<Root>());
+        let opened = project.is_some_and(|handle| {
+            handle
+                .update(cx, |root, window, cx| {
+                    let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Click);
+                    root.open_viewer(&file, true, cx);
+                    window.activate_window();
+                })
+                .is_ok()
+        });
+        if !opened {
+            cx.open_with_system(&file);
+        }
+    });
+}
+
 /// Shows `shown` in the Settings window when it is open.
 pub fn push_settings(cx: &mut App, shown: Shown) {
     let Some(handle) = cx.try_global::<Aux>().and_then(|aux| aux.settings) else { return };

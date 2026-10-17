@@ -29,7 +29,7 @@ see: Help > What Arkos Sends in Arkos IDE
 const DAEMON_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The copy `seal` keeps of the session it sealed last, in the telemetry folder.
-const LAST_SESSION: &str = "last-session.json";
+pub const LAST_SESSION: &str = "last-session.json";
 
 /// The mode for the config file's `[telemetry]` table as read, or the error that kept it from
 /// being read, with this process's environment and channel; the tests give their own.
@@ -217,7 +217,8 @@ fn local(dir: &Path, mode: &Mode, now: u64, source: Source) -> Status {
     }
 }
 
-fn usage_name(u: Usage) -> &'static str {
+/// A usage as the config spells it.
+pub fn usage_name(u: Usage) -> &'static str {
     match u {
         Usage::Off => "off",
         Usage::Local => "local",
@@ -290,7 +291,13 @@ pub fn status_lines(s: &Status) -> Vec<String> {
 /// Why the mode is what it is, in the words of the disclosure page: the rule that keeps
 /// uploads off when one does, else what the usage setting means.
 pub fn reason_words(s: &Status) -> String {
-    let words = match s.reason.as_deref() {
+    mode_words(s.reason.as_deref(), &s.usage)
+}
+
+/// `reason_words` for a rule's `reason` and a usage spelled as the config spells it; the
+/// Settings window's line under Usage reports says the same.
+pub fn mode_words(reason: Option<&str>, usage: &str) -> String {
+    let words = match reason {
         Some("source build") => "this copy was built from source and sends nothing",
         Some("DO_NOT_TRACK") => "DO_NOT_TRACK is set: nothing is recorded and nothing is sent",
         Some("telemetry off") => "ARKOS_TELEMETRY=off: nothing is recorded and nothing is sent",
@@ -299,7 +306,7 @@ pub fn reason_words(s: &Status) -> String {
         Some("not interactive") => "arkos run from a script, with no terminal, never sends and never asks",
         Some("config error") => "the config file cannot be read, so nothing is recorded or sent for that run",
         Some(other) => other,
-        None => match s.usage.as_str() {
+        None => match usage {
             "on" => "usage reports are on: recorded and sent",
             "off" => "usage reports are off: nothing is recorded",
             _ => "usage reports are local: recorded on this Mac, never sent",

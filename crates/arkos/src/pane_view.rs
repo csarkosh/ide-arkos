@@ -386,8 +386,12 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let number = root.pane_order.iter().position(|id| *id == pane).map(|i| i + 1).unwrap_or(0);
     let tabs = tab_labels(root, &p, cx);
     let bar_h = bar_height_for(p.tabs.get(p.active));
+    // The invitation hangs under the first pane's tab bar, above the body, which gives up its
+    // height: a terminal measures the grid it is left.
+    let strip = (root.invite_pane == Some(pane)).then(|| render_invitation(root, cx));
+    let body_top = bar_h + if strip.is_some() { INVITE_H } else { 0.0 };
     // The body under the bar, for a Chrome window dragged over arkos (`Root::browser_drop`).
-    root.pane_rects.push((pane, Rect { x: rect.x, y: rect.y + bar_h, w: rect.w, h: rect.h - bar_h }));
+    root.pane_rects.push((pane, Rect { x: rect.x, y: rect.y + body_top, w: rect.w, h: rect.h - body_top }));
     let bar = render_tab_bar(root, pane, &p, number, &tabs, bar_h, cx);
     let labels: Vec<String> = tabs.into_iter().map(|(label, _)| label).collect();
     if !p.tabs.is_empty() {
@@ -440,7 +444,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let painted = if zone.is_some() || root.drop_tints.contains_key(&pane) {
         let tint = root.drop_tints.entry(pane).or_default();
         tint.aim(zone, now);
-        tint.paint(rect.w, rect.h - bar_h, now)
+        tint.paint(rect.w, rect.h - body_top, now)
     } else {
         None
     };
@@ -554,10 +558,42 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             }),
         )
         .child(bar)
+        .children(strip)
         .child(content)
         .children(menu)
         .children(render_url_prompt(root, pane, bar_h, cx))
         .children(glow.into_iter().flatten())
+}
+
+/// The invitation strip's height on one line; a narrow pane wraps its words onto more.
+pub const INVITE_H: f32 = 24.0;
+
+/// The invitation to turn usage reports on (telemetry spec, section 3.3), drawn as a viewer
+/// tab's banners are (dim words, buttons as text in the text colour) on the window banners'
+/// background, so it reads as the app's own and not as a terminal's output. Turn on and Not now
+/// answer it for good; What is sent opens the disclosure page in a viewer tab and leaves it up.
+fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
+    let theme = root.theme.clone();
+    let c = &theme.chrome;
+    let text = c.text.hsla();
+    let button = |id: &'static str, label: &'static str| div().id(id).flex_none().text_color(text).cursor_pointer().hover(|s| s.underline()).child(label);
+    div()
+        .flex_none()
+        .min_h(px(INVITE_H))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(12.0))
+        .py(px(4.0))
+        .bg(c.banner.hsla())
+        .text_color(c.text_dim.hsla())
+        .font_family(root.ui_family())
+        .text_size(px(12.0))
+        .child(div().flex_1().min_w_0().child(crate::telemetry::INVITATION))
+        .child(button("invite-turn-on", crate::telemetry::TURN_ON).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::TurnOn, cx))))
+        .child(button("invite-not-now", crate::telemetry::NOT_NOW).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::NotNow, cx))))
+        .child(button("invite-what-is-sent", crate::telemetry::WHAT_IS_SENT).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.open_disclosure(cx))))
 }
 
 /// The tab bar, `height` tall. Slim (a browser tab is active), it shows only the pane number and

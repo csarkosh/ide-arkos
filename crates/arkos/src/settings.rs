@@ -5,12 +5,13 @@
 use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
 use crate::config::{self, AppearanceMode, Config, FontConfig, StartAtLogin, WideTables};
 use crate::theme::{self, Theme};
-use crate::{aux, keymap, paths};
+use crate::{aux, keymap, paths, telemetry_cli};
+use ::telemetry::visits_app::{Crashes, Mode, Usage};
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, Context, ElementId, FocusHandle, Hsla, KeyDownEvent, PathPromptOptions, SharedString,
     Stateful, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -65,11 +66,12 @@ pub enum Section {
     Text,
     Startup,
     Updates,
+    Privacy,
     Keyboard,
 }
 
 impl Section {
-    const ALL: [Section; 5] = [Section::Appearance, Section::Text, Section::Startup, Section::Updates, Section::Keyboard];
+    const ALL: [Section; 6] = [Section::Appearance, Section::Text, Section::Startup, Section::Updates, Section::Privacy, Section::Keyboard];
 
     fn label(self) -> &'static str {
         match self {
@@ -77,6 +79,7 @@ impl Section {
             Section::Text => "Text",
             Section::Startup => "Startup",
             Section::Updates => "Updates",
+            Section::Privacy => "Privacy",
             Section::Keyboard => "Keyboard",
         }
     }
@@ -302,6 +305,54 @@ fn wide_tables_edit(mode: WideTables) -> Edit {
         WideTables::Wrap => "wrap",
         WideTables::Scroll => "scroll",
     })
+}
+
+/// The Privacy section's rows (telemetry spec, section 3.4), named as `docs/telemetry.md` names
+/// them.
+const USAGE_ROW: &str = "Usage reports";
+const CRASHES_ROW: &str = "Crash reports";
+const WHAT_IS_SENT_ROW: &str = "What Arkos sends";
+const LAST_REPORT_ROW: &str = "Last report";
+
+/// The Usage reports row's choices, in order.
+const USAGE_CHOICES: [(&str, Usage); 3] = [("Off", Usage::Off), ("Local only", Usage::Local), ("On", Usage::On)];
+/// The Crash reports row's choices, in order.
+const CRASH_CHOICES: [(&str, Crashes); 3] = [("Never", Crashes::Never), ("Ask each time", Crashes::Ask), ("Always", Crashes::Always)];
+
+/// The edit for the "Usage reports" row: `telemetry.usage` as the config spells it. Written like
+/// any other setting; the project window's reload hands a change to `on` to the Recorder, which
+/// deletes the session reports queued before the consent (the opt-in rule), as the daemon does.
+fn usage_edit(usage: Usage) -> Edit {
+    edit(&["telemetry", "usage"], telemetry_cli::usage_name(usage))
+}
+
+/// The edit for the "Crash reports" row: `telemetry.crashes` as the config spells it.
+fn crashes_edit(crashes: Crashes) -> Edit {
+    edit(&["telemetry", "crashes"], match crashes {
+        Crashes::Never => "never",
+        Crashes::Ask => "ask",
+        Crashes::Always => "always",
+    })
+}
+
+/// The line under Usage reports: what the mode means, or the rule that forces it, in the words
+/// `arkos telemetry status` and the disclosure page use.
+fn usage_line(mode: &Mode) -> String {
+    telemetry_cli::mode_words(mode.reason, telemetry_cli::usage_name(mode.usage))
+}
+
+/// The mode the shown config gives this app: a person's, so interactive. A config file that does
+/// not load is telemetry `Off`, never the defaults.
+fn shown_mode(shown: &Shown) -> Mode {
+    let config = if shown.error.is_some() { Err(()) } else { Ok(&shown.config.telemetry) };
+    ::telemetry::mode_for(config, true)
+}
+
+/// The session the daemon sealed last, `last-session.json` in the telemetry folder `dir`, when
+/// there is one. Only a plain file counts: a folder or a link in its place is not the daemon's.
+fn last_report(dir: &Path) -> Option<PathBuf> {
+    let file = dir.join(telemetry_cli::LAST_SESSION);
+    file.symlink_metadata().is_ok_and(|m| m.is_file()).then_some(file)
 }
 
 impl SettingsWindow {
@@ -639,6 +690,45 @@ impl SettingsWindow {
         out
     }
 
+    fn privacy(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = &self.shown.config.telemetry;
+        let mut out = vec![heading(USAGE_ROW, c).into_any_element()];
+        let mut usage = div().flex().gap(px(6.0));
+        for (ix, (label, value)) in USAGE_CHOICES.into_iter().enumerate() {
+            let current = t.usage == value;
+            let mut p = pill(("usage", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![usage_edit(value)], cx)));
+            }
+            usage = usage.child(p);
+        }
+        out.push(usage.into_any_element());
+        out.push(div().text_color(c.dim).text_size(px(12.0)).child(usage_line(&shown_mode(&self.shown))).into_any_element());
+        out.push(heading(CRASHES_ROW, c).into_any_element());
+        let mut crashes = div().flex().gap(px(6.0));
+        for (ix, (label, value)) in CRASH_CHOICES.into_iter().enumerate() {
+            let current = t.crashes == value;
+            let mut p = pill(("crashes", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![crashes_edit(value)], cx)));
+            }
+            crashes = crashes.child(p);
+        }
+        out.push(crashes.into_any_element());
+        // Both stay live while the config has a problem: they only read.
+        let sends = pill("what-arkos-sends", WHAT_IS_SENT_ROW, false, true, c).on_click(|_, _, cx| aux::open_disclosure(cx));
+        let last = last_report(&paths::telemetry_dir());
+        let mut report = pill("last-report", LAST_REPORT_ROW, false, last.is_some(), c);
+        if let Some(file) = last.clone() {
+            report = report.on_click(move |_, _, cx| aux::open_last_report(cx, file.clone()));
+        }
+        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(sends).child(report).into_any_element());
+        if last.is_none() {
+            out.push(div().text_color(c.dim).text_size(px(12.0)).child("no session sealed yet").into_any_element());
+        }
+        out
+    }
+
     fn keyboard(&self, c: Colors) -> Vec<AnyElement> {
         // Live even while the config has a problem: opening the file is how it gets fixed.
         let open = pill("open-config", "Open config", false, true, c).on_click(|_, _, cx| open_config_in_editor(cx));
@@ -681,6 +771,7 @@ impl Render for SettingsWindow {
             Section::Text => self.text(enabled, c, cx),
             Section::Startup => self.startup(enabled, c, cx),
             Section::Updates => self.updates(enabled, c, cx),
+            Section::Privacy => self.privacy(enabled, c, cx),
             Section::Keyboard => self.keyboard(c),
         };
         let banner = self.shown.error.clone().map(|e| div().flex_none().px(px(10.0)).py(px(6.0)).rounded(px(4.0)).bg(c.pill).text_color(c.text).child(e));
@@ -825,5 +916,106 @@ mod tests {
         for name in ["Menlo", "Courier New", "PT Mono"] {
             assert!(offerable(name), "{name}");
         }
+    }
+
+    #[test]
+    fn the_privacy_section_names_its_rows_and_their_choices() {
+        assert!(Section::ALL.contains(&Section::Privacy));
+        assert_eq!(Section::Privacy.label(), "Privacy");
+        assert_eq!([USAGE_ROW, CRASHES_ROW, WHAT_IS_SENT_ROW, LAST_REPORT_ROW], ["Usage reports", "Crash reports", "What Arkos sends", "Last report"]);
+        assert_eq!(USAGE_CHOICES.map(|(label, _)| label), ["Off", "Local only", "On"]);
+        assert_eq!(CRASH_CHOICES.map(|(label, _)| label), ["Never", "Ask each time", "Always"]);
+        // The page names the section and its rows as the window does.
+        let page = include_str!("../../../docs/telemetry.md").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(page.contains(&format!("in the {} section: {USAGE_ROW} and {CRASHES_ROW}", Section::Privacy.label())), "the page's list of switches");
+        assert!(page.contains(&format!("Settings > {} > **{LAST_REPORT_ROW}**", Section::Privacy.label())), "the page's way to read the last report");
+    }
+
+    /// Like the Wide tables row: each choice writes its key as the config spells it, and the
+    /// edited default file reads back as that choice.
+    #[test]
+    fn the_privacy_rows_write_the_telemetry_keys() {
+        use ::telemetry::visits_app::{Crashes, Usage};
+        for ((_, usage), spelled) in USAGE_CHOICES.into_iter().zip(["off", "local", "on"]) {
+            let (keys, value) = usage_edit(usage);
+            assert_eq!(keys, vec!["telemetry".to_string(), "usage".to_string()]);
+            assert_eq!(value.as_str(), Some(spelled));
+            let text = config::apply_edits(DEFAULT_CONFIG, &[(&["telemetry", "usage"], value)]).unwrap();
+            assert_eq!(config::parse(&text).unwrap().telemetry.usage, usage, "{spelled}");
+        }
+        for ((_, crashes), spelled) in CRASH_CHOICES.into_iter().zip(["never", "ask", "always"]) {
+            let (keys, value) = crashes_edit(crashes);
+            assert_eq!(keys, vec!["telemetry".to_string(), "crashes".to_string()]);
+            assert_eq!(value.as_str(), Some(spelled));
+            let text = config::apply_edits(DEFAULT_CONFIG, &[(&["telemetry", "crashes"], value)]).unwrap();
+            assert_eq!(config::parse(&text).unwrap().telemetry.crashes, crashes, "{spelled}");
+        }
+        assert_eq!(USAGE_CHOICES.map(|(_, u)| u), [Usage::Off, Usage::Local, Usage::On]);
+        assert_eq!(CRASH_CHOICES.map(|(_, c)| c), [Crashes::Never, Crashes::Ask, Crashes::Always]);
+    }
+
+    /// Turning usage on in Settings is the opt-in: the file it writes, applied by the project
+    /// window, reaches the Recorder, which deletes the sessions queued before the consent.
+    #[test]
+    fn turning_usage_on_in_settings_clears_the_queued_sessions_through_the_recorder() {
+        use ::telemetry::visits_app::{new_id, Channel, Usage};
+        let dir = tempfile::tempdir().unwrap();
+        let now = crate::telemetry::Now::system();
+        let mut r = crate::telemetry::Recorder::new(dir.path(), ::telemetry::envelope(::telemetry::Bin::App), ::telemetry::allowlist().clone(), Usage::Local, now);
+        let queue = dir.path().join("queue");
+        std::fs::create_dir_all(&queue).unwrap();
+        let (session, crash) = (queue.join(format!("session-{}.json", new_id())), queue.join(format!("crash-{}.json", new_id())));
+        std::fs::write(&session, "{}").unwrap();
+        std::fs::write(&crash, "{}").unwrap();
+        let old: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let (_, on) = usage_edit(Usage::On);
+        let new = config::parse(&config::apply_edits(DEFAULT_CONFIG, &[(&["telemetry", "usage"], on)]).unwrap()).unwrap();
+        let usage = ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&new.telemetry), &|_: &str| None, &Channel::Release, true).usage;
+        assert!(r.config_changed(&old, &new, usage, now).is_some(), "a fresh journal");
+        assert!(!session.exists(), "the sessions queued before the consent are gone");
+        assert!(crash.exists(), "a crash report stays");
+    }
+
+    /// The line under Usage reports: what the mode means, or, when a rule forces it, why, in the
+    /// words of the disclosure page.
+    #[test]
+    fn the_usage_line_says_what_the_mode_means_and_why() {
+        use ::telemetry::visits_app::{Channel, Crashes, Mode, Usage};
+        let mode = |usage: Usage, channel: Channel, var: Option<(&'static str, &'static str)>, interactive: bool| -> Mode {
+            let config = ::telemetry::TelemetryConfig { usage, crashes: Crashes::Ask };
+            let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
+            ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&config), &env, &channel, interactive)
+        };
+        let release = |usage| mode(usage, Channel::Release, None, true);
+        assert_eq!(usage_line(&release(Usage::Off)), "usage reports are off: nothing is recorded");
+        assert_eq!(usage_line(&release(Usage::Local)), "usage reports are local: recorded on this Mac, never sent");
+        assert_eq!(usage_line(&release(Usage::On)), "usage reports are on: recorded and sent");
+        assert_eq!(usage_line(&mode(Usage::On, Channel::Source, None, true)), "this copy was built from source and sends nothing");
+        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("DO_NOT_TRACK", "1")), true)), "DO_NOT_TRACK is set: nothing is recorded and nothing is sent");
+        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("ARKOS_TELEMETRY", "off")), true)), "ARKOS_TELEMETRY=off: nothing is recorded and nothing is sent");
+        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("ARKOS_TELEMETRY", "log")), true)), "ARKOS_TELEMETRY=log: Arkos records as your settings say and sends nothing");
+        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, Some(("CI", "1")), true)), "CI is set: Arkos records as your settings say and sends nothing");
+        assert_eq!(usage_line(&mode(Usage::On, Channel::Release, None, false)), "arkos run from a script, with no terminal, never sends and never asks");
+        let broken = ::telemetry::mode_with(Err::<&::telemetry::TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &Channel::Release, true);
+        assert_eq!(usage_line(&broken), "the config file cannot be read, so nothing is recorded or sent for that run");
+    }
+
+    /// Last report opens `last-session.json` when the daemon has sealed one, and is disabled
+    /// until then; a folder or a link in its place is no report.
+    #[test]
+    fn last_report_is_there_only_once_a_session_was_sealed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(last_report(dir.path()), None, "no folder");
+        let file = dir.path().join("last-session.json");
+        std::fs::create_dir_all(&file).unwrap();
+        assert_eq!(last_report(dir.path()), None, "a folder is not a report");
+        std::fs::remove_dir(&file).unwrap();
+        let elsewhere = dir.path().join("elsewhere.json");
+        std::fs::write(&elsewhere, "{}").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &file).unwrap();
+        assert_eq!(last_report(dir.path()), None, "a link is not the daemon's file");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(last_report(dir.path()), Some(file));
     }
 }

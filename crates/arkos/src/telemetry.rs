@@ -879,6 +879,55 @@ pub fn help(what: Help) {
     with(|r, now| r.help(what, now));
 }
 
+// The invitation (telemetry spec, section 3.3): a strip under the first pane's tab bar that asks
+// once, on a later day than the install, whether to turn usage reports on. Either answer writes
+// `asked` in the telemetry folder, which every window reads before it draws the strip, so a
+// second window never asks again once the first has had its answer.
+
+/// The strip's words and its buttons, as `docs/telemetry.md` quotes them.
+pub const INVITATION: &str = "Help improve Arkos: share anonymous usage reports. Nothing identifies you or your files.";
+pub const TURN_ON: &str = "Turn on";
+pub const NOT_NOW: &str = "Not now";
+pub const WHAT_IS_SENT: &str = "What is sent";
+
+/// The file in the telemetry folder that says the invitation was answered.
+pub const ASKED: &str = "asked";
+
+/// The two answers, each written to `asked` as a word so the file says which one it was.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Answer {
+    TurnOn,
+    NotNow,
+}
+
+/// Whether the invitation shows: on a later UTC day than the install (the second launch, since
+/// each window is its own process and a counter could not say it), while the mode invites (a
+/// release build, interactive, usage `local`, no rule of the environment), and only while no
+/// window has had an answer.
+pub fn invitation_due(mode: &::telemetry::visits_app::Mode, installed_day: u64, today: u64, asked: bool) -> bool {
+    mode.invite && today > installed_day && !asked
+}
+
+/// `at` as days since 1970 in UTC; a clock before 1970 is day 0.
+pub fn utc_day(at: SystemTime) -> u64 {
+    at.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400)
+}
+
+/// Whether the invitation was answered: `asked` is in the telemetry folder `dir`.
+pub fn asked(dir: &Path) -> bool {
+    dir.join(ASKED).symlink_metadata().is_ok()
+}
+
+/// Writes `asked` into the telemetry folder `dir`, creating the folder when it is missing.
+pub fn answer_invitation(dir: &Path, answer: Answer) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let word = match answer {
+        Answer::TurnOn => "on",
+        Answer::NotNow => "not now",
+    };
+    std::fs::write(dir.join(ASKED), format!("{word}\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1376,5 +1425,83 @@ mod tests {
         assert_eq!(kind_of(&Tab::Terminal { session: protocol::SessionId(1), cwd: None }), PaneKind::Terminal);
         assert_eq!(kind_of(&Tab::Viewer { path: "/p/a.md".into(), mode: crate::tree::ViewMode::Raw }), PaneKind::Viewer);
         assert_eq!(kind_of(&Tab::Browser { url: None, app_mode: true }), PaneKind::Browser);
+    }
+
+    /// The mode for `usage` in a build of `channel`, with one environment variable set (or none)
+    /// and the session interactive or not.
+    fn mode_of(usage: Usage, channel: Channel, var: Option<(&'static str, &'static str)>, interactive: bool) -> ::telemetry::visits_app::Mode {
+        let config = ::telemetry::TelemetryConfig { usage, crashes: ::telemetry::visits_app::Crashes::Ask };
+        let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
+        ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&config), &env, &channel, interactive)
+    }
+
+    /// Review Focus 5: the invitation shows on a later UTC day than the install, in a release
+    /// build, interactive, with usage `local` and `asked` absent; take any one away and it hides.
+    #[test]
+    fn the_invitation_is_due_only_on_a_later_day_in_a_release_with_usage_local_and_never_once_asked() {
+        // 2026-10-16, as days since 1970.
+        let installed = 20_742;
+        let yes = mode_of(Usage::Local, Channel::Release, None, true);
+        assert!(invitation_due(&yes, installed, installed + 1, false), "the second day, everything right");
+        assert!(invitation_due(&yes, installed, installed + 30, false), "any later day");
+        assert!(!invitation_due(&yes, installed, installed, false), "never on the install day");
+        assert!(!invitation_due(&yes, installed, installed - 1, false), "a clock set back is not a later day");
+        assert!(!invitation_due(&yes, installed, installed + 1, true), "never again once answered");
+        let hidden: [(&str, ::telemetry::visits_app::Mode); 10] = [
+            ("a source build", mode_of(Usage::Local, Channel::Source, None, true)),
+            ("not interactive", mode_of(Usage::Local, Channel::Release, None, false)),
+            ("usage on", mode_of(Usage::On, Channel::Release, None, true)),
+            ("usage off", mode_of(Usage::Off, Channel::Release, None, true)),
+            ("DO_NOT_TRACK", mode_of(Usage::Local, Channel::Release, Some(("DO_NOT_TRACK", "1")), true)),
+            ("ARKOS_TELEMETRY=off", mode_of(Usage::Local, Channel::Release, Some(("ARKOS_TELEMETRY", "off")), true)),
+            ("ARKOS_TELEMETRY=log", mode_of(Usage::Local, Channel::Release, Some(("ARKOS_TELEMETRY", "log")), true)),
+            ("CI", mode_of(Usage::Local, Channel::Release, Some(("CI", "true")), true)),
+            (
+                "a config error",
+                ::telemetry::mode_with(Err::<&::telemetry::TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &Channel::Release, true),
+            ),
+            ("an unrelated variable changes nothing", mode_of(Usage::Local, Channel::Release, Some(("HOME", "/Users/x")), true)),
+        ];
+        for (why, mode) in &hidden[..9] {
+            assert!(!invitation_due(mode, installed, installed + 1, false), "hidden: {why}");
+        }
+        assert!(invitation_due(&hidden[9].1, installed, installed + 1, false), "{}", hidden[9].0);
+    }
+
+    #[test]
+    fn the_day_is_the_utc_day() {
+        // 2026-10-16 09:00 UTC.
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_792_141_200);
+        assert_eq!(utc_day(at), 20_742);
+        assert_eq!(utc_day(at + Duration::from_secs(14 * 3600)), 20_742, "23:00 UTC the same day");
+        assert_eq!(utc_day(at + Duration::from_secs(15 * 3600)), 20_743, "00:00 UTC the next day");
+        assert_eq!(utc_day(SystemTime::UNIX_EPOCH - Duration::from_secs(5)), 0, "a clock before 1970");
+    }
+
+    /// Either button writes `asked`, creating the telemetry folder when it is missing, and a
+    /// window that looks again finds it.
+    #[test]
+    fn an_answer_writes_asked_and_every_window_then_sees_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = dir.path().join("telemetry");
+        assert!(!asked(&telemetry), "no folder yet");
+        answer_invitation(&telemetry, Answer::NotNow).unwrap();
+        assert!(asked(&telemetry));
+        assert!(telemetry.join(ASKED).is_file());
+        // Answering again (a second window's stale strip) is no error.
+        answer_invitation(&telemetry, Answer::TurnOn).unwrap();
+        assert!(asked(&telemetry));
+    }
+
+    /// The strip says what `docs/telemetry.md` says it says, with the buttons it names.
+    #[test]
+    fn the_invitation_speaks_in_the_words_of_the_page() {
+        let page = include_str!("../../../docs/telemetry.md").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(INVITATION, "Help improve Arkos: share anonymous usage reports. Nothing identifies you or your files.");
+        assert!(page.contains(&format!("\"{INVITATION}\"")), "the page quotes the strip");
+        for button in [TURN_ON, NOT_NOW, WHAT_IS_SENT] {
+            assert!(page.contains(&format!("**{button}**")), "the page names {button}");
+        }
+        assert_eq!([TURN_ON, NOT_NOW, WHAT_IS_SENT], ["Turn on", "Not now", "What is sent"]);
     }
 }
