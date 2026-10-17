@@ -16,8 +16,8 @@ use std::time::Duration;
 /// status, check and apply requests and the staged event. Version 5 adds the detailed status
 /// (the check's state) and the grace detach. Version 6 adds the customize relay: a tool client's
 /// `Customize`, the windows' `Event::Customize` and `CustomizeDone`, and the `Customized` answer.
-/// Version 7 adds telemetry: the window's `Session` after its Hello and the `TelemetryStatus`
-/// request and answer.
+/// Version 7 adds telemetry: the window's `Session` after its Hello, the `TelemetryStatus`
+/// request and answer, and `SessionQuit`.
 pub const PROTOCOL_VERSION: u32 = 7;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
@@ -200,6 +200,12 @@ pub enum Request {
     /// The telemetry mode and the queue as the daemon sees them, for `arkos telemetry status`
     /// and the doctor. Answered `TelemetryStatus`, whatever protocol the client said.
     TelemetryStatus,
+    /// The window is quitting, so its usage session ended as `quit` when its connection closes.
+    /// Unlike `Goodbye` it changes nothing else: the folder stays among the windows a restart
+    /// reopens. Sent by a window, or the launch chooser, that quits without a `Goodbye` (a macOS
+    /// logout or restart, after which the window comes back), and harmless beside one. Answered
+    /// `Ok`.
+    SessionQuit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,10 +377,12 @@ mod tests {
         };
         assert_eq!(first_byte(&session), 23);
         assert_eq!(first_byte(&Request::TelemetryStatus), 24);
+        assert_eq!(first_byte(&Request::SessionQuit), 25);
         assert_eq!(first_byte(&status), 10);
-        for req in [session, Request::TelemetryStatus] {
+        for req in [session, Request::TelemetryStatus, Request::SessionQuit] {
             let bytes = postcard::to_allocvec(&req).unwrap();
             assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), req);
+            assert_eq!(serde_json::from_str::<Request>(&serde_json::to_string(&req).unwrap()).unwrap(), req);
         }
         let bytes = postcard::to_allocvec(&status).unwrap();
         assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), status);

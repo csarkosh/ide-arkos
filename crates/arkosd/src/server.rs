@@ -50,8 +50,9 @@ pub struct ClientRecord {
     /// The usage session id its `Session` named, whose journal is sealed when it goes; None for
     /// a client that sent none (a protocol 6 window, a tool, a window keeping no journal).
     pub sid: Option<String>,
-    /// How its session ended, as far as it said: `Quit` once its `Goodbye` came. None until then,
-    /// which seals as `Lost` unless the daemon was asked to relaunch it (`telemetry::seal`).
+    /// How its session ended, as far as it said: `Quit` once its `Goodbye` or its `SessionQuit`
+    /// came. None until then, which seals as `Lost` unless the daemon was asked to relaunch it
+    /// (`telemetry::seal`).
     pub end: Option<telemetry::visits_app::End>,
 }
 
@@ -620,6 +621,14 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             Response::Ok
         }
+        // A quit that is not a Goodbye: only the end is noted, and the folder stays among the
+        // windows a restart reopens. The journal is sealed when the socket closes, as `quit`.
+        Request::SessionQuit => {
+            if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
+                rec.end = Some(telemetry::visits_app::End::Quit);
+            }
+            Response::Ok
+        }
         // Kept on the record alone: the record leaves the table when the window goes, and the
         // journal is sealed from what it held. A later one replaces it. An id that is not hex is
         // refused and never named back, and the record keeps the one it had.
@@ -1110,6 +1119,32 @@ mod tests {
         disconnect(&state, 1, &opts.update);
         assert_eq!(sealed_end(&opts).as_deref(), Some("quit"));
         assert!(state.lock().unwrap().clients.is_empty());
+    }
+
+    /// A quit without a Goodbye (a macOS logout or restart, after which the window comes back):
+    /// `SessionQuit` notes the end as `quit` and changes nothing else, so the folder stays among
+    /// the windows a restart reopens, unlike after a Goodbye.
+    #[test]
+    fn a_session_quit_seals_as_quit_and_keeps_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        let tx = window_with_journal(&state, &opts);
+        let folder = dir.path().join("project");
+        std::fs::create_dir_all(&folder).unwrap();
+        dispatch(&state, 1, &tx, 3, Request::Hello { protocol_version: 7, ui_pid: 0, ui_exe: None, ui_cwd: folder.clone() }, &opts);
+        assert!(state.lock().unwrap().windows.contains_key(&folder));
+        state.lock().unwrap().manifest_dirty = false;
+        assert_eq!(dispatch(&state, 1, &tx, 4, Request::SessionQuit, &opts), Some(Response::Ok));
+        {
+            let st = state.lock().unwrap();
+            assert!(st.windows.contains_key(&folder), "the folder is still one a restart reopens");
+            assert!(!st.manifest_dirty, "nothing else changed");
+            assert_eq!(st.clients[&1].end, Some(telemetry::visits_app::End::Quit));
+            assert_eq!(st.clients[&1].sid.as_deref(), Some(SID));
+        }
+        assert_eq!(sealed_end(&opts), None, "only noted; the socket closing seals");
+        disconnect(&state, 1, &opts.update);
+        assert_eq!(sealed_end(&opts).as_deref(), Some("quit"));
     }
 
     /// An update's relaunch closes the old window on purpose: its session ended as a quit.

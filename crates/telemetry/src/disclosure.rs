@@ -82,7 +82,7 @@ pub const SESSION: Table = Table {
         field(
             "end",
             "`quit`",
-            "How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash, a force quit, or the daemon restarted), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate.",
+            "How the report ended: `quit` when the window or the launch chooser quit (a macOS logout or restart included) or relaunched for an update, `lost` when its connection to the daemon dropped without a quit (a crash or a force quit), or `unknown` when it was sealed later from a journal left behind, as after the daemon restarted or was upgraded. The share of `lost` reports estimates the crash rate.",
         ),
         field(
             "iw",
@@ -293,12 +293,17 @@ mod tests {
 
     /// A session report as `seal` makes one, with an event that carries a `d`.
     fn session() -> serde_json::Value {
+        session_ending(End::Quit)
+    }
+
+    /// `session` with the end given.
+    fn session_ending(end: End) -> serde_json::Value {
         let d: BTreeMap<String, DValue> = [("kind".to_string(), DValue::Str("terminal".into())), ("how".to_string(), DValue::Str("key".into()))].into();
         let s = Session {
             env: env(),
             sid: visits_app::new_id(),
             len: 5400,
-            end: End::Quit,
+            end,
             iw: 20_370,
             rd: 2,
             focus: [("terminal".to_string(), 3100), ("viewer".to_string(), 900)].into(),
@@ -344,6 +349,22 @@ mod tests {
         assert_eq!(envelope, envelope_keys(), "the report carries the whole envelope");
         let event = &report["ev"][0];
         assert_eq!(as_strs(&object_keys(event)), keys(&EVENT), "the event table");
+    }
+
+    /// The `end` row explains every value a real report can carry, each by its wire spelling,
+    /// with the cases the daemon seals it for: a quit (a logout or restart included), a dropped
+    /// connection (a crash or a force quit), and a journal sealed later (a daemon restart).
+    #[test]
+    fn the_end_row_explains_every_end_a_report_can_carry() {
+        let reason = SESSION.fields.iter().find(|f| f.key == "end").expect("an end row").reason;
+        for end in [End::Quit, End::Lost, End::Unknown] {
+            let report = session_ending(end);
+            let wire = report["end"].as_str().expect("a word");
+            assert!(reason.contains(&format!("`{wire}` when")), "{wire} in {reason}");
+        }
+        for case in ["launch chooser", "logout or restart", "crash or a force quit", "daemon restarted"] {
+            assert!(reason.contains(case), "{case} in {reason}");
+        }
     }
 
     #[test]

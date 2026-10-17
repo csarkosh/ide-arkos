@@ -1,14 +1,15 @@
 //! Sealing a window's journal when its connection ends (telemetry spec, section 2.2). The window
 //! named its session in a `Session` request after its `Hello`; when its socket closes, the
 //! daemon turns `journal/<sid>.jsonl` into `queue/session-<sid>.json`. The end is `quit` when the
-//! window said `Goodbye` first, or when the daemon was asked to relaunch it (an update's
-//! relaunch, which closes the old window on purpose), and `lost` otherwise: a crash, a kill, or
-//! a connection that broke. A window that named no session has nothing sealed.
+//! window said `Goodbye` or `SessionQuit` first (a quit, a macOS logout or restart included), or
+//! when the daemon was asked to relaunch it (an update's relaunch, which closes the old window on
+//! purpose), and `lost` otherwise: a crash or a force quit, the connection dropped without a
+//! quit. A window that named no session has nothing sealed.
 use ::telemetry::visits_app::{seal, End};
 use std::path::{Path, PathBuf};
 
 /// How a window's session ended, from what its record held when it left: the end its `Goodbye`
-/// set, else `quit` for a window the daemon relaunches, else `lost`.
+/// or `SessionQuit` set, else `quit` for a window the daemon relaunches, else `lost`.
 pub fn end_of(said: Option<End>, relaunch: bool) -> End {
     said.unwrap_or(if relaunch { End::Quit } else { End::Lost })
 }

@@ -183,6 +183,13 @@ impl Client {
         }
     }
 
+    /// Tells the daemon this window's usage session ended as a quit, on a quit that sends no
+    /// `Goodbye` (a macOS logout or restart, after which the window comes back): without it the
+    /// closing socket reads as a crash. Nothing else changes. Returns the request's id.
+    pub fn session_quit(&self) -> u32 {
+        self.send(Request::SessionQuit)
+    }
+
     /// Queues a request. Returns its id so the response can be matched.
     pub fn send(&self, request: Request) -> u32 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -464,6 +471,19 @@ mod tests {
         assert!(matches!(seen[3], Request::Hello { .. }), "{seen:?}");
         assert_eq!(seen[4], Request::Session { sid: second });
         assert!(matches!(seen[5], Request::Hello { .. }), "{seen:?}");
+    }
+
+    /// A quit without a Goodbye tells the daemon the session ended as a quit, in one request.
+    #[test]
+    fn session_quit_sends_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("quit.sock");
+        let server = fake_daemon(&socket);
+        let (client, _rx) = Client::connect(&socket, None).unwrap();
+        client.session_quit();
+        let seen: Vec<Request> = server.join().unwrap().into_iter().map(|m| m.request).collect();
+        assert!(matches!(seen[0], Request::Hello { .. }), "{seen:?}");
+        assert_eq!(seen[1], Request::SessionQuit);
     }
 
     #[test]
