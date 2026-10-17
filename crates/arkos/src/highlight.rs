@@ -88,7 +88,9 @@ impl Highlighter {
         self.highlight_with(syntax, lines)
     }
 
-    fn highlight_with(&self, syntax: Option<&syntect::parsing::SyntaxReference>, lines: &[String]) -> Vec<Vec<Span>> {
+    /// `highlight` with the grammar already picked (`syntax_for`), so a caller that also needs
+    /// the grammar picks it once.
+    pub fn highlight_with(&self, syntax: Option<&syntect::parsing::SyntaxReference>, lines: &[String]) -> Vec<Vec<Span>> {
         let Some(syntax) = syntax else {
             return lines.iter().map(|l| plain(l, self.text)).collect();
         };

@@ -597,20 +597,37 @@ fn changed_keys_of(old: &toml::Table, new: &toml::Table) -> Vec<String> {
 }
 
 /// The format the viewer showed a file in, from what its load produced: markdown by its name,
-/// binaries and files too large to read as such, text a grammar other than Plain Text coloured
-/// (`coloured`, the highlighter's own rule) as code, other text, and text shown without colours
-/// for its size or a long line (`plain`), as plain. `None` for a file that could not be read:
-/// nothing was shown. An image or a video opened as a file is a binary; the two formats name
-/// what the rendered markdown shows.
-pub fn format_of(content: &Content, plain: bool, coloured: bool, path: &Path) -> Option<Format> {
+/// binaries and files too large to read as such, text shown without colours for its size or a
+/// long line (`plain`) as plain, and other text as code when a grammar other than Plain Text
+/// coloured it (`coloured`, the highlighter's own rule), else plain. `None` for a file that could
+/// not be read (nothing was shown) and for text whose colouring is not known yet (`coloured` is
+/// `None` while the grammars load). An image or a video opened as a file is a binary; the two
+/// formats name what the rendered markdown shows.
+pub fn format_of(content: &Content, plain: bool, coloured: Option<bool>, path: &Path) -> Option<Format> {
     Some(match content {
         Content::Unreadable(_) => return None,
         Content::TooLarge(_) => Format::TooLarge,
         Content::Binary => Format::Binary,
         Content::Text { .. } if crate::viewer::is_markdown(path) => Format::Markdown,
-        Content::Text { .. } if coloured && !plain => Format::Code,
-        Content::Text { .. } => Format::Plain,
+        Content::Text { .. } if plain => Format::Plain,
+        Content::Text { .. } => match coloured? {
+            true => Format::Code,
+            false => Format::Plain,
+        },
     })
+}
+
+/// The view a viewer's load records, once a viewer (`viewed`): `None` when it was recorded
+/// already, or when this load says nothing yet (unreadable, or code loaded before the grammars,
+/// whose reload once they land records it); whether a markdown file is shown rendered.
+pub fn next_view(viewed: &mut bool, content: &Content, plain: bool, coloured: Option<bool>, path: &Path, mode: crate::tree::ViewMode) -> Option<(Format, Shown)> {
+    if *viewed {
+        return None;
+    }
+    let format = format_of(content, plain, coloured, path)?;
+    *viewed = true;
+    let shown = if format == Format::Markdown && mode == crate::tree::ViewMode::Rendered { Shown::Rendered } else { Shown::Raw };
+    Some((format, shown))
 }
 
 /// What a tab is, for `pane_open`, `pane_close` and the focus clock.
@@ -809,12 +826,11 @@ pub fn pane_close(tab: &Tab) {
     with(|r, now| r.pane_close(kind_of(tab), now));
 }
 
-/// The viewer's first load of a file landed: its format, and whether a markdown file is shown
-/// rendered.
-pub fn viewed(content: &Content, plain: bool, coloured: bool, path: &Path, mode: crate::tree::ViewMode) {
-    let Some(format) = format_of(content, plain, coloured, path) else { return };
-    let shown = if format == Format::Markdown && mode == crate::tree::ViewMode::Rendered { Shown::Rendered } else { Shown::Raw };
-    with(|r, now| r.view(format, shown, now));
+/// A viewer's load landed: the view, once a viewer, when its format is known (`next_view`).
+pub fn viewed(viewed: &mut bool, content: &Content, plain: bool, coloured: Option<bool>, path: &Path, mode: crate::tree::ViewMode) {
+    if let Some((format, shown)) = next_view(viewed, content, plain, coloured, path, mode) {
+        with(|r, now| r.view(format, shown, now));
+    }
 }
 
 pub fn md(feature: MdFeature) {
@@ -1309,22 +1325,52 @@ mod tests {
             let loaded = crate::viewer::read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
             assert_eq!(format_of(&loaded.content, loaded.plain.is_some(), loaded.coloured, &path), Some(want), "{name}");
         }
-        // Before the grammars load nothing is coloured.
+        // Before the grammars load the colouring is not known yet.
         let path = dir.path().join("Makefile");
-        assert!(!crate::viewer::read_file(&path, None, None, 1 << 20, false).unwrap().coloured);
+        assert_eq!(crate::viewer::read_file(&path, None, None, 1 << 20, false).unwrap().coloured, None);
+        // Markdown, binaries and text shown plain do not wait for the grammars.
+        let md = dir.path().join("README.md");
+        std::fs::write(&md, "# Title\n").unwrap();
+        assert_eq!(crate::viewer::read_file(&md, None, None, 1 << 20, false).unwrap().coloured, Some(false));
+    }
+
+    /// A restored tab usually loads before the grammars: that load records nothing, and the load
+    /// that colours it once they are ready records the view, once.
+    #[test]
+    fn a_viewer_records_its_format_once_the_grammars_have_loaded() {
+        let theme = crate::theme::builtin("navy").unwrap();
+        let h = crate::highlight::Highlighter::new(&theme.viewer, theme.chrome.text);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut viewed = false;
+        let early = crate::viewer::read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(next_view(&mut viewed, &early.content, early.plain.is_some(), early.coloured, &path, crate::tree::ViewMode::Rendered), None, "not known yet");
+        assert!(!viewed);
+        let coloured = crate::viewer::read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
+        assert_eq!(next_view(&mut viewed, &coloured.content, coloured.plain.is_some(), coloured.coloured, &path, crate::tree::ViewMode::Rendered), Some((Format::Code, Shown::Raw)));
+        assert!(viewed);
+        assert_eq!(next_view(&mut viewed, &coloured.content, coloured.plain.is_some(), coloured.coloured, &path, crate::tree::ViewMode::Rendered), None, "once a viewer");
+        // Markdown records at its first load, rendered or raw as the tab shows it.
+        let md = dir.path().join("README.md");
+        std::fs::write(&md, "# Title\n").unwrap();
+        let loaded = crate::viewer::read_file(&md, None, None, 1 << 20, false).unwrap();
+        let mut viewed = false;
+        assert_eq!(next_view(&mut viewed, &loaded.content, loaded.plain.is_some(), loaded.coloured, &md, crate::tree::ViewMode::Rendered), Some((Format::Markdown, Shown::Rendered)));
     }
 
     #[test]
     fn the_viewer_names_the_format_it_showed() {
         use crate::viewer::Content;
         let text = Content::Text { lines: std::sync::Arc::new(vec!["fn main() {}".into()]), spans: Vec::new() };
-        assert_eq!(format_of(&text, false, false, Path::new("/p/README.md")), Some(Format::Markdown));
-        assert_eq!(format_of(&text, false, true, Path::new("/p/main.rs")), Some(Format::Code));
-        assert_eq!(format_of(&text, true, true, Path::new("/p/main.rs")), Some(Format::Plain), "shown without colours");
-        assert_eq!(format_of(&text, false, false, Path::new("/p/notes.txt")), Some(Format::Plain), "no grammar but Plain Text");
-        assert_eq!(format_of(&Content::Binary, false, false, Path::new("/p/logo.png")), Some(Format::Binary));
-        assert_eq!(format_of(&Content::TooLarge(1 << 30), false, false, Path::new("/p/dump.sql")), Some(Format::TooLarge));
-        assert_eq!(format_of(&Content::Unreadable("denied".into()), false, false, Path::new("/p/x")), None, "nothing was shown");
+        assert_eq!(format_of(&text, false, Some(false), Path::new("/p/README.md")), Some(Format::Markdown));
+        assert_eq!(format_of(&text, false, Some(true), Path::new("/p/main.rs")), Some(Format::Code));
+        assert_eq!(format_of(&text, true, Some(false), Path::new("/p/main.rs")), Some(Format::Plain), "shown without colours");
+        assert_eq!(format_of(&text, false, Some(false), Path::new("/p/notes.txt")), Some(Format::Plain), "no grammar but Plain Text");
+        assert_eq!(format_of(&text, false, None, Path::new("/p/main.rs")), None, "the grammars have not loaded yet");
+        assert_eq!(format_of(&Content::Binary, false, Some(false), Path::new("/p/logo.png")), Some(Format::Binary));
+        assert_eq!(format_of(&Content::TooLarge(1 << 30), false, Some(false), Path::new("/p/dump.sql")), Some(Format::TooLarge));
+        assert_eq!(format_of(&Content::Unreadable("denied".into()), false, Some(false), Path::new("/p/x")), None, "nothing was shown");
     }
 
     #[test]

@@ -490,8 +490,9 @@ pub struct Loaded {
     /// The document's top-level blocks, split on the background thread with it; empty without a
     /// document.
     pub blocks: Vec<md_blocks::Block>,
-    /// A grammar other than Plain Text coloured the text (`Highlighter::syntax_for`).
-    pub coloured: bool,
+    /// Whether a grammar other than Plain Text coloured the text (`Highlighter::syntax_for`);
+    /// `None` for text the grammars would colour while they are still loading.
+    pub coloured: Option<bool>,
 }
 
 pub struct Viewer {
@@ -499,6 +500,9 @@ pub struct Viewer {
     pub content: Content,
     /// `false` until the first load lands.
     pub loaded: bool,
+    /// The view of this file is recorded (`telemetry::viewed`): at the first load whose format is
+    /// known, which for code is the first one after the grammars loaded.
+    pub viewed: bool,
     pub scroll: ScrollAnimator,
     pub focus: FocusHandle,
     pub find: Option<ViewerFind>,
@@ -621,6 +625,7 @@ impl Viewer {
             path,
             content: Content::Text { lines: Arc::new(Vec::new()), spans: Vec::new() },
             loaded: false,
+            viewed: false,
             scroll: ScrollAnimator::new(),
             focus: cx.focus_handle(),
             find: None,
@@ -792,9 +797,7 @@ impl Viewer {
     }
 
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
-        if !self.loaded {
-            crate::telemetry::viewed(&loaded.content, loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
-        }
+        crate::telemetry::viewed(&mut self.viewed, &loaded.content, loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
         self.content = loaded.content;
         self.fingerprint = loaded.fingerprint;
         self.plain = loaded.plain;
@@ -2018,7 +2021,7 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
     };
     let mut doc = None;
     let mut read_only = None;
-    let mut coloured = false;
+    let mut coloured = Some(false);
     let (content, why_plain) = match read_capped(path) {
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
@@ -2042,12 +2045,16 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
                 match highlighter {
                     _ if lines.iter().any(|l| l.len() > MAX_LINE_BYTES) => (plain(lines), Some(Plain::LongLine)),
                     Some(h) => {
-                        coloured = h.syntax_for(path, &lines).is_some_and(|s| s.name != "Plain Text");
-                        let spans = h.highlight(path, &lines);
+                        let syntax = h.syntax_for(path, &lines);
+                        coloured = Some(syntax.is_some_and(|s| s.name != "Plain Text"));
+                        let spans = h.highlight_with(syntax, &lines);
                         (Content::Text { lines: Arc::new(lines), spans }, None)
                     }
                     // The grammars are still loading: plain for now, coloured when they land.
-                    None => (plain(lines), None),
+                    None => {
+                        coloured = None;
+                        (plain(lines), None)
+                    }
                 }
             }
         },
