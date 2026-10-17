@@ -131,8 +131,9 @@ wakes, macOS runs the daemon but schedules no window. So:
   last relaunch forgets the count. The count is kept per window binary and folder in the
   daemon, across reconnects; a daemon restart forgets it.
 - **Stop.** Silent again after three relaunches in a row, the window is left as it is, and one
-  line in the daemon log and the update journal says to quit it and open Arkos again. A window
-  of that binary and folder opened afterwards starts a fresh count.
+  line in the daemon log and the update journal says to quit it and open Arkos again. A fresh
+  count starts only once every stopped window of that binary and folder is gone and another
+  one opens; a healthy sibling never undoes a stop.
 
 ### 2.5 Scheduling
 

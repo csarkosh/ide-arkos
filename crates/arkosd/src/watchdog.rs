@@ -18,8 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 const SLEEP_SLACK: Duration = Duration::from_secs(5);
 
 /// A window's silent relaunches are forgotten at a scan that finds it heartbeating (a heartbeat
-/// heard, not one a sleep gave it) this long after the last of them. A record with no window of
-/// its identity connected is dropped once its last relaunch is this old.
+/// heard, not one a sleep gave it) this long after the last of them, unless a sibling of its
+/// identity is still given up on. A record with no window of its identity connected and none
+/// given up on is dropped once its last relaunch is this old.
 const HEALTHY_RESET: Duration = Duration::from_secs(10 * 60);
 
 /// The wait before each silent relaunch in a row, counted from the one before: none for the
@@ -65,7 +66,7 @@ pub struct Watch {
     /// When a sleep or a return last restarted every heartbeat clock: a heartbeat no newer than
     /// that was given, not heard, and never counts as a healthy window.
     refreshed: Option<Instant>,
-    /// The last answer to whether the person is away, kept while nobody is asked.
+    /// Whether the last scan found the person away; a scan that asked nobody found nobody away.
     away: bool,
     /// Whether the daemon log already says silent windows are left while the person is away;
     /// once per absence.
@@ -200,7 +201,7 @@ fn is_silent(rec: &ClientRecord, now: Instant, timeout: Duration) -> bool {
 }
 
 /// Drops the relaunch records nothing needs any more: one with no window of its identity
-/// connected whose last relaunch is `HEALTHY_RESET` old, and one whose given-up windows have all
+/// connected, none given up on, whose last relaunch is `HEALTHY_RESET` old, and one whose given-up windows have all
 /// gone while another window of its identity came (the person opened Arkos again).
 fn prune(st: &mut State, now: Instant) {
     let mut connected: HashMap<WindowId, Vec<u32>> = HashMap::new();
@@ -210,7 +211,7 @@ fn prune(st: &mut State, now: Instant) {
         }
     }
     st.relaunches.retain(|id, h| match connected.get(id) {
-        None => now.saturating_duration_since(h.last) < HEALTHY_RESET,
+        None => !(h.stopped.is_empty() && now.saturating_duration_since(h.last) >= HEALTHY_RESET),
         Some(pids) => h.stopped.is_empty() || pids.iter().any(|p| h.stopped.contains(p)),
     });
 }
@@ -223,11 +224,11 @@ fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watc
     let prev = watch.prev.replace(now);
     prune(st, now.mono);
     let back = watch.away && away == Some(false);
-    if let Some(a) = away {
-        watch.away = a;
-        if !a {
-            watch.told_away = false;
-        }
+    // Nobody asked means no window was silent, which counts as nobody away: the next hang is
+    // not held back by a return, and the next absence is logged again.
+    watch.away = away == Some(true);
+    if !watch.away {
+        watch.told_away = false;
     }
     if back || prev.is_some_and(|p| slept(p, now, interval)) {
         if back {
@@ -250,15 +251,20 @@ fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watc
         match decide(silent, away.unwrap_or(true), relaunches.get(&id), pid, now.mono) {
             Verdict::Healthy => {
                 let heard = watch.refreshed.is_none_or(|r| rec.last_heartbeat > r);
-                if heard && relaunches.get(&id).is_some_and(|h| healthy_long_enough(h, now.mono)) {
-                    relaunches.remove(&id);
+                if let Some(h) = relaunches.get_mut(&id).filter(|h| heard && healthy_long_enough(h, now.mono)) {
+                    // Only this window's own stop, if any, is undone: a sibling of the same
+                    // identity the watchdog gave up on stays given up on.
+                    h.stopped.remove(&pid);
+                    if h.stopped.is_empty() {
+                        relaunches.remove(&id);
+                    }
                 }
             }
             // Its clock is left as it is, so it is judged again once things change.
             Verdict::Away => {
                 if away == Some(true) && !watch.told_away {
                     watch.told_away = true;
-                    actions.push(Action::Log(format!("UI pid {pid} is silent, but the screen is locked or the display asleep, so no window is relaunched until someone is back")));
+                    actions.push(Action::Log(format!("UI pid {pid} is silent, but the screen is locked or the display asleep, or the window server cannot say, so no window is relaunched until someone is back")));
                 }
             }
             Verdict::Stopped | Verdict::Backoff => {}
@@ -740,6 +746,44 @@ mod tests {
         assert!(plan(&mut st, TIMEOUT, INTERVAL, now, &mut watch, Some(false)).is_empty());
         assert!(st.relaunches.contains_key(&chooser));
         let _ = (a.kill(), b.kill(), a.wait(), b.wait());
+    }
+
+    #[test]
+    fn a_healthy_sibling_does_not_undo_the_stop_of_a_hung_window() {
+        // Two launch choosers: A was given up on, B heartbeats, long after the last relaunch.
+        let mut a = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let mut b = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 30 * MIN, SystemTime::now());
+        let chooser: WindowId = (Some(PathBuf::from("/nowhere/arkos")), None);
+        st.relaunches.insert(chooser.clone(), Relaunches { stopped: BTreeSet::from([a.id()]), ..history(3, m - 11 * MIN) });
+        add_window_as(&mut st, 1, a.id(), None, 5 * MIN, m);
+        add_window_as(&mut st, 2, b.id(), None, Duration::ZERO, m);
+        let mut watch = Watch::default();
+        let mut now = at(m, w);
+        for _ in 0..5 {
+            st.clients.get_mut(&2).unwrap().last_heartbeat = now.mono;
+            let actions = plan(&mut st, TIMEOUT, INTERVAL, now, &mut watch, Some(false));
+            assert!(actions.is_empty(), "{actions:?}");
+            now = at(now.mono + INTERVAL, now.wall + INTERVAL);
+        }
+        assert_eq!(st.relaunches[&chooser].stopped, BTreeSet::from([a.id()]), "A stays given up on");
+        let _ = (a.kill(), b.kill(), a.wait(), b.wait());
+    }
+
+    #[test]
+    fn nobody_asked_means_nobody_is_away() {
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
+        add_window(&mut st, 1, Duration::ZERO, m);
+        // Away once, and told so; then every window heartbeats, so nobody is asked.
+        let mut watch = Watch { away: true, told_away: true, ..Watch::default() };
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, None).is_empty());
+        assert!(!watch.away && !watch.told_away);
+        // The next hang with the person there is relaunched without an extra fresh clock.
+        let later = at(m + TIMEOUT, w + TIMEOUT);
+        on_time(&mut watch, later);
+        assert_eq!(relaunches(&plan(&mut st, TIMEOUT, INTERVAL, later, &mut watch, Some(false))), 1);
     }
 
     #[test]
