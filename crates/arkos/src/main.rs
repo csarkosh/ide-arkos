@@ -3794,6 +3794,10 @@ fn main() {
         println!("{}", version_string());
         return;
     }
+    // The panic hook, once every command-line branch above has had its turn (a new one goes
+    // above this line too), so a crash in a CLI run is never an app incident: from here on a
+    // release build's panic becomes an incident for the crash dialog.
+    telemetry::panic::install(telemetry::envelope(telemetry::Bin::App), env!("ARKOS_GIT_HASH"), &paths::telemetry_dir());
     // `arkos <folder>`: open that folder, as `cd` there and `arkos` would. A Launch Services
     // start (`open -a`, the screenshot shoot) has no working directory to speak of.
     if let Some(folder) = args.get(1).filter(|a| !a.starts_with('-')) {

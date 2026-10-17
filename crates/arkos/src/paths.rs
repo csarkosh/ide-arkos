@@ -30,6 +30,12 @@ pub fn recovered_dir() -> PathBuf {
     app_support().join("recovered")
 }
 
+/// The app's telemetry folder: the journals, the queue and `incidents/`, the crash reports the
+/// panic hook writes for the dialog.
+pub fn telemetry_dir() -> PathBuf {
+    app_support().join("telemetry")
+}
+
 pub fn socket_path() -> PathBuf {
     app_support().join("arkosd.sock")
 }

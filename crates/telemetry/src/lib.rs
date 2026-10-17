@@ -1,12 +1,16 @@
 //! What Arkos adds to lib-visits's `visits-app` (telemetry spec, section 5), shared by the app
 //! and the daemon: the event allowlist compiled in from `telemetry/events.toml`, the envelope
-//! every report carries, the config file's `[telemetry]` table and the mode it gives, and the
-//! folders both binaries read. The crate opens no connection and starts no thread; the daemon is
+//! every report carries, the config file's `[telemetry]` table and the mode it gives, the
+//! folders both binaries read, and the panic hook (`panic`) with the named failure points its
+//! reports can carry (`Kind`). The crate opens no connection and starts no thread; the daemon is
 //! the only process that uploads.
 mod config;
+mod kinds;
+pub mod panic;
 mod paths;
 
 pub use config::{parse_table, Error, TelemetryConfig};
+pub use kinds::Kind;
 pub use paths::{app_support, app_support_from, config_dir, config_dir_from, config_file};
 pub use visits_app;
 

@@ -12,6 +12,8 @@ toml = "1"
 # The panic hook's frames, unresolved, and the hash of a panic message's first line.
 backtrace.workspace = true
 sha2.workspace = true
+# The panic hook's dyld calls (the main image's header) and its `openat` on the kept folder.
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

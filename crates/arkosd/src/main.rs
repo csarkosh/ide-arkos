@@ -151,6 +151,11 @@ fn main() {
     update.running_version = running_version;
     update.telemetry.dir = telemetry_dir.unwrap_or(update.telemetry.dir);
     update.telemetry.url = telemetry_url.unwrap_or(update.telemetry.url);
+    // The panic hook comes first, as soon as the telemetry folder is known and before anything is
+    // served: a release daemon's panic becomes an incident for the app's dialog. The envelope runs
+    // `sw_vers` once; nothing has started yet, and what a resumed daemon inherited (terminal
+    // masters and the listener) is held by that short-lived child only while it runs.
+    ::telemetry::panic::install(::telemetry::envelope(::telemetry::Bin::Daemon), env!("ARKOS_GIT_HASH"), &update.telemetry.dir);
     journal::init(&update.dir, &socket);
     if let Some(path) = resume {
         let h = match handover::read(&path) {
