@@ -56,6 +56,10 @@ jobs:
           # A first start would ask for a theme and a login: the scenes expect a set-up account.
           printf '{"hasCompletedOnboarding": true, "lastOnboardingVersion": "%s"}\n' "$(claude --version | cut -d' ' -f1)" > "$HOME/.claude.json"
           claude --version
+          # The token signs in here as it will in the scenes; a refused one fails now, not after a
+          # five-minute scene.
+          echo "token length: ${#CLAUDE_CODE_OAUTH_TOKEN}"
+          claude -p "Reply with the single word ready." < /dev/null
       - name: Shoot
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
