@@ -16,12 +16,13 @@
 //! `source` build's hook returns at once and writes nothing.
 use crate::Kind;
 use sha2::{Digest, Sha256};
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::panic::PanicHookInfo;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
 use visits_app::{Crash, CrashKind, Envelope, Uptime};
@@ -34,8 +35,13 @@ const MAX_LINE: u32 = 10_000_000;
 const NO_COMMIT: &str = "0000000";
 /// What a path-like token of a panic message becomes before the message is hashed.
 const PATH: &str = "<path>";
-/// What a run of digits becomes.
+/// What a run of digits, or a `0x` hex number, becomes.
 const NUMBER: &str = "<n>";
+/// What a token holding an `@` (a mail address, `user@host`) becomes.
+const ADDRESS: &str = "<addr>";
+/// At most this many reports a run: a panic that a loop catches and meets again (the daemon's
+/// recovery flusher runs every second or faster) must not fill the folder.
+const MAX_REPORTS: u32 = 4;
 
 /// What `install` worked out, for the hook to read without a lock.
 struct Installed {
@@ -57,6 +63,8 @@ struct Image {
 }
 
 static INSTALLED: OnceLock<Installed> = OnceLock::new();
+/// The panics this run has tried to report, counted before the report is made.
+static WRITTEN: AtomicU32 = AtomicU32::new(0);
 
 /// Installs the hook for this process, once. `env` is the envelope its reports carry (`main`
 /// passes `envelope(..)`, a test a release one), `commit` the binary's `ARKOS_GIT_HASH`, and `dir`
@@ -67,7 +75,7 @@ pub fn install(env: Envelope, commit: &str, dir: &Path) {
     let installed = Installed {
         commit: if is_commit(commit) { commit.to_string() } else { NO_COMMIT.to_string() },
         incidents: if source { None } else { open_incidents(&dir.join("incidents")) },
-        image: if source { None } else { main_image() },
+        image: if source { None } else { main_image(image_name(&env.bin)) },
         env,
         start: Instant::now(),
     };
@@ -94,6 +102,9 @@ fn record(info: &PanicHookInfo<'_>) {
     if at.env.ch.is_source() {
         return;
     }
+    if WRITTEN.fetch_add(1, Ordering::Relaxed) >= MAX_REPORTS {
+        return;
+    }
     let Some(dir) = &at.incidents else { return };
     let (pk, mh) = match info.payload().downcast_ref::<Kind>() {
         Some(kind) => (kind.name().to_string(), None),
@@ -117,7 +128,7 @@ fn record(info: &PanicHookInfo<'_>) {
     };
     // A report the wire would refuse is not written; the previous hook still says what happened.
     let Ok(bytes) = crash.to_bytes() else { return };
-    write_new(dir, &format!("{}.json", crash.inc), &bytes);
+    write_new(dir, &crash.inc, &bytes);
 }
 
 /// The panic's message when it has one: `panic!` with a literal or with arguments.
@@ -147,23 +158,34 @@ fn frames(image: Option<&Image>) -> Vec<(u32, u64)> {
     frames
 }
 
-/// Creates `name` in the kept folder and writes `bytes` to it with one `write`. An existing file
-/// of that name is never touched.
-fn write_new(dir: &File, name: &str, bytes: &[u8]) {
-    let Ok(name) = CString::new(name) else { return };
+/// Writes `bytes` as `<inc>.json` in the kept folder, whole or not at all: one `write` to a new
+/// `.<inc>.tmp`, then a rename onto the report's name, both relative to the kept descriptor. A
+/// short write removes the temporary, so the dialog never meets half a report.
+fn write_new(dir: &File, inc: &str, bytes: &[u8]) {
+    let (Ok(tmp), Ok(name)) = (CString::new(format!(".{inc}.tmp")), CString::new(format!("{inc}.json"))) else { return };
+    let dirfd = dir.as_raw_fd();
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     // SAFETY: `dir` is an open directory descriptor that `INSTALLED` keeps for the life of the
-    // process, and `name` is a NUL-terminated string that outlives the call. The mode is passed
-    // as the `unsigned int` the variadic argument is promoted to.
-    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags, 0o600 as libc::c_uint) };
+    // process (a test's is open for the call), and `tmp` is a NUL-terminated string that outlives
+    // the call. The mode is passed as the `unsigned int` the variadic argument is promoted to.
+    let fd = unsafe { libc::openat(dirfd, tmp.as_ptr(), flags, 0o600 as libc::c_uint) };
     if fd < 0 {
         return;
     }
     // SAFETY: `fd` was just returned by `openat`, is open, and nothing else owns it, so the file
     // may close it when it is dropped.
     let mut file = unsafe { File::from_raw_fd(fd) };
-    // One `write` call: a short write on a full disk leaves a file the dialog refuses to read.
-    let _ = file.write(bytes);
+    let whole = file.write(bytes).is_ok_and(|n| n == bytes.len());
+    drop(file);
+    if !whole {
+        // SAFETY: both arguments are as for the `openat` above, and the name is the temporary
+        // this call created.
+        unsafe { libc::unlinkat(dirfd, tmp.as_ptr(), 0) };
+        return;
+    }
+    // SAFETY: as for the `openat` above; both names are NUL-terminated strings that outlive the
+    // call, and both are resolved relative to the kept descriptor alone.
+    unsafe { libc::renameat(dirfd, tmp.as_ptr(), dirfd, name.as_ptr()) };
 }
 
 /// The hash a report's `mh` carries: SHA-256 of the message's first line once `stripped`, in
@@ -172,26 +194,45 @@ pub fn message_hash(message: &str) -> String {
     hex(&Sha256::digest(stripped(message.lines().next().unwrap_or("")).as_bytes()))
 }
 
-/// `line` with every path-like token (a whitespace-separated piece holding a `/`) replaced by
-/// `<path>` and every run of digits by `<n>`, the pieces joined by single spaces.
+/// `line` as its hash sees it: the first token holding a `/` or a `\\` and everything after it on
+/// the line become one `<path>` (a path with spaces leaves no piece behind), a token holding an
+/// `@` becomes `<addr>`, and every run of digits or `0x` hex number becomes `<n>`; the tokens are
+/// joined by single spaces. An accepted limit: a word without a slash (a host name, a user name, a
+/// bare file name) still reaches the hash input, though never the report.
 fn stripped(line: &str) -> String {
-    let tokens: Vec<String> = line.split_whitespace().map(|t| if t.contains('/') { PATH.to_string() } else { numbers_out(t) }).collect();
+    let mut tokens = Vec::new();
+    for token in line.split_whitespace() {
+        if token.contains(['/', '\\']) {
+            tokens.push(PATH.to_string());
+            break;
+        }
+        tokens.push(if token.contains('@') { ADDRESS.to_string() } else { numbers_out(token) });
+    }
     tokens.join(" ")
 }
 
-/// `token` with each run of ASCII digits replaced by `<n>`.
+/// `token` with each run of ASCII digits, and each `0x` followed by hex digits, replaced by `<n>`.
 fn numbers_out(token: &str) -> String {
+    let chars: Vec<char> = token.chars().collect();
     let mut out = String::with_capacity(token.len());
-    let mut in_number = false;
-    for c in token.chars() {
-        if c.is_ascii_digit() {
-            if !in_number {
-                out.push_str(NUMBER);
-            }
-            in_number = true;
-        } else {
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        if !c.is_ascii_digit() {
             out.push(c);
-            in_number = false;
+            i += 1;
+            continue;
+        }
+        out.push_str(NUMBER);
+        let hex = c == '0' && matches!(chars.get(i + 1), Some('x' | 'X')) && chars.get(i + 2).is_some_and(char::is_ascii_hexdigit);
+        if hex {
+            i += 2;
+            while chars.get(i).is_some_and(char::is_ascii_hexdigit) {
+                i += 1;
+            }
+        } else {
+            while chars.get(i).is_some_and(char::is_ascii_digit) {
+                i += 1;
+            }
         }
     }
     out
@@ -241,12 +282,12 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// The main executable as a report's image: its file name, its LC_UUID and the span its segments
+/// The main executable as a report's image: `name`, its LC_UUID and the span its segments
 /// cover, with the address its header is loaded at as the base the frames count from. Only the
 /// main executable: Arkos's binaries link Rust statically, so nothing else of Arkos is loaded,
 /// and a system library is never listed.
 #[cfg(target_os = "macos")]
-fn main_image() -> Option<Image> {
+fn main_image(name: &str) -> Option<Image> {
     /// The size of a `mach_header_64`; the load commands start right after it.
     const HEADER: usize = 32;
     const MH_MAGIC_64: u32 = 0xfeed_facf;
@@ -256,7 +297,6 @@ fn main_image() -> Option<Image> {
     extern "C" {
         fn _dyld_image_count() -> u32;
         fn _dyld_get_image_header(image_index: u32) -> *const u8;
-        fn _dyld_get_image_name(image_index: u32) -> *const libc::c_char;
     }
     // SAFETY: dyld's image count takes no argument and may be read from any thread.
     let count = unsafe { _dyld_image_count() };
@@ -279,28 +319,24 @@ fn main_image() -> Option<Image> {
         // them, read only.
         let commands = unsafe { std::slice::from_raw_parts(header.add(HEADER), sizeofcmds as usize) };
         let (uuid, size) = uuid_and_size(commands, ncmds)?;
-        // SAFETY: dyld's name for a loaded image is a NUL-terminated path it keeps while the image
-        // is loaded, and it is copied out at once.
-        let path = unsafe { _dyld_get_image_name(index) };
-        let path = if path.is_null() { String::new() } else { unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned() };
-        return Some(Image { name: image_name(&path), uuid, base: header as usize, size });
+        return Some(Image { name: name.to_string(), uuid, base: header as usize, size });
     }
     None
 }
 
 #[cfg(not(target_os = "macos"))]
-fn main_image() -> Option<Image> {
+fn main_image(_name: &str) -> Option<Image> {
     None
 }
 
-/// A loaded image's name as the wire takes it: its path's last part, cleaned and cut to 64, or
-/// `main` when nothing is left.
-fn image_name(path: &str) -> String {
-    let name = cleaned(path.rsplit('/').next().unwrap_or(""), 64);
-    if name.is_empty() {
-        "main".to_string()
+/// The image's name for the binary a report comes from (`Envelope::bin`): `arkosd` for the
+/// daemon and `arkos` for the app. It names the binary, never the file it was loaded from, so a
+/// renamed copy or a dev build's path says nothing.
+fn image_name(bin: &str) -> &'static str {
+    if bin == crate::Bin::Daemon.as_str() {
+        "arkosd"
     } else {
-        name
+        "arkos"
     }
 }
 
@@ -367,11 +403,14 @@ mod tests {
 
     #[test]
     fn a_path_like_token_and_every_run_of_digits_are_replaced() {
-        assert_eq!(stripped(MESSAGE), "could not read <path> at line <n>");
+        assert_eq!(stripped(MESSAGE), "could not read <path>", "the path and everything after it");
         assert_eq!(stripped("index out of bounds: the len is 3 but the index is 10"), "index out of bounds: the len is <n> but the index is <n>");
-        assert_eq!(stripped("open 'src/main.rs:12:5' failed"), "open <path> failed", "a relative path is a path too");
-        assert_eq!(stripped("'/Users/a b/My Project/notes.md' is gone"), "<path> <path> <path> is gone", "each piece of a path with spaces");
+        assert_eq!(stripped("open 'src/main.rs:12:5' failed"), "open <path>", "a relative path is a path too");
+        assert_eq!(stripped("'/Users/a b c/My Project/notes.md' is gone"), "<path>", "no piece of a path with spaces is left");
+        assert_eq!(stripped("cannot open C:\\Users\\someone\\x.txt now"), "cannot open <path>", "a backslash starts a path too");
+        assert_eq!(stripped("mail someone@example.com or <someone@host> today"), "mail <addr> or <addr> today");
         assert_eq!(stripped("version v1.22.3 and abc123def"), "version v<n>.<n>.<n> and abc<n>def");
+        assert_eq!(stripped("bad address 0x7ffee4a1c0 and 0XFF, but 0xg and 10x5"), "bad address <n> and <n>, but <n>xg and <n>x<n>");
         assert_eq!(stripped("Os { code: 2, kind: NotFound }"), "Os { code: <n>, kind: NotFound }");
         assert_eq!(stripped("  spaced   out\tline "), "spaced out line", "whitespace is one space");
         assert_eq!(stripped("https://example.com/x?id=7"), "<path>");
@@ -380,7 +419,7 @@ mod tests {
 
     #[test]
     fn the_message_hash_is_of_the_first_line_stripped() {
-        assert_eq!(message_hash(MESSAGE), sha256_hex("could not read <path> at line <n>"));
+        assert_eq!(message_hash(MESSAGE), sha256_hex("could not read <path>"));
         assert_eq!(message_hash("failed 3 times\nat /Users/someone/secret"), sha256_hex("failed <n> times"));
         assert_eq!(message_hash(""), sha256_hex(""));
         assert!(is_hex(&message_hash("anything"), 64));
@@ -454,11 +493,9 @@ mod tests {
     }
 
     #[test]
-    fn an_image_is_named_by_its_file_and_a_commit_is_hex() {
-        assert_eq!(image_name("/Applications/Arkos IDE.app/Contents/MacOS/arkos"), "arkos");
-        assert_eq!(image_name("/Users/someone/ide-arkos/target/debug/deps/telemetry-0a1b2c"), "telemetry-0a1b2c");
-        assert_eq!(image_name(""), "main");
-        assert_eq!(image_name(&"x".repeat(80)).len(), 64);
+    fn an_image_is_named_by_its_binary_and_a_commit_is_hex() {
+        assert_eq!(image_name("app"), "arkos");
+        assert_eq!(image_name("daemon"), "arkosd");
         assert!(is_commit("0123abc") && is_commit(&"f".repeat(40)));
         for bad in ["unknown", "012345", &"f".repeat(41), "0123ABC", ""] {
             assert!(!is_commit(bad), "{bad}");
@@ -488,6 +525,12 @@ mod tests {
         wait.recv().unwrap();
         if how == "kind" {
             std::panic::panic_any(Kind::Placeholder);
+        }
+        if how == "repeat" {
+            // A panic a loop catches and meets again, as the daemon's recovery flusher would.
+            for n in 0..10 {
+                let _ = std::panic::catch_unwind(|| panic!("tick {n} failed"));
+            }
         }
         panic!("could not read /Users/someone/project/file.rs at line {}", 42);
     }
@@ -543,16 +586,16 @@ mod tests {
         assert_eq!(crash.ck, CrashKind::Panic);
         assert_eq!(crash.commit, COMMIT);
         assert_eq!(crash.pk, "other");
-        assert_eq!(crash.mh.as_deref(), Some(sha256_hex("could not read <path> at line <n>").as_str()));
+        assert_eq!(crash.mh.as_deref(), Some(sha256_hex("could not read <path>").as_str()));
         assert!(crash.file == "panic.rs" || crash.file.starts_with("/src/"), "remapped or a basename: {}", crash.file);
         assert!(crash.line > 0);
         assert_eq!(crash.up, Uptime::Lt1m);
         assert_eq!((crash.sig, crash.mem), (None, None));
-        // The images are this binary alone, by its name, its LC_UUID and its size.
-        let exe = std::env::current_exe().unwrap();
+        // The images are this binary alone, by the name of the binary it installed as (never the
+        // file's name or path), its LC_UUID and its size.
         assert_eq!(crash.images.len(), 1, "{:?}", crash.images);
         let (name, uuid, size) = &crash.images[0];
-        assert_eq!(name, exe.file_name().unwrap().to_str().unwrap());
+        assert_eq!(name, "arkos");
         assert!(is_hex(uuid, 32), "{uuid}");
         assert_ne!(uuid, &"0".repeat(32));
         assert!(*size > 0);
@@ -568,6 +611,31 @@ mod tests {
         for leak in [home.as_str(), "/Users", "someone", "project", "file.rs"] {
             assert!(!text.contains(leak), "{leak} in {text}");
         }
+    }
+
+    #[test]
+    fn a_repeating_panic_writes_at_most_four_reports_a_run() {
+        let (dir, _) = run_child("repeat");
+        let names: Vec<String> = std::fs::read_dir(dir.path().join("incidents")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names.len(), 4, "ten caught panics and the last one: {names:?}");
+        for name in &names {
+            assert!(name.ends_with(".json") && is_hex(name.trim_end_matches(".json"), 32), "whole reports only: {name}");
+            assert!(Crash::from_bytes(&std::fs::read(dir.path().join("incidents").join(name)).unwrap()).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_report_is_written_whole_under_its_name_and_no_temporary_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = File::open(dir.path()).unwrap();
+        write_new(&kept, "0123456789abcdef0123456789abcdef", b"{\"a\":1}");
+        let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, ["0123456789abcdef0123456789abcdef.json"]);
+        assert_eq!(std::fs::read(dir.path().join(&names[0])).unwrap(), b"{\"a\":1}");
+        write_new(&kept, "fedcba9876543210fedcba9876543210", b"{}");
+        let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["0123456789abcdef0123456789abcdef.json", "fedcba9876543210fedcba9876543210.json"]);
     }
 
     #[test]
