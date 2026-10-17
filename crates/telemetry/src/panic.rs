@@ -44,6 +44,9 @@ const ADDRESS: &str = "<addr>";
 /// At most this many reports a run: a panic that a loop catches and meets again (the daemon's
 /// recovery flusher runs every second or faster) must not fill the folder.
 const MAX_REPORTS: u32 = 4;
+/// At most this many reports waiting in the folder, across runs: a binary that panics at every
+/// launch, with nobody answering the dialog, stops adding to it here.
+const MAX_WAITING: u32 = 16;
 
 /// What `install` worked out, for the hook to read without a lock.
 struct Installed {
@@ -53,6 +56,9 @@ struct Installed {
     commit: String,
     /// The incidents folder, open: `None` for a source build, or when it could not be made.
     incidents: Option<File>,
+    /// The reports already waiting in it at install (`waiting_reports`), which count against
+    /// `MAX_WAITING` with this run's.
+    waiting: u32,
     /// The Arkos binary this process runs, the report's only image.
     image: Option<Image>,
     start: Instant,
@@ -72,16 +78,19 @@ static WRITTEN: AtomicU32 = AtomicU32::new(0);
 
 /// Installs the hook for this process, once. `env` is the envelope its reports carry (`main`
 /// passes `envelope(..)`, a test a release one), `commit` the binary's `ARKOS_GIT_HASH`, and `dir`
-/// its telemetry folder, whose `incidents/` is made and opened here. For a source build nothing
-/// is made or opened, and the hook only passes the panic on; the same when the environment turns
-/// crash reports off (`env_turns_crashes_off`), which is read here, once, since the hook may not
-/// read it after a panic. A second call changes nothing.
+/// its telemetry folder, whose `incidents/` is made and opened here and the reports already
+/// waiting in it counted, so the folder holds at most `MAX_WAITING` across runs. For a source
+/// build nothing is made or opened, and the hook only passes the panic on; the same when the
+/// environment turns crash reports off (`env_turns_crashes_off`), which is read here, once, since
+/// the hook may not read it after a panic. A second call changes nothing.
 pub fn install(env: Envelope, commit: &str, dir: &Path) {
     let off = env_turns_crashes_off(&|k| std::env::var(k).ok());
     let quiet = off || env.ch.is_source();
+    let incidents = if quiet { None } else { open_incidents(&dir.join("incidents")) };
     let installed = Installed {
         commit: if is_commit(commit) { commit.to_string() } else { NO_COMMIT.to_string() },
-        incidents: if quiet { None } else { open_incidents(&dir.join("incidents")) },
+        waiting: incidents.as_ref().map_or(0, waiting_reports),
+        incidents,
         image: if quiet { None } else { main_image(image_name(&env.bin)) },
         env,
         off,
@@ -112,13 +121,59 @@ fn open_incidents(path: &Path) -> Option<File> {
     std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(path).ok()
 }
 
+/// How many reports wait in the open incidents folder `dir`: the entries named as a report is,
+/// `<inc>.json` with `inc` 32 lowercase hex characters, read through the kept descriptor so no
+/// path is resolved again. A claimed report (in `claimed/`), a temporary and anything else do
+/// not count.
+fn waiting_reports(dir: &File) -> u32 {
+    // SAFETY: `dir` is an open directory descriptor; `dup` gives a new one that `fdopendir` takes
+    // over and `closedir` closes, so the kept descriptor stays open.
+    let stream = unsafe {
+        let fd = libc::dup(dir.as_raw_fd());
+        if fd < 0 {
+            return 0;
+        }
+        let stream = libc::fdopendir(fd);
+        if stream.is_null() {
+            libc::close(fd);
+            return 0;
+        }
+        // The duplicate shares the kept descriptor's offset, so the listing starts from the top.
+        libc::rewinddir(stream);
+        stream
+    };
+    let mut count = 0u32;
+    loop {
+        // SAFETY: `stream` is the open stream made above, read by this thread alone.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: `readdir` returned a valid entry whose `d_name` is NUL-terminated, and it is
+        // read before the next `readdir` call can reuse it.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if is_report_name(name) {
+            count = count.saturating_add(1);
+        }
+    }
+    // SAFETY: `stream` is open and closed only here, which closes the duplicate with it.
+    unsafe { libc::closedir(stream) };
+    count
+}
+
+/// Whether `name` is a report's file name: 32 lowercase hex characters and `.json`.
+fn is_report_name(name: &[u8]) -> bool {
+    name.strip_suffix(b".json").is_some_and(|inc| inc.len() == 32 && inc.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b)))
+}
+
 /// The hook's own work: the report of this panic, written to the incidents folder.
 fn record(info: &PanicHookInfo<'_>) {
     let Some(at) = INSTALLED.get() else { return };
     if at.off || at.env.ch.is_source() {
         return;
     }
-    if WRITTEN.fetch_add(1, Ordering::Relaxed) >= MAX_REPORTS {
+    let written = WRITTEN.fetch_add(1, Ordering::Relaxed);
+    if written >= MAX_REPORTS || at.waiting.saturating_add(written) >= MAX_WAITING {
         return;
     }
     let Some(dir) = &at.incidents else { return };
@@ -563,10 +618,16 @@ mod tests {
     /// reports off are removed first, so the developer's own environment cannot change a result.
     fn run_child_with(how: &str, vars: &[(&str, &str)]) -> (tempfile::TempDir, Output) {
         let dir = tempfile::tempdir().unwrap();
+        let out = run_child_in(dir.path(), how, vars);
+        (dir, out)
+    }
+
+    /// `run_child_with` installing into the telemetry folder `dir`, which the caller made.
+    fn run_child_in(dir: &Path, how: &str, vars: &[(&str, &str)]) -> Output {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "panic::tests::child", "--ignored", "--nocapture", "--test-threads=1"])
             .env(CHILD, how)
-            .env(DIR, dir.path())
+            .env(DIR, dir)
             .env_remove("RUST_BACKTRACE")
             .env_remove("DO_NOT_TRACK")
             .env_remove(crate::ENV_VAR)
@@ -587,7 +648,7 @@ mod tests {
         assert!(!out.status.success(), "the child panicked, so its test failed");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("panicked at"), "the previous hook ran after ours: {stderr}");
-        (dir, out)
+        out
     }
 
     /// The one incident a child wrote: its file name's `inc` and its bytes.
@@ -648,6 +709,31 @@ mod tests {
             assert!(name.ends_with(".json") && is_hex(name.trim_end_matches(".json"), 32), "whole reports only: {name}");
             assert!(Crash::from_bytes(&std::fs::read(dir.path().join("incidents").join(name)).unwrap()).is_ok());
         }
+    }
+
+    /// The folder is capped across runs, not only within one: a run counts the reports already
+    /// waiting when it installs, so a folder holding 15 takes one more and a full one takes
+    /// none. Only names a report can have count, never a claimed report, a temporary or a note.
+    #[test]
+    fn the_incidents_folder_holds_at_most_sixteen_reports_across_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let incidents = dir.path().join("incidents");
+        std::fs::create_dir_all(incidents.join("claimed")).unwrap();
+        for n in 0..15u32 {
+            std::fs::write(incidents.join(format!("{n:032x}.json")), "{}").unwrap();
+        }
+        for other in ["notes.txt", ".0123456789abcdef0123456789abcdef.tmp", "0123456789ABCDEF0123456789ABCDEF.json", "0123456789abcdef.json"] {
+            std::fs::write(incidents.join(other), "").unwrap();
+        }
+        std::fs::write(incidents.join("claimed").join("fedcba9876543210fedcba9876543210.42.json"), "{}").unwrap();
+        let reports = || {
+            let names = std::fs::read_dir(&incidents).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap());
+            names.filter(|n| n.strip_suffix(".json").is_some_and(|inc| is_hex(inc, 32))).count()
+        };
+        run_child_in(dir.path(), "repeat", &[]);
+        assert_eq!(reports(), 16, "eleven panics, and room for one");
+        run_child_in(dir.path(), "release", &[]);
+        assert_eq!(reports(), 16, "a full folder takes none");
     }
 
     #[test]
