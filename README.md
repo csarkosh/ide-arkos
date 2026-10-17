@@ -65,10 +65,11 @@ markdown editor, and a Claude Code session drafting the next one from the notes.
 
 ## Privacy
 
-Arkos can send anonymous usage reports and crash reports. Both are off until you turn them on,
-in Settings (Privacy) or with `arkos telemetry on`. Once a day the update check goes through the
-project's own server so installs can be counted, with nothing that identifies you or your Mac.
-[What Arkos sends](docs/telemetry.md) lists every key.
+Arkos can send anonymous usage reports and crash reports. Usage reports stay on your Mac until
+you turn them on (Settings > Privacy, or `arkos telemetry on`). A crash report is sent only when
+you press Send in the dialog that shows it, or when you have chosen Always. Once a day the update
+check goes through the project's own server so installs can be counted, with nothing that
+identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every key.
 
 ## Learn more
 

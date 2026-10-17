@@ -154,10 +154,11 @@ worktrees, and the viewer marks a file's changes against HEAD. The browser pane 
 window into a pane (Accessibility permission needed). Milestone 6a made the update path and the
 launcher trustworthy: "Check for updates" waits for the check and says what it found, the chooser
 opens before the daemon answers and reconnects, and a closed tab's minute is kept by the daemon.
-Milestones 6b and 6c are next. Milestone telemetry added anonymous usage reports and crash reports,
-both off until turned on (Settings > Privacy, or `arkos telemetry`), a crash dialog that shows the
-exact bytes before a report is sent, an invitation strip on the second day, the update check once
-a day through the project's own server, and published dSYMs for release builds. What is sent is in
+Milestones 6b and 6c are next. Milestone telemetry added anonymous usage reports and crash reports.
+Usage reports stay on your Mac until you turn them on (Settings > Privacy, or `arkos telemetry
+on`). A crash report is sent only when you press Send in the dialog that shows it, or when you have
+chosen Always. It also added an invitation strip on the second day, the update check once a day
+through the project's own server, and published dSYMs for release builds. What is sent is in
 [telemetry.md](telemetry.md).
 
 Things only a person at the screen can check, in order of value:

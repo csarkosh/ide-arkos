@@ -339,8 +339,8 @@ Notes:
 ## Menu, About, Settings and Keybindings
 
 The menu bar has two menus. "Arkos IDE" holds About Arkos IDE, a line, New Window, Settings, Quit;
-"Help" holds Keybindings and Documentation. They work from the chooser, the project window, About,
-Settings and Keybindings alike. Each Arkos process has its own About, Settings and Keybindings
+"Help" holds Keybindings, Documentation and What Arkos Sends. They work from the chooser, the
+project window, About, Settings and Keybindings alike. Each Arkos process has its own About, Settings and Keybindings
 windows, so two open projects mean two of each. Closing the project window closes them and quits
 the app. New Window from any of the three goes to the project window, or brings the chooser
 forward. The three draw the project window's title bar instead of the native one: the window's
@@ -366,7 +366,7 @@ About again refreshes the rows. "Copy details" puts "Arkos IDE {version}" and on
 line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub); a "Buy
 me more tokens" line shows only once a donation URL is set in the build.
 
-Settings (menu or Cmd+,) has the shared title bar and five sections.
+Settings (menu or Cmd+,) has the shared title bar and six sections.
 
 - Appearance: Mode (System, Dark, Light), the dark and light theme, "Add theme…" and "Show themes
   folder". "Add theme…" takes a `.toml` file (anything else is refused), names the copy after
@@ -383,6 +383,11 @@ Settings (menu or Cmd+,) has the shared title bar and five sections.
 - Startup: "Start at login" on or off; it reads "set by config to ask" while the file says `ask`.
 - Updates: the automatic-updates switch; "{version} is ready" with "Update now" when a build
   waits.
+- Privacy: Usage reports (Off, Local only, On) with a line under it saying what the mode means,
+  or which rule of the environment forces it; Crash reports (Never, Ask each time, Always); "What
+  Arkos sends", which opens the disclosure page; "Last report", which opens the session sealed
+  last in a viewer tab; and Reports, each crash report by date with its id (a click copies it)
+  and what became of it: `waiting`, `queued`, `left the queue` or `declined`.
 - Keyboard: "Keybindings live in config.toml" and an "Open config" button, then "Every binding is
   listed under Help, Keybindings" and a "Keybindings" button that opens that window.
 
@@ -394,6 +399,17 @@ Settings shows the error in a banner and its controls are read-only, except "Ope
 the file refuses (a read-only file, say) is said above the controls, which stay live. Keybindings
 stay in the file. A user's `"open config" = "cmd-,"` makes the key open the config file instead of
 Settings; the menu still shows the shortcut next to Settings, a known limit.
+
+Help, What Arkos Sends opens the disclosure page, [telemetry.md](telemetry.md), which lists every
+key a report can carry. Usage reports are recorded on your Mac and sent only once you turn them on.
+On a day after the install, a release build asks once, in a strip under the first pane's tab bar:
+**Turn on**, **Not now** or **What is sent**. After a crash, the next launch shows a dialog with the
+report's exact bytes under **Show report**: **Send** queues that report to be sent, **Don't send**
+deletes it, and the "Always send crash reports" box, unchecked until you check it, sends later ones
+without asking. Settings > Privacy > Reports keeps a line for each, with the id to quote in an
+issue. `arkos telemetry status` shows the mode in force and why; `arkos telemetry on`, `off` and
+`local` and `arkos telemetry crashes never|ask|always` change it; `arkos telemetry view` prints what
+waits to be sent.
 
 ## Config
 
