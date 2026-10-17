@@ -38,12 +38,13 @@ peach-light); every picture is a real session, taken by [`scripts/shoot.sh`](doc
 
 **The multi tasker** runs several Claude Code sessions on unrelated workstreams at once and
 orchestrates the agents that orchestrate the subagents: here a rate limiter for a web service,
-an inbox being triaged, and a trip being planned, three windows' worth of work in one, with the
-tabs saying which session is working and which is waiting on you.
+an inbox being triaged and a trip being planned, each with its own background agents, and
+behind two of them a blog and a household budget whose sessions have finished. The tabs say
+which session is working and which is waiting on you.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/multitasker-dark.png">
-  <img alt="Three Claude Code sessions in one Arkos IDE window, no sidebar: a rate limiter being built by three background agents, an inbox triaged by four, and a trip being planned" src="docs/images/multitasker-light.png" width="760">
+  <img alt="One Arkos IDE window, no sidebar, three panes: a rate limiter being built by three background agents, an inbox triaged by four, and a trip being planned. The first two panes each have a second tab, a blog and a household budget, marked as waiting on you" src="docs/images/multitasker-light.png" width="760">
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
@@ -55,12 +56,21 @@ tree and the worktree list show what changed.
   <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/web-developer-light.png" width="760">
 </picture>
 
-**The blogger** is not an engineer: a folder of posts in the file tree, two of them open in the
-markdown editor, and a Claude Code session drafting the next one from the notes.
+**The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
+as a grid, a Mermaid diagram, a checklist and a folded open-questions section, and a Claude Code
+session beside it bringing the plan up to date from the review notes.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-dark.png">
-  <img alt="An Arkos IDE window with a folder of markdown posts in the file tree, a post rendered in the editor and a Claude Code session drafting a new post beside it" src="docs/images/blogger-light.png" width="760">
+  <img alt="An Arkos IDE window: a launch plan rendered in the markdown editor with a status table drawn as a grid, a flow diagram, a checklist and an open questions section, and a Claude Code session on the right updating the plan from the notes" src="docs/images/blogger-light.png" width="760">
+</picture>
+
+The same work stacked, one pane above the other: the file on top with the caret in it, since
+the rendered view is also where you edit, and the session below.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/blogger-stacked-dark.png">
+  <img alt="The same launch plan and Claude Code session arranged one above the other: the rendered plan on top with the caret in a heading showing its markdown source, the session underneath" src="docs/images/blogger-stacked-light.png" width="760">
 </picture>
 
 ## Learn more
