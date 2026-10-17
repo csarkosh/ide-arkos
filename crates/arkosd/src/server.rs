@@ -19,6 +19,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub struct Options {
     pub replay_capacity: usize,
     pub watchdog: Duration,
+    /// Whether nobody can be at the Mac, for the watchdog: `watchdog::person_away`, or the fixed
+    /// answer of the hidden `--presence` flag (the tests). Not carried through an upgrade.
+    pub presence: fn() -> bool,
     /// Output bytes a client may have pending before it is dropped as hung.
     pub client_pending_cap: usize,
     pub backpressure: Backpressure,
@@ -245,6 +248,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
     let opts = Options {
         replay_capacity: h.replay_capacity,
         watchdog: Duration::from_secs(h.watchdog_secs),
+        presence: crate::watchdog::person_away,
         client_pending_cap: h.client_pending_cap,
         backpressure: Backpressure { high_water: h.high_water, low_water: h.low_water, stall: Duration::from_secs(h.stall_secs) },
         reaper_every: Duration::from_millis(h.reaper_millis.max(10)),
@@ -283,7 +287,7 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
 /// The watchdog, the reaper, the flusher, the signal watcher, the update poll, the telemetry
 /// upload and the accept loop, shared by a fresh start and a resume.
 fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
-    crate::watchdog::start(state.clone(), opts.watchdog);
+    crate::watchdog::start(state.clone(), opts.watchdog, opts.presence);
     let u = &opts.update;
     if !u.check_every.is_zero() {
         let keys = protocol::release_key::RELEASE_PUBLIC_KEYS.iter().map(|k| k.to_string()).chain(u.extra_keys.iter().cloned()).collect();
@@ -1019,6 +1023,7 @@ mod tests {
         Options {
             replay_capacity: 64,
             watchdog: Duration::from_secs(60),
+            presence: crate::watchdog::person_away,
             client_pending_cap: 1 << 20,
             backpressure: Backpressure::default(),
             reaper_every: Duration::from_secs(1),

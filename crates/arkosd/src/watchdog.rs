@@ -2,10 +2,12 @@
 //!
 //! A silent window is not always a hung one. While the Mac sleeps, and through the dark wakes of
 //! Power Nap, macOS runs the daemon but schedules no window, so every heartbeat stops at once; a
-//! window relaunched then is frozen the same way. So a scan after a sleep starts every window's
-//! clock again, a window is never killed while the screen is locked or the display asleep, and a
-//! window that keeps going silent is relaunched after a growing wait and then left alone.
+//! window relaunched then is frozen the same way. So a scan after a sleep, or after the person
+//! comes back, starts every window's clock again, a window is never killed while the screen is
+//! locked or the display asleep, and a window that keeps going silent is relaunched after a
+//! growing wait and then left alone.
 use crate::server::{ClientRecord, Shared, State};
+use std::collections::{BTreeSet, HashMap};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -15,8 +17,9 @@ use std::time::{Duration, Instant, SystemTime};
 /// system is taken to have slept (the monotonic clock stops while it sleeps).
 const SLEEP_SLACK: Duration = Duration::from_secs(5);
 
-/// How long a relaunched window must go on heartbeating before its silent relaunches are
-/// forgotten; a window silent again sooner waits for its next relaunch.
+/// A window's silent relaunches are forgotten at a scan that finds it heartbeating (a heartbeat
+/// heard, not one a sleep gave it) this long after the last of them. A record with no window of
+/// its identity connected is dropped once its last relaunch is this old.
 const HEALTHY_RESET: Duration = Duration::from_secs(10 * 60);
 
 /// The wait before each silent relaunch in a row, counted from the one before: none for the
@@ -25,17 +28,19 @@ const HEALTHY_RESET: Duration = Duration::from_secs(10 * 60);
 const WAITS: [Duration; 3] = [Duration::ZERO, Duration::from_secs(2 * 60), Duration::from_secs(8 * 60)];
 
 /// A window as the watchdog remembers it across reconnects: the binary it relaunches and the
-/// folder it relaunches it in.
+/// folder it relaunches it in. Two windows may share one (two launch choosers, with no folder),
+/// and then share its count too.
 pub type WindowId = (Option<PathBuf>, Option<PathBuf>);
 
 /// How often a window was relaunched for silence in a row, and when last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Relaunches {
     pub count: u32,
     pub last: Instant,
-    /// The pid of the window the watchdog gave up on. A window of the same identity with another
-    /// pid is one the person opened again, which starts from nothing.
-    pub stopped: Option<u32>,
+    /// The pids of the windows of this identity the watchdog gave up on. Once none of them is
+    /// connected, a window of this identity with another pid is one the person opened again,
+    /// which starts from nothing.
+    pub stopped: BTreeSet<u32>,
 }
 
 /// Both clocks, read together: the monotonic one for heartbeats and waits, the wall clock only
@@ -57,9 +62,14 @@ impl Clocks {
 pub struct Watch {
     /// The clocks at the previous scan; None before the first.
     prev: Option<Clocks>,
-    /// When a sleep last restarted every heartbeat clock: a heartbeat no newer than that was
-    /// given, not heard, and never counts as a healthy window.
+    /// When a sleep or a return last restarted every heartbeat clock: a heartbeat no newer than
+    /// that was given, not heard, and never counts as a healthy window.
     refreshed: Option<Instant>,
+    /// The last answer to whether the person is away, kept while nobody is asked.
+    away: bool,
+    /// Whether the daemon log already says silent windows are left while the person is away;
+    /// once per absence.
+    told_away: bool,
 }
 
 /// What one scan decides for one silent or healthy window.
@@ -85,9 +95,13 @@ enum Action {
     Relaunch { pid: u32, exe: Option<PathBuf>, cwd: Option<PathBuf> },
     /// The line saying the watchdog gave up on a window, for its log and the update journal.
     Stop(String),
+    /// A line for the daemon log alone.
+    Log(String),
 }
 
-pub fn start(state: Shared, timeout: Duration) {
+/// Starts the watchdog thread. `presence` answers whether nobody can be at the Mac:
+/// `person_away` for a real daemon, a fixed answer for `--presence` (the tests).
+pub fn start(state: Shared, timeout: Duration, presence: fn() -> bool) {
     if timeout.is_zero() {
         return;
     }
@@ -98,10 +112,19 @@ pub fn start(state: Shared, timeout: Duration) {
             let mut watch = Watch::default();
             loop {
                 std::thread::sleep(interval);
-                scan(&state, timeout, interval, Clocks::now(), &mut watch, person_away);
+                scan(&state, timeout, interval, &mut watch, presence);
             }
         })
         .expect("spawn watchdog");
+}
+
+/// The answer `--presence` fixes: `away` or `present`. None for anything else.
+pub fn presence_flag(v: &str) -> Option<fn() -> bool> {
+    match v {
+        "away" => Some(|| true),
+        "present" => Some(|| false),
+        _ => None,
+    }
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -126,19 +149,19 @@ fn wait_before(count: u32) -> Option<Duration> {
     WAITS.get(count as usize).copied()
 }
 
-/// Whether a window heartbeating now has done so long enough since its last silent relaunch for
-/// that run of relaunches to be forgotten.
+/// Whether a window heartbeating now does so long enough after its last silent relaunch for that
+/// run of relaunches to be forgotten.
 fn healthy_long_enough(history: &Relaunches, now: Instant) -> bool {
     now.saturating_duration_since(history.last) >= HEALTHY_RESET
 }
 
-/// The verdict on one connected window silent for `silent_for`, given whether the person is away
-/// and its silent relaunches so far.
-fn decide(silent_for: Duration, timeout: Duration, away: bool, history: Option<&Relaunches>, now: Instant) -> Verdict {
-    if silent_for < timeout {
+/// The verdict on one connected window, `pid`, given whether it is silent, whether the person is
+/// away, and the silent relaunches of its identity so far.
+fn decide(silent: bool, away: bool, history: Option<&Relaunches>, pid: u32, now: Instant) -> Verdict {
+    if !silent {
         return Verdict::Healthy;
     }
-    if history.is_some_and(|h| h.stopped.is_some()) {
+    if history.is_some_and(|h| h.stopped.contains(&pid)) {
         return Verdict::Stopped;
     }
     if away {
@@ -176,14 +199,42 @@ fn is_silent(rec: &ClientRecord, now: Instant, timeout: Duration) -> bool {
     now.saturating_duration_since(rec.last_heartbeat) >= timeout
 }
 
-/// Decides one scan under the lock: restarts every clock after a sleep, forgets the relaunches of
-/// windows healthy long enough, and returns what is to be killed, launched and logged. `away`
-/// says whether nobody can be at the Mac; `scan` asks the window server only when a window is
-/// silent, so the tests never do.
-fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watch: &mut Watch, away: bool) -> Vec<Action> {
+/// Drops the relaunch records nothing needs any more: one with no window of its identity
+/// connected whose last relaunch is `HEALTHY_RESET` old, and one whose given-up windows have all
+/// gone while another window of its identity came (the person opened Arkos again).
+fn prune(st: &mut State, now: Instant) {
+    let mut connected: HashMap<WindowId, Vec<u32>> = HashMap::new();
+    for rec in st.clients.values() {
+        if let Some(pid) = watched_pid(rec) {
+            connected.entry((rec.ui_exe.clone(), rec.ui_cwd.clone())).or_default().push(pid);
+        }
+    }
+    st.relaunches.retain(|id, h| match connected.get(id) {
+        None => now.saturating_duration_since(h.last) < HEALTHY_RESET,
+        Some(pids) => h.stopped.is_empty() || pids.iter().any(|p| h.stopped.contains(p)),
+    });
+}
+
+/// Decides one scan under the lock: restarts every clock after a sleep or when the person comes
+/// back, forgets the relaunches nothing needs, and returns what is to be killed, launched and
+/// logged. `away` says whether nobody can be at the Mac, or is None when nobody was asked (no
+/// window was silent when `scan` looked); a window silent by now is then judged next scan.
+fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watch: &mut Watch, away: Option<bool>) -> Vec<Action> {
     let prev = watch.prev.replace(now);
-    if prev.is_some_and(|p| slept(p, now, interval)) {
-        eprintln!("arkosd: the system slept or the daemon was not scheduled; every window's heartbeat clock starts again");
+    prune(st, now.mono);
+    let back = watch.away && away == Some(false);
+    if let Some(a) = away {
+        watch.away = a;
+        if !a {
+            watch.told_away = false;
+        }
+    }
+    if back || prev.is_some_and(|p| slept(p, now, interval)) {
+        if back {
+            eprintln!("arkosd: the screen is unlocked and the display awake again; every window's heartbeat clock starts again");
+        } else {
+            eprintln!("arkosd: the system slept or the daemon was not scheduled; every window's heartbeat clock starts again");
+        }
         for rec in st.clients.values_mut() {
             rec.last_heartbeat = now.mono;
         }
@@ -195,12 +246,8 @@ fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watc
     for rec in clients.values_mut() {
         let Some(pid) = watched_pid(rec) else { continue };
         let id: WindowId = (rec.ui_exe.clone(), rec.ui_cwd.clone());
-        // The window the watchdog gave up on was opened again by the person: a fresh start.
-        if relaunches.get(&id).is_some_and(|h| h.stopped.is_some_and(|p| p != pid)) {
-            relaunches.remove(&id);
-        }
-        let silent_for = now.mono.saturating_duration_since(rec.last_heartbeat);
-        match decide(silent_for, timeout, away, relaunches.get(&id), now.mono) {
+        let silent = is_silent(rec, now.mono, timeout);
+        match decide(silent, away.unwrap_or(true), relaunches.get(&id), pid, now.mono) {
             Verdict::Healthy => {
                 let heard = watch.refreshed.is_none_or(|r| rec.last_heartbeat > r);
                 if heard && relaunches.get(&id).is_some_and(|h| healthy_long_enough(h, now.mono)) {
@@ -208,13 +255,19 @@ fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watc
                 }
             }
             // Its clock is left as it is, so it is judged again once things change.
-            Verdict::Stopped | Verdict::Away | Verdict::Backoff => {}
+            Verdict::Away => {
+                if away == Some(true) && !watch.told_away {
+                    watch.told_away = true;
+                    actions.push(Action::Log(format!("UI pid {pid} is silent, but the screen is locked or the display asleep, so no window is relaunched until someone is back")));
+                }
+            }
+            Verdict::Stopped | Verdict::Backoff => {}
             Verdict::Stop => {
                 if !pid_alive(pid) {
                     continue;
                 }
                 if let Some(h) = relaunches.get_mut(&id) {
-                    h.stopped = Some(pid);
+                    h.stopped.insert(pid);
                 }
                 actions.push(Action::Stop(stop_line(rec.ui_exe.as_deref(), rec.ui_cwd.as_deref(), pid)));
             }
@@ -223,7 +276,7 @@ fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watc
                     continue;
                 }
                 eprintln!("arkosd: UI pid {pid} silent for {:?}, relaunching", timeout);
-                let h = relaunches.entry(id).or_insert(Relaunches { count: 0, last: now.mono, stopped: None });
+                let h = relaunches.entry(id).or_insert(Relaunches { count: 0, last: now.mono, stopped: BTreeSet::new() });
                 h.count += 1;
                 h.last = now.mono;
                 actions.push(Action::Relaunch { pid, exe: rec.ui_exe.clone(), cwd: rec.ui_cwd.clone() });
@@ -235,15 +288,20 @@ fn plan(st: &mut State, timeout: Duration, interval: Duration, now: Clocks, watc
     actions
 }
 
-fn scan(state: &Shared, timeout: Duration, interval: Duration, now: Clocks, watch: &mut Watch, person_away: fn() -> bool) {
+fn scan(state: &Shared, timeout: Duration, interval: Duration, watch: &mut Watch, presence: fn() -> bool) {
     // Whether anyone is at the Mac is asked of the window server only when a window is silent,
     // and outside the lock.
-    let any_silent = state.lock().unwrap().clients.values().any(|rec| watched_pid(rec).is_some() && is_silent(rec, now.mono, timeout));
-    let away = any_silent && person_away();
+    let looked = Instant::now();
+    let any_silent = state.lock().unwrap().clients.values().any(|rec| watched_pid(rec).is_some() && is_silent(rec, looked, timeout));
+    let away = any_silent.then(presence);
+    // Both clocks are read after the question, so a window server slow to answer through a sleep
+    // is caught by the sleep check on this same scan.
+    let now = Clocks::now();
     let actions = plan(&mut state.lock().unwrap(), timeout, interval, now, watch, away);
     // The lock is released: killing and spawning never block other threads.
     for action in actions {
         match action {
+            Action::Log(line) => eprintln!("arkosd: {line}"),
             Action::Stop(line) => {
                 eprintln!("arkosd: {line}");
                 crate::journal::note(line);
@@ -262,11 +320,26 @@ fn scan(state: &Shared, timeout: Duration, interval: Duration, now: Clocks, watc
     }
 }
 
-/// Whether nobody can be at the Mac: the screen is locked or the main display asleep. A window
-/// is not drawn then, so its silence says nothing about whether it hangs. Without a session to
-/// ask (no window server), the person is taken to be there, as before this check.
+/// What the window server said about the screen lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lock {
+    Locked,
+    Unlocked,
+    /// No session to ask, or an answer that could not be read.
+    Unknown,
+}
+
+/// Away when the display sleeps, the screen is locked, or the lock could not be learned: without
+/// an answer the watchdog would rather leave a hung window than kill a sleeping one.
+fn away_from(display_asleep: bool, lock: Lock) -> bool {
+    display_asleep || lock != Lock::Unlocked
+}
+
+/// Whether nobody can be at the Mac: the main display asleep or the screen locked, or no session
+/// to ask (see `away_from`). A window is not drawn then, so its silence says nothing about
+/// whether it hangs.
 #[cfg(target_os = "macos")]
-fn person_away() -> bool {
+pub fn person_away() -> bool {
     use std::ffi::{c_char, c_void};
     type CFTypeRef = *const c_void;
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -288,27 +361,36 @@ fn person_away() -> bool {
     // SAFETY: each Create or Copy is released once; the dictionary's value is borrowed from it
     // and read before the dictionary is released.
     unsafe {
-        if CGDisplayIsAsleep(CGMainDisplayID()) != 0 {
-            return true;
-        }
+        let display_asleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0;
         let session = CGSessionCopyCurrentDictionary();
         if session.is_null() {
-            return false;
+            return away_from(display_asleep, Lock::Unknown);
         }
         let key = CFStringCreateWithCString(std::ptr::null(), c"CGSSessionScreenIsLocked".as_ptr(), UTF8);
-        let mut locked = false;
-        if !key.is_null() {
+        let lock = if key.is_null() {
+            Lock::Unknown
+        } else {
             let v = CFDictionaryGetValue(session, key);
-            locked = !v.is_null() && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v) != 0;
+            // The key is there only while the screen is locked.
+            let lock = if v.is_null() {
+                Lock::Unlocked
+            } else if CFGetTypeID(v) != CFBooleanGetTypeID() {
+                Lock::Unknown
+            } else if CFBooleanGetValue(v) != 0 {
+                Lock::Locked
+            } else {
+                Lock::Unlocked
+            };
             CFRelease(key);
-        }
+            lock
+        };
         CFRelease(session);
-        locked
+        away_from(display_asleep, lock)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn person_away() -> bool {
+pub fn person_away() -> bool {
     false
 }
 
@@ -369,6 +451,7 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(30);
     const INTERVAL: Duration = Duration::from_secs(5);
     const MIN: Duration = Duration::from_secs(60);
+    const PID: u32 = 4242;
 
     fn at(mono: Instant, wall: SystemTime) -> Clocks {
         Clocks { mono, wall }
@@ -408,45 +491,47 @@ mod tests {
     }
 
     fn history(count: u32, last: Instant) -> Relaunches {
-        Relaunches { count, last, stopped: None }
+        Relaunches { count, last, stopped: BTreeSet::new() }
     }
 
     #[test]
     fn a_heartbeating_window_is_healthy_whatever_else_holds() {
         let now = Instant::now();
-        assert_eq!(decide(Duration::from_secs(1), TIMEOUT, false, None, now), Verdict::Healthy);
-        assert_eq!(decide(Duration::from_secs(1), TIMEOUT, true, Some(&history(3, now)), now), Verdict::Healthy);
+        assert_eq!(decide(false, false, None, PID, now), Verdict::Healthy);
+        assert_eq!(decide(false, true, Some(&history(3, now)), PID, now), Verdict::Healthy);
     }
 
     #[test]
     fn a_silent_window_with_the_person_there_is_relaunched() {
         let now = Instant::now();
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, None, now), Verdict::Relaunch);
+        assert_eq!(decide(true, false, None, PID, now), Verdict::Relaunch);
     }
 
     #[test]
     fn a_silent_window_with_the_person_away_is_left() {
         let now = Instant::now();
-        assert_eq!(decide(TIMEOUT * 100, TIMEOUT, true, None, now), Verdict::Away);
-        assert_eq!(decide(TIMEOUT * 100, TIMEOUT, true, Some(&history(3, now)), now), Verdict::Away, "no stop while away either");
+        assert_eq!(decide(true, true, None, PID, now), Verdict::Away);
+        assert_eq!(decide(true, true, Some(&history(3, now)), PID, now), Verdict::Away, "no stop while away either");
     }
 
     #[test]
     fn a_window_silent_again_soon_after_a_relaunch_waits() {
         let last = Instant::now();
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&history(1, last)), last + MIN), Verdict::Backoff);
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&history(1, last)), last + 2 * MIN), Verdict::Relaunch);
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&history(2, last)), last + 7 * MIN), Verdict::Backoff);
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&history(2, last)), last + 8 * MIN), Verdict::Relaunch);
+        assert_eq!(decide(true, false, Some(&history(1, last)), PID, last + MIN), Verdict::Backoff);
+        assert_eq!(decide(true, false, Some(&history(1, last)), PID, last + 2 * MIN), Verdict::Relaunch);
+        assert_eq!(decide(true, false, Some(&history(2, last)), PID, last + 7 * MIN), Verdict::Backoff);
+        assert_eq!(decide(true, false, Some(&history(2, last)), PID, last + 8 * MIN), Verdict::Relaunch);
     }
 
     #[test]
     fn a_window_silent_after_three_relaunches_is_given_up_on_once() {
         let last = Instant::now();
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&history(3, last)), last + MIN), Verdict::Stop);
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&history(3, last)), last + 60 * MIN), Verdict::Stop);
-        let stopped = Relaunches { stopped: Some(42), ..history(3, last) };
-        assert_eq!(decide(TIMEOUT, TIMEOUT, false, Some(&stopped), last + MIN), Verdict::Stopped);
+        assert_eq!(decide(true, false, Some(&history(3, last)), PID, last + MIN), Verdict::Stop);
+        assert_eq!(decide(true, false, Some(&history(3, last)), PID, last + 60 * MIN), Verdict::Stop);
+        let stopped = Relaunches { stopped: BTreeSet::from([PID]), ..history(3, last) };
+        assert_eq!(decide(true, false, Some(&stopped), PID, last + MIN), Verdict::Stopped);
+        // Another silent window of the same identity is given up on too, not relaunched.
+        assert_eq!(decide(true, false, Some(&stopped), PID + 1, last + MIN), Verdict::Stop);
     }
 
     #[test]
@@ -477,17 +562,33 @@ mod tests {
         assert!(stop_line(None, None, 7).contains("open Arkos again"));
     }
 
-    /// A connected window whose pid is alive (the test's parent, which the plan never signals:
-    /// only `scan` kills) and whose last heartbeat was `silent_for` ago.
-    fn add_window(st: &mut State, client: u64, silent_for: Duration, now: Instant) {
+    #[test]
+    fn an_unreadable_lock_or_no_session_is_away() {
+        assert!(!away_from(false, Lock::Unlocked));
+        assert!(away_from(true, Lock::Unlocked), "the display asleep");
+        assert!(away_from(false, Lock::Locked), "the screen locked");
+        assert!(away_from(false, Lock::Unknown), "no session to ask, or no answer");
+    }
+
+    #[test]
+    fn the_presence_flag_fixes_the_answer() {
+        assert!(presence_flag("away").expect("away is a value")());
+        assert!(!presence_flag("present").expect("present is a value")());
+        assert!(presence_flag("maybe").is_none());
+        assert!(presence_flag("").is_none());
+    }
+
+    /// A connected window whose pid is `pid` (alive and never signalled: only `scan` kills) and
+    /// whose last heartbeat was `silent_for` ago.
+    fn add_window_as(st: &mut State, client: u64, pid: u32, cwd: Option<&str>, silent_for: Duration, now: Instant) {
         let (a, _b) = UnixStream::pair().unwrap();
         let rec = ClientRecord {
             tx: ClientSink::new(client, a, 1 << 20),
             attached: Vec::new(),
             last_heartbeat: now - silent_for,
-            ui_pid: Some(std::os::unix::process::parent_id()),
+            ui_pid: Some(pid),
             ui_exe: Some(PathBuf::from("/nowhere/arkos")),
-            ui_cwd: Some(PathBuf::from("/nowhere/project")),
+            ui_cwd: cwd.map(PathBuf::from),
             connected: true,
             protocol: 0,
             relaunch: None,
@@ -495,6 +596,11 @@ mod tests {
             end: None,
         };
         st.clients.insert(client, rec);
+    }
+
+    /// The test's parent as the window: alive, and not ours to signal, which the plan never does.
+    fn add_window(st: &mut State, client: u64, silent_for: Duration, now: Instant) {
+        add_window_as(st, client, std::os::unix::process::parent_id(), Some("/nowhere/project"), silent_for, now);
     }
 
     /// Makes `now` the scan right after the previous one, however far the test moved the clocks.
@@ -506,6 +612,10 @@ mod tests {
         (Some(PathBuf::from("/nowhere/arkos")), Some(PathBuf::from("/nowhere/project")))
     }
 
+    fn relaunches(actions: &[Action]) -> usize {
+        actions.iter().filter(|a| matches!(a, Action::Relaunch { .. })).count()
+    }
+
     #[test]
     fn a_scan_after_a_sleep_restarts_every_clock_and_relaunches_nothing() {
         let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
@@ -513,10 +623,50 @@ mod tests {
         // The window looks silent for five minutes, but the Mac slept: nothing is killed.
         let mut silent = State::default();
         add_window(&mut silent, 1, 5 * MIN, woke.mono);
-        let mut watch = Watch { prev: Some(at(m, w)), refreshed: None };
-        assert!(plan(&mut silent, TIMEOUT, INTERVAL, woke, &mut watch, false).is_empty());
+        let mut watch = Watch { prev: Some(at(m, w)), ..Watch::default() };
+        assert!(plan(&mut silent, TIMEOUT, INTERVAL, woke, &mut watch, Some(false)).is_empty());
         assert_eq!(silent.clients[&1].last_heartbeat, woke.mono);
         assert!(silent.relaunches.is_empty());
+    }
+
+    #[test]
+    fn the_person_coming_back_restarts_every_clock_and_relaunches_nothing() {
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
+        add_window(&mut st, 1, 5 * MIN, m);
+        let mut watch = Watch::default();
+        on_time(&mut watch, at(m, w));
+        assert!(relaunches(&plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, Some(true))) == 0, "left while away");
+        // The display wakes with no lock: the window, silent for minutes, has had no chance to
+        // heartbeat yet.
+        let back = at(m + INTERVAL, w + INTERVAL);
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, back, &mut watch, Some(false)).is_empty());
+        assert_eq!(st.clients[&1].last_heartbeat, back.mono);
+        // Still silent a whole timeout later, with the person there: now it is relaunched.
+        let later = at(back.mono + TIMEOUT, back.wall + TIMEOUT);
+        on_time(&mut watch, later);
+        assert_eq!(relaunches(&plan(&mut st, TIMEOUT, INTERVAL, later, &mut watch, Some(false))), 1);
+    }
+
+    #[test]
+    fn being_away_is_logged_once_per_absence() {
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
+        add_window(&mut st, 1, 5 * MIN, m);
+        let mut watch = Watch::default();
+        let logs = |a: &[Action]| a.iter().filter(|a| matches!(a, Action::Log(_))).count();
+        assert_eq!(logs(&plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, Some(true))), 1);
+        let next = at(m + INTERVAL, w + INTERVAL);
+        assert_eq!(logs(&plan(&mut st, TIMEOUT, INTERVAL, next, &mut watch, Some(true))), 0, "not every scan");
+    }
+
+    #[test]
+    fn a_window_silent_when_nobody_was_asked_waits_for_the_next_scan() {
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
+        add_window(&mut st, 1, TIMEOUT, m);
+        let mut watch = Watch::default();
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, None).is_empty());
     }
 
     #[test]
@@ -525,7 +675,7 @@ mod tests {
         let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
         add_window(&mut st, 1, TIMEOUT, m);
         let mut watch = Watch::default();
-        let actions = plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, false);
+        let actions = plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, Some(false));
         assert!(matches!(actions.as_slice(), [Action::Relaunch { .. }]), "{actions:?}");
         assert_eq!(st.relaunches[&window()].count, 1);
         // The relaunched window, a new client, goes silent again a minute later: it waits.
@@ -533,12 +683,13 @@ mod tests {
         let later = at(m + MIN, w + MIN);
         add_window(&mut st, 2, TIMEOUT, later.mono);
         on_time(&mut watch, later);
-        assert!(plan(&mut st, TIMEOUT, INTERVAL, later, &mut watch, false).is_empty());
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, later, &mut watch, Some(false)).is_empty());
         assert_eq!(st.clients[&2].last_heartbeat, later.mono - TIMEOUT, "its clock is left as it is");
         // Away, it is left too, and its clock with it.
         let away = at(later.mono + 2 * MIN, later.wall + 2 * MIN);
         on_time(&mut watch, away);
-        assert!(plan(&mut st, TIMEOUT, INTERVAL, away, &mut watch, true).is_empty());
+        assert_eq!(relaunches(&plan(&mut st, TIMEOUT, INTERVAL, away, &mut watch, Some(true))), 0);
+        assert_eq!(st.clients[&2].last_heartbeat, later.mono - TIMEOUT);
         assert_eq!(st.relaunches[&window()].count, 1);
     }
 
@@ -549,16 +700,59 @@ mod tests {
         st.relaunches.insert(window(), history(3, m));
         add_window(&mut st, 1, TIMEOUT, m + MIN);
         let mut watch = Watch::default();
-        let actions = plan(&mut st, TIMEOUT, INTERVAL, at(m + MIN, w), &mut watch, false);
+        let actions = plan(&mut st, TIMEOUT, INTERVAL, at(m + MIN, w), &mut watch, Some(false));
         assert!(matches!(actions.as_slice(), [Action::Stop(_)]), "{actions:?}");
         let next = at(m + MIN + INTERVAL, w + INTERVAL);
-        assert!(plan(&mut st, TIMEOUT, INTERVAL, next, &mut watch, false).is_empty(), "the stop is written once");
-        // The person opens Arkos again: a window of that identity with another pid starts afresh.
-        st.relaunches.get_mut(&window()).unwrap().stopped = Some(1_000_000);
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, next, &mut watch, Some(false)).is_empty(), "the stop is written once");
+        // The person opens Arkos again: the given-up window is gone and one of that identity
+        // with another pid starts afresh.
+        st.relaunches.get_mut(&window()).unwrap().stopped = BTreeSet::from([1_000_000]);
         let again = at(next.mono + INTERVAL, next.wall + INTERVAL);
-        let actions = plan(&mut st, TIMEOUT, INTERVAL, again, &mut watch, false);
+        let actions = plan(&mut st, TIMEOUT, INTERVAL, again, &mut watch, Some(false));
         assert!(matches!(actions.as_slice(), [Action::Relaunch { .. }]), "{actions:?}");
         assert_eq!(st.relaunches[&window()].count, 1);
+    }
+
+    #[test]
+    fn two_windows_of_one_identity_are_both_given_up_on_and_stay_so() {
+        // Two launch choosers: the same binary, no folder.
+        let mut a = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let mut b = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 10 * MIN, SystemTime::now());
+        let chooser: WindowId = (Some(PathBuf::from("/nowhere/arkos")), None);
+        st.relaunches.insert(chooser.clone(), history(3, m));
+        add_window_as(&mut st, 1, a.id(), None, TIMEOUT, m + MIN);
+        add_window_as(&mut st, 2, b.id(), None, TIMEOUT, m + MIN);
+        let mut watch = Watch::default();
+        let mut now = at(m + MIN, w);
+        let first = plan(&mut st, TIMEOUT, INTERVAL, now, &mut watch, Some(false));
+        assert_eq!(first.iter().filter(|a| matches!(a, Action::Stop(_))).count(), 2, "{first:?}");
+        for _ in 0..5 {
+            now = at(now.mono + INTERVAL, now.wall + INTERVAL);
+            let actions = plan(&mut st, TIMEOUT, INTERVAL, now, &mut watch, Some(false));
+            assert!(actions.is_empty(), "{actions:?}");
+        }
+        assert_eq!(st.relaunches[&chooser].stopped, BTreeSet::from([a.id(), b.id()]));
+        // One of them is quit; the other, still given up on, keeps the record.
+        st.clients.remove(&1);
+        now = at(now.mono + INTERVAL, now.wall + INTERVAL);
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, now, &mut watch, Some(false)).is_empty());
+        assert!(st.relaunches.contains_key(&chooser));
+        let _ = (a.kill(), b.kill(), a.wait(), b.wait());
+    }
+
+    #[test]
+    fn a_record_with_no_window_is_dropped_once_its_last_relaunch_is_old() {
+        let mut st = State::default();
+        let (m, w) = (Instant::now() + 30 * MIN, SystemTime::now());
+        let other: WindowId = (Some(PathBuf::from("/nowhere/arkos")), Some(PathBuf::from("/nowhere/other")));
+        st.relaunches.insert(window(), history(1, m - 11 * MIN));
+        st.relaunches.insert(other.clone(), history(1, m - MIN));
+        let mut watch = Watch::default();
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, at(m, w), &mut watch, None).is_empty());
+        assert!(!st.relaunches.contains_key(&window()), "old and with no window");
+        assert!(st.relaunches.contains_key(&other), "its relaunched window may still be starting");
     }
 
     #[test]
@@ -569,15 +763,15 @@ mod tests {
         let woke = at(m + 11 * MIN, w + 60 * MIN);
         add_window(&mut st, 1, 5 * MIN, woke.mono);
         // A sleep gives the hung window a fresh clock; that is not a heartbeat heard.
-        let mut watch = Watch { prev: Some(at(m + 11 * MIN - INTERVAL, w)), refreshed: None };
-        assert!(plan(&mut st, TIMEOUT, INTERVAL, woke, &mut watch, false).is_empty());
+        let mut watch = Watch { prev: Some(at(m + 11 * MIN - INTERVAL, w)), ..Watch::default() };
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, woke, &mut watch, Some(false)).is_empty());
         let next = at(woke.mono + INTERVAL, woke.wall + INTERVAL);
-        assert!(plan(&mut st, TIMEOUT, INTERVAL, next, &mut watch, false).is_empty());
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, next, &mut watch, None).is_empty());
         assert_eq!(st.relaunches[&window()].count, 2, "a given clock kept the count");
         // A real heartbeat after it does.
         st.clients.get_mut(&1).unwrap().last_heartbeat = next.mono;
         let after = at(next.mono + INTERVAL, next.wall + INTERVAL);
-        assert!(plan(&mut st, TIMEOUT, INTERVAL, after, &mut watch, false).is_empty());
+        assert!(plan(&mut st, TIMEOUT, INTERVAL, after, &mut watch, None).is_empty());
         assert!(st.relaunches.is_empty(), "ten healthy minutes forgot the relaunches");
     }
 }

@@ -373,7 +373,8 @@ fn marker_written(marker: &std::path::Path) -> bool {
 
 #[test]
 fn watchdog_kills_a_silent_ui_and_relaunches_it() {
-    let d = Daemon::start(&["--watchdog-secs", "2"]);
+    // Present whatever the Mac's screen does while the tests run.
+    let d = Daemon::start(&["--watchdog-secs", "2", "--presence", "present"]);
     let dir = tempfile::tempdir().unwrap();
     // The UI's working directory, distinct from the daemon's, which is the test's own.
     let ui_cwd = tempfile::tempdir().unwrap();
@@ -402,6 +403,22 @@ fn watchdog_kills_a_silent_ui_and_relaunches_it() {
     }
     let relaunched_in = std::fs::read_to_string(&marker).unwrap();
     assert_eq!(relaunched_in.trim_end(), ui_cwd.path().canonicalize().unwrap().to_str().unwrap(), "relaunched outside the UI's cwd");
+}
+
+#[test]
+fn watchdog_leaves_a_silent_ui_alone_while_the_person_is_away() {
+    let d = Daemon::start(&["--watchdog-secs", "1", "--presence", "away"]);
+    let dir = tempfile::tempdir().unwrap();
+    let (script, marker) = relaunch_script(dir.path());
+    let mut fake_ui = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+    let mut c = d.connect_raw();
+    c.send(Request::Hello { protocol_version: PROTOCOL_VERSION, ui_pid: fake_ui.id(), ui_exe: Some(script), ui_cwd: dir.path().to_path_buf() });
+    // Silent for several timeouts with nobody at the Mac: neither killed nor relaunched.
+    std::thread::sleep(Duration::from_millis(4000));
+    assert!(fake_ui.try_wait().unwrap().is_none(), "a silent UI was killed while the person was away");
+    assert!(!marker.exists(), "a window was relaunched while the person was away");
+    let _ = fake_ui.kill();
+    let _ = fake_ui.wait();
 }
 
 #[test]
@@ -649,6 +666,8 @@ fn frozen_ui_with_busy_session_is_relaunched() {
     let d = Daemon::start(&[
         "--watchdog-secs",
         "3",
+        "--presence",
+        "present",
         "--subscriber-high-water",
         "262144",
         "--subscriber-stall-secs",
@@ -826,7 +845,7 @@ fn hello_with_a_foreign_ui_exe_is_not_relaunched() {
     let script = dir.path().join("other");
     std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let d = Daemon::start(&["--watchdog-secs", "1"]);
+    let d = Daemon::start(&["--watchdog-secs", "1", "--presence", "present"]);
     let mut fake_ui = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
     let mut c = d.connect_raw();
     c.send(Request::Hello {

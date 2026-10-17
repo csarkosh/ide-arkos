@@ -117,6 +117,23 @@ configured window (default 30 s) while the UI process is still alive, it kills a
 the UI. The relaunched UI reattaches every session from the workspace file. Sessions are never
 touched. This holds regardless of what the renderer or the GPU is doing.
 
+A silent window is not always a hung one: while the Mac sleeps, and through Power Nap's dark
+wakes, macOS runs the daemon but schedules no window. So:
+
+- **Sleep.** A scan where the wall clock moved more than a few seconds further than the
+  monotonic clock (the system slept), or whose own gap is far longer than its interval (the
+  daemon was not scheduled), gives every window a fresh heartbeat clock and relaunches nothing.
+- **Away.** No window is killed while the screen is locked, the main display is asleep, or the
+  window server cannot say (no session). The daemon log says so once per absence. The first
+  scan after the person is back gives every window a fresh clock and relaunches nothing.
+- **Backoff.** A window relaunched for silence that goes silent again waits 2 minutes from that
+  relaunch, then 8, before the next. A scan that finds it heartbeating ten minutes after its
+  last relaunch forgets the count. The count is kept per window binary and folder in the
+  daemon, across reconnects; a daemon restart forgets it.
+- **Stop.** Silent again after three relaunches in a row, the window is left as it is, and one
+  line in the daemon log and the update journal says to quit it and open Arkos again. A window
+  of that binary and folder opened afterwards starts a fresh count.
+
 ### 2.5 Scheduling
 
 UI main thread: user-interactive QoS. Each session can be spawned at a configurable nice
