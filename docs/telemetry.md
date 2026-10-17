@@ -55,7 +55,7 @@ One report per journal, which is one run of a window, recorded only while usage 
 |---|---|---|
 | `sid` | `9f2c4e1a7b3d5f60a1c2e3f4b5d6e7f8` | A random number made for one report and never used again. It ties that report's events together. |
 | `len` | `5400` | How long the report covers, in seconds. |
-| `end` | `quit` | How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash or a force quit), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate. |
+| `end` | `quit` | How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash, a force quit, or the daemon restarted), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate. |
 | `iw` | `20370` | The week the first session was recorded on this Mac, as days since 1 January 1970 rounded down to a multiple of 7. It shows how long people keep using Arkos; everyone who started that week sends the same number. |
 | `rd` | `2` | Days since the last session report from this copy, or `-1` for the first. It shows how often Arkos is used, without an id. |
 | `focus` | `{"terminal": 3100, "viewer": 900}` | Seconds the window was in front during the report, per kind of tab and for Settings, to see which parts of Arkos are used. |

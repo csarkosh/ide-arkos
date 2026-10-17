@@ -396,10 +396,10 @@ mod tests {
     use super::*;
     use crate::{envelope, Bin, Kind};
     use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
     use std::process::{Command, Output, Stdio};
     use std::time::{Duration, Instant};
     use visits_app::{Channel, Crash, CrashKind};
-    use std::collections::HashMap;
 
     /// Set in a child run to `release`, `source` or `kind`: how the child installs and panics.
     const CHILD: &str = "ARKOS_PANIC_TEST_CHILD";

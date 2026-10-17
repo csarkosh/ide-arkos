@@ -82,7 +82,7 @@ pub const SESSION: Table = Table {
         field(
             "end",
             "`quit`",
-            "How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash or a force quit), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate.",
+            "How the report ended: `quit` when the window quit or relaunched for an update, `lost` when its connection to the daemon ended without that (a crash, a force quit, or the daemon restarted), or `unknown` when it was found left behind. The share of `lost` reports estimates the crash rate.",
         ),
         field(
             "iw",
