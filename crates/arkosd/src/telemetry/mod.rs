@@ -129,14 +129,21 @@ pub fn update_state<R>(dir: &Path, f: impl FnOnce(&mut State) -> R) -> std::io::
 /// needs no consent and never reads it.
 ///
 /// The daemon parses only the `[telemetry]` table, with toml 1 (`parse_table`), while the app
-/// parses the whole file with its own reader, toml 0.8. When the app refuses the file (a
-/// mistake in another section, or something only one of the two parsers accepts), the app runs
-/// `Off` for that run while the daemon follows the table. That is deliberate: the app records
-/// nothing then, so nothing new reaches the queue, and what the daemon posts was consented to
-/// by the table as written.
+/// parses the whole file with its own reader, toml 0.8, so the two can disagree when the app
+/// refuses the file (a mistake in another section, or something only one of the two parsers
+/// accepts). The app runs `Off` only for a file it refused at launch, and then for the whole
+/// run: it records nothing, so nothing new reaches the queue. A reload it refuses keeps the
+/// settings and the journal it had, while the daemon follows the table as written. Should that
+/// table turn usage `On`, the window does not restart its journal, which is why the consent
+/// check (`upload::consent_check`) judges every journal by its start, a connected window's too.
 pub fn mode_now(config: &Path) -> Mode {
-    let config = config_of(std::fs::read_to_string(config));
-    ::telemetry::mode_for(config.as_ref(), true)
+    ::telemetry::mode_for(table_now(config).as_ref(), true)
+}
+
+/// The `[telemetry]` table of `config` read afresh, before any environment rule: what the
+/// person wrote. The mode is made from it (`mode_now`), and so is the consent check.
+pub fn table_now(config: &Path) -> Result<::telemetry::TelemetryConfig, String> {
+    config_of(std::fs::read_to_string(config))
 }
 
 /// The answer to `TelemetryStatus`: the mode as given and the folder as it stands at `now`,

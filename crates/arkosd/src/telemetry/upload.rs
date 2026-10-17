@@ -4,15 +4,20 @@
 //! `Queue::drain` decides what leaves and what a status means; this module gives it the
 //! transport and the folder.
 use ::telemetry::visits_app::{seal_stale_except, Mode, Outcome, Queue, Transport, Usage};
+use ::telemetry::TelemetryConfig;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How often the queue is posted and the journals left behind are sealed.
 pub const EVERY: Duration = Duration::from_secs(15 * 60);
 
-/// How long a journal of a window no longer connected must have been quiet before the loop seals
-/// it as `unknown`: a day, so a window whose connection is only being re-made keeps its own.
+/// How long a journal of a window not connected must have been quiet before the loop seals it as
+/// `unknown`. A window whose connection drops starts a new journal under a new id and leaves the
+/// old one to be sealed, so what this waits for is a journal still being written by a window the
+/// daemon cannot name: one launched and not yet connected, or one that cannot reach the daemon.
+/// A day of quiet says its window is gone (a daemon restart or an upgrade forgot it).
 pub const STALE_SECS: u64 = 86_400;
 
 /// How long one post may take, curl's own `--max-time`.
@@ -51,31 +56,53 @@ impl Transport for Curl {
 }
 
 /// Opt-in's clean start for the journals this loop seals: when usage was not `On` at the last
-/// pass (`previous`) and is now, deletes the journal of every window not among `connected`, so
-/// nothing recorded before the consent is sealed and sent. A connected window restarts its own
-/// journal under a new id when it sees the change (`config_watch`). With `since`, the moment
-/// usage turned on, a journal written after it is kept: a window that launched under `On` and has
-/// not sent its `Session` yet is not connected by sid, and its journal holds nothing from before
-/// the consent. Returns how many it deleted.
-pub fn forget_before_consent(dir: &Path, previous: Usage, usage: Usage, connected: &[&str], since: Option<SystemTime>) -> usize {
+/// pass (`previous`) and is now, deletes every journal that started before `since`, the moment
+/// usage turned on, so nothing recorded before the consent is sealed and sent. A journal is
+/// judged by the time on its start line, whether its window is connected or not. A window that
+/// saw the change restarted its journal under a new id, and its new journal started after the
+/// consent and is kept; one that did not (its reload refused the file, or its watcher lagged)
+/// loses the journal it kept writing, which held what came before the consent. A journal with
+/// no start line yet is judged by its file's modification time. Without `since`, every journal
+/// counts as from before. Returns how many it deleted.
+pub fn forget_before_consent(dir: &Path, previous: Usage, usage: Usage, since: Option<SystemTime>) -> usize {
     if previous == Usage::On || usage != Usage::On {
         return 0;
     }
     let Ok(entries) = std::fs::read_dir(dir.join("journal")) else { return 0 };
+    let at = since.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs());
     let mut deleted = 0;
     for path in entries.flatten().map(|e| e.path()) {
-        let is_journal = path.extension().is_some_and(|e| e == "jsonl");
-        let sid = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-        let after_consent = since.is_some_and(|at| std::fs::metadata(&path).and_then(|m| m.modified()).is_ok_and(|m| m > at));
-        if is_journal && !connected.contains(&sid) && !after_consent {
-            match std::fs::remove_file(&path) {
-                Ok(()) => deleted += 1,
-                Err(e) => eprintln!("arkosd: cannot delete a usage journal recorded before consent: {e}"),
-            }
+        if !path.extension().is_some_and(|e| e == "jsonl") {
+            continue;
+        }
+        let before = match (at, started(&path)) {
+            (Some(at), Some(start)) => start < at,
+            (Some(_), None) => !std::fs::metadata(&path).and_then(|m| m.modified()).is_ok_and(|m| since.is_some_and(|s| m >= s)),
+            (None, _) => true,
+        };
+        if !before {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => deleted += 1,
+            // Its window restarted it and deleted the old one first.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("arkosd: cannot delete a usage journal recorded before consent: {e}"),
         }
     }
     deleted
 }
+
+/// When the journal at `path` started: the unix seconds of its start line, the first line
+/// `Journal::open` writes (`{"start": <secs>, "env": {..}}`). None when it has no readable one.
+fn started(path: &Path) -> Option<u64> {
+    let mut first = String::new();
+    BufReader::new(std::fs::File::open(path).ok()?.take(START_LINE_MAX)).read_line(&mut first).ok()?;
+    serde_json::from_str::<serde_json::Value>(&first).ok()?.get("start")?.as_u64()
+}
+
+/// The most of a journal read for its start line, which holds a number and the envelope.
+const START_LINE_MAX: u64 = 4096;
 
 /// The file in the telemetry folder that holds the usage the loop last saw, one word (`off`,
 /// `local` or `on`), so a turn-on made while the daemon was down is still seen as one.
@@ -106,20 +133,24 @@ pub struct Forgotten {
     pub sessions: usize,
 }
 
-/// The start of a pass: compares `usage` with the usage last seen (`usage_seen`, which outlives
-/// the daemon). On a change to `On` it deletes the queued sessions (`Queue::clear_sessions`,
-/// which the opt-in surfaces also call, but a turn-on with no window running has none of them:
-/// a hand edit, `arkos settings set` with no window, a change made while Arkos was quit) and the
-/// journals of gone windows from before the consent (`forget_before_consent`). The moment of the
-/// consent is the config file's modification time, the file that says `On`; `usage-seen`'s own
-/// time is no use here, since it was last written when usage last changed, long before.
-/// Then it records `usage` as seen when it differs.
-pub fn consent_check(dir: &Path, config: &Path, usage: Usage, connected: &[&str]) -> Forgotten {
-    let previous = usage_seen(dir);
+/// The start of a pass: compares `table`, the usage the config's `[telemetry]` table says as
+/// `parse_table` read it (before any environment rule, so `DO_NOT_TRACK` coming and going is not
+/// a consent), with the usage last seen (`usage_seen`, which outlives the daemon). On a change to
+/// `On` it deletes the queued sessions (`Queue::clear_sessions`, which the opt-in surfaces also
+/// call, but a turn-on with no window running has none of them: a hand edit, `arkos settings
+/// set` with no window, a change made while Arkos was quit) and every journal from before the
+/// consent (`forget_before_consent`). The moment of the consent is the config file's
+/// modification time on the pass that sees the change, the file that says `On`; `usage-seen`'s
+/// own time is no use here, since it was last written when usage last changed, long before.
+/// Then it records `table` as seen when it differs. A config error (`table` is None) changes
+/// nothing, `usage-seen` included: the file says nothing about consent until it parses again.
+pub fn consent_check(dir: &Path, config: &Path, table: Option<Usage>) -> Forgotten {
     let mut deleted = Forgotten::default();
+    let Some(usage) = table else { return deleted };
+    let previous = usage_seen(dir);
     if previous != Usage::On && usage == Usage::On {
         let since = std::fs::metadata(config).and_then(|m| m.modified()).ok();
-        deleted.journals = forget_before_consent(dir, previous, usage, connected, since);
+        deleted.journals = forget_before_consent(dir, previous, usage, since);
         match Queue::new(dir).clear_sessions() {
             Ok(n) => deleted.sessions = n,
             Err(e) => eprintln!("arkosd: cannot clear the sessions queued before consent: {e}"),
@@ -159,24 +190,33 @@ pub fn pass(dir: &Path, t: &dyn Transport, url: &str, user_agent: &str, mode: &M
     out
 }
 
-/// Starts the loop on a thread of its own. Each pass, one `EVERY` after the last (the first one
-/// `EVERY` after the start), reads the mode afresh from the config file, so `arkos telemetry on`
-/// takes effect without a restart, and takes the sids of the windows still in the table, which
-/// the stale seal leaves alone. A window leaving meanwhile seals its own journal on the way out.
-/// Every pass, the first after a start included, compares the usage with the one last seen,
-/// kept in `USAGE_SEEN` across restarts, so a change to `On` first deletes what was left behind
+/// One turn of the loop at `now`: reads the `[telemetry]` table of `o.config` afresh, so `arkos
+/// telemetry on` takes effect without a restart; runs the consent check on the table's own usage
+/// (`consent_check`); then makes the mode from the table (`mode_of`, which is `mode_for` but in a
+/// test) and runs the `pass` under it. `connected` are the sids of the windows still in the
+/// table, which the stale seal leaves alone.
+pub fn tick(o: &super::Options, t: &dyn Transport, url: &str, user_agent: &str, mode_of: &dyn Fn(Result<&TelemetryConfig, &String>) -> Mode, connected: &[&str], now: u64) -> Outcome {
+    let table = super::table_now(&o.config);
+    consent_check(&o.dir, &o.config, table.as_ref().ok().map(|c| c.usage));
+    let mode = mode_of(table.as_ref());
+    pass(&o.dir, t, url, user_agent, &mode, connected, now)
+}
+
+/// Starts the loop on a thread of its own: a `tick` one `EVERY` after the last (the first one
+/// `EVERY` after the start). A window leaving meanwhile seals its own journal on the way out.
+/// Every tick, the first after a start included, compares the usage with the one last seen,
+/// kept in `USAGE_SEEN` across restarts, so a change to `On` first deletes what was recorded
 /// before the consent (`consent_check`).
 pub fn start(state: crate::server::Shared, o: super::Options, curl: PathBuf) {
     let spawned = std::thread::Builder::new().name("telemetry-upload".into()).spawn(move || {
         let transport = Curl { curl };
         let (url, user_agent) = (o.reports_url(), ::telemetry::user_agent());
+        let mode_of = |c: Result<&TelemetryConfig, &String>| ::telemetry::mode_for(c, true);
         loop {
             std::thread::sleep(EVERY);
-            let mode = super::mode_now(&o.config);
             let sids: Vec<String> = state.lock().unwrap().clients.values().filter_map(|r| r.sid.clone()).collect();
             let connected: Vec<&str> = sids.iter().map(String::as_str).collect();
-            consent_check(&o.dir, &o.config, mode.usage, &connected);
-            pass(&o.dir, &transport, &url, &user_agent, &mode, &connected, crate::updates::apply::now_unix());
+            tick(&o, &transport, &url, &user_agent, &mode_of, &connected, crate::updates::apply::now_unix());
         }
     });
     if let Err(e) = spawned {
@@ -464,11 +504,11 @@ mod tests {
         assert_eq!(t.calls(), 0, "and under the default config nothing was sent");
     }
 
-    /// Nothing recorded before the consent is sent: when usage turns `On`, the journals of the
-    /// windows that are gone are deleted before the pass could seal them, and a connected
-    /// window's journal is left for that window to restart.
+    /// Nothing recorded before the consent is sent: when usage turns `On` and the moment of the
+    /// consent is unknown, every journal counts as from before it, connected or not, and is
+    /// deleted before the pass could seal it. Only journals are touched.
     #[test]
-    fn turning_usage_on_deletes_what_gone_windows_recorded_before_the_consent() {
+    fn turning_usage_on_deletes_every_journal_recorded_before_the_consent() {
         let dir = tempfile::tempdir().unwrap();
         let (live, gone) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
         let allow = ::telemetry::allowlist();
@@ -478,18 +518,18 @@ mod tests {
         let journal = |sid: &str| dir.path().join("journal").join(format!("{sid}.jsonl"));
         // No change to `On`: nothing is deleted.
         for (previous, usage) in [(Usage::Local, Usage::Local), (Usage::On, Usage::On), (Usage::Off, Usage::Local), (Usage::On, Usage::Local)] {
-            assert_eq!(forget_before_consent(dir.path(), previous, usage, &[], None), 0, "{previous:?} to {usage:?}");
+            assert_eq!(forget_before_consent(dir.path(), previous, usage, None), 0, "{previous:?} to {usage:?}");
         }
         assert!(journal(gone).exists() && journal(live).exists());
-        assert_eq!(forget_before_consent(dir.path(), Usage::Local, Usage::On, &[live], None), 1);
-        assert!(!journal(gone).exists(), "a gone window's journal from before the consent");
-        assert!(journal(live).exists(), "a connected window restarts its own");
+        assert_eq!(forget_before_consent(dir.path(), Usage::Local, Usage::On, None), 2);
+        assert!(!journal(gone).exists() && !journal(live).exists());
         assert!(dir.path().join("journal").join("notes.txt").exists(), "only journals are touched");
         let t = Recorder::answering(204);
         pass(dir.path(), &t, URL, UA, &mode(Ok(&CONSENTED), &[], true), &[live], NOW);
         assert!(queued(dir.path()).is_empty(), "nothing from before the consent was sealed");
         assert_eq!(t.calls(), 0, "or sent");
-        assert_eq!(forget_before_consent(dir.path(), Usage::Off, Usage::On, &[], None), 1, "from off too");
+        Journal::open(dir.path(), gone, &release_env(), allow.clone(), NOW - 2 * STALE_SECS).unwrap();
+        assert_eq!(forget_before_consent(dir.path(), Usage::Off, Usage::On, None), 1, "from off too");
     }
 
     /// A turn-on made while the daemon was down: the usage last seen is on disk, so the first
@@ -500,7 +540,7 @@ mod tests {
         let gone = "fedcba9876543210fedcba9876543210";
         Journal::open(dir.path(), gone, &release_env(), ::telemetry::allowlist().clone(), NOW - 2 * STALE_SECS).unwrap();
         std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
-        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Usage::On, &[]).journals, 1);
+        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Some(Usage::On)).journals, 1);
         assert!(!dir.path().join("journal").join(format!("{gone}.jsonl")).exists(), "deleted before any seal");
         assert_eq!(std::fs::read_to_string(dir.path().join(USAGE_SEEN)).unwrap(), "on\n");
         assert!(!dir.path().join(format!("{USAGE_SEEN}.tmp")).exists(), "written through a renamed temporary");
@@ -509,11 +549,11 @@ mod tests {
         assert!(queued(dir.path()).is_empty() && t.calls() == 0, "nothing sealed or sent");
         // Still on: a journal recorded after the consent is kept for the seal.
         Journal::open(dir.path(), gone, &release_env(), ::telemetry::allowlist().clone(), NOW - 2 * STALE_SECS).unwrap();
-        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Usage::On, &[]).journals, 0);
+        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Some(Usage::On)).journals, 0);
         // Back to local, then on again: a new consent starts clean again.
-        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Usage::Local, &[]).journals, 0);
+        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Some(Usage::Local)).journals, 0);
         assert_eq!(usage_seen(dir.path()), Usage::Local);
-        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Usage::On, &[]).journals, 1);
+        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Some(Usage::On)).journals, 1);
     }
 
     /// A turn-on with no window running (a hand edit, `arkos settings set` with no window, a
@@ -526,7 +566,7 @@ mod tests {
         queue_crash(dir.path(), release_env());
         assert_eq!(queued(dir.path()).len(), 2);
         std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
-        let forgotten = consent_check(dir.path(), &dir.path().join("config.toml"), Usage::On, &[]);
+        let forgotten = consent_check(dir.path(), &dir.path().join("config.toml"), Some(Usage::On));
         assert_eq!(forgotten, Forgotten { journals: 0, sessions: 1 });
         assert_eq!(queued(dir.path()), [format!("crash-{INC}.json")], "the session is gone; a crash the person agreed to send stays");
         let t = Recorder::answering(204);
@@ -535,29 +575,113 @@ mod tests {
         assert_eq!(t.calls(), 0, "nothing was posted");
         // Still on at the next pass: what is sealed from now on stays queued for the drain.
         queue_session(dir.path(), "ffeeddccbbaa99887766554433221100", &release_env());
-        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Usage::On, &[]), Forgotten::default());
+        assert_eq!(consent_check(dir.path(), &dir.path().join("config.toml"), Some(Usage::On)), Forgotten::default());
     }
 
-    /// A window that launched under `On` and has not sent its `Session` yet is not connected by
-    /// sid, but its journal was written after the consent, so it is kept.
-    #[test]
-    fn a_journal_written_after_the_turn_on_is_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let (before, after) = ("fedcba9876543210fedcba9876543210", "0123456789abcdef0123456789abcdef");
-        let allow = ::telemetry::allowlist();
-        Journal::open(dir.path(), before, &release_env(), allow.clone(), NOW - 2 * STALE_SECS).unwrap();
-        Journal::open(dir.path(), after, &release_env(), allow.clone(), NOW - 60).unwrap();
-        let config = dir.path().join("config.toml");
+    /// The config file saying `On`, written now, with the unix second of its modification time:
+    /// the moment of the consent as `consent_check` reads it.
+    fn turned_on(dir: &Path) -> (PathBuf, u64) {
+        let config = dir.join("config.toml");
         std::fs::write(&config, "[telemetry]\nusage = \"on\"\n").unwrap();
-        let turned_on = std::fs::metadata(&config).unwrap().modified().unwrap();
+        let at = std::fs::metadata(&config).unwrap().modified().unwrap();
+        (config, at.duration_since(UNIX_EPOCH).unwrap().as_secs())
+    }
+
+    /// The options of a daemon whose telemetry folder and config file are `dir`'s.
+    fn options(dir: &Path, config: &Path) -> crate::telemetry::Options {
+        crate::telemetry::Options { dir: dir.to_path_buf(), url: URL.into(), config: config.to_path_buf() }
+    }
+
+    /// A journal is judged by the time on its start line, not by its file's: a window that
+    /// launched under `On` and has not sent its `Session` yet keeps its journal, and one from
+    /// before the consent goes even when its file was written since. A journal whose start line
+    /// is not written yet is judged by its file's time.
+    #[test]
+    fn a_journal_that_started_after_the_turn_on_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, at) = turned_on(dir.path());
+        let (before, after, unstarted) = ("fedcba9876543210fedcba9876543210", "0123456789abcdef0123456789abcdef", "00112233445566778899aabbccddeeff");
+        let allow = ::telemetry::allowlist();
+        Journal::open(dir.path(), before, &release_env(), allow.clone(), at - 3600).unwrap();
+        Journal::open(dir.path(), after, &release_env(), allow.clone(), at + 60).unwrap();
         let journal = |sid: &str| dir.path().join("journal").join(format!("{sid}.jsonl"));
-        let set_mtime = |sid: &str, at: SystemTime| std::fs::File::options().write(true).open(journal(sid)).unwrap().set_modified(at).unwrap();
-        set_mtime(before, turned_on - Duration::from_secs(3600));
-        set_mtime(after, turned_on + Duration::from_secs(60));
+        std::fs::write(journal(unstarted), "").unwrap();
+        let set_mtime = |sid: &str, secs: u64| std::fs::File::options().write(true).open(journal(sid)).unwrap().set_modified(UNIX_EPOCH + Duration::from_secs(secs)).unwrap();
+        set_mtime(before, at + 600);
+        set_mtime(after, at - 600);
+        set_mtime(unstarted, at + 60);
         std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
-        assert_eq!(consent_check(dir.path(), &config, Usage::On, &[]).journals, 1);
-        assert!(!journal(before).exists(), "written before the consent");
-        assert!(journal(after).exists(), "written after it");
+        assert_eq!(consent_check(dir.path(), &config, Some(Usage::On)).journals, 1);
+        assert!(!journal(before).exists(), "started before the consent, written since");
+        assert!(journal(after).exists(), "started after it");
+        assert!(journal(unstarted).exists(), "no start line yet, written after it");
+        // A start line in the second of the consent is after it: the window saw the change.
+        std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
+        std::fs::remove_file(journal(after)).unwrap();
+        Journal::open(dir.path(), after, &release_env(), allow.clone(), at).unwrap();
+        set_mtime(unstarted, at - 60);
+        assert_eq!(consent_check(dir.path(), &config, Some(Usage::On)).journals, 1);
+        assert!(journal(after).exists());
+        assert!(!journal(unstarted).exists(), "no start line, written before it");
+    }
+
+    /// Item one of the branch review: a connected window is no exception. One that restarted its
+    /// journal on seeing the change keeps the new one; one that did not (its reload refused the
+    /// file, or its watcher lagged) loses the journal it kept writing, so nothing recorded before
+    /// the consent is sealed later, when that window goes.
+    #[test]
+    fn a_connected_windows_journal_that_started_before_the_turn_on_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, at) = turned_on(dir.path());
+        let (stale, restarted) = ("fedcba9876543210fedcba9876543210", "0123456789abcdef0123456789abcdef");
+        let allow = ::telemetry::allowlist();
+        Journal::open(dir.path(), stale, &release_env(), allow.clone(), at - 3600).unwrap();
+        Journal::open(dir.path(), restarted, &release_env(), allow.clone(), at + 5).unwrap();
+        std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
+        let t = Recorder::answering(204);
+        let release = |c: Result<&TelemetryConfig, &String>| mode(c.map_err(|_| ()), &[], true);
+        tick(&options(dir.path(), &config), &t, URL, UA, &release, &[stale, restarted], at + 60);
+        let journal = |sid: &str| dir.path().join("journal").join(format!("{sid}.jsonl"));
+        assert!(!journal(stale).exists(), "connected, but started before the consent");
+        assert!(journal(restarted).exists(), "connected, and started after it");
+        assert_eq!(usage_seen(dir.path()), Usage::On);
+        // The window that kept the deleted file goes: its seal finds nothing to send.
+        window_gone(dir.path(), stale, End::Quit, at + 120);
+        assert!(queued(dir.path()).is_empty(), "nothing from before the consent was sealed");
+        assert_eq!(t.calls(), 0);
+    }
+
+    /// The consent check reads the table the person wrote, not the mode the environment made of
+    /// it: a pass under `DO_NOT_TRACK` sees usage `On` as the table says, so `usage-seen` stays
+    /// `on` and the variable going away later is not taken for a new consent. A config error
+    /// says nothing about consent and leaves `usage-seen` as it was too.
+    #[test]
+    fn a_pass_under_do_not_track_or_a_config_error_leaves_usage_seen_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, at) = turned_on(dir.path());
+        let sid = "0123456789abcdef0123456789abcdef";
+        Journal::open(dir.path(), sid, &release_env(), ::telemetry::allowlist().clone(), at - 3600).unwrap();
+        std::fs::write(dir.path().join(USAGE_SEEN), "on\n").unwrap();
+        let o = options(dir.path(), &config);
+        let t = Recorder::answering(204);
+        let dnt = |c: Result<&TelemetryConfig, &String>| mode(c.map_err(|_| ()), &[("DO_NOT_TRACK", "1")], true);
+        let m = dnt(Ok(&CONSENTED));
+        assert_eq!((m.usage, m.uploads), (Usage::Off, false), "the environment turns the mode off");
+        tick(&o, &t, URL, UA, &dnt, &[sid], at + 60);
+        assert_eq!(std::fs::read_to_string(dir.path().join(USAGE_SEEN)).unwrap(), "on\n");
+        // Without the variable, the next pass sees no change, so the window's journal stays.
+        let release = |c: Result<&TelemetryConfig, &String>| mode(c.map_err(|_| ()), &[], true);
+        tick(&o, &t, URL, UA, &release, &[sid], at + 120);
+        assert!(dir.path().join("journal").join(format!("{sid}.jsonl")).exists(), "no consent was taken for a new one");
+        // A config error: nothing is recorded as seen, and nothing is deleted.
+        std::fs::write(&config, "[telemetry]\nusage = \"sometimes\"\n").unwrap();
+        tick(&o, &t, URL, UA, &release, &[sid], at + 180);
+        assert_eq!(std::fs::read_to_string(dir.path().join(USAGE_SEEN)).unwrap(), "on\n");
+        std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
+        assert_eq!(consent_check(dir.path(), &config, None), Forgotten::default());
+        assert_eq!(std::fs::read_to_string(dir.path().join(USAGE_SEEN)).unwrap(), "local\n");
+        assert!(dir.path().join("journal").join(format!("{sid}.jsonl")).exists());
+        assert_eq!(t.calls(), 0);
     }
 
     #[test]
@@ -570,7 +694,7 @@ mod tests {
         assert_eq!(usage_seen(dir.path()), Usage::Off);
         // A first start under the default writes what it saw.
         let fresh = tempfile::tempdir().unwrap();
-        assert_eq!(consent_check(fresh.path(), &fresh.path().join("config.toml"), Usage::Local, &[]).journals, 0);
+        assert_eq!(consent_check(fresh.path(), &fresh.path().join("config.toml"), Some(Usage::Local)).journals, 0);
         assert_eq!(std::fs::read_to_string(fresh.path().join(USAGE_SEEN)).unwrap(), "local\n");
     }
 }
