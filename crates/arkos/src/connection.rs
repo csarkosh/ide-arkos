@@ -70,11 +70,16 @@ impl Reconnect {
     }
 }
 
-/// One connect on the background executor, starting the daemon too when `start`.
+/// One connect on the background executor, starting the daemon too when `start`. The session id
+/// it says is the running journal's, or a fresh one's when the daemon sealed it after the socket
+/// dropped (`telemetry::connect_sid`).
 pub async fn attempt(socket: &std::path::Path, daemon_exe: &std::path::Path, daemon_args: &[String], start: bool, cx: &AsyncApp) -> Result<(Client, UnboundedReceiver<ServerMessage>), String> {
     let (s, d, a) = (socket.to_path_buf(), daemon_exe.to_path_buf(), daemon_args.to_vec());
     cx.background_executor()
-        .spawn(async move { if start { Client::connect_or_start(&s, &d, &a, None) } else { Client::connect(&s, None) } })
+        .spawn(async move {
+            let sid = crate::telemetry::connect_sid();
+            if start { Client::connect_or_start(&s, &d, &a, sid) } else { Client::connect(&s, sid) }
+        })
         .await
         .map_err(|e| format!("{e:#}"))
 }
@@ -147,6 +152,11 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
             let ((next_client, next_events), started) = next;
             let how = if started { ", starting it if it was not running" } else { "" };
             eprintln!("arkos: reconnected to arkosd after {:.1}s{how}", lost_at.elapsed().as_secs_f32());
+            // Another process answers: the daemon went and a new one came up (an upgrade's exec
+            // keeps the pid).
+            if next_client.peer_pid() != client.peer_pid() {
+                crate::telemetry::error(crate::telemetry::Failure::DaemonRestarted);
+            }
             client = Arc::new(next_client);
             events = next_events;
         }

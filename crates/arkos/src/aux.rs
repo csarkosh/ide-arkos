@@ -57,6 +57,7 @@ pub fn set_root(cx: &mut App, root: WeakEntity<Root>) {
 /// loaded, with no daemon. Deferred, because the Root's own command runs this while the Root is
 /// being updated, and gpui refuses a second update or read of an entity meanwhile.
 pub fn open_about(cx: &mut App) {
+    crate::telemetry::help(crate::telemetry::Help::About);
     cx.defer(|cx| {
         let Some(aux) = cx.try_global::<Aux>() else { return };
         let handle = aux.about;
@@ -134,6 +135,7 @@ fn settings_state(cx: &App) -> Option<(Shown, Theme)> {
 /// own command runs this while the Root is being updated, and gpui refuses a second update or
 /// read of an entity meanwhile.
 pub fn open_keybindings(cx: &mut App) {
+    crate::telemetry::help(crate::telemetry::Help::Keybindings);
     cx.defer(|cx| {
         let Some(aux) = cx.try_global::<Aux>() else { return };
         let handle = aux.keybindings;
@@ -175,6 +177,7 @@ pub const DOCS_URL: &str = "https://github.com/csarkosh/ide-arkos/blob/main/docs
 
 /// The Documentation menu item and command: opens `DOCS_URL` in the default browser.
 pub fn open_documentation(cx: &mut App) {
+    crate::telemetry::help(crate::telemetry::Help::Documentation);
     cx.open_url(DOCS_URL);
 }
 

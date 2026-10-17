@@ -51,7 +51,10 @@ impl Notices {
                 n.at = now;
                 n.action = action;
             }
-            None => self.items.push(Notice { kind, text, at: now, action }),
+            None => {
+                crate::telemetry::notice(kind);
+                self.items.push(Notice { kind, text, at: now, action });
+            }
         }
         self.items.sort_by(|a, b| b.at.cmp(&a.at));
     }

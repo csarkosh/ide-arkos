@@ -322,6 +322,9 @@ impl SessionManager {
     pub fn note_list(&mut self, list: &[SessionDetail]) {
         for d in list {
             self.states.insert(d.info.id, d.info.state);
+            if let Some(agent) = &d.agent {
+                crate::telemetry::agent_listed(d.info.id.0, &agent.kind, d.recovered);
+            }
             if d.recovered {
                 self.notes.insert(d.info.id, Note::Resumed);
             }
@@ -581,6 +584,7 @@ impl SessionManager {
         for ev in events {
             match ev {
                 Event::State { session, state } => {
+                    crate::telemetry::agent_state(session.0, *state);
                     self.states.insert(*session, *state);
                 }
                 Event::Exited { session, .. } => {

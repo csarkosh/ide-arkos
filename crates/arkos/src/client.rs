@@ -50,8 +50,8 @@ pub struct Client {
     /// would not say.
     peer_pid: Option<u32>,
     /// The usage session id sent after every Hello, so the daemon can seal this window's
-    /// journal; None when the window keeps none.
-    sid: Option<String>,
+    /// journal; None when the window keeps none. It changes on a live client (`set_sid`).
+    sid: Mutex<Option<String>>,
 }
 
 impl Drop for Client {
@@ -145,7 +145,7 @@ impl Client {
                 *reason_for_reader.lock().unwrap() = Some(reason);
             })
             .context("spawn reader")?;
-        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream, peer_pid, sid };
+        let client = Client { tx, next_id: AtomicU32::new(1), disconnect_reason, unread, stream: shutdown_stream, peer_pid, sid: Mutex::new(sid) };
         client.hello();
         Ok((client, ev_rx))
     }
@@ -166,10 +166,21 @@ impl Client {
             ui_exe: std::env::current_exe().ok(),
             ui_cwd: crate::launch::hello_cwd(&std::env::current_dir().unwrap_or_default()),
         });
-        if let Some(sid) = &self.sid {
-            self.send(Request::Session { sid: sid.clone() });
+        let sid = self.sid.lock().unwrap().clone();
+        if let Some(sid) = sid {
+            self.send(Request::Session { sid });
         }
         id
+    }
+
+    /// Replaces the session id: the opt-in starts a new journal, and turning usage off keeps
+    /// none. A new one is said at once, so the daemon seals the new journal when this window
+    /// goes; every later Hello says it again.
+    pub fn set_sid(&self, sid: Option<String>) {
+        *self.sid.lock().unwrap() = sid.clone();
+        if let Some(sid) = sid {
+            self.send(Request::Session { sid });
+        }
     }
 
     /// Queues a request. Returns its id so the response can be matched.
@@ -430,6 +441,29 @@ mod tests {
         assert!(matches!(seen[0], Request::Hello { .. }), "{seen:?}");
         assert_eq!(seen[1], Request::ListSessions);
         assert!(matches!(seen[2], Request::Hello { .. }), "{seen:?}");
+    }
+
+    /// The opt-in and a sealed journal give a running window a new session id: it is said at
+    /// once on the live connection, and after every later Hello.
+    #[test]
+    fn a_live_client_says_a_new_sid_at_once_and_after_every_hello() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("newsid.sock");
+        let server = fake_daemon_for(&socket, 6);
+        let (first, second) = ("0123456789abcdef0123456789abcdef".to_string(), "fedcba9876543210fedcba9876543210".to_string());
+        let (client, _rx) = Client::connect(&socket, Some(first.clone())).unwrap();
+        client.set_sid(Some(second.clone()));
+        client.hello();
+        // A window that turned usage off keeps its connection and names no session again.
+        client.set_sid(None);
+        client.hello();
+        let seen: Vec<Request> = server.join().unwrap().into_iter().map(|m| m.request).collect();
+        assert!(matches!(seen[0], Request::Hello { .. }), "{seen:?}");
+        assert_eq!(seen[1], Request::Session { sid: first });
+        assert_eq!(seen[2], Request::Session { sid: second.clone() }, "said at once");
+        assert!(matches!(seen[3], Request::Hello { .. }), "{seen:?}");
+        assert_eq!(seen[4], Request::Session { sid: second });
+        assert!(matches!(seen[5], Request::Hello { .. }), "{seen:?}");
     }
 
     #[test]

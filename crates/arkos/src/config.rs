@@ -634,7 +634,7 @@ pub fn preset_after_reload(current: &str, old: &FontConfig, new: &FontConfig) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -774,7 +774,7 @@ mod tests {
     }
 
     /// Every `Command` variant, with any value where it carries one.
-    fn every_command() -> Vec<crate::keymap::Command> {
+    pub(crate) fn every_command() -> Vec<crate::keymap::Command> {
         use crate::keymap::Command::*;
         use crate::tree::Side;
         let all = vec![

@@ -237,6 +237,11 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
     };
     let opened = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| {
+            // Foreground time in Settings counts while its window is the key window, and stops
+            // when it closes.
+            crate::telemetry::settings_focus(true);
+            cx.observe_window_activation(window, |_, window, _| crate::telemetry::settings_focus(window.is_window_active())).detach();
+            cx.on_release(|_, _| crate::telemetry::settings_focus(false)).detach();
             let fonts = FIXED_PITCH.get().filter(|f| !f.is_empty()).cloned().unwrap_or(fonts);
             if claim_fixed_pitch_check() {
                 let text = cx.text_system().clone();

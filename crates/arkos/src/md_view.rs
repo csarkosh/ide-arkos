@@ -544,7 +544,13 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoChrome)) {
         return;
     }
+    if state.is_none() {
+        crate::telemetry::md(crate::telemetry::MdFeature::Mermaid);
+    }
     let next = mermaid::advance(state, key, || mermaid::page(text, theme), mermaid::cache_dir, || mermaid::chrome().is_some());
+    if matches!(next, Some(Diagram::Error(_))) {
+        crate::telemetry::error(crate::telemetry::Failure::MermaidFailed);
+    }
     let rendering = next.as_ref().is_none_or(|n| *n == Diagram::Rendering);
     if let Some(next) = next {
         v.diagrams.insert(key.clone(), next);
@@ -571,6 +577,9 @@ fn track_media(v: &mut Viewer, ix: usize, base_dir: &Path, cx: &mut Context<View
                 let state = v.posters.get(&file);
                 if matches!(state, Some(Poster::Ready(_) | Poster::Failed)) {
                     continue;
+                }
+                if state.is_none() {
+                    crate::telemetry::md(crate::telemetry::MdFeature::Video);
                 }
                 let next = media::advance(state, &file, || dir.get_or_insert_with(media::poster_dir).clone());
                 making |= next.as_ref().is_none_or(|n| *n == Poster::Making);
@@ -603,6 +612,9 @@ fn track_remote(v: &mut Viewer, ix: usize, cx: &mut Context<Viewer>) {
         let state = v.remote.get(url);
         if matches!(state, Some(Remote::Ready(_) | Remote::Failed)) {
             continue;
+        }
+        if state.is_none() {
+            crate::telemetry::md(crate::telemetry::MdFeature::RemoteImage);
         }
         let next = remote_image::advance(state, url, || dir.get_or_insert_with(remote_image::cache_dir).clone());
         fetching |= next.as_ref().is_none_or(|n| *n == Remote::Fetching);
@@ -1281,6 +1293,7 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
 /// Flips the task box of the item in block `ix` whose text starts at `offset` in the block's text:
 /// an undoable edit of that one line, away from the caret, so the view does not move.
 fn toggle_item(v: &mut Viewer, ix: usize, offset: usize, cx: &mut Context<Viewer>) {
+    crate::telemetry::md(crate::telemetry::MdFeature::Checklist);
     let (Some(doc), Some(block)) = (v.doc.as_ref(), v.blocks.get(ix)) else { return };
     let line = md_blocks::pos_of_offset(block, doc.lines(), offset).line;
     v.edit_elsewhere(

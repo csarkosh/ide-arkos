@@ -599,7 +599,10 @@ pub fn tab_cycle(active: usize, len: usize, delta: isize) -> usize {
 macro_rules! route {
     ($div:expr, $cx:expr, $($action:ty => $command:expr),* $(,)?) => {{
         let mut d = $div;
-        $( d = d.on_action($cx.listener(|root: &mut Root, _: &$action, window: &mut Window, cx: &mut Context<Root>| root.run($command, window, cx))); )*
+        $( d = d.on_action($cx.listener(|root: &mut Root, _: &$action, window: &mut Window, cx: &mut Context<Root>| {
+            let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Key);
+            root.run($command, window, cx)
+        })); )*
         d
     }};
 }

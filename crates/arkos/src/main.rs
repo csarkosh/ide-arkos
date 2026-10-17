@@ -58,6 +58,7 @@ mod split_view;
 mod startup;
 mod sessions;
 mod sidebar;
+mod telemetry;
 mod terminal;
 mod terminal_element;
 mod theme;
@@ -423,7 +424,10 @@ fn launch_chrome(url: Option<&str>, app_mode: bool, cx: &mut App) {
             let status = std::process::Command::new("/usr/bin/open").args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
             match status {
                 Ok(s) if s.success() => {}
-                Ok(s) => eprintln!("arkos: opening a Chrome window failed ({s}); is Google Chrome installed?"),
+                Ok(s) => {
+                    eprintln!("arkos: opening a Chrome window failed ({s}); is Google Chrome installed?");
+                    telemetry::error(telemetry::Failure::ChromeMissing);
+                }
                 Err(e) => eprintln!("arkos: cannot run /usr/bin/open: {e}"),
             }
         })
@@ -529,6 +533,7 @@ impl Root {
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
+        telemetry::restored(&tree);
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
@@ -1176,6 +1181,11 @@ impl Root {
     /// the daemon; the file says so.
     pub fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         let old = std::mem::replace(&mut self.config, cfg);
+        // The keys changed, the theme chosen, and a usage change: a new journal's id goes to the
+        // daemon at once (on a reconnect, `telemetry::connect_sid` names it).
+        if let (Some(sid), Some(client)) = (telemetry::config_changed(&old, &self.config), &self.sessions.client) {
+            client.set_sid(sid);
+        }
         if old.keybindings != self.config.keybindings {
             rebind(cx, &self.config.keybindings);
             // An open Keybindings window shows the saved override at once.
@@ -1486,6 +1496,7 @@ impl Root {
             }
         }
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
+        telemetry::pane_close(&tab);
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
         self.tab_widths.remove(&id);
@@ -1552,6 +1563,7 @@ impl Root {
     /// ended meanwhile shows as ended. `cwd` is the worktree it was opened in, if any.
     fn reopen_session(&mut self, pane: PaneId, session: SessionId, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
         let idx = self.tree.add_tab(pane, Tab::Terminal { session, cwd });
+        telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
         self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
             eprintln!("arkos: reopening session {} in pane {pane}", session.0);
@@ -1609,6 +1621,10 @@ impl Root {
     /// in. A worktree gone meanwhile gives the project, and the tab forgets it, so the next
     /// restart checks the shell against the folder it really started in.
     fn start_shell(&mut self, tab: TabId, cwd: Option<PathBuf>, note: bool) {
+        // The note is the "(restarted)" one: the session the tab showed is gone.
+        if note {
+            telemetry::error(telemetry::Failure::SessionLost);
+        }
         let wanted = cwd.is_some();
         match shell_folder(cwd) {
             Some(dir) => self.sessions.create_in(tab, note, dir),
@@ -1736,6 +1752,8 @@ impl Root {
         let cmd = self.palette.value().and_then(|p| p.selected_command());
         self.close_palette(cx);
         if let Some(cmd) = cmd {
+            telemetry::palette(&cmd);
+            let _via = telemetry::opened_via(telemetry::Opened::Palette);
             self.run(cmd, window, cx);
         }
     }
@@ -1831,6 +1849,7 @@ impl Root {
     /// `new_terminal_tab`, with the shell in `cwd` (a worktree) while that folder exists.
     fn new_terminal_tab_in(&mut self, pane: PaneId, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
         let idx = self.tree.add_tab(pane, Tab::Terminal { session: SessionId(0), cwd: cwd.clone() });
+        telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
         self.tree.focus(pane);
         if let Some(id) = self.tree.tab_id(pane, idx) {
             self.start_shell(id, cwd, false);
@@ -1849,6 +1868,7 @@ impl Root {
     fn add_browser_tab(&mut self, pane: PaneId, url: Option<String>, app_mode: bool, launch: bool, cx: &mut Context<Self>) -> Option<TabId> {
         let pane = if self.tree.pane(pane).is_some() { pane } else { self.tree.focused };
         let idx = self.tree.add_tab(pane, Tab::Browser { url: url.clone(), app_mode });
+        telemetry::pane_open(telemetry::PaneKind::Browser, telemetry::Opened::Click);
         self.tree.focus(pane);
         let id = self.tree.tab_id(pane, idx);
         if let Some(id) = id {
@@ -2432,6 +2452,7 @@ impl Root {
     pub fn split_focused(&mut self, side: Side, cx: &mut Context<Self>) {
         let pane = self.tree.focused;
         if let Some(new_pane) = self.tree.split(pane, side, Tab::Terminal { session: SessionId(0), cwd: None }) {
+            telemetry::pane_open(telemetry::PaneKind::Terminal, telemetry::Opened::Click);
             if let Some(id) = self.tree.tab_id(new_pane, 0) {
                 self.sessions.create(id, false);
             }
@@ -2614,7 +2635,10 @@ impl Root {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                 }
             }
-            SetTheme(name) => self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx),
+            SetTheme(name) => {
+                telemetry::theme_named(&name);
+                self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx)
+            }
             UpdateNow => self.update_now(cx),
             CheckForUpdates => {
                 self.sessions.check_for_updates();
@@ -3019,6 +3043,10 @@ impl Root {
         let apply = staged.is_some() && last_error.is_none();
         if let Some(e) = &last_error {
             if requested || self.update_error_noticed.as_ref() != Some(e) {
+                // The daemon's own words for a release it put back (`updates::apply`).
+                if e.contains(" rolled back: ") {
+                    telemetry::update(telemetry::UpdateStep::RolledBack);
+                }
                 self.update_error_noticed = Some(e.clone());
                 self.show_notice(if e.starts_with("update") { e.clone() } else { format!("update check failed: {e}") }, cx);
             }
@@ -3049,6 +3077,7 @@ impl Root {
         for ev in events {
             match ev {
                 Event::UpdateStaged { update } => {
+                    telemetry::update(telemetry::UpdateStep::Staged);
                     self.staged = Some(update.clone());
                     self.update_error = None;
                     // The manifest was reached.
@@ -3087,6 +3116,7 @@ impl Root {
     /// so no quit drops them. `goodbye` is whether a Goodbye was queued just before, which the
     /// same wait covers.
     pub fn flush_for_quit(&mut self, goodbye: bool, cx: &mut App) {
+        telemetry::quitting();
         for (_, e) in self.save_dirty_viewers_now(cx) {
             eprintln!("arkos: quitting with unsaved edits: {e}");
         }
@@ -3133,6 +3163,7 @@ impl Root {
             return;
         }
         self.said_goodbye = true;
+        telemetry::quitting();
         self.sessions.goodbye();
         self.flush_for_quit(true, cx);
     }
@@ -3235,6 +3266,7 @@ impl Root {
                 }
             }
             Outcome::Applied => {
+                telemetry::update(telemetry::UpdateStep::Applied);
                 // The bundle at the launch path is the new one: "Update now" upgrades the daemon
                 // and relaunches the window from it.
                 self.updating = None;
@@ -3251,6 +3283,7 @@ impl Root {
             }
             Outcome::ApplyFailed(e) => {
                 eprintln!("arkos: update failed: {e}");
+                telemetry::update(telemetry::UpdateStep::Failed);
                 self.updating = None;
                 // The daemon reports this failure as its `last_error` in these words: shown once.
                 self.update_error_noticed = Some(format!("update failed: {e}"));
@@ -3321,6 +3354,7 @@ impl Root {
             Outcome::UpgradeFailed(e) => {
                 // The old daemon keeps running and serving; nothing else changes.
                 eprintln!("arkos: update failed: {e}");
+                telemetry::update(telemetry::UpdateStep::Failed);
                 self.updating = None;
                 self.show_notice(format!("update failed: {e}"), cx);
             }
@@ -3434,6 +3468,7 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         self.window_active = window.is_window_active();
+        telemetry::window_focus(&self.tree, self.window_active);
         let now = Instant::now();
         let last_frame = std::mem::replace(&mut self.frame_now, now);
         self.settle(now, last_frame);
@@ -3797,7 +3832,7 @@ fn main() {
     // The panic hook, once every command-line branch above has had its turn (a new one goes
     // above this line too), so a crash in a CLI run is never an app incident: from here on a
     // release build's panic becomes an incident for the crash dialog.
-    telemetry::panic::install(telemetry::envelope(telemetry::Bin::App), env!("ARKOS_GIT_HASH"), &paths::telemetry_dir());
+    ::telemetry::panic::install(::telemetry::envelope(::telemetry::Bin::App), env!("ARKOS_GIT_HASH"), &paths::telemetry_dir());
     // `arkos <folder>`: open that folder, as `cd` there and `arkos` would. A Launch Services
     // start (`open -a`, the screenshot shoot) has no working directory to speak of.
     if let Some(folder) = args.get(1).filter(|a| !a.starts_with('-')) {
@@ -3835,6 +3870,12 @@ fn main() {
     let updated = startup::updated_from(&paths::last_version_file(), env!("CARGO_PKG_VERSION"));
     // The same: the first run's moment, written on the first run and read back on every other.
     let installed = startup::installed_since(&paths::installed_file(), SystemTime::now());
+    // The usage journal opens before the first connect, which names its session; a config error
+    // records nothing this run.
+    telemetry::init(
+        telemetry::usage_of(if config_error.is_some() { Err(()) } else { Ok(&config.telemetry) }),
+        if updated.is_some() { telemetry::Launch::Updated } else if relaunched { telemetry::Launch::Relaunch } else { telemetry::Launch::Normal },
+    );
     let yes = |b: bool| if b { "yes" } else { "no" };
     eprintln!("{} starting in {} (relaunch: {}, chooser: {})", version_string(), cwd.display(), yes(relaunched), yes(plan.is_chooser()));
     // The connect runs off the main thread once the app runs, the chooser included: a window the
@@ -4008,6 +4049,7 @@ impl Launch {
             Ok(connected) => connected,
             Err(e) => {
                 eprintln!("arkos: cannot reach arkosd (attempt {}): {e}", self.retry.borrow().attempts());
+                telemetry::error(telemetry::Failure::DaemonUnreachable);
                 self.set_footer(None, cx);
                 let this = self.clone();
                 startup::open_failure_window(e, Rc::new(move |cx: &mut App| this.connect(None, cx)), &self.config, &self.theme, cx);
@@ -4152,6 +4194,7 @@ fn open_project_window(
                         // next activation is seen as one.
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
+                            telemetry::window_focus(&root.tree, root.window_active);
                             if !root.window_active && root.close_popovers(Instant::now()) {
                                 cx.notify();
                             }
@@ -4195,6 +4238,7 @@ fn open_project_window(
             )
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
+        telemetry::window_open();
         // About and Settings take their details from the Root from now on.
         aux::set_root(cx, root.downgrade());
         // The caches' old entries go once a launch, on a thread of their own, now the window is up.
@@ -4278,6 +4322,12 @@ fn open_project_window(
         update::start(root.clone(), cx);
         pulse::start(root.downgrade(), cx);
 
+        // The focus totals reach the journal once a minute, and at quit (`flush_for_quit`).
+        cx.spawn(async move |cx| loop {
+            cx.background_executor().timer(telemetry::MARK_EVERY).await;
+            telemetry::mark();
+        })
+        .detach();
         // Closed tabs' sessions end once their grace runs out.
         let tick_root = root.clone();
         cx.spawn(async move |cx| loop {

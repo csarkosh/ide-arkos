@@ -770,6 +770,9 @@ impl Viewer {
         let (top, frac) = (self.scroll.current.floor().max(0.0), self.scroll.current - self.scroll.current.floor());
         let line = if self.inline_diff { diff::line_at_row(d, &diff::display_rows(self.line_count(), d, true), top as usize) } else { top as usize };
         self.inline_diff = !self.inline_diff;
+        if self.inline_diff && self.doc.is_some() {
+            crate::telemetry::md(crate::telemetry::MdFeature::InlineDiff);
+        }
         let row = if self.scroll.current <= 0.0 { 0.0 } else { self.row_of_line(line) as f32 + frac };
         self.scroll.jump_to(row.min(self.max_scroll()));
         cx.notify();
@@ -787,6 +790,9 @@ impl Viewer {
     }
 
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
+        if !self.loaded {
+            crate::telemetry::viewed(&loaded.content, loaded.plain.is_some(), &self.path, self.mode);
+        }
         self.content = loaded.content;
         self.fingerprint = loaded.fingerprint;
         self.plain = loaded.plain;
@@ -1008,6 +1014,7 @@ impl Viewer {
             }
             Err(SaveError::Io(e)) => {
                 self.save_error = Some(format!("cannot save {}: {e}", self.path.display()));
+                crate::telemetry::error(crate::telemetry::Failure::SaveFailed);
                 cx.emit(ViewerEvent::SaveFailed);
             }
             // Only a close or a quit abandons a save, and it took the flight over first.
@@ -1791,6 +1798,7 @@ impl Viewer {
     pub fn toggle_details(&mut self, ix: usize, summary: &str, starts_open: bool, cx: &mut Context<Self>) {
         let index = self.details_index(ix);
         flip_section(&mut self.open_details, summary, index, starts_open);
+        crate::telemetry::md(crate::telemetry::MdFeature::Details);
         cx.emit(ViewerEvent::DetailsToggled(sections_saved(&self.open_details)));
         cx.notify();
     }
@@ -1812,6 +1820,7 @@ impl Viewer {
         let Some(doc) = self.doc.as_ref() else { return };
         let (realign, next) = next_entry(&self.blocks, doc.lines(), self.caret, self.table_entry.take(), refresh, !self.caret_placed);
         if let Some((range, entry)) = realign {
+            crate::telemetry::md(crate::telemetry::MdFeature::TableEdit);
             self.edit_elsewhere(
                 |doc, caret, now| {
                     realign_on_leave(doc, range, &entry, now);
@@ -2667,7 +2676,10 @@ impl Root {
                         root.load(tab, true, cx);
                     }
                 }
-                ViewerEvent::OpenPath(path) => root.open_viewer(path, true, cx),
+                ViewerEvent::OpenPath(path) => {
+                    let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Link);
+                    root.open_viewer(path, true, cx)
+                }
                 // The state is the file's: every other tab on it shows the same sections open.
                 ViewerEvent::DetailsToggled(open) => {
                     let path = v.read(cx).path.clone();

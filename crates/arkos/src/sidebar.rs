@@ -1074,6 +1074,7 @@ impl Root {
                 if let Some(e) = kept {
                     self.show_notice(e, cx);
                     let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
+                    crate::telemetry::pane_open(crate::telemetry::PaneKind::Viewer, crate::telemetry::Opened::Explorer);
                     self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
                     idx
                 } else {
@@ -1087,6 +1088,7 @@ impl Root {
             }
             OpenPlan::Add => {
                 let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
+                crate::telemetry::pane_open(crate::telemetry::PaneKind::Viewer, crate::telemetry::Opened::Explorer);
                 self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
                 idx
             }
