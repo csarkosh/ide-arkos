@@ -51,7 +51,17 @@ jobs:
           git commit -am "Release $VERSION"
           git tag "v$VERSION"
       - name: Build
-        run: cargo build --release --locked -p arkos -p arkosd -p release-tool
+        # The source root and the Cargo home are remapped out of the binaries, so a crash report's
+        # file reads /src/crates/... or /cargo/... and never the runner's folders (the toolchain's
+        # own paths already read /rustc/<hash>). Cargo hands rustc the workspace's own sources by
+        # relative paths, crates/..., which the first prefix does not match, hence the third. A
+        # crash report names the build by its commit, so a build that could not read it fails.
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=crates=/src/crates"
+          cargo build --release --locked -p arkos -p arkosd -p release-tool
+          for BIN in arkos arkosd; do
+            case "$("target/release/$BIN" --version)" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
+          done
       - name: Signing identity
         # A keychain of its own for the run, the identity imported into it, and codesign allowed
         # to use the key without a prompt. The runner is thrown away afterwards.
@@ -81,10 +91,11 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           mkdir -p dist
-          ZIP=$(sh packaging/bundle.sh "$VERSION" target/release dist)
+          ZIP=$(ARKOS_CHANNEL=release sh packaging/bundle.sh "$VERSION" target/release dist)
           echo "$APPLE_API_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           ZIP=$(NOTARY_KEY="$RUNNER_TEMP/notary.p8" sh packaging/notarize.sh "$ZIP")
           rm -f "$RUNNER_TEMP/notary.p8"
+          sh packaging/dsym.sh "$VERSION" target/release dist
           URL="https://github.com/$REPO/releases/download/v$VERSION/$(basename "$ZIP")"
           sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "$URL" dist
           target/release/release-tool sign --key-env ARKOS_RELEASE_KEY dist/manifest.json > dist/manifest.json.sig
@@ -93,6 +104,7 @@ jobs:
           # The signature checks against the first key the IDE trusts, as an installed IDE would.
           KEY=$(sed -n 's/^ *"\(.*\)",$/\1/p' crates/protocol/src/release_key.rs | head -1)
           target/release/release-tool verify --public "$KEY" dist/manifest.json dist/manifest.json.sig
+          [ "$(cat "dist/Arkos IDE.app/Contents/Resources/channel")" = release ] || { echo "the bundle is not on the release channel"; exit 1; }
           GOT=$("dist/Arkos IDE.app/Contents/MacOS/arkosd" --version)
           echo "$GOT"
           case "$GOT" in
@@ -109,4 +121,4 @@ jobs:
         run: |
           PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
           if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
-          gh release create "v$VERSION" dist/Arkos-IDE-*.zip dist/manifest.json dist/manifest.json.sig --title "Arkos IDE $VERSION" --notes "$NOTES"
+          gh release create "v$VERSION" "dist/Arkos-IDE-$VERSION-arm64.zip" "dist/Arkos-IDE-$VERSION-dSYM.zip" dist/manifest.json dist/manifest.json.sig --title "Arkos IDE $VERSION" --notes "$NOTES"

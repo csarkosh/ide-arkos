@@ -92,6 +92,38 @@ zip, and runs before `manifest.sh`, which records the final zip. The key, the ce
 `.p8` live outside the repository (`~/.config/arkos-release/`): back them up; a lost key means a
 new identity and reset permissions on every Mac.
 
+All three release paths also do what makes a build a release for telemetry
+([what Arkos sends](telemetry.md)). `bundle.sh` run with `ARKOS_CHANNEL=release` writes
+`Contents/Resources/channel` saying `release` before signing, and only such a bundle can ever
+upload; `packaging/test.sh`, the shoot and every dev build have no channel file and are `source`,
+which never sends anything. The build passes `--remap-path-prefix` for the checkout (`/src`), the
+Cargo home (`/cargo`) and the workspace's relative `crates/` paths (`/src/crates`), so a panic's
+`file` reads `/src/crates/arkos/src/md_view.rs` and never a home folder (the toolchain's own files
+already read `/rustc/<hash>`), and the release fails when the binaries were built without their
+commit hash. The release profile's `split-debuginfo = "packed"` leaves `arkos.dSYM` and
+`arkosd.dSYM` beside the binaries in `target/release`; `packaging/dsym.sh` checks that each
+carries its binary's UUID and zips both to `Arkos-IDE-<version>-dSYM.zip`, published with the
+release beside the app zip.
+
+To symbolicate a crash report, download the dSYM zip of the report's `ver` from its GitHub
+Release and unzip it. The report's `images` names the binary (`arkos` or `arkosd`) and its UUID,
+which `dwarfdump --uuid arkos.dSYM` shows too (upper case, with dashes); a different one means
+another build's symbols. Each of `frames` is `[image, offset]`: the offset of a return address
+from the binary's load address, in decimal. `atos` takes the dSYM, the binary's link address
+`0x100000000` as the load address, and per frame that address plus the offset minus one (a return
+address points just after its call):
+
+```bash
+unzip Arkos-IDE-0.5.0-dSYM.zip    # arkos.dSYM and arkosd.dSYM
+for OFF in 1843200 1790466; do printf '0x%x ' $((0x100000000 + OFF - 1)); done |
+  xargs atos -o arkos.dSYM -l 0x100000000
+```
+
+The first nine or so frames are the panic hook and std's panic machinery; the panic's own path
+through Arkos starts after them, and the report's `file` and `line` say where it was raised. The
+names come out in Rust's mangled form (`_RNv...`); `rustfilt` (`cargo install rustfilt`) turns
+them back into Rust paths.
+
 ## Screenshots
 
 The pictures in `docs/images/` (the README's and csarko.sh's) are taken of the real app by

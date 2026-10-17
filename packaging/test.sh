@@ -12,7 +12,10 @@ BIN="$TARGET/debug"
 # (the daemon's check_bundle compares them).
 VERSION=$(sed -n 's/^version = "\([0-9.]*\)"$/\1/p' Cargo.toml)
 OUT=$(mktemp -d)
-ZIP=$(sh packaging/bundle.sh "$VERSION" "$BIN" "$OUT")
+# A dev build's bundle is a `source` build, whatever the shell exports: no channel file, so
+# nothing it runs ever uploads (bundle.sh writes one only for ARKOS_CHANNEL=release).
+ZIP=$(ARKOS_CHANNEL= sh packaging/bundle.sh "$VERSION" "$BIN" "$OUT")
+[ ! -e "$OUT/Arkos IDE.app/Contents/Resources/channel" ] || { echo "the dev bundle says it is a release"; exit 1; }
 sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "file://$ZIP" "$OUT" > /dev/null
 KEYS=$("$BIN/release-tool" keygen)
 SK=$(echo "$KEYS" | sed -n 's/^secret: //p'); PK=$(echo "$KEYS" | sed -n 's/^public: //p')

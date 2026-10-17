@@ -265,6 +265,54 @@ mod tests {
         assert_eq!(channel_of(&dir.path().join("missing.app")), Channel::Source);
     }
 
+    /// `packaging/bundle.sh` run as a release path runs it, on a fake `target/release` (two empty
+    /// executables) and with no identity, so it signs ad-hoc: only `ARKOS_CHANNEL=release` makes
+    /// a bundle that `channel_of` calls a release, and the signature seals the channel file.
+    /// `packaging/test.sh` sets nothing, so its bundle of the dev binaries stays `source`.
+    #[test]
+    fn only_a_release_bundle_carries_the_channel_and_the_signature_seals_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("release");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in ["arkos", "arkosd"] {
+            std::fs::write(bin.join(name), "").unwrap();
+            std::fs::set_permissions(bin.join(name), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/bundle.sh");
+        let bundle = |out: &str, channel: Option<&str>| {
+            let out = dir.path().join(out);
+            std::fs::create_dir_all(&out).unwrap();
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg(&script).arg("0.0.0").arg(&bin).arg(&out).env_remove("CODESIGN_IDENTITY").env_remove("ARKOS_CHANNEL");
+            if let Some(channel) = channel {
+                cmd.env("ARKOS_CHANNEL", channel);
+            }
+            let status = cmd.output().unwrap().status;
+            (status.success(), out.join("Arkos IDE.app"))
+        };
+        let verify = |app: &Path| std::process::Command::new("codesign").arg("--verify").arg("--strict").arg(app).output().unwrap().status.success();
+
+        let (ok, dev) = bundle("dev", None);
+        assert!(ok, "bundle.sh without a channel");
+        assert!(!dev.join("Contents/Resources/channel").exists(), "no channel file without ARKOS_CHANNEL");
+        assert_eq!(channel_of(&dev), Channel::Source);
+        assert!(verify(&dev));
+
+        let (ok, release) = bundle("release-out", Some("release"));
+        assert!(ok, "bundle.sh with ARKOS_CHANNEL=release");
+        assert_eq!(std::fs::read_to_string(release.join("Contents/Resources/channel")).unwrap(), "release\n");
+        assert_eq!(channel_of(&release), Channel::Release);
+        assert!(verify(&release), "the channel file was written before signing");
+        std::fs::write(release.join("Contents/Resources/channel"), "source\n").unwrap();
+        assert!(!verify(&release), "the signature seals the channel file");
+
+        let (ok, source) = bundle("source", Some("source"));
+        assert!(ok);
+        assert_eq!(channel_of(&source), Channel::Source);
+        let (ok, _) = bundle("typo", Some("relase"));
+        assert!(!ok, "a misspelt channel fails the bundle instead of shipping it as source");
+    }
+
     #[test]
     fn a_binary_outside_a_bundle_has_no_bundle() {
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkosd");

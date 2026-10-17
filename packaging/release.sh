@@ -23,11 +23,22 @@ grep -q "version = \"$VERSION\"" Cargo.toml
 "$CARGO" update -w -q
 git commit -qam "Release $VERSION"
 git tag "v$VERSION"
-nice -n 10 "$CARGO" build --release --locked -p arkos -p arkosd -p release-tool
+# The source root and the Cargo home are remapped out of the binaries, so a crash report's file
+# reads /src/crates/... or /cargo/... and never names this Mac's folders (the toolchain's own
+# paths already read /rustc/<hash>). Cargo hands rustc the workspace's own sources by relative
+# paths, crates/..., which the first prefix does not match, hence the third.
+RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=crates=/src/crates" \
+  nice -n 10 "$CARGO" build --release --locked -p arkos -p arkosd -p release-tool
 TARGET=$("$CARGO" metadata -q --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+# A crash report names the build by its commit; a build that could not read it would say 0000000.
+for BIN in arkos arkosd; do
+  case "$("$TARGET/release/$BIN" --version)" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
+done
 DIST=$(mktemp -d)
-ZIP=$(CODESIGN_IDENTITY="$IDENTITY" sh packaging/bundle.sh "$VERSION" "$TARGET/release" "$DIST")
+ZIP=$(ARKOS_CHANNEL=release CODESIGN_IDENTITY="$IDENTITY" sh packaging/bundle.sh "$VERSION" "$TARGET/release" "$DIST")
+[ "$(cat "$DIST/Arkos IDE.app/Contents/Resources/channel")" = release ] || { echo "the bundle is not on the release channel"; exit 1; }
 ZIP=$(NOTARY_PROFILE=arkos-notary sh packaging/notarize.sh "$ZIP")
+DSYM=$(sh packaging/dsym.sh "$VERSION" "$TARGET/release" "$DIST")
 URL="https://github.com/$REPO/releases/download/v$VERSION/$(basename "$ZIP")"
 sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "$URL" "$DIST" > /dev/null
 "$TARGET/release/release-tool" sign --key-env ARKOS_RELEASE_KEY "$DIST/manifest.json" > "$DIST/manifest.json.sig"
@@ -37,5 +48,5 @@ spctl -a -t exec -vv "$DIST/Arkos IDE.app" 2>&1 | grep -q 'source=Notarized Deve
 git push --atomic origin HEAD:main "v$VERSION"
 PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
 if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
-gh release create "v$VERSION" "$ZIP" "$DIST/manifest.json" "$DIST/manifest.json.sig" --title "Arkos IDE $VERSION" --notes "$NOTES"
+gh release create "v$VERSION" "$ZIP" "$DSYM" "$DIST/manifest.json" "$DIST/manifest.json.sig" --title "Arkos IDE $VERSION" --notes "$NOTES"
 echo "released $VERSION from $DIST"
