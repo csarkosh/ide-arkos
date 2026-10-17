@@ -23,6 +23,14 @@ pub const BAR_RIGHT_PAD: f32 = 12.0;
 /// The icon is drawn in a box this wide and high, centred in its target.
 const ICON_SIZE: f32 = 16.0;
 const ICON_STROKE: f32 = 1.5;
+/// An icon's dot: this wide, its top right this far in from the target's.
+const DOT: f32 = 6.0;
+const DOT_INSET: f32 = 3.0;
+/// The dot breathes with the focused pane's glow: at the peak a halo of the focus colour this
+/// wide and this opaque spreads around it, and the dot gains the glow's lightness.
+const DOT_HALO: f32 = 14.0;
+const DOT_HALO_ALPHA: f32 = 0.45;
+const DOT_BREATH_LIGHT: f32 = 0.2;
 
 /// Which popover hangs under the bar. Only one is open at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -126,12 +134,14 @@ pub fn icon_path(icon: Icon, origin: Point<Pixels>, stroke: Pixels) -> gpui::Pat
 }
 
 /// The right side of the bar: a dot per icon when there is something to see, which popover is
-/// open, and which icon the pointer is over (`Closed` for none).
+/// open, which icon the pointer is over (`Closed` for none), and the focus glow's breath
+/// (`pulse::glow`, 0 at rest) the dots breathe with.
 pub struct Right {
     pub bell_dot: bool,
     pub doctor_dot: bool,
     pub open: Popover,
     pub hover: Popover,
+    pub breath: f32,
 }
 
 pub type IconClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -151,9 +161,17 @@ pub fn popover_width(which: Popover, window_w: f32) -> f32 {
     wanted.min(window_w - popover_right_inset(which) - 12.0)
 }
 
+/// The dot's halo at `breath` (0 at rest, 1 at the peak): its width, from the dot's own to
+/// `DOT_HALO`, and its opacity, from nothing to `DOT_HALO_ALPHA`.
+pub fn dot_halo(breath: f32) -> (f32, f32) {
+    let b = breath.clamp(0.0, 1.0);
+    (DOT + (DOT_HALO - DOT) * b, DOT_HALO_ALPHA * b)
+}
+
 /// One icon: a square target holding the 16 px drawing, lit while hovered or open, with a dot
-/// at its top right when there is news.
-fn icon_button(id: &'static str, icon: Icon, dot: bool, lit: bool, c: &crate::theme::Chrome, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
+/// at its top right when there is news. The dot breathes as the focused pane's glow does: a
+/// halo swells around it and it lightens towards the peak, away from the bar's colour.
+fn icon_button(id: &'static str, icon: Icon, dot: bool, breath: f32, lit: bool, c: &crate::theme::Chrome, (on_click, on_hover): (IconClick, IconHover)) -> gpui::Stateful<Div> {
     let color = if lit { c.text.hsla() } else { c.text_dim.hsla() };
     div()
         .id(id)
@@ -171,7 +189,16 @@ fn icon_button(id: &'static str, icon: Icon, dot: bool, lit: bool, c: &crate::th
             canvas(|_, _, _| (), move |bounds, _, window, _| window.paint_path(icon_path(icon, bounds.origin, px(ICON_STROKE)), color))
                 .size(px(ICON_SIZE)),
         )
-        .when(dot, |d| d.child(div().absolute().top(px(3.0)).right(px(3.0)).size(px(6.0)).rounded_full().bg(c.focus_ring.hsla())))
+        .when(dot, |d| {
+            let (halo, halo_alpha) = dot_halo(breath);
+            // The halo shares the dot's centre, so it reaches past the dot on every side.
+            let halo_inset = DOT_INSET + (DOT - halo) / 2.0;
+            let mut fill = c.focus_ring.hsla();
+            let lift = DOT_BREATH_LIGHT * breath.clamp(0.0, 1.0);
+            fill.l = if c.title_bar.hsla().l > 0.5 { (fill.l - lift).max(0.0) } else { (fill.l + lift).min(1.0) };
+            d.when(halo_alpha > 0.0, |d| d.child(div().absolute().top(px(halo_inset)).right(px(halo_inset)).size(px(halo)).rounded_full().bg(c.focus_ring.alpha(halo_alpha))))
+                .child(div().absolute().top(px(DOT_INSET)).right(px(DOT_INSET)).size(px(DOT)).rounded_full().bg(fill))
+        })
 }
 
 /// `bar` made to act as the native title bar did: a left press drags the window and a double
@@ -241,8 +268,8 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
                 .flex()
                 .items_center()
                 .gap(px(ICON_GAP))
-                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.open == Popover::Bell || right.hover == Popover::Bell, c, on_bell))
-                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.open == Popover::Doctor || right.hover == Popover::Doctor, c, on_doctor)),
+                .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, c, on_bell))
+                .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, c, on_doctor)),
         )
 }
 
@@ -278,6 +305,16 @@ mod tests {
         assert_eq!(Popover::Closed.toggled(Popover::Bell), Popover::Bell);
         assert_eq!(Popover::Bell.toggled(Popover::Doctor), Popover::Doctor);
         assert_eq!(Popover::Doctor.toggled(Popover::Doctor), Popover::Closed);
+    }
+
+    #[test]
+    fn the_dot_breathes_from_bare_to_a_full_halo() {
+        assert_eq!(dot_halo(0.0), (DOT, 0.0), "at rest, or under Reduce Motion, the dot alone");
+        assert_eq!(dot_halo(1.0), (DOT_HALO, DOT_HALO_ALPHA));
+        let (w, a) = dot_halo(0.5);
+        assert!(w > DOT && w < DOT_HALO && a > 0.0 && a < DOT_HALO_ALPHA);
+        assert_eq!(dot_halo(2.0), dot_halo(1.0), "clamped");
+        assert!(DOT_INSET + (DOT - DOT_HALO) / 2.0 >= -1.0, "the halo stays about the target's corner");
     }
 
     #[test]

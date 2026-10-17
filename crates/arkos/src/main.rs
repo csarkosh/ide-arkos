@@ -3658,7 +3658,9 @@ impl Render for Root {
                 window.focus(&f);
             }
         }
-        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover };
+        // The dots breathe with the focused pane's glow, on its clock; a window not in front rests.
+        let breath = if self.window_active { pulse::glow(now.saturating_duration_since(self.pulse_epoch), crate::motion::reduce_motion()) } else { 0.0 };
+        let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath };
         let hover = |which: chrome::Popover| {
             Box::new(cx.listener(move |root, on: &bool, _, cx| {
                 let next = if *on { which } else { chrome::Popover::Closed };
