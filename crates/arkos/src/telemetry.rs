@@ -918,6 +918,15 @@ pub fn asked(dir: &Path) -> bool {
     dir.join(ASKED).symlink_metadata().is_ok()
 }
 
+/// The mode for `usage` in a build of `channel`, with one environment variable set (or none) and
+/// the session interactive or not: for the tests here and in Settings.
+#[cfg(test)]
+pub fn mode_of(usage: Usage, channel: ::telemetry::visits_app::Channel, var: Option<(&'static str, &'static str)>, interactive: bool) -> ::telemetry::visits_app::Mode {
+    let config = ::telemetry::TelemetryConfig { usage, crashes: ::telemetry::visits_app::Crashes::Ask };
+    let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
+    ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&config), &env, &channel, interactive)
+}
+
 /// Writes `asked` into the telemetry folder `dir`, creating the folder when it is missing.
 pub fn answer_invitation(dir: &Path, answer: Answer) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
@@ -1427,14 +1436,6 @@ mod tests {
         assert_eq!(kind_of(&Tab::Browser { url: None, app_mode: true }), PaneKind::Browser);
     }
 
-    /// The mode for `usage` in a build of `channel`, with one environment variable set (or none)
-    /// and the session interactive or not.
-    fn mode_of(usage: Usage, channel: Channel, var: Option<(&'static str, &'static str)>, interactive: bool) -> ::telemetry::visits_app::Mode {
-        let config = ::telemetry::TelemetryConfig { usage, crashes: ::telemetry::visits_app::Crashes::Ask };
-        let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
-        ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&config), &env, &channel, interactive)
-    }
-
     /// Review Focus 5: the invitation shows on a later UTC day than the install, in a release
     /// build, interactive, with usage `local` and `asked` absent; take any one away and it hides.
     #[test]
@@ -1447,7 +1448,7 @@ mod tests {
         assert!(!invitation_due(&yes, installed, installed, false), "never on the install day");
         assert!(!invitation_due(&yes, installed, installed - 1, false), "a clock set back is not a later day");
         assert!(!invitation_due(&yes, installed, installed + 1, true), "never again once answered");
-        let hidden: [(&str, ::telemetry::visits_app::Mode); 10] = [
+        let hidden: [(&str, ::telemetry::visits_app::Mode); 9] = [
             ("a source build", mode_of(Usage::Local, Channel::Source, None, true)),
             ("not interactive", mode_of(Usage::Local, Channel::Release, None, false)),
             ("usage on", mode_of(Usage::On, Channel::Release, None, true)),
@@ -1460,12 +1461,12 @@ mod tests {
                 "a config error",
                 ::telemetry::mode_with(Err::<&::telemetry::TelemetryConfig, _>("line 1: bad"), &|_: &str| None, &Channel::Release, true),
             ),
-            ("an unrelated variable changes nothing", mode_of(Usage::Local, Channel::Release, Some(("HOME", "/Users/x")), true)),
         ];
-        for (why, mode) in &hidden[..9] {
+        for (why, mode) in &hidden {
             assert!(!invitation_due(mode, installed, installed + 1, false), "hidden: {why}");
         }
-        assert!(invitation_due(&hidden[9].1, installed, installed + 1, false), "{}", hidden[9].0);
+        let unrelated = mode_of(Usage::Local, Channel::Release, Some(("HOME", "/Users/x")), true);
+        assert!(invitation_due(&unrelated, installed, installed + 1, false), "an unrelated variable changes nothing");
     }
 
     #[test]

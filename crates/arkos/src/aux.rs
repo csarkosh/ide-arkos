@@ -192,20 +192,39 @@ pub fn open_disclosure(cx: &mut App) {
     }
 }
 
+/// Runs `f` on the project window's Root and brings that window forward; false when there is no
+/// project window to run it in.
+fn in_project_window(cx: &mut App, f: impl FnOnce(&mut Root, &mut gpui::Context<Root>)) -> bool {
+    let project = cx.windows().into_iter().find_map(|w| w.downcast::<Root>());
+    project.is_some_and(|handle| {
+        handle
+            .update(cx, |root, window, cx| {
+                f(root, cx);
+                window.activate_window();
+            })
+            .is_ok()
+    })
+}
+
+/// Settings' "What Arkos sends": the disclosure page in a viewer tab of the project window, as its
+/// Help item opens it there (`Root::open_disclosure`); before there is one, in the default app for
+/// Markdown, as the chooser's Help item does. Deferred, as `open_settings` is.
+pub fn open_disclosure_from_settings(cx: &mut App) {
+    cx.defer(|cx| {
+        if !in_project_window(cx, |root, cx| root.open_disclosure(cx)) {
+            open_disclosure(cx);
+        }
+    });
+}
+
 /// Settings' "Last report": the session the daemon sealed last, `file`, in a viewer tab of the
-/// project window, which comes forward; before there is one, in the default app for JSON, as the
-/// chooser's "What Arkos Sends" does. Deferred, as `open_settings` is.
+/// project window, as "What Arkos sends" opens; before there is one, in the default app for JSON.
+/// Deferred, as `open_settings` is.
 pub fn open_last_report(cx: &mut App, file: PathBuf) {
     cx.defer(move |cx| {
-        let project = cx.windows().into_iter().find_map(|w| w.downcast::<Root>());
-        let opened = project.is_some_and(|handle| {
-            handle
-                .update(cx, |root, window, cx| {
-                    let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Click);
-                    root.open_viewer(&file, true, cx);
-                    window.activate_window();
-                })
-                .is_ok()
+        let opened = in_project_window(cx, |root, cx| {
+            let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Click);
+            root.open_viewer(&file, true, cx);
         });
         if !opened {
             cx.open_with_system(&file);

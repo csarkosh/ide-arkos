@@ -565,7 +565,8 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .children(glow.into_iter().flatten())
 }
 
-/// The invitation strip's height on one line; a narrow pane wraps its words onto more.
+/// The invitation strip's height: one line, whatever the pane's width. A narrow pane cuts the
+/// words short and keeps the buttons, so the body below never gives up more than this.
 pub const INVITE_H: f32 = 24.0;
 
 /// The invitation to turn usage reports on (telemetry spec, section 3.3), drawn as a viewer
@@ -579,18 +580,17 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
     let button = |id: &'static str, label: &'static str| div().id(id).flex_none().text_color(text).cursor_pointer().hover(|s| s.underline()).child(label);
     div()
         .flex_none()
-        .min_h(px(INVITE_H))
+        .h(px(INVITE_H))
         .flex()
         .flex_row()
         .items_center()
         .gap(px(10.0))
         .px(px(12.0))
-        .py(px(4.0))
         .bg(c.banner.hsla())
         .text_color(c.text_dim.hsla())
         .font_family(root.ui_family())
         .text_size(px(12.0))
-        .child(div().flex_1().min_w_0().child(crate::telemetry::INVITATION))
+        .child(div().flex_1().min_w_0().truncate().child(crate::telemetry::INVITATION))
         .child(button("invite-turn-on", crate::telemetry::TURN_ON).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::TurnOn, cx))))
         .child(button("invite-not-now", crate::telemetry::NOT_NOW).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::NotNow, cx))))
         .child(button("invite-what-is-sent", crate::telemetry::WHAT_IS_SENT).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.open_disclosure(cx))))

@@ -716,7 +716,7 @@ impl SettingsWindow {
         }
         out.push(crashes.into_any_element());
         // Both stay live while the config has a problem: they only read.
-        let sends = pill("what-arkos-sends", WHAT_IS_SENT_ROW, false, true, c).on_click(|_, _, cx| aux::open_disclosure(cx));
+        let sends = pill("what-arkos-sends", WHAT_IS_SENT_ROW, false, true, c).on_click(|_, _, cx| aux::open_disclosure_from_settings(cx));
         let last = last_report(&paths::telemetry_dir());
         let mut report = pill("last-report", LAST_REPORT_ROW, false, last.is_some(), c);
         if let Some(file) = last.clone() {
@@ -980,12 +980,8 @@ mod tests {
     /// words of the disclosure page.
     #[test]
     fn the_usage_line_says_what_the_mode_means_and_why() {
-        use ::telemetry::visits_app::{Channel, Crashes, Mode, Usage};
-        let mode = |usage: Usage, channel: Channel, var: Option<(&'static str, &'static str)>, interactive: bool| -> Mode {
-            let config = ::telemetry::TelemetryConfig { usage, crashes: Crashes::Ask };
-            let env = move |k: &str| var.filter(|(name, _)| *name == k).map(|(_, v)| v.to_string());
-            ::telemetry::mode_with(Ok::<_, ::telemetry::Error>(&config), &env, &channel, interactive)
-        };
+        use crate::telemetry::mode_of as mode;
+        use ::telemetry::visits_app::{Channel, Usage};
         let release = |usage| mode(usage, Channel::Release, None, true);
         assert_eq!(usage_line(&release(Usage::Off)), "usage reports are off: nothing is recorded");
         assert_eq!(usage_line(&release(Usage::Local)), "usage reports are local: recorded on this Mac, never sent");
