@@ -98,6 +98,9 @@ pub struct State {
     pub update: crate::updates::UpdateState,
     /// The `Customize` requests waiting for windows, by the tool's own id.
     pub customize: HashMap<u64, CustomizeWait>,
+    /// The watchdog's silent relaunches in a row, by window (its binary and folder), so the
+    /// count survives the window's reconnects; a daemon restart starts it again.
+    pub relaunches: HashMap<crate::watchdog::WindowId, crate::watchdog::Relaunches>,
 }
 
 impl State {

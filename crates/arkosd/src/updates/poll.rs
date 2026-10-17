@@ -791,7 +791,7 @@ mod tests {
         let first = calls(&r.log);
         assert_eq!(first.len(), 2, "the check and the signature: {first:?}");
         assert!(first[0].last().unwrap().starts_with(&r.check_url()), "{first:?}");
-        assert_eq!(arg(&first[0], "--max-time"), "5", "the check's own timeout");
+        assert_eq!(arg(&first[0], "--max-time"), "10", "the check's own timeout");
         assert_eq!(arg(&first[0], "--user-agent"), "arkos/0.5.0");
         assert_eq!(first[1].last().unwrap(), &format!("{}manifest.json.sig", r.site.base), "the signature always comes from GitHub");
         assert_eq!(arg(&first[1], "--max-time"), "20");

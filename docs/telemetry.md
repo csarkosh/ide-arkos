@@ -221,7 +221,7 @@ To read them:
 Only the daemon sends. It uses the system's `curl`, over HTTPS only, to `apps.csarko.sh`, the
 maintainer's own address, with the user agent `arkos/<version>`. Firebase Hosting serves that
 address and passes each request on to the collector. Reports go up every 15 minutes
-with a 10 second limit; the update check has its own 5 second limit and falls back to GitHub
+with a 10 second limit; the update check has its own 10 second limit and falls back to GitHub
 straight away if it fails, so a collector outage never delays an update. A report that fails is
 tried again after 15 minutes, an hour, four hours, then daily, and is deleted after seven days.
 The day's other update checks, the update manifest's signature and every update download go

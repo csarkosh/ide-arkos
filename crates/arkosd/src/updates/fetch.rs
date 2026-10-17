@@ -20,7 +20,7 @@ pub const MANIFEST_SECS: u64 = 20;
 
 /// How long the first-party check may take, its redirect to GitHub's manifest included: a slow
 /// collector costs the check at most this before the fetch falls back to GitHub.
-pub const FIRST_PARTY_SECS: u64 = 5;
+pub const FIRST_PARTY_SECS: u64 = 10;
 
 /// GitHub's hosts, where every download ends.
 const GITHUB_HOSTS: [&str; 3] = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
