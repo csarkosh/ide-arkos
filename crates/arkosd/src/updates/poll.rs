@@ -51,11 +51,21 @@ enum Failure {
     Release(String),
 }
 
+/// What `fetch_manifest` fetched for one check.
+#[derive(Debug)]
+pub struct Fetched {
+    pub bytes: Vec<u8>,
+    /// The signature's text, always GitHub's.
+    pub sig: String,
+    /// Whether the manifest came from the first-party path rather than from GitHub.
+    pub first_party: bool,
+}
+
 /// The manifest's bytes and its signature's text for one check, fetched into `dir`. With `t`,
 /// the day's first check asks the first-party path first (telemetry spec, section 2.1), within
 /// its own 5 s, and the day is recorded once it was asked, whatever it answered; any failure
 /// falls back to GitHub's manifest in the same check. The signature always comes from GitHub.
-pub fn fetch_manifest(f: &Fetcher, t: Option<&Telemetry>, dir: &Path, now: u64) -> Result<(Vec<u8>, String), String> {
+pub fn fetch_manifest(f: &Fetcher, t: Option<&Telemetry>, dir: &Path, now: u64) -> Result<Fetched, String> {
     let check = t.and_then(|t| t.next_check(now));
     let urls = route(check, t.map(|t| t.check_url.as_str()), &f.manifest_url());
     let (github, first_party) = urls.split_last().expect("route always ends with GitHub");
@@ -65,31 +75,49 @@ pub fn fetch_manifest(f: &Fetcher, t: Option<&Telemetry>, dir: &Path, now: u64) 
             t.checked(now);
         }
         match got {
-            Ok(bytes) => return Ok((bytes, f.signature(dir)?)),
+            Ok(bytes) => return Ok(Fetched { bytes, sig: f.signature(dir)?, first_party: true }),
             Err(e) => eprintln!("arkosd: the first-party check failed, GitHub's manifest instead: {e}"),
         }
     }
     let bytes = f.manifest(github, dir, MANIFEST_SECS)?;
-    Ok((bytes, f.signature(dir)?))
+    Ok(Fetched { bytes, sig: f.signature(dir)?, first_party: false })
+}
+
+/// The manifest of one check that verifies against `keys`, with its signature. A manifest from
+/// the first-party path that does not match GitHub's signature (a stale copy, a collector that
+/// answered with the wrong file) costs no update: GitHub's manifest is fetched once more in the
+/// same check and verified in its place. Only a manifest from GitHub that fails is `Invalid`;
+/// that second fetch failing in transport is `Transient`, as any fetch is.
+fn verified_manifest(f: &Fetcher, got: Fetched, dir: &Path, keys: &[&str]) -> Result<Vec<u8>, Outcome> {
+    match verify::verify_manifest(&got.bytes, &got.sig, keys) {
+        Ok(()) => return Ok(got.bytes),
+        Err(e) if got.first_party => eprintln!("arkosd: the first-party manifest does not verify, GitHub's manifest instead: {e}"),
+        Err(e) => return Err(Outcome::Invalid(e)),
+    }
+    let bytes = f.manifest(&f.manifest_url(), dir, MANIFEST_SECS).map_err(Outcome::Transient)?;
+    verify::verify_manifest(&bytes, &got.sig, keys).map_err(Outcome::Invalid)?;
+    Ok(bytes)
 }
 
 /// One check. `staged` is the version already staged: a manifest must be newer than it and
 /// than `running`, so the same release is not fetched twice and a replayed older manifest
 /// cannot replace a newer staged one. A failure of the release itself (size, sha256, staging)
 /// marks it bad; a transport failure is retried at the next check. With `t`, the day's first
-/// check fetches the manifest through the first-party path.
+/// check fetches the manifest through the first-party path, and falls back to GitHub's should
+/// that one not verify (`verified_manifest`).
 #[allow(clippy::too_many_arguments)]
 pub fn run_check(f: &Fetcher, t: Option<&Telemetry>, dir: &Path, keys: &[&str], running: &Version, bad: &mut Bad, ditto: &Path, staged: Option<&Version>) -> Outcome {
     if let Err(e) = private_dir(dir) {
         return Outcome::Invalid(format!("updates dir: {e}"));
     }
-    let (bytes, sig) = match fetch_manifest(f, t, dir, super::apply::now_unix()) {
+    let got = match fetch_manifest(f, t, dir, super::apply::now_unix()) {
         Ok(x) => x,
         Err(e) => return Outcome::Transient(e),
     };
-    if let Err(e) = verify::verify_manifest(&bytes, &sig, keys) {
-        return Outcome::Invalid(e);
-    }
+    let bytes = match verified_manifest(f, got, dir, keys) {
+        Ok(bytes) => bytes,
+        Err(outcome) => return outcome,
+    };
     let m = match manifest::parse(&bytes) {
         Ok(m) => m,
         Err(e) => return Outcome::Failed(e),
@@ -756,9 +784,10 @@ mod tests {
         let t = r.telemetry(Channel::Release);
         std::fs::create_dir_all(&r.updates).unwrap();
         let published = std::fs::read(r.site.root.join("manifest.json")).unwrap();
-        let (bytes, sig) = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 3_600).unwrap();
-        assert_eq!(bytes, published);
-        assert!(!sig.is_empty());
+        let got = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 3_600).unwrap();
+        assert_eq!(got.bytes, published);
+        assert!(!got.sig.is_empty());
+        assert!(got.first_party);
         let first = calls(&r.log);
         assert_eq!(first.len(), 2, "the check and the signature: {first:?}");
         assert!(first[0].last().unwrap().starts_with(&r.check_url()), "{first:?}");
@@ -768,8 +797,8 @@ mod tests {
         assert_eq!(arg(&first[1], "--max-time"), "20");
         assert_eq!(State::load(&r.telemetry_dir).last_check_day, Some(20_000));
         // Later the same UTC day: straight to GitHub, as before the first-party path.
-        let (again, _) = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 86_399).unwrap();
-        assert_eq!(again, published);
+        let again = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0 + 86_399).unwrap();
+        assert_eq!((again.bytes, again.first_party), (published, false));
         assert_eq!(urls(&calls(&r.log)), [format!("{}manifest.json", r.site.base), format!("{}manifest.json.sig", r.site.base)]);
         // A new daemon the same day reads the day from the state file.
         let t = r.telemetry(Channel::Release);
@@ -801,8 +830,9 @@ mod tests {
         std::fs::remove_file(r.site.root.join("fp/a/check")).unwrap();
         let t = r.telemetry(Channel::Release);
         std::fs::create_dir_all(&r.updates).unwrap();
-        let (bytes, _) = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0).unwrap();
-        assert_eq!(bytes, std::fs::read(r.site.root.join("manifest.json")).unwrap());
+        let got = fetch_manifest(&r.f, Some(&t), &r.updates, DAY0).unwrap();
+        assert_eq!(got.bytes, std::fs::read(r.site.root.join("manifest.json")).unwrap());
+        assert!(!got.first_party);
         let got = urls(&calls(&r.log));
         assert_eq!(got.len(), 3, "{got:?}");
         assert!(got[0].starts_with(&r.check_url()));
@@ -823,6 +853,33 @@ mod tests {
             assert_eq!(urls(&calls(&r.log)), [format!("{}manifest.json", r.site.base), format!("{}manifest.json.sig", r.site.base)]);
         }
         assert!(!r.telemetry_dir.join("state.toml").exists(), "nothing recorded either");
+    }
+
+    /// The collector answers the first-party path with a manifest, and the signature comes from
+    /// GitHub. Should the two not match (a stale copy, a collector serving the wrong file), the
+    /// check fetches GitHub's manifest once more in the same check and goes on with that one.
+    #[test]
+    fn a_first_party_manifest_that_fails_verification_falls_back_to_githubs() {
+        use ::telemetry::visits_app::Channel;
+        let r = routed();
+        let wrong = std::fs::read_to_string(r.site.root.join("manifest.json")).unwrap().replace("0.2.1", "0.9.9");
+        std::fs::write(r.site.root.join("fp/a/check"), wrong).unwrap();
+        let t = r.telemetry(Channel::Release);
+        let mut bad = Bad::new();
+        let outcome = run_check(&r.f, Some(&t), &r.updates, &[&r.site.pk], &ver(0, 1, 0), &mut bad, Path::new("/usr/bin/ditto"), None);
+        assert!(matches!(&outcome, Outcome::Staged(st) if st.version == "0.2.1"), "{outcome:?}");
+        let got = urls(&calls(&r.log));
+        assert!(got[0].starts_with(&r.check_url()), "{got:?}");
+        assert_eq!(got[1..3], [format!("{}manifest.json.sig", r.site.base), format!("{}manifest.json", r.site.base)], "GitHub's manifest, once more");
+        assert!(bad.is_empty());
+        // GitHub's own manifest failing too is still reported as invalid.
+        let other = routed();
+        std::fs::write(other.site.root.join("fp/a/check"), b"{}").unwrap();
+        std::fs::write(other.site.root.join("manifest.json"), b"{\"format\": 1}").unwrap();
+        let t = other.telemetry(Channel::Release);
+        let outcome = run_check(&other.f, Some(&t), &other.updates, &[&other.site.pk], &ver(0, 1, 0), &mut bad, Path::new("/usr/bin/ditto"), None);
+        assert!(matches!(&outcome, Outcome::Invalid(e) if e.contains("signature")), "{outcome:?}");
+        assert_eq!(urls(&calls(&other.log)).len(), 3, "the check, the signature and GitHub's manifest, once");
     }
 
     #[test]
