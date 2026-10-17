@@ -419,6 +419,9 @@ pub struct Root {
     /// The Goodbye went out: the Quit action sends it, and the close its quit makes must not
     /// send a second one.
     said_goodbye: bool,
+    /// A quit without a Goodbye said how the session ended (`SessionQuit`): macOS's terminate
+    /// runs the flush twice, and the second need not say it again.
+    said_quit: bool,
     /// When a quit or a window close last stopped because a markdown tab's edits could not be
     /// saved: another within `FORCE_QUIT_WITHIN` goes ahead without them (`quit_forced`).
     pub last_quit_attempt: Option<Instant>,
@@ -670,6 +673,7 @@ impl Root {
             frame_now: Instant::now(),
             user_closing: false,
             said_goodbye: false,
+            said_quit: false,
             focus_surface: None,
             dock_via: telemetry::Opened::Click,
             last_quit_attempt: None,
@@ -1201,9 +1205,7 @@ impl Root {
         let old = std::mem::replace(&mut self.config, cfg);
         // The keys changed, the theme chosen, and a usage change: a new journal's id goes to the
         // daemon at once (on a reconnect, `telemetry::connect_sid` names it).
-        if let (Some(sid), Some(client)) = (telemetry::config_changed(&old, &self.config), &self.sessions.client) {
-            client.set_sid(sid);
-        }
+        telemetry::config_applied(&old, &self.config, self.sessions.client.as_deref());
         if old.keybindings != self.config.keybindings {
             rebind(cx, &self.config.keybindings);
             // An open Keybindings window shows the saved override at once.
@@ -3196,9 +3198,16 @@ impl Root {
     /// them later), unsaved markdown edits are written, and the pending layout save is written.
     /// Edits that cannot be saved (a conflict, a failed write) go to the recovery folder instead,
     /// so no quit drops them. `goodbye` is whether a Goodbye was queued just before, which the
-    /// same wait covers.
+    /// same wait covers. A quit with no Goodbye at all (macOS's terminate, the update relaunch)
+    /// says `SessionQuit` after the final mark instead, once, so the daemon seals the session as
+    /// a quit; the same wait covers it.
     pub fn flush_for_quit(&mut self, goodbye: bool, cx: &mut App) {
-        telemetry::quitting();
+        let quit_said = !goodbye && !self.said_goodbye && !std::mem::replace(&mut self.said_quit, true);
+        if quit_said {
+            telemetry::quit_without_goodbye(self.sessions.client.as_deref());
+        } else {
+            telemetry::quitting();
+        }
         for (_, e) in self.save_dirty_viewers_now(cx) {
             eprintln!("arkos: quitting with unsaved edits: {e}");
         }
@@ -3207,8 +3216,15 @@ impl Root {
         let killed = self.end_closed_tabs();
         // The process may exit before the writer thread sends what is queued; wait for it, once
         // and briefly. The client is the current connection's, whichever reconnect that is.
-        if (killed > 0 || goodbye) && !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
-            eprintln!("arkos: could not send {killed} kill requests{} before quitting", if goodbye { " and the goodbye" } else { "" });
+        if (killed > 0 || goodbye || quit_said) && !self.sessions.client.as_ref().is_some_and(|c| c.wait_sent(Duration::from_millis(500))) {
+            let also = if goodbye {
+                " and the goodbye"
+            } else if quit_said {
+                " and the session's end"
+            } else {
+                ""
+            };
+            eprintln!("arkos: could not send {killed} kill requests{also} before quitting");
         }
         workspace::flush_now(&self.save_queue);
     }
@@ -3993,7 +4009,7 @@ fn main() {
         let system_is_dark = theme::is_dark(cx.window_appearance());
         let (theme, theme_error) = startup_theme(&config, system_is_dark);
         let (look_config, look_theme) = (config.clone(), theme.clone());
-        aux::init(cx, aux::LaunchState { config: config.clone(), theme: theme.clone(), config_path: config_path.clone(), installed, fingerprint });
+        aux::init(cx, aux::LaunchState { config: config.clone(), theme: theme.clone(), config_path: config_path.clone(), installed, fingerprint, client: None });
         let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark, updated };
         let launch = Rc::new(Launch {
             plan,
@@ -4004,6 +4020,7 @@ fn main() {
             start: RefCell::new(Some(start)),
             chooser: Cell::new(None),
             client: RefCell::new(None),
+            flushed: Cell::new(false),
             opened: Cell::new(false),
             retry: RefCell::new(startup::Retry::default()),
         });
@@ -4042,6 +4059,16 @@ fn main() {
                 closing.flush();
                 cx.quit();
             }
+        })
+        .detach();
+        // macOS's own terminate (logout, shutdown, the Dock's Quit) closes the chooser without
+        // the close above: the quit observer flushes it too. The project window has its own.
+        let terminating = launch.clone();
+        cx.on_app_quit(move |_| {
+            if !terminating.opened.get() {
+                terminating.flush();
+            }
+            std::future::ready(())
         })
         .detach();
         if !plan.is_chooser() {
@@ -4116,6 +4143,8 @@ struct Launch {
     chooser: Cell<Option<WindowHandle<launch::Chooser>>>,
     /// The connection once it exists, so a quit can flush what the chooser sent.
     client: RefCell<Option<Arc<client::Client>>>,
+    /// A quit flushed already: Quit and the close it makes, then macOS's terminate, each ask.
+    flushed: Cell<bool>,
     /// The project window is open or opening: the start's handlers stand down.
     opened: Cell<bool>,
     retry: RefCell<startup::Retry>,
@@ -4159,6 +4188,8 @@ impl Launch {
         };
         let client = Arc::new(client);
         *self.client.borrow_mut() = Some(client.clone());
+        // A usage change in the chooser's Settings says its new session id on this connection.
+        aux::set_launch_client(cx, client.clone());
         if !self.plan.is_chooser() {
             let start = self.start.borrow_mut().take();
             if let Some(start) = start {
@@ -4185,9 +4216,16 @@ impl Launch {
         }
     }
 
-    /// Gives the writer a moment for what the chooser sent (a "Stop all"'s kills) before a quit.
+    /// Before a quit from the chooser, which says no Goodbye: the final mark and `SessionQuit`,
+    /// so the daemon seals the chooser's session as a quit, then a moment for the writer to send
+    /// them and what the chooser sent (a "Stop all"'s kills). Once a run.
     fn flush(&self) {
-        if let Some(client) = self.client.borrow().as_ref() {
+        if self.flushed.replace(true) {
+            return;
+        }
+        let client = self.client.borrow().clone();
+        telemetry::quit_without_goodbye(client.as_deref());
+        if let Some(client) = client {
             client.wait_sent(Duration::from_millis(500));
         }
     }
@@ -4244,7 +4282,11 @@ fn open_project_window(
     // The file changed since `main()` read it (Settings, opened from the chooser, writes it): read
     // it again, and the theme it names, so that change is not lost.
     if now != launched {
+        // The Recorder has seen what the chooser's Settings applied; a change made elsewhere
+        // meanwhile (`arkos telemetry on`, an editor) reaches it here, a new session id with it.
+        let applied = launch.config.clone();
         let (cfg, banner) = config::reload_decision(&config, config::load(&config_path));
+        telemetry::config_applied(&applied, &cfg, Some(&*client));
         if cfg.keybindings != config.keybindings {
             rebind(cx, &cfg.keybindings);
         }

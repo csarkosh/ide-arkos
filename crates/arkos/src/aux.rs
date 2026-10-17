@@ -26,6 +26,9 @@ pub struct LaunchState {
     pub installed: SystemTime,
     /// `config_watch::fingerprint` of the config file as `main()` loaded it.
     pub fingerprint: Option<(u128, u64)>,
+    /// The launch's connection to the daemon once it exists (`set_launch_client`), on which a
+    /// change made in Settings before the project window says a new session id.
+    pub client: Option<std::sync::Arc<crate::client::Client>>,
 }
 
 /// The registry. A handle stays here after its window closes; `aux_open` asks which are open.
@@ -47,6 +50,17 @@ impl gpui::Global for Aux {}
 /// Sets the registry up with what `main()` loaded. Called once, before any window opens.
 pub fn init(cx: &mut App, launch: LaunchState) {
     cx.set_global(Aux { launch: Some(launch), ..Aux::default() });
+}
+
+/// Records the launch's connection to the daemon, for the Settings window's writes made before
+/// the project window exists.
+pub fn set_launch_client(cx: &mut App, client: std::sync::Arc<crate::client::Client>) {
+    if !cx.has_global::<Aux>() {
+        return;
+    }
+    if let Some(launch) = cx.global_mut::<Aux>().launch.as_mut() {
+        launch.client = Some(client);
+    }
 }
 
 /// Records the project window's Root, from which About, Settings and Keybindings take their
@@ -304,6 +318,9 @@ fn apply_settings_edits(edits: &[(&[&str], toml_edit::Value)], cx: &mut App) {
     let written = config::set_values(&path, edits);
     let (config, error) = config::reload_decision(&current, config::load(&path));
     if written.is_ok() && error.is_none() {
+        // The Recorder takes the change now, as the project window's reload would: turning
+        // usage on restarts the journal and says the new session id on the launch's connection.
+        crate::telemetry::config_applied(&current, &config, launch.client.as_deref());
         if let Some(launch) = cx.global_mut::<Aux>().launch.as_mut() {
             launch.config = config.clone();
         }

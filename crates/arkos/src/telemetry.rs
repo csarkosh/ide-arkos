@@ -301,6 +301,15 @@ impl Recorder {
         (self.sid != before).then(|| self.sid.clone())
     }
 
+    /// `config_changed`, with a new session id said to the daemon at once on `daemon`, the
+    /// connection there is (the launch chooser's before the project window, the window's own
+    /// after). With none yet, the connect says it (`connect_sid`).
+    pub fn config_applied<D: Daemon + ?Sized>(&mut self, old: &Config, new: &Config, usage: Usage, now: Now, daemon: Option<&D>) {
+        if let (Some(sid), Some(daemon)) = (self.config_changed(old, new, usage, now), daemon) {
+            daemon.set_sid(sid);
+        }
+    }
+
     /// Writes one event; the journal refuses and counts what the allowlist does not list, and a
     /// failed write is lost without a word.
     fn record(&mut self, ev: Event, now: Now) {
@@ -360,6 +369,12 @@ impl Recorder {
         if !std::mem::replace(&mut self.closed, true) {
             self.record(events::window_close(), now);
         }
+    }
+
+    /// The window is going: `window_close` (once) and the final mark.
+    pub fn quitting(&mut self, now: Now) {
+        self.window_close(now);
+        self.mark(now);
     }
 
     pub fn pane_open(&mut self, kind: PaneKind, how: Opened, now: Now) {
@@ -691,6 +706,25 @@ fn with(f: impl FnOnce(&mut Recorder, Now)) {
     }
 }
 
+/// The connection to the daemon as the recorder's calls use it: the window's `Client`, or a fake
+/// in the tests.
+pub trait Daemon {
+    /// Says the window's session id now (`Client::set_sid`).
+    fn set_sid(&self, sid: Option<String>);
+    /// Says the session ended as a quit, on a quit that sends no Goodbye (`Client::session_quit`).
+    fn session_quit(&self);
+}
+
+impl Daemon for crate::client::Client {
+    fn set_sid(&self, sid: Option<String>) {
+        crate::client::Client::set_sid(self, sid);
+    }
+
+    fn session_quit(&self) {
+        crate::client::Client::session_quit(self);
+    }
+}
+
 /// Sets this process's recorder up under the usage its config (`Err` when it did not load) and
 /// the environment give, with a journal unless that is `Off`, and records the launch. Called
 /// once in `main`, before the first connect, which says the session id it made.
@@ -724,12 +758,12 @@ pub fn connect_sid() -> Option<String> {
     sid
 }
 
-/// A config the window applied (`Recorder::config_changed`).
-pub fn config_changed(old: &Config, new: &Config) -> Option<Option<String>> {
+/// A config the window applied, a new session id said on `daemon` (`Recorder::config_applied`):
+/// the project window's reloads, the config it opens on, and a change made in the launch
+/// chooser's Settings.
+pub fn config_applied<D: Daemon + ?Sized>(old: &Config, new: &Config, daemon: Option<&D>) {
     let usage = usage_of(Ok(&new.telemetry));
-    let mut changed = None;
-    with(|r, now| changed = r.config_changed(old, new, usage, now));
-    changed
+    with(|r, now| r.config_applied(old, new, usage, now, daemon));
 }
 
 /// What the project window shows for the focus clock: the focused pane's active tab while it is
@@ -754,12 +788,28 @@ pub fn mark() {
 }
 
 /// The window is going: `window_close` (once) and the final mark, before the Goodbye on the
-/// user's quit and in the flush every quit runs.
+/// user's quit.
 pub fn quitting() {
-    with(|r, now| {
-        r.window_close(now);
-        r.mark(now);
-    });
+    with(|r, now| r.quitting(now));
+}
+
+/// The window is going on a quit that sends no Goodbye (the launch chooser's, macOS's terminate
+/// at a logout or restart, the update relaunch): `quitting`, then `SessionQuit` on `daemon`, so
+/// the daemon seals the session as a quit rather than as `lost`. The caller waits for the writer.
+pub fn quit_without_goodbye<D: Daemon + ?Sized>(daemon: Option<&D>) {
+    let mut guard = RECORDER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    quit_unsaid(guard.as_mut(), Now::system(), daemon);
+}
+
+/// `quit_without_goodbye` on the process's recorder, when there is one: the final mark is
+/// written before the quit is said, and the quit is said with no recorder too.
+fn quit_unsaid<D: Daemon + ?Sized>(r: Option<&mut Recorder>, now: Now, daemon: Option<&D>) {
+    if let Some(r) = r {
+        r.quitting(now);
+    }
+    if let Some(daemon) = daemon {
+        daemon.session_quit();
+    }
 }
 
 pub fn window_open() {
@@ -1280,6 +1330,83 @@ mod tests {
         let third = r.config_changed(&off, &local, Usage::Local, at(base, 6)).expect("the sid changed").expect("a journal again");
         assert!(journal_path(dir.path(), &third).exists());
         assert_ne!(third, new_sid);
+    }
+
+    /// A fake connection to the daemon: what the window told it, in order. A quit also notes the
+    /// journal's last line at that moment, so a test can see what was written before it.
+    #[derive(Default)]
+    struct FakeDaemon {
+        calls: std::cell::RefCell<Vec<String>>,
+        journal: Option<PathBuf>,
+    }
+
+    impl Daemon for FakeDaemon {
+        fn set_sid(&self, sid: Option<String>) {
+            self.calls.borrow_mut().push(format!("sid {}", sid.as_deref().unwrap_or("none")));
+        }
+
+        fn session_quit(&self) {
+            let last = self.journal.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| t.lines().last().map(str::to_string));
+            self.calls.borrow_mut().push(format!("quit after {}", last.unwrap_or_default()));
+        }
+    }
+
+    /// A usage change made while the launch chooser is up (in its Settings, or from the command
+    /// line before the project window reads the file again) reaches the Recorder and the daemon:
+    /// a change to on restarts the journal under a new id and says it on the chooser's
+    /// connection; the same config applied again by the project window changes nothing; a change
+    /// to off deletes the journal and names no session.
+    #[test]
+    fn a_usage_change_before_the_project_window_restarts_the_journal_and_says_the_new_sid() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::Local, at(base, 0));
+        let first = r.sid().unwrap().to_string();
+        let daemon = FakeDaemon::default();
+        let launched = Config::default();
+        let mut on = launched.clone();
+        on.telemetry.usage = Usage::On;
+        r.config_applied(&launched, &on, Usage::On, at(base, 1), Some(&daemon));
+        let second = r.sid().expect("a journal under on").to_string();
+        assert_ne!(second, first);
+        assert!(!journal_path(dir.path(), &first).exists(), "nothing recorded before the consent is kept");
+        assert!(journal_path(dir.path(), &second).exists());
+        assert_eq!(*daemon.calls.borrow(), [format!("sid {second}")], "said at once");
+        // The project window opens on the config the chooser already applied.
+        r.config_applied(&on, &on, Usage::On, at(base, 2), Some(&daemon));
+        assert_eq!(daemon.calls.borrow().len(), 1, "nothing changed, nothing said");
+        let mut off = on.clone();
+        off.telemetry.usage = Usage::Off;
+        r.config_applied(&on, &off, Usage::Off, at(base, 3), Some(&daemon));
+        assert_eq!(r.sid(), None);
+        assert!(!journal_path(dir.path(), &second).exists(), "off keeps nothing it recorded");
+        assert_eq!(daemon.calls.borrow().last().map(String::as_str), Some("sid none"));
+        // With no connection yet the journal still restarts; the connect says the new id.
+        let mut local = off.clone();
+        local.telemetry.usage = Usage::Local;
+        r.config_applied::<FakeDaemon>(&off, &local, Usage::Local, at(base, 4), None);
+        assert!(r.sid().is_some());
+    }
+
+    /// A quit that sends no Goodbye (the launch chooser's, a macOS logout or restart, the update
+    /// relaunch) writes `window_close` and the final mark first, then says `SessionQuit`.
+    #[test]
+    fn a_quit_without_a_goodbye_says_session_quit_after_the_final_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::On, at(base, 0));
+        let sid = r.sid().unwrap().to_string();
+        let daemon = FakeDaemon { journal: Some(journal_path(dir.path(), &sid)), ..FakeDaemon::default() };
+        quit_unsaid(Some(&mut r), at(base, 5), Some(&daemon));
+        let calls = daemon.calls.borrow().clone();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let last: serde_json::Value = serde_json::from_str(calls[0].strip_prefix("quit after ").unwrap()).unwrap();
+        assert_eq!(last["mark"]["t"], 5, "the final mark was written before the quit was said: {last}");
+        assert_eq!(events_in(dir.path(), &sid).last().map(|(n, _)| n.as_str()), Some("window_close"));
+        // Without a recorder (a run under off, or before `init`) the quit is said all the same.
+        let alone = FakeDaemon::default();
+        quit_unsaid(None, at(base, 6), Some(&alone));
+        assert_eq!(*alone.calls.borrow(), ["quit after ".to_string()]);
     }
 
     /// After a dropped socket the daemon sealed and deleted the journal: the reconnect opens a
