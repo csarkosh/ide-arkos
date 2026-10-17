@@ -51,6 +51,8 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
+          # A pasted secret can carry a newline or a space, which the sign-in refuses.
+          CLAUDE_CODE_OAUTH_TOKEN=$(printf %s "$CLAUDE_CODE_OAUTH_TOKEN" | tr -d '[:space:]'); export CLAUDE_CODE_OAUTH_TOKEN
           [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || { echo "set the CLAUDE_CODE_OAUTH_TOKEN secret (claude setup-token) first"; exit 1; }
           npm install -g --silent @anthropic-ai/claude-code
           # A first start would ask for a theme and a login: the scenes expect a set-up account.
@@ -63,7 +65,9 @@ jobs:
       - name: Shoot
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: scripts/shoot.sh $SCENES
+        run: |
+          CLAUDE_CODE_OAUTH_TOKEN=$(printf %s "$CLAUDE_CODE_OAUTH_TOKEN" | tr -d '[:space:]'); export CLAUDE_CODE_OAUTH_TOKEN
+          scripts/shoot.sh $SCENES
       - name: Keep the pictures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (v4)
