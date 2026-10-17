@@ -4200,6 +4200,9 @@ impl Launch {
         *self.client.borrow_mut() = Some(client.clone());
         // A usage change in the chooser's Settings says its new session id on this connection.
         aux::set_launch_client(cx, client.clone());
+        // The id this connection said was read on the connect thread; a change in the chooser
+        // since then restarted the journal, so it says the Recorder's own now.
+        telemetry::sync_sid(&*client);
         if !self.plan.is_chooser() {
             let start = self.start.borrow_mut().take();
             if let Some(start) = start {
@@ -4296,7 +4299,7 @@ fn open_project_window(
         // meanwhile (`arkos telemetry on`, an editor) reaches it here, a new session id with it.
         let applied = launch.config.clone();
         let (cfg, banner) = config::reload_decision(&config, config::load(&config_path));
-        telemetry::config_applied(&applied, &cfg, Some(&*client));
+        telemetry::opening_config(&applied, &cfg, banner.is_some(), Some(&*client));
         if cfg.keybindings != config.keybindings {
             rebind(cx, &cfg.keybindings);
         }

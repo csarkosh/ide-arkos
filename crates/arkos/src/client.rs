@@ -183,6 +183,11 @@ impl Client {
         }
     }
 
+    /// The session id this connection says after each Hello.
+    pub fn sid(&self) -> Option<String> {
+        self.sid.lock().unwrap().clone()
+    }
+
     /// Tells the daemon this window's usage session ended as a quit, on a quit that sends no
     /// `Goodbye` (a macOS logout or restart, after which the window comes back): without it the
     /// closing socket reads as a crash. Nothing else changes. Returns the request's id.

@@ -65,6 +65,27 @@ fn name_of<T: PartialEq>(v: &T, names: &[&'static str], choices: &[T]) -> &'stat
     choices.iter().position(|c| c == v).map_or("", |i| names[i])
 }
 
+/// The config spelling of a usage setting: `off`, `local` or `on`.
+pub fn usage_name(u: Usage) -> &'static str {
+    name_of(&u, USAGE_NAMES, &USAGE)
+}
+
+/// The config spelling of a crash setting: `never`, `ask` or `always`.
+pub fn crashes_name(c: Crashes) -> &'static str {
+    name_of(&c, CRASHES_NAMES, &CRASHES)
+}
+
+/// The usage setting a config spelling names (`usage_name` read back); `None` for any other word.
+pub fn parse_usage(word: &str) -> Option<Usage> {
+    USAGE_NAMES.iter().position(|n| *n == word).map(|i| USAGE[i])
+}
+
+/// The crash setting a config spelling names (`crashes_name` read back); `None` for any other
+/// word.
+pub fn parse_crashes(word: &str) -> Option<Crashes> {
+    CRASHES_NAMES.iter().position(|n| *n == word).map(|i| CRASHES[i])
+}
+
 mod usage {
     use super::*;
 

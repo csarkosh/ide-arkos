@@ -157,6 +157,10 @@ pub struct Recorder {
     agents: HashSet<u64>,
     /// The terminals whose agent first asked for input in this session.
     waiting: HashSet<u64>,
+    /// `window_open` was recorded in this run: a run that never opened a project window (the
+    /// launch chooser, quit) records no close. Kept across a new journal, since the window is
+    /// still the one that opened.
+    opened: bool,
     /// `window_close` is written: every quit path asks, and the first one writes it.
     closed: bool,
     /// The config did not load at launch: usage stays `Off` for the whole run, whatever a later
@@ -189,7 +193,7 @@ impl Recorder {
     /// A recorder for this process, with a journal opened under a fresh id unless usage is `Off`.
     pub fn new(dir: &Path, env: Envelope, allow: Allowlist, usage: Usage, now: Now) -> Recorder {
         let focus = Focus { project: None, settings: false, since: now.at, carry: BTreeMap::new() };
-        let mut r = Recorder { dir: dir.to_path_buf(), env, allow, usage, sid: None, journal: None, focus, md: BTreeSet::new(), agents: HashSet::new(), waiting: HashSet::new(), closed: false, pinned_off: false };
+        let mut r = Recorder { dir: dir.to_path_buf(), env, allow, usage, sid: None, journal: None, focus, md: BTreeSet::new(), agents: HashSet::new(), waiting: HashSet::new(), opened: false, closed: false, pinned_off: false };
         if usage != Usage::Off {
             r.start(now);
         }
@@ -316,6 +320,24 @@ impl Recorder {
         }
     }
 
+    /// The config the project window opens on, read again because the file changed since
+    /// launch, against the one the Recorder last took (`applied`). One that failed to load
+    /// (`failed`) is the launch config `reload_decision` fell back to, not a choice: the Recorder
+    /// keeps what it has, so an off chosen in the chooser is not undone.
+    pub fn opening_config<D: Daemon + ?Sized>(&mut self, applied: &Config, reloaded: &Config, failed: bool, usage: Usage, now: Now, daemon: Option<&D>) {
+        if !failed {
+            self.config_applied(applied, reloaded, usage, now, daemon);
+        }
+    }
+
+    /// Says this recorder's session id on `daemon` when the connection says another: the id it
+    /// was made with may have been read before a change in the chooser restarted the journal.
+    pub fn sync_sid<D: Daemon + ?Sized>(&self, daemon: &D) {
+        if daemon.sid() != self.sid {
+            daemon.set_sid(self.sid.clone());
+        }
+    }
+
     /// Writes one event; the journal refuses and counts what the allowlist does not list, and a
     /// failed write is lost without a word.
     fn record(&mut self, ev: Event, now: Now) {
@@ -367,12 +389,14 @@ impl Recorder {
     }
 
     pub fn window_open(&mut self, now: Now) {
+        self.opened = true;
         self.record(events::window_open(), now);
     }
 
-    /// The window is going: written once, whichever quit paths run.
+    /// The window is going: written once, whichever quit paths run, and only after a
+    /// `window_open`.
     pub fn window_close(&mut self, now: Now) {
-        if !std::mem::replace(&mut self.closed, true) {
+        if self.opened && !std::mem::replace(&mut self.closed, true) {
             self.record(events::window_close(), now);
         }
     }
@@ -719,6 +743,8 @@ pub trait Daemon {
     fn set_sid(&self, sid: Option<String>);
     /// Says the session ended as a quit, on a quit that sends no Goodbye (`Client::session_quit`).
     fn session_quit(&self);
+    /// The session id the connection says after each Hello (`Client::sid`).
+    fn sid(&self) -> Option<String>;
 }
 
 impl Daemon for crate::client::Client {
@@ -728,6 +754,10 @@ impl Daemon for crate::client::Client {
 
     fn session_quit(&self) {
         crate::client::Client::session_quit(self);
+    }
+
+    fn sid(&self) -> Option<String> {
+        crate::client::Client::sid(self)
     }
 }
 
@@ -791,6 +821,19 @@ pub fn settings_focus(active: bool) {
 /// The minute's flush of the focus totals.
 pub fn mark() {
     with(|r, now| r.mark(now));
+}
+
+/// The config the project window opens on, when the file changed since launch
+/// (`Recorder::opening_config`): `failed` when it did not load.
+pub fn opening_config<D: Daemon + ?Sized>(applied: &Config, reloaded: &Config, failed: bool, daemon: Option<&D>) {
+    let usage = usage_of(Ok(&reloaded.telemetry));
+    with(|r, now| r.opening_config(applied, reloaded, failed, usage, now, daemon));
+}
+
+/// The launch's connection is stored: it says the Recorder's session id if it differs
+/// (`Recorder::sync_sid`).
+pub fn sync_sid<D: Daemon + ?Sized>(daemon: &D) {
+    with(|r, _| r.sync_sid(daemon));
 }
 
 /// The window is going: `window_close` (once) and the final mark, before the Goodbye on the
@@ -1220,6 +1263,7 @@ mod tests {
         let base = Instant::now();
         let mut r = recorder(dir.path(), Usage::On, at(base, 0));
         let sid = r.sid().unwrap().to_string();
+        r.window_open(at(base, 1));
         r.window_close(at(base, 1));
         r.window_close(at(base, 2));
         let closes = events_in(dir.path(), &sid).into_iter().filter(|(n, _)| n == "window_close").count();
@@ -1411,11 +1455,18 @@ mod tests {
     struct FakeDaemon {
         calls: std::cell::RefCell<Vec<String>>,
         journal: Option<PathBuf>,
+        /// The session id the connection says, as `Client` keeps it.
+        said: std::cell::RefCell<Option<String>>,
     }
 
     impl Daemon for FakeDaemon {
         fn set_sid(&self, sid: Option<String>) {
             self.calls.borrow_mut().push(format!("sid {}", sid.as_deref().unwrap_or("none")));
+            *self.said.borrow_mut() = sid;
+        }
+
+        fn sid(&self) -> Option<String> {
+            self.said.borrow().clone()
         }
 
         fn session_quit(&self) {
@@ -1470,6 +1521,7 @@ mod tests {
         let mut r = recorder(dir.path(), Usage::On, at(base, 0));
         let sid = r.sid().unwrap().to_string();
         let daemon = FakeDaemon { journal: Some(journal_path(dir.path(), &sid)), ..FakeDaemon::default() };
+        r.window_open(at(base, 1));
         quit_unsaid(Some(&mut r), at(base, 5), Some(&daemon));
         let calls = daemon.calls.borrow().clone();
         assert_eq!(calls.len(), 1, "{calls:?}");
@@ -1480,6 +1532,67 @@ mod tests {
         let alone = FakeDaemon::default();
         quit_unsaid(None, at(base, 6), Some(&alone));
         assert_eq!(*alone.calls.borrow(), ["quit after ".to_string()]);
+    }
+
+    /// A run that never opened a project window (the launch chooser, quit) records no close:
+    /// `window_close` follows only a recorded `window_open`.
+    #[test]
+    fn a_run_with_no_window_open_records_no_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::On, at(base, 0));
+        let sid = r.sid().unwrap().to_string();
+        r.launch(Launch::Normal, at(base, 0));
+        r.quitting(at(base, 3));
+        let names: Vec<String> = events_in(dir.path(), &sid).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["launch"], "no close without an open");
+        assert!(lines(dir.path(), &sid).iter().any(|l| l.get("mark").is_some()), "the final mark is still written");
+    }
+
+    /// The project window opens on a config that failed to load: the Recorder keeps what the
+    /// chooser applied (here off), rather than the launch config that `reload_decision` falls
+    /// back to. A config that loads is applied as usual.
+    #[test]
+    fn a_config_that_fails_to_load_at_the_project_window_is_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::Local, at(base, 0));
+        let launched = Config::default();
+        let mut off = launched.clone();
+        off.telemetry.usage = Usage::Off;
+        r.config_applied::<FakeDaemon>(&launched, &off, Usage::Off, at(base, 1), None);
+        assert_eq!(r.sid(), None);
+        let daemon = FakeDaemon::default();
+        r.opening_config(&off, &launched, true, Usage::Local, at(base, 2), Some(&daemon));
+        assert_eq!(r.sid(), None, "off stays off");
+        assert!(daemon.calls.borrow().is_empty());
+        assert!(!dir.path().join("journal").read_dir().is_ok_and(|mut d| d.next().is_some()), "no journal");
+        r.opening_config(&off, &launched, false, Usage::Local, at(base, 3), Some(&daemon));
+        assert!(r.sid().is_some(), "a config that loads is applied");
+        assert_eq!(daemon.calls.borrow().len(), 1);
+    }
+
+    /// The connection the launch made says the Recorder's session id when it differs, as when
+    /// usage changed in the chooser between the connect thread reading the id and the
+    /// connection being stored; when they agree, nothing is said.
+    #[test]
+    fn a_stored_connection_says_the_recorders_sid_when_it_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::Local, at(base, 0));
+        let first = r.sid().unwrap().to_string();
+        let daemon = FakeDaemon { said: std::cell::RefCell::new(Some(first.clone())), ..FakeDaemon::default() };
+        r.sync_sid(&daemon);
+        assert!(daemon.calls.borrow().is_empty(), "the same id: nothing said");
+        let launched = Config::default();
+        let mut on = launched.clone();
+        on.telemetry.usage = Usage::On;
+        r.config_applied::<FakeDaemon>(&launched, &on, Usage::On, at(base, 1), None);
+        let second = r.sid().unwrap().to_string();
+        r.sync_sid(&daemon);
+        assert_eq!(*daemon.calls.borrow(), [format!("sid {second}")]);
+        r.sync_sid(&daemon);
+        assert_eq!(daemon.calls.borrow().len(), 1, "said once");
     }
 
     /// After a dropped socket the daemon sealed and deleted the journal: the reconnect opens a

@@ -340,12 +340,12 @@ Notes:
 
 The menu bar has two menus. "Arkos IDE" holds About Arkos IDE, a line, New Window, Settings, Quit;
 "Help" holds Keybindings, Documentation and What Arkos Sends. They work from the chooser, the
-project window, About, Settings and Keybindings alike. Each Arkos process has its own About, Settings and Keybindings
-windows, so two open projects mean two of each. Closing the project window closes them and quits
-the app. New Window from any of the three goes to the project window, or brings the chooser
-forward. The three draw the project window's title bar instead of the native one: the window's
-name in bold where the project path would be, dragged to move the window and double clicked to
-zoom it (About keeps its fixed size).
+project window, About, Settings and Keybindings alike. Each Arkos process has its own About,
+Settings and Keybindings windows, so two open projects mean two of each. Closing the project
+window closes them and quits the app. New Window from any of the three goes to the project window,
+or brings the chooser forward. The three draw the project window's title bar instead of the native
+one: the window's name in bold where the project path would be, dragged to move the window and
+double clicked to zoom it (About keeps its fixed size).
 
 Help, Keybindings (or Cmd+/, or "Keybindings" in the palette) opens a read-only list of every
 action with the keys in force, grouped by what it acts on: Window and app, Panes, Tabs, Terminal,

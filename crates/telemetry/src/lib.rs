@@ -10,7 +10,7 @@ mod kinds;
 pub mod panic;
 mod paths;
 
-pub use config::{parse_table, Error, TelemetryConfig};
+pub use config::{crashes_name, parse_crashes, parse_table, parse_usage, usage_name, Error, TelemetryConfig};
 pub use kinds::Kind;
 pub use paths::{app_support, app_support_from, config_dir, config_dir_from, config_file};
 pub use visits_app;
@@ -93,35 +93,6 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
 /// collector requires it) and the reports it posts.
 pub fn user_agent() -> String {
     format!("arkos/{}", env!("CARGO_PKG_VERSION"))
-}
-
-/// The config spelling of a usage setting: `off`, `local` or `on`.
-pub fn usage_name(u: Usage) -> &'static str {
-    match u {
-        Usage::Off => "off",
-        Usage::Local => "local",
-        Usage::On => "on",
-    }
-}
-
-/// The config spelling of a crash setting: `never`, `ask` or `always`.
-pub fn crashes_name(c: Crashes) -> &'static str {
-    match c {
-        Crashes::Never => "never",
-        Crashes::Ask => "ask",
-        Crashes::Always => "always",
-    }
-}
-
-/// The usage setting a config spelling names (`usage_name` read back); `None` for any other word.
-pub fn parse_usage(word: &str) -> Option<Usage> {
-    [Usage::Off, Usage::Local, Usage::On].into_iter().find(|u| usage_name(*u) == word)
-}
-
-/// The crash setting a config spelling names (`crashes_name` read back); `None` for any other
-/// word.
-pub fn parse_crashes(word: &str) -> Option<Crashes> {
-    [Crashes::Never, Crashes::Ask, Crashes::Always].into_iter().find(|c| crashes_name(*c) == word)
 }
 
 /// The major of `sw_vers -productVersion`, read once; 0 when it cannot be read.
