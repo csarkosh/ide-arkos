@@ -12,6 +12,7 @@ mod command_palette;
 mod config;
 mod config_watch;
 mod connection;
+mod crash_dialog;
 mod diff;
 mod dock;
 mod doctor;
@@ -4365,6 +4366,20 @@ fn open_project_window(
         aux::push_settings(cx, shown);
         aux::push_theme(cx, &theme);
         aux::push_keybindings(cx, &overrides);
+        // The crash reports a panic left, now the window is up: shown in the crash dialog, queued
+        // or deleted as `telemetry.crashes` says, or left waiting under any rule of the
+        // environment. A command-line run never gets here. "Always send" applies through the
+        // reload, as Settings' writes do.
+        let (crashes, mode, mono) = {
+            let root = root.read(cx);
+            let config = if root.config_error.is_some() { Err(()) } else { Ok(&root.config.telemetry) };
+            (root.config.telemetry.crashes, ::telemetry::mode_for(config, true), root.family())
+        };
+        let reloading = root.downgrade();
+        let on_always: Rc<dyn Fn(&mut App)> = Rc::new(move |cx| {
+            let _ = reloading.update(cx, |root, cx| root.reload_config(cx));
+        });
+        crash_dialog::at_launch(crashes, &mode, (*theme).clone(), mono, on_always, cx);
         let quit_root = root.clone();
         cx.on_action(move |_: &Quit, cx| {
             // Goodbye here, while everything runs; the close this quit makes finds it said. Unsaved

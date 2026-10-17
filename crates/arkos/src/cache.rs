@@ -84,7 +84,7 @@ pub fn sweep_ended(dir: &Path, prefix: &str) -> usize {
 
 /// Whether process `pid` is running: signal 0 checks without sending anything, and only "no such
 /// process" says it ended (a process of another user refuses the signal and is running).
-fn alive(pid: libc::pid_t) -> bool {
+pub fn alive(pid: libc::pid_t) -> bool {
     // SAFETY: signal 0 is never delivered; kill only checks that the process exists.
     if unsafe { libc::kill(pid, 0) } == 0 {
         return true;

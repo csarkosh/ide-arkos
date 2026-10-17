@@ -8,7 +8,7 @@ use crate::theme::{self, Theme};
 use crate::{aux, keymap, paths, telemetry_cli};
 use ::telemetry::visits_app::{Crashes, Mode, Usage};
 use gpui::{
-    div, prelude::*, px, size, AnyElement, App, Bounds, Context, ElementId, FocusHandle, Hsla, KeyDownEvent, PathPromptOptions, SharedString,
+    div, prelude::*, px, size, AnyElement, App, Bounds, ClipboardItem, Context, ElementId, FocusHandle, Hsla, KeyDownEvent, PathPromptOptions, SharedString,
     Stateful, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use std::path::{Path, PathBuf};
@@ -313,6 +313,7 @@ const USAGE_ROW: &str = "Usage reports";
 const CRASHES_ROW: &str = "Crash reports";
 const WHAT_IS_SENT_ROW: &str = "What Arkos sends";
 const LAST_REPORT_ROW: &str = "Last report";
+const REPORTS_ROW: &str = "Reports";
 
 /// The Usage reports row's choices, in order.
 const USAGE_CHOICES: [(&str, Usage); 3] = [("Off", Usage::Off), ("Local only", Usage::Local), ("On", Usage::On)];
@@ -350,6 +351,12 @@ fn shown_mode(shown: &Shown) -> Mode {
 
 /// The session the daemon sealed last, `last-session.json` in the telemetry folder `dir`, when
 /// there is one. Only a plain file counts: a folder or a link in its place is not the daemon's.
+/// The Reports list's lines: each crash report by date, newest first, with its `inc` and what
+/// became of it (`crash_dialog::reports`).
+fn report_lines(dir: &Path) -> Vec<(String, String)> {
+    crate::crash_dialog::reports(dir).into_iter().map(|r| (format!("{}  {}", r.date, r.inc), r.status.to_string())).collect()
+}
+
 fn last_report(dir: &Path) -> Option<PathBuf> {
     let file = dir.join(telemetry_cli::LAST_SESSION);
     file.symlink_metadata().is_ok_and(|m| m.is_file()).then_some(file)
@@ -726,6 +733,29 @@ impl SettingsWindow {
         if last.is_none() {
             out.push(div().text_color(c.dim).text_size(px(12.0)).child("no session sealed yet").into_any_element());
         }
+        // Each crash report by date with its `inc`, a receipt the person can quote in an issue: a
+        // click copies the `inc`.
+        out.push(heading(REPORTS_ROW, c).into_any_element());
+        let lines = report_lines(&paths::telemetry_dir());
+        let mono = SharedString::from(self.shown.config.font.family.clone());
+        if lines.is_empty() {
+            out.push(div().text_color(c.dim).text_size(px(12.0)).child("no crash reports").into_any_element());
+        }
+        for (ix, (line, status)) in lines.into_iter().enumerate() {
+            let inc = line.rsplit(' ').next().unwrap_or_default().to_string();
+            let row = div()
+                .id(("crash-report", ix))
+                .flex()
+                .gap(px(10.0))
+                .text_size(px(12.0))
+                .font_family(mono.clone())
+                .cursor_pointer()
+                .hover(move |s| s.bg(c.pill))
+                .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(inc.clone())))
+                .child(line)
+                .child(div().text_color(c.dim).child(status));
+            out.push(row.into_any_element());
+        }
         out
     }
 
@@ -1013,5 +1043,25 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         std::fs::write(&file, "{}").unwrap();
         assert_eq!(last_report(dir.path()), Some(file));
+    }
+
+    /// The Reports list is named as the page names it, and lists each receipt by date with its
+    /// `inc`, a queued report as sent once its file has left the queue, and what still waits.
+    #[test]
+    fn the_reports_list_shows_the_receipts_by_date_with_the_inc() {
+        assert_eq!(REPORTS_ROW, "Reports");
+        let page = include_str!("../../../docs/telemetry.md").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(page.contains(&format!("shown under {REPORTS_ROW} in Settings")));
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(report_lines(dir.path()), Vec::<(String, String)>::new());
+        let (a, b) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
+        std::fs::write(dir.path().join(crate::crash_dialog::RECEIPTS), format!("{a} 2026-10-01 queued\n{b} 2026-10-02 declined\n")).unwrap();
+        assert_eq!(report_lines(dir.path()), vec![
+            (format!("2026-10-02  {b}"), "declined".to_string()),
+            (format!("2026-10-01  {a}"), "sent".to_string()),
+        ]);
+        std::fs::create_dir_all(dir.path().join("queue")).unwrap();
+        std::fs::write(dir.path().join("queue").join(format!("crash-{a}.json")), "{}").unwrap();
+        assert_eq!(report_lines(dir.path())[1], (format!("2026-10-01  {a}"), "queued".to_string()));
     }
 }

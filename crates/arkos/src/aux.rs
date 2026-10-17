@@ -1,9 +1,10 @@
-//! The auxiliary windows' registry: the About, Settings and Keybindings windows, one of each at
-//! most, and the project window's Root once it exists. A gpui global, so the actions registered
+//! The auxiliary windows' registry: the About, Settings and Keybindings windows and the crash
+//! dialog, one of each at most, and the project window's Root once it exists. A gpui global, so the actions registered
 //! once in `main()` reach them in every state, the launch chooser's included, and the close rules
 //! can count them.
 use crate::about::{self, AboutWindow};
 use crate::config::{self, Config};
+use crate::crash_dialog::CrashDialog;
 use crate::keybindings::{self, KeybindingsWindow};
 use crate::settings::{self, SettingsWindow, Shown};
 use crate::theme::Theme;
@@ -33,6 +34,8 @@ pub struct Aux {
     pub about: Option<WindowHandle<AboutWindow>>,
     pub settings: Option<WindowHandle<SettingsWindow>>,
     pub keybindings: Option<WindowHandle<KeybindingsWindow>>,
+    /// The crash dialog, opened at most once a run (`crash_dialog::at_launch`).
+    pub crash: Option<WindowHandle<CrashDialog>>,
     /// The project window's Root, once it exists.
     pub root: Option<WeakEntity<Root>>,
     /// Set by `init` before any window opens.
@@ -246,11 +249,11 @@ pub fn push_keybindings(cx: &mut App, overrides: &BTreeMap<String, String>) {
     let _ = handle.update(cx, |w, _window, cx| w.set_rows(rows, cx));
 }
 
-/// Redraws the open About, Settings and Keybindings windows in `theme`, the project window's new
-/// one.
+/// Redraws the open About, Settings and Keybindings windows and the crash dialog in `theme`, the
+/// project window's new one.
 pub fn push_theme(cx: &mut App, theme: &Theme) {
     let Some(aux) = cx.try_global::<Aux>() else { return };
-    let (about, settings, keybindings) = (aux.about, aux.settings, aux.keybindings);
+    let (about, settings, keybindings, crash) = (aux.about, aux.settings, aux.keybindings, aux.crash);
     if let Some(h) = about {
         let theme = theme.clone();
         let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
@@ -260,6 +263,10 @@ pub fn push_theme(cx: &mut App, theme: &Theme) {
         let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
     }
     if let Some(h) = keybindings {
+        let theme = theme.clone();
+        let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
+    }
+    if let Some(h) = crash {
         let theme = theme.clone();
         let _ = h.update(cx, |w, _window, cx| w.set_theme(theme, cx));
     }
@@ -325,7 +332,7 @@ fn settings_update_now(cx: &mut App) {
     }
 }
 
-/// How many of the About, Settings and Keybindings windows are open.
+/// How many of the About, Settings and Keybindings windows and the crash dialog are open.
 pub fn aux_open(cx: &App) -> usize {
     let Some(aux) = cx.try_global::<Aux>() else { return 0 };
     // A window being updated is still listed by `windows()`, while `read` would fail on it.
@@ -334,12 +341,14 @@ pub fn aux_open(cx: &App) -> usize {
     usize::from(open(aux.about.map(|h| h.window_id())))
         + usize::from(open(aux.settings.map(|h| h.window_id())))
         + usize::from(open(aux.keybindings.map(|h| h.window_id())))
+        + usize::from(open(aux.crash.map(|h| h.window_id())))
 }
 
-/// Closes the About, Settings and Keybindings windows and forgets their handles.
+/// Closes the About, Settings and Keybindings windows and the crash dialog, and forgets their
+/// handles. A crash dialog closed this way made no choice: its reports wait for the next launch.
 pub fn close_all(cx: &mut App) {
     let Some(aux) = cx.try_global::<Aux>() else { return };
-    let (about, settings, keybindings) = (aux.about, aux.settings, aux.keybindings);
+    let (about, settings, keybindings, crash) = (aux.about, aux.settings, aux.keybindings, aux.crash);
     if let Some(h) = about {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
@@ -349,10 +358,14 @@ pub fn close_all(cx: &mut App) {
     if let Some(h) = keybindings {
         let _ = h.update(cx, |_, window, _| window.remove_window());
     }
+    if let Some(h) = crash {
+        let _ = h.update(cx, |_, window, _| window.remove_window());
+    }
     let aux = cx.global_mut::<Aux>();
     aux.about = None;
     aux.settings = None;
     aux.keybindings = None;
+    aux.crash = None;
 }
 
 /// New Window pressed in About, Settings or Keybindings: the project window's New Window when

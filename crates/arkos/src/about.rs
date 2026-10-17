@@ -147,8 +147,14 @@ pub fn format_when(t: SystemTime, now: SystemTime) -> String {
     if (at.tm_year, at.tm_yday) == (today.tm_year, today.tm_yday) {
         format!("today {:02}:{:02}", at.tm_hour, at.tm_min)
     } else {
-        format!("{:04}-{:02}-{:02}", at.tm_year + 1900, at.tm_mon + 1, at.tm_mday)
+        format_date(t)
     }
+}
+
+/// The local date of `t` as "YYYY-MM-DD", as the table and the crash dialog write a day.
+pub fn format_date(t: SystemTime) -> String {
+    let at = local_tm(t);
+    format!("{:04}-{:02}-{:02}", at.tm_year + 1900, at.tm_mon + 1, at.tm_mday)
 }
 
 /// The local civil time of `t`. A time before the epoch counts as the epoch.
