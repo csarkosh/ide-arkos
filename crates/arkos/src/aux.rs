@@ -1,7 +1,7 @@
 //! The auxiliary windows' registry: the About, Settings and Keybindings windows and the crash
-//! dialog, one of each at most, and the project window's Root once it exists. A gpui global, so the actions registered
-//! once in `main()` reach them in every state, the launch chooser's included, and the close rules
-//! can count them.
+//! dialog, one of each at most, and the project window's Root once it exists. A gpui global, so
+//! the actions registered once in `main()` reach them in every state, the launch chooser's
+//! included, and the close rules can count them.
 use crate::about::{self, AboutWindow};
 use crate::config::{self, Config};
 use crate::crash_dialog::CrashDialog;

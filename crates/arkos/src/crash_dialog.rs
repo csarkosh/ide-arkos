@@ -373,7 +373,10 @@ pub fn at_launch(crashes: Crashes, mode: &Mode, theme: Theme, mono: SharedString
         return;
     }
     let dir = crate::paths::telemetry_dir();
-    let claims = Claims::take(&dir, std::process::id(), &alive);
+    // This process holds no claim yet, so a claim under its own pid is an earlier run's whose
+    // pid came round again: that one ended too.
+    let pid = std::process::id();
+    let claims = Claims::take(&dir, pid, &|p| p != pid && alive(p));
     if claims.invalid > 0 {
         eprintln!("arkos: deleted {} crash report(s) that were not valid", claims.invalid);
     }
@@ -396,16 +399,36 @@ fn unix_now() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// What the dialog shows and the state of its two controls.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DialogState {
+    pub sentence: String,
+    /// Every claimed report's bytes, as text, in the order shown.
+    pub report: String,
+    /// Whether the Show report disclosure is open.
+    pub show_report: bool,
+    /// "Always send crash reports": checked only by the person.
+    pub always: bool,
+}
+
+impl DialogState {
+    /// The dialog's first state over `claims`: the sentence names the newest incident and counts
+    /// the rest, the report is every claimed report's bytes, the disclosure is closed and the
+    /// Always send box unchecked, so Send is consent for these reports alone.
+    pub fn of(claims: &Claims) -> DialogState {
+        let held = claims.held();
+        let newest = held.iter().max_by_key(|c| c.at);
+        let sentence = newest.map_or_else(String::new, |c| sentence(&c.crash.env.bin, &about::format_date(c.at), held.len() - 1));
+        let report = held.iter().map(|c| String::from_utf8_lossy(&c.bytes).into_owned()).collect::<Vec<_>>().join("\n\n");
+        DialogState { sentence, report, show_report: false, always: false }
+    }
+}
+
 /// The crash dialog's view: the claims until Send or Don't send takes them; dropped with the
 /// window, it puts back whatever it still holds.
 pub struct CrashDialog {
     claims: Option<Claims>,
-    sentence: String,
-    /// Every claimed report's bytes, as text, in the order shown.
-    report: String,
-    show_report: bool,
-    /// "Always send crash reports", unchecked until the person checks it.
-    always: bool,
+    state: DialogState,
     theme: Theme,
     mono: SharedString,
     on_always: Rc<dyn Fn(&mut App)>,
@@ -414,11 +437,7 @@ pub struct CrashDialog {
 
 impl CrashDialog {
     fn new(claims: Claims, theme: Theme, mono: SharedString, on_always: Rc<dyn Fn(&mut App)>, focus: FocusHandle) -> CrashDialog {
-        // The sentence names the newest incident; the rest are counted.
-        let newest = claims.held().iter().max_by_key(|c| c.at);
-        let sentence = newest.map_or_else(String::new, |c| sentence(&c.crash.env.bin, &about::format_date(c.at), claims.held().len() - 1));
-        let report = claims.held().iter().map(|c| String::from_utf8_lossy(&c.bytes).into_owned()).collect::<Vec<_>>().join("\n\n");
-        CrashDialog { claims: Some(claims), sentence, report, show_report: false, always: false, theme, mono, on_always, focus }
+        CrashDialog { state: DialogState::of(&claims), claims: Some(claims), theme, mono, on_always, focus }
     }
 
     /// Redraws the window in the project window's new theme.
@@ -432,7 +451,7 @@ impl CrashDialog {
         if let Some(claims) = self.claims.take() {
             claims.send(unix_now());
         }
-        if self.always {
+        if self.state.always {
             match always_send(&crate::paths::config_file()) {
                 Ok(()) => {
                     let on_always = self.on_always.clone();
@@ -492,14 +511,14 @@ impl Render for CrashDialog {
             .text_color(c.accent)
             .cursor_pointer()
             .hover(|s| s.underline())
-            .child(if self.show_report { "▾" } else { "▸" })
+            .child(if self.state.show_report { "▾" } else { "▸" })
             .child(SHOW_REPORT)
             .on_click(cx.listener(|d, _, window, cx| {
-                d.show_report = !d.show_report;
-                window.resize(size(px(WIDTH), px(if d.show_report { HEIGHT_SHOWN } else { HEIGHT })));
+                d.state.show_report = !d.state.show_report;
+                window.resize(size(px(WIDTH), px(if d.state.show_report { HEIGHT_SHOWN } else { HEIGHT })));
                 cx.notify();
             }));
-        let report = self.show_report.then(|| {
+        let report = self.state.show_report.then(|| {
             div()
                 .id("crash-report")
                 .flex_1()
@@ -512,7 +531,7 @@ impl Render for CrashDialog {
                 .bg(field)
                 .font_family(self.mono.clone())
                 .text_size(px(11.0))
-                .child(self.report.clone())
+                .child(self.state.report.clone())
         });
         let always = div()
             .id("crash-always")
@@ -530,13 +549,13 @@ impl Render for CrashDialog {
                     .justify_center()
                     .rounded(px(3.0))
                     .border_1()
-                    .border_color(if self.always { c.accent } else { c.border })
+                    .border_color(if self.state.always { c.accent } else { c.border })
                     .text_size(px(11.0))
-                    .child(if self.always { "✓" } else { "" }),
+                    .child(if self.state.always { "✓" } else { "" }),
             )
             .child(ALWAYS_SEND)
             .on_click(cx.listener(|d, _, _, cx| {
-                d.always = !d.always;
+                d.state.always = !d.state.always;
                 cx.notify();
             }));
         let dont = settings::pill("crash-dont-send", DONT_SEND, false, true, c).on_click(cx.listener(|d, _, window, _| d.dont_send(window)));
@@ -570,11 +589,11 @@ impl Render for CrashDialog {
                     .flex_col()
                     .gap(px(10.0))
                     .p(px(20.0))
-                    .child(div().flex_none().font_weight(gpui::FontWeight::SEMIBOLD).child(self.sentence.clone()))
+                    .child(div().flex_none().font_weight(gpui::FontWeight::SEMIBOLD).child(self.state.sentence.clone()))
                     .child(div().flex_none().text_color(c.dim).text_size(px(12.0)).child("A crash report says where it happened and in which build. Nothing in it names you, this Mac or your files."))
                     .child(disclosure)
                     .children(report)
-                    .when(!self.show_report, |d| d.child(div().flex_1()))
+                    .when(!self.state.show_report, |d| d.child(div().flex_1()))
                     .child(div().flex_none().flex().items_center().gap(px(8.0)).child(always).child(div().flex_1()).child(dont).child(send)),
             )
     }
@@ -834,6 +853,30 @@ mod tests {
         assert!(dir.path().join("incidents").join(format!("{}.json", c.inc)).exists());
     }
 
+    /// Review Focus 6: the dialog opens with Always send unchecked and the report hidden; the
+    /// sentence names the newest incident and counts the other, and the report is every claimed
+    /// report's exact bytes.
+    #[test]
+    fn the_dialog_opens_unchecked_and_names_the_newest_incident() {
+        let dir = tempfile::tempdir().unwrap();
+        let (older, newer) = (crash(Bin::App), crash(Bin::Daemon));
+        incident(dir.path(), &older);
+        let newer_bytes = newer.to_bytes().unwrap();
+        let file = dir.path().join("incidents").join(format!("{}.json", newer.inc));
+        std::fs::write(&file, &newer_bytes).unwrap();
+        let later = at() + Duration::from_secs(2 * 86_400);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(later).unwrap();
+        let claims = Claims::take(dir.path(), 4242, &|_| true);
+        let state = DialogState::of(&claims);
+        assert!(!state.always, "Always send starts unchecked");
+        assert!(!state.show_report, "the report starts hidden");
+        assert_eq!(state.sentence, format!("The background daemon ran into an error on {}, and 1 more.", crate::about::format_date(later)));
+        let joined = claims.held().iter().map(|c| String::from_utf8(c.bytes.clone()).unwrap()).collect::<Vec<_>>().join("\n\n");
+        assert_eq!(state.report, joined);
+        assert!(state.report.contains(&String::from_utf8(newer_bytes).unwrap()) && state.report.contains(&String::from_utf8(older.to_bytes().unwrap()).unwrap()));
+        claims.put_back();
+    }
+
     #[test]
     fn the_sentence_names_the_binary_the_date_and_the_rest() {
         assert_eq!(sentence("app", "2026-10-15", 0), "Arkos IDE ran into an error on 2026-10-15.");
@@ -848,7 +891,7 @@ mod tests {
         let page = include_str!("../../../docs/telemetry.md").split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(page.contains(&format!("The crash dialog's **{SHOW_REPORT}** shows the exact bytes")));
         assert!(page.contains("shown under Reports in Settings"));
-        assert!(!SHOW_REPORT.contains('\u{2014}') && !sentence("app", "x", 1).contains("crashed"));
+        assert!(!sentence("app", "x", 1).contains("crashed"), "the daemon recovers from some panics");
     }
 
     #[test]

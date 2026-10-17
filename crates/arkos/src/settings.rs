@@ -351,15 +351,24 @@ fn shown_mode(shown: &Shown) -> Mode {
 
 /// The session the daemon sealed last, `last-session.json` in the telemetry folder `dir`, when
 /// there is one. Only a plain file counts: a folder or a link in its place is not the daemon's.
-/// The Reports list's lines: each crash report by date, newest first, with its `inc` and what
-/// became of it (`crash_dialog::reports`).
-fn report_lines(dir: &Path) -> Vec<(String, String)> {
-    crate::crash_dialog::reports(dir).into_iter().map(|r| (format!("{}  {}", r.date, r.inc), r.status.to_string())).collect()
-}
-
 fn last_report(dir: &Path) -> Option<PathBuf> {
     let file = dir.join(telemetry_cli::LAST_SESSION);
     file.symlink_metadata().is_ok_and(|m| m.is_file()).then_some(file)
+}
+
+/// One line of the Reports list: the label it shows ("date  inc"), the `inc` a click copies,
+/// and what became of the report.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ReportLine {
+    label: String,
+    inc: String,
+    status: &'static str,
+}
+
+/// The Reports list's lines: each crash report by date, newest first, with its `inc` and what
+/// became of it (`crash_dialog::reports`).
+fn report_lines(dir: &Path) -> Vec<ReportLine> {
+    crate::crash_dialog::reports(dir).into_iter().map(|r| ReportLine { label: format!("{}  {}", r.date, r.inc), inc: r.inc, status: r.status }).collect()
 }
 
 impl SettingsWindow {
@@ -741,8 +750,7 @@ impl SettingsWindow {
         if lines.is_empty() {
             out.push(div().text_color(c.dim).text_size(px(12.0)).child("no crash reports").into_any_element());
         }
-        for (ix, (line, status)) in lines.into_iter().enumerate() {
-            let inc = line.rsplit(' ').next().unwrap_or_default().to_string();
+        for (ix, ReportLine { label, inc, status }) in lines.into_iter().enumerate() {
             let row = div()
                 .id(("crash-report", ix))
                 .flex()
@@ -752,7 +760,7 @@ impl SettingsWindow {
                 .cursor_pointer()
                 .hover(move |s| s.bg(c.pill))
                 .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(inc.clone())))
-                .child(line)
+                .child(label)
                 .child(div().text_color(c.dim).child(status));
             out.push(row.into_any_element());
         }
@@ -1053,15 +1061,13 @@ mod tests {
         let page = include_str!("../../../docs/telemetry.md").split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(page.contains(&format!("shown under {REPORTS_ROW} in Settings")));
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(report_lines(dir.path()), Vec::<(String, String)>::new());
+        assert_eq!(report_lines(dir.path()), Vec::new());
+        let line = |date: &str, inc: &str, status| ReportLine { label: format!("{date}  {inc}"), inc: inc.to_string(), status };
         let (a, b) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210");
         std::fs::write(dir.path().join(crate::crash_dialog::RECEIPTS), format!("{a} 2026-10-01 queued\n{b} 2026-10-02 declined\n")).unwrap();
-        assert_eq!(report_lines(dir.path()), vec![
-            (format!("2026-10-02  {b}"), "declined".to_string()),
-            (format!("2026-10-01  {a}"), "sent".to_string()),
-        ]);
+        assert_eq!(report_lines(dir.path()), vec![line("2026-10-02", b, "declined"), line("2026-10-01", a, "sent")]);
         std::fs::create_dir_all(dir.path().join("queue")).unwrap();
         std::fs::write(dir.path().join("queue").join(format!("crash-{a}.json")), "{}").unwrap();
-        assert_eq!(report_lines(dir.path())[1], (format!("2026-10-01  {a}"), "queued".to_string()));
+        assert_eq!(report_lines(dir.path())[1], line("2026-10-01", a, "queued"));
     }
 }
