@@ -15,16 +15,16 @@ use std::time::{Duration, Instant, SystemTime};
 /// Declares the values one `d` key may take: the enum, its wire spelling and every variant in
 /// `ALL`, all from the one list, so the list a test walks cannot miss a variant.
 macro_rules! values {
-    ($(#[$meta:meta])* $name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
+    ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident => $wire:literal),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
         pub enum $name {
-            $($variant),+
+            $($(#[$vmeta])* $variant),+
         }
 
         impl $name {
             /// Every value, in the allowlist's order.
-            #[allow(dead_code)]
+            #[cfg(test)]
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
 
             /// The value as the journal spells it.
@@ -39,7 +39,15 @@ macro_rules! values {
 
 values! {
     /// How this process started.
-    Launch { Normal => "normal", Relaunch => "relaunch", Updated => "updated", Recovered => "recovered" }
+    Launch {
+        Normal => "normal",
+        Relaunch => "relaunch",
+        Updated => "updated",
+        // No call site yet: the daemon starts every window it launches the same way, so a window
+        // cannot tell a recovery from a relaunch.
+        #[allow(dead_code)]
+        Recovered => "recovered",
+    }
 }
 values! {
     /// What a tab shows.
@@ -51,7 +59,18 @@ values! {
 }
 values! {
     /// What kind of file the viewer showed.
-    Format { Markdown => "markdown", Code => "code", Plain => "plain", Image => "image", Video => "video", Binary => "binary", TooLarge => "too_large" }
+    Format {
+        Markdown => "markdown",
+        Code => "code",
+        Plain => "plain",
+        // No call site yet: an image or a video opened as a file is shown as a binary.
+        #[allow(dead_code)]
+        Image => "image",
+        #[allow(dead_code)]
+        Video => "video",
+        Binary => "binary",
+        TooLarge => "too_large",
+    }
 }
 values! {
     /// Whether the viewer showed a file rendered or as its text.
@@ -83,7 +102,14 @@ values! {
 }
 values! {
     /// A Help surface.
-    Help { Keybindings => "keybindings", Documentation => "documentation", About => "about", Telemetry => "telemetry" }
+    Help {
+        Keybindings => "keybindings",
+        Documentation => "documentation",
+        About => "about",
+        // No call site yet: the disclosure comes with the Help menu's telemetry item.
+        #[allow(dead_code)]
+        Telemetry => "telemetry",
+    }
 }
 values! {
     /// What foreground time is counted against.
@@ -129,6 +155,9 @@ pub struct Recorder {
     waiting: HashSet<u64>,
     /// `window_close` is written: every quit path asks, and the first one writes it.
     closed: bool,
+    /// The config did not load at launch: usage stays `Off` for the whole run, whatever a later
+    /// config says, until the next launch.
+    pinned_off: bool,
 }
 
 /// The focus clock: what the project window and the Settings window show, since when, and the
@@ -156,14 +185,23 @@ impl Recorder {
     /// A recorder for this process, with a journal opened under a fresh id unless usage is `Off`.
     pub fn new(dir: &Path, env: Envelope, allow: Allowlist, usage: Usage, now: Now) -> Recorder {
         let focus = Focus { project: None, settings: false, since: now.at, carry: BTreeMap::new() };
-        let mut r = Recorder { dir: dir.to_path_buf(), env, allow, usage, sid: None, journal: None, focus, md: BTreeSet::new(), agents: HashSet::new(), waiting: HashSet::new(), closed: false };
+        let mut r = Recorder { dir: dir.to_path_buf(), env, allow, usage, sid: None, journal: None, focus, md: BTreeSet::new(), agents: HashSet::new(), waiting: HashSet::new(), closed: false, pinned_off: false };
         if usage != Usage::Off {
             r.start(now);
         }
         r
     }
 
+    /// A recorder for a run whose config did not load at launch: no journal, now or later in the
+    /// run (a config error means telemetry `Off` for that run, never the defaults).
+    pub fn after_config_error(dir: &Path, env: Envelope, allow: Allowlist, now: Now) -> Recorder {
+        let mut r = Recorder::new(dir, env, allow, Usage::Off, now);
+        r.pinned_off = true;
+        r
+    }
+
     /// The session id the daemon is told, while a journal is open.
+    #[cfg(test)]
     pub fn sid(&self) -> Option<&str> {
         self.sid.as_deref()
     }
@@ -205,6 +243,9 @@ impl Recorder {
     /// running journal; `Local` after `Off` starts one. Returns the new session id the window
     /// must send, when there is one.
     pub fn set_usage(&mut self, usage: Usage, now: Now) -> Option<String> {
+        if self.pinned_off {
+            return None;
+        }
         let old = std::mem::replace(&mut self.usage, usage);
         match (old, usage) {
             (old, new) if old == new => None,
@@ -222,9 +263,18 @@ impl Recorder {
         }
     }
 
-    /// The session id a connection says after its Hello: the running one while its journal is
-    /// there, else a fresh journal's. The daemon seals a window's journal when its socket drops
-    /// (a restart, a stalled window dropped), and that file must not be written again.
+    /// The window's socket to the daemon dropped. The daemon seals the journal as `lost` (a
+    /// restart, an upgrade, a stalled window dropped), so the window always starts a fresh one
+    /// under a new id and leaves the old file to the daemon; the reconnect says the new id.
+    pub fn socket_lost(&mut self, now: Now) {
+        if self.usage != Usage::Off {
+            self.start(now);
+        }
+    }
+
+    /// The session id a connection says after its Hello: the running one, so every attempt of
+    /// the first connect keeps the launch's. Should its journal be gone all the same (sealed by
+    /// the daemon), a fresh one's: that file must not be written again.
     pub fn connect_sid(&mut self, now: Now) -> Option<String> {
         if self.usage == Usage::Off {
             return None;
@@ -237,9 +287,11 @@ impl Recorder {
 
     /// A config the window applied: the usage it gives (the opt-in, `set_usage`, comes first, so
     /// a new journal starts with it), a `settings` event per key changed and a `theme` event per
-    /// theme chosen. Returns the new session id to send, when there is one.
-    pub fn config_changed(&mut self, old: &Config, new: &Config, usage: Usage, now: Now) -> Option<String> {
-        let sid = self.set_usage(usage, now);
+    /// theme chosen. `Some` when the session id changed: the new journal's for the window to
+    /// send, or `None` once usage is off and no journal is kept.
+    pub fn config_changed(&mut self, old: &Config, new: &Config, usage: Usage, now: Now) -> Option<Option<String>> {
+        let before = self.sid.clone();
+        self.set_usage(usage, now);
         for key in changed_keys(old, new) {
             self.record(events::settings(&key), now);
         }
@@ -248,7 +300,7 @@ impl Recorder {
                 self.theme(is_builtin(after), now);
             }
         }
-        sid
+        (self.sid != before).then(|| self.sid.clone())
     }
 
     /// Writes one event; the journal refuses and counts what the allowlist does not list, and a
@@ -545,19 +597,19 @@ fn changed_keys_of(old: &toml::Table, new: &toml::Table) -> Vec<String> {
 }
 
 /// The format the viewer showed a file in, from what its load produced: markdown by its name,
-/// binaries and files too large to read as such, text shown without colours (`plain`, for its
-/// size or a long line) or named as text (`.txt`, `.text`, `.log`, no extension) as plain, any
-/// other text as code. `None` for a file that could not be read: nothing was shown. An image or
-/// a video opened as a file is a binary; the two formats name what the rendered markdown shows.
-pub fn format_of(content: &Content, plain: bool, path: &Path) -> Option<Format> {
-    let text_name = || path.extension().and_then(|e| e.to_str()).is_none_or(|e| ["txt", "text", "log"].contains(&e.to_ascii_lowercase().as_str()));
+/// binaries and files too large to read as such, text a grammar other than Plain Text coloured
+/// (`coloured`, the highlighter's own rule) as code, other text, and text shown without colours
+/// for its size or a long line (`plain`), as plain. `None` for a file that could not be read:
+/// nothing was shown. An image or a video opened as a file is a binary; the two formats name
+/// what the rendered markdown shows.
+pub fn format_of(content: &Content, plain: bool, coloured: bool, path: &Path) -> Option<Format> {
     Some(match content {
         Content::Unreadable(_) => return None,
         Content::TooLarge(_) => Format::TooLarge,
         Content::Binary => Format::Binary,
         Content::Text { .. } if crate::viewer::is_markdown(path) => Format::Markdown,
-        Content::Text { .. } if plain || text_name() => Format::Plain,
-        Content::Text { .. } => Format::Code,
+        Content::Text { .. } if coloured && !plain => Format::Code,
+        Content::Text { .. } => Format::Plain,
     })
 }
 
@@ -624,20 +676,29 @@ fn with(f: impl FnOnce(&mut Recorder, Now)) {
     }
 }
 
-/// Sets this process's recorder up under the usage its config and environment give, with a
-/// journal unless that is `Off`, and records the launch. Called once in `main`, before the first
-/// connect, which says the session id it made.
-pub fn init(usage: Usage, how: Launch) {
+/// Sets this process's recorder up under the usage its config (`Err` when it did not load) and
+/// the environment give, with a journal unless that is `Off`, and records the launch. Called
+/// once in `main`, before the first connect, which says the session id it made.
+pub fn init(config: Result<&::telemetry::TelemetryConfig, ()>, how: Launch) {
     let now = Now::system();
-    let mut r = Recorder::new(&crate::paths::telemetry_dir(), ::telemetry::envelope(::telemetry::Bin::App), ::telemetry::allowlist().clone(), usage, now);
+    let (dir, env, allow) = (crate::paths::telemetry_dir(), ::telemetry::envelope(::telemetry::Bin::App), ::telemetry::allowlist().clone());
+    let mut r = match config {
+        Ok(config) => Recorder::new(&dir, env, allow, usage_of(Ok(config)), now),
+        Err(()) => Recorder::after_config_error(&dir, env, allow, now),
+    };
     r.launch(how, now);
     *RECORDER.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(r);
 }
 
 /// The usage `config` gives with the environment's say, for the app (a person's, so
 /// interactive).
-pub fn usage_of(config: Result<&::telemetry::TelemetryConfig, ()>) -> Usage {
+fn usage_of(config: Result<&::telemetry::TelemetryConfig, ()>) -> Usage {
     ::telemetry::mode_for(config, true).usage
+}
+
+/// The window's socket to the daemon dropped (`Recorder::socket_lost`).
+pub fn socket_lost() {
+    with(|r, now| r.socket_lost(now));
 }
 
 /// The session id a new connection says after its Hello (`Recorder::connect_sid`). Every connect
@@ -648,22 +709,22 @@ pub fn connect_sid() -> Option<String> {
     sid
 }
 
-/// A config the window applied (`Recorder::config_changed`). `Some` when the session id changed:
-/// the new journal's for the window to send, or `None` once usage is off and no journal is kept.
+/// A config the window applied (`Recorder::config_changed`).
 pub fn config_changed(old: &Config, new: &Config) -> Option<Option<String>> {
     let usage = usage_of(Ok(&new.telemetry));
     let mut changed = None;
-    with(|r, now| {
-        let before = r.sid().map(str::to_string);
-        r.config_changed(old, new, usage, now);
-        changed = (r.sid() != before.as_deref()).then(|| r.sid().map(str::to_string));
-    });
+    with(|r, now| changed = r.config_changed(old, new, usage, now));
     changed
 }
 
-/// The project window's focus: the focused pane's active tab while it is the key window.
-pub fn window_focus(tree: &Tree, active: bool) {
-    let surface = active.then(|| tree.pane(tree.focused).and_then(|p| p.tabs.get(p.active)).map(Surface::of)).flatten();
+/// What the project window shows for the focus clock: the focused pane's active tab while it is
+/// the key window.
+pub fn surface_of(tree: &Tree, active: bool) -> Option<Surface> {
+    active.then(|| tree.pane(tree.focused).and_then(|p| p.tabs.get(p.active)).map(Surface::of)).flatten()
+}
+
+/// The project window's focus changed (`surface_of`).
+pub fn window_focus(surface: Option<Surface>) {
     with(|r, now| r.project_focus(surface, now));
 }
 
@@ -695,16 +756,36 @@ pub fn window_open() {
 /// through the same call as the file tree.
 #[must_use]
 pub fn opened_via(how: Opened) -> Via {
-    Via(VIA.with(|via| via.get().is_none().then(|| via.set(Some(how))).is_some()))
+    VIA.with(|via| match via.get() {
+        Some(_) => Via(None),
+        None => {
+            via.set(Some(how));
+            Via(Some(None))
+        }
+    })
 }
 
-/// Ends what `opened_via` said when it was the one that said it.
-pub struct Via(bool);
+/// Says again the origin a prompt or a picker kept from when it opened (`current_via`), over
+/// whatever runs its submit (the palette's own list, a key in the prompt).
+#[must_use]
+pub fn resumed_via(how: Opened) -> Via {
+    VIA.with(|via| Via(Some(via.replace(Some(how)))))
+}
+
+/// How a tab opened now would be opened: what a caller up the stack said, else a click. A prompt
+/// or a picker keeps it when it opens.
+pub fn current_via() -> Opened {
+    VIA.with(|via| via.get()).unwrap_or(Opened::Click)
+}
+
+/// Puts back, when it goes, what was said before the guard said its own (`None` when it said
+/// nothing).
+pub struct Via(Option<Option<Opened>>);
 
 impl Drop for Via {
     fn drop(&mut self) {
-        if self.0 {
-            VIA.with(|via| via.set(None));
+        if let Some(before) = self.0 {
+            VIA.with(|via| via.set(before));
         }
     }
 }
@@ -730,8 +811,8 @@ pub fn pane_close(tab: &Tab) {
 
 /// The viewer's first load of a file landed: its format, and whether a markdown file is shown
 /// rendered.
-pub fn viewed(content: &Content, plain: bool, path: &Path, mode: crate::tree::ViewMode) {
-    let Some(format) = format_of(content, plain, path) else { return };
+pub fn viewed(content: &Content, plain: bool, coloured: bool, path: &Path, mode: crate::tree::ViewMode) {
+    let Some(format) = format_of(content, plain, coloured, path) else { return };
     let shown = if format == Format::Markdown && mode == crate::tree::ViewMode::Rendered { Shown::Rendered } else { Shown::Raw };
     with(|r, now| r.view(format, shown, now));
 }
@@ -1067,7 +1148,7 @@ mod tests {
             crate::config::WideTables::Scroll => crate::config::WideTables::Wrap,
         };
         new.theme.dark = "my-midnight".into();
-        assert_eq!(r.config_changed(&old, &new, Usage::Local, at(base, 1)), None, "the usage did not change");
+        assert_eq!(r.config_changed(&old, &new, Usage::Local, at(base, 1)), None, "the usage did not change, nor the sid");
         let mut newer = new.clone();
         newer.theme.light = "peach-light".into();
         r.config_changed(&new, &newer, Usage::Local, at(base, 2));
@@ -1101,7 +1182,7 @@ mod tests {
         let old = Config::default();
         let mut on = old.clone();
         on.telemetry.usage = Usage::On;
-        let new_sid = r.config_changed(&old, &on, Usage::On, at(base, 2)).expect("a fresh sid to send");
+        let new_sid = r.config_changed(&old, &on, Usage::On, at(base, 2)).expect("the sid changed").expect("a fresh sid to send");
         assert_ne!(new_sid, old_sid);
         assert!(::telemetry::is_sid(&new_sid));
         assert_eq!(r.sid(), Some(new_sid.as_str()));
@@ -1113,13 +1194,18 @@ mod tests {
         r.md(MdFeature::Mermaid, at(base, 3));
         let events = events_in(dir.path(), &new_sid);
         assert_eq!(events, [("settings".to_string(), serde_json::json!({ "key": "telemetry.usage" })), ("md".to_string(), serde_json::json!({ "feature": "mermaid" }))]);
-        // On to local keeps the journal; off deletes it; local again starts another.
-        assert_eq!(r.set_usage(Usage::Local, at(base, 4)), None);
+        // On to local keeps the journal and its id; off deletes it and names none; local again
+        // starts another under a new id.
+        let mut local = on.clone();
+        local.telemetry.usage = Usage::Local;
+        assert_eq!(r.config_changed(&on, &local, Usage::Local, at(base, 4)), None);
         assert!(journal_path(dir.path(), &new_sid).exists());
-        assert_eq!(r.set_usage(Usage::Off, at(base, 5)), None);
+        let mut off = local.clone();
+        off.telemetry.usage = Usage::Off;
+        assert_eq!(r.config_changed(&local, &off, Usage::Off, at(base, 5)), Some(None), "the window names no session");
         assert!(!journal_path(dir.path(), &new_sid).exists(), "off records nothing, and keeps nothing it recorded");
         assert_eq!(r.sid(), None);
-        let third = r.set_usage(Usage::Local, at(base, 6)).expect("a journal again");
+        let third = r.config_changed(&off, &local, Usage::Local, at(base, 6)).expect("the sid changed").expect("a journal again");
         assert!(journal_path(dir.path(), &third).exists());
         assert_ne!(third, new_sid);
     }
@@ -1143,18 +1229,102 @@ mod tests {
         assert_eq!(events_in(dir.path(), &second), [("md".to_string(), serde_json::json!({ "feature": "details" }))]);
     }
 
+    /// A lost socket always starts a fresh journal (the daemon seals the old one as `lost`), even
+    /// while the old file is still there; the reconnect then says the new id.
+    #[test]
+    fn a_lost_socket_starts_a_fresh_journal_while_the_old_file_is_still_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::Local, at(base, 0));
+        let first = r.sid().unwrap().to_string();
+        r.md(MdFeature::Details, at(base, 1));
+        r.socket_lost(at(base, 2));
+        let second = r.sid().expect("a fresh journal").to_string();
+        assert_ne!(second, first);
+        assert!(journal_path(dir.path(), &first).exists(), "the old file is the daemon's to seal");
+        assert!(journal_path(dir.path(), &second).exists());
+        assert_eq!(r.connect_sid(at(base, 3)).as_deref(), Some(second.as_str()), "each attempt says the new id");
+        assert_eq!(r.connect_sid(at(base, 4)).as_deref(), Some(second.as_str()));
+        r.md(MdFeature::Details, at(base, 5));
+        assert_eq!(events_in(dir.path(), &second), [("md".to_string(), serde_json::json!({ "feature": "details" }))]);
+        assert_eq!(events_in(dir.path(), &first).len(), 1, "nothing more goes to the old one");
+        // Under off a lost socket opens nothing.
+        let off = tempfile::tempdir().unwrap();
+        let mut r = recorder(off.path(), Usage::Off, at(base, 0));
+        r.socket_lost(at(base, 1));
+        assert_eq!(r.sid(), None);
+        assert!(!off.path().join("journal").exists());
+    }
+
+    /// A config error at launch keeps usage off for the whole run: a config fixed meanwhile opens
+    /// no journal until the next launch.
+    #[test]
+    fn a_config_error_at_launch_keeps_usage_off_for_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = Recorder::after_config_error(dir.path(), env(), ::telemetry::allowlist().clone(), at(base, 0));
+        assert_eq!(r.sid(), None);
+        let old = Config::default();
+        let mut on = old.clone();
+        on.telemetry.usage = Usage::On;
+        assert_eq!(r.config_changed(&old, &on, Usage::On, at(base, 1)), None, "no journal, no sid");
+        assert_eq!(r.set_usage(Usage::Local, at(base, 2)), None);
+        assert_eq!(r.connect_sid(at(base, 3)), None);
+        r.socket_lost(at(base, 4));
+        r.launch(Launch::Normal, at(base, 5));
+        assert_eq!(r.sid(), None);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing written at all");
+    }
+
+    /// A prompt or a picker keeps the origin it opened under, and its submit says it again over
+    /// whatever runs the submit.
+    #[test]
+    fn a_prompt_keeps_the_origin_it_opened_under() {
+        assert_eq!(current_via(), Opened::Click, "no caller said: a click");
+        let kept = {
+            let _key = opened_via(Opened::Key);
+            assert_eq!(current_via(), Opened::Key);
+            let _inner = opened_via(Opened::Palette);
+            assert_eq!(current_via(), Opened::Key, "the outermost caller says how");
+            current_via()
+        };
+        assert_eq!(current_via(), Opened::Click, "said only while the guard lives");
+        {
+            let _palette = opened_via(Opened::Palette);
+            let _resumed = resumed_via(kept);
+            assert_eq!(current_via(), Opened::Key, "the kept origin wins over the submit's own");
+        }
+        assert_eq!(current_via(), Opened::Click);
+    }
+
+    /// The highlighter's own rule: a grammar other than Plain Text makes a file code.
+    #[test]
+    fn a_makefile_is_code_and_an_unknown_extension_is_plain() {
+        let theme = crate::theme::builtin("navy").unwrap();
+        let h = crate::highlight::Highlighter::new(&theme.viewer, theme.chrome.text);
+        let dir = tempfile::tempdir().unwrap();
+        for (name, want) in [("Makefile", Format::Code), ("main.rs", Format::Code), ("notes.unknownext", Format::Plain), ("notes.txt", Format::Plain)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "all:\n\techo hi\n").unwrap();
+            let loaded = crate::viewer::read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
+            assert_eq!(format_of(&loaded.content, loaded.plain.is_some(), loaded.coloured, &path), Some(want), "{name}");
+        }
+        // Before the grammars load nothing is coloured.
+        let path = dir.path().join("Makefile");
+        assert!(!crate::viewer::read_file(&path, None, None, 1 << 20, false).unwrap().coloured);
+    }
+
     #[test]
     fn the_viewer_names_the_format_it_showed() {
         use crate::viewer::Content;
         let text = Content::Text { lines: std::sync::Arc::new(vec!["fn main() {}".into()]), spans: Vec::new() };
-        assert_eq!(format_of(&text, false, Path::new("/p/README.md")), Some(Format::Markdown));
-        assert_eq!(format_of(&text, false, Path::new("/p/main.rs")), Some(Format::Code));
-        assert_eq!(format_of(&text, true, Path::new("/p/main.rs")), Some(Format::Plain), "shown without colours");
-        assert_eq!(format_of(&text, false, Path::new("/p/notes.txt")), Some(Format::Plain));
-        assert_eq!(format_of(&text, false, Path::new("/p/LICENSE")), Some(Format::Plain));
-        assert_eq!(format_of(&Content::Binary, false, Path::new("/p/logo.png")), Some(Format::Binary));
-        assert_eq!(format_of(&Content::TooLarge(1 << 30), false, Path::new("/p/dump.sql")), Some(Format::TooLarge));
-        assert_eq!(format_of(&Content::Unreadable("denied".into()), false, Path::new("/p/x")), None, "nothing was shown");
+        assert_eq!(format_of(&text, false, false, Path::new("/p/README.md")), Some(Format::Markdown));
+        assert_eq!(format_of(&text, false, true, Path::new("/p/main.rs")), Some(Format::Code));
+        assert_eq!(format_of(&text, true, true, Path::new("/p/main.rs")), Some(Format::Plain), "shown without colours");
+        assert_eq!(format_of(&text, false, false, Path::new("/p/notes.txt")), Some(Format::Plain), "no grammar but Plain Text");
+        assert_eq!(format_of(&Content::Binary, false, false, Path::new("/p/logo.png")), Some(Format::Binary));
+        assert_eq!(format_of(&Content::TooLarge(1 << 30), false, false, Path::new("/p/dump.sql")), Some(Format::TooLarge));
+        assert_eq!(format_of(&Content::Unreadable("denied".into()), false, false, Path::new("/p/x")), None, "nothing was shown");
     }
 
     #[test]

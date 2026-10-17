@@ -490,6 +490,8 @@ pub struct Loaded {
     /// The document's top-level blocks, split on the background thread with it; empty without a
     /// document.
     pub blocks: Vec<md_blocks::Block>,
+    /// A grammar other than Plain Text coloured the text (`Highlighter::syntax_for`).
+    pub coloured: bool,
 }
 
 pub struct Viewer {
@@ -791,7 +793,7 @@ impl Viewer {
 
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         if !self.loaded {
-            crate::telemetry::viewed(&loaded.content, loaded.plain.is_some(), &self.path, self.mode);
+            crate::telemetry::viewed(&loaded.content, loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
         }
         self.content = loaded.content;
         self.fingerprint = loaded.fingerprint;
@@ -2016,6 +2018,7 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
     };
     let mut doc = None;
     let mut read_only = None;
+    let mut coloured = false;
     let (content, why_plain) = match read_capped(path) {
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
@@ -2039,6 +2042,7 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
                 match highlighter {
                     _ if lines.iter().any(|l| l.len() > MAX_LINE_BYTES) => (plain(lines), Some(Plain::LongLine)),
                     Some(h) => {
+                        coloured = h.syntax_for(path, &lines).is_some_and(|s| s.name != "Plain Text");
                         let spans = h.highlight(path, &lines);
                         (Content::Text { lines: Arc::new(lines), spans }, None)
                     }
@@ -2056,7 +2060,7 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         _ => None,
     };
     let blocks = doc.as_ref().map_or_else(Vec::new, |d| md_blocks::split(d.lines()));
-    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks })
+    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured })
 }
 
 /// The file's changes against its worktree's HEAD, or `None` when it has no base or no changes.

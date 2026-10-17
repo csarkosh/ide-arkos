@@ -201,6 +201,8 @@ pub struct UrlPrompt {
     pub edit: LineEdit,
     pub app_mode: bool,
     pub target: Option<TabId>,
+    /// How the tab it opens is opened: the palette or the key that opened the prompt.
+    pub via: crate::telemetry::Opened,
 }
 
 /// What a key in the URL prompt leads to.
@@ -214,7 +216,7 @@ pub enum UrlStep {
 
 impl UrlPrompt {
     pub fn new(app_mode: bool, target: Option<TabId>) -> Self {
-        UrlPrompt { edit: LineEdit::new(), app_mode, target }
+        UrlPrompt { edit: LineEdit::new(), app_mode, target, via: crate::telemetry::current_via() }
     }
 
     /// One key; `configured` is `[browser] url`, taken when the field is empty.

@@ -117,6 +117,7 @@ pub fn start(root: Entity<Root>, socket: PathBuf, daemon_exe: PathBuf, daemon_ar
                 return;
             }
             let lost_at = Instant::now();
+            crate::telemetry::socket_lost();
             let mut policy = Reconnect::new(lost_at);
             let next = loop {
                 cx.background_executor().timer(policy.next_delay()).await;

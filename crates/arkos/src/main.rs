@@ -398,6 +398,11 @@ pub struct Root {
     /// When this frame is drawn: every transition in one render reads the same instant, and
     /// `any_motion` asks for the next frame with it.
     pub frame_now: Instant,
+    /// What the focus clock was last told the window shows (`note_focus`).
+    pub focus_surface: Option<telemetry::Surface>,
+    /// How the tab a docked window may need is opened: the palette or the key that opened the
+    /// dock list, kept for its pick.
+    pub dock_via: telemetry::Opened,
     /// The user is closing the window: the Quit action, or the red button
     /// (`windowShouldClose:`). Never set by macOS's own terminate or the update relaunch.
     pub user_closing: bool,
@@ -533,7 +538,6 @@ impl Root {
         };
         // No saved layout: the empty screen, not a shell nobody asked for.
         let tree = saved.map(|ws| ws.tree).unwrap_or_else(Tree::empty);
-        telemetry::restored(&tree);
         let mut sessions = SessionManager::new(client.clone(), Some(client), project.clone());
         let t = &config.terminal;
         sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
@@ -654,6 +658,8 @@ impl Root {
             frame_now: Instant::now(),
             user_closing: false,
             said_goodbye: false,
+            focus_surface: None,
+            dock_via: telemetry::Opened::Click,
             last_quit_attempt: None,
         }
     }
@@ -1414,6 +1420,15 @@ impl Root {
         }
     }
 
+    /// Tells the focus clock what the window shows, when that changed since it was last told.
+    fn note_focus(&mut self) {
+        let surface = telemetry::surface_of(&self.tree, self.window_active);
+        if surface != self.focus_surface {
+            self.focus_surface = surface;
+            telemetry::window_focus(surface);
+        }
+    }
+
     /// Focuses a pane, exiting another pane's maximize so the focused pane is on screen.
     pub fn focus_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
@@ -1961,13 +1976,14 @@ impl Root {
             }
             return;
         }
-        let (app_mode, target) = (p.app_mode, p.target);
+        let (app_mode, target, via) = (p.app_mode, p.target, p.via);
         match p.key(ks, &configured) {
             pane_view::UrlStep::Stay => {}
             pane_view::UrlStep::Cancel => {
                 self.url_prompt.hide(Instant::now());
             }
             pane_view::UrlStep::Open(url) => {
+                let _via = telemetry::resumed_via(via);
                 self.url_prompt.hide(Instant::now());
                 match target.and_then(|t| self.tree.locate(t)) {
                     Some((pane, idx)) => {
@@ -2315,6 +2331,7 @@ impl Root {
             })
             .collect();
         self.dock_choices = free.into_iter().map(|(w, _)| w).collect();
+        self.dock_via = telemetry::current_via();
         self.palette.show(command_palette::Palette::list(items, "pick a Chrome window to dock", cx.focus_handle()), Instant::now());
         cx.notify();
     }
@@ -2728,6 +2745,7 @@ impl Root {
             NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
             DockChromeWindow => self.open_dock_list(cx),
             DockChromeWindowAt(i) => {
+                let _via = telemetry::resumed_via(self.dock_via);
                 let Some(win) = self.dock_choices.get(i).cloned() else { return };
                 if let Some(tab) = self.dock_target(cx) {
                     self.dock_window_into(tab, win, cx);
@@ -3043,8 +3061,8 @@ impl Root {
         let apply = staged.is_some() && last_error.is_none();
         if let Some(e) = &last_error {
             if requested || self.update_error_noticed.as_ref() != Some(e) {
-                // The daemon's own words for a release it put back (`updates::apply`).
-                if e.contains(" rolled back: ") {
+                // The daemon's own words for a release it put back (`updates::apply`), once.
+                if e.contains(" rolled back: ") && self.update_error_noticed.as_ref() != Some(e) {
                     telemetry::update(telemetry::UpdateStep::RolledBack);
                 }
                 self.update_error_noticed = Some(e.clone());
@@ -3468,7 +3486,7 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
         self.window_active = window.is_window_active();
-        telemetry::window_focus(&self.tree, self.window_active);
+        self.note_focus();
         let now = Instant::now();
         let last_frame = std::mem::replace(&mut self.frame_now, now);
         self.settle(now, last_frame);
@@ -3873,7 +3891,7 @@ fn main() {
     // The usage journal opens before the first connect, which names its session; a config error
     // records nothing this run.
     telemetry::init(
-        telemetry::usage_of(if config_error.is_some() { Err(()) } else { Ok(&config.telemetry) }),
+        if config_error.is_some() { Err(()) } else { Ok(&config.telemetry) },
         if updated.is_some() { telemetry::Launch::Updated } else if relaunched { telemetry::Launch::Relaunch } else { telemetry::Launch::Normal },
     );
     let yes = |b: bool| if b { "yes" } else { "no" };
@@ -4194,7 +4212,7 @@ fn open_project_window(
                         // next activation is seen as one.
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
-                            telemetry::window_focus(&root.tree, root.window_active);
+                            root.note_focus();
                             if !root.window_active && root.close_popovers(Instant::now()) {
                                 cx.notify();
                             }
@@ -4239,6 +4257,7 @@ fn open_project_window(
             .expect("open window");
         let root = window.entity(cx).expect("root entity");
         telemetry::window_open();
+        telemetry::restored(&root.read(cx).tree);
         // About and Settings take their details from the Root from now on.
         aux::set_root(cx, root.downgrade());
         // The caches' old entries go once a launch, on a thread of their own, now the window is up.

@@ -68,11 +68,16 @@ impl Highlighter {
     /// no grammar claims gets one plain span per line. Reads nothing from disk: the grammar comes
     /// from the file name, then its extension, then the first line already loaded.
     pub fn highlight(&self, path: &Path, lines: &[String]) -> Vec<Vec<Span>> {
+        self.highlight_with(self.syntax_for(path, lines), lines)
+    }
+
+    /// The grammar `highlight` colours a file with: from the file name, then its extension, then
+    /// the first line; `None` when none claims it.
+    pub fn syntax_for(&self, path: &Path, lines: &[String]) -> Option<&syntect::parsing::SyntaxReference> {
         let by_ext = |s: Option<&std::ffi::OsStr>| s.and_then(|s| s.to_str()).and_then(|s| self.syntaxes.find_syntax_by_extension(s));
-        let syntax = by_ext(path.file_name())
+        by_ext(path.file_name())
             .or_else(|| by_ext(path.extension()))
-            .or_else(|| lines.first().and_then(|l| self.syntaxes.find_syntax_by_first_line(l)));
-        self.highlight_with(syntax, lines)
+            .or_else(|| lines.first().and_then(|l| self.syntaxes.find_syntax_by_first_line(l)))
     }
 
     /// `highlight` for a fenced code block: the grammar comes from the info string's first word
@@ -178,6 +183,17 @@ mod tests {
         let other = ViewerColors { keyword: rgb(0x123456), ..colors() };
         let spans = h.with_theme(&other, rgb(0xd6dae0)).highlight(Path::new("/p/main.rs"), &["fn main() {}".to_string()]);
         assert_eq!(spans[0][0].color, rgb(0x123456), "fn takes the new theme's keyword colour");
+    }
+
+    #[test]
+    fn the_grammar_comes_from_the_name_then_the_extension_then_the_first_line() {
+        let h = Highlighter::new(&colors(), rgb(0x010203));
+        let name = |path: &str, first: &str| h.syntax_for(Path::new(path), &[first.to_string()]).map(|s| s.name.clone());
+        assert_eq!(name("/p/Makefile", "all:").as_deref(), Some("Makefile"));
+        assert_eq!(name("/p/main.rs", "fn main() {}").as_deref(), Some("Rust"));
+        assert_eq!(name("/p/notes.txt", "hello").as_deref(), Some("Plain Text"));
+        assert_eq!(name("/p/run", "#!/bin/bash").as_deref(), Some("Bourne Again Shell (bash)"));
+        assert_eq!(name("/p/notes.unknownext", "some text"), None);
     }
 
     #[test]
