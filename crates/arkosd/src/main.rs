@@ -120,10 +120,11 @@ fn main() {
                 assert!(updates::version::parse_semver(&v).is_some(), "--running-version needs <major>.<minor>.<patch>");
                 running_version = Some(v)
             }
-            // The telemetry folder (the state file, and later the journals and the queue).
+            // The telemetry folder: the state file, the windows' journals and the queue.
             "--telemetry-dir" => telemetry_dir = Some(PathBuf::from(args.next().expect("--telemetry-dir needs a path"))),
-            // Test only: where the day's first update check goes instead of the collector. Only
-            // the collector itself or a `file://` folder is taken, so no flag can send it elsewhere.
+            // Test only: where the day's first update check and the queued reports go instead of
+            // the collector. Only the collector itself or a `file://` folder is taken, so no flag
+            // can send either elsewhere (and the reports' curl takes https alone).
             "--telemetry-url" => {
                 let url = args.next().expect("--telemetry-url needs a url");
                 if !telemetry::allowed_url(&url) {

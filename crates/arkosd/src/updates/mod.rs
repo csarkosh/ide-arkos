@@ -254,6 +254,14 @@ pub fn adopt_staged(state: &crate::server::Shared, dir: &Path, floor: &version::
 /// process group, so a grandchild that keeps a pipe open past the child's exit (a staged binary
 /// that forks) is killed with it rather than holding this thread.
 pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> Result<Output, String> {
+    run_bounded_input(cmd, None, timeout)
+}
+
+/// `run_bounded`, with `input` written to the child's stdin when given (the telemetry upload's
+/// body), from a thread of its own so a child that reads slowly or not at all cannot stall this
+/// one. The spawn holds `pty::spawn_lock`, as every process the daemon starts must.
+pub fn run_bounded_input(cmd: &mut Command, input: Option<Vec<u8>>, timeout: Duration) -> Result<Output, String> {
+    use std::io::Write;
     use std::os::unix::process::CommandExt;
     use std::sync::mpsc;
     cmd.env_clear().env("PATH", "/usr/bin:/bin");
@@ -261,7 +269,18 @@ pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> Result<Output, Strin
         cmd.env("HOME", home);
     }
     let deadline = Instant::now() + timeout;
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn().map_err(|e| e.to_string())?;
+    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    let spawned = {
+        let _no_open_pty_inheritable = crate::pty::spawn_lock();
+        cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()
+    };
+    let mut child = spawned.map_err(|e| e.to_string())?;
+    if let (Some(bytes), Some(mut pipe)) = (input, child.stdin.take()) {
+        // A child that exits without reading closes the pipe; the write's error is its answer.
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&bytes);
+        });
+    }
     let group = child.id() as libc::pid_t;
     let timed_out = || {
         // SAFETY: killpg only signals; the group is the child's own, made at spawn.
@@ -320,7 +339,7 @@ mod tests {
         let o = UpdateOptions { running_version: Some("9.9.9".into()), ..UpdateOptions::defaults(socket) };
         assert_eq!(o.args(socket), ["--running-version", "9.9.9"], "a test's running version survives the exec");
         assert_eq!((o.running().major, o.running().minor, o.running().patch), (9, 9, 9));
-        let telemetry = crate::telemetry::Options { dir: PathBuf::from("/t/tel"), url: "file:///t/site".into() };
+        let telemetry = crate::telemetry::Options { dir: PathBuf::from("/t/tel"), url: "file:///t/site".into(), config: PathBuf::from("/t/config.toml") };
         let o = UpdateOptions { telemetry, ..UpdateOptions::defaults(socket) };
         assert_eq!(o.args(socket), ["--telemetry-dir", "/t/tel", "--telemetry-url", "file:///t/site"], "a test's telemetry folder and site survive the exec");
     }

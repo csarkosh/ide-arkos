@@ -47,10 +47,12 @@ pub struct ClientRecord {
     pub protocol: u32,
     /// The window and directory `RelaunchClient` asked for, launched when this client goes.
     pub relaunch: Option<(PathBuf, PathBuf)>,
-    /// The usage session id its `Session` named, whose journal will be sealed when it goes
-    /// (Task 4); None for a client that sent none (a protocol 6 window, a tool, a window keeping
-    /// no journal).
+    /// The usage session id its `Session` named, whose journal is sealed when it goes; None for
+    /// a client that sent none (a protocol 6 window, a tool, a window keeping no journal).
     pub sid: Option<String>,
+    /// How its session ended, as far as it said: `Quit` once its `Goodbye` came. None until then,
+    /// which seals as `Lost` unless the daemon was asked to relaunch it (`telemetry::seal`).
+    pub end: Option<telemetry::visits_app::End>,
 }
 
 /// A tool client's `Customize` waiting for the windows' answers (agent theme spec, section 5).
@@ -274,8 +276,8 @@ pub fn run_resumed(h: Handover, socket: PathBuf, update: crate::updates::UpdateO
     serve(listener, state, opts)
 }
 
-/// The watchdog, the reaper, the flusher, the signal watcher, the update poll and the accept
-/// loop, shared by a fresh start and a resume.
+/// The watchdog, the reaper, the flusher, the signal watcher, the update poll, the telemetry
+/// upload and the accept loop, shared by a fresh start and a resume.
 fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
     crate::watchdog::start(state.clone(), opts.watchdog);
     let u = &opts.update;
@@ -289,6 +291,7 @@ fn serve(listener: UnixListener, state: Shared, opts: Options) -> Result<()> {
         let fetcher = crate::updates::fetch::Fetcher { base: u.url.clone(), curl: u.curl.clone(), user_agent: telemetry.user_agent() };
         crate::updates::poll::start(state.clone(), fetcher, telemetry, u.dir.clone(), keys, u.check_every, u.ditto.clone(), u.running(), u.bundle.clone());
     }
+    crate::telemetry::upload::start(state.clone(), u.telemetry.clone(), u.curl.clone());
     crate::reaper::start(state.clone(), opts.reaper_every, opts.dead_session_ttl);
     let dir = crate::recovery::sessions_dir(&opts.socket);
     let flusher = crate::recovery::start(state.clone(), dir, opts.flush_quiet);
@@ -318,7 +321,7 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
         let sink = ClientSink::new(id, shutdown_stream, opts.client_pending_cap);
         st.clients.insert(
             id,
-            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None, sid: None },
+            ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None, sid: None, end: None },
         );
         (id, sink)
     };
@@ -388,14 +391,15 @@ fn spawn_client(stream: UnixStream, state: Shared, opts: Options) {
                     }
                 }
             }
-            disconnect(&state, client_id, &opts.update.dir);
+            disconnect(&state, client_id, &opts.update);
             sink.close();
         })
         .expect("spawn reader");
 }
 
-fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
-    let (relaunch, ui_exe, ui_cwd, clock) = {
+fn disconnect(state: &Shared, client_id: ClientId, update: &crate::updates::UpdateOptions) {
+    let updates_dir = update.dir.as_path();
+    let (relaunch, ui_exe, ui_cwd, clock, sid, end) = {
         let mut st = state.lock().unwrap();
         if let Some(rec) = st.clients.get_mut(&client_id) {
             rec.connected = false;
@@ -406,8 +410,11 @@ fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
                 }
             }
         }
-        let (relaunch, ui_exe, ui_cwd, ui_pid) = match st.clients.remove(&client_id) {
-            Some(rec) => (rec.relaunch, rec.ui_exe, rec.ui_cwd, rec.ui_pid),
+        let (relaunch, ui_exe, ui_cwd, ui_pid, sid, end) = match st.clients.remove(&client_id) {
+            Some(rec) => {
+                let end = crate::telemetry::seal::end_of(rec.end, rec.relaunch.is_some());
+                (rec.relaunch, rec.ui_exe, rec.ui_cwd, rec.ui_pid, rec.sid, end)
+            }
             None => return,
         };
         // A tool that hung up wants no answer; a window that left will not answer, and a wait
@@ -429,7 +436,7 @@ fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
         }
         // The new window starts now: an applied update's grace counts from here.
         let clock = if relaunch.is_some() { crate::updates::apply::restart_clock(&mut st.update, updates_dir) } else { None };
-        (relaunch, ui_exe, ui_cwd, clock)
+        (relaunch, ui_exe, ui_cwd, clock, sid, end)
     };
     if let Some(line) = clock {
         crate::journal::note(line);
@@ -444,6 +451,11 @@ fn disconnect(state: &Shared, client_id: ClientId, updates_dir: &Path) {
                 }
             }
         }
+    }
+    // After the relaunch, which a person is waiting for: the window's journal becomes a report in
+    // the queue. A client that named no session has nothing to seal.
+    if let Some(sid) = sid {
+        crate::telemetry::seal::window_gone(&update.telemetry.dir, &sid, end, crate::updates::apply::now_unix());
     }
 }
 
@@ -602,11 +614,15 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 st.windows.remove(&cwd);
                 st.manifest_dirty = true;
             }
+            // Only noted: the journal is sealed when the socket closes, as `quit`.
+            if let Some(rec) = st.clients.get_mut(&client_id) {
+                rec.end = Some(telemetry::visits_app::End::Quit);
+            }
             Response::Ok
         }
         // Kept on the record alone: the record leaves the table when the window goes, and the
-        // journal will be sealed from what it held (Task 4). A later one replaces it. An id that
-        // is not hex is refused and never named back, and the record keeps the one it had.
+        // journal is sealed from what it held. A later one replaces it. An id that is not hex is
+        // refused and never named back, and the record keeps the one it had.
         Request::Session { sid } if !telemetry::is_sid(&sid) => Response::Error("invalid session id".into()),
         Request::Session { sid } => {
             if let Some(rec) = state.lock().unwrap().clients.get_mut(&client_id) {
@@ -614,18 +630,11 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             Response::Ok
         }
-        // Until the daemon keeps telemetry state: the config's defaults and an empty queue.
-        Request::TelemetryStatus => Response::TelemetryStatus {
-            usage: "local".into(),
-            crashes: "ask".into(),
-            uploads: false,
-            reason: None,
-            queued: 0,
-            journals: 0,
-            last_check_day: None,
-            sent: 0,
-            rejected: 0,
-        },
+        // The mode read afresh and the folder as it stands; nothing is written.
+        Request::TelemetryStatus => {
+            let t = &opts.update.telemetry;
+            crate::telemetry::status(&t.dir, crate::telemetry::mode_now(&t.config), crate::updates::apply::now_unix())
+        }
         Request::SetAgent { session: sid, agent } => match session(sid) {
             Some(s) => {
                 s.set_agent(agent);
@@ -1003,7 +1012,12 @@ mod tests {
             reaper_every: Duration::from_secs(1),
             dead_session_ttl: Duration::from_secs(60),
             flush_quiet: Duration::from_secs(1),
-            update: crate::updates::UpdateOptions::defaults(&socket),
+            update: crate::updates::UpdateOptions {
+                // Never the developer's config file: the mode reads this one, which no test writes
+                // unless it means to.
+                telemetry: crate::telemetry::Options { config: dir.join("config.toml"), ..crate::telemetry::Options::defaults(&socket) },
+                ..crate::updates::UpdateOptions::defaults(&socket)
+            },
             socket,
         }
     }
@@ -1012,7 +1026,7 @@ mod tests {
     fn add_client(state: &Shared, client: ClientId) -> ClientSink {
         let (a, _b) = UnixStream::pair().unwrap();
         let sink = ClientSink::new(client, a, 1 << 20);
-        let rec = ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None, sid: None };
+        let rec = ClientRecord { tx: sink.clone(), attached: Vec::new(), last_heartbeat: Instant::now(), ui_pid: None, ui_exe: None, ui_cwd: None, connected: true, protocol: 0, relaunch: None, sid: None, end: None };
         state.lock().unwrap().clients.insert(client, rec);
         sink
     }
@@ -1047,27 +1061,93 @@ mod tests {
     }
 
     /// `TelemetryStatus` is not gated on the Hello's protocol: the command line and the doctor
-    /// ask it, and a protocol 6 window that never sends `Session` simply has nothing sealed.
+    /// ask it, and a protocol 6 window that never sends `Session` simply has nothing sealed. It
+    /// answers from the folder and the mode read afresh from the config file.
     #[test]
     fn telemetry_status_answers_whatever_the_protocol() {
         let dir = tempfile::tempdir().unwrap();
         let (state, opts) = (test_state(), test_options(dir.path()));
-        let empty = Response::TelemetryStatus {
-            usage: "local".into(),
-            crashes: "ask".into(),
-            uploads: false,
-            reason: None,
-            queued: 0,
-            journals: 0,
-            last_check_day: None,
-            sent: 0,
-            rejected: 0,
-        };
+        let t = &opts.update.telemetry;
+        let journal = telemetry::visits_app::Journal::open(&t.dir, SID, &crate::telemetry::tests::release_env(), telemetry::allowlist().clone(), now());
+        journal.unwrap();
+        let want = crate::telemetry::status(&t.dir, crate::telemetry::mode_now(&t.config), now());
+        assert!(matches!(&want, Response::TelemetryStatus { journals: 1, queued: 0, uploads: false, reason: Some(r), .. } if r == "source build"), "{want:?}");
         let old = add_client(&state, 1);
         dispatch(&state, 1, &old, 1, hello(6), &opts);
-        assert_eq!(dispatch(&state, 1, &old, 2, Request::TelemetryStatus, &opts), Some(empty.clone()));
+        assert_eq!(dispatch(&state, 1, &old, 2, Request::TelemetryStatus, &opts), Some(want.clone()));
         assert_eq!(state.lock().unwrap().clients[&1].sid, None);
         let tool = add_client(&state, 2);
-        assert_eq!(dispatch(&state, 2, &tool, 1, Request::TelemetryStatus, &opts), Some(empty));
+        assert_eq!(dispatch(&state, 2, &tool, 1, Request::TelemetryStatus, &opts), Some(want));
+    }
+
+    const SID: &str = "0123456789abcdef0123456789abcdef";
+
+    fn now() -> u64 {
+        crate::updates::apply::now_unix()
+    }
+
+    /// A protocol 7 window as client 1 that named `SID`, with its journal open in the telemetry
+    /// folder.
+    fn window_with_journal(state: &Shared, opts: &Options) -> ClientSink {
+        let tx = add_client(state, 1);
+        dispatch(state, 1, &tx, 1, hello(7), opts);
+        assert_eq!(dispatch(state, 1, &tx, 2, Request::Session { sid: SID.into() }, opts), Some(Response::Ok));
+        let dir = &opts.update.telemetry.dir;
+        telemetry::visits_app::Journal::open(dir, SID, &crate::telemetry::tests::release_env(), telemetry::allowlist().clone(), now()).unwrap();
+        tx
+    }
+
+    fn sealed_end(opts: &Options) -> Option<String> {
+        crate::telemetry::seal::tests::sealed_end(&opts.update.telemetry.dir, SID)
+    }
+
+    #[test]
+    fn a_window_that_said_goodbye_is_sealed_as_quit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        let tx = window_with_journal(&state, &opts);
+        assert_eq!(dispatch(&state, 1, &tx, 3, Request::Goodbye, &opts), Some(Response::Ok));
+        assert_eq!(sealed_end(&opts), None, "Goodbye only notes the end; the socket closing seals");
+        disconnect(&state, 1, &opts.update);
+        assert_eq!(sealed_end(&opts).as_deref(), Some("quit"));
+        assert!(state.lock().unwrap().clients.is_empty());
+    }
+
+    /// An update's relaunch closes the old window on purpose: its session ended as a quit.
+    #[test]
+    fn a_window_the_daemon_relaunches_is_sealed_as_quit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        window_with_journal(&state, &opts);
+        // A window that does not exist, so the relaunch launches nothing.
+        let missing = (dir.path().join("missing/arkos"), dir.path().to_path_buf());
+        state.lock().unwrap().clients.get_mut(&1).unwrap().relaunch = Some(missing);
+        disconnect(&state, 1, &opts.update);
+        assert_eq!(sealed_end(&opts).as_deref(), Some("quit"));
+    }
+
+    #[test]
+    fn a_window_whose_socket_dropped_is_sealed_as_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        window_with_journal(&state, &opts);
+        disconnect(&state, 1, &opts.update);
+        assert_eq!(sealed_end(&opts).as_deref(), Some("lost"));
+    }
+
+    /// A client that named no session (a protocol 6 window, a tool) seals nothing, even with a
+    /// journal of someone else's in the folder.
+    #[test]
+    fn a_client_without_a_session_seals_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        let t = &opts.update.telemetry;
+        telemetry::visits_app::Journal::open(&t.dir, SID, &crate::telemetry::tests::release_env(), telemetry::allowlist().clone(), now()).unwrap();
+        let tx = add_client(&state, 1);
+        dispatch(&state, 1, &tx, 1, hello(6), &opts);
+        dispatch(&state, 1, &tx, 2, Request::Goodbye, &opts);
+        disconnect(&state, 1, &opts.update);
+        assert_eq!(sealed_end(&opts), None);
+        assert!(t.dir.join("journal").join(format!("{SID}.jsonl")).exists());
     }
 }

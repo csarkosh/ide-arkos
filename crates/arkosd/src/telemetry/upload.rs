@@ -1,0 +1,378 @@
+//! The upload loop (telemetry spec, section 2.2, "Uploading"): every 15 minutes, on a thread of
+//! its own, the daemon reads the mode afresh, seals the journals left behind by windows no longer
+//! connected, and posts what the mode lets leave through the system curl. The crate's
+//! `Queue::drain` decides what leaves and what a status means; this module gives it the
+//! transport and the folder.
+use ::telemetry::visits_app::{seal_stale_except, Mode, Outcome, Queue, Transport};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+/// How often the queue is posted and the journals left behind are sealed.
+pub const EVERY: Duration = Duration::from_secs(15 * 60);
+
+/// How long a journal of a window no longer connected must have been quiet before the loop seals
+/// it as `unknown`: a day, so a window whose connection is only being re-made keeps its own.
+pub const STALE_SECS: u64 = 86_400;
+
+/// How long one post may take, curl's own `--max-time`.
+pub const POST_SECS: u64 = 10;
+
+/// The arguments of one post: https only, at most `POST_SECS`, the body from stdin, and only the
+/// status written back. No `--fail`, so a refusal is a status the crate reads rather than an
+/// error, and no `--location`, so a redirect is never followed off the collector.
+pub fn curl_args(url: &str, user_agent: &str) -> Vec<String> {
+    let mut args: Vec<String> = ["--disable", "--silent", "--show-error", "--proto", "=https", "--max-time"].map(String::from).into();
+    args.push(POST_SECS.to_string());
+    args.extend(["--user-agent", user_agent, "-H", "Content-Type: application/json", "--data-binary", "@-", "-o", "/dev/null", "-w", "%{http_code}", "--", url].map(String::from));
+    args
+}
+
+/// The transport the crate's drain posts through: the configured curl (`--curl`).
+pub struct Curl {
+    pub curl: PathBuf,
+}
+
+impl Transport for Curl {
+    fn post(&self, url: &str, user_agent: &str, body: &[u8]) -> Result<u16, String> {
+        let mut cmd = Command::new(&self.curl);
+        cmd.args(curl_args(url, user_agent));
+        // curl's own --max-time ends it first; this is the backstop should it hang regardless.
+        let out = crate::updates::run_bounded_input(&mut cmd, Some(body.to_vec()), Duration::from_secs(POST_SECS + 10)).map_err(|e| format!("curl: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("curl: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        // `000` is curl saying no response came, which is an error and not a status.
+        match String::from_utf8_lossy(&out.stdout).trim().parse::<u16>() {
+            Ok(status) if (100..=599).contains(&status) => Ok(status),
+            _ => Err("curl: no status".into()),
+        }
+    }
+}
+
+/// One pass of the loop at `now`: seals as `unknown` every journal quiet for `STALE_SECS` whose
+/// window is not among `connected` (a sleeping machine makes a live journal look stale), drains
+/// the queue through `t` to `url` under `mode`, and adds the drain's sent and refused counts to
+/// the state file once the posts are done.
+pub fn pass(dir: &Path, t: &dyn Transport, url: &str, user_agent: &str, mode: &Mode, connected: &[&str], now: u64) -> Outcome {
+    // Without a journal folder there is nothing to seal, and the state file is left as it is.
+    if dir.join("journal").is_dir() {
+        match super::update_state(dir, |s| seal_stale_except(dir, now, STALE_SECS, connected, s)) {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) | Err(e) => eprintln!("arkosd: cannot seal the usage sessions left behind: {e}"),
+        }
+    }
+    let out = Queue::new(dir).drain(t, url, user_agent, mode, now);
+    if out.sent > 0 || out.rejected > 0 {
+        let counted = super::update_state(dir, |s| {
+            s.sent += out.sent as u64;
+            s.rejected += out.rejected as u64;
+        });
+        if let Err(e) = counted {
+            eprintln!("arkosd: cannot save the telemetry counts: {e}");
+        }
+    }
+    out
+}
+
+/// Starts the loop on a thread of its own. Each pass, one `EVERY` after the last (the first one
+/// `EVERY` after the start), reads the mode afresh from the config file, so `arkos telemetry on`
+/// takes effect without a restart, and takes the sids of the windows still in the table, which
+/// the stale seal leaves alone. A window leaving meanwhile seals its own journal on the way out.
+pub fn start(state: crate::server::Shared, o: super::Options, curl: PathBuf) {
+    let spawned = std::thread::Builder::new().name("telemetry-upload".into()).spawn(move || {
+        let transport = Curl { curl };
+        let (url, user_agent) = (o.reports_url(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
+        loop {
+            std::thread::sleep(EVERY);
+            let mode = super::mode_now(&o.config);
+            let sids: Vec<String> = state.lock().unwrap().clients.values().filter_map(|r| r.sid.clone()).collect();
+            let connected: Vec<&str> = sids.iter().map(String::as_str).collect();
+            pass(&o.dir, &transport, &url, &user_agent, &mode, &connected, crate::updates::apply::now_unix());
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("arkosd: cannot start the telemetry upload: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telemetry::seal::window_gone;
+    use crate::telemetry::tests::release_env;
+    use ::telemetry::visits_app::{Channel, Crash, CrashKind, Crashes, End, Envelope, Journal, Memory, Queue, State, Uptime, Usage};
+    use ::telemetry::TelemetryConfig;
+    use std::cell::RefCell;
+
+    const URL: &str = "https://apps.csarko.sh/a";
+    const UA: &str = "arkos/0.5.0";
+    const NOW: u64 = 20_000 * 86_400;
+    const INC: &str = "abcdef0123456789abcdef0123456789";
+
+    /// A transport that answers `status` to every post and remembers each one.
+    struct Recorder {
+        status: u16,
+        posts: RefCell<Vec<(String, String, Vec<u8>)>>,
+    }
+
+    impl Recorder {
+        fn answering(status: u16) -> Self {
+            Self { status, posts: RefCell::new(Vec::new()) }
+        }
+
+        fn calls(&self) -> usize {
+            self.posts.borrow().len()
+        }
+    }
+
+    impl Transport for Recorder {
+        fn post(&self, url: &str, user_agent: &str, body: &[u8]) -> Result<u16, String> {
+            self.posts.borrow_mut().push((url.into(), user_agent.into(), body.to_vec()));
+            Ok(self.status)
+        }
+    }
+
+    fn crash(env: Envelope) -> Crash {
+        Crash {
+            env,
+            inc: INC.into(),
+            ck: CrashKind::Panic,
+            commit: "9f2c1ab4e7d03b65a1c8f2e94d7b06a35c81e2fd".into(),
+            pk: "other".into(),
+            mh: None,
+            file: "/src/crates/arkosd/src/server.rs".into(),
+            line: 412,
+            frames: vec![(0, 4096)],
+            images: vec![("arkosd".into(), "0123456789abcdef0123456789abcdef".into(), 52428800)],
+            sig: None,
+            up: Uptime::Lt1h,
+            mem: Some(Memory::Unknown),
+        }
+    }
+
+    /// A session of `env` that ended at `NOW`, sealed into the queue as the daemon seals it.
+    fn queue_session(dir: &Path, sid: &str, env: &Envelope) {
+        Journal::open(dir, sid, env, ::telemetry::allowlist().clone(), NOW - 600).unwrap();
+        window_gone(dir, sid, End::Quit, NOW).expect("sealed");
+    }
+
+    /// A crash the person agreed to send, queued at `NOW`.
+    fn queue_crash(dir: &Path, env: Envelope) {
+        Queue::new(dir).enqueue_crash(&crash(env), NOW).unwrap();
+    }
+
+    fn queued(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir.join("queue")).map(|d| d.map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n.ends_with(".json")).collect()).unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// The mode of a release build for this table and environment, as `mode_for` makes it.
+    fn mode(config: Result<&TelemetryConfig, ()>, env: &[(&str, &str)], interactive: bool) -> Mode {
+        let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let read = move |k: &str| env.iter().find(|(name, _)| name == k).map(|(_, v)| v.clone());
+        ::telemetry::mode_with(config, &read, &Channel::Release, interactive)
+    }
+
+    const CONSENTED: TelemetryConfig = TelemetryConfig { usage: Usage::On, crashes: Crashes::Always };
+
+    #[test]
+    fn curl_is_told_https_only_ten_seconds_the_body_on_stdin_and_only_the_status_back() {
+        let args = curl_args(URL, UA);
+        assert_eq!(args.first().map(String::as_str), Some("--disable"), "no ~/.curlrc can add options");
+        let pairs = [("--proto", "=https"), ("--max-time", "10"), ("--user-agent", UA), ("-H", "Content-Type: application/json"), ("--data-binary", "@-"), ("-o", "/dev/null"), ("-w", "%{http_code}")];
+        for (flag, value) in pairs {
+            let i = args.iter().position(|a| a == flag).unwrap_or_else(|| panic!("no {flag} in {args:?}"));
+            assert_eq!(args[i + 1], value, "{flag}");
+        }
+        for never in ["--fail", "-f", "--location", "-L", "--proto-redir"] {
+            assert!(!args.iter().any(|a| a == never), "{never} in {args:?}");
+        }
+        assert_eq!(args.last().map(String::as_str), Some(URL), "the url is last so it cannot be read as an option");
+        assert_eq!(args[args.len() - 2], "--");
+    }
+
+    /// A curl that records its arguments and the body it read from stdin, and prints the status
+    /// written in `status` (with curl's exit 7 for `000`, no connection).
+    fn fake_curl(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("curl");
+        let d = dir.display();
+        let text = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{d}/args'\ncat > '{d}/body'\ns=$(cat '{d}/status')\nprintf '%s' \"$s\"\n[ \"$s\" = 000 ] && exit 7\nexit 0\n");
+        // Written under the spawn lock, so no fork in another test inherits the script open for
+        // writing and makes its exec fail as busy.
+        let _no_fork = crate::pty::spawn_lock();
+        std::fs::write(&script, text).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[test]
+    fn the_curl_transport_gives_the_crate_each_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("telemetry");
+        let curl = Curl { curl: fake_curl(tmp.path()) };
+        let m = mode(Ok(&CONSENTED), &[], true);
+        let set = |status: &str| std::fs::write(tmp.path().join("status"), status).unwrap();
+        let name = format!("crash-{INC}.json");
+
+        // Accepted: deleted and counted sent.
+        queue_crash(&dir, release_env());
+        let bytes = std::fs::read(dir.join("queue").join(&name)).unwrap();
+        set("204");
+        let out = pass(&dir, &curl, URL, UA, &m, &[], NOW);
+        assert_eq!((out.sent, out.failed, out.rejected), (1, 0, 0), "{out:?}");
+        assert!(queued(&dir).is_empty());
+        assert_eq!(std::fs::read(tmp.path().join("body")).unwrap(), bytes, "the body is the queued bytes, through stdin");
+        let args = std::fs::read_to_string(tmp.path().join("args")).unwrap();
+        assert_eq!(args.lines().last(), Some(URL));
+        assert!(args.lines().any(|a| a == UA));
+        assert_eq!(State::load(&dir).sent, 1, "the count reaches the state file");
+
+        // Too many requests: kept for the backoff.
+        queue_crash(&dir, release_env());
+        set("429");
+        let out = pass(&dir, &curl, URL, UA, &m, &[], NOW);
+        assert_eq!((out.sent, out.failed, out.rejected), (0, 1, 0), "{out:?}");
+        assert_eq!(queued(&dir), [name.clone()]);
+
+        // No connection: curl fails, kept for the backoff too.
+        queue_crash(&dir, release_env());
+        set("000");
+        let out = pass(&dir, &curl, URL, UA, &m, &[], NOW);
+        assert_eq!((out.sent, out.failed, out.rejected), (0, 1, 0), "{out:?}");
+        assert_eq!(queued(&dir), [name.clone()]);
+
+        // Refused: deleted and counted, never tried again.
+        queue_crash(&dir, release_env());
+        set("400");
+        let out = pass(&dir, &curl, URL, UA, &m, &[], NOW);
+        assert_eq!((out.sent, out.failed, out.rejected), (0, 0, 1), "{out:?}");
+        assert!(queued(&dir).is_empty());
+        assert_eq!((State::load(&dir).sent, State::load(&dir).rejected), (1, 1));
+    }
+
+    /// Review Focus 4: the default config sends no session. A crash queued from the dialog's
+    /// Send is the person's consent for that report and does leave.
+    #[test]
+    fn the_default_config_uploads_no_session() {
+        let dir = tempfile::tempdir().unwrap();
+        queue_session(dir.path(), "0123456789abcdef0123456789abcdef", &release_env());
+        let t = Recorder::answering(204);
+        let out = pass(dir.path(), &t, URL, UA, &mode(Ok(&TelemetryConfig::default()), &[], true), &[], NOW);
+        assert_eq!(t.calls(), 0, "{out:?}");
+        assert_eq!(queued(dir.path()).len(), 1, "kept for seven days, should usage turn on");
+        queue_crash(dir.path(), release_env());
+        pass(dir.path(), &t, URL, UA, &mode(Ok(&TelemetryConfig::default()), &[], true), &[], NOW);
+        assert_eq!(t.calls(), 1, "the crash the person sent");
+        assert!(t.posts.borrow()[0].2.windows(7).any(|w| w == b"\"crash\""));
+    }
+
+    /// One rule of Review Focus 4: with everything consented in the config, this environment
+    /// keeps both a session and a crash from leaving, and both stay queued.
+    fn nothing_leaves_under(m: Mode) {
+        let dir = tempfile::tempdir().unwrap();
+        queue_session(dir.path(), "0123456789abcdef0123456789abcdef", &release_env());
+        queue_crash(dir.path(), release_env());
+        let t = Recorder::answering(204);
+        let out = pass(dir.path(), &t, URL, UA, &m, &[], NOW);
+        assert_eq!(t.calls(), 0, "{m:?}: {out:?}");
+        assert_eq!(queued(dir.path()).len(), 2, "{m:?}");
+        assert!(!m.uploads && m.reason.is_some(), "{m:?}");
+    }
+
+    #[test]
+    fn do_not_track_uploads_nothing() {
+        nothing_leaves_under(mode(Ok(&CONSENTED), &[("DO_NOT_TRACK", "1")], true));
+    }
+
+    #[test]
+    fn arkos_telemetry_off_uploads_nothing() {
+        nothing_leaves_under(mode(Ok(&CONSENTED), &[("ARKOS_TELEMETRY", "off")], true));
+    }
+
+    #[test]
+    fn arkos_telemetry_log_uploads_nothing() {
+        nothing_leaves_under(mode(Ok(&CONSENTED), &[("ARKOS_TELEMETRY", "log")], true));
+    }
+
+    #[test]
+    fn ci_uploads_nothing() {
+        nothing_leaves_under(mode(Ok(&CONSENTED), &[("CI", "true")], true));
+    }
+
+    #[test]
+    fn a_non_interactive_run_uploads_nothing() {
+        nothing_leaves_under(mode(Ok(&CONSENTED), &[], false));
+    }
+
+    #[test]
+    fn a_config_error_uploads_nothing() {
+        let m = mode(Err(()), &[], true);
+        assert_eq!(m.reason, Some("config error"));
+        nothing_leaves_under(m);
+    }
+
+    /// Review Focus 1: a source build's report never reaches the transport, whatever the
+    /// settings; the drain deletes it.
+    #[test]
+    fn a_source_build_never_reaches_the_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Envelope { ch: Channel::Source, ..release_env() };
+        queue_session(dir.path(), "0123456789abcdef0123456789abcdef", &source);
+        queue_crash(dir.path(), source);
+        let no_env = |_: &str| None;
+        let m = ::telemetry::mode_with(Ok::<_, ()>(&CONSENTED), &no_env, &Channel::Source, true);
+        assert_eq!((m.uploads, m.reason), (false, Some("source build")));
+        let t = Recorder::answering(204);
+        let out = pass(dir.path(), &t, URL, UA, &m, &[], NOW);
+        assert_eq!((t.calls(), out.dropped), (0, 2), "{out:?}");
+        // A release daemon draining a source report drops it unsent too.
+        queue_session(dir.path(), "fedcba9876543210fedcba9876543210", &Envelope { ch: Channel::Source, ..release_env() });
+        let out = pass(dir.path(), &t, URL, UA, &mode(Ok(&CONSENTED), &[], true), &[], NOW);
+        assert_eq!((t.calls(), out.dropped), (0, 1), "{out:?}");
+        assert!(queued(dir.path()).is_empty());
+    }
+
+    /// Withdrawing consent stops the crashes already queued: one queued under `always` that
+    /// failed once is not posted again once crashes are `never`.
+    #[test]
+    fn a_crash_queued_under_always_stops_once_crashes_is_never() {
+        let dir = tempfile::tempdir().unwrap();
+        queue_crash(dir.path(), release_env());
+        let busy = Recorder::answering(503);
+        pass(dir.path(), &busy, URL, UA, &mode(Ok(&CONSENTED), &[], true), &[], NOW);
+        assert_eq!(busy.calls(), 1);
+        let never = TelemetryConfig { crashes: Crashes::Never, ..CONSENTED };
+        let t = Recorder::answering(204);
+        let later = NOW + EVERY.as_secs() + 60;
+        let out = pass(dir.path(), &t, URL, UA, &mode(Ok(&never), &[], true), &[], later);
+        assert_eq!((t.calls(), out.skipped), (0, 1), "{out:?}");
+        assert_eq!(queued(dir.path()), [format!("crash-{INC}.json")]);
+    }
+
+    /// The journals left by windows that are gone are sealed as `unknown` once a day quiet; a
+    /// window still connected keeps its journal, however old it looks after a sleep.
+    #[test]
+    fn the_loop_seals_what_was_left_and_leaves_a_connected_windows_journal_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (live, gone, fresh) = ("0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210", "00112233445566778899aabbccddeeff");
+        let allow = ::telemetry::allowlist();
+        Journal::open(dir.path(), live, &release_env(), allow.clone(), NOW - 2 * STALE_SECS).unwrap();
+        Journal::open(dir.path(), gone, &release_env(), allow.clone(), NOW - 2 * STALE_SECS).unwrap();
+        Journal::open(dir.path(), fresh, &release_env(), allow.clone(), NOW - 60).unwrap();
+        let t = Recorder::answering(204);
+        pass(dir.path(), &t, URL, UA, &mode(Ok(&TelemetryConfig::default()), &[], true), &[live], NOW);
+        let journal = |sid: &str| dir.path().join("journal").join(format!("{sid}.jsonl"));
+        assert!(journal(live).exists(), "a connected window's journal stays");
+        assert!(journal(fresh).exists(), "a journal quiet for less than a day stays");
+        assert!(!journal(gone).exists());
+        assert_eq!(queued(dir.path()), [format!("session-{gone}.json")]);
+        assert_eq!(crate::telemetry::seal::tests::sealed_end(dir.path(), gone).as_deref(), Some("unknown"));
+        // Once that window is gone too, the next pass seals it.
+        pass(dir.path(), &t, URL, UA, &mode(Ok(&TelemetryConfig::default()), &[], true), &[], NOW);
+        assert!(!journal(live).exists());
+        assert_eq!(t.calls(), 0, "and under the default config nothing was sent");
+    }
+}

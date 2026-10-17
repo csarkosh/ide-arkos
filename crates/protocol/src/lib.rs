@@ -193,7 +193,7 @@ pub enum Request {
     /// still waiting: a late answer is never an error.
     CustomizeDone { id: u64, outcome: CustomizeOutcome },
     /// Sent by a protocol 7 window right after every Hello when it keeps a journal: the id of
-    /// its usage session, whose journal the daemon will seal when the window goes (Task 4). A
+    /// its usage session, whose journal the daemon seals when the window's connection ends. A
     /// later one replaces it (the journal restarts under a fresh id when usage is turned on).
     /// Answered `Ok`, or `Error` for an id that is not 16 to 32 lowercase hex characters.
     Session { sid: String },

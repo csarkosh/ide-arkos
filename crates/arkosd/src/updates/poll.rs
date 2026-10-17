@@ -727,7 +727,7 @@ mod tests {
 
     impl Routed {
         fn telemetry(&self, ch: ::telemetry::visits_app::Channel) -> Telemetry {
-            let o = crate::telemetry::Options { dir: self.telemetry_dir.clone(), url: format!("file://{}/fp", self.site.root.display()) };
+            let o = crate::telemetry::Options { dir: self.telemetry_dir.clone(), url: format!("file://{}/fp", self.site.root.display()), config: self.telemetry_dir.join("config.toml") };
             Telemetry::with_env(&o, ::telemetry::visits_app::Envelope { ch, ..crate::telemetry::tests::release_env() })
         }
         fn check_url(&self) -> String {
