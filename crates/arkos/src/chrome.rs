@@ -27,10 +27,11 @@ const ICON_STROKE: f32 = 1.5;
 const DOT: f32 = 6.0;
 const DOT_INSET: f32 = 3.0;
 /// The dot breathes with the focused pane's glow: at the peak a halo of the focus colour this
-/// wide and this opaque spreads around it, and the dot gains the glow's lightness.
+/// wide and this opaque spreads around it, and the dot lightens a little (on a light bar it
+/// darkens; the glow's full 0.2 turns a small dot muddy there, so the halo carries the breath).
 const DOT_HALO: f32 = 14.0;
 const DOT_HALO_ALPHA: f32 = 0.45;
-const DOT_BREATH_LIGHT: f32 = 0.2;
+const DOT_BREATH_LIGHT: f32 = 0.08;
 
 /// Which popover hangs under the bar. Only one is open at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
