@@ -389,8 +389,12 @@ pub fn at_launch(crashes: Crashes, mode: &Mode, theme: Theme, mono: SharedString
         }
         Decision::QueueAll => {
             claims.send(unix_now());
+            aux::reports_changed(cx);
         }
-        Decision::DeleteAll => claims.decline(),
+        Decision::DeleteAll => {
+            claims.decline();
+            aux::reports_changed(cx);
+        }
         Decision::Wait => claims.put_back(),
     }
 }
@@ -460,14 +464,16 @@ impl CrashDialog {
                 Err(e) => eprintln!("arkos: cannot turn crash reports to always: {e}"),
             }
         }
+        cx.defer(aux::reports_changed);
         window.remove_window();
     }
 
     /// Don't send: the reports are deleted.
-    fn dont_send(&mut self, window: &mut Window) {
+    fn dont_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(claims) = self.claims.take() {
             claims.decline();
         }
+        cx.defer(aux::reports_changed);
         window.remove_window();
     }
 }
@@ -558,7 +564,7 @@ impl Render for CrashDialog {
                 d.state.always = !d.state.always;
                 cx.notify();
             }));
-        let dont = settings::pill("crash-dont-send", DONT_SEND, false, true, c).on_click(cx.listener(|d, _, window, _| d.dont_send(window)));
+        let dont = settings::pill("crash-dont-send", DONT_SEND, false, true, c).on_click(cx.listener(|d, _, window, cx| d.dont_send(window, cx)));
         let send = settings::pill("crash-send", SEND, true, true, c).on_click(cx.listener(|d, _, window, cx| d.send(window, cx)));
         div()
             .id("crash-dialog")

@@ -223,6 +223,8 @@ pub struct SettingsWindow {
     theme: Theme,
     on_change: OnChange,
     on_update: OnUpdate,
+    /// The Privacy section's rows read from the folder, kept between renders.
+    privacy: PrivacyCache,
 }
 
 /// Opens the Settings window centred on the main display and gives it the keyboard. `fonts` is
@@ -243,7 +245,17 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
             // Foreground time in Settings counts while its window is the key window, and stops
             // when it closes.
             crate::telemetry::settings_focus(true);
-            cx.observe_window_activation(window, |_, window, _| crate::telemetry::settings_focus(window.is_window_active())).detach();
+            // Coming to the front reads the Privacy rows again: the daemon may have sent a report
+            // meanwhile.
+            cx.observe_window_activation(window, |w: &mut SettingsWindow, window, cx| {
+                let active = window.is_window_active();
+                crate::telemetry::settings_focus(active);
+                if active {
+                    w.privacy.forget();
+                    cx.notify();
+                }
+            })
+            .detach();
             cx.on_release(|_, _| crate::telemetry::settings_focus(false)).detach();
             let fonts = FIXED_PITCH.get().filter(|f| !f.is_empty()).cloned().unwrap_or(fonts);
             if claim_fixed_pitch_check() {
@@ -278,6 +290,7 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
                 theme,
                 on_change,
                 on_update,
+                privacy: PrivacyCache::default(),
             }
         });
         window.focus(&view.read(cx).focus);
@@ -371,7 +384,40 @@ fn report_lines(dir: &Path) -> Vec<ReportLine> {
     crate::crash_dialog::reports(dir).into_iter().map(|r| ReportLine { label: format!("{}  {}", r.date, r.inc), inc: r.inc, status: r.status }).collect()
 }
 
+/// What the Privacy section shows that is read from the telemetry folder and the environment:
+/// the line under Usage reports, the last sealed session, and the Reports list.
+#[derive(Clone, Debug, PartialEq)]
+struct PrivacyRows {
+    usage_line: String,
+    last: Option<PathBuf>,
+    lines: Vec<ReportLine>,
+}
+
+/// The Privacy rows as last read: read when the section is shown, and again only after `forget`
+/// (a new config, the window coming to the front, a crash report decided), never per render.
+#[derive(Default)]
+struct PrivacyCache(Option<PrivacyRows>);
+
+impl PrivacyCache {
+    /// The rows, read from the telemetry folder `dir` and `shown` when there are none yet.
+    fn get(&mut self, dir: &Path, shown: &Shown) -> &PrivacyRows {
+        self.0.get_or_insert_with(|| PrivacyRows { usage_line: usage_line(&shown_mode(shown)), last: last_report(dir), lines: report_lines(dir) })
+    }
+
+    /// Something they are read from changed: the next showing reads them again.
+    fn forget(&mut self) {
+        self.0 = None;
+    }
+}
+
 impl SettingsWindow {
+    /// The telemetry folder changed under the Privacy section (a crash report was decided): its
+    /// rows are read again.
+    pub fn reports_changed(&mut self, cx: &mut Context<Self>) {
+        self.privacy.forget();
+        cx.notify();
+    }
+
     /// Redraws the window in the project window's new theme.
     pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         self.theme = theme;
@@ -381,6 +427,7 @@ impl SettingsWindow {
     /// Shows a newly loaded config (or its error) and the themes folder as it is now.
     pub fn set_shown(&mut self, shown: Shown, cx: &mut Context<Self>) {
         self.shown = shown;
+        self.privacy.forget();
         self.themes = theme::list(&paths::themes_dir());
         cx.notify();
     }
@@ -706,7 +753,8 @@ impl SettingsWindow {
         out
     }
 
-    fn privacy(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn privacy(&mut self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let PrivacyRows { usage_line, last, lines } = self.privacy.get(&paths::telemetry_dir(), &self.shown).clone();
         let t = &self.shown.config.telemetry;
         let mut out = vec![heading(USAGE_ROW, c).into_any_element()];
         let mut usage = div().flex().gap(px(6.0));
@@ -719,7 +767,7 @@ impl SettingsWindow {
             usage = usage.child(p);
         }
         out.push(usage.into_any_element());
-        out.push(div().text_color(c.dim).text_size(px(12.0)).child(usage_line(&shown_mode(&self.shown))).into_any_element());
+        out.push(div().text_color(c.dim).text_size(px(12.0)).child(usage_line).into_any_element());
         out.push(heading(CRASHES_ROW, c).into_any_element());
         let mut crashes = div().flex().gap(px(6.0));
         for (ix, (label, value)) in CRASH_CHOICES.into_iter().enumerate() {
@@ -733,7 +781,6 @@ impl SettingsWindow {
         out.push(crashes.into_any_element());
         // Both stay live while the config has a problem: they only read.
         let sends = pill("what-arkos-sends", WHAT_IS_SENT_ROW, false, true, c).on_click(|_, _, cx| aux::open_disclosure_from_settings(cx));
-        let last = last_report(&paths::telemetry_dir());
         let mut report = pill("last-report", LAST_REPORT_ROW, false, last.is_some(), c);
         if let Some(file) = last.clone() {
             report = report.on_click(move |_, _, cx| aux::open_last_report(cx, file.clone()));
@@ -745,7 +792,6 @@ impl SettingsWindow {
         // Each crash report by date with its `inc`, a receipt the person can quote in an issue: a
         // click copies the `inc`.
         out.push(heading(REPORTS_ROW, c).into_any_element());
-        let lines = report_lines(&paths::telemetry_dir());
         let mono = SharedString::from(self.shown.config.font.family.clone());
         if lines.is_empty() {
             out.push(div().text_color(c.dim).text_size(px(12.0)).child("no crash reports").into_any_element());
@@ -799,6 +845,8 @@ impl Render for SettingsWindow {
                 .when(current, |d| d.bg(c.pill))
                 .on_click(cx.listener(move |w, _, _, cx| {
                     w.section = section;
+                    // A section shown reads what it shows afresh.
+                    w.privacy.forget();
                     cx.notify();
                 }))
                 .child(section.label());
@@ -1051,6 +1099,26 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         std::fs::write(&file, "{}").unwrap();
         assert_eq!(last_report(dir.path()), Some(file));
+    }
+
+    /// The Privacy section reads the folder when it is shown and when something changed, not
+    /// at every render: a receipt written meanwhile shows once the cache is forgotten.
+    #[test]
+    fn the_privacy_rows_are_read_once_until_something_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let shown = Shown { config: Config::default(), error: None, write_error: None, update_ready: None, active_preset: None };
+        let mut cache = PrivacyCache::default();
+        assert_eq!(cache.get(dir.path(), &shown).lines, Vec::new());
+        assert_eq!(cache.get(dir.path(), &shown).last, None);
+        let inc = "0123456789abcdef0123456789abcdef";
+        std::fs::write(dir.path().join(crate::crash_dialog::RECEIPTS), format!("{inc} 2026-10-01 declined\n")).unwrap();
+        std::fs::write(dir.path().join(telemetry_cli::LAST_SESSION), "{}").unwrap();
+        assert_eq!(cache.get(dir.path(), &shown).lines, Vec::new(), "a render reads nothing");
+        cache.forget();
+        let rows = cache.get(dir.path(), &shown);
+        assert_eq!(rows.lines.len(), 1);
+        assert_eq!(rows.last, Some(dir.path().join(telemetry_cli::LAST_SESSION)));
+        assert_eq!(rows.usage_line, usage_line(&shown_mode(&shown)));
     }
 
     /// The Reports list is named as the page names it, and lists each receipt by date with its

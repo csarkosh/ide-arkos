@@ -286,11 +286,11 @@ pub struct Root {
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
     pub installed: SystemTime,
-    /// The invitation to turn usage reports on (telemetry spec, section 3.3): the install's UTC
-    /// day and this launch's, while the strip may still show in this run. `None` once it was
-    /// answered, here or in another window, and from the start when it never can: a launch on
-    /// the install day, or a source build.
-    pub invite: Option<(u64, u64)>,
+    /// The invitation to turn usage reports on (telemetry spec, section 3.3): whether its strip
+    /// shows, with the mode of the last config change and `asked` as last read, so no frame
+    /// reads the folder. It never shows on the install day or in a source build, and not again
+    /// once answered, here or in another window.
+    pub invitation: telemetry::Invitation,
     /// The pane the invitation hangs under the tab bar of this frame: the first pane drawn, while
     /// the invitation is due.
     pub invite_pane: Option<PaneId>,
@@ -541,6 +541,7 @@ fn shell_name(configured: Option<&str>, env: Option<&str>) -> String {
 impl Root {
     fn new(client: Arc<client::Client>, project: PathBuf, saved: Option<Workspace>, config: config::Config, theme: theme::Theme, system_is_dark: bool, installed: SystemTime, cx: &mut Context<Self>) -> Self {
         let (text_preset, preset) = config::resolve_preset(saved.as_ref().and_then(|w| w.text_preset.as_deref()), &config.font.preset, &config.font.presets);
+        let invitation = telemetry::Invitation::new(invite_days(installed, SystemTime::now(), ::telemetry::channel().is_source()), ::telemetry::mode_for(Ok::<_, ()>(&config.telemetry), true));
         let reconcile_with_note = saved.is_some();
         let window_saved = saved.as_ref().and_then(|w| w.window.clone());
         let details_open = saved.as_ref().map(|w| w.details_open.clone()).unwrap_or_default();
@@ -621,7 +622,7 @@ impl Root {
             viewers: HashMap::new(),
             system_is_dark,
             installed,
-            invite: invite_days(installed, SystemTime::now(), ::telemetry::channel().is_source()),
+            invitation,
             invite_pane: None,
             config_error: None,
             theme_error: None,
@@ -1180,6 +1181,7 @@ impl Root {
             eprintln!("arkos: config reloaded");
             self.apply_config(cfg, cx);
         }
+        self.invitation_config_changed();
         self.probe_doctor();
         // The Settings window shows the reloaded file, or its problem.
         aux::push_settings(cx, self.settings_shown());
@@ -1206,6 +1208,7 @@ impl Root {
         // The keys changed, the theme chosen, and a usage change: a new journal's id goes to the
         // daemon at once (on a reconnect, `telemetry::connect_sid` names it).
         telemetry::config_applied(&old, &self.config, self.sessions.client.as_deref());
+        self.invitation_config_changed();
         if old.keybindings != self.config.keybindings {
             rebind(cx, &self.config.keybindings);
             // An open Keybindings window shows the saved override at once.
@@ -1723,22 +1726,29 @@ impl Root {
         }
     }
 
-    /// Whether the invitation shows this frame (`telemetry::invitation_due`). `asked` is read
-    /// right before the strip is drawn, every frame it would be, since another window may have
-    /// had its answer meanwhile; once it is there, this run never asks again.
+    /// Whether the invitation shows this frame (`telemetry::Invitation::shows`). `asked` is read
+    /// the first time the strip would show, then again when the window comes to the front and
+    /// every `telemetry::ASKED_EVERY`, since another window may have had its answer meanwhile;
+    /// once it is there, this run never asks again.
     fn invitation_shows(&mut self) -> bool {
-        let Some((installed, today)) = self.invite else { return false };
+        self.invitation.shows(|| telemetry::asked(&paths::telemetry_dir()))
+    }
+
+    /// The config, or its error, changed: the invitation takes the mode it gives now. A config
+    /// that does not load is telemetry `Off`, which never invites.
+    fn invitation_config_changed(&mut self) {
         let config = if self.config_error.is_some() { Err(()) } else { Ok(&self.config.telemetry) };
-        let mode = ::telemetry::mode_for(config, true);
-        // The file is read only when nothing else hides the strip.
-        if !telemetry::invitation_due(&mode, installed, today, false) {
-            return false;
+        self.invitation.set_mode(::telemetry::mode_for(config, true));
+    }
+
+    /// Looks for `asked` again at the next frame, while the strip shows: on activation and every
+    /// `telemetry::ASKED_EVERY`. `false` once the invitation can no longer show in this run.
+    fn recheck_invitation(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.invite_pane.is_some() {
+            self.invitation.recheck();
+            cx.notify();
         }
-        let due = telemetry::invitation_due(&mode, installed, today, telemetry::asked(&paths::telemetry_dir()));
-        if !due {
-            self.invite = None;
-        }
-        due
+        self.invitation.possible()
     }
 
     /// The invitation's Turn on or Not now: writes `asked`, so no window asks again, and takes
@@ -1747,7 +1757,7 @@ impl Root {
     /// the session reports queued before the consent, and the daemon does the same when it next
     /// reads the file.
     fn answer_invitation(&mut self, answer: telemetry::Answer, cx: &mut Context<Self>) {
-        self.invite = None;
+        self.invitation.answered();
         self.invite_pane = None;
         if let Err(e) = telemetry::answer_invitation(&paths::telemetry_dir(), answer) {
             eprintln!("arkos: cannot write the invitation's answer: {e}");
@@ -4338,6 +4348,10 @@ fn open_project_window(
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
                             root.note_focus();
+                            // Another window may have had the invitation's answer meanwhile.
+                            if root.window_active {
+                                root.recheck_invitation(cx);
+                            }
                             if !root.window_active && root.close_popovers(Instant::now()) {
                                 cx.notify();
                             }
@@ -4389,6 +4403,7 @@ fn open_project_window(
         std::thread::spawn(cache::sweep_all);
         root.update(cx, |root, cx| {
             root.config_error = config_error;
+            root.invitation_config_changed();
             root.theme_error = theme_error;
             root.seed_notices(updated);
             root.apply_recovery(true, cx);
@@ -4484,6 +4499,16 @@ fn open_project_window(
         cx.spawn(async move |cx| loop {
             cx.background_executor().timer(telemetry::MARK_EVERY).await;
             telemetry::mark();
+        })
+        .detach();
+        // While the invitation shows, `asked` is looked for again now and then, not every frame;
+        // the loop ends once the invitation can no longer show in this run.
+        let invite_root = root.clone();
+        cx.spawn(async move |cx| loop {
+            cx.background_executor().timer(telemetry::ASKED_EVERY).await;
+            if !invite_root.update(cx, |root, cx| root.recheck_invitation(cx)).unwrap_or(false) {
+                break;
+            }
         })
         .detach();
         // Closed tabs' sessions end once their grace runs out.
@@ -4630,7 +4655,7 @@ mod tests {
     }
 
     /// The invitation is looked for only on a later UTC day than the install, and never in a
-    /// source build; the rest (the mode, `asked`) is `telemetry::invitation_due`'s, each frame.
+    /// source build; the rest (the mode, `asked`) is `telemetry::Invitation`'s.
     #[test]
     fn the_invitation_is_never_looked_for_on_the_install_day_or_in_a_source_build() {
         use super::invite_days;

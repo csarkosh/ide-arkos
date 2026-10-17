@@ -336,6 +336,12 @@ fn apply_settings_edits(edits: &[(&[&str], toml_edit::Value)], cx: &mut App) {
     push_settings(cx, shown);
 }
 
+/// A crash report was decided: an open Settings window reads its Reports list again.
+pub fn reports_changed(cx: &mut App) {
+    let Some(handle) = cx.try_global::<Aux>().and_then(|aux| aux.settings) else { return };
+    let _ = handle.update(cx, |w, _window, cx| w.reports_changed(cx));
+}
+
 /// The preset name an edit of `[font] preset` writes, if the edits hold one.
 fn picked_preset(edits: &[(&[&str], toml_edit::Value)]) -> Option<String> {
     edits.iter().find(|(keys, _)| *keys == ["font", "preset"]).and_then(|(_, v)| v.as_str()).map(str::to_string)

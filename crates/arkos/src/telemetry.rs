@@ -958,6 +958,65 @@ pub fn invitation_due(mode: &::telemetry::visits_app::Mode, installed_day: u64, 
     mode.invite && today > installed_day && !asked
 }
 
+/// How often a window showing the invitation looks for `asked` again, besides when it becomes the
+/// key window: another window may have had its answer meanwhile.
+pub const ASKED_EVERY: Duration = Duration::from_secs(30);
+
+/// Whether the invitation shows in one window, kept so that a frame reads nothing: the mode is
+/// the one the last config change set (`set_mode`), and `asked` is read the first time the strip
+/// would show, then again only after a `recheck`.
+pub struct Invitation {
+    /// The install's UTC day and this launch's, while the strip can still show in this run.
+    days: Option<(u64, u64)>,
+    mode: ::telemetry::visits_app::Mode,
+    /// `asked` as last read; `None` until the next frame that would show the strip reads it.
+    asked: Option<bool>,
+}
+
+impl Invitation {
+    /// The invitation for this run: `days` from the install and the launch (`None` when it can
+    /// never show in this run), and the mode the config at launch gives.
+    pub fn new(days: Option<(u64, u64)>, mode: ::telemetry::visits_app::Mode) -> Invitation {
+        Invitation { days, mode, asked: None }
+    }
+
+    /// The config changed: the mode it gives now.
+    pub fn set_mode(&mut self, mode: ::telemetry::visits_app::Mode) {
+        self.mode = mode;
+    }
+
+    /// Reads `asked` again at the next frame the strip would show: on activation and every
+    /// `ASKED_EVERY`.
+    pub fn recheck(&mut self) {
+        self.asked = None;
+    }
+
+    /// Whether the strip can still show in this run; once it cannot, nothing rechecks.
+    pub fn possible(&self) -> bool {
+        self.days.is_some()
+    }
+
+    /// Whether the strip shows this frame (`invitation_due`), with `asked` read by `look` only
+    /// when nothing else hides it and no read since the last recheck says. Once it says the
+    /// invitation was answered, this run never asks again.
+    pub fn shows(&mut self, look: impl FnOnce() -> bool) -> bool {
+        let Some((installed, today)) = self.days else { return false };
+        if !invitation_due(&self.mode, installed, today, false) {
+            return false;
+        }
+        let asked = *self.asked.get_or_insert_with(look);
+        if asked {
+            self.days = None;
+        }
+        !asked
+    }
+
+    /// This window had its answer.
+    pub fn answered(&mut self) {
+        self.days = None;
+    }
+}
+
 /// `at` as days since 1970 in UTC; a clock before 1970 is day 0.
 pub fn utc_day(at: SystemTime) -> u64 {
     at.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400)
@@ -1594,6 +1653,52 @@ mod tests {
         }
         let unrelated = mode_of(Usage::Local, Channel::Release, Some(("HOME", "/Users/x")), true);
         assert!(invitation_due(&unrelated, installed, installed + 1, false), "an unrelated variable changes nothing");
+    }
+
+    /// No frame reads the folder: `asked` is read the first time the strip would show, then
+    /// again only when the window asks for a recheck (on activation and every `ASKED_EVERY`), and
+    /// the mode is the one the last config change set.
+    #[test]
+    fn the_invitation_reads_asked_once_and_again_only_on_a_recheck() {
+        let installed = 20_742;
+        let reads = Cell::new(0);
+        let answered = Cell::new(false);
+        let look = || {
+            reads.set(reads.get() + 1);
+            answered.get()
+        };
+        let mut inv = Invitation::new(Some((installed, installed + 1)), mode_of(Usage::Local, Channel::Release, None, true));
+        for _ in 0..100 {
+            assert!(inv.shows(look));
+        }
+        assert_eq!(reads.get(), 1, "one read for a hundred frames");
+        inv.recheck();
+        assert!(inv.shows(look));
+        assert_eq!(reads.get(), 2, "the activation's recheck reads again");
+        // Another window has its answer: this one sees it at its next recheck, not before.
+        answered.set(true);
+        assert!(inv.shows(look));
+        inv.recheck();
+        assert!(!inv.shows(look));
+        assert_eq!(reads.get(), 3);
+        assert!(!inv.possible(), "never again in this run");
+        inv.recheck();
+        assert!(!inv.shows(look));
+        assert_eq!(reads.get(), 3, "nothing is read once it cannot show");
+        // A mode that does not invite hides the strip without reading the folder.
+        let reads_before = reads.get();
+        let mut inv = Invitation::new(Some((installed, installed + 1)), mode_of(Usage::On, Channel::Release, None, true));
+        inv.recheck();
+        assert!(!inv.shows(look));
+        assert_eq!(reads.get(), reads_before);
+        answered.set(false);
+        inv.set_mode(mode_of(Usage::Local, Channel::Release, None, true));
+        assert!(inv.shows(look), "the config changed back to local");
+        // The install day, and either answer in this window, show nothing.
+        assert!(!Invitation::new(None, mode_of(Usage::Local, Channel::Release, None, true)).shows(look));
+        inv.answered();
+        assert!(!inv.shows(look));
+        assert!(!inv.possible());
     }
 
     #[test]
