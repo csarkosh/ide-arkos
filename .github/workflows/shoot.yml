@@ -29,7 +29,8 @@ jobs:
       - name: The machine
         run: |
           sw_vers
-          system_profiler SPDisplaysDataType | sed -n '/Displays:/,$p'
+          swift scripts/shoot/display.swift
+          swift scripts/shoot/display.swift best
           for f in Baskerville Optima "PT Mono"; do
             system_profiler SPFontsDataType 2>/dev/null | grep -q "Full Name: $f" && echo "font: $f" || echo "font missing: $f"
           done
