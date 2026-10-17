@@ -145,7 +145,7 @@ pub fn mode_now(config: &Path) -> Mode {
 }
 
 /// The config spelling of a usage setting.
-fn usage_name(u: Usage) -> &'static str {
+pub(crate) fn usage_name(u: Usage) -> &'static str {
     match u {
         Usage::Off => "off",
         Usage::Local => "local",

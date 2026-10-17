@@ -73,6 +73,43 @@ pub fn forget_before_consent(dir: &Path, previous: Usage, usage: Usage, connecte
     deleted
 }
 
+/// The file in the telemetry folder that holds the usage the loop last saw, one word (`off`,
+/// `local` or `on`), so a turn-on made while the daemon was down is still seen as one.
+pub const USAGE_SEEN: &str = "usage-seen";
+
+/// The usage the loop last saw, from `USAGE_SEEN`. A missing or unreadable file is `Local`, the
+/// default, so a first start that finds usage `On` starts clean too.
+pub fn usage_seen(dir: &Path) -> Usage {
+    match std::fs::read_to_string(dir.join(USAGE_SEEN)).as_deref().map(str::trim) {
+        Ok("off") => Usage::Off,
+        Ok("on") => Usage::On,
+        _ => Usage::Local,
+    }
+}
+
+/// Writes `usage` to `USAGE_SEEN` whole, through a temporary file renamed over it.
+fn write_usage_seen(dir: &Path, usage: Usage) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{USAGE_SEEN}.tmp"));
+    std::fs::write(&tmp, format!("{}\n", super::usage_name(usage)))?;
+    std::fs::rename(&tmp, dir.join(USAGE_SEEN))
+}
+
+/// The start of a pass: compares `usage` with the usage last seen (`usage_seen`, which outlives
+/// the daemon), runs `forget_before_consent` on the change, and records `usage` as seen when it
+/// differs. Returns how many journals it deleted.
+pub fn consent_check(dir: &Path, usage: Usage, connected: &[&str]) -> usize {
+    let previous = usage_seen(dir);
+    let deleted = forget_before_consent(dir, previous, usage, connected);
+    let recorded = std::fs::read_to_string(dir.join(USAGE_SEEN)).ok();
+    if recorded.as_deref().map(str::trim) != Some(super::usage_name(usage)) {
+        if let Err(e) = write_usage_seen(dir, usage) {
+            eprintln!("arkosd: cannot record the usage setting seen: {e}");
+        }
+    }
+    deleted
+}
+
 /// One pass of the loop at `now`: seals as `unknown` every journal quiet for `STALE_SECS` whose
 /// window is not among `connected` (a sleeping machine makes a live journal look stale), drains
 /// the queue through `t` to `url` under `mode`, and adds the drain's sent and refused counts to
@@ -102,20 +139,19 @@ pub fn pass(dir: &Path, t: &dyn Transport, url: &str, user_agent: &str, mode: &M
 /// `EVERY` after the start), reads the mode afresh from the config file, so `arkos telemetry on`
 /// takes effect without a restart, and takes the sids of the windows still in the table, which
 /// the stale seal leaves alone. A window leaving meanwhile seals its own journal on the way out.
-/// The usage of the last pass is kept, so a change to `On` first deletes what was left behind
-/// before the consent (`forget_before_consent`).
+/// Every pass, the first after a start included, compares the usage with the one last seen,
+/// kept in `USAGE_SEEN` across restarts, so a change to `On` first deletes what was left behind
+/// before the consent (`consent_check`).
 pub fn start(state: crate::server::Shared, o: super::Options, curl: PathBuf) {
     let spawned = std::thread::Builder::new().name("telemetry-upload".into()).spawn(move || {
         let transport = Curl { curl };
         let (url, user_agent) = (o.reports_url(), format!("arkos/{}", env!("CARGO_PKG_VERSION")));
-        let mut previous = super::mode_now(&o.config).usage;
         loop {
             std::thread::sleep(EVERY);
             let mode = super::mode_now(&o.config);
             let sids: Vec<String> = state.lock().unwrap().clients.values().filter_map(|r| r.sid.clone()).collect();
             let connected: Vec<&str> = sids.iter().map(String::as_str).collect();
-            forget_before_consent(&o.dir, previous, mode.usage, &connected);
-            previous = mode.usage;
+            consent_check(&o.dir, mode.usage, &connected);
             pass(&o.dir, &transport, &url, &user_agent, &mode, &connected, crate::updates::apply::now_unix());
         }
     });
@@ -430,5 +466,43 @@ mod tests {
         assert!(queued(dir.path()).is_empty(), "nothing from before the consent was sealed");
         assert_eq!(t.calls(), 0, "or sent");
         assert_eq!(forget_before_consent(dir.path(), Usage::Off, Usage::On, &[]), 1, "from off too");
+    }
+
+    /// A turn-on made while the daemon was down: the usage last seen is on disk, so the first
+    /// pass after the start still deletes what a gone window recorded before the consent.
+    #[test]
+    fn a_turn_on_while_the_daemon_was_down_still_starts_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = "fedcba9876543210fedcba9876543210";
+        Journal::open(dir.path(), gone, &release_env(), ::telemetry::allowlist().clone(), NOW - 2 * STALE_SECS).unwrap();
+        std::fs::write(dir.path().join(USAGE_SEEN), "local\n").unwrap();
+        assert_eq!(consent_check(dir.path(), Usage::On, &[]), 1);
+        assert!(!dir.path().join("journal").join(format!("{gone}.jsonl")).exists(), "deleted before any seal");
+        assert_eq!(std::fs::read_to_string(dir.path().join(USAGE_SEEN)).unwrap(), "on\n");
+        assert!(!dir.path().join(format!("{USAGE_SEEN}.tmp")).exists(), "written through a renamed temporary");
+        let t = Recorder::answering(204);
+        pass(dir.path(), &t, URL, UA, &mode(Ok(&CONSENTED), &[], true), &[], NOW);
+        assert!(queued(dir.path()).is_empty() && t.calls() == 0, "nothing sealed or sent");
+        // Still on: a journal recorded after the consent is kept for the seal.
+        Journal::open(dir.path(), gone, &release_env(), ::telemetry::allowlist().clone(), NOW - 2 * STALE_SECS).unwrap();
+        assert_eq!(consent_check(dir.path(), Usage::On, &[]), 0);
+        // Back to local, then on again: a new consent starts clean again.
+        assert_eq!(consent_check(dir.path(), Usage::Local, &[]), 0);
+        assert_eq!(usage_seen(dir.path()), Usage::Local);
+        assert_eq!(consent_check(dir.path(), Usage::On, &[]), 1);
+    }
+
+    #[test]
+    fn a_missing_usage_seen_file_counts_as_local() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(usage_seen(dir.path()), Usage::Local);
+        std::fs::write(dir.path().join(USAGE_SEEN), "garbage").unwrap();
+        assert_eq!(usage_seen(dir.path()), Usage::Local);
+        std::fs::write(dir.path().join(USAGE_SEEN), "off\n").unwrap();
+        assert_eq!(usage_seen(dir.path()), Usage::Off);
+        // A first start under the default writes what it saw.
+        let fresh = tempfile::tempdir().unwrap();
+        assert_eq!(consent_check(fresh.path(), Usage::Local, &[]), 0);
+        assert_eq!(std::fs::read_to_string(fresh.path().join(USAGE_SEEN)).unwrap(), "local\n");
     }
 }
