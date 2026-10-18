@@ -62,29 +62,32 @@ move to a new release, change the version in that script and in `crates/arkos/sr
 
 ## Releasing
 
-Releases are built by the `release` workflow, which runs only when you start it:
-`gh workflow run release -f version=0.2.1` (or the Actions tab). It bumps the version, tags
-`v0.2.1`, builds on a macOS runner, assembles and ad-hoc signs `Arkos IDE.app`, signs
-`manifest.json` with the release key (the repository secret `ARKOS_RELEASE_KEY`; make a pair with
-`scripts/release-key`, keep the secret there and in your password manager, and put the public half
-in `crates/protocol/src/release_key.rs`), and publishes a GitHub Release. Every running daemon
-sees it within five minutes. `release-tool verify --public <key> manifest.json manifest.json.sig`
-checks a published manifest by hand. `packaging/test.sh` runs the same packaging steps locally on
-a dev build.
+Every release is signed with the Developer ID and notarized, so macOS opens the download without
+the quarantine step and updates keep the app's permissions (Accessibility for the browser pane).
+macOS keys those permissions to the signature, so a release signed any other way makes every Mac
+forget them: until 0.5.1 releases alternated between an ad-hoc workflow and the notarized one,
+and each switch asked for Accessibility again. That `release` workflow is retired (it only
+refuses now), and a Developer ID copy's daemon refuses to stage an update its team did not sign
+(`check_signer` in `crates/arkosd/src/updates/stage.rs`), so a wrongly signed release cannot cost
+anyone their permissions. Two ways, the same steps:
 
-A release that macOS opens without the quarantine step, and whose updates keep the app's
-permissions (Accessibility for the browser pane; an ad-hoc signature's identity is the binary's
-hash, so macOS forgets them at every update), is signed with a Developer ID and notarized. Two
-ways, the same steps:
-
-- **`release-notarized` workflow**: `gh workflow run release-notarized -f version=0.3.1`. It
-  needs the secrets `APPLE_CERT_P12` (base64 of a `.p12` holding the "Developer ID Application"
-  identity and Apple's Developer ID G2 intermediate), `APPLE_CERT_PASSWORD`, `APPLE_API_KEY` (an
-  App Store Connect API key, the `.p8`, base64), `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`,
-  besides `ARKOS_RELEASE_KEY`.
+- **`release-notarized` workflow**: `gh workflow run release-notarized -f version=0.3.1` (or the
+  Actions tab; it runs only when you start it). It bumps the version, tags `v0.3.1`, builds on a
+  macOS runner, signs and notarizes `Arkos IDE.app`, signs `manifest.json` with the release key,
+  and publishes a GitHub Release; every running daemon sees it within five minutes. It needs the
+  secrets `APPLE_CERT_P12` (base64 of a `.p12` holding the "Developer ID Application" identity
+  and Apple's Developer ID G2 intermediate), `APPLE_CERT_PASSWORD`, `APPLE_API_KEY` (an App Store
+  Connect API key, the `.p8`, base64), `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`, besides
+  `ARKOS_RELEASE_KEY` (make a pair with `scripts/release-key`, keep the secret there and in your
+  password manager, and put the public half in `crates/protocol/src/release_key.rs`).
 - **`packaging/release.sh 0.3.1`** on a Mac that holds the identity in its keychain and a
   notary profile `arkos-notary` (`xcrun notarytool store-credentials arkos-notary --key <.p8>
   --key-id <id> --issuer <id>`, once), with `ARKOS_RELEASE_KEY` in the environment.
+
+After a release, bump the Homebrew cask (`csarkosh/homebrew-tap`, `Casks/arkos-ide.rb`: version
+and the zip's sha256) and run csarko.sh's `apps/deploy.sh` so the download button names it.
+`release-tool verify --public <key> manifest.json manifest.json.sig` checks a published manifest
+by hand. `packaging/test.sh` runs the same packaging steps locally on a dev build.
 
 `packaging/bundle.sh` signs with `CODESIGN_IDENTITY` when it is set (hardened runtime, timestamp)
 and ad-hoc otherwise; `packaging/notarize.sh` submits the zip, staples the ticket and rewrites the
@@ -92,7 +95,7 @@ zip, and runs before `manifest.sh`, which records the final zip. The key, the ce
 `.p8` live outside the repository (`~/.config/arkos-release/`): back them up; a lost key means a
 new identity and reset permissions on every Mac.
 
-All three release paths also do what makes a build a release for telemetry ([what Arkos
+Both release paths also do what makes a build a release for telemetry ([what Arkos
 sends](telemetry.md)). `bundle.sh` run with `ARKOS_CHANNEL=release` writes
 `Contents/Resources/channel` saying `release` before signing, and only such a bundle can ever
 upload; `packaging/test.sh`, the shoot and every dev build have no channel file and are `source`,
@@ -254,7 +257,7 @@ Things only a person at the screen can check, in order of value:
   seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
   "(restarted)"
 - "Update now" when nothing changed relaunches the window and every tab comes back attached
-- push, `gh workflow run release -f version=X`, wait for the run, see "Update ready: X" in the
+- push, `gh workflow run release-notarized -f version=X`, wait for the run, see "Update ready: X" in the
   bell within five minutes, stop typing for thirty seconds: the window relaunches with every
   shell and tab where it was; `arkos --version` in a tab prints X
 - `[update] auto = false`: the bell's dot stays and "Update now" applies it

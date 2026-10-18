@@ -1,95 +1,24 @@
 name: release
-# Manual only (the user's rule): nothing builds on push.
+# Retired 2026-10-17: it signed ad hoc, and macOS keys Accessibility and the other permissions to
+# an app's signature, so every switch between this and release-notarized made it forget them.
+# Kept only to refuse, so `gh workflow run release` says where to go instead.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, like 0.2.1"
+        description: "Retired: run release-notarized instead"
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: macos-15
-    # The input reaches the scripts only through this variable, never pasted into them.
-    env:
-      VERSION: ${{ inputs.version }}
+  refuse:
+    runs-on: ubuntu-latest
     steps:
-      - name: Release from main only
-        if: github.ref != 'refs/heads/main'
+      - name: Use release-notarized
         run: |
-          echo "run this workflow on main, not $GITHUB_REF"
+          echo "This workflow is retired: it signed ad hoc, which makes macOS forget Arkos's permissions."
+          echo "Run: gh workflow run release-notarized -f version=<version>"
           exit 1
-      # Actions pinned to full commit SHAs (looked up with `gh api`); the comment names the tag.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
-        with:
-          fetch-depth: 0
-      - name: Check the version
-        run: |
-          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not major.minor.patch"; exit 1; }
-          git rev-parse -q --verify "refs/tags/v$VERSION" && { echo "tag exists"; exit 1; } || true
-      # Pinned by SHA, so the toolchain is named here rather than by the ref.
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable, 2026-10-09
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (v2)
-      - name: Bump the version and tag
-        run: |
-          sed -i '' -E "s/^version = \"[0-9.]+\"\$/version = \"$VERSION\"/" Cargo.toml
-          grep -q "version = \"$VERSION\"" Cargo.toml
-          cargo update -w -q
-          git config user.name "release workflow"
-          git config user.email "release@csarko.sh"
-          git commit -am "Release $VERSION"
-          git tag "v$VERSION"
-      - name: Build
-        # The source root and the Cargo home are remapped out of the binaries, so a crash report's
-        # file reads /src/crates/... or /cargo/... and never the runner's folders (the toolchain's
-        # own paths already read /rustc/<hash>). Cargo hands rustc the workspace's own sources by
-        # relative paths, crates/..., which the first prefix does not match, hence the third. A
-        # crash report names the build by its commit, so a build that could not read it fails.
-        run: |
-          export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=crates=/src/crates"
-          cargo build --release --locked -p arkos -p arkosd -p release-tool
-          # The version is read first, so a binary that crashes or prints nothing fails here too.
-          for BIN in arkos arkosd; do
-            V=$("target/release/$BIN" --version)
-            case "$V" in "$BIN "*" ("*")") ;; *) echo "$BIN --version said '$V'"; exit 1 ;; esac
-            case "$V" in *"(unknown)") echo "$BIN was built without its commit hash"; exit 1 ;; esac
-          done
-      - name: Bundle and sign
-        env:
-          ARKOS_RELEASE_KEY: ${{ secrets.ARKOS_RELEASE_KEY }}
-          REPO: ${{ github.repository }}
-        run: |
-          mkdir -p dist
-          ZIP=$(ARKOS_CHANNEL=release sh packaging/bundle.sh "$VERSION" target/release dist)
-          sh packaging/dsym.sh "$VERSION" target/release dist
-          URL="https://github.com/$REPO/releases/download/v$VERSION/$(basename "$ZIP")"
-          sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "$URL" dist
-          target/release/release-tool sign --key-env ARKOS_RELEASE_KEY dist/manifest.json > dist/manifest.json.sig
-      - name: Check what will be published
-        run: |
-          # The signature checks against the first key the IDE trusts, as an installed IDE would.
-          KEY=$(sed -n 's/^ *"\(.*\)",$/\1/p' crates/protocol/src/release_key.rs | head -1)
-          target/release/release-tool verify --public "$KEY" dist/manifest.json dist/manifest.json.sig
-          [ "$(cat "dist/Arkos IDE.app/Contents/Resources/channel")" = release ] || { echo "the bundle is not on the release channel"; exit 1; }
-          GOT=$("dist/Arkos IDE.app/Contents/MacOS/arkosd" --version)
-          echo "$GOT"
-          case "$GOT" in
-            "arkosd $VERSION "*) ;;
-            *) echo "the bundled arkosd is not $VERSION"; exit 1 ;;
-          esac
-      - name: Push the release commit and tag
-        # Both or neither: a tag without its commit on main (or the reverse) is never published.
-        run: git push --atomic origin HEAD:main "v$VERSION"
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
-          if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
-          gh release create "v$VERSION" "dist/Arkos-IDE-$VERSION-arm64.zip" "dist/Arkos-IDE-$VERSION-dSYM.zip" dist/manifest.json dist/manifest.json.sig --title "Arkos IDE $VERSION" --notes "$NOTES"

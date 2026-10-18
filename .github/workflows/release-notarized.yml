@@ -4,7 +4,9 @@ name: release-notarized
 # rule): nothing builds on push. Secrets: APPLE_CERT_P12 (base64 of a .p12 holding the
 # "Developer ID Application" identity and Apple's Developer ID G2 intermediate),
 # APPLE_CERT_PASSWORD, APPLE_API_KEY (the App Store Connect API key, .p8, base64),
-# APPLE_API_KEY_ID, APPLE_API_ISSUER, and ARKOS_RELEASE_KEY as in release.yml.
+# APPLE_API_KEY_ID, APPLE_API_ISSUER, and ARKOS_RELEASE_KEY (the manifest's signing key). The only
+# release path: the ad-hoc `release` workflow is retired, and a signed copy refuses an update
+# its team did not sign.
 on:
   workflow_dispatch:
     inputs:

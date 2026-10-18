@@ -17,6 +17,9 @@ pub const BUNDLE_NAME: &str = "Arkos IDE.app";
 /// How long ditto may take to unpack a release (at most `MAX_ZIP_BYTES` of zip).
 const DITTO_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long codesign may take to read or check a bundle's signature.
+const CODESIGN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// `<dir>/<version>/Arkos IDE.app` from the zip, or an error with the folder removed.
 pub fn stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Staged, String> {
     let into = dir.join(&m.version);
@@ -29,6 +32,7 @@ pub fn stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Stage
         }
         let bundle = into.join(BUNDLE_NAME);
         check_bundle(&bundle, &m.version)?;
+        check_signer(&bundle, running_team().as_deref())?;
         Ok(Staged { version: m.version.clone(), git: m.git.clone(), bundle })
     })();
     if result.is_err() {
@@ -52,6 +56,41 @@ pub fn check_bundle(bundle: &Path, want_version: &str) -> Result<(), String> {
         Some(v) if format!("{}.{}.{}", v.major, v.minor, v.patch) == want_version => Ok(()),
         _ => Err(format!("the staged arkosd says {said:?}, the manifest {want_version}")),
     }
+}
+
+/// The Developer ID team that signed the bundle this daemon runs from, read once; None for an
+/// ad-hoc signature or a binary outside a bundle (a dev build, the tests).
+fn running_team() -> Option<String> {
+    static TEAM: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    TEAM.get_or_init(|| std::env::current_exe().ok().and_then(|exe| telemetry::bundle_of(&exe)).and_then(|b| team_of(&b))).clone()
+}
+
+/// The team in `codesign -dv`'s report on `bundle`, or None (ad hoc, unsigned or unreadable).
+pub fn team_of(bundle: &Path) -> Option<String> {
+    let out = super::run_bounded(Command::new("/usr/bin/codesign").args(["-dv", "--verbose=2"]).arg(bundle), CODESIGN_TIMEOUT).ok()?;
+    team_in(&String::from_utf8_lossy(&out.stderr))
+}
+
+/// `TeamIdentifier=ABCDE12345` in a codesign report; `not set` (ad hoc) is None.
+pub fn team_in(report: &str) -> Option<String> {
+    let team = report.lines().find_map(|l| l.strip_prefix("TeamIdentifier="))?.trim();
+    (!team.is_empty() && team != "not set").then(|| team.to_string())
+}
+
+/// A copy signed by a Developer ID team installs only a release that team signed, with a valid
+/// signature: macOS keys Accessibility and the other permissions to that signature, so any other
+/// (an ad-hoc build above all) would make it forget them. An ad-hoc copy takes any release, so
+/// it can move to a signed one.
+pub fn check_signer(bundle: &Path, team: Option<&str>) -> Result<(), String> {
+    let Some(team) = team else { return Ok(()) };
+    let requirement = format!("=anchor apple generic and certificate leaf[subject.OU] = \"{team}\"");
+    let ok = super::run_bounded(Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict", "-R"]).arg(&requirement).arg(bundle), CODESIGN_TIMEOUT)
+        .is_ok_and(|out| out.status.success());
+    if ok {
+        return Ok(());
+    }
+    let signer = team_of(bundle).map_or("an ad-hoc signature".to_string(), |t| format!("team {t}"));
+    Err(format!("the release is signed with {signer}, not by team {team}: installing it would make macOS forget Arkos's permissions"))
 }
 
 /// `exe --version`, within `timeout`, else None (the child is killed).
@@ -166,6 +205,31 @@ pub(crate) mod tests {
         assert!(check_bundle(&app, "0.3.0").unwrap_err().contains("0.2.1"));
         std::fs::remove_file(app.join("Contents/MacOS/arkos")).unwrap();
         assert!(check_bundle(&app, "0.2.1").unwrap_err().contains("arkos"));
+    }
+
+    #[test]
+    fn the_team_is_read_from_codesigns_report() {
+        assert_eq!(team_in("Identifier=sh.csarko.arkos\nTeamIdentifier=4MEU5BFV35\n").as_deref(), Some("4MEU5BFV35"));
+        assert_eq!(team_in("Signature=adhoc\nTeamIdentifier=not set\n"), None);
+        assert_eq!(team_in("code object is not signed at all\n"), None);
+    }
+
+    #[test]
+    fn a_signed_copy_refuses_a_release_its_team_did_not_sign() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_bundle(dir.path(), "0.2.1", "x");
+        assert_eq!(check_signer(&app, None), Ok(()), "an ad-hoc copy takes anything");
+        let e = check_signer(&app, Some("4MEU5BFV35")).unwrap_err();
+        assert!(e.contains("ad-hoc") && e.contains("4MEU5BFV35") && e.contains("permissions"), "{e}");
+    }
+
+    /// The installed release, when this Mac has one: its own team accepts it, another refuses it.
+    #[test]
+    fn the_installed_release_passes_for_its_own_team_only() {
+        let app = Path::new("/Applications/Arkos IDE.app");
+        let Some(team) = team_of(app) else { return };
+        assert_eq!(check_signer(app, Some(&team)), Ok(()));
+        assert!(check_signer(app, Some("ZZZZZZZZZZ")).unwrap_err().contains(&format!("team {team}")));
     }
 
     #[test]
