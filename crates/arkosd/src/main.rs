@@ -6,6 +6,7 @@ mod recovery;
 mod ring;
 mod server;
 mod session;
+mod spawn;
 mod telemetry;
 mod upgrade;
 mod updates;

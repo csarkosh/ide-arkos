@@ -4,17 +4,14 @@
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 #[cfg(not(any(target_os = "macos")))]
 compile_error!("arkosd's PTY layer is written for macOS (XNU ioctl numbers)");
 
-/// `libc` 0.2 may lack these on Apple targets; the values are XNU's.
-const TIOCSCTTY: libc::c_ulong = 0x2000_7461;
+/// `libc` 0.2 may lack this on Apple targets; the value is XNU's.
 const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
 
 pub struct Pty {
@@ -158,39 +155,32 @@ impl Pty {
 }
 
 /// Starts `program` with the slave as its terminal: a new session, the slave as its controlling
-/// terminal and standard streams. The slave is closed in the parent. Returns the pid; the child
-/// is reaped through `wait_nohang`, never through a `std::process::Child`, because the handover
-/// execs this process and a `Child` does not survive that.
+/// terminal and standard streams, and its own responsible process (`spawn.rs`), so what runs in
+/// the shell is checked by macOS as that shell, not as `arkosd`. The slave is closed in the
+/// parent. Returns the pid; the child is reaped through `wait_nohang`, never through a
+/// `std::process::Child`, because the handover execs this process and a `Child` does not survive
+/// that.
 pub fn spawn(slave: OwnedFd, program: &str, args: &[&str], cwd: &Path, env: &[(String, String)]) -> io::Result<libc::pid_t> {
-    let stdin = Stdio::from(slave.try_clone()?);
-    let stdout = Stdio::from(slave.try_clone()?);
-    let stderr = Stdio::from(slave);
-    let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(cwd).stdin(stdin).stdout(stdout).stderr(stderr);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    // SAFETY: only async-signal-safe calls between fork and exec.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::ioctl(0, TIOCSCTTY, 0) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = {
-        let _no_open_pty_inheritable = spawn_lock();
-        cmd.spawn()?
-    };
-    let pid = child.id() as libc::pid_t;
-    // The Child must not reap on drop; std's Child does not wait in Drop, so forgetting it only
-    // releases its stdio handles (clones of the slave, which we want closed in the parent).
-    std::mem::forget(child);
+    let path = tty_path(slave.as_raw_fd())?;
+    let _no_open_pty_inheritable = spawn_lock();
+    let pid = crate::spawn::spawn(program, args, cwd, env, crate::spawn::Stdio::Terminal(&path))?;
+    // The child opened its own descriptor on the terminal; ours goes.
+    drop(slave);
     Ok(pid)
+}
+
+/// The device path of a terminal descriptor (`/dev/ttys003`).
+fn tty_path(fd: RawFd) -> io::Result<std::path::PathBuf> {
+    let mut buf = [0 as libc::c_char; 128];
+    // SAFETY: buf is valid for its length; ttyname_r writes a NUL-terminated name into it.
+    let rc = unsafe { libc::ttyname_r(fd, buf.as_mut_ptr(), buf.len()) };
+    if rc != 0 {
+        return Err(io::Error::from_raw_os_error(rc));
+    }
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: ttyname_r succeeded, so buf holds a NUL-terminated string.
+    let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())))
 }
 
 /// `waitpid(pid, WNOHANG)`: `None` while running, `Some(code)` once reaped (a signal death is

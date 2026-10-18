@@ -198,7 +198,10 @@ another pane moves it, still docked. Chrome's own tab dragging is left alone.
 
 Moving another app's window needs the Accessibility permission. Arkos asks once, when the first
 browser pane needs it; until it is granted the pane explains what is missing and links to System
-Settings. Revoking it later brings the explanation back within a second.
+Settings. Revoking it later brings the explanation back within a second. The grant is Arkos IDE's,
+and holds for every window, including one the daemon reopens after an update. A shell in a tab is
+its own app to macOS: a command in it that reaches a protected folder (Documents, Desktop,
+Downloads) makes macOS ask for that shell (`zsh`), once.
 
 A pane holding a browser tab shows a slim 14 px tab bar: the pane number and one dot per tab, no
 titles, since Chrome shows the page's own title. Dragging a tab still drops onto it. To get the

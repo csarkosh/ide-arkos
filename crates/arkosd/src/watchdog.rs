@@ -8,9 +8,8 @@
 //! growing wait and then left alone.
 use crate::server::{ClientRecord, Shared, State};
 use std::collections::{BTreeSet, HashMap};
-use std::os::unix::process::CommandExt;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 /// How much further the wall clock may move than the monotonic one between two scans before the
@@ -416,40 +415,33 @@ pub fn launch_ui(exe: &Path, cwd: Option<&Path>, why: &str) -> std::io::Result<u
     launched
 }
 
+/// The window as its own responsible process (`spawn.rs`): macOS then checks its Accessibility
+/// as Arkos IDE's, which a window forked by the daemon never had.
 fn spawn_ui(exe: &Path, cwd: &Path) -> std::io::Result<u32> {
-    let mut cmd = Command::new(exe);
-    cmd.stdin(Stdio::null());
     // Both outputs to window.log, so a window that dies at start (or waits in the chooser) says
     // why; with no log, nowhere.
-    match crate::journal::open_window_log().and_then(|f| Some((f.try_clone().ok()?, f))) {
-        Some((out, err)) => cmd.stdout(out).stderr(err),
-        None => cmd.stdout(Stdio::null()).stderr(Stdio::null()),
-    };
+    let log = crate::journal::open_window_log();
+    let null = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+    let out = log.as_ref().map_or(null.as_raw_fd(), |f| f.as_raw_fd());
+    let program = exe.to_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "the window's path is not UTF-8"))?;
     // The window opens without taking focus: the user may be in another app.
-    cmd.env("ARKOS_RELAUNCH", "1");
-    cmd.current_dir(cwd);
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    // No fork while a session's PTY descriptors are still inheritable, or the relaunched UI
-    // would hold that terminal open for its whole life.
-    let mut child = {
+    let env = [("ARKOS_RELAUNCH".to_string(), "1".to_string())];
+    let pid = {
         let _no_open_pty_inheritable = crate::pty::spawn_lock();
-        cmd.spawn()?
+        crate::spawn::spawn(program, &[], cwd, &env, crate::spawn::Stdio::Output { stdout: out, stderr: out })?
     };
-    let pid = child.id();
     // Reap the child when it exits so it does not linger as a zombie.
     std::thread::spawn(move || {
-        let _ = child.wait();
+        let mut status = 0;
+        // SAFETY: waits for this process's own child; status is a valid out-pointer.
+        unsafe { libc::waitpid(pid, &mut status, 0) };
     });
-    Ok(pid)
+    Ok(pid as u32)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
     use super::*;
     use crate::session::ClientSink;
     use std::os::unix::net::UnixStream;
