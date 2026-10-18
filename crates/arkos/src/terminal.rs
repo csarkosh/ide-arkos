@@ -91,6 +91,73 @@ pub struct TerminalCore {
     listener: Listener,
     palette: Arc<Palette>,
     pub scroll: ScrollAnimator,
+    /// The program asked for theme-change pushes (`CSI ? 2031 h`, contour's colour palette
+    /// update notifications; alacritty_terminal ignores the mode, so it is read here). Claude
+    /// Code's Auto theme does, and then hears `CSI ? 997 ; 1 n` (dark) or `; 2 n` (light) at
+    /// every Arkos theme switch, so its colours follow without a restart.
+    theme_updates: bool,
+    /// The end of the last chunk when it stopped inside a `CSI ?` sequence, read with the next.
+    csi_tail: Vec<u8>,
+}
+
+/// The longest `CSI ?` sequence the theme scan waits for across chunks; anything longer is not
+/// one it reads.
+const CSI_TAIL_MAX: usize = 32;
+
+/// What a `CSI ? … ` sequence in the output asked of the theme scan.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ThemeAsks {
+    /// `Some(true)` when mode 2031 was set, `Some(false)` when reset, the last one winning.
+    updates: Option<bool>,
+    /// `CSI ? 996 n`: which theme is this, dark or light?
+    query: bool,
+}
+
+/// Reads `CSI ? <params> h|l|n` sequences out of `tail` followed by `bytes`; returns what they
+/// asked and the unfinished end to carry into the next chunk.
+fn scan_theme_asks(tail: &[u8], bytes: &[u8]) -> (ThemeAsks, Vec<u8>) {
+    let data: Vec<u8> = tail.iter().chain(bytes).copied().collect();
+    let mut asks = ThemeAsks::default();
+    let mut i = 0;
+    while let Some(at) = data[i..].iter().position(|&b| b == 0x1b).map(|p| p + i) {
+        let rest = &data[at..];
+        if rest.len() < 3 {
+            // ESC, or ESC [, at the very end: maybe the start of one.
+            if rest == b"\x1b" || rest == b"\x1b[" {
+                return (asks, rest.to_vec());
+            }
+            break;
+        }
+        if &rest[..3] != b"\x1b[?" {
+            i = at + 1;
+            continue;
+        }
+        let params_len = rest[3..].iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
+        let Some(&end) = rest.get(3 + params_len) else {
+            // Unfinished: carry it, unless it is too long to be one of ours.
+            return (asks, if rest.len() <= CSI_TAIL_MAX { rest.to_vec() } else { Vec::new() });
+        };
+        let params = std::str::from_utf8(&rest[3..3 + params_len]).unwrap_or("");
+        match end {
+            b'h' | b'l' if params.split(';').any(|p| p == "2031") => asks.updates = Some(end == b'h'),
+            b'n' if params == "996" => asks.query = true,
+            _ => {}
+        }
+        i = at + 3 + params_len + 1;
+    }
+    (asks, Vec::new())
+}
+
+/// The theme-change push for a palette: `CSI ? 997 ; 1 n` on a dark background, `; 2 n` on a
+/// light one (relative luminance under half is dark).
+fn theme_report(palette: &Palette) -> &'static [u8] {
+    let bg = palette.bg;
+    let luma = 0.2126 * f32::from(bg.r) + 0.7152 * f32::from(bg.g) + 0.0722 * f32::from(bg.b);
+    if luma < 128.0 {
+        b"\x1b[?997;1n"
+    } else {
+        b"\x1b[?997;2n"
+    }
 }
 
 impl TerminalCore {
@@ -100,11 +167,16 @@ impl TerminalCore {
         // the key encoding it asked for; see `key_mode`.
         let config = Config { scrolling_history: scrollback, kitty_keyboard: true, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new() }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new() }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
         let before = self.term.grid().display_offset();
+        let (asks, tail) = scan_theme_asks(&self.csi_tail, bytes);
+        self.csi_tail = tail;
+        if let Some(on) = asks.updates {
+            self.theme_updates = on;
+        }
         self.parser.advance(&mut self.term, bytes);
         self.flush_sync_if_due();
         // Alacritty raises display_offset as lines arrive while scrolled up; keep the animator
@@ -116,6 +188,9 @@ impl TerminalCore {
             self.scroll.target += d;
         }
         let mut w = Wakeup { repaint: !bytes.is_empty(), ..Default::default() };
+        if asks.query {
+            w.pty_write.extend_from_slice(theme_report(&self.palette));
+        }
         let events: Vec<TermEvent> = self.listener.events.lock().unwrap().drain(..).collect();
         for ev in events {
             match ev {
@@ -151,9 +226,11 @@ impl TerminalCore {
         Some(alacritty_terminal::vte::ansi::Rgb { r: c.r, g: c.g, b: c.b })
     }
 
-    /// Swaps the colours every cell resolves against at paint. Nothing is re-parsed.
-    pub fn set_palette(&mut self, palette: Arc<Palette>) {
+    /// Swaps the colours every cell resolves against at paint. Nothing is re-parsed. Returns the
+    /// theme-change push to write to the program when it asked for them (`theme_updates`).
+    pub fn set_palette(&mut self, palette: Arc<Palette>) -> Option<&'static [u8]> {
         self.palette = palette;
+        self.theme_updates.then(|| theme_report(&self.palette))
     }
 
     pub fn palette(&self) -> &Palette {
@@ -1358,6 +1435,36 @@ mod tests {
         // An index with no colour gets no answer, and nothing else is written.
         let w = core.apply_output(b"\x1b]4;999;?\x07");
         assert!(w.pty_write.is_empty());
+    }
+
+    #[test]
+    fn a_program_that_asks_for_theme_pushes_hears_each_switch() {
+        use crate::palette::{rgb, Palette, NAVY};
+        let mut core = TerminalCore::new(10, 2, 100);
+        let mut light = Palette { ..NAVY };
+        light.bg = rgb(0xf3effa);
+        assert_eq!(core.set_palette(std::sync::Arc::new(light.clone())), None, "nobody asked yet");
+        // The query alone is answered, from the palette in use.
+        assert_eq!(core.apply_output(b"\x1b[?996n").pty_write, b"\x1b[?997;2n");
+        // Mode 2031 set inside a list with another mode, split across two chunks.
+        assert!(core.apply_output(b"text\x1b[?2004;20").pty_write.is_empty());
+        core.apply_output(b"31h more");
+        assert_eq!(core.set_palette(std::sync::Arc::new(Palette { ..NAVY })), Some(&b"\x1b[?997;1n"[..]), "navy is dark");
+        assert_eq!(core.set_palette(std::sync::Arc::new(light)), Some(&b"\x1b[?997;2n"[..]));
+        // Reset: switches are silent again, and the grid saw only the text.
+        core.apply_output(b"\x1b[?2031l");
+        assert_eq!(core.set_palette(std::sync::Arc::new(Palette { ..NAVY })), None);
+        assert!(text_of(&core.rows_for_paint().visible[0]).starts_with("text more"));
+    }
+
+    #[test]
+    fn the_theme_scan_carries_only_unfinished_csi_sequences() {
+        assert_eq!(scan_theme_asks(b"", b"plain \x1b[1mbold"), (ThemeAsks::default(), Vec::new()));
+        assert_eq!(scan_theme_asks(b"", b"end\x1b").1, b"\x1b");
+        assert_eq!(scan_theme_asks(b"", b"end\x1b[?99").1, b"\x1b[?99");
+        assert_eq!(scan_theme_asks(b"\x1b[?99", b"6n").0, ThemeAsks { updates: None, query: true });
+        assert_eq!(scan_theme_asks(b"", b"\x1b[?2031h\x1b[?2031l").0.updates, Some(false), "the last one wins");
+        assert_eq!(scan_theme_asks(b"", b"\x1b[?12031h").0.updates, None, "only 2031 itself");
     }
 
     #[test]

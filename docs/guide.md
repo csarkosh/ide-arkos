@@ -447,7 +447,11 @@ the interval it started with. `auto` and `idle_after_secs` apply at once.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
-wrench at the right of the title bar) sets it for you.
+wrench at the right of the title bar) sets it for you. Claude Code's colours follow the Arkos
+theme when its theme is Auto (`"theme": "auto"`): it asks the terminal for its background, and
+Arkos answers with the theme's and tells it at every theme switch, so a light theme never shows
+Claude Code's dark-theme text. Arkos sets Auto itself at start when the theme is unset, `dark` or
+`light`; for any other choice the doctor offers it.
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light`,
 `timo-purple`, `peach-light` (warm cream and peach) and `lavender-light` (a VS Code lavender look) are built in. [themes.md](themes.md) documents every key;

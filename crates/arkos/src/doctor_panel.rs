@@ -12,6 +12,7 @@ use crate::hook_cli;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckId {
     WheelScroll,
+    ClaudeTheme,
     StartAtLogin,
     TitleHook,
     Accessibility,
@@ -52,11 +53,16 @@ pub struct Probe<'a> {
     pub claude_present: bool,
 }
 
-/// The five checks, in the order the popover lists them.
+/// The six checks, in the order the popover lists them.
 pub fn probe_all(p: &Probe) -> Vec<Check> {
     let (scroll_state, scroll_button) = match hook_cli::wheel_scroll_acceleration_at(p.settings) {
         Ok(Some(false)) => (State::Good(if p.scroll_applied { "on; restart claude for it to take effect" } else { "on" }.into()), None),
         Ok(_) => (State::Fix("off: fast scrolls jump in Claude Code".into()), Some("Apply")),
+        Err(e) => (State::Broken(e), None),
+    };
+    let (theme_state, theme_button) = match hook_cli::claude_theme_at(p.settings) {
+        Ok(Some(t)) if t == "auto" => (State::Good("on: Claude Code matches each Arkos theme".into()), None),
+        Ok(t) => (State::Fix(format!("{}: Claude Code keeps its own colours, unreadable on some Arkos themes", t.as_deref().map_or("not set".to_string(), |t| format!("set to {t}")))), Some("Apply")),
         Err(e) => (State::Broken(e), None),
     };
     let (login_state, login_button) = match (p.start_at_login, p.login_item_installed) {
@@ -85,6 +91,7 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
     };
     vec![
         Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: scroll_state, button: scroll_button },
+        Check { id: CheckId::ClaudeTheme, title: "Claude Code: follows the Arkos theme", state: theme_state, button: theme_button },
         Check { id: CheckId::StartAtLogin, title: "Start at login", state: login_state, button: login_button },
         Check { id: CheckId::TitleHook, title: "Claude Code title hook", state: hook_state, button: hook_button },
         Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: ax_state, button: ax_button },
@@ -118,20 +125,21 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_machine_has_three_things_to_fix() {
+    fn a_fresh_machine_has_four_things_to_fix() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
         let checks = probe_all(&probe(&settings, exe));
-        assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::Accessibility, CheckId::AgentGuide]);
+        assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::ClaudeTheme, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::Accessibility, CheckId::AgentGuide]);
         assert_eq!(checks[0], Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: State::Fix("off: fast scrolls jump in Claude Code".into()), button: Some("Apply") });
-        assert_eq!(checks[1].state, State::Fix("off: sessions do not come back after a restart".into()));
-        assert_eq!(checks[1].button, Some("Install"));
-        assert_eq!(checks[2].state, State::Fix("missing: tabs show no Claude Code state".into()));
+        assert_eq!(checks[2].state, State::Fix("off: sessions do not come back after a restart".into()));
         assert_eq!(checks[2].button, Some("Install"));
-        assert_eq!(checks[2].title, "Claude Code title hook");
-        assert_eq!(checks[3], Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: State::Good("granted".into()), button: None });
-        assert_eq!(needs_fix(&checks), 3);
+        assert_eq!(checks[3].state, State::Fix("missing: tabs show no Claude Code state".into()));
+        assert_eq!(checks[3].button, Some("Install"));
+        assert_eq!(checks[3].title, "Claude Code title hook");
+        assert_eq!(checks[4], Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: State::Good("granted".into()), button: None });
+        assert_eq!(checks[1], Check { id: CheckId::ClaudeTheme, title: "Claude Code: follows the Arkos theme", state: State::Fix("not set: Claude Code keeps its own colours, unreadable on some Arkos themes".into()), button: Some("Apply") });
+        assert_eq!(needs_fix(&checks), 4);
     }
 
     #[test]
@@ -141,14 +149,16 @@ mod tests {
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
         crate::hook_cli::install_hooks_at(&settings, exe).unwrap();
         crate::hook_cli::set_wheel_scroll_acceleration_at(&settings, false).unwrap();
+        crate::hook_cli::set_claude_theme_auto_at(&settings).unwrap();
         let mut p = probe(&settings, exe);
         p.login_item_installed = true;
         p.scroll_applied = true;
         let checks = probe_all(&p);
         assert_eq!(checks[0].state, State::Good("on; restart claude for it to take effect".into()));
         assert_eq!(checks[0].button, None);
-        assert_eq!((checks[1].state.clone(), checks[1].button), (State::Good("on".into()), Some("Remove")));
-        assert_eq!(checks[2].state, State::Good("installed".into()));
+        assert_eq!((checks[2].state.clone(), checks[2].button), (State::Good("on".into()), Some("Remove")));
+        assert_eq!(checks[1].state, State::Good("on: Claude Code matches each Arkos theme".into()));
+        assert_eq!(checks[3].state, State::Good("installed".into()));
         assert_eq!(needs_fix(&checks), 0);
         p.scroll_applied = false;
         assert_eq!(probe_all(&p)[0].state, State::Good("on".into()));
@@ -173,12 +183,12 @@ mod tests {
         p.start_at_login = StartAtLogin::Off;
         p.accessibility = false;
         let checks = probe_all(&p);
-        assert_eq!(checks[1], Check { id: CheckId::StartAtLogin, title: "Start at login", state: State::Pinned("off, set in config.toml ([recovery] start_at_login)".into()), button: None });
-        assert_eq!(checks[3].state, State::Fix("not granted: browser tabs cannot dock".into()));
-        assert_eq!(checks[3].button, Some("Open System Settings"));
+        assert_eq!(checks[2], Check { id: CheckId::StartAtLogin, title: "Start at login", state: State::Pinned("off, set in config.toml ([recovery] start_at_login)".into()), button: None });
+        assert_eq!(checks[4].state, State::Fix("not granted: browser tabs cannot dock".into()));
+        assert_eq!(checks[4].button, Some("Open System Settings"));
         p.start_at_login = StartAtLogin::On;
-        assert_eq!(probe_all(&p)[1].state, State::Pinned("on, set in config.toml ([recovery] start_at_login)".into()));
-        assert_eq!(needs_fix(&probe_all(&p)), 3, "pinned rows never count; scroll, hook and accessibility do");
+        assert_eq!(probe_all(&p)[2].state, State::Pinned("on, set in config.toml ([recovery] start_at_login)".into()));
+        assert_eq!(needs_fix(&probe_all(&p)), 4, "pinned rows never count; scroll, theme, hook and accessibility do");
     }
 
     #[test]
@@ -189,8 +199,9 @@ mod tests {
         let checks = probe_all(&probe(&settings, Path::new("/x/arkos")));
         assert!(matches!(&checks[0].state, State::Broken(t) if t.starts_with(&format!("cannot parse {}", settings.display()))), "{:?}", checks[0].state);
         assert_eq!(checks[0].button, None);
-        assert!(matches!(&checks[2].state, State::Broken(t) if t.starts_with("cannot parse")), "{:?}", checks[2].state);
-        assert_eq!(checks[2].button, None);
+        assert!(matches!(&checks[3].state, State::Broken(t) if t.starts_with("cannot parse")), "{:?}", checks[3].state);
+        assert_eq!(checks[3].button, None);
+        assert!(matches!(&checks[1].state, State::Broken(t) if t.starts_with("cannot parse")), "{:?}", checks[1].state);
         assert_eq!(needs_fix(&checks), 1, "a broken row is not a fix the doctor can make; only start at login is left");
     }
 

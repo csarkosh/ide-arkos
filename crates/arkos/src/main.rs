@@ -774,6 +774,35 @@ impl Root {
         self.probe_doctor();
     }
 
+    /// At startup: a stock Claude Code theme (unset, dark or light) becomes Auto, so Claude Code
+    /// asks Arkos for its colours instead of keeping one kind of background; any other choice is
+    /// left for the doctor's row to offer. Claude Code reloads its settings, so running sessions
+    /// pick it up.
+    fn follow_theme_in_claude(&mut self, cx: &mut Context<Self>) {
+        let path = hook_cli::claude_settings_path();
+        let root = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let changed = cx
+                .background_executor()
+                .spawn(async move {
+                    let theme = hook_cli::claude_theme_at(&path).ok()?;
+                    if !path.exists() || !hook_cli::claude_theme_is_stock(theme.as_deref()) {
+                        return None;
+                    }
+                    hook_cli::set_claude_theme_auto_at(&path).ok().map(|()| theme)
+                })
+                .await;
+            if let Some(was) = changed {
+                eprintln!("arkos: Claude Code's theme was {}; set to auto so it follows the Arkos theme", was.as_deref().unwrap_or("unset"));
+                let _ = root.update(cx, |root, cx| {
+                    root.probe_doctor();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Runs what a notice's button (or its row) offers.
     fn run_notice_action(&mut self, action: notices::Action, cx: &mut Context<Self>) {
         match action {
@@ -849,6 +878,22 @@ impl Root {
                                 root.probe_doctor();
                             }
                             Err(e) => root.mark_doctor_broken(CheckId::WheelScroll, e),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            CheckId::ClaudeTheme => {
+                let path = hook_cli::claude_settings_path();
+                let root = cx.entity();
+                cx.spawn(async move |_, cx| {
+                    let r = cx.background_executor().spawn(async move { hook_cli::set_claude_theme_auto_at(&path) }).await;
+                    let _ = root.update(cx, |root, cx| {
+                        root.doctor_busy = None;
+                        match r {
+                            Ok(()) => root.probe_doctor(),
+                            Err(e) => root.mark_doctor_broken(CheckId::ClaudeTheme, e),
                         }
                         cx.notify();
                     });
@@ -1121,7 +1166,10 @@ impl Root {
         self.reload_all_viewers(cx);
         for t in self.sessions.terminals.values() {
             t.update(cx, |t, cx| {
-                t.core.set_palette(palette.clone());
+                // A program that asked for theme pushes (Claude Code's Auto theme) hears the switch.
+                if let Some(push) = t.core.set_palette(palette.clone()) {
+                    t.client.send(Request::Input { session: t.session, bytes: push.to_vec() });
+                }
                 cx.notify();
             });
         }
@@ -4411,6 +4459,7 @@ fn open_project_window(
             root.invitation_config_changed();
             root.theme_error = theme_error;
             root.seed_notices(updated);
+            root.follow_theme_in_claude(cx);
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
             root.refresh_status(cx);

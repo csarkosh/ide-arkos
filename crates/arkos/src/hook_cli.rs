@@ -313,6 +313,33 @@ pub fn wheel_scroll_acceleration_at(path: &Path) -> Result<Option<bool>, String>
     Ok(read_settings(path)?.and_then(|v| v.get("wheelScrollAccelerationEnabled").and_then(|b| b.as_bool())))
 }
 
+/// Claude Code's `theme` key: Ok(Some(name)) when it is a string, Ok(None) when absent or the
+/// file is missing, the `read_settings` error otherwise.
+pub fn claude_theme_at(path: &Path) -> Result<Option<String>, String> {
+    Ok(read_settings(path)?.and_then(|v| v.get("theme").and_then(|t| t.as_str()).map(str::to_string)))
+}
+
+/// Sets Claude Code's theme to `auto` (Auto, match terminal): it asks the terminal for its
+/// background and listens for its theme pushes, both of which Arkos answers from its own theme,
+/// so Claude Code's colours are readable on every Arkos theme and follow each switch.
+pub fn set_claude_theme_auto_at(path: &Path) -> Result<(), String> {
+    edit_settings(path, |mut v| {
+        if !v.is_object() {
+            v = serde_json::json!({});
+        }
+        v["theme"] = serde_json::json!("auto");
+        v
+    })
+}
+
+/// Whether Arkos sets Claude Code's theme to `auto` without asking: when it is unset or one of the
+/// two stock themes, which match one kind of terminal background and are what onboarding
+/// leaves. A colourblind-friendly, ANSI-only or custom theme is a deliberate choice; the doctor
+/// offers the change for those and leaves the choice to the person.
+pub fn claude_theme_is_stock(theme: Option<&str>) -> bool {
+    matches!(theme, None | Some("dark") | Some("light"))
+}
+
 /// Whether every event in `hooks_json(exe)` has, in the file, a group whose commands equal ours for
 /// that event (so hooks installed from an old or moved binary count as missing, which is what an
 /// install would replace). A missing file is `Ok(false)`; one that cannot be read or parsed is the
@@ -672,6 +699,21 @@ mod tests {
         assert!(v["hooks"]["Stop"].is_array(), "other keys and nesting kept");
         assert!(path.with_extension("json.bak").exists());
         assert_eq!(wheel_scroll_acceleration_at(&path), Ok(Some(false)));
+    }
+
+    #[test]
+    fn the_claude_theme_is_set_to_auto_and_everything_else_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert_eq!(claude_theme_at(&path), Ok(None), "no file");
+        std::fs::write(&path, r#"{"theme":"dark","wheelScrollAccelerationEnabled":false}"#).unwrap();
+        assert_eq!(claude_theme_at(&path), Ok(Some("dark".into())));
+        set_claude_theme_auto_at(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!((v["theme"].as_str(), v["wheelScrollAccelerationEnabled"].as_bool()), (Some("auto"), Some(false)));
+        assert!(path.with_extension("json.bak").exists());
+        assert!(claude_theme_is_stock(None) && claude_theme_is_stock(Some("dark")) && claude_theme_is_stock(Some("light")));
+        assert!(!claude_theme_is_stock(Some("auto")) && !claude_theme_is_stock(Some("dark-daltonized")) && !claude_theme_is_stock(Some("light-ansi")));
     }
 
     #[test]
