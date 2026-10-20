@@ -68,6 +68,7 @@ mod tree;
 mod update;
 mod update_check;
 mod viewer;
+mod video;
 mod viewer_element;
 mod workspace;
 mod worktrees;

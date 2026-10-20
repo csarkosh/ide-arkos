@@ -36,6 +36,8 @@ unicode-width = "0.2"
 # features off: the full AppKit binding is a long compile, and only these modules are used.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSGraphics", "NSView"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFString", "CFNumber", "CFCGTypes"] }
+# gpui's CoreVideo crate: the pixel buffer type its surface element paints (video tab).
+core-video = "0.4.3"
 
 [dev-dependencies]
 tempfile.workspace = true
