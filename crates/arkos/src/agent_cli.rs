@@ -17,10 +17,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `arkos --help`.
 pub const USAGE: &str = "\
-usage: arkos guide                  how an agent changes the theme and settings; read it first
-       arkos open <file> ...          show a video or a document in a pane beside you
-       arkos video <command> ...      status, play, pause, seek, step, loop, reload, close, mute
-       arkos panes                    this window's panes and tabs, numbered as Cmd+1..9
+usage: arkos guide                  how an agent shows the user a file and changes the theme; read it first
+       arkos open <file> ...        show a video or a document in a pane beside you
+       arkos video <command> ...    status, play, pause, seek, step, loop, reload, close, mute
+       arkos panes                  this window's panes and tabs, numbered as Cmd+1..9
        arkos [<folder>]             open a window on a folder (default: the current one)
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current
        arkos settings get|set ...   read the config, or set a key on the allow-list
