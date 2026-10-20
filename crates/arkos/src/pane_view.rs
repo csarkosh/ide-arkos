@@ -194,12 +194,36 @@ pub fn prompt_url(typed: &str, configured: &str) -> Option<String> {
     (!url.is_empty()).then(|| with_scheme(url))
 }
 
-/// The URL prompt ("New browser tab"), a small box at the top of the focused pane. `target`
-/// is the waiting browser tab whose "Open a URL..." opened it; `None` makes a new tab.
+/// What `typed` names in the path prompt: a path under the home folder for `~`, under the
+/// project for a relative one, as it is for an absolute one; `None` when nothing was typed.
+pub fn prompt_path(typed: &str, project: &std::path::Path, home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return None;
+    }
+    Some(match typed.strip_prefix('~') {
+        Some("") => home.to_path_buf(),
+        Some(rest) if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
+        _ if typed.starts_with('/') => std::path::PathBuf::from(typed),
+        _ => project.join(typed),
+    })
+}
+
+/// What the prompt asks for: a URL for a browser tab (in Chrome's app mode or not), or a file's
+/// path to open in the focused pane ("Open file in pane...").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    Url { app_mode: bool },
+    Path,
+}
+
+/// The URL prompt ("New browser tab"), a small box at the top of the focused pane; the same box
+/// asks for a path when `kind` is `Path`. `target` is the waiting browser tab whose "Open a
+/// URL..." opened it; `None` makes a new tab.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UrlPrompt {
     pub edit: LineEdit,
-    pub app_mode: bool,
+    pub kind: PromptKind,
     pub target: Option<TabId>,
     /// How the tab it opens is opened: the palette or the key that opened the prompt.
     pub via: crate::telemetry::Opened,
@@ -212,16 +236,23 @@ pub enum UrlStep {
     Cancel,
     /// Enter: the URL to open (`prompt_url`).
     Open(Option<String>),
+    /// Enter in the path prompt: what was typed, trimmed (`prompt_path` reads it).
+    OpenPath(String),
 }
 
 impl UrlPrompt {
-    pub fn new(app_mode: bool, target: Option<TabId>) -> Self {
-        UrlPrompt { edit: LineEdit::new(), app_mode, target, via: crate::telemetry::current_via() }
+    pub fn new(kind: PromptKind, target: Option<TabId>) -> Self {
+        UrlPrompt { edit: LineEdit::new(), kind, target, via: crate::telemetry::current_via() }
     }
 
-    /// One key; `configured` is `[browser] url`, taken when the field is empty.
+    /// One key; `configured` is `[browser] url`, taken when a URL field is empty. Enter on an
+    /// empty path opens nothing and keeps the prompt.
     pub fn key(&mut self, ks: &Keystroke, configured: &str) -> UrlStep {
         match self.edit.handle(ks) {
+            Edit::Submit | Edit::SubmitBack if self.kind == PromptKind::Path => match self.edit.text.trim() {
+                "" => UrlStep::Stay,
+                typed => UrlStep::OpenPath(typed.to_string()),
+            },
             Edit::Submit | Edit::SubmitBack => UrlStep::Open(prompt_url(&self.edit.text, configured)),
             Edit::Cancel => UrlStep::Cancel,
             _ => UrlStep::Stay,
@@ -1278,15 +1309,21 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
 }
 
+/// A video tab: the picture, the control strip and the video keys (`video_element`), its view
+/// made the first time the tab is shown. A press anywhere in it focuses the pane.
+fn render_video(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
+    let view = root.video_for(tab, path, cx);
+    let theme = root.theme.clone();
+    let family = root.family();
+    div()
+        .size_full()
+        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
+        .child(crate::video_element::render(&view, &theme, family, cx))
+}
+
 /// A browser tab's placeholder: the rectangle a Chrome window docks onto, reported every frame
 /// (a `canvas`, like the pane's grid measure; it paints nothing and asks for no frames), and the
 /// screen `browser_screen` picks. A click anywhere in it is `browser_clicked`.
-/// A video tab's body. A placeholder until the player view replaces it: the file's name, centred.
-fn render_video(root: &mut Root, _pane: PaneId, _tab: TabId, path: &std::path::Path, _cx: &mut Context<Root>) -> Div {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    div().flex().flex_1().items_center().justify_center().text_color(root.theme.chrome.text_dim.hsla()).child(name)
-}
-
 fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>, app_mode: bool, cx: &mut Context<Root>) -> Div {
     let focus = pane_focus(root, pane, cx);
     let theme = root.theme.clone();
@@ -1351,7 +1388,7 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>
                     .flex_row()
                     .gap(px(10.0))
                     .child(button("browser-dock", "Dock a Chrome window\u{2026}").on_click(cx.listener(|root, _ev: &ClickEvent, window, cx| root.run(Command::DockChromeWindow, window, cx))))
-                    .child(button("browser-url", "Open a URL\u{2026}").on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.open_url_prompt(app_mode, Some(tab), cx)))),
+                    .child(button("browser-url", "Open a URL\u{2026}").on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.open_url_prompt(PromptKind::Url { app_mode }, Some(tab), cx)))),
             )
             .when(!tip_seen, |d| {
                 d.child(
@@ -1397,8 +1434,12 @@ fn render_url_prompt(root: &mut Root, pane: PaneId, bar_h: f32, cx: &mut Context
     let theme = root.theme.clone();
     let family = root.ui_family();
     let c = &theme.chrome;
-    let hint = if p.app_mode { "Enter opens it as a single page; empty opens [browser] url; Escape cancels" } else { "Enter opens it; empty opens [browser] url; Escape cancels" };
-    let field = line_edit::render(&p.edit, "a URL, like example.com", &theme, family.clone(), 13.0);
+    let (hint, placeholder) = match p.kind {
+        PromptKind::Url { app_mode: true } => ("Enter opens it as a single page; empty opens [browser] url; Escape cancels", "a URL, like example.com"),
+        PromptKind::Url { app_mode: false } => ("Enter opens it; empty opens [browser] url; Escape cancels", "a URL, like example.com"),
+        PromptKind::Path => ("Enter opens it in this pane; a relative path is the project's; Escape cancels", "a file, like ~/Movies/cut.mp4"),
+    };
+    let field = line_edit::render(&p.edit, placeholder, &theme, family.clone(), 13.0);
     Some(
         div()
             .absolute()
@@ -1621,7 +1662,7 @@ mod tests {
     #[test]
     fn the_url_prompt_opens_on_enter_and_cancels_on_escape() {
         let key = |k: &str| gpui::Keystroke::parse(k).unwrap();
-        let mut p = UrlPrompt::new(true, None);
+        let mut p = UrlPrompt::new(PromptKind::Url { app_mode: true }, None);
         assert_eq!(p.key(&key("enter"), ""), UrlStep::Open(None), "an empty field with no configured URL is a blank window");
         assert_eq!(p.key(&key("enter"), "example.org"), UrlStep::Open(Some("https://example.org".into())));
         p.edit.set("rust-lang.org");
@@ -1629,7 +1670,23 @@ mod tests {
         assert_eq!(p.edit.text, "rust-lang.or");
         assert_eq!(p.key(&key("enter"), "example.org"), UrlStep::Open(Some("https://rust-lang.or".into())), "what was typed wins");
         assert_eq!(p.key(&key("escape"), ""), UrlStep::Cancel);
-        assert!(p.app_mode);
+        assert_eq!(p.kind, PromptKind::Url { app_mode: true });
+    }
+
+    #[test]
+    fn the_path_prompt_reads_home_and_the_project_and_opens_on_enter() {
+        let (project, home) = (std::path::Path::new("/p/proj"), std::path::Path::new("/Users/me"));
+        assert_eq!(prompt_path("/v/cut.mp4", project, home), Some("/v/cut.mp4".into()));
+        assert_eq!(prompt_path("  ~/Movies/cut.mp4 ", project, home), Some("/Users/me/Movies/cut.mp4".into()));
+        assert_eq!(prompt_path("~", project, home), Some("/Users/me".into()));
+        assert_eq!(prompt_path("out/cut.mp4", project, home), Some("/p/proj/out/cut.mp4".into()), "a relative path is the project's");
+        assert_eq!(prompt_path("   ", project, home), None);
+        let key = |k: &str| gpui::Keystroke::parse(k).unwrap();
+        let mut p = UrlPrompt::new(PromptKind::Path, None);
+        assert_eq!(p.key(&key("enter"), ""), UrlStep::Stay, "an empty path opens nothing and the prompt stays");
+        p.edit.set("/v/cut.mp4");
+        assert_eq!(p.key(&key("enter"), "example.org"), UrlStep::OpenPath("/v/cut.mp4".into()), "a path is never given a scheme");
+        assert_eq!(p.key(&key("escape"), ""), UrlStep::Cancel);
     }
 
     #[test]

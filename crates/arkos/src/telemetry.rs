@@ -63,10 +63,9 @@ values! {
         Markdown => "markdown",
         Code => "code",
         Plain => "plain",
-        // No call site yet: an image or a video opened as a file is shown as a binary.
+        // No call site yet: an image opened as a file is shown as a binary.
         #[allow(dead_code)]
         Image => "image",
-        #[allow(dead_code)]
         Video => "video",
         Binary => "binary",
         TooLarge => "too_large",
@@ -105,8 +104,6 @@ values! {
         ChromeMissing => "chrome_missing",
         MermaidFailed => "mermaid_failed",
         SaveFailed => "save_failed",
-        // No call site yet: the player view (Task 6) records it.
-        #[allow(dead_code)]
         VideoUnplayable => "video_unplayable",
     }
 }
@@ -1022,6 +1019,11 @@ pub fn notice(kind: crate::notices::Kind) {
 
 pub fn error(kind: Failure) {
     with(|r, now| r.error(kind, now));
+}
+
+/// A video tab showed its first frame.
+pub fn video_shown() {
+    with(|r, now| r.view(Format::Video, Shown::Rendered, now));
 }
 
 // No call site yet: Task 8 records an agent's `arkos open`, `arkos video` and `arkos panes`.

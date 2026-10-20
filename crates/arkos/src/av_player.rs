@@ -19,8 +19,6 @@
 //! one callback, a seek's completion handler, only bumps an atomic counter. Nothing in
 //! `cargo test` constructs a player.
 #![cfg(target_os = "macos")]
-// The video view constructs the player (Task 6); until then nothing outside the test uses it.
-#![allow(dead_code)]
 
 use crate::video::{Player, PlayerEvent};
 use block2::RcBlock;

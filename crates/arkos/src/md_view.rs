@@ -1558,7 +1558,7 @@ fn open_in_preview(file: PathBuf, cx: &mut App) {
 /// plain file of the kind its name says, so a link named like audio that leads to an app or a
 /// script is refused, with a line on stderr and nothing shown in the window. A path that is not
 /// absolute is not opened.
-fn open_media(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
+pub(crate) fn open_media(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
     if !file.is_absolute() {
         return;
     }
