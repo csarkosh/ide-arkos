@@ -60,6 +60,29 @@ move to a new release, change the version in that script and in `crates/arkos/sr
 (`VERSION`), record the new hash, run the script and commit the file. The recorded SHA-256 for 11.17.2 is
 `581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8`.
 
+## Motion
+
+Every transition in the window goes through `crates/arkos/src/motion.rs`, on `Instant`, with
+one duration per kind: `ENTER` (120 ms, chrome appearing), `EXIT` (90 ms, chrome going),
+`SIDEBAR_SLIDE` (150 ms, Cmd+B) and `THEME_FADE` (200 ms, a theme switch). Under macOS's Reduce
+Motion every curve is at its end at once; nothing animates. The rules that keep this working as
+features are added:
+
+- A colour is read from `root.theme` at paint time and never cached in a view or an element
+  built earlier. For 200 ms after a theme switch `root.theme` is a `theme::blend` of the old and
+  the new theme, remade each frame; a view that keeps a colour from an earlier frame snaps or
+  lags behind the rest of the window.
+- Anything that derives data from the theme once, rather than reading it at paint (the
+  highlighter's spans, a viewer's re-highlight, the terminal program's theme push, Claude Code's
+  `CSI ? 997 n`), does so from the final theme at the end of the fade, in `Root::finish_theme`,
+  never per frame. Per-frame work is limited to swapping what the next paint reads.
+- A new animated thing adds its `animating(now)` to `Root::any_motion`, so the one
+  `request_animation_frame` in `Root::render` serves every transition and an idle window still
+  paints nothing. Read `now` once per frame (`Root::frame_now`); never call `Instant::now()` per
+  element.
+- A new surface that reads the palette or the theme (a window, a panel, a program told about
+  the theme) is checked by hand with a theme switch: it must fade with the window, not jump.
+
 ## Releasing
 
 Every release is signed with the Developer ID and notarized, so macOS opens the download without
@@ -314,9 +337,12 @@ Things only a person at the screen can check, in order of value:
   Window log and Daemon log paths exist; "Copy details" then paste gives "Arkos IDE {version}"
   and one `label: value` line per row; the "Buy me more tokens" line is hidden while
   `DONATE_URL` is empty
-- Settings: Dark theme or Mode switches the window at once and `config.toml` keeps its comments;
+- Settings: Dark theme or Mode switches the window and `config.toml` keeps its comments;
   "Add theme…" with a broken file shows the error and copies nothing, and with a file named
   like an installed theme asks "Replace the existing ..." first
+- switch themes in Settings, with `arkos theme use`, and by flipping macOS appearance: the window
+  fades over 200 ms with the terminals, no colour snaps, and a second switch mid-fade starts from
+  the colours on screen; with Reduce Motion on, the switch is instant
 - edit the configured theme's file (`~/.config/arkos/themes/<name>.toml`, change `window_bg`) while
   the window shows it: the colour follows within a second; save it with a typo: the banner names
   the error and the last good colours stay

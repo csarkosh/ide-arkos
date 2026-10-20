@@ -395,7 +395,8 @@ Settings (menu or Cmd+,) has the shared title bar and six sections.
   listed under Help, Keybindings" and a "Keybindings" button that opens that window.
 
 Every change is written to `config.toml` in place, keeping its comments, order and formatting, and
-applies at once; Settings, About and Keybindings follow a live theme change. Other Arkos windows
+applies at once; a theme change cross-fades the window, its terminals included, over 200 ms (at
+once with Reduce Motion on), and Settings, About and Keybindings follow it. Other Arkos windows
 are other processes and follow within a second through the config watcher. A change made in the
 chooser is written and takes effect when the project window opens. While the config has an error,
 Settings shows the error in a banner and its controls are read-only, except "Open config". A write
@@ -449,8 +450,8 @@ Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
 wrench at the right of the title bar) sets it for you. Claude Code's colours follow the Arkos
 theme when its theme is Auto (`"theme": "auto"`): it asks the terminal for its background, and
-Arkos answers with the theme's and tells it at every theme switch, so a light theme never shows
-Claude Code's dark-theme text. Arkos sets Auto itself at start when the theme is unset, `dark` or
+Arkos answers with the theme's and tells it at the end of every theme switch's fade, so a light
+theme never shows Claude Code's dark-theme text. Arkos sets Auto itself at start when the theme is unset, `dark` or
 `light`; for any other choice the doctor offers it.
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light`,
@@ -459,7 +460,9 @@ Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light`
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen
 from the palette lasts until the config reloads or the app relaunches; the config file decides
-otherwise. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
+otherwise. However a theme arrives (Settings, the palette, `arkos theme use` or `preview`, an
+edit to the theme's file, a macOS light or dark switch), the window fades from the old colours to
+the new over 200 ms; with Reduce Motion on, it switches at once. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
 ### Themes for agents
