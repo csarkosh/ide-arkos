@@ -85,9 +85,40 @@ pub enum ViewerEvent {
     SaveFailed,
     /// A link to a markdown file was Cmd+clicked: it opens in a viewer tab of its own.
     OpenPath(PathBuf),
+    /// A local video's poster was Cmd+clicked: the file (canonical, checked by
+    /// `media::checked_open_path`) opens in a video tab beside the document.
+    OpenVideo(PathBuf),
     /// A `<details>` section was opened or closed: the file's section states now, for the
     /// workspace file.
     DetailsToggled(Vec<DetailsOpen>),
+}
+
+/// What a press on a media block in the rendered view does (`md_view::media_element`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PosterPress {
+    /// A plain press: the row's, which puts the caret in the block.
+    Caret,
+    /// Cmd+click follows the link around it, or opens remote media's web address.
+    Link,
+    /// Cmd+click on a local video: a video tab beside the document (spec 9).
+    OpenVideo,
+    /// Cmd+click on local audio: QuickTime Player plays it.
+    QuickTime,
+    /// Cmd+click on a local `webm`, which nothing here plays: Finder shows it.
+    Reveal,
+}
+
+/// The press on a media block: `platform` is Cmd, `kind` what the path's name says (`None` for
+/// a `webm`), `link` the link around it, `remote` whether the path is a web address.
+pub fn poster_press(platform: bool, kind: Option<crate::media::Media>, link: Option<&str>, remote: bool) -> PosterPress {
+    use crate::media::Media;
+    match (platform, kind) {
+        (false, _) => PosterPress::Caret,
+        _ if link.is_some() || remote => PosterPress::Link,
+        (true, Some(Media::Video)) => PosterPress::OpenVideo,
+        (true, Some(Media::Audio)) => PosterPress::QuickTime,
+        (true, None) => PosterPress::Reveal,
+    }
 }
 
 /// What a load that found the file changed does to a viewer holding a document.
@@ -2691,6 +2722,7 @@ impl Root {
                     let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Link);
                     root.open_viewer(path, true, cx)
                 }
+                ViewerEvent::OpenVideo(path) => root.open_poster_video(tab, path, cx),
                 // The state is the file's: every other tab on it shows the same sections open.
                 ViewerEvent::DetailsToggled(open) => {
                     let path = v.read(cx).path.clone();
@@ -3716,5 +3748,18 @@ mod tests {
         assert!(!again.blocks.is_empty());
         let rs = dir.path().join("x.rs"); std::fs::write(&rs, "fn main() {}\n").unwrap();
         assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().doc.is_none(), "not markdown: no document");
+    }
+
+    #[test]
+    fn a_poster_cmd_click_asks_for_a_video_tab() {
+        use crate::media::Media;
+        assert_eq!(poster_press(true, Some(Media::Video), None, false), PosterPress::OpenVideo, "a local video plays in a tab of its own");
+        assert_eq!(poster_press(false, Some(Media::Video), None, false), PosterPress::Caret, "a plain press puts the caret in the block");
+        assert_eq!(poster_press(false, Some(Media::Video), Some("notes.md"), false), PosterPress::Caret);
+        assert_eq!(poster_press(true, Some(Media::Video), Some("notes.md"), false), PosterPress::Link, "the link around it wins");
+        assert_eq!(poster_press(true, Some(Media::Audio), None, false), PosterPress::QuickTime, "audio stays with QuickTime Player");
+        assert_eq!(poster_press(true, None, None, false), PosterPress::Reveal, "a local webm is shown in Finder");
+        assert_eq!(poster_press(true, Some(Media::Video), None, true), PosterPress::Link, "remote video is a web address");
+        assert_eq!(poster_press(true, None, None, true), PosterPress::Link);
     }
 }

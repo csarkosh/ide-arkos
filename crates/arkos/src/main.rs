@@ -1701,16 +1701,11 @@ impl Root {
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
         } else {
-            let closed = match tab {
-                Tab::Viewer { path, .. } => Closed::Viewer(path),
-                Tab::Browser { url, app_mode } => {
-                    // Its window is released where it was last shown; arkos never closes it.
-                    self.release_browser_tab(id, cx);
-                    Closed::Browser { url, app_mode }
-                }
-                Tab::Video { path, at, loop_range } => Closed::Video { path, at, loop_range },
-                Tab::Terminal { .. } => unreachable!("handled above"),
-            };
+            if matches!(tab, Tab::Browser { .. }) {
+                // Its window is released where it was last shown; arkos never closes it.
+                self.release_browser_tab(id, cx);
+            }
+            let closed = closed_entry(tab).expect("a terminal is handled above");
             for old in self.closed.push(ClosedTab { closed, pane, closed_at: Instant::now(), daemon_timed: false }) {
                 eprintln!("arkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                 self.sessions.kill(old);
@@ -2128,19 +2123,51 @@ impl Root {
         }
     }
 
-    /// A video plays only while it is the active tab of a pane on screen (spec 3.5): every other
-    /// video tab is made inactive, which pauses it until it is shown again.
+    /// A video plays only while it is the active tab of a pane on screen in a window that is not
+    /// hidden or minimized (spec 3.5): every other video view is made inactive, which pauses it
+    /// (and lets the display sleep) until it is shown again. It runs at the top of every render,
+    /// which covers a tab switch, a pane closed and a maximize, and from the once a second poll
+    /// (`tick_videos`) and the window's activation, since a hidden window draws nothing.
     pub fn update_video_activity(&mut self, cx: &mut Context<Self>) {
-        let shown = self.layout().panes;
+        let shown: Vec<PaneId> = self.layout().panes.into_iter().map(|(p, _)| p).collect();
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| ax::screen::window_hidden(ns));
         for (tab, v) in &self.videos {
-            let active = self.tree.locate(*tab).is_some_and(|(pane, idx)| shown.iter().any(|(p, _)| *p == pane) && self.tree.pane(pane).is_some_and(|p| p.active == idx));
-            v.update(cx, |v, cx| v.set_inactive(!active, cx));
+            let plays = video_plays(&self.tree, &shown, *tab, hidden);
+            v.update(cx, |v, cx| v.set_inactive(!plays, cx));
         }
     }
 
-    /// "Open file in pane...": `path` in the focused pane, pinned. A video opens as a video tab
-    /// (one already open on the file there is brought forward); any other file opens in the
-    /// viewer. A path that is not a file says so.
+    /// Opens `path` in `pane` as the kind its name says (`sidebar::file_tab`): a video as a video
+    /// tab, else the viewer, pinned. A tab already on the file there is reused. The tab becomes
+    /// the pane's active one without moving the focus (`Tree::activate_quiet`); a caller that
+    /// wants the keys there focuses the pane itself. `how` is recorded for a new tab.
+    pub fn open_path_in_pane(&mut self, path: &Path, pane: PaneId, how: telemetry::Opened, cx: &mut Context<Self>) -> (usize, bool) {
+        let reused = self.tree.find_path(pane, path);
+        let idx = match reused {
+            Some(idx) => {
+                // Opened on purpose: a preview it was is kept.
+                if self.tree.tab_id(pane, idx) == self.preview_tab {
+                    self.preview_tab = None;
+                }
+                idx
+            }
+            None => {
+                let tab = sidebar::file_tab(path);
+                telemetry::pane_open(telemetry::kind_of(&tab), how);
+                self.tree.add_tab(pane, tab)
+            }
+        };
+        self.tree.activate_quiet(pane, idx);
+        if let Some(h) = self.bar_scroll.get(&pane) {
+            h.scroll_to_item(idx);
+        }
+        self.save(cx);
+        cx.notify();
+        (idx, reused.is_some())
+    }
+
+    /// "Open file in pane...": `path` in the focused pane, pinned and focused
+    /// (`open_path_in_pane`). A path that is not a file says so.
     pub fn open_file_in_pane(&mut self, path: &Path, cx: &mut Context<Self>) {
         let path = match std::fs::canonicalize(path) {
             Ok(p) if p.is_file() => p,
@@ -2149,22 +2176,46 @@ impl Root {
                 return;
             }
         };
-        if media::kind(&path.to_string_lossy()) != Some(media::Media::Video) {
-            self.open_viewer(&path, true, cx);
-            return;
-        }
         let pane = self.tree.focused;
-        let open = self.tree.find_path(pane, &path).filter(|&i| matches!(self.tree.pane(pane).and_then(|p| p.tabs.get(i)), Some(Tab::Video { .. })));
-        let idx = match open {
-            Some(idx) => idx,
-            None => {
-                let idx = self.tree.add_tab(pane, Tab::Video { path, at: None, loop_range: None });
-                telemetry::pane_open(telemetry::PaneKind::Video, telemetry::Opened::Palette);
-                idx
-            }
-        };
+        let (idx, _) = self.open_path_in_pane(&path, pane, telemetry::Opened::Palette, cx);
         self.tree.focus(pane);
         self.activate_tab(pane, idx, cx);
+    }
+
+    /// A poster's Cmd+click in the document shown by tab `doc` (spec 9): the video opens paused
+    /// in the pane after the document's (`pane_after`), else in a new pane split to its right. A
+    /// video tab already on the file in another pane is brought forward instead (one in the
+    /// document's own pane would hide the document). The keys stay in the document either way;
+    /// a maximize that would hide the video ends, since the click asked to see it.
+    pub fn open_poster_video(&mut self, doc: TabId, path: &Path, cx: &mut Context<Self>) {
+        let focused = self.tree.focused;
+        let doc_pane = self.tree.locate(doc).map_or(focused, |(pane, _)| pane);
+        let existing = self.tree.tabs_on(path).into_iter().find(|(pane, idx)| *pane != doc_pane && matches!(self.tree.pane(*pane).and_then(|p| p.tabs.get(*idx)), Some(Tab::Video { .. })));
+        let target = existing.map(|(pane, _)| pane).or_else(|| pane_after(&self.tree, doc_pane));
+        if self.tree.maximized.is_some() && self.tree.maximized != target {
+            self.tree.maximized = None;
+        }
+        match (existing, target) {
+            (Some((pane, idx)), _) => {
+                self.tree.activate_quiet(pane, idx);
+                self.save(cx);
+                cx.notify();
+            }
+            (None, Some(pane)) => {
+                self.open_path_in_pane(path, pane, telemetry::Opened::Poster, cx);
+            }
+            (None, None) => {
+                let tab = sidebar::file_tab(path);
+                let kind = telemetry::kind_of(&tab);
+                if self.tree.split(doc_pane, Side::Right, tab).is_some() {
+                    telemetry::pane_open(kind, telemetry::Opened::Poster);
+                    // A split focuses its new pane; the keys go back to the document.
+                    self.tree.focus(focused);
+                }
+                self.save(cx);
+                cx.notify();
+            }
+        }
     }
 
     /// A browser tab in `pane` (the focused pane when that one is gone) that opens `url` (`None`:
@@ -2875,8 +2926,9 @@ impl Root {
                     Closed::Browser { url, app_mode } => {
                         self.add_browser_tab(pane, url, app_mode, false, cx);
                     }
-                    Closed::Video { path, at, loop_range } => {
-                        let idx = self.tree.add_tab(pane, Tab::Video { path, at, loop_range });
+                    video @ Closed::Video { .. } => {
+                        let Some(tab) = reopened_video(video) else { return };
+                        let idx = self.tree.add_tab(pane, tab);
                         telemetry::pane_open(telemetry::PaneKind::Video, telemetry::Opened::Key);
                         self.tree.focus(pane);
                         self.activate_tab(pane, idx, cx);
@@ -3817,6 +3869,40 @@ fn pick_grid(visible: bool, own: Option<(usize, usize)>, maximized: Option<(usiz
     }
 }
 
+/// What the closed stack keeps for a closed tab: the file, the page or the video with its place.
+/// A terminal's session is `close_tab`'s own (`None` here).
+fn closed_entry(tab: Tab) -> Option<Closed> {
+    match tab {
+        Tab::Viewer { path, .. } => Some(Closed::Viewer(path)),
+        Tab::Browser { url, app_mode } => Some(Closed::Browser { url, app_mode }),
+        Tab::Video { path, at, loop_range } => Some(Closed::Video { path, at, loop_range }),
+        Tab::Terminal { .. } => None,
+    }
+}
+
+/// The tab a reopened video comes back as: its file, where it was and its loop. Anything else
+/// reopens its own way.
+fn reopened_video(closed: Closed) -> Option<Tab> {
+    match closed {
+        Closed::Video { path, at, loop_range } => Some(Tab::Video { path, at, loop_range }),
+        Closed::Session(..) | Closed::Viewer(_) | Closed::Browser { .. } => None,
+    }
+}
+
+/// Whether the video tab `tab` plays (spec 3.5): it is its pane's active tab, the pane is on
+/// screen (`shown`: not hidden by another's maximize) and the window is not hidden or minimized.
+fn video_plays(tree: &Tree, shown: &[PaneId], tab: TabId, window_hidden: bool) -> bool {
+    !window_hidden && tree.locate(tab).is_some_and(|(pane, idx)| shown.contains(&pane) && tree.pane(pane).is_some_and(|p| p.active == idx))
+}
+
+/// The pane after `pane` in reading order, where a poster's video opens (spec 9); `None` when
+/// it is the last, and the video splits it instead.
+fn pane_after(tree: &Tree, pane: PaneId) -> Option<PaneId> {
+    let panes = tree.panes();
+    let i = panes.iter().position(|p| *p == pane)?;
+    panes.get(i + 1).copied()
+}
+
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
@@ -4609,6 +4695,9 @@ fn open_project_window(
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
                             root.note_focus();
+                            // A minimize deactivates first: a video pauses as soon as the window
+                            // reads as hidden, here or on the next poll.
+                            root.update_video_activity(cx);
                             // Another window may have had the invitation's answer meanwhile.
                             if root.window_active {
                                 root.recheck_invitation(cx);
@@ -4797,7 +4886,7 @@ fn open_project_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{after_window_closed, daemon_label, menus, pick_grid, quit_forced, says_goodbye, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
+    use super::{after_window_closed, closed_entry, daemon_label, menus, pane_after, pick_grid, quit_forced, reopened_video, says_goodbye, video_plays, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
     use crate::keymap;
     use gpui::{Action, MenuItem};
 
@@ -5035,5 +5124,47 @@ mod tests {
         let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3");
         assert_eq!(disconnect_mark(is_final(&refused)), "daemon refused");
         assert_eq!(disconnect_mark(is_final("daemon closed the connection")), "reconnecting");
+    }
+
+    #[test]
+    fn a_closed_video_reopens_with_its_position() {
+        use crate::closed_stack::Closed;
+        use crate::tree::Tab;
+        let tab = Tab::Video { path: "/p/cut.mp4".into(), at: Some(12.0), loop_range: Some((2.0, 4.5)) };
+        let closed = closed_entry(tab.clone()).unwrap();
+        assert_eq!(closed, Closed::Video { path: "/p/cut.mp4".into(), at: Some(12.0), loop_range: Some((2.0, 4.5)) });
+        assert_eq!(reopened_video(closed), Some(tab));
+        assert_eq!(reopened_video(Closed::Viewer("/p/a.rs".into())), None, "a viewer reopens through the viewer's own path");
+        assert_eq!(closed_entry(Tab::Terminal { session: protocol::SessionId(1), cwd: None }), None, "a session's close is its own");
+    }
+
+    #[test]
+    fn a_video_plays_only_as_the_active_tab_of_a_shown_pane_in_a_shown_window() {
+        use crate::tree::{Side, Tab, Tree};
+        let video = |name: &str| Tab::Video { path: format!("/p/{name}.mp4").into(), at: None, loop_range: None };
+        let mut t = Tree::new(video("a"));
+        let left = t.focused;
+        t.add_tab(left, video("b"));
+        let right = t.split(left, Side::Right, video("c")).unwrap();
+        let (a, b, c) = (t.tab_id(left, 0).unwrap(), t.tab_id(left, 1).unwrap(), t.tab_id(right, 0).unwrap());
+        let both = [left, right];
+        assert!(!video_plays(&t, &both, a, false), "a tab behind another in its pane");
+        assert!(video_plays(&t, &both, b, false), "the active tab of a pane on screen");
+        assert!(video_plays(&t, &both, c, false), "a pane without the focus plays too");
+        assert!(!video_plays(&t, &[left], c, false), "a pane hidden by another's maximize");
+        assert!(!video_plays(&t, &both, b, true), "a hidden or minimized window");
+        assert!(!video_plays(&t, &both, 999, false), "a tab that has closed");
+    }
+
+    #[test]
+    fn a_poster_opens_its_video_in_the_next_pane_or_splits() {
+        use crate::tree::{Side, Tab, Tree};
+        let term = |n| Tab::Terminal { session: protocol::SessionId(n), cwd: None };
+        let mut t = Tree::new(term(1));
+        let doc = t.focused;
+        assert_eq!(pane_after(&t, doc), None, "the only pane: split");
+        let below = t.split(doc, Side::Bottom, term(2)).unwrap();
+        assert_eq!(pane_after(&t, doc), Some(below), "the next pane in reading order");
+        assert_eq!(pane_after(&t, below), None, "the last pane: split");
     }
 }
