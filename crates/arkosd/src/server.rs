@@ -636,6 +636,8 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             Response::Ok
         }
+        // The daemon relays `Direct` in a later task; until then it is refused.
+        Request::Direct { .. } | Request::DirectDone { .. } => Response::Error("direct requests are not supported yet".into()),
         // Kept on the record alone: the record leaves the table when the window goes, and the
         // journal is sealed from what it held. A later one replaces it. An id that is not hex is
         // refused and never named back, and the record keeps the one it had.

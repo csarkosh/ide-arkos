@@ -17,8 +17,9 @@ use std::time::Duration;
 /// (the check's state) and the grace detach. Version 6 adds the customize relay: a tool client's
 /// `Customize`, the windows' `Event::Customize` and `CustomizeDone`, and the `Customized` answer.
 /// Version 7 adds telemetry: the window's `Session` after its Hello, the `TelemetryStatus`
-/// request and answer, and `SessionQuit`.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// request and answer, and `SessionQuit`. Version 8 adds the targeted channel: a tool client's
+/// `Direct`, the window's `Event::Direct` and `DirectDone`, and the `Directed` answer.
+pub const PROTOCOL_VERSION: u32 = 8;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -34,6 +35,9 @@ pub const CUSTOMIZE_FROM: u32 = 6;
 /// The first protocol whose windows send `Session` after their Hello. An older window sends
 /// none, and the daemon seals nothing for it.
 pub const TELEMETRY_FROM: u32 = 7;
+/// The first protocol whose windows answer `Event::Direct`. An older project window is never
+/// the target of a `Direct`.
+pub const DIRECT_FROM: u32 = 8;
 /// How long the daemon waits for the windows' answers to a `Customize` before it replies with
 /// the silent ones as `missing`.
 pub const CUSTOMIZE_WAIT: Duration = Duration::from_secs(2);
@@ -133,7 +137,166 @@ pub struct CustomizeOutcome {
     pub result: Result<Report, String>,
 }
 
+/// Which window a `Direct` is aimed at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WindowTarget {
+    /// The window showing this session, as a tool client finds it from its own session.
+    Session(SessionId),
+    /// The window with this process id.
+    Pid(u32),
+    /// The only project window; the daemon refuses when there is none or more than one.
+    Only,
+}
+
+/// Which side of a pane a new pane opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SplitSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// How a file opened by `PaneAction::Open` is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenKind {
+    Video,
+    /// A markdown document, raw source when `raw` and rendered otherwise.
+    Markdown { raw: bool },
+    Text,
+}
+
+/// Where `PaneAction::Open` puts the new tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Placement {
+    /// The preview slot beside the agent.
+    Preview,
+    /// The pane with this number, as `PaneAction::Panes` lists them.
+    Pane(u32),
+    /// A new pane split off on this side of the focused one.
+    Split(SplitSide),
+}
+
+/// What a video's loop becomes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum LoopChange {
+    /// Leave the loop as it is.
+    Keep,
+    /// Loop between two times, in seconds.
+    Set { start: f64, end: f64 },
+    /// Loop the whole file.
+    WholeFile,
+    /// Stop looping.
+    Clear,
+}
+
+/// One operation on a video tab.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum VideoOp {
+    /// Report the video's state and change nothing.
+    Status,
+    Play,
+    Pause,
+    /// Jump to a time, in seconds.
+    Seek(f64),
+    /// Move by this many frames, negative for backwards.
+    Step(i32),
+    Loop(LoopChange),
+    /// Load the file again from disk.
+    Reload,
+    Close,
+    Mute(bool),
+}
+
+/// What a `Direct` asks the target window to do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PaneAction {
+    /// Open a file in a tab. `reuse` shows an already open tab of the file instead of a second
+    /// one, `wait_for_file` opens before the file exists and loads it when it appears, and
+    /// `focus` moves the keyboard to the new tab.
+    Open {
+        path: PathBuf,
+        kind: OpenKind,
+        place: Placement,
+        at: Option<f64>,
+        playing: Option<bool>,
+        loop_change: LoopChange,
+        reuse: bool,
+        wait_for_file: bool,
+        focus: bool,
+    },
+    /// Operate on a video tab: the one showing `path`, or the only video when `path` is None.
+    Video { path: Option<PathBuf>, op: VideoOp },
+    /// List the panes and their tabs.
+    Panes,
+}
+
+/// A video tab's state as its window reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VideoState {
+    /// The number of the pane holding the tab.
+    pub pane: u32,
+    pub tab: u64,
+    pub path: PathBuf,
+    /// The length in seconds, None until the file is read.
+    pub duration: Option<f64>,
+    pub position: f64,
+    pub playing: bool,
+    pub muted: bool,
+    pub loop_range: Option<(f64, f64)>,
+    pub width: u32,
+    pub height: u32,
+    /// One of "ready", "loading", "reloading", "waiting" or "unplayable".
+    pub state: String,
+    pub error: Option<String>,
+    /// The file's modification time, in seconds since the epoch.
+    pub file_mtime: Option<u64>,
+}
+
+/// One tab as `PaneAction::Panes` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabRow {
+    pub id: u64,
+    pub kind: String,
+    pub title: String,
+    /// The tab is its pane's active one.
+    pub active: bool,
+    /// The tab is the one running the asking tool client's session.
+    pub you: bool,
+    pub path: Option<PathBuf>,
+    pub session: Option<SessionId>,
+}
+
+/// One pane as `PaneAction::Panes` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneRow {
+    /// The number a `Placement::Pane` names.
+    pub n: u32,
+    pub id: u64,
+    pub focused: bool,
+    pub tabs: Vec<TabRow>,
+}
+
+/// The panes of one window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanesReport {
+    pub project: PathBuf,
+    pub panes: Vec<PaneRow>,
+}
+
+/// What a window did for a `Direct`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PaneOutcome {
+    /// The answer to `PaneAction::Open`: where the tab is, whether an existing tab was reused or
+    /// reloaded, and the video's state when it is one.
+    Opened { pane: u32, tab: u64, kind: String, reused: bool, reloaded: bool, video: Option<VideoState> },
+    /// The answer to `PaneAction::Video`: the videos it touched.
+    Videos(Vec<VideoState>),
+    /// The answer to `PaneAction::Panes`.
+    Panes(PanesReport),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Request {
     /// First message on a connection. `protocol_version` comes first so it decodes even when the
     /// rest has changed; it must equal the daemon's `PROTOCOL_VERSION`. `ui_pid`, `ui_exe` and
@@ -206,15 +369,23 @@ pub enum Request {
     /// logout or restart, after which the window comes back), and harmless beside one. Answered
     /// `Ok`.
     SessionQuit,
+    /// A tool client's request aimed at one window, to open a file in a pane or drive a video.
+    /// The daemon forwards it as `Event::Direct` to the target window, which must speak
+    /// `DIRECT_FROM`, and answers `Directed` with the window's outcome, or `Error` when no window
+    /// matches or none answers in time.
+    Direct { id: u64, window: WindowTarget, action: PaneAction },
+    /// A window's answer to `Event::Direct { id, .. }`. Answered `Ok` whether or not the id is
+    /// still waited for.
+    DirectDone { id: u64, outcome: Result<PaneOutcome, String> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientMessage {
     pub id: u32,
     pub request: Request,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Response {
     Ok,
     SessionCreated { id: SessionId },
@@ -266,9 +437,12 @@ pub enum Response {
         /// The reports the collector refused, ever.
         rejected: u64,
     },
+    /// The answer to `Direct`: the target window's process id and folder, and what it did or why
+    /// it could not.
+    Directed { pid: u32, project: PathBuf, outcome: Result<PaneOutcome, String> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Output { session: SessionId, bytes: Vec<u8> },
     Exited { session: SessionId, code: Option<i32> },
@@ -278,9 +452,13 @@ pub enum Event {
     /// A tool client's `Customize`, sent only to project windows on `CUSTOMIZE_FROM` or later.
     /// The window answers with `Request::CustomizeDone` carrying the same `id`.
     Customize { id: u64, action: CustomizeAction },
+    /// A tool client's `Direct`, sent only to the target project window, which is on
+    /// `DIRECT_FROM` or later. `session` is the tool client's own session when it gave one. The
+    /// window answers with `Request::DirectDone` carrying the same `id`.
+    Direct { id: u64, action: PaneAction, session: Option<SessionId> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
     Response { id: u32, response: Response },
     Event(Event),
@@ -297,7 +475,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -347,7 +525,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
         let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
         assert_eq!(CUSTOMIZE_FROM, 6);
         assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
         assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
@@ -361,7 +539,7 @@ mod tests {
 
     #[test]
     fn telemetry_messages_round_trip_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
         assert_eq!(TELEMETRY_FROM, 7);
         let session = Request::Session { sid: "0123456789abcdef0123456789abcdef".into() };
         let status = Response::TelemetryStatus {
@@ -386,6 +564,85 @@ mod tests {
         }
         let bytes = postcard::to_allocvec(&status).unwrap();
         assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), status);
+    }
+
+    fn sample_video() -> VideoState {
+        VideoState {
+            pane: 2,
+            tab: 41,
+            path: "/p/clip.mp4".into(),
+            duration: Some(93.5),
+            position: 12.25,
+            playing: true,
+            muted: false,
+            loop_range: Some((1.5, 4.0)),
+            width: 1920,
+            height: 1080,
+            state: "ready".into(),
+            error: None,
+            file_mtime: Some(1_760_000_000),
+        }
+    }
+
+    #[test]
+    fn direct_messages_sit_at_the_end_of_their_enums() {
+        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(DIRECT_FROM, 8);
+        let action = PaneAction::Panes;
+        let outcome = Ok(PaneOutcome::Videos(vec![]));
+        assert_eq!(first_byte(&Request::Direct { id: 1, window: WindowTarget::Only, action: action.clone() }), 26);
+        assert_eq!(first_byte(&Request::DirectDone { id: 1, outcome: outcome.clone() }), 27);
+        assert_eq!(first_byte(&Response::Directed { pid: 3, project: "/p".into(), outcome }), 11);
+        assert_eq!(first_byte(&Event::Direct { id: 1, action, session: None }), 5);
+    }
+
+    #[test]
+    fn direct_messages_round_trip_through_postcard_and_json() {
+        let open = PaneAction::Open {
+            path: "/p/clip.mp4".into(),
+            kind: OpenKind::Markdown { raw: true },
+            place: Placement::Split(SplitSide::Right),
+            at: Some(3.5),
+            playing: Some(true),
+            loop_change: LoopChange::Set { start: 1.0, end: 2.5 },
+            reuse: true,
+            wait_for_file: true,
+            focus: true,
+        };
+        let opened = PaneOutcome::Opened { pane: 2, tab: 41, kind: "video".into(), reused: false, reloaded: true, video: Some(sample_video()) };
+        let tab = |id: u64, you: bool| TabRow { id, kind: "terminal".into(), title: "claude".into(), active: you, you, path: None, session: Some(SessionId(7)) };
+        let report = PanesReport {
+            project: "/p".into(),
+            panes: vec![
+                PaneRow { n: 1, id: 10, focused: true, tabs: vec![tab(1, true)] },
+                PaneRow { n: 2, id: 11, focused: false, tabs: vec![tab(2, false), tab(3, false)] },
+            ],
+        };
+        let panes = PaneOutcome::Panes(report);
+        let requests = [
+            Request::Direct { id: 5, window: WindowTarget::Session(SessionId(7)), action: open.clone() },
+            Request::Direct { id: 6, window: WindowTarget::Pid(99), action: PaneAction::Video { path: None, op: VideoOp::Seek(2.5) } },
+            Request::DirectDone { id: 5, outcome: Ok(opened.clone()) },
+            Request::DirectDone { id: 6, outcome: Err("no such pane".into()) },
+        ];
+        for req in requests {
+            let bytes = postcard::to_allocvec(&req).unwrap();
+            assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), req);
+            assert_eq!(serde_json::from_str::<Request>(&serde_json::to_string(&req).unwrap()).unwrap(), req);
+        }
+        let responses = [
+            Response::Directed { pid: 4, project: "/p".into(), outcome: Ok(opened) },
+            Response::Directed { pid: 4, project: "/p".into(), outcome: Ok(panes) },
+        ];
+        for resp in responses {
+            let bytes = postcard::to_allocvec(&resp).unwrap();
+            assert_eq!(postcard::from_bytes::<Response>(&bytes).unwrap(), resp);
+            assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
+        }
+        let ev = Event::Direct { id: 5, action: open, session: Some(SessionId(7)) };
+        let bytes = postcard::to_allocvec(&ev).unwrap();
+        assert_eq!(postcard::from_bytes::<Event>(&bytes).unwrap(), ev);
+        assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
     }
 
     /// The bytes a protocol 6 window writes for its Hello, spelled out rather than encoded by
