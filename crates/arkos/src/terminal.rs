@@ -233,6 +233,12 @@ impl TerminalCore {
         self.theme_updates.then(|| theme_report(&self.palette))
     }
 
+    /// Swaps the colours for painting without telling the program: the theme cross-fade sets a
+    /// blended palette every frame, and the program hears one `set_palette` at the fade's end.
+    pub fn set_palette_quiet(&mut self, palette: Arc<Palette>) {
+        self.palette = palette;
+    }
+
     pub fn palette(&self) -> &Palette {
         &self.palette
     }
@@ -1450,7 +1456,11 @@ mod tests {
         assert!(core.apply_output(b"text\x1b[?2004;20").pty_write.is_empty());
         core.apply_output(b"31h more");
         assert_eq!(core.set_palette(std::sync::Arc::new(Palette { ..NAVY })), Some(&b"\x1b[?997;1n"[..]), "navy is dark");
-        assert_eq!(core.set_palette(std::sync::Arc::new(light)), Some(&b"\x1b[?997;2n"[..]));
+        assert_eq!(core.set_palette(std::sync::Arc::new(light.clone())), Some(&b"\x1b[?997;2n"[..]));
+        // The fade's frames recolour the cells without a push; the final palette still pushes.
+        core.set_palette_quiet(std::sync::Arc::new(Palette { ..NAVY }));
+        assert_eq!(core.palette().bg, NAVY.bg, "a quiet swap recolours the paint");
+        assert_eq!(core.set_palette(std::sync::Arc::new(light)), Some(&b"\x1b[?997;2n"[..]), "and the end of a fade is heard");
         // Reset: switches are silent again, and the grid saw only the text.
         core.apply_output(b"\x1b[?2031l");
         assert_eq!(core.set_palette(std::sync::Arc::new(Palette { ..NAVY })), None);

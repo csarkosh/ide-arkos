@@ -164,6 +164,15 @@ pub enum UpdateStage {
     Relaunching,
 }
 
+/// A theme switch half way: the window shows `theme::blend(from, to, p)` with `p` the
+/// `motion::fade_progress` since `since`. `from` is whatever was on screen when the switch came,
+/// a blend itself when a switch lands mid-fade, so nothing jumps.
+pub struct ThemeFade {
+    pub from: Arc<theme::Theme>,
+    pub to: Arc<theme::Theme>,
+    pub since: Instant,
+}
+
 pub struct Root {
     pub tree: Tree,
     pub sessions: SessionManager,
@@ -274,7 +283,14 @@ pub struct Root {
     pub shell_name: String,
     /// The last good config; `apply_config` replaces it.
     pub config: config::Config,
+    /// The theme every view reads at paint. For `motion::THEME_FADE` after a switch it is a
+    /// `theme::blend` of the old and the new, remade each frame by `step_theme_fade`, so no view
+    /// may cache a colour; `theme_fade` holds the ends of that fade while it runs.
     pub theme: Arc<theme::Theme>,
+    /// The theme cross-fade under way, if any: `theme` is between `from` and `to`.
+    pub theme_fade: Option<ThemeFade>,
+    /// Whether a frame has been drawn: a theme set before the first one shows at once.
+    pub painted: bool,
     /// The theme's fonts, less any family this Mac lacks (`ThemeFont::installed`).
     pub fonts: theme::ThemeFont,
     /// Syntax colours for viewer tabs in the theme's `viewer` colours. `None` until the grammars
@@ -618,6 +634,8 @@ impl Root {
             config,
             fonts: installed_fonts(&theme, cx),
             theme: Arc::new(theme),
+            theme_fade: None,
+            painted: false,
             highlighter: None,
             viewers: HashMap::new(),
             system_is_dark,
@@ -1115,6 +1133,7 @@ impl Root {
             || self.handle_fades.animating(now)
             || self.find_bars.animating(now)
             || self.sidebar.animating(now)
+            || self.theme_fade.is_some()
     }
 
     /// Drops what finished fading out, and the per-key fades the frame drawn at `last_frame`
@@ -1147,8 +1166,16 @@ impl Root {
         theme::load(name, &paths::themes_dir())
     }
 
+    /// Switches to `theme`. The fonts change at once (they cannot fade); the colours cross-fade
+    /// from what is on screen over `motion::THEME_FADE`, frame by frame in `step_theme_fade`, and
+    /// what is derived from the theme once (the highlighter, the viewers, the push a program
+    /// asked for) waits for the fade's end. Under Reduce Motion, or before the first frame, the
+    /// switch is instant. A theme equal to the one being shown or faded to does nothing.
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
-        let palette = Arc::new(theme.palette());
+        let target = self.theme_fade.as_ref().map_or(&self.theme, |f| &f.to);
+        if **target == theme {
+            return;
+        }
         let fonts = installed_fonts(&theme, cx);
         // A theme that brings its own terminal font changes the cell size (`family()` reads the
         // theme): panes re-measure before a restore trusts a grid, as a config change does.
@@ -1156,17 +1183,54 @@ impl Root {
             self.grids.clear();
         }
         self.fonts = fonts;
+        let to = Arc::new(theme);
+        if motion::reduce_motion() || !self.painted {
+            self.finish_theme(to, cx);
+            return;
+        }
+        // From the colours on screen (a blend, when a switch lands mid-fade). The name and fonts
+        // are the target's from this frame on, so the state reported and the fonts drawn agree.
+        let from = self.theme.clone();
+        self.theme = Arc::new(theme::blend(&from, &to, 0.0));
+        self.theme_fade = Some(ThemeFade { from, to, since: Instant::now() });
+        cx.notify();
+    }
+
+    /// One frame of the theme cross-fade: the blend at `now` for the window, the terminals (for
+    /// painting only; no program is told) and the aux windows. At the end, the final theme lands.
+    fn step_theme_fade(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let Some(fade) = &self.theme_fade else { return };
+        let p = motion::fade_progress(fade.since, now, motion::THEME_FADE);
+        if p >= 1.0 {
+            let to = fade.to.clone();
+            self.finish_theme(to, cx);
+            return;
+        }
+        self.theme = Arc::new(theme::blend(&fade.from, &fade.to, p));
+        let palette = Arc::new(self.theme.palette());
+        for t in self.sessions.terminals.values() {
+            t.update(cx, |t, cx| {
+                t.core.set_palette_quiet(palette.clone());
+                cx.notify();
+            });
+        }
+        aux::push_theme(cx, &self.theme);
+    }
+
+    /// The final theme of a switch, and everything derived from a theme once: the highlighter is
+    /// rethemed, every open viewer re-highlights, About, Settings and Keybindings follow, and a
+    /// program that asked for theme pushes (Claude Code's Auto theme) hears the switch.
+    fn finish_theme(&mut self, theme: Arc<theme::Theme>, cx: &mut Context<Self>) {
+        self.theme_fade = None;
         if let Some(h) = &self.highlighter {
             self.highlighter = Some(Arc::new(h.with_theme(&theme.viewer, theme.chrome.text)));
         }
-        self.theme = Arc::new(theme);
-        // About, Settings and Keybindings follow the theme too.
+        self.theme = theme;
         aux::push_theme(cx, &self.theme);
-        // Every open viewer re-highlights in the new colours.
         self.reload_all_viewers(cx);
+        let palette = Arc::new(self.theme.palette());
         for t in self.sessions.terminals.values() {
             t.update(cx, |t, cx| {
-                // A program that asked for theme pushes (Claude Code's Auto theme) hears the switch.
                 if let Some(push) = t.core.set_palette(palette.clone()) {
                     t.client.send(Request::Input { session: t.session, bytes: push.to_vec() });
                 }
@@ -3627,7 +3691,10 @@ impl Render for Root {
         self.note_focus();
         let now = Instant::now();
         let last_frame = std::mem::replace(&mut self.frame_now, now);
+        self.painted = true;
         self.settle(now, last_frame);
+        // The theme's blend for this frame, before any element reads `self.theme`.
+        self.step_theme_fade(now, cx);
         self.sync_notices(SystemTime::now());
         self.note_window_placement(window, cx);
         // A rename whose tab closed, moved, or sits behind a slim bar has no editor to hold the
