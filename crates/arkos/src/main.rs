@@ -48,6 +48,7 @@ mod mermaid;
 mod motion;
 mod mouse;
 mod notices;
+mod open_cli;
 mod palette;
 mod pane_view;
 mod paths;
@@ -4288,6 +4289,9 @@ fn main() {
     // before the folder argument below, so a folder named `config` opens as `arkos ./config`.
     match args.get(1).map(String::as_str) {
         Some("guide") => std::process::exit(guide::guide_cli(&args[2..])),
+        Some("open") => std::process::exit(open_cli::open_cli(&args[2..])),
+        Some("video") => std::process::exit(open_cli::video_cli(&args[2..])),
+        Some("panes") => std::process::exit(open_cli::panes_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),

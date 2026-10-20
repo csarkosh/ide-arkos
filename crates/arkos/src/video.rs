@@ -22,8 +22,6 @@ fn digits(s: &str) -> bool {
 }
 
 /// `12`, `12.5`, `m:ss`, `m:ss.fff` and `h:mm:ss[.fff]` to seconds; Err(text) otherwise.
-// `arkos open --at` and `arkos video seek` read times with it (Task 9).
-#[allow(dead_code)]
 pub fn parse_time(s: &str) -> Result<f64, String> {
     let bad = || format!("not a time: {s:?}");
     let parts: Vec<&str> = s.trim().split(':').collect();
@@ -75,8 +73,6 @@ pub fn fmt_time(secs: f64) -> String {
 }
 
 /// `a-b` with either side a time and a before b.
-// `arkos open --at` and `arkos video seek` read times with it (Task 9).
-#[allow(dead_code)]
 pub fn parse_range(s: &str) -> Result<(f64, f64), String> {
     let (a, b) = s.split_once('-').ok_or_else(|| format!("not a range: {s:?}"))?;
     let (a, b) = (parse_time(a)?, parse_time(b)?);
