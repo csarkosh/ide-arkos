@@ -389,7 +389,19 @@ fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark
         .collect()
 }
 
-fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab, cx: &Context<Root>) -> (String, TabMark) {
+/// The title a tab shows in its bar, without the unsaved mark: the name the user gave it, else
+/// its automatic label (for a terminal the program's title, never what the terminal shows).
+/// `arkos panes` lists it.
+pub fn tab_title(root: &Root, pane: PaneId, idx: usize, cx: &gpui::App) -> String {
+    let Some(p) = root.tree.pane(pane) else { return String::new() };
+    let Some(tab) = p.tabs.get(idx) else { return String::new() };
+    match p.ids.get(idx).and_then(|id| root.tree.tab_name(*id)) {
+        Some(name) => name.to_string(),
+        None => automatic_label(root, p, idx, tab, cx).0,
+    }
+}
+
+fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab, cx: &gpui::App) -> (String, TabMark) {
     match tab {
         Tab::Terminal { session, .. } => {
             let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();

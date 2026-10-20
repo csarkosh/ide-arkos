@@ -14,6 +14,9 @@ pub const NOTICE_FOR: Duration = Duration::from_secs(3);
 /// file is missing.
 pub type Fp = Option<(u128, u64)>;
 
+/// The notice a reload whose new file cannot be played leaves, the old item still showing.
+pub const RELOAD_FAILED: &str = "new file cannot be played yet";
+
 fn digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
@@ -313,7 +316,7 @@ impl VideoModel {
                     PlayerState::Loading => self.state = PlayerState::Unplayable(why),
                     PlayerState::Reloading => {
                         self.state = PlayerState::Ready;
-                        self.notice = Some(("new file cannot be played yet".into(), now));
+                        self.notice = Some((RELOAD_FAILED.into(), now));
                     }
                     _ => {}
                 },
