@@ -283,7 +283,9 @@ arkos open <file> [--pane N | --split right|down|left|up] [--at TIME] [--paused 
   with `--playing` is how an agent shows a scene on repeat.
 - `--window PID` aims at another window (from `arkos panes --all`); the default is the agent's.
 - Output: `opened video ranger-radio-animatic.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5,
-  paused, 1920x1080` or `shown … in pane 2` for a reused tab (`reloaded, ` prefixed when it was),
+  paused, 1920x1080` or `shown … in pane 2` for a reused tab (`reloaded, ` prefixed when this
+  command loaded the new cut; a tab that already followed the file says only `shown`, so the
+  confirmation that the file as it is now is on screen is exit 0 with no `error`),
   or for a document `opened notes.md in pane 2, rendered`. JSON: `{ "window": pid, "pane": n,
   "tab": id, "kind": "video" | "markdown" | "text", "reused": bool, "reloaded": bool, "video":
   { "duration", "position", "playing", "loop": [a, b] | null, "width", "height", "state":
@@ -422,8 +424,9 @@ arkos open out/ranger-radio/ranger-radio-animatic.mp4 --at 0:12 --loop 0:12-0:18
 arkos video status out/ranger-radio/ranger-radio-animatic.mp4 --json
 ```
 
-with the note that the second `open` reuses the tab, reloads the new file and jumps, and that
-the tab would have reloaded on its own within two seconds anyway; and rules: open a file in a
+with the note that the second `open` reuses the tab, makes sure it shows the new file and jumps,
+that the tab reloads on its own within two seconds anyway (so the line often says `shown` without
+`reloaded`), and that exit 0 with no `error` is the confirmation; and rules: open a file in a
 pane when the user asks to see, watch or review it, and offer it when you have just made one;
 prefer the preview pane and name the pane number to the user; never open the same file twice
 (`open` reuses for you); leave the tab open when you finish, the user closes it; pause before

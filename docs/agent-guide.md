@@ -149,7 +149,10 @@ shown notes.md in pane 3, raw
 ```
 
 `opened` is a new tab and `shown` a reused one; `(new pane)` says the open split a pane;
-`reloaded, ` says a reused video's file had changed and the new cut was loaded first. A video's
+`reloaded, ` says this command found a reused video's file changed and loaded the new cut itself;
+a tab that had already followed the file on its own (it does within about two seconds of a render
+ending) prints `shown` without it. Either way, exit 0 with no `error` and the state `ready` means
+the tab shows the file as it is now; `reloaded` only says who loaded it. A video's
 words are its position and length, `playing` or `paused`, its loop, `muted` when it is, and its
 size; a video that is not ready ends with its state instead (`loading`, `reloading`, `waiting`,
 or `unplayable` with the reason in brackets, as in `unplayable (no video track)`), and a tab whose
@@ -245,6 +248,8 @@ With `--json` the command prints one JSON value on stdout and nothing else, and 
   `width` and `height` are 0 until the video has loaded. `error` is there only with something to
   say: the reason when `state` is `unplayable`, or `new file cannot be played yet` from a reload
   that failed until a later cut loads (`state` stays `ready`: the old cut is still showing).
+  `reloaded` is true only when this command loaded the new cut; the tab having followed the file
+  on its own leaves it false with the new cut on screen.
 - `arkos video`: one tab is the same `video` object with `"window"`, `"pane"`, `"tab"`, `"path"`,
   `"muted"` and `"file_mtime"` (seconds since 1970, or null) added; several (a bare `status`) are
   `{ "window": pid, "videos": [...] }`, one such object each.
@@ -282,17 +287,20 @@ The user is iterating an animatic and wants the radio scene, 0:12 to 0:18:
 ```
 arkos open out/ranger-radio/ranger-radio-animatic.mp4 --at 0:12 --paused   # first cut, the radio scene
 python3 tools/cinema/animatic.py tools/cinema/ranger-radio.json              # the next cut
-arkos open out/ranger-radio/ranger-radio-animatic.mp4 --at 0:12 --loop 0:12-0:18 --playing
+arkos open out/ranger-radio/ranger-radio-animatic.mp4 --at 0:12 --loop 0:12-0:18 --playing   # exit 0, no error: the new cut shows
 arkos video status out/ranger-radio/ranger-radio-animatic.mp4 --json
 ```
 
 The first `open` splits your pane and shows the cut paused on 0:12; tell the user it is in pane 2
-(the number the line printed). The second `open` reuses that tab: it reloads the new file, jumps
-to 0:12 and loops the scene with sound. The tab would have reloaded on its own within two seconds
-anyway; the second `open` makes it happen now and sets the loop. The confirmation that the new
-cut is the one on screen is the second `open`'s answer saying `reloaded` with no `error` (and exit
-0), and `status` showing no `error`. If the answer has `"error": "new file cannot be played yet"`
-(exit 1), the old cut is still showing: tell the user the render did not produce a playable file.
+(the number the line printed). The second `open` reuses that tab: it makes sure the tab shows the
+new file, jumps to 0:12 and loops the scene with sound. The tab reloads on its own within about
+two seconds of the file changing, so when the render finished a few seconds before, the tab has
+already loaded the new cut and the second `open` prints `shown` without `reloaded`; when it had
+not, the `open` loads it now and says `reloaded`. The confirmation that the new cut is the one on
+screen is the second `open` exiting 0 with no `error` (state `ready`), whichever of the two it
+printed, and `status` showing no `error`. If the answer has `"error": "new file cannot be played
+yet"` (exit 1), the old cut is still showing: tell the user the render did not produce a playable
+file.
 
 ## 4. The theme file
 
