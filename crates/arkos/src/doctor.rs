@@ -155,7 +155,7 @@ pub fn themes_section(themes: &Path, config: &Path, skills_dir: &Path, skill: &S
     let said = match skill {
         SkillState::Missing => "not installed".to_string(),
         SkillState::Current => "installed".to_string(),
-        SkillState::Outdated(old) => format!("older than this build ({old})"),
+        SkillState::Outdated(old) => format!("older than this build ({old}); agents will not know about video panes until it is reinstalled"),
         SkillState::Foreign => "a different skill".to_string(),
     };
     lines.push(format!("agent guide skill in {}: {said}", skills_dir.display()));
@@ -346,7 +346,7 @@ mod tests {
         std::fs::write(&cfg, "[theme]\ndark = \"navy\"\n").unwrap();
         let lines = themes_section(&themes, &cfg, Path::new("/h/.claude/skills"), &SkillState::Outdated("abc".into()));
         assert_eq!(lines[0], format!("{} themes, all valid", theme::BUILTIN.len()));
-        assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude/skills: older than this build (abc)"));
+        assert!(lines.iter().any(|l| l == "agent guide skill in /h/.claude/skills: older than this build (abc); agents will not know about video panes until it is reinstalled"), "{lines:?}");
     }
 
     #[test]
