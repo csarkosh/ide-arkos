@@ -31,7 +31,7 @@ usage: arkos video status [<file>] [--json]
 see: arkos guide
 ";
 
-pub const PANES_USAGE: &str = "usage: arkos panes [--all] [--window PID] [--json]\nsee: arkos guide\n";
+pub const PANES_USAGE: &str = "usage: arkos panes [--all | --window PID] [--json]\nsee: arkos guide\n";
 
 /// The extensions of images, which a pane does not show yet.
 const IMAGES: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp", "svg"];
@@ -150,19 +150,20 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
     if remote_image::is_remote(&given) {
         return Err("a web address is not a file; open it in the browser pane (Cmd+Shift+B)".into());
     }
+    // Every check reads one path, the canonical one when the file exists: the one the tab shows.
     let abs = absolute(cwd, &given);
     let shown = abs.display();
-    let ext = extension(&abs);
-    if IMAGES.contains(&ext.as_str()) {
+    let name = abs.to_string_lossy();
+    if IMAGES.contains(&extension(&abs).as_str()) {
         return Err(format!("images are not shown in a pane yet; open it with `open {shown}` (Preview)"));
     }
-    if media::kind(&given) == Some(media::Media::Audio) {
+    if media::kind(&name) == Some(media::Media::Audio) {
         return Err(format!("audio is not shown in a pane yet; play it with `open -a 'QuickTime Player' {shown}`"));
     }
-    if media::is_link(&given) {
+    if media::is_link(&name) {
         return Err(format!("a .webm is not shown in a pane; show it with `open -R {shown}` (Finder)"));
     }
-    let is_video = media::kind(&given) == Some(media::Media::Video);
+    let is_video = media::kind(&name) == Some(media::Media::Video);
     if abs.is_dir() {
         return Err(format!("{shown} is a folder"));
     }
@@ -213,7 +214,7 @@ pub fn direct(socket: &Path, window: WindowTarget, action: PaneAction, wait: Dur
 }
 
 /// Reports a failed reach through `finish_error`.
-fn unreachable(reach: &Reach, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+fn report_reach(reach: &Reach, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let text = reach.line();
     finish_error(json, &text, out, err)
 }
@@ -443,7 +444,7 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
     let name = file_name(&path);
     let action = PaneAction::Open { path, kind, place, at, playing, loop_change, reuse: !p.has("--new"), wait_for_file: p.has("--wait"), focus: p.has("--focus") };
     match direct(env.socket, target_from(env, window), action, env.wait) {
-        Err(reach) => unreachable(&reach, json, out, err),
+        Err(reach) => report_reach(&reach, json, out, err),
         Ok((_, _, Err(text))) => finish_error(json, &text, out, err),
         Ok((pid, _, Ok(o @ PaneOutcome::Opened { .. }))) => {
             if json {
@@ -451,9 +452,10 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
             } else {
                 let _ = writeln!(out, "{}", opened_line(&o, &name));
             }
-            // A reused tab whose new cut did not load still shows the old one: not done.
-            let stale = matches!(&o, PaneOutcome::Opened { video: Some(v), .. } if v.error.as_deref() == Some(crate::video::RELOAD_FAILED));
-            i32::from(stale)
+            // A video that cannot be played, or a reused tab whose new cut did not load (the old
+            // one still showing): not done, as for `arkos video reload`.
+            let failed = matches!(&o, PaneOutcome::Opened { video: Some(v), .. } if v.state == "unplayable" || v.error.as_deref() == Some(crate::video::RELOAD_FAILED));
+            i32::from(failed)
         }
         Ok(_) => finish_error(json, "the window answered something else", out, err),
     }
@@ -509,7 +511,7 @@ pub fn video_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: 
         Err(text) => return finish_error(json, &text, out, err),
     };
     match direct(env.socket, target_from(env, window), PaneAction::Video { path, op }, env.wait) {
-        Err(reach) => unreachable(&reach, json, out, err),
+        Err(reach) => report_reach(&reach, json, out, err),
         Ok((_, _, Err(text))) => finish_error(json, &text, out, err),
         Ok((pid, _, Ok(o @ PaneOutcome::Videos(_)))) => {
             let PaneOutcome::Videos(list) = &o else { return 1 };
@@ -530,7 +532,8 @@ pub fn video_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: 
 /// `arkos panes [--all]` against `env`.
 pub fn panes_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let Some(p) = parse(args, &["--window"], &["--all"]) else { return usage(err, PANES_USAGE) };
-    if !p.words.is_empty() {
+    // `--all` asks every window, so a window named too is a contradiction, not a filter.
+    if !p.words.is_empty() || (p.has("--all") && p.value("--window").is_some()) {
         return usage(err, PANES_USAGE);
     }
     let json = p.has("--json");
@@ -540,7 +543,7 @@ pub fn panes_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: 
     };
     if !p.has("--all") {
         return match direct(env.socket, target_from(env, window), PaneAction::Panes, env.wait) {
-            Err(reach) => unreachable(&reach, json, out, err),
+            Err(reach) => report_reach(&reach, json, out, err),
             Ok((_, _, Err(text))) => finish_error(json, &text, out, err),
             Ok((pid, _, Ok(PaneOutcome::Panes(r)))) => {
                 if json {
@@ -558,7 +561,7 @@ pub fn panes_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: 
     // Every window: ask who is there (the customize relay lists them), then each one.
     let windows = match agent_cli::customize(env.socket, CustomizeAction::ReportState, env.wait) {
         Ok(a) => a.outcomes,
-        Err(reach) => return unreachable(&reach, json, out, err),
+        Err(reach) => return report_reach(&reach, json, out, err),
     };
     if windows.is_empty() {
         return finish_error(json, "no window running", out, err);
@@ -823,6 +826,35 @@ mod tests {
     }
 
     #[test]
+    fn open_exits_1_when_the_video_cannot_be_played_as_reload_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        std::fs::write(d.join("x.mp4"), b"x").unwrap();
+        let sock = dir.path().join("d.sock");
+        let bad = VideoState { duration: None, width: 0, height: 0, state: "unplayable".into(), error: Some("no video track".into()), ..state(&d.join("x.mp4")) };
+        let server = fake_daemon(&sock, vec![opened(Some(bad.clone()), false), opened(Some(bad.clone()), true), videos(vec![bad.clone()])]);
+        let ran = run(open_cli_to, &["x.mp4"], &sock, &d, Some(5));
+        assert_eq!(ran.code, 1, "{}", ran.out);
+        assert_eq!(ran.out, "opened video x.mp4 in pane 2, unplayable (no video track)\n", "the line still prints");
+        assert_eq!(run(open_cli_to, &["x.mp4", "--json"], &sock, &d, Some(5)).code, 1);
+        assert_eq!(run(video_cli_to, &["reload"], &sock, &d, Some(5)).code, 1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn open_classifies_a_symlink_by_the_file_it_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        std::fs::write(d.join("clip.mp4"), b"x").unwrap();
+        std::fs::write(d.join("shot.png"), b"x").unwrap();
+        std::os::unix::fs::symlink(d.join("clip.mp4"), d.join("a.png")).unwrap();
+        std::os::unix::fs::symlink(d.join("shot.png"), d.join("b.mp4")).unwrap();
+        // The tab shows the canonical file, so its name decides the kind, as the image check did.
+        assert_eq!(classify_open(Path::new("a.png"), &d, false, false), Ok((d.join("clip.mp4"), OpenKind::Video)));
+        assert_eq!(classify_open(Path::new("b.mp4"), &d, false, false), Err(format!("images are not shown in a pane yet; open it with `open {}` (Preview)", d.join("shot.png").display())));
+    }
+
+    #[test]
     fn open_targets_the_session_then_the_pid_then_only() {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().canonicalize().unwrap();
@@ -999,6 +1031,15 @@ mod tests {
         assert_eq!(ran.out, "window 7 (/p)\npane 1\nwindow 8 (/q)\npane 2\n");
         let asked = server.join().unwrap();
         assert_eq!(direct_of(&asked[2]).0, WindowTarget::Pid(8));
+    }
+
+    #[test]
+    fn panes_all_with_a_window_is_a_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("none.sock");
+        let ran = run(panes_cli_to, &["--all", "--window", "42"], &sock, dir.path(), None);
+        assert_eq!(ran.code, 2);
+        assert!(ran.err.contains("see: arkos guide"), "{}", ran.err);
     }
 
     #[test]

@@ -52,7 +52,7 @@ arkos video loop <A-B>|on|off [<file>] [--json]
 arkos video reload [<file>] [--json]
 arkos video close [<file>] [--json]
 arkos video mute|unmute [<file>] [--json]
-arkos panes [--all] [--window PID] [--json]
+arkos panes [--all | --window PID] [--json]
 ```
 
 Every `arkos video` form also takes `--window PID`. A file is a path relative to your working
@@ -156,7 +156,8 @@ or `unplayable` with the reason in brackets, as in `unplayable (no video track)`
 new file could not be played ends with `new file cannot be played yet`. Any other text file
 prints only `opened main.rs in pane 2`.
 
-When a reused video's new file cannot be played (it is truncated, or not a valid file yet), the
+A video that cannot be played at all ends `unplayable (...)` and the command exits 1. When a
+reused video's new file cannot be played (it is truncated, or not a valid file yet), the
 old cut stays on screen, the line ends with `new file cannot be played yet` and the command exits
 1. It exits 1 for as long as the tab shows a cut older than the file: write a file that plays (the
 tab tries again on the next change) or run `arkos video reload`.
@@ -213,7 +214,8 @@ pane 2: video ranger-radio-animatic.mp4 (active), markdown notes.md
 `(you)` is your own tab, `(active)` the tab a pane shows, `(focused)` the pane with the keyboard
 focus. A tab's kind is `terminal`, `markdown`, `text`, `browser` or `video`, and its title is the
 title on the tab (the program, or the user's name for it), never what a terminal shows.
-`--all` prints every window, each headed `window {pid} ({project})`.
+`--all` prints every window, each headed `window {pid} ({project})`; it cannot be given with
+`--window` (exit 2).
 
 ### Times
 
@@ -227,8 +229,8 @@ print times as `m:ss.f`, with hours when the file is an hour or longer.
 
 Exit codes: 0 done; 1 refused or failed (a missing or unsupported file, a bad time or range, a pane
 that does not exist, no such video tab, several to choose from, several windows, an
-`arkos video reload` that failed, an `arkos open` whose reused tab still shows an older cut than
-the file, a window that reported an error, did not answer or is too old for the command); 2 usage
+`arkos video reload` that failed or found the file unplayable, an `arkos open` whose video is
+`unplayable` or whose reused tab still shows an older cut than the file, a window that reported an error, did not answer or is too old for the command); 2 usage
 (the usage text is on stderr, ending `see: arkos guide`); 3 no window to aim at
 (`no window running`, `session {id} is not shown in a window`, or
 `your session is not shown in this window; pass --pane or --window`).
