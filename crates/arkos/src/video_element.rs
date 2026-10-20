@@ -200,19 +200,23 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
             }
             // A drag follows the pointer anywhere in the window until the button comes up.
             if dragging {
-                let (moved, released) = (drag_view.clone(), drag_view.clone());
+                let moved = drag_view.clone();
                 window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _window, cx| {
                     if phase == DispatchPhase::Bubble {
                         let held = ev.pressed_button == Some(MouseButton::Left);
                         let _ = moved.update(cx, |v, cx| v.scrub_move(f32::from(ev.position.x), held, cx));
                     }
                 });
-                window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
-                    if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
-                        let _ = released.update(cx, |v, cx| v.scrub_release(cx));
-                    }
-                });
             }
+            // The release is listened for on every paint, not only one made while dragging: a
+            // trackpad tap's button comes up before the press has been painted, and a release
+            // that is not a drag's changes nothing (`scrub_release`).
+            let released = drag_view.clone();
+            window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                    let _ = released.update(cx, |v, cx| v.scrub_release(cx));
+                }
+            });
         },
     )
     .size_full();
