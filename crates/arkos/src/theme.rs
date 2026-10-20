@@ -569,6 +569,42 @@ impl Theme {
     }
 }
 
+/// One colour `t` of the way from `a` to `b`, each channel rounded to the nearest step.
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let channel = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
+    Rgb { r: channel(a.r, b.r), g: channel(a.g, b.g), b: channel(a.b, b.b) }
+}
+
+/// Mixes every colour field of two values of one struct, `t` of the way from `a` to `b`.
+macro_rules! blend_fields {
+    ($ty:ident, $a:expr, $b:expr, $t:expr; $($field:ident),+ $(,)?) => {
+        $ty { $($field: mix($a.$field, $b.$field, $t),)+ }
+    };
+}
+
+/// The theme `t` of the way from `from` to `to`: every colour interpolated per channel, with `t`
+/// clamped to 0..1. The name and the fonts are `to`'s throughout (fonts cannot fade). The window
+/// shows a run of these over `motion::THEME_FADE` after a switch, so nothing that reads the theme
+/// may cache a colour, and anything derived from it once must wait for `t` to reach 1.
+pub fn blend(from: &Theme, to: &Theme, t: f32) -> Theme {
+    let t = if t.is_nan() { 1.0 } else { t.clamp(0.0, 1.0) };
+    let (a, b) = (from, to);
+    Theme {
+        name: to.name.clone(),
+        chrome: blend_fields!(Chrome, a.chrome, b.chrome, t;
+            window_bg, title_bar, status_bar, sidebar, tab_bar, tab_active, tab_inactive, border,
+            split_handle, split_handle_hover, focus_ring, text, text_dim, banner),
+        terminal: blend_fields!(TerminalColors, a.terminal, b.terminal, t;
+            background, foreground, cursor, selection, black, red, green, yellow, blue, magenta, cyan, white,
+            bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white),
+        semantic: blend_fields!(Semantic, a.semantic, b.semantic, t; working, waiting, bell, error_banner, find_match, find_current),
+        tree: blend_fields!(TreeColors, a.tree, b.tree, t; added, modified, deleted, untracked, ignored),
+        viewer: blend_fields!(ViewerColors, a.viewer, b.viewer, t;
+            keyword, string, comment, number, function, type_name, constant, operator, punctuation),
+        font: to.font.clone(),
+    }
+}
+
 /// Which theme name the config picks for the current appearance (spec 7.1: follow the system
 /// by default, Navy for dark and Navy Light for light).
 pub fn pick_name(mode: crate::config::AppearanceMode, system_is_dark: bool, cfg: &crate::config::ThemeConfig) -> &str {
@@ -849,5 +885,38 @@ mod tests {
         assert_eq!((switch, banner), (None, None), "the same theme is not re-applied");
         let light = builtin("navy-light").unwrap();
         assert_eq!(keep_or_switch(&navy, Ok(light.clone())), (Some(light), None));
+    }
+
+    #[test]
+    fn a_blend_walks_every_colour_from_one_theme_to_the_other() {
+        let from = builtin("navy").unwrap();
+        let mut to = builtin("navy-light").unwrap();
+        to.font.ui = Some("Avenir".into());
+        let start = blend(&from, &to, 0.0);
+        assert_eq!(start.chrome, from.chrome);
+        assert_eq!(start.terminal, from.terminal);
+        assert_eq!(start.semantic, from.semantic);
+        assert_eq!(start.tree, from.tree);
+        assert_eq!(start.viewer, from.viewer);
+        assert_eq!((start.name.as_str(), &start.font), ("navy-light", &to.font), "the name and fonts are the target's from the first frame");
+        let end = blend(&from, &to, 1.0);
+        assert_eq!(end, to);
+        assert_eq!(blend(&from, &to, -3.0).chrome, from.chrome, "t is clamped below");
+        assert_eq!(blend(&from, &to, 7.0), to, "and above");
+        // Every channel sits at its midpoint at t = 0.5, rounded to the nearest step.
+        let mid = |a: u8, b: u8| ((f32::from(a) + f32::from(b)) / 2.0).round() as u8;
+        let half = blend(&from, &to, 0.5);
+        let (a, b, h) = (from.chrome.window_bg, to.chrome.window_bg, half.chrome.window_bg);
+        assert_eq!(h, Rgb { r: mid(a.r, b.r), g: mid(a.g, b.g), b: mid(a.b, b.b) });
+        let (a, b, h) = (from.terminal.bright_cyan, to.terminal.bright_cyan, half.terminal.bright_cyan);
+        assert_eq!(h, Rgb { r: mid(a.r, b.r), g: mid(a.g, b.g), b: mid(a.b, b.b) });
+        let (a, b, h) = (from.viewer.punctuation, to.viewer.punctuation, half.viewer.punctuation);
+        assert_eq!(h, Rgb { r: mid(a.r, b.r), g: mid(a.g, b.g), b: mid(a.b, b.b) });
+        // A single step: 0 to 255 at a quarter is 64, the nearest integer to 63.75.
+        let mut black = from.clone();
+        black.semantic.bell = rgb(0x000000);
+        let mut white = from.clone();
+        white.semantic.bell = rgb(0xffffff);
+        assert_eq!(blend(&black, &white, 0.25).semantic.bell, rgb(0x404040));
     }
 }

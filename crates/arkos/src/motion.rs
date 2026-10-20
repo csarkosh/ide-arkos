@@ -37,6 +37,8 @@ pub const ENTER: Duration = Duration::from_millis(120);
 pub const EXIT: Duration = Duration::from_millis(90);
 /// How long Cmd+B takes to slide the sidebar in or out.
 pub const SIDEBAR_SLIDE: Duration = Duration::from_millis(150);
+/// How long a theme switch takes to cross-fade the window from the old colours to the new.
+pub const THEME_FADE: Duration = Duration::from_millis(200);
 
 /// How far `now` is through `dur` from `since`, 0 to 1.
 fn fraction(since: Instant, now: Instant, dur: Duration) -> f32 {
@@ -62,6 +64,17 @@ pub fn exit_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
     }
     let t = fraction(since, now, dur);
     (1.0 - t) * (1.0 - t)
+}
+
+/// 0 to 1 over `dur` from `since`, easing in and out (the smoothstep curve: slow to start and to
+/// settle), for a cross-fade between two states that are both at rest. 1 at once under Reduce
+/// Motion.
+pub fn fade_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
+    if reduce_motion() {
+        return 1.0;
+    }
+    let t = fraction(since, now, dur);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// How far above its resting place a menu starts as it enters, and a panel (the palette, a find
@@ -317,6 +330,20 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_fade_eases_in_and_out() {
+        let _g = test_lock(false);
+        let t0 = Instant::now();
+        assert_eq!(fade_progress(t0, t0, THEME_FADE), 0.0);
+        assert!(close(fade_progress(t0, t0 + THEME_FADE / 4, THEME_FADE), 0.15625), "slow to start");
+        assert!(close(fade_progress(t0, t0 + THEME_FADE / 2, THEME_FADE), 0.5), "half way at half time");
+        assert!(close(fade_progress(t0, t0 + THEME_FADE * 3 / 4, THEME_FADE), 0.84375), "slow to settle");
+        assert_eq!(fade_progress(t0, t0 + THEME_FADE, THEME_FADE), 1.0);
+        assert_eq!(fade_progress(t0, t0 + THEME_FADE * 4, THEME_FADE), 1.0, "settled");
+        assert_eq!(fade_progress(t0 + MS(5), t0, THEME_FADE), 0.0, "an instant from the future never panics");
+        assert_eq!(THEME_FADE, MS(200));
+    }
+
+    #[test]
     fn a_transient_enters_holds_and_exits_with_its_last_value() {
         let _g = test_lock(false);
         let t0 = Instant::now();
@@ -396,6 +423,7 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(enter_progress(t0, t0, ENTER), 1.0);
         assert_eq!(exit_progress(t0, t0, EXIT), 0.0);
+        assert_eq!(fade_progress(t0, t0, THEME_FADE), 1.0, "a theme switch is instant");
         let mut h = Transient::default();
         h.set(Some(1), t0);
         assert_eq!(h.current(t0), Some((&1, 1.0)));
