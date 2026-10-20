@@ -2,6 +2,7 @@ mod about;
 mod agent_cli;
 mod app_nap;
 mod aux;
+mod av_player;
 mod ax;
 mod cache;
 mod chooser_sessions;
