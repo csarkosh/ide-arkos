@@ -323,9 +323,17 @@ impl VideoView {
         self.set_muted(muted, cx);
     }
 
-    /// R: loads the file again now, keeping the position, the rate and the loop.
+    /// R, and an agent's reload: loads the file again now as it is, keeping the position, the
+    /// rate and the loop. The file's fingerprint is measured here, so the polls after it do not
+    /// load the same file again.
     pub fn reload_now(&mut self, cx: &mut Context<Self>) {
-        self.model.reload_now(&mut *self.player);
+        let fp = crate::config_watch::fingerprint(&self.model.path);
+        self.reload_at(fp, cx);
+    }
+
+    /// `reload_now` with the fingerprint the caller just measured.
+    pub fn reload_at(&mut self, fp: Fp, cx: &mut Context<Self>) {
+        self.model.reload_at(&mut *self.player, fp);
         self.after(cx);
     }
 

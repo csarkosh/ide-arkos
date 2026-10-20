@@ -307,6 +307,15 @@ impl VideoModel {
         p.load(&self.path);
     }
 
+    /// `reload_now` for the file as it is now, `fp` measured just before (the R key, an agent's
+    /// reload or open of a finished file). Both the shown and the last polled fingerprint become
+    /// `fp`, so a change the last poll had not seen yet is not loaded a second time.
+    pub fn reload_at(&mut self, p: &mut dyn Player, fp: Fp) {
+        // `reload_now` takes the shown fingerprint from the last poll's.
+        self.prev_fp = fp;
+        self.reload_now(p);
+    }
+
     /// Takes what the player reports since the last call.
     pub fn apply(&mut self, p: &mut dyn Player, now: Instant) {
         for event in p.poll() {
@@ -769,6 +778,21 @@ mod tests {
         m.reload_now(&mut p);
         p.pending.push(ready(20.0));
         assert!(!m.tick(&mut p, a, now), "a manual reload is not repeated by the next poll");
+    }
+
+    #[test]
+    fn a_reload_of_a_file_the_polls_have_not_seen_yet_is_not_repeated() {
+        // The file changed after the last poll and the agent reloads at once: the polls that
+        // follow see the same file and must not load it a second time.
+        let (mut m, mut p, now) = opened(10.0);
+        let b = Some((2, 20));
+        m.reload_at(&mut p, b);
+        p.pending.push(ready(12.0));
+        m.apply(&mut p, now);
+        assert_eq!(m.state, PlayerState::Ready);
+        assert!(!m.tick(&mut p, b, now));
+        assert!(!m.tick(&mut p, b, now));
+        assert_eq!(p.calls.iter().filter(|c| c.starts_with("load")).count(), 1, "{:?}", p.calls);
     }
 
     #[test]
