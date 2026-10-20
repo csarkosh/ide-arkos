@@ -558,7 +558,6 @@ impl Tree {
         self.pane(pane)?.ids.get(idx).copied()
     }
 
-    /// The index of the viewer tab showing `path` in `pane`, if any.
     /// The first tab in `pane` on `path`, whatever its kind.
     pub fn find_path(&self, pane: PaneId, path: &Path) -> Option<usize> {
         self.pane(pane)?.tabs.iter().position(|t| tab_path(t) == Some(path))

@@ -585,7 +585,6 @@ fn videos_answer(states: Vec<Option<VideoState>>) -> Result<PaneOutcome, String>
 /// once they load, and whether to look once more before answering.
 type Prepared = (Answer, Vec<TabId>, Vec<Settle>, bool);
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
