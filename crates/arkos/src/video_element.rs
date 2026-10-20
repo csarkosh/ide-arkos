@@ -173,7 +173,9 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
             )
     });
     let (border, span_bg) = (c.border.hsla(), c.focus_ring.hsla().opacity(0.4));
-    let (track_view, drag_view) = (view.downgrade(), view.clone());
+    // Every listener holds the view weakly: a closed tab's view (and its player) goes when `Root`
+    // drops it, not when the next frame replaces these closures.
+    let (track_view, drag_view) = (view.downgrade(), view.downgrade());
     let track = canvas(
         move |bounds, window, cx| {
             // One request per draw while the view needs frames (playing, loading, or a paused
@@ -202,19 +204,19 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
                 window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _window, cx| {
                     if phase == DispatchPhase::Bubble {
                         let held = ev.pressed_button == Some(MouseButton::Left);
-                        moved.update(cx, |v, cx| v.scrub_move(f32::from(ev.position.x), held, cx));
+                        let _ = moved.update(cx, |v, cx| v.scrub_move(f32::from(ev.position.x), held, cx));
                     }
                 });
                 window.on_mouse_event(move |ev: &MouseUpEvent, phase, _window, cx| {
                     if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
-                        released.update(cx, |v, cx| v.scrub_release(cx));
+                        let _ = released.update(cx, |v, cx| v.scrub_release(cx));
                     }
                 });
             }
         },
     )
     .size_full();
-    let press = view.clone();
+    let press = view.downgrade();
     let scrubber = div()
         .id(("video-scrubber", eid))
         .flex_1()
@@ -225,29 +227,35 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |_root, ev: &MouseDownEvent, _window, cx| press.update(cx, |v, cx| v.scrub_press(f32::from(ev.position.x), ev.modifiers.shift, cx))),
+            cx.listener(move |_root, ev: &MouseDownEvent, _window, cx| {
+                let _ = press.update(cx, |v, cx| v.scrub_press(f32::from(ev.position.x), ev.modifiers.shift, cx));
+            }),
         )
         .child(track);
     let toggle = |id: &'static str, label: &'static str, on: bool, act: fn(&mut VideoView, &mut Context<VideoView>), cx: &mut Context<Root>| {
-        let target = view.clone();
+        let target = view.downgrade();
         div()
             .id((id, eid))
             .flex_none()
             .text_color(if on { c.focus_ring.hsla() } else { dim })
             .cursor_pointer()
             .child(label)
-            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| target.update(cx, |v, cx| act(v, cx))))
+            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| {
+                let _ = target.update(cx, |v, cx| act(v, cx));
+            }))
     };
     let looping = toggle("video-loop", "loop", loop_range.is_some(), VideoView::toggle_loop, cx);
     let mute = toggle("video-mute", "mute", muted, VideoView::mute, cx);
-    let play_target = view.clone();
+    let play_target = view.downgrade();
     let play_button = div()
         .id(("video-play", eid))
         .flex_none()
         .size(px(GLYPH + 4.0))
         .cursor_pointer()
         .child(canvas(|_, _, _| (), move |b, _, window, _| paint_glyph(b, playing, text, window)).size_full())
-        .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| play_target.update(cx, |v, cx| v.play_pause(cx))));
+        .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| {
+            let _ = play_target.update(cx, |v, cx| v.play_pause(cx));
+        }));
     let strip = div()
         .flex_none()
         .h(px(STRIP_H))

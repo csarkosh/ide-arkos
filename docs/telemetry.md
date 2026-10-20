@@ -84,7 +84,7 @@ An event is one of these names, with only these keys, each taking only the value
 | `window_close` | none | A project window closed. |
 | `pane_open` | `kind`: `terminal`, `viewer`, `browser`, `video`; `how`: `palette`, `key`, `click`, `explorer`, `link`, `restore`, `agent`, `poster` | A tab was opened, and how. |
 | `pane_close` | `kind`: `terminal`, `viewer`, `browser`, `video` | A tab was closed. |
-| `view` | `format`: `markdown`, `code`, `plain`, `image`, `video`, `binary`, `too_large`; `mode`: `rendered`, `raw` | The viewer showed a file, by its kind, never its name. `image` and `video` are reserved, not sent yet. |
+| `view` | `format`: `markdown`, `code`, `plain`, `image`, `video`, `binary`, `too_large`; `mode`: `rendered`, `raw` | The viewer showed a file, by its kind, never its name, or a video tab showed its first frame (`video`). `image` is reserved, not sent yet. |
 | `md` | `feature`: `table_edit`, `mermaid`, `details`, `checklist`, `remote_image`, `video`, `inline_diff` | A markdown feature was used for the first time in this report, once per feature. |
 | `agent_launch` | `agent`: `claude`, `other`; `how`: `new`, `resume` | A coding agent started in a terminal. |
 | `agent_state` | `agent`: `claude`, `other`; `state`: `waiting` | An agent first asked for input, once per terminal. |

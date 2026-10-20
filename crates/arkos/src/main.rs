@@ -1654,16 +1654,19 @@ impl Root {
                 return;
             }
         }
-        // A video's place and loop go with it into the closed stack, so a reopen comes back there.
-        if let Some(video) = self.videos.get(&id) {
+        // A video's place and loop go with it into the closed stack, so a reopen comes back there,
+        // and it pauses now, so the sound and the display token end at once (spec 3.5: no grace)
+        // even while something still holds the view.
+        if let Some(video) = self.videos.get(&id).cloned() {
             let (at, loop_range) = video.read(cx).saved_state();
             self.tree.set_video_state(pane, idx, at, loop_range);
+            video.update(cx, |v, cx| v.pause(cx));
         }
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         telemetry::pane_close(&tab);
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
-        // Dropping the view stops its sound now (spec 3.5: no grace for a video).
+        // The only strong hold on the view: dropping it releases the player (`AvPlayer::drop`).
         self.videos.remove(&id);
         self.tab_widths.remove(&id);
         if let Tab::Terminal { session, cwd } = tab {

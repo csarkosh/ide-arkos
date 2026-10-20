@@ -164,7 +164,7 @@ pub const EVENT_WHEN: &[(&str, &str)] = &[
     ("window_close", "A project window closed."),
     ("pane_open", "A tab was opened, and how."),
     ("pane_close", "A tab was closed."),
-    ("view", "The viewer showed a file, by its kind, never its name. `image` and `video` are reserved, not sent yet."),
+    ("view", "The viewer showed a file, by its kind, never its name, or a video tab showed its first frame (`video`). `image` is reserved, not sent yet."),
     ("md", "A markdown feature was used for the first time in this report, once per feature."),
     ("agent_launch", "A coding agent started in a terminal."),
     ("agent_state", "An agent first asked for input, once per terminal."),
@@ -374,9 +374,10 @@ mod tests {
     fn the_values_no_call_site_writes_yet_are_marked_reserved() {
         let when = |name: &str| EVENT_WHEN.iter().find(|(n, _)| *n == name).map(|(_, w)| *w).expect(name);
         assert!(when("launch").contains("`recovered` is reserved, not sent yet"), "{}", when("launch"));
-        assert!(when("view").contains("`image` and `video` are reserved, not sent yet"), "{}", when("view"));
+        assert!(when("view").contains("`image` is reserved, not sent yet"), "{}", when("view"));
+        assert!(when("view").contains("a video tab showed its first frame (`video`)"), "{}", when("view"));
         let render = render_tables();
-        for (event, value) in [("launch", "recovered"), ("view", "image"), ("view", "video")] {
+        for (event, value) in [("launch", "recovered"), ("view", "image")] {
             let row = render.lines().find(|l| l.starts_with(&format!("| `{event}` |"))).expect(event);
             assert!(row.contains(&format!("`{value}`")) && row.contains("reserved, not sent yet"), "{row}");
         }
