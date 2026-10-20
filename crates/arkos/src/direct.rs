@@ -170,6 +170,13 @@ pub fn pick_videos(tree: &Tree, path: Option<&Path>, op_is_status: bool) -> Resu
     Err(lines.join("\n"))
 }
 
+/// Whether a video op waits for the item to load before it is applied: a seek, a step or a loop
+/// needs the loaded item (its length, its frames), and one made while it loads would be lost
+/// (`ready` seeks back to where the load began, a whole-file loop has no length yet).
+pub fn defer_op(state: &PlayerState, op: VideoOp) -> bool {
+    matches!(state, PlayerState::Loading | PlayerState::Reloading) && matches!(op, VideoOp::Seek(_) | VideoOp::Step(_) | VideoOp::Loop(_))
+}
+
 /// The telemetry name of an action.
 pub fn command_of(action: &PaneAction) -> AgentCommand {
     match action {
@@ -206,17 +213,24 @@ pub fn new_tab(path: &Path, kind: OpenKind, at: Option<f64>, loop_change: LoopCh
     }
 }
 
-/// What an open asks of a video once it has loaded: a time, playing or paused, a loop.
+/// What an open or a deferred op asks of a video once it has loaded: a loop, a time, a step,
+/// playing or paused. The loop, the time and the step apply only to a loaded item; one that did
+/// not load by the deadline (or cannot be played) is reported as it is.
 struct Settle {
     tab: TabId,
     at: Option<f64>,
+    step: Option<i32>,
     playing: Option<bool>,
     loop_change: LoopChange,
 }
 
 impl Settle {
+    fn new(tab: TabId) -> Settle {
+        Settle { tab, at: None, step: None, playing: None, loop_change: LoopChange::Keep }
+    }
+
     fn is_empty(&self) -> bool {
-        self.at.is_none() && self.playing.is_none() && self.loop_change == LoopChange::Keep
+        self.at.is_none() && self.step.is_none() && self.playing.is_none() && self.loop_change == LoopChange::Keep
     }
 }
 
@@ -235,8 +249,8 @@ struct Waiting {
     answer: Answer,
     /// The video tabs whose load the answer waits for.
     loads: Vec<TabId>,
-    /// Applied once the video has loaded.
-    then: Option<Settle>,
+    /// Applied once the videos have loaded.
+    then: Vec<Settle>,
     /// One more look before answering, so a seek or a play just made shows in the state.
     tick: bool,
     /// When the request came: a failed reload's notice after it is reported as the error.
@@ -260,7 +274,7 @@ impl Root {
             PaneAction::Panes => {
                 let tree = &self.tree;
                 let titles = |pane: PaneId, idx: usize| crate::pane_view::tab_title(self, pane, idx, cx);
-                Ok((Answer::Now(PaneOutcome::Panes(panes_report(tree, &self.project, session, &titles))), Vec::new(), None, false))
+                Ok((Answer::Now(PaneOutcome::Panes(panes_report(tree, &self.project, session, &titles))), Vec::new(), Vec::new(), false))
             }
         };
         match answer {
@@ -330,7 +344,7 @@ impl Root {
             cx.notify();
         }
         let Some(Tab::Video { path, .. }) = shown else {
-            return Ok((Answer::Opened { tab, reused, reloaded: false }, Vec::new(), None, false));
+            return Ok((Answer::Opened { tab, reused, reloaded: false }, Vec::new(), Vec::new(), false));
         };
         let view = self.video_for(tab, &path, cx);
         // The agent says the file is done: a reused tab whose file moved since it loaded loads it
@@ -338,19 +352,19 @@ impl Root {
         let fp = crate::config_watch::fingerprint(&path);
         let reloaded = reused && fp.is_some() && view.read(cx).model.shown_fp != fp;
         if reloaded {
-            view.update(cx, |v, cx| v.reload_now(cx));
+            view.update(cx, |v, cx| v.reload_at(fp, cx));
         }
         // A new tab already carries its time and a set loop (`new_tab`).
         let then = if reused {
-            Settle { tab, at: a.at, playing: a.playing, loop_change: a.loop_change }
+            Settle { at: a.at, playing: a.playing, loop_change: a.loop_change, ..Settle::new(tab) }
         } else {
             let loop_change = match a.loop_change {
                 LoopChange::WholeFile => LoopChange::WholeFile,
                 LoopChange::Keep | LoopChange::Set { .. } | LoopChange::Clear => LoopChange::Keep,
             };
-            Settle { tab, at: None, playing: a.playing, loop_change }
+            Settle { playing: a.playing, loop_change, ..Settle::new(tab) }
         };
-        Ok((Answer::Opened { tab, reused, reloaded }, vec![tab], Some(then).filter(|s| !s.is_empty()), false))
+        Ok((Answer::Opened { tab, reused, reloaded }, vec![tab], Some(then).into_iter().filter(|s| !s.is_empty()).collect(), false))
     }
 
     fn direct_video(&mut self, path: Option<&Path>, op: VideoOp, cx: &mut Context<Self>) -> Result<Prepared, String> {
@@ -358,6 +372,7 @@ impl Root {
         let tabs: Vec<TabId> = picked.iter().filter_map(|(pane, idx)| self.tree.tab_id(*pane, *idx)).collect();
         let mut touched = Vec::new();
         let mut loads = Vec::new();
+        let mut then = Vec::new();
         for tab in tabs {
             let Some((pane, idx)) = self.tree.locate(tab) else { continue };
             let Some(Tab::Video { path, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { continue };
@@ -366,6 +381,20 @@ impl Root {
             let view = self.video_for(tab, &path, cx);
             if fresh || op == VideoOp::Reload {
                 loads.push(tab);
+            }
+            if defer_op(&view.read(cx).model.state, op) {
+                let settle = match op {
+                    VideoOp::Seek(secs) => Settle { at: Some(secs), ..Settle::new(tab) },
+                    VideoOp::Step(n) => Settle { step: Some(n), ..Settle::new(tab) },
+                    VideoOp::Loop(change) => Settle { loop_change: change, ..Settle::new(tab) },
+                    _ => Settle::new(tab),
+                };
+                then.push(settle);
+                if !loads.contains(&tab) {
+                    loads.push(tab);
+                }
+                touched.push((tab, None));
+                continue;
             }
             match op {
                 VideoOp::Status => {}
@@ -388,7 +417,7 @@ impl Root {
             touched.push((tab, None));
         }
         let tick = !matches!(op, VideoOp::Status | VideoOp::Close);
-        Ok((Answer::Videos(touched), loads, None, tick))
+        Ok((Answer::Videos(touched), loads, then, tick))
     }
 
     /// Answers at once when nothing is loading, else looks again every `READY_POLL` until it
@@ -415,15 +444,21 @@ impl Root {
         if loading && !late {
             return false;
         }
-        if let Some(s) = w.then.take() {
+        for s in std::mem::take(&mut w.then) {
             if let Some(v) = self.videos.get(&s.tab).cloned() {
                 v.update(cx, |v, cx| {
-                    if s.loop_change != LoopChange::Keep {
-                        v.set_loop(s.loop_change, cx);
+                    if v.model.state == PlayerState::Ready {
+                        if s.loop_change != LoopChange::Keep {
+                            v.set_loop(s.loop_change, cx);
+                        }
+                        if let Some(at) = s.at {
+                            v.seek(at, cx);
+                        }
+                        if let Some(n) = s.step {
+                            v.step(n, cx);
+                        }
                     }
-                    if let Some(at) = s.at {
-                        v.seek(at, cx);
-                    }
+                    // The model keeps a play asked for while loading, and refuses one it cannot do.
                     match s.playing {
                         Some(true) => v.play(cx),
                         Some(false) => v.pause(cx),
@@ -497,7 +532,7 @@ struct OpenArgs {
 
 /// What a handled action leaves to answer: the answer, the videos to wait for, what to apply
 /// once they load, and whether to look once more before answering.
-type Prepared = (Answer, Vec<TabId>, Option<Settle>, bool);
+type Prepared = (Answer, Vec<TabId>, Vec<Settle>, bool);
 
 
 #[cfg(test)]
@@ -680,6 +715,25 @@ mod tests {
         assert_eq!(new_tab(md, OpenKind::Markdown { raw: true }, None, LoopChange::Keep), Tab::Viewer { path: md.into(), mode: ViewMode::Raw });
         assert_eq!(new_tab(md, OpenKind::Markdown { raw: false }, None, LoopChange::Keep), viewer("/p/notes.md"));
         assert_eq!(new_tab(Path::new("/p/a.rs"), OpenKind::Text, None, LoopChange::Keep), viewer("/p/a.rs"));
+    }
+
+    #[test]
+    fn a_seek_a_step_or_a_loop_waits_for_the_item_to_load() {
+        let needs = [VideoOp::Seek(3.0), VideoOp::Step(1), VideoOp::Loop(LoopChange::WholeFile), VideoOp::Loop(LoopChange::Clear)];
+        let never = [VideoOp::Status, VideoOp::Play, VideoOp::Pause, VideoOp::Reload, VideoOp::Close, VideoOp::Mute(true)];
+        for state in [PlayerState::Loading, PlayerState::Reloading] {
+            for op in needs {
+                assert!(defer_op(&state, op), "{op:?} while {state:?}");
+            }
+            for op in never {
+                assert!(!defer_op(&state, op), "{op:?} while {state:?}");
+            }
+        }
+        for state in [PlayerState::Ready, PlayerState::Waiting, PlayerState::Unplayable("no".into())] {
+            for op in needs.into_iter().chain(never) {
+                assert!(!defer_op(&state, op), "{op:?} while {state:?}");
+            }
+        }
     }
 
     #[test]
