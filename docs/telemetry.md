@@ -82,8 +82,8 @@ An event is one of these names, with only these keys, each taking only the value
 | `launch` | `how`: `normal`, `relaunch`, `updated`, `recovered` | The window started, and how. `recovered` is reserved, not sent yet: it would mark a start after the last window died. |
 | `window_open` | none | A project window opened. |
 | `window_close` | none | A project window closed. |
-| `pane_open` | `kind`: `terminal`, `viewer`, `browser`; `how`: `palette`, `key`, `click`, `explorer`, `link`, `restore` | A tab was opened, and how. |
-| `pane_close` | `kind`: `terminal`, `viewer`, `browser` | A tab was closed. |
+| `pane_open` | `kind`: `terminal`, `viewer`, `browser`, `video`; `how`: `palette`, `key`, `click`, `explorer`, `link`, `restore`, `agent`, `poster` | A tab was opened, and how. |
+| `pane_close` | `kind`: `terminal`, `viewer`, `browser`, `video` | A tab was closed. |
 | `view` | `format`: `markdown`, `code`, `plain`, `image`, `video`, `binary`, `too_large`; `mode`: `rendered`, `raw` | The viewer showed a file, by its kind, never its name. `image` and `video` are reserved, not sent yet. |
 | `md` | `feature`: `table_edit`, `mermaid`, `details`, `checklist`, `remote_image`, `video`, `inline_diff` | A markdown feature was used for the first time in this report, once per feature. |
 | `agent_launch` | `agent`: `claude`, `other`; `how`: `new`, `resume` | A coding agent started in a terminal. |
@@ -93,10 +93,11 @@ An event is one of these names, with only these keys, each taking only the value
 | `theme` | `builtin`: `true`, `false` | A theme was chosen. A built-in theme is not named, and a theme of your own is just `false`. |
 | `update` | `step`: `staged`, `applied`, `failed`, `rolled_back` | The updater moved a step. |
 | `notice` | `kind`: `update_ready`, `updated`, `daemon`, `config_error`, `theme_error` | The bell got a notice. |
-| `error` | `kind`: `daemon_unreachable`, `daemon_restarted`, `session_lost`, `chrome_missing`, `mermaid_failed`, `save_failed` | Something went wrong where you would have seen it. |
+| `error` | `kind`: `daemon_unreachable`, `daemon_restarted`, `session_lost`, `chrome_missing`, `mermaid_failed`, `save_failed`, `video_unplayable` | Something went wrong where you would have seen it. |
+| `agent_pane` | `command`: `open`, `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `panes`; `ok`: `true`, `false` | An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded. |
 | `help` | `what`: `keybindings`, `documentation`, `about`, `telemetry` | A Help surface opened. |
 
-The keys of `focus` are these surfaces only: `terminal`, `viewer`, `browser`, `settings`.
+The keys of `focus` are these surfaces only: `terminal`, `viewer`, `browser`, `video`, `settings`.
 
 ### The crash report
 

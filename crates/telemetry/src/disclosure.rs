@@ -174,6 +174,7 @@ pub const EVENT_WHEN: &[(&str, &str)] = &[
     ("update", "The updater moved a step."),
     ("notice", "The bell got a notice."),
     ("error", "Something went wrong where you would have seen it."),
+    ("agent_pane", "An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded."),
     ("help", "A Help surface opened."),
 ];
 

@@ -150,7 +150,7 @@ pub fn reconcile(tree: &Tree, list: &[SessionInfo], project: &Path) -> Vec<Recon
             match tab {
                 Tab::Terminal { session, cwd } if reattachable(*session, list, cwd.as_deref().unwrap_or(project)) => Some(Reconcile::Attach { tab: id, session: *session }),
                 Tab::Terminal { cwd, .. } => Some(Reconcile::Create { tab: id, cwd: cwd.clone() }),
-                Tab::Viewer { .. } | Tab::Browser { .. } => None,
+                Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
             }
         })
         .collect()

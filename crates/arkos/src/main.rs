@@ -539,7 +539,7 @@ fn focused_session_of(tree: &Tree) -> Option<SessionId> {
     let p = tree.pane(tree.focused)?;
     match p.tabs.get(p.active)? {
         Tab::Terminal { session, .. } => Some(*session),
-        Tab::Viewer { .. } | Tab::Browser { .. } => None,
+        Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
     }
 }
 
@@ -1552,7 +1552,7 @@ impl Root {
         let p = self.tree.pane(self.tree.focused)?;
         match p.tabs.get(p.active)? {
             Tab::Terminal { session, .. } => self.sessions.terminals.get(session).cloned(),
-            Tab::Viewer { .. } | Tab::Browser { .. } => None,
+            Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
         }
     }
 
@@ -1690,6 +1690,7 @@ impl Root {
                     self.release_browser_tab(id, cx);
                     Closed::Browser { url, app_mode }
                 }
+                Tab::Video { path, at, loop_range } => Closed::Video { path, at, loop_range },
                 Tab::Terminal { .. } => unreachable!("handled above"),
             };
             for old in self.closed.push(ClosedTab { closed, pane, closed_at: Instant::now(), daemon_timed: false }) {
@@ -1764,7 +1765,7 @@ impl Root {
         let (pane, idx) = self.tree.locate(tab)?;
         match self.tree.pane(pane)?.tabs.get(idx)? {
             Tab::Terminal { cwd, .. } => cwd.clone(),
-            Tab::Viewer { .. } | Tab::Browser { .. } => None,
+            Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
         }
     }
 
@@ -2766,6 +2767,12 @@ impl Root {
                     // Its old window may still be open: the tab waits rather than launch another.
                     Closed::Browser { url, app_mode } => {
                         self.add_browser_tab(pane, url, app_mode, false, cx);
+                    }
+                    Closed::Video { path, at, loop_range } => {
+                        let idx = self.tree.add_tab(pane, Tab::Video { path, at, loop_range });
+                        telemetry::pane_open(telemetry::PaneKind::Video, telemetry::Opened::Key);
+                        self.tree.focus(pane);
+                        self.activate_tab(pane, idx, cx);
                     }
                     Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
                     Closed::Session(session, cwd) => {

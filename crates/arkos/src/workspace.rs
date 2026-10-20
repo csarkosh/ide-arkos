@@ -1,7 +1,7 @@
 //! Remembers a project's layout: the split tree with every tab's session (spec 4). Saved on
 //! every change, debounced, atomically, and off the UI thread.
 use crate::paths::{legacy_workspace_file, workspace_file};
-use crate::tree::{Tab, Tree};
+use crate::tree::{PaneId, Tab, Tree};
 use gpui::App;
 use protocol::SessionId;
 use serde::{Deserialize, Serialize};
@@ -159,6 +159,21 @@ pub fn session_ids(project: &Path) -> Vec<SessionId> {
         .unwrap_or_default()
 }
 
+/// A viewer tab on a video file becomes a video tab (files from before 0.6.0).
+pub fn promote_videos(tree: &mut Tree) {
+    let found: Vec<(PaneId, usize, PathBuf)> = tree
+        .tabs()
+        .into_iter()
+        .filter_map(|(pane, idx, tab)| match tab {
+            Tab::Viewer { path, .. } if crate::media::kind(&path.to_string_lossy()) == Some(crate::media::Media::Video) => Some((pane, idx, path.clone())),
+            _ => None,
+        })
+        .collect();
+    for (pane, idx, path) in found {
+        tree.replace_tab(pane, idx, Tab::Video { path, at: None, loop_range: None });
+    }
+}
+
 /// Writes to disk; run it off the UI thread (see `request_save`).
 pub fn save(project: &Path, ws: &Workspace) -> std::io::Result<()> {
     save_to(&workspace_file(project), ws)
@@ -177,6 +192,7 @@ pub fn load_from(file: &Path, project: &Path) -> Option<Workspace> {
     };
     if let Ok(mut ws) = serde_json::from_str::<Workspace>(&text) {
         ws.tree.repair_ids();
+        promote_videos(&mut ws.tree);
         return Some(ws);
     }
     match serde_json::from_str::<V1>(&text) {
@@ -440,6 +456,31 @@ mod tests {
         std::fs::write(&file, r#"{ "version": 3, "project": "/projects/x", "tree": { "root": { "Leaf": { "id": 1, "tabs": [ { "Terminal": { "session": 7 } } ], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
         let ws = load_from(&file, project).unwrap();
         assert_eq!(ws.tree.pane(1).unwrap().tabs, vec![Tab::Terminal { session: SessionId(7), cwd: None }]);
+    }
+
+    #[test]
+    fn a_video_tab_round_trips_with_its_position_and_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ws.json");
+        let project = Path::new("/projects/x");
+        let mut tree = Tree::new(Tab::Video { path: "/projects/x/cut.mp4".into(), at: Some(12.0), loop_range: Some((12.0, 18.0)) });
+        let pane = tree.focused;
+        tree.add_tab(pane, Tab::Video { path: "/projects/x/b.mov".into(), at: None, loop_range: None });
+        let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
+        save_to(&file, &ws).unwrap();
+        assert_eq!(load_from(&file, project), Some(ws));
+    }
+
+    #[test]
+    fn a_viewer_on_a_video_is_promoted_when_the_workspace_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ws.json");
+        std::fs::write(&file, r#"{ "version": 3, "project": "/p", "tree": { "root": { "Leaf": { "id": 1, "tabs": [ { "Viewer": { "path": "/p/cut.mp4" } }, { "Viewer": { "path": "/p/a.rs" } } ], "ids": [5, 6], "active": 0 } }, "next_id": 7, "focused": 1, "maximized": null } }"#).unwrap();
+        let ws = load_from(&file, Path::new("/p")).unwrap();
+        let pane = ws.tree.pane(1).unwrap();
+        assert_eq!(pane.tabs[0], Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None });
+        assert_eq!(pane.tabs[1], Tab::Viewer { path: "/p/a.rs".into(), mode: crate::tree::ViewMode::default() });
+        assert_eq!(pane.ids, vec![5, 6]);
     }
 
     #[test]

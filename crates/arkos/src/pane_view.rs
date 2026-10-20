@@ -372,7 +372,7 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab, cx: &Context<Ro
                 None => (tab_label("", &root.shell_name, true, None, note, busy.or(Some("starting shell"))), TabMark::None),
             }
         }
-        Tab::Viewer { path, .. } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
+        Tab::Viewer { path, .. } | Tab::Video { path, .. } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
         // `browser_titles` holds a title only while a window is docked.
         Tab::Browser { url, .. } => (browser_label(p.ids.get(idx).and_then(|id| root.browser_titles.get(id)).map(String::as_str), url.as_deref()), TabMark::None),
     }
@@ -414,6 +414,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         },
         Some(Tab::Browser { url, app_mode }) => match p.ids.get(p.active).copied() {
             Some(tab) => render_browser(root, pane, tab, url.clone(), *app_mode, cx),
+            None => div(),
+        },
+        Some(Tab::Video { path, .. }) => match p.ids.get(p.active).copied() {
+            Some(tab) => render_video(root, pane, tab, path, cx),
             None => div(),
         },
     };
@@ -1277,6 +1281,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
 /// A browser tab's placeholder: the rectangle a Chrome window docks onto, reported every frame
 /// (a `canvas`, like the pane's grid measure; it paints nothing and asks for no frames), and the
 /// screen `browser_screen` picks. A click anywhere in it is `browser_clicked`.
+/// A video tab's body. A placeholder until the player view replaces it: the file's name, centred.
+fn render_video(root: &mut Root, _pane: PaneId, _tab: TabId, path: &std::path::Path, _cx: &mut Context<Root>) -> Div {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    div().flex().flex_1().items_center().justify_center().text_color(root.theme.chrome.text_dim.hsla()).child(name)
+}
+
 fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: Option<String>, app_mode: bool, cx: &mut Context<Root>) -> Div {
     let focus = pane_focus(root, pane, cx);
     let theme = root.theme.clone();

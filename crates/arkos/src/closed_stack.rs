@@ -18,7 +18,7 @@ pub const CLOSE_TICK: Duration = Duration::from_secs(5);
 pub const MAX_CLOSED: usize = 20;
 
 /// What a closed tab showed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Closed {
     /// The session, and the worktree its tab was opened in (`None`: the project).
     Session(SessionId, Option<PathBuf>),
@@ -26,9 +26,11 @@ pub enum Closed {
     /// A browser tab: what it opened with. It reopens waiting for a Chrome window, whenever it
     /// is popped; the window it had was never arkos's to keep.
     Browser { url: Option<String>, app_mode: bool },
+    /// A video tab: the file, and the position and loop it had.
+    Video { path: PathBuf, at: Option<f64>, loop_range: Option<(f64, f64)> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClosedTab {
     pub closed: Closed,
     /// The pane it was closed from, where it reopens if that pane still exists.
@@ -48,7 +50,7 @@ impl ClosedTab {
     pub fn session(&self) -> Option<SessionId> {
         match self.closed {
             Closed::Session(s, _) => Some(s),
-            Closed::Viewer(_) | Closed::Browser { .. } => None,
+            Closed::Viewer(_) | Closed::Browser { .. } | Closed::Video { .. } => None,
         }
     }
 }
@@ -114,6 +116,17 @@ mod tests {
 
     fn viewer(path: &str, pane: PaneId, at: Instant) -> ClosedTab {
         ClosedTab { closed: Closed::Viewer(PathBuf::from(path)), pane, closed_at: at, daemon_timed: false }
+    }
+
+    #[test]
+    fn a_closed_video_has_no_session() {
+        let t0 = Instant::now();
+        let tab = ClosedTab { closed: Closed::Video { path: PathBuf::from("/p/cut.mp4"), at: Some(4.0), loop_range: None }, pane: 1, closed_at: t0, daemon_timed: false };
+        assert_eq!(tab.session(), None);
+        let mut s = ClosedStack::default();
+        assert!(s.push(tab).is_empty());
+        assert!(s.expired(t0 + CLOSE_GRACE).is_empty(), "a video is never killed");
+        assert_eq!(s.len(), 1);
     }
 
     #[test]
