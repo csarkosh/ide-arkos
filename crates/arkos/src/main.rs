@@ -1172,8 +1172,7 @@ impl Root {
     /// asked for) waits for the fade's end. Under Reduce Motion, or before the first frame, the
     /// switch is instant. A theme equal to the one being shown or faded to does nothing.
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
-        let target = self.theme_fade.as_ref().map_or(&self.theme, |f| &f.to);
-        if **target == theme {
+        if **self.target_theme() == theme {
             return;
         }
         let fonts = installed_fonts(&theme, cx);
@@ -1194,6 +1193,12 @@ impl Root {
         self.theme = Arc::new(theme::blend(&from, &to, 0.0));
         self.theme_fade = Some(ThemeFade { from, to, since: Instant::now() });
         cx.notify();
+    }
+
+    /// The theme the window is at or is fading to: what a switch compares against and what the
+    /// state report names. `theme` itself is a blend while a fade runs.
+    pub fn target_theme(&self) -> &Arc<theme::Theme> {
+        fade_target(self.theme_fade.as_ref(), &self.theme)
     }
 
     /// One frame of the theme cross-fade: the blend at `now` for the window, the terminals (for
@@ -1264,7 +1269,9 @@ impl Root {
     /// Switches to `wanted` if it loaded and differs; a load error keeps the current theme and
     /// sets `theme_error`, a success clears it.
     fn switch_theme_to(&mut self, wanted: Result<theme::Theme, String>, cx: &mut Context<Self>) {
-        let (switch, banner) = theme::keep_or_switch(&self.theme, wanted);
+        // Against the target, not the blend on screen: at the fade's first frame the blend has
+        // the old colours under the new name, and a revert to the old theme must still switch.
+        let (switch, banner) = theme::keep_or_switch(self.target_theme(), wanted);
         if let Some(t) = switch {
             self.set_theme(t, cx);
         }
@@ -1354,8 +1361,8 @@ impl Root {
     /// What this window shows, for an agent's `Customize` (spec 5).
     pub fn report(&self) -> protocol::Report {
         protocol::Report {
-            theme: self.theme.name.clone(),
-            dark: !self.theme.is_light(),
+            theme: self.target_theme().name.clone(),
+            dark: !self.target_theme().is_light(),
             system_is_dark: self.system_is_dark,
             preset: self.text_preset.clone(),
             family: self.family().to_string(),
@@ -4019,6 +4026,11 @@ fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &th
 
 /// The theme's fonts that this Mac has; each missing one is said once on stderr and its slot
 /// falls back as if the theme had not named it.
+/// The end of a theme fade, or the theme shown when none runs (`Root::target_theme`).
+fn fade_target<'a>(fade: Option<&'a ThemeFade>, shown: &'a Arc<theme::Theme>) -> &'a Arc<theme::Theme> {
+    fade.map_or(shown, |f| &f.to)
+}
+
 fn installed_fonts(theme: &theme::Theme, cx: &App) -> theme::ThemeFont {
     let families: std::collections::HashSet<String> = cx.text_system().all_font_names().into_iter().collect();
     let (fonts, missing) = theme.font.installed(&families);
@@ -4713,6 +4725,30 @@ mod tests {
         assert_eq!(after_window_closed(1, false, true), AfterClose::CloseAux, "About stayed after the project window closed");
         assert_eq!(after_window_closed(2, false, true), AfterClose::CloseAux, "the chooser and About both");
         assert_eq!(after_window_closed(1, true, true), AfterClose::Stay, "a project window remains");
+    }
+
+    #[test]
+    fn a_revert_that_lands_before_the_first_fade_frame_still_switches() {
+        use super::{fade_target, ThemeFade};
+        use crate::theme;
+        use std::sync::Arc;
+        use std::time::Instant;
+        // A theme file edited in place keeps its name: the watcher fires for the write, then
+        // again when the editor's rename restores the old text before the first fade frame.
+        let navy = Arc::new(theme::builtin("navy").unwrap());
+        let mut edited = theme::builtin("navy-light").unwrap();
+        edited.name = "navy".into();
+        let light = Arc::new(edited);
+        // The screen at the start of that fade: navy's colours under the edited theme's name.
+        let shown = Arc::new(theme::blend(&navy, &light, 0.0));
+        let fade = ThemeFade { from: navy.clone(), to: light.clone(), since: Instant::now() };
+        assert_eq!(theme::keep_or_switch(&shown, Ok((*navy).clone())).0, None, "the blend alone would swallow the revert");
+        let target = fade_target(Some(&fade), &shown);
+        assert_eq!(**target, *light, "the target is the fade's end");
+        assert_eq!(theme::keep_or_switch(target, Ok((*navy).clone())).0, Some((*navy).clone()), "so a revert to navy switches");
+        assert_eq!(theme::keep_or_switch(target, Ok((*light).clone())).0, None, "and the theme being faded to is not applied twice");
+        assert!(target.is_light(), "the report says light while navy is still on screen");
+        assert_eq!(**fade_target(None, &shown), *shown, "with no fade, the theme shown is the target");
     }
 
     #[test]
