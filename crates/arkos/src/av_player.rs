@@ -59,6 +59,13 @@ const TIMESCALE: i32 = 90_000;
 const END_SLACK: f64 = 0.1;
 
 /// What `poll` has found out about the item on the player.
+///
+/// The reload rule: `held` and `resume_rate` are taken by a `load` only while the phase is
+/// `Ready`, so they describe the item a failed reload falls back to; a second `load` during
+/// `Loading` keeps the ones it has (the player is paused by then, so its rate would read zero).
+/// While `Loading` with a `shown` item to fall back to, `play` and `pause` record the intent in
+/// `resume_rate` (1.0 or 0.0) instead of messaging the player: playing would start the new item
+/// from zero, and a pause during a reload must hold if the old item comes back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// Loaded but not yet ready or failed; nothing reported.
@@ -84,9 +91,11 @@ pub struct AvPlayer {
     output: Retained<AVPlayerItemVideoOutput>,
     /// The last pixel buffer copied, handed out again until a newer one exists.
     last: Option<CVPixelBuffer>,
-    /// The position when the last `load` began, reported until the new item is ready.
+    /// The position of the shown item when a reload began (see `Phase`), reported until the
+    /// new item is ready and restored by a fall back.
     held: f64,
-    /// The rate when the last `load` began, restored when a failed reload puts the old item back.
+    /// The shown item's rate when a reload began, then the intent of any `play` or `pause` made
+    /// during the reload (see `Phase`), restored when a failed reload puts the old item back.
     resume_rate: f32,
     /// Asked to play and not since paused or ended, so a stop at the end is an `Ended`.
     playing: bool,
@@ -174,6 +183,11 @@ impl AvPlayer {
         unsafe { self.player.rate() }
     }
 
+    /// True while a reload loads with a ready item to fall back to (see `Phase`).
+    fn reloading(&self) -> bool {
+        self.phase == Phase::Loading && self.shown.is_some()
+    }
+
     /// True while a seek on the current item has not yet completed.
     fn seeking(&self) -> bool {
         self.seeks_landed.load(Ordering::Acquire) < self.seeks_sent
@@ -254,8 +268,11 @@ impl AvPlayer {
 
 impl Player for AvPlayer {
     fn load(&mut self, path: &Path) {
-        self.held = self.position();
-        self.resume_rate = self.rate();
+        // Only a ready item's position and rate are worth going back to (see `Phase`).
+        if self.phase == Phase::Ready {
+            self.held = self.position();
+            self.resume_rate = self.rate();
+        }
         // The new item is paused until the model plays it once ready (after seeking it to the
         // old position), so it does not start from zero on its own.
         // SAFETY: a plain message to a live player, on the main thread.
@@ -286,13 +303,23 @@ impl Player for AvPlayer {
     }
 
     fn play(&mut self) {
-        // SAFETY: a plain message to a live player, on the main thread. Before the item is ready
-        // this sets the rate and the item starts once it can.
+        if self.reloading() {
+            // Recorded for a fall back (see `Phase`); the model plays the new item once ready.
+            self.resume_rate = 1.0;
+            return;
+        }
+        // SAFETY: a plain message to a live player, on the main thread. Before a first item is
+        // ready this sets the rate and the item starts once it can.
         unsafe { self.player.play() };
         self.playing = true;
     }
 
     fn pause(&mut self) {
+        if self.reloading() {
+            // The player is already paused by `load`; a fall back must stay paused.
+            self.resume_rate = 0.0;
+            return;
+        }
         // SAFETY: a plain message to a live player, on the main thread.
         unsafe { self.player.pause() };
         self.playing = false;
