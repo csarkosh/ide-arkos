@@ -427,13 +427,20 @@ impl VideoModel {
         p.step(n);
     }
 
-    pub fn set_loop(&mut self, p: &mut dyn Player, change: LoopChange) {
+    /// Sets, clears or keeps the loop. A range is clamped to the file before it is compared, and
+    /// one with nothing of it left (a start past the end) clears the loop and says so on the
+    /// strip, as a reload that shortens the file does (`ready`).
+    pub fn set_loop(&mut self, p: &mut dyn Player, now: Instant, change: LoopChange) {
         let dur = known(p.duration());
         match change {
             LoopChange::Keep => return,
             LoopChange::Set { start, end } => {
+                let start = dur.map_or(start.max(0.0), |d| start.max(0.0).min(d));
                 let end = dur.map_or(end, |d| end.min(d));
-                self.loop_range = (start < end).then_some((start.max(0.0), end));
+                self.loop_range = (start < end).then_some((start, end));
+                if self.loop_range.is_none() {
+                    self.notice = Some(("loop cleared".into(), now));
+                }
             }
             LoopChange::WholeFile => match dur {
                 Some(d) => self.loop_range = Some((0.0, d)),
@@ -701,7 +708,7 @@ mod tests {
         m.play(&mut p);
         assert_eq!(p.calls, vec!["seek 0.0", "play"], "play at the end starts over");
 
-        m.set_loop(&mut p, LoopChange::Set { start: 12.0, end: 18.0 });
+        m.set_loop(&mut p, now, LoopChange::Set { start: 12.0, end: 18.0 });
         p.pending.push(PlayerEvent::Ended);
         p.calls.clear();
         m.apply(&mut p, now);
@@ -711,14 +718,14 @@ mod tests {
 
     #[test]
     fn loops_seeks_and_steps_are_clamped_and_passed_on() {
-        let (mut m, mut p, _) = opened(30.0);
-        m.set_loop(&mut p, LoopChange::Set { start: 12.0, end: 99.0 });
+        let (mut m, mut p, now) = opened(30.0);
+        m.set_loop(&mut p, now, LoopChange::Set { start: 12.0, end: 99.0 });
         assert_eq!(m.loop_range, Some((12.0, 30.0)));
-        m.set_loop(&mut p, LoopChange::Keep);
+        m.set_loop(&mut p, now, LoopChange::Keep);
         assert_eq!(m.loop_range, Some((12.0, 30.0)));
-        m.set_loop(&mut p, LoopChange::WholeFile);
+        m.set_loop(&mut p, now, LoopChange::WholeFile);
         assert_eq!(m.loop_range, Some((0.0, 30.0)));
-        m.set_loop(&mut p, LoopChange::Clear);
+        m.set_loop(&mut p, now, LoopChange::Clear);
         assert_eq!(m.loop_range, None);
         m.seek(&mut p, 99.0);
         m.seek(&mut p, -4.0);
@@ -743,6 +750,27 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_past_the_end_is_clamped_first_and_an_empty_one_clears_the_loop_and_says_so() {
+        // `--loop 2:00-2:10` on a 1:48 cut: nothing of it is in the file.
+        let (mut m, mut p, now) = opened(108.0);
+        m.set_loop(&mut p, now, LoopChange::Set { start: 12.0, end: 18.0 });
+        m.set_loop(&mut p, now, LoopChange::Set { start: 120.0, end: 130.0 });
+        assert_eq!(m.loop_range, None);
+        assert_eq!(m.notice_at(now), Some("loop cleared"));
+        assert_eq!(p.calls, vec!["loop Some((12.0, 18.0))", "loop None"]);
+        // A start before 0 is clamped before the compare, so a range wholly before 0 is empty too.
+        let (mut m, mut p, now) = opened(108.0);
+        m.set_loop(&mut p, now, LoopChange::Set { start: -5.0, end: -1.0 });
+        assert_eq!(m.loop_range, None);
+        assert_eq!(m.notice_at(now), Some("loop cleared"));
+        // A range that reaches past the end keeps the part in the file, with no notice.
+        m.notice = None;
+        m.set_loop(&mut p, now, LoopChange::Set { start: 100.0, end: 130.0 });
+        assert_eq!(m.loop_range, Some((100.0, 108.0)));
+        assert_eq!(m.notice_at(now), None);
+    }
+
+    #[test]
     fn a_first_load_that_fails_is_unplayable_with_the_reason() {
         let now = Instant::now();
         let mut m = VideoModel::new("/p/x.mp4".into(), None, None);
@@ -756,10 +784,10 @@ mod tests {
 
     #[test]
     fn status_reports_what_the_strip_shows() {
-        let (mut m, mut p, _) = opened(60.0);
+        let (mut m, mut p, now) = opened(60.0);
         m.play(&mut p);
         m.set_muted(&mut p, true);
-        m.set_loop(&mut p, LoopChange::Set { start: 12.0, end: 18.0 });
+        m.set_loop(&mut p, now, LoopChange::Set { start: 12.0, end: 18.0 });
         p.pos = 14.5;
         let s = m.status(&p, 3, 9, Some(1234));
         assert_eq!(

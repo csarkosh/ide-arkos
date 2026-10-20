@@ -294,7 +294,7 @@ impl VideoView {
     }
 
     pub fn set_loop(&mut self, change: LoopChange, cx: &mut Context<Self>) {
-        self.model.set_loop(&mut *self.player, change);
+        self.model.set_loop(&mut *self.player, Instant::now(), change);
         cx.emit(VideoEvent::StateChanged);
         self.after(cx);
     }
