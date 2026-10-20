@@ -1,6 +1,7 @@
 //! The sidebar's "watcher" (spec 6, ruling 1): every second, the expanded directories' and the
 //! open viewers' fingerprints are read on the background executor; a changed directory is read
-//! again, a changed file reloaded. One stat per expanded directory per second. `git status`
+//! again, a changed file reloaded. Each video view is handed its file's fingerprint every
+//! second, changed or not (`Root::tick_videos`). One stat per expanded directory per second. `git status`
 //! runs a second after the last change it has not seen, and every ten seconds regardless; the
 //! worktree list, the expanded worktrees' status and the viewers' diffs, every ten seconds.
 use crate::config_watch::fingerprint;
@@ -99,6 +100,11 @@ pub fn start(root: Entity<Root>, cx: &mut App) {
                 .spawn(async move { paths.into_iter().map(|p| (p.clone(), fingerprint(&p))).collect::<HashMap<_, _>>() })
                 .await;
             let changed = changed(&last, &now);
+            // Every video view hears every poll, not only a change: its follow rule reloads a file
+            // once it has held still for one poll (spec 4).
+            if root.update(cx, |root, cx| root.tick_videos(&now, cx)).is_err() {
+                return;
+            }
             // Merged, not replaced: a directory collapsed while it changed keeps its old
             // fingerprint, so expanding it again reads it again rather than showing stale rows.
             last.extend(now);

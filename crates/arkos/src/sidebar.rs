@@ -15,6 +15,8 @@ use crate::worktrees::{Worktree, WtRow};
 use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
 use protocol::SessionId;
+use crate::video::Fp;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -466,7 +468,7 @@ pub enum OpenPlan {
 }
 
 pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<TabId>, pin: bool) -> OpenPlan {
-    if let Some(idx) = tree.find_viewer(pane, path) {
+    if let Some(idx) = tree.find_path(pane, path) {
         return OpenPlan::Activate(idx);
     }
     if !pin {
@@ -479,6 +481,31 @@ pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<Tab
         }
     }
     OpenPlan::Add
+}
+
+/// The tab a file opens in, by the kind its name says (spec 9): a video as a video tab at its
+/// start, anything else in the viewer.
+pub fn file_tab(path: &Path) -> Tab {
+    if crate::media::kind(&path.to_string_lossy()) == Some(crate::media::Media::Video) {
+        Tab::Video { path: path.to_path_buf(), at: None, loop_range: None }
+    } else {
+        Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() }
+    }
+}
+
+/// The files the open video views show, each once, for the poll to fingerprint (spec 4).
+pub fn video_paths(views: &HashMap<TabId, PathBuf>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = views.values().cloned().collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// What one poll tells the video views: every view whose file the poll read gets that file's
+/// fingerprint, changed or not, since the follow rule decides on two samples in a row. A view
+/// made after the poll listed its paths waits for the next poll; it is not told its file is gone.
+pub fn video_ticks(views: &[(TabId, PathBuf)], polled: &HashMap<PathBuf, Fp>) -> Vec<(TabId, Fp)> {
+    views.iter().filter_map(|(tab, path)| polled.get(path).map(|fp| (*tab, *fp))).collect()
 }
 
 /// The preview tab after a tab closed: none if the preview was the one closed.
@@ -1045,7 +1072,8 @@ impl Root {
     }
 
     /// Opens `path` in the focused pane as a preview (single click) or pinned (double click,
-    /// Enter). The tab's viewer is made and loaded when the pane first shows it.
+    /// Enter): a video as a video tab, paused, anything else in the viewer (`file_tab`). The
+    /// tab's view is made and loaded when the pane first shows it.
     pub fn open_viewer(&mut self, path: &Path, pin: bool, cx: &mut Context<Self>) {
         self.sidebar_focused = false;
         self.wt_focused = false;
@@ -1073,22 +1101,26 @@ impl Root {
                 });
                 if let Some(e) = kept {
                     self.show_notice(e, cx);
-                    let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
-                    crate::telemetry::pane_open(crate::telemetry::PaneKind::Viewer, crate::telemetry::Opened::Explorer);
+                    let tab = file_tab(path);
+                    crate::telemetry::pane_open(crate::telemetry::kind_of(&tab), crate::telemetry::Opened::Explorer);
+                    let idx = self.tree.add_tab(pane, tab);
                     self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
                     idx
                 } else {
-                    // Same tab id, another file: the old viewer goes, the render makes the new one.
+                    // Same tab id, another file: the old view goes (a video's with its player), the
+                    // render makes the new one.
                     if let Some(id) = self.tree.tab_id(pane, idx) {
                         self.viewers.remove(&id);
+                        self.videos.remove(&id);
                     }
-                    self.tree.replace_tab(pane, idx, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
+                    self.tree.replace_tab(pane, idx, file_tab(path));
                     idx
                 }
             }
             OpenPlan::Add => {
-                let idx = self.tree.add_tab(pane, Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() });
-                crate::telemetry::pane_open(crate::telemetry::PaneKind::Viewer, crate::telemetry::Opened::Explorer);
+                let tab = file_tab(path);
+                crate::telemetry::pane_open(crate::telemetry::kind_of(&tab), crate::telemetry::Opened::Explorer);
+                let idx = self.tree.add_tab(pane, tab);
                 self.preview_tab = if pin { None } else { self.tree.tab_id(pane, idx) };
                 idx
             }
@@ -1327,22 +1359,45 @@ impl Root {
     }
 
     /// What the poll fingerprints: the expanded directories (and the root), and the open
-    /// viewers' files.
+    /// viewers' and video views' files.
     pub fn watched_paths(&self, cx: &App) -> Vec<PathBuf> {
         let mut v = vec![self.project.clone()];
         v.extend(self.explorer.expanded_dirs());
         v.extend(self.viewers.values().map(|viewer| viewer.read(cx).path.clone()));
+        v.extend(video_paths(&self.video_files(cx)));
         v
     }
 
-    /// A changed directory is read again, a changed viewer file reloaded.
+    /// The file each video view shows, by its tab.
+    fn video_files(&self, cx: &App) -> HashMap<TabId, PathBuf> {
+        self.videos.iter().map(|(tab, v)| (*tab, v.read(cx).model.path.clone())).collect()
+    }
+
+    /// A changed directory is read again, a changed viewer file reloaded. A video's file is left
+    /// to `tick_videos`, which sees every poll, changed or not.
     pub fn paths_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let videos: Vec<PathBuf> = video_paths(&self.video_files(cx));
         for p in paths {
-            if !self.reload_viewers_for(p, cx) {
+            if !self.reload_viewers_for(p, cx) && !videos.contains(p) {
                 self.explorer.invalidate(p);
             }
         }
         self.load_pending_dirs(cx);
+    }
+
+    /// Every poll (spec 4): each video view is ticked with its file's fingerprint from this poll,
+    /// unchanged files included, so the follow rule sees a file that has held still for one poll
+    /// and reloads it then. The poll is also the once a second look at whether the window is
+    /// hidden or minimized, which draws nothing for `render` to notice.
+    pub fn tick_videos(&mut self, polled: &HashMap<PathBuf, Fp>, cx: &mut Context<Self>) {
+        let mut views: Vec<(TabId, PathBuf)> = self.video_files(cx).into_iter().collect();
+        views.sort();
+        for (tab, fp) in video_ticks(&views, polled) {
+            if let Some(v) = self.videos.get(&tab).cloned() {
+                v.update(cx, |v, cx| v.tick(fp, cx));
+            }
+        }
+        self.update_video_activity(cx);
     }
 }
 
@@ -1651,5 +1706,39 @@ mod tests {
         assert_eq!(open_plan(&tree, other, Path::new("/p/b.rs"), Some(a_id), false), OpenPlan::Add, "the preview is in another pane");
         // An already open pinned tab for the file: activate, whatever the mode.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, true), OpenPlan::Activate(a));
+    }
+
+    #[test]
+    fn a_video_in_the_tree_opens_as_a_video_tab_and_is_reused() {
+        use crate::tree::Tab;
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let pane = tree.panes()[0];
+        let cut = Path::new("/p/cut.mp4");
+        assert_eq!(file_tab(cut), Tab::Video { path: cut.into(), at: None, loop_range: None }, "a video opens as a video tab");
+        assert_eq!(file_tab(Path::new("/p/a.rs")), Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        let v = tree.add_tab(pane, file_tab(cut));
+        let v_id = tree.tab_id(pane, v).unwrap();
+        // A single click and a double click on the same file both bring the open tab forward.
+        assert_eq!(open_plan(&tree, pane, cut, None, false), OpenPlan::Activate(v));
+        assert_eq!(open_plan(&tree, pane, cut, None, true), OpenPlan::Activate(v));
+        // A video preview is replaced by the next previewed file like any other preview.
+        assert_eq!(open_plan(&tree, pane, Path::new("/p/b.rs"), Some(v_id), false), OpenPlan::Replace(v));
+    }
+
+    #[test]
+    fn watched_paths_include_every_video_tab() {
+        let views: std::collections::HashMap<TabId, PathBuf> = [(7, PathBuf::from("/p/b.mov")), (3, PathBuf::from("/p/a.mp4")), (9, PathBuf::from("/p/a.mp4"))].into_iter().collect();
+        assert_eq!(video_paths(&views), vec![PathBuf::from("/p/a.mp4"), PathBuf::from("/p/b.mov")], "each file once, two tabs on it or not");
+        assert!(video_paths(&std::collections::HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn every_video_is_ticked_each_poll_but_never_for_a_path_the_poll_did_not_read() {
+        let views = vec![(1, PathBuf::from("/p/a.mp4")), (2, PathBuf::from("/p/gone.mp4")), (3, PathBuf::from("/p/new.mp4"))];
+        let polled: std::collections::HashMap<PathBuf, crate::video::Fp> = [(PathBuf::from("/p/a.mp4"), Some((5, 10))), (PathBuf::from("/p/gone.mp4"), None)].into_iter().collect();
+        // An unchanged file is ticked too (the follow rule needs its second, stable sample); a
+        // missing file is ticked with no fingerprint; a view made after the poll read its paths
+        // waits for the next poll rather than being told its file is gone.
+        assert_eq!(video_ticks(&views, &polled), vec![(1, Some((5, 10))), (2, None)]);
     }
 }

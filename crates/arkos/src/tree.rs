@@ -469,6 +469,14 @@ impl Tree {
     }
 
     pub fn activate(&mut self, pane: PaneId, idx: usize) {
+        self.activate_quiet(pane, idx);
+        self.focus(pane);
+    }
+
+    /// Makes a tab its pane's active one (and the most recent) without moving the focus or
+    /// leaving a maximize: for a tab opened on another's behalf (a poster's Cmd+click, an
+    /// agent's open) while the keys stay where they are.
+    pub fn activate_quiet(&mut self, pane: PaneId, idx: usize) {
         if let Some(p) = self.pane_mut(pane) {
             if idx < p.tabs.len() {
                 p.active = idx;
@@ -476,7 +484,6 @@ impl Tree {
                 p.mru.insert(0, idx);
             }
         }
-        self.focus(pane);
     }
 
     /// Focuses a pane. Focusing a pane hidden by another's maximize exits the maximize, so the
@@ -552,10 +559,6 @@ impl Tree {
     }
 
     /// The index of the viewer tab showing `path` in `pane`, if any.
-    pub fn find_viewer(&self, pane: PaneId, path: &Path) -> Option<usize> {
-        self.pane(pane)?.tabs.iter().position(|t| matches!(t, Tab::Viewer { path: p, .. } if p == path))
-    }
-
     /// The first tab in `pane` on `path`, whatever its kind.
     pub fn find_path(&self, pane: PaneId, path: &Path) -> Option<usize> {
         self.pane(pane)?.tabs.iter().position(|t| tab_path(t) == Some(path))
@@ -778,14 +781,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn find_viewer_locates_a_tab_by_path_in_one_pane() {
+    fn find_path_locates_a_tab_by_path_in_one_pane() {
         let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = t.panes()[0];
         t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
         let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into(), mode: ViewMode::default() }).unwrap();
-        assert_eq!(t.find_viewer(root, Path::new("/p/a.rs")), Some(1));
-        assert_eq!(t.find_viewer(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
-        assert_eq!(t.find_viewer(right, Path::new("/p/b.rs")), Some(0));
+        assert_eq!(t.find_path(root, Path::new("/p/a.rs")), Some(1));
+        assert_eq!(t.find_path(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
+        assert_eq!(t.find_path(right, Path::new("/p/b.rs")), Some(0));
     }
 
     #[test]
@@ -1129,6 +1132,23 @@ mod tests {
         assert_eq!(t.panes().len(), 2, "numbering still counts every pane");
         t.toggle_maximize(b);
         assert_eq!(t.layout(bounds()).panes.len(), 2);
+    }
+
+    #[test]
+    fn a_quiet_activation_leaves_the_focus_and_the_maximize_alone() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        let b = t.split(a, Side::Right, term(2)).unwrap();
+        t.add_tab(b, term(3));
+        t.activate(b, 0);
+        t.focus(a);
+        t.toggle_maximize(a);
+        t.activate_quiet(b, 1);
+        assert_eq!((t.focused, t.maximized), (a, Some(a)), "the hidden pane is not shown and the keys stay put");
+        let p = t.pane(b).unwrap();
+        assert_eq!((p.active, p.mru.clone()), (1, vec![1, 0]));
+        t.activate_quiet(b, 9);
+        assert_eq!(t.pane(b).unwrap().active, 1, "an index past the end changes nothing");
     }
 
     #[test]

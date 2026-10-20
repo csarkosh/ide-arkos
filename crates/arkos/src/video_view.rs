@@ -207,8 +207,6 @@ impl VideoView {
     }
 
     /// The once a second poll of the file (spec 4): `fp` is its fingerprint now.
-    // `Root::paths_changed` calls it from Task 7 on.
-    #[allow(dead_code)]
     pub fn tick(&mut self, fp: Fp, cx: &mut Context<Self>) {
         let before = (self.model.state.clone(), self.model.notice.clone());
         self.model.tick(&mut *self.player, fp, Instant::now());
