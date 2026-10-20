@@ -13,7 +13,7 @@ use protocol::{
     WindowTarget,
 };
 use serde_json::{json, Value as Json};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -177,6 +177,14 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
     } else if viewer::is_markdown(&abs) {
         OpenKind::Markdown { raw }
     } else {
+        // The viewer's own rule: a NUL in the first bytes is not text.
+        let mut head = Vec::new();
+        if let Ok(f) = std::fs::File::open(&abs) {
+            let _ = f.take(viewer::SNIFF as u64).read_to_end(&mut head);
+        }
+        if viewer::looks_binary(&head) {
+            return Err(format!("{shown} is not a text file; Arkos shows text, markdown and video"));
+        }
         OpenKind::Text
     };
     Ok((abs, kind))
@@ -259,18 +267,18 @@ pub fn status_line(v: &VideoState, file_name: &str) -> String {
     format!("{file_name} in pane {}: {}", v.pane, detail(v, true))
 }
 
-/// What `arkos open` prints. `new_pane` says the open split a pane off.
-pub fn opened_line(o: &PaneOutcome, file_name: &str, new_pane: bool) -> String {
-    let PaneOutcome::Opened { pane, kind, reused, reloaded, video, .. } = o else {
+/// What `arkos open` prints; the window says whether it made a pane and whether a document is raw.
+pub fn opened_line(o: &PaneOutcome, file_name: &str) -> String {
+    let PaneOutcome::Opened { pane, kind, reused, reloaded, new_pane, raw, video, .. } = o else {
         return String::new();
     };
     let verb = if *reused { "shown" } else { "opened" };
     let prefix = if *reloaded { "reloaded, " } else { "" };
     let what = if kind == "video" { format!("video {file_name}") } else { file_name.to_string() };
-    let fresh = if new_pane && !reused { " (new pane)" } else { "" };
+    let fresh = if *new_pane && !reused { " (new pane)" } else { "" };
     let tail = match (video, kind.as_str()) {
         (Some(v), _) => format!(", {}", detail(v, false)),
-        (None, "markdown") => ", rendered".into(),
+        (None, "markdown") => if *raw { ", raw" } else { ", rendered" }.into(),
         _ => String::new(),
     };
     format!("{prefix}{verb} {what} in pane {pane}{fresh}{tail}")
@@ -356,7 +364,7 @@ fn panes_json(r: &PanesReport) -> Json {
 /// video is the flat object; several are under `videos`.
 pub fn outcome_json(pid: u32, o: &PaneOutcome) -> Json {
     let mut v = match o {
-        PaneOutcome::Opened { pane, tab, kind, reused, reloaded, video } => json!({
+        PaneOutcome::Opened { pane, tab, kind, reused, reloaded, video, .. } => json!({
             "pane": pane, "tab": tab, "kind": kind, "reused": reused, "reloaded": reloaded,
             "video": video.as_ref().map(video_json),
         }),
@@ -432,7 +440,6 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
     } else {
         None
     };
-    let split = matches!(place, Placement::Split(_));
     let name = file_name(&path);
     let action = PaneAction::Open { path, kind, place, at, playing, loop_change, reuse: !p.has("--new"), wait_for_file: p.has("--wait"), focus: p.has("--focus") };
     match direct(env.socket, target_from(env, window), action, env.wait) {
@@ -442,13 +449,7 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
             if json {
                 print_json(out, &outcome_json(pid, &o));
             } else {
-                let line = opened_line(&o, &name, split);
-                // The window does not say whether a markdown file is raw; this command asked.
-                let line = match line.strip_suffix(", rendered") {
-                    Some(head) if raw => format!("{head}, raw"),
-                    _ => line,
-                };
-                let _ = writeln!(out, "{line}");
+                let _ = writeln!(out, "{}", opened_line(&o, &name));
             }
             0
         }
@@ -639,7 +640,7 @@ mod tests {
         Response::Directed {
             pid: 7,
             project: "/p".into(),
-            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused, reloaded: false, video }),
+            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused, reloaded: false, new_pane: false, raw: false, video }),
         }
     }
 
@@ -720,6 +721,22 @@ mod tests {
     }
 
     #[test]
+    fn open_refuses_a_binary_file_but_passes_text_and_unsniffed_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        std::fs::write(d.join("blob.bin"), b"ab\0cd").unwrap();
+        std::fs::write(d.join("notes.txt"), b"hello").unwrap();
+        std::fs::write(d.join("raw.md"), b"a\0b").unwrap();
+        let (_, kind) = classify_open(Path::new("notes.txt"), &d, false, false).unwrap();
+        assert_eq!(kind, OpenKind::Text);
+        let err = classify_open(Path::new("blob.bin"), &d, false, false).unwrap_err();
+        assert_eq!(err, format!("{} is not a text file; Arkos shows text, markdown and video", d.join("blob.bin").display()));
+        // Markdown is never sniffed, nor a video; a missing file under --wait is not read.
+        assert!(classify_open(Path::new("raw.md"), &d, false, false).is_ok());
+        assert!(classify_open(Path::new("later.bin"), &d, false, true).is_err());
+    }
+
+    #[test]
     fn open_sends_the_right_action_and_prints_the_line() {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().canonicalize().unwrap();
@@ -766,12 +783,14 @@ mod tests {
     #[test]
     fn open_says_new_pane_for_a_split_and_reloaded_and_shown_for_a_reuse() {
         let path = Path::new("/v/x.mp4");
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: false, reloaded: false, video: Some(state(path)) };
-        assert_eq!(opened_line(&o, "x.mp4", true), "opened video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: true, video: Some(state(path)) };
-        assert_eq!(opened_line(&o, "x.mp4", false), "reloaded, shown video x.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080");
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "markdown".into(), reused: false, reloaded: false, video: None };
-        assert_eq!(opened_line(&o, "notes.md", false), "opened notes.md in pane 2, rendered");
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: false, reloaded: false, new_pane: true, raw: false, video: Some(state(path)) };
+        assert_eq!(opened_line(&o, "x.mp4"), "opened video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(state(path)) };
+        assert_eq!(opened_line(&o, "x.mp4"), "reloaded, shown video x.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080");
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "markdown".into(), reused: false, reloaded: false, new_pane: false, raw: false, video: None };
+        assert_eq!(opened_line(&o, "notes.md"), "opened notes.md in pane 2, rendered");
+        let o = PaneOutcome::Opened { pane: 3, tab: 1, kind: "markdown".into(), reused: true, reloaded: false, new_pane: false, raw: true, video: None };
+        assert_eq!(opened_line(&o, "notes.md"), "shown notes.md in pane 3, raw");
     }
 
     #[test]

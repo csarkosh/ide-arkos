@@ -288,8 +288,9 @@ pub struct PanesReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PaneOutcome {
     /// The answer to `PaneAction::Open`: where the tab is, whether an existing tab was reused or
-    /// reloaded, and the video's state when it is one.
-    Opened { pane: u32, tab: u64, kind: String, reused: bool, reloaded: bool, video: Option<VideoState> },
+    /// reloaded, whether a pane was created for it, whether a markdown tab shows its source, and
+    /// the video's state when it is one.
+    Opened { pane: u32, tab: u64, kind: String, reused: bool, reloaded: bool, new_pane: bool, raw: bool, video: Option<VideoState> },
     /// The answer to `PaneAction::Video`: the videos it touched.
     Videos(Vec<VideoState>),
     /// The answer to `PaneAction::Panes`.
@@ -609,7 +610,7 @@ mod tests {
             wait_for_file: true,
             focus: true,
         };
-        let opened = PaneOutcome::Opened { pane: 2, tab: 41, kind: "video".into(), reused: false, reloaded: true, video: Some(sample_video()) };
+        let opened = PaneOutcome::Opened { pane: 2, tab: 41, kind: "video".into(), reused: false, reloaded: true, new_pane: true, raw: false, video: Some(sample_video()) };
         let tab = |id: u64, you: bool| TabRow { id, kind: "terminal".into(), title: "claude".into(), active: you, you, path: None, session: Some(SessionId(7)) };
         let report = PanesReport {
             project: "/p".into(),

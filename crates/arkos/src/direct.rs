@@ -237,7 +237,7 @@ impl Settle {
 /// What the answer reports once it is sent.
 enum Answer {
     Now(PaneOutcome),
-    Opened { tab: TabId, reused: bool, reloaded: bool },
+    Opened { tab: TabId, reused: bool, reloaded: bool, new_pane: bool },
     /// The videos an op touched; a closed one's state as it was just before it closed.
     Videos(Vec<(TabId, Option<VideoState>)>),
 }
@@ -298,26 +298,26 @@ impl Root {
         let live_preview = self.preview_panes.get(&a.session).copied().filter(|p| self.tree.pane(*p).is_some());
         let step = plan_open(&self.tree, &a.path, &a.place, a.reuse, anchor, live_preview)?;
         let before = self.tree.focused;
-        let (pane, idx, reused) = match step {
+        let (pane, idx, reused, new_pane) = match step {
             OpenStep::Reuse { pane, idx } => {
                 self.tree.activate_quiet(pane, idx);
                 // Opened on purpose: a preview it was is kept.
                 if self.tree.tab_id(pane, idx) == self.preview_tab {
                     self.preview_tab = None;
                 }
-                (pane, idx, true)
+                (pane, idx, true, false)
             }
             OpenStep::AddTo { pane } => {
                 let tab = new_tab(&a.path, a.kind, a.at, a.loop_change);
                 telemetry::pane_open(telemetry::kind_of(&tab), telemetry::Opened::Agent);
-                (pane, self.tree.add_tab(pane, tab), false)
+                (pane, self.tree.add_tab(pane, tab), false, false)
             }
             OpenStep::SplitFrom { pane, side } => {
                 let tab = new_tab(&a.path, a.kind, a.at, a.loop_change);
                 let kind = telemetry::kind_of(&tab);
                 let new = self.tree.split(pane, side, tab).ok_or_else(|| format!("pane {} cannot be split", pane_number(&self.tree, pane)))?;
                 telemetry::pane_open(kind, telemetry::Opened::Agent);
-                (new, 0, false)
+                (new, 0, false, true)
             }
         };
         // A split focused its new pane: the keys go back to where they were unless asked.
@@ -344,7 +344,7 @@ impl Root {
             cx.notify();
         }
         let Some(Tab::Video { path, .. }) = shown else {
-            return Ok((Answer::Opened { tab, reused, reloaded: false }, Vec::new(), Vec::new(), false));
+            return Ok((Answer::Opened { tab, reused, reloaded: false, new_pane }, Vec::new(), Vec::new(), false));
         };
         let view = self.video_for(tab, &path, cx);
         // The agent says the file is done: a reused tab whose file moved since it loaded loads it
@@ -364,7 +364,7 @@ impl Root {
             };
             Settle { playing: a.playing, loop_change, ..Settle::new(tab) }
         };
-        Ok((Answer::Opened { tab, reused, reloaded }, vec![tab], Some(then).into_iter().filter(|s| !s.is_empty()).collect(), false))
+        Ok((Answer::Opened { tab, reused, reloaded, new_pane }, vec![tab], Some(then).into_iter().filter(|s| !s.is_empty()).collect(), false))
     }
 
     fn direct_video(&mut self, path: Option<&Path>, op: VideoOp, cx: &mut Context<Self>) -> Result<Prepared, String> {
@@ -480,14 +480,15 @@ impl Root {
     fn direct_outcome(&self, w: &Waiting, cx: &Context<Self>) -> Result<PaneOutcome, String> {
         match &w.answer {
             Answer::Now(outcome) => Ok(outcome.clone()),
-            Answer::Opened { tab, reused, reloaded } => {
+            Answer::Opened { tab, reused, reloaded, new_pane } => {
                 let (pane, idx) = self.tree.locate(*tab).ok_or("the tab closed before it loaded")?;
                 let shown = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).ok_or("the tab closed before it loaded")?;
+                let raw = matches!(shown, Tab::Viewer { mode: ViewMode::Raw, .. });
                 let video = match shown {
                     Tab::Video { .. } => self.video_state(*tab, w.since, cx),
                     _ => None,
                 };
-                Ok(PaneOutcome::Opened { pane: pane_number(&self.tree, pane), tab: *tab, kind: kind_string(shown).to_string(), reused: *reused, reloaded: *reloaded, video })
+                Ok(PaneOutcome::Opened { pane: pane_number(&self.tree, pane), tab: *tab, kind: kind_string(shown).to_string(), reused: *reused, reloaded: *reloaded, new_pane: *new_pane, raw, video })
             }
             Answer::Videos(touched) => Ok(PaneOutcome::Videos(touched.iter().filter_map(|(tab, kept)| kept.clone().or_else(|| self.video_state(*tab, w.since, cx))).collect())),
         }

@@ -412,8 +412,13 @@ pub struct Hit {
     pub end: usize,
 }
 
+/// A NUL in the first `SNIFF` bytes: the viewer calls such a file binary.
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(SNIFF)].contains(&0)
+}
+
 pub fn classify(bytes: &[u8], limit: usize) -> Classified {
-    if bytes[..bytes.len().min(SNIFF)].contains(&0) {
+    if looks_binary(bytes) {
         return Classified::Binary;
     }
     if bytes.len() > limit {
