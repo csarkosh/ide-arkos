@@ -15,6 +15,7 @@ mod config_watch;
 mod connection;
 mod crash_dialog;
 mod diff;
+mod direct;
 mod dock;
 mod doctor;
 mod doctor_panel;
@@ -215,6 +216,10 @@ pub struct Root {
     /// The tab a single click previews into; the next single click replaces it. `None` once
     /// pinned or closed.
     pub preview_tab: Option<TabId>,
+    /// Each agent session's preview pane (spec 5): where its plain `arkos open` goes while the
+    /// pane lives. `None` is the key of an open sent without a session. Not saved: after a
+    /// relaunch the first open splits again.
+    pub preview_panes: HashMap<Option<SessionId>, PaneId>,
     /// The file tree's right-click menu while it is open, and while it fades out.
     pub context_menu: Transient<sidebar::ContextMenu>,
     /// A terminal link's right-click menu while it is open, and while it fades out.
@@ -605,6 +610,7 @@ impl Root {
             sidebar_focused: false,
             explorer,
             preview_tab: None,
+            preview_panes: HashMap::new(),
             context_menu: Transient::Hidden,
             link_menu: Transient::Hidden,
             notices: Default::default(),
@@ -3467,8 +3473,8 @@ impl Root {
         self.sessions.apply_update(version);
     }
 
-    /// A batch of daemon events: the window's own (`UpdateStaged`, `Customize`) first, then the
-    /// sessions'.
+    /// A batch of daemon events: the window's own (`UpdateStaged`, `Customize`, `Direct`) first,
+    /// then the sessions'.
     pub fn route_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
         for ev in events {
             match ev {
@@ -3482,6 +3488,7 @@ impl Root {
                     self.start_idle_timer(cx);
                 }
                 Event::Customize { id, action } => self.customize(*id, action.clone(), cx),
+                Event::Direct { id, action, session } => self.handle_direct(*id, action.clone(), *session, cx),
                 _ => {}
             }
         }

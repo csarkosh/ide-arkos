@@ -109,8 +109,6 @@ values! {
 }
 values! {
     /// Which command an agent ran against the window's panes.
-    // No call site yet: `agent_pane` is called by Task 8.
-    #[allow(dead_code)]
     AgentCommand {
         Open => "open",
         Status => "status",
@@ -1026,8 +1024,7 @@ pub fn video_shown() {
     with(|r, now| r.view(Format::Video, Shown::Rendered, now));
 }
 
-// No call site yet: Task 8 records an agent's `arkos open`, `arkos video` and `arkos panes`.
-#[allow(dead_code)]
+/// An agent's `arkos open`, `arkos video` or `arkos panes`, and whether the window did it.
 pub fn agent_pane(command: AgentCommand, ok: bool) {
     with(|r, now| r.agent_pane(command, ok, now));
 }

@@ -241,8 +241,6 @@ impl VideoView {
     }
 
     /// What `arkos video status` reports for this tab.
-    // The targeted channel answers with it from Task 8 on.
-    #[allow(dead_code)]
     pub fn status(&self, pane: u32, tab: u64) -> protocol::VideoState {
         self.model.status(&*self.player, pane, tab, crate::media::mtime_secs(&self.model.path))
     }
