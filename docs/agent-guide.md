@@ -148,9 +148,14 @@ shown notes.md in pane 3, raw
 `reloaded, ` says a reused video's file had changed and the new cut was loaded first. A video's
 words are its position and length, `playing` or `paused`, its loop, `muted` when it is, and its
 size; a video that is not ready ends with its state instead (`loading`, `reloading`, `waiting`,
-or `unplayable` with the reason in brackets, as in `unplayable (no video track)`), and a reload
-whose new file could not be played ends with `new file cannot be played yet`. Any other text file
+or `unplayable` with the reason in brackets, as in `unplayable (no video track)`), and a tab whose
+new file could not be played ends with `new file cannot be played yet`. Any other text file
 prints only `opened main.rs in pane 2`.
+
+When a reused video's new file cannot be played (it is truncated, or not a valid file yet), the
+old cut stays on screen, the line ends with `new file cannot be played yet` and the command exits
+1. It exits 1 for as long as the tab shows a cut older than the file: write a file that plays (the
+tab tries again on the next change) or run `arkos video reload`.
 
 ### `arkos video`
 
@@ -172,7 +177,9 @@ file that no tab shows with `no video tab shows {path}`.
 - `arkos video close`: close the tab, as the user's close would (Shift+Cmd+T brings it back).
 - `arkos video mute` and `arkos video unmute`.
 
-A seek, a step or a loop on a video that is still loading waits for the load, so it is never lost.
+A seek, a step or a loop on a video that is still loading waits up to about two seconds for the
+load; if the answer still says `loading` or `reloading`, the seek, step or loop was not applied:
+run it again once `status` says `ready`. The same holds for `--at` and `--loop` on an open.
 Every command prints the tab's status line after acting, so you see what you changed:
 
 ```
@@ -180,8 +187,9 @@ ranger-radio-animatic.mp4 in pane 2: 0:12.0 of 1:48.5, paused, loop 0:12.0-0:18.
 ```
 
 The state word at the end is `ready`, `loading`, `reloading`, `waiting` (the file is missing) or
-`unplayable` with the reason in brackets; after a reload that failed it reads
-`ready (new file cannot be played yet)`, the old cut still showing. `file changed 00:00:04 ago` is the file's age on disk,
+`unplayable` with the reason in brackets. After a reload that failed it reads
+`ready (new file cannot be played yet)`, the old cut still showing, and `status` keeps saying so
+(and exits 0) until a later cut loads. `file changed 00:00:04 ago` is the file's age on disk,
 hours, minutes and seconds.
 
 A video plays only while it is the active tab of its pane and the window is not hidden or
@@ -214,8 +222,9 @@ print times as `m:ss.f`, with hours when the file is an hour or longer.
 ### Exit codes and JSON
 
 Exit codes: 0 done; 1 refused or failed (a missing or unsupported file, a bad time or range, a pane
-that does not exist, no such video tab, several to choose from, several windows, a reload that
-failed, a window that reported an error, did not answer or is too old for the command); 2 usage
+that does not exist, no such video tab, several to choose from, several windows, an
+`arkos video reload` that failed, an `arkos open` whose reused tab still shows an older cut than
+the file, a window that reported an error, did not answer or is too old for the command); 2 usage
 (the usage text is on stderr, ending `see: arkos guide`); 3 no window to aim at
 (`no window running`, `session {id} is not shown in a window`, or
 `your session is not shown in this window; pass --pane or --window`).
@@ -228,8 +237,8 @@ With `--json` the command prints one JSON value on stdout and nothing else, and 
   "playing": bool, "loop": [a, b] | null, "width", "height", "state": "ready" | "loading" |
   "reloading" | "waiting" | "unplayable", "error"? } | null }`. `video` is null for a document;
   `width` and `height` are 0 until the video has loaded. `error` is there only with something to
-  say: the reason when `state` is `unplayable`, or `new file cannot be played yet` after a reload
-  that failed (`state` stays `ready`: the old cut is still showing).
+  say: the reason when `state` is `unplayable`, or `new file cannot be played yet` from a reload
+  that failed until a later cut loads (`state` stays `ready`: the old cut is still showing).
 - `arkos video`: one tab is the same `video` object with `"window"`, `"pane"`, `"tab"`, `"path"`,
   `"muted"` and `"file_mtime"` (seconds since 1970, or null) added; several (a bare `status`) are
   `{ "window": pid, "videos": [...] }`, one such object each.
@@ -274,8 +283,10 @@ arkos video status out/ranger-radio/ranger-radio-animatic.mp4 --json
 The first `open` splits your pane and shows the cut paused on 0:12; tell the user it is in pane 2
 (the number the line printed). The second `open` reuses that tab: it reloads the new file, jumps
 to 0:12 and loops the scene with sound. The tab would have reloaded on its own within two seconds
-anyway; the second `open` makes it happen now and sets the loop. The `status` call confirms the
-new cut is the one on screen (`file_mtime`, `duration`, `state`).
+anyway; the second `open` makes it happen now and sets the loop. The confirmation that the new
+cut is the one on screen is the second `open`'s answer saying `reloaded` with no `error` (and exit
+0), and `status` showing no `error`. If the answer has `"error": "new file cannot be played yet"`
+(exit 1), the old cut is still showing: tell the user the render did not produce a playable file.
 
 ## 4. The theme file
 
