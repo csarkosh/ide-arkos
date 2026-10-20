@@ -21,6 +21,9 @@ const READY_POLL: Duration = Duration::from_millis(50);
 /// whose placement needs the session's pane.
 const NOT_SHOWN: &str = "your session is not shown in this window; pass --pane or --window";
 
+/// The answer when the tab an answer waited for closed before it was sent.
+const TAB_CLOSED: &str = "the tab closed before it loaded";
+
 /// What an open does to the tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenStep {
@@ -525,8 +528,8 @@ impl Root {
         match &w.answer {
             Answer::Now(outcome) => Ok(outcome.clone()),
             Answer::Opened { tab, reused, reloaded, new_pane } => {
-                let (pane, idx) = self.tree.locate(*tab).ok_or("the tab closed before it loaded")?;
-                let shown = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).ok_or("the tab closed before it loaded")?;
+                let (pane, idx) = self.tree.locate(*tab).ok_or(TAB_CLOSED)?;
+                let shown = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).ok_or(TAB_CLOSED)?;
                 let raw = matches!(shown, Tab::Viewer { mode: ViewMode::Raw, .. });
                 let video = match shown {
                     Tab::Video { .. } => self.video_state(*tab, cx),
@@ -534,7 +537,7 @@ impl Root {
                 };
                 Ok(PaneOutcome::Opened { pane: pane_number(&self.tree, pane), tab: *tab, kind: kind_string(shown).to_string(), reused: *reused, reloaded: *reloaded, new_pane: *new_pane, raw, video })
             }
-            Answer::Videos(touched) => Ok(PaneOutcome::Videos(touched.iter().filter_map(|(tab, kept)| kept.clone().or_else(|| self.video_state(*tab, cx))).collect())),
+            Answer::Videos(touched) => videos_answer(touched.iter().map(|(tab, kept)| kept.clone().or_else(|| self.video_state(*tab, cx))).collect()),
         }
     }
 
@@ -566,6 +569,16 @@ struct OpenArgs {
     wait_for_file: bool,
     focus: bool,
     session: Option<SessionId>,
+}
+
+/// The answer to a video op from the state of each tab it touched (None: closed since). With
+/// none left there is nothing to report, which is an error as for an open, not an empty success.
+fn videos_answer(states: Vec<Option<VideoState>>) -> Result<PaneOutcome, String> {
+    let left: Vec<VideoState> = states.into_iter().flatten().collect();
+    if left.is_empty() {
+        return Err(TAB_CLOSED.to_string());
+    }
+    Ok(PaneOutcome::Videos(left))
 }
 
 /// What a handled action leaves to answer: the answer, the videos to wait for, what to apply
@@ -832,6 +845,29 @@ mod tests {
                 assert!(!defer_op(&state, op), "{op:?} while {state:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_video_op_whose_tabs_all_closed_while_it_waited_is_an_error() {
+        let v = |pane: u32| VideoState {
+            pane,
+            tab: 9,
+            path: "/p/a.mp4".into(),
+            duration: Some(10.0),
+            position: 0.0,
+            playing: false,
+            muted: false,
+            loop_range: None,
+            width: 0,
+            height: 0,
+            state: "ready".into(),
+            error: None,
+            file_mtime: None,
+        };
+        assert_eq!(videos_answer(vec![None]), Err("the tab closed before it loaded".to_string()));
+        assert_eq!(videos_answer(vec![]), Err("the tab closed before it loaded".to_string()));
+        // One of two closed: the other is still reported.
+        assert_eq!(videos_answer(vec![None, Some(v(2))]), Ok(PaneOutcome::Videos(vec![v(2)])));
     }
 
     #[test]
