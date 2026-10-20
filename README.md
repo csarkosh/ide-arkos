@@ -7,7 +7,7 @@
 </picture>
 
 <p align="center">
-<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a docked Chrome pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b>
+<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a docked Chrome pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b> · <b>a video pane</b>
 </p>
 
 Arkos is a terminal layout manager built for Claude Code: a grid of terminal panes with tabs
@@ -75,9 +75,10 @@ identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every ke
 ## Learn more
 
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the
-  browser pane, keys, settings and updates.
+  browser pane, the video pane, keys, settings and updates.
 - **[Themes](docs/themes.md)**: the five built in, and how to make your own.
-- **Agents**: run `arkos guide` in an Arkos terminal for how to change the theme and settings.
+- **Agents**: run `arkos guide` in an Arkos terminal for how to show the user a video or a
+  document and how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.
 
 ## License

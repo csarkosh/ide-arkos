@@ -199,9 +199,40 @@ Usage reports stay on your Mac until you turn them on (Settings > Privacy, or `a
 on`). A crash report is sent only when you press Send in the dialog that shows it, or when you have
 chosen Always. It also added an invitation strip on the second day, the update check once a day
 through the project's own server, and published dSYMs for release builds. What is sent is in
-[telemetry.md](telemetry.md).
+[telemetry.md](telemetry.md). Milestone 9 added the video pane: a video is a tab of its own,
+drawn in process through AVFoundation with a control strip (play, time, scrubber, loop, mute) and
+keys while the pane is focused; it follows its file, reloading a new render within about two
+seconds and holding the position, and a relaunch brings it back paused on its frame. The sidebar,
+the markdown poster's Cmd+click and the palette's "Open file in pane…" open it, and agents get
+`arkos open`, `arkos video` and `arkos panes` over a targeted channel to their own window
+(protocol 8), found through the SessionStart hook's line, the skill and `arkos guide`.
 
 Things only a person at the screen can check, in order of value:
+
+- video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
+  period do what the Keyboard table says
+- video pane: dragging the tab to another pane keeps it playing after the drop, and switching
+  tabs pauses it (switching back resumes)
+- video pane: re-rendering the file with ffmpeg reloads the tab within two seconds, holding the
+  position, and the half-written file never shows; deleting the file shows "waiting for file" and
+  restoring it recovers
+- video pane: a relaunch brings the tab back paused on the frame
+- video pane: `arkos open` from a Claude Code tab splits a preview pane to the right the first
+  time and reuses it the second; the keyboard focus stays in the Claude Code tab
+- video pane: `arkos open <file> --at 0:12 --loop 0:12-0:18 --playing` loops the range with sound
+- video pane, the fresh session demo: from a fresh Claude Code session in a window with the hooks
+  installed (pointing at the dev binary, or after the release), "show me the animatic beside you
+  and stop on the radio scene" ends with the video paused in a pane to the right, and the agent
+  ran `arkos guide` first
+- video pane: a 4K file plays without the window stuttering, and the GPU stays idle when every
+  video is paused (Activity Monitor's GPU column)
+- video pane, the strip: Space plays with sound; the scrubber moves and a click seeks; a drag
+  scrubs showing frames and resumes playback if it was playing; comma and period step one frame;
+  L loops (Shift+drag on the scrubber selects a range); M mutes; R reloads
+- video pane, the strip: it stays legible in a narrow pane, and the Unplayable text is legible
+  over a poster
+- video pane: a paused seek shows its frame within half a second on a 4K HEVC file, and a
+  trackpad tap on the scrubber does not leave it stuck paused
 
 - markdown, Rendered: a table draws as a grid and a click lands in the cell with the caret there;
   Tab, Shift+Tab, Up and Down move by cell; Tab in the last cell adds a row; leaving the block
@@ -212,7 +243,7 @@ Things only a person at the screen can check, in order of value:
   (`[ref]: https://...`), edit the table and leave it: only the table is realigned, the definitions
   stay as they were and every `[text][ref]` link still works; the grid shows no row for them
 - a remote image shows "loading" and then the image; a plain click places the caret and Cmd+click
-  opens it in Preview; a `.mov` shows its poster and Cmd+click opens QuickTime Player; audio opens
+  opens it in Preview; a `.mov` shows its poster and Cmd+click opens a video tab beside the document; audio opens
   in QuickTime Player; a local `.webm` is shown in Finder; a badge row wraps in a narrow pane
 - a `mermaid` block renders within two seconds and again after an edit; with Google Chrome
   missing, the source shows with a message; the docking check: start a slow render (a large

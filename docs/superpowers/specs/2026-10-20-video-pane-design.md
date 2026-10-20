@@ -99,8 +99,9 @@ One `VideoView` entity per tab (as `Viewer` is per viewer tab), holding:
   planes through a `CVMetalTextureCache` (`metal_renderer.rs`, `draw_surfaces`), so the output
   does the conversion and Arkos never touches pixels.
 - The last pixel buffer copied, as `core_video::pixel_buffer::CVPixelBuffer` (the type gpui's
-  `surface()` takes), wrapped from the raw `CVPixelBufferRef` the output hands back under the
-  create rule.
+  `surface()` takes). The output hands the buffer back under the copy rule, as the objc2
+  binding's `Retained`; Arkos wraps its raw `CVPixelBufferRef` under the get rule (a reference
+  of its own) and then drops the `Retained`, so the kept buffer has exactly one owner.
 
 Each frame: while the player's rate is not zero, the view asks for an animation frame
 (`window.request_animation_frame()`), and on paint it calls `hasNewPixelBufferForItemTime` with
@@ -255,7 +256,7 @@ arkos open <file> [--pane N | --split right|down|left|up] [--at TIME] [--paused 
   PaneId>`, not persisted; after a relaunch the first open splits again). This gives an agent a
   place of its own beside it and never covers a pane the user is looking at. When the agent's
   session tab is not in the window (it was closed in its minute of grace), the command exits 3
-  with "your session is not shown in a window; pass --pane or --window".
+  with "your session is not shown in this window; pass --pane or --window".
 - **Focus stays with the agent.** An open from the command line activates the tab in its pane
   and never moves keyboard focus: the user is typing to the agent while it runs `arkos open` once
   per cut, and a focus jump would send the next Space or L to the video. The pane's keys (section
