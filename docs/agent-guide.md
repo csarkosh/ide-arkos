@@ -410,7 +410,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 - `arkos guide [--path | --install]`: prints this guide; `--path` writes it to a file and prints
   the path; `--install` installs the skill into your Claude config folder (or prints
   `already current: {path}` and writes nothing when it is up to date) and prints a line to paste
-  into `AGENTS.md` or `CLAUDE.md`.
+  into `AGENTS.md` or `CLAUDE.md`:
+  ``Arkos IDE: run `arkos guide` before showing the user a file in a pane or changing its theme or settings.``
 
 ## 6. The theme workflow
 

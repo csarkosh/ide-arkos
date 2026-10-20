@@ -16,7 +16,7 @@ pub const SKILL_NAME: &str = "arkos-ide";
 /// The skill's front matter `description`, which is how an agent decides to load it.
 pub const SKILL_DESCRIPTION: &str = "Show a video or a markdown file in an Arkos IDE pane, control its playback, or customize Arkos: themes, fonts and settings. Use when the user asks to see, preview, play or watch a video or a document, or to change how Arkos looks or behaves.";
 /// The line `arkos guide --install` offers for `AGENTS.md` or `CLAUDE.md`.
-pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before changing its theme or settings.";
+pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before showing the user a file in a pane or changing its theme or settings.";
 
 const USAGE: &str = "usage: arkos guide [--path | --install]\n";
 const STAMP_PREFIX: &str = "<!-- arkos-guide: ";
@@ -276,6 +276,12 @@ mod tests {
         }
         assert!(SKILL_DESCRIPTION.contains("video"), "{SKILL_DESCRIPTION}");
         assert!(SKILL_DESCRIPTION.contains(": "), "it stays quoted in the front matter");
+    }
+
+    #[test]
+    fn the_agents_md_line_names_showing_a_file_as_well_as_the_theme() {
+        assert_eq!(AGENTS_MD_LINE, "Arkos IDE: run `arkos guide` before showing the user a file in a pane or changing its theme or settings.");
+        assert!(TEXT.contains(AGENTS_MD_LINE), "the guide quotes the line as printed");
     }
 
     #[test]
