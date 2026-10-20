@@ -2096,6 +2096,11 @@ impl Root {
         let path = path.to_path_buf();
         let v = cx.new(|cx| video_view::VideoView::new(path, at, loop_range, Box::new(av_player::AvPlayer::new()), cx));
         cx.subscribe(&v, move |root, v, _event: &video_view::VideoEvent, cx| {
+            // A view no longer the tab's (a preview whose tab now shows another file, paused as it
+            // was let go) must not write its place into the tab's new file.
+            if root.videos.get(&tab).map(|own| own.entity_id()) != Some(v.entity_id()) {
+                return;
+            }
             let (at, loop_range) = v.read(cx).saved_state();
             if let Some((pane, idx)) = root.tree.locate(tab) {
                 root.tree.set_video_state(pane, idx, at, loop_range);

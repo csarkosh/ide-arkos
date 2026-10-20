@@ -1111,7 +1111,11 @@ impl Root {
                     // render makes the new one.
                     if let Some(id) = self.tree.tab_id(pane, idx) {
                         self.viewers.remove(&id);
-                        self.videos.remove(&id);
+                        // As in `close_tab`: paused first, so the sound and the display token end
+                        // now even while something still holds the view.
+                        if let Some(v) = self.videos.remove(&id) {
+                            v.update(cx, |v, cx| v.pause(cx));
+                        }
                     }
                     self.tree.replace_tab(pane, idx, file_tab(path));
                     idx
