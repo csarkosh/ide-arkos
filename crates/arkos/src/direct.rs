@@ -26,6 +26,10 @@ const NOT_SHOWN: &str = "your session is not shown in this window; pass --pane o
 pub enum OpenStep {
     /// A tab already on the file: activate it where it is.
     Reuse { pane: PaneId, idx: usize },
+    /// A tab already on the file, in the agent's own pane: showing it there would cover the agent
+    /// (call 12), so it moves out with its id into the preview pane `into`, or a new pane split
+    /// off the agent's to the right when there is none.
+    MoveOut { pane: PaneId, idx: usize, into: Option<PaneId> },
     /// A new tab in this pane.
     AddTo { pane: PaneId },
     /// A new pane split off this one on `side`, with the new tab as its first.
@@ -35,11 +39,18 @@ pub enum OpenStep {
 /// Spec section 5: where an Open lands. `anchor` is the calling session's pane (None without
 /// one: the focused pane); `preview` is the pane this session's earlier opens went into. With
 /// `reuse`, a tab already on the file anywhere in the window is shown instead (ruling 3, any
-/// kind). A preview pane that has closed, or that now holds the agent itself, makes a new split.
+/// kind), one outside the agent's pane first; one only in the agent's pane moves out of it, so
+/// the open never covers the agent. A preview pane that has closed, or that now holds the agent
+/// itself, makes a new split.
 pub fn plan_open(tree: &Tree, path: &Path, place: &Placement, reuse: bool, anchor: Option<PaneId>, preview: Option<PaneId>) -> Result<OpenStep, String> {
+    let preview = preview.filter(|p| tree.pane(*p).is_some() && anchor != Some(*p));
     if reuse {
-        if let Some((pane, idx)) = tabs_on_file(tree, path).into_iter().next() {
+        let on = tabs_on_file(tree, path);
+        if let Some(&(pane, idx)) = on.iter().find(|(pane, _)| anchor != Some(*pane)) {
             return Ok(OpenStep::Reuse { pane, idx });
+        }
+        if let Some(&(pane, idx)) = on.first() {
+            return Ok(OpenStep::MoveOut { pane, idx, into: preview });
         }
     }
     let from = anchor.unwrap_or(tree.focused);
@@ -50,7 +61,7 @@ pub fn plan_open(tree: &Tree, path: &Path, place: &Placement, reuse: bool, ancho
             pane.map(|pane| OpenStep::AddTo { pane }).ok_or_else(|| format!("pane {n} does not exist; this window has {count}"))
         }
         Placement::Split(side) => Ok(OpenStep::SplitFrom { pane: from, side: side_of(side) }),
-        Placement::Preview => match preview.filter(|p| tree.pane(*p).is_some() && anchor != Some(*p)) {
+        Placement::Preview => match preview {
             Some(pane) => Ok(OpenStep::AddTo { pane }),
             None => Ok(OpenStep::SplitFrom { pane: from, side: Side::Right }),
         },
@@ -78,6 +89,33 @@ fn tab_file(tab: &Tab) -> Option<&Path> {
         Tab::Viewer { path, .. } | Tab::Video { path, .. } => Some(path),
         Tab::Terminal { .. } | Tab::Browser { .. } => None,
     }
+}
+
+/// Applies `OpenStep::MoveOut`: the tab at `idx` of the agent's pane `pane` goes, keeping its id
+/// (the view, the player, the closed stack and a rename follow the id), to the end of `into` or
+/// into a new pane split off `pane` to the right, as that pane's active tab. When it was the tab
+/// the agent's pane showed, that pane shows the agent's own tab (`agent`) again. Returns where the
+/// tab is now; the tree's focus is the destination's, for `apply_focus` to put back.
+pub fn move_out(tree: &mut Tree, pane: PaneId, idx: usize, into: Option<PaneId>, agent: SessionId) -> Option<(PaneId, usize)> {
+    let id = tree.tab_id(pane, idx)?;
+    let was_shown = tree.pane(pane)?.active == idx;
+    match into {
+        Some(to) => {
+            if !tree.move_tab(pane, idx, to, None) {
+                return None;
+            }
+        }
+        None => {
+            let (id, tab) = tree.take_tab(pane, idx)?;
+            tree.split_with_tab(pane, Side::Right, id, tab)?;
+        }
+    }
+    if was_shown {
+        if let Some((p, i)) = tree.find_session(agent).filter(|(p, _)| *p == pane) {
+            tree.activate_quiet(p, i);
+        }
+    }
+    tree.locate(id)
 }
 
 /// The pane an open leaves focused: where the focus was, unless the agent asked for the tab.
@@ -299,11 +337,15 @@ impl Root {
         let (pane, idx, reused, new_pane) = match step {
             OpenStep::Reuse { pane, idx } => {
                 self.tree.activate_quiet(pane, idx);
-                // Opened on purpose: a preview it was is kept.
-                if self.tree.tab_id(pane, idx) == self.preview_tab {
-                    self.preview_tab = None;
-                }
                 (pane, idx, true, false)
+            }
+            OpenStep::MoveOut { pane, idx, into } => {
+                // Only planned with an anchor, which only a session has.
+                let agent = a.session.ok_or(NOT_SHOWN)?;
+                let (to, at) = move_out(&mut self.tree, pane, idx, into, agent).ok_or("the tab could not be moved out of your pane")?;
+                // The agent's preview pane from now on, whatever placement was asked.
+                self.preview_panes.insert(a.session, to);
+                (to, at, true, into.is_none())
             }
             OpenStep::AddTo { pane } => {
                 let tab = new_tab(&a.path, a.kind, a.at, a.loop_change);
@@ -318,6 +360,10 @@ impl Root {
                 (new, 0, false, true)
             }
         };
+        // Opened on purpose: a preview tab (the sidebar's single click) it was is kept.
+        if reused && self.tree.tab_id(pane, idx) == self.preview_tab {
+            self.preview_tab = None;
+        }
         // A split focused its new pane: the keys go back to where they were unless asked.
         self.tree.focused = apply_focus(before, pane, a.focus);
         if a.place == Placement::Preview && (!reused || live_preview.is_none()) {
@@ -552,6 +598,7 @@ mod tests {
                 tree.activate_quiet(pane, idx);
                 pane
             }
+            OpenStep::MoveOut { pane, idx, into } => move_out(tree, pane, idx, into, SessionId(1)).unwrap().0,
             OpenStep::AddTo { pane } => {
                 tree.add_tab(pane, tab);
                 pane
@@ -577,6 +624,65 @@ mod tests {
         assert_eq!(step, OpenStep::AddTo { pane: new });
         apply(&mut tree, step, video("/p/b.mp4"));
         assert_eq!(tree.focused, agent);
+        // A tab moved out of the agent's pane: the split focused its new pane, the window puts the
+        // focus back, and the agent's pane still shows the agent, so the keys reach it.
+        let mut tree = Tree::new(terminal(1));
+        let agent = tree.panes()[0];
+        tree.add_tab(agent, video("/p/cut.mp4"));
+        let before = tree.focused;
+        let OpenStep::MoveOut { pane, idx, into } = plan_open(&tree, Path::new("/p/cut.mp4"), &Placement::Preview, true, Some(agent), None).unwrap() else { panic!("not moved out") };
+        let (new, _) = move_out(&mut tree, pane, idx, into, SessionId(1)).unwrap();
+        assert_eq!(tree.focused, new);
+        tree.focused = apply_focus(before, new, false);
+        assert_eq!(tree.focused, agent);
+        assert_eq!(tree.pane(agent).unwrap().tabs[tree.pane(agent).unwrap().active], terminal(1));
+    }
+
+    #[test]
+    fn a_reused_tab_in_the_agents_own_pane_moves_out_beside_it() {
+        // The user opened cut.mp4 from the sidebar into the agent's pane, then went back to the agent.
+        let mut tree = Tree::new(terminal(1));
+        let agent = tree.panes()[0];
+        tree.add_tab(agent, video("/p/cut.mp4"));
+        let id = tree.tab_id(agent, 1).unwrap();
+        tree.activate_quiet(agent, 0);
+        let step = plan_open(&tree, Path::new("/p/cut.mp4"), &Placement::Preview, true, Some(agent), None).unwrap();
+        assert_eq!(step, OpenStep::MoveOut { pane: agent, idx: 1, into: None });
+        let (pane, idx) = move_out(&mut tree, agent, 1, None, SessionId(1)).unwrap();
+        assert_eq!(tree.panes(), vec![agent, pane], "a new pane to the right of the agent's");
+        assert_eq!(tree.locate(id), Some((pane, idx)), "the tab keeps its id, so its view and player stay");
+        assert_eq!(tree.pane(agent).unwrap().tabs, vec![terminal(1)]);
+        assert_eq!(tree.pane(agent).unwrap().active, 0);
+
+        // A live preview pane takes it as its active tab; a markdown tab moves the same way.
+        let mut tree = Tree::new(terminal(1));
+        let agent = tree.panes()[0];
+        let preview = tree.split(agent, Side::Right, video("/p/a.mp4")).unwrap();
+        tree.add_tab(agent, viewer("/p/plan.md"));
+        tree.add_tab(agent, terminal(2));
+        let id = tree.tab_id(agent, 1).unwrap();
+        // The user is looking at the document in the agent's pane.
+        tree.activate_quiet(agent, 1);
+        tree.focused = agent;
+        let step = plan_open(&tree, Path::new("/p/plan.md"), &Placement::Preview, true, Some(agent), Some(preview)).unwrap();
+        assert_eq!(step, OpenStep::MoveOut { pane: agent, idx: 1, into: Some(preview) });
+        assert_eq!(move_out(&mut tree, agent, 1, Some(preview), SessionId(1)), Some((preview, 1)));
+        assert_eq!(tree.locate(id), Some((preview, 1)));
+        assert_eq!(tree.pane(preview).unwrap().active, 1);
+        // The agent's pane shows the agent again, not whichever tab was next to the document.
+        assert_eq!(tree.pane(agent).unwrap().tabs[tree.pane(agent).unwrap().active], terminal(1));
+
+        // A tab on the file outside the agent's pane is shown where it is, before one inside it.
+        let mut tree = Tree::new(terminal(1));
+        let agent = tree.panes()[0];
+        tree.add_tab(agent, video("/p/cut.mp4"));
+        let other = tree.split(agent, Side::Right, video("/p/cut.mp4")).unwrap();
+        let step = plan_open(&tree, Path::new("/p/cut.mp4"), &Placement::Preview, true, Some(agent), None).unwrap();
+        assert_eq!(step, OpenStep::Reuse { pane: other, idx: 0 });
+        // Without a session there is no agent's pane to keep clear: the tab is shown where it is.
+        tree.focused = agent;
+        let step = plan_open(&tree, Path::new("/p/cut.mp4"), &Placement::Preview, true, None, None).unwrap();
+        assert_eq!(step, OpenStep::Reuse { pane: agent, idx: 1 });
     }
 
     #[test]

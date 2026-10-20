@@ -268,7 +268,9 @@ arkos open <file> [--pane N | --split right|down|left|up] [--at TIME] [--paused 
   first time and reuses that pane afterwards, under a no-session key in the same map. `--pane` and
   `--split` (which splits the focused pane) work as before.
 - **Reuse:** a tab already open on the same canonical path in the target window is activated in
-  its pane (focus unchanged) instead of opening a second one, and `--at`, `--paused`, `--playing` and
+  its pane (focus unchanged) instead of opening a second one; one outside the agent's own pane is
+  preferred, and one only in the agent's pane moves out with its tab id (into the preview pane, or
+  a new split to the right that becomes it) so the agent's pane is never covered (call 12), and `--at`, `--paused`, `--playing` and
   `--loop` apply to it; this is how an agent's iteration loop is one command per cut. `--new`
   forces another tab. A reused tab whose file changed since it last loaded is reloaded first
   (the same stable rule, with the stability wait skipped since the agent says the file is done).

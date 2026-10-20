@@ -107,6 +107,10 @@ Where the tab goes, the preview pane rule:
 
 A file already open in the window is never opened twice: the tab that shows it, of any kind, is
 made the active tab of its pane wherever it is, and that rule wins over `--pane` and `--split`.
+The one exception is your own pane, where showing it would cover you: a tab on the file there
+(the user opened it beside your tab) moves into your preview pane, or into a new pane split off
+yours to the right, which becomes your preview pane; a video keeps its position and its play
+state through the move.
 `--new` forces another tab, placed by the rules above. On a video tab reused this way `--at`,
 `--paused`, `--playing` and `--loop` apply; a reused markdown tab switches to raw with `--raw`.
 
