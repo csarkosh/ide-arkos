@@ -216,6 +216,11 @@ Things only a person at the screen can check, in order of value:
 - video pane: re-rendering the file with ffmpeg reloads the tab within two seconds, holding the
   position, and the half-written file never shows; deleting the file shows "waiting for file" and
   restoring it recovers
+- video pane: an ffmpeg re-render written over a cut while it plays reloads the tab within two
+  seconds, holding the position and still playing
+- video pane: a truncated file written over a playing cut (`head -c 100000 good.mp4 > cut.mp4`)
+  leaves the old cut on screen with the strip saying "new file cannot be played yet", and the next
+  good write loads
 - video pane: a relaunch brings the tab back paused on the frame
 - video pane: `arkos open` from a Claude Code tab splits a preview pane to the right the first
   time and reuses it the second; the keyboard focus stays in the Claude Code tab

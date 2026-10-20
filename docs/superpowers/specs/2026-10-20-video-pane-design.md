@@ -519,6 +519,10 @@ Headless, as always; nothing in `cargo test` creates an `AVPlayer` or needs a di
 - `--at <heading>` for markdown, scrolling the editor to a heading.
 - An agent reading a frame out (`arkos video frame --out f.png`); ffmpeg covers it today.
 - Playback rate, a volume slider, subtitles.
+- Rotated and anamorphic video: the surface paints the decoded pixel buffer as stored, so a track
+  with a rotation in its metadata (phone footage) shows on its side and non-square pixels
+  (anamorphic) show squeezed. The track's preferred transform and pixel aspect are to be applied
+  when the frame is fitted.
 - Replacing the Chrome docking with an in process web view: Cyrus's wish (2026-10-20). `WKWebView`
   cannot be painted through `surface()`; it would be an `NSView` child of the window placed over
   the pane's bounds and clipped by the window, which the gpui window's `NSView` allows but which
