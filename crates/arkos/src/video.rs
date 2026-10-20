@@ -83,6 +83,11 @@ pub fn parse_range(s: &str) -> Result<(f64, f64), String> {
     }
 }
 
+/// A duration the player reported, when it is a real length.
+fn known(d: Option<f64>) -> Option<f64> {
+    d.filter(|d| d.is_finite() && *d >= 0.0)
+}
+
 /// What a poll of the file decides (spec 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Follow {
@@ -250,8 +255,10 @@ impl VideoModel {
     }
 
     /// Starts loading, or waits when the file is not there yet.
-    pub fn open(&mut self, p: &mut dyn Player, exists: bool) {
-        if exists {
+    pub fn open(&mut self, p: &mut dyn Player, fp: Fp) {
+        self.shown_fp = fp;
+        self.prev_fp = fp;
+        if fp.is_some() {
             self.reload_now(p);
         } else {
             self.state = PlayerState::Waiting;
@@ -291,6 +298,8 @@ impl VideoModel {
         } else {
             self.state = PlayerState::Loading;
         }
+        // A reload asked for by hand loads the file as it is now, so the next poll finds nothing new.
+        self.shown_fp = self.prev_fp;
         p.load(&self.path);
     }
 
@@ -325,11 +334,13 @@ impl VideoModel {
         let reloaded = self.state == PlayerState::Reloading;
         self.state = PlayerState::Ready;
         self.loaded = true;
+        // AVFoundation reports an indefinite (NaN) duration for a file still being written.
+        let duration = Some(duration).filter(|d| d.is_finite() && *d >= 0.0);
         if let Some(at) = self.restore_at.take() {
-            p.seek(at.clamp(0.0, duration));
+            p.seek(duration.map_or(at.max(0.0), |d| at.max(0.0).min(d)));
         }
         let mut cleared = false;
-        if let Some((start, end)) = self.loop_range {
+        if let (Some((start, end)), Some(duration)) = (self.loop_range, duration) {
             if start >= duration {
                 self.loop_range = None;
                 cleared = true;
@@ -369,7 +380,7 @@ impl VideoModel {
         if self.inactive {
             return;
         }
-        if let Some(d) = p.duration() {
+        if let Some(d) = known(p.duration()) {
             if p.position() >= d - 0.05 {
                 p.seek(0.0);
             }
@@ -393,7 +404,7 @@ impl VideoModel {
 
     pub fn seek(&mut self, p: &mut dyn Player, secs: f64) {
         let secs = secs.max(0.0);
-        p.seek(p.duration().map_or(secs, |d| secs.min(d)));
+        p.seek(known(p.duration()).map_or(secs, |d| secs.min(d)));
     }
 
     /// Steps frames, forward or back; stepping pauses.
@@ -403,7 +414,7 @@ impl VideoModel {
     }
 
     pub fn set_loop(&mut self, p: &mut dyn Player, change: LoopChange) {
-        let dur = p.duration();
+        let dur = known(p.duration());
         match change {
             LoopChange::Keep => return,
             LoopChange::Set { start, end } => {
@@ -462,7 +473,7 @@ impl VideoModel {
             pane,
             tab,
             path: self.path.clone(),
-            duration: p.duration(),
+            duration: known(p.duration()),
             position: p.position(),
             playing: self.playing,
             muted: self.muted,
@@ -492,7 +503,7 @@ mod tests {
         let now = Instant::now();
         let mut m = VideoModel::new("/p/x.mp4".into(), None, None);
         let mut p = FakePlayer::default();
-        m.open(&mut p, true);
+        m.open(&mut p, Some((1, 10)));
         p.pending.push(ready(dur));
         m.apply(&mut p, now);
         p.calls.clear();
@@ -614,7 +625,7 @@ mod tests {
         let now = Instant::now();
         let mut m = VideoModel::new("/p/x.mp4".into(), Some(7.0), None);
         let mut p = FakePlayer::default();
-        m.open(&mut p, false);
+        m.open(&mut p, None);
         assert_eq!(m.state_word(), "waiting");
         assert!(p.calls.is_empty());
         assert!(!m.tick(&mut p, None, now));
@@ -632,9 +643,7 @@ mod tests {
     #[test]
     fn a_vanished_file_waits_and_pauses_then_the_next_stable_one_reloads() {
         let (mut m, mut p, now) = opened(60.0);
-        let (a, b) = (Some((1, 10)), Some((2, 20)));
-        m.shown_fp = a;
-        m.prev_fp = a;
+        let b = Some((2, 20));
         m.play(&mut p);
         assert!(!m.tick(&mut p, None, now));
         assert_eq!(m.state_word(), "waiting");
@@ -704,7 +713,7 @@ mod tests {
         let now = Instant::now();
         let mut m = VideoModel::new("/p/x.mp4".into(), None, None);
         let mut p = FakePlayer::default();
-        m.open(&mut p, true);
+        m.open(&mut p, Some((1, 10)));
         p.pending.push(PlayerEvent::Failed("no video track".into()));
         m.apply(&mut p, now);
         let s = m.status(&p, 1, 2, None);
@@ -737,5 +746,41 @@ mod tests {
                 file_mtime: Some(1234),
             }
         );
+    }
+
+    #[test]
+    fn an_unchanged_file_is_not_reloaded_by_the_polls_after_opening() {
+        let now = Instant::now();
+        let a = Some((1, 10));
+        let mut m = VideoModel::new("/p/x.mp4".into(), None, None);
+        let mut p = FakePlayer::default();
+        m.open(&mut p, a);
+        p.pending.push(ready(20.0));
+        m.apply(&mut p, now);
+        p.calls.clear();
+        assert!(!m.tick(&mut p, a, now));
+        assert!(!m.tick(&mut p, a, now));
+        assert!(p.calls.is_empty(), "{:?}", p.calls);
+        assert_eq!(m.notice, None);
+        m.reload_now(&mut p);
+        p.pending.push(ready(20.0));
+        assert!(!m.tick(&mut p, a, now), "a manual reload is not repeated by the next poll");
+    }
+
+    #[test]
+    fn an_unknown_or_negative_duration_is_survived_as_unknown() {
+        for bad in [f64::NAN, -1.0, f64::INFINITY] {
+            let now = Instant::now();
+            let mut m = VideoModel::new("/p/x.mp4".into(), Some(5.0), Some((1.0, 2.0)));
+            let mut p = FakePlayer::default();
+            m.open(&mut p, Some((1, 10)));
+            p.pending.push(ready(bad));
+            m.apply(&mut p, now);
+            let s = m.status(&p, 1, 1, None);
+            assert_eq!((s.state.as_str(), s.duration), ("ready", None), "duration {bad}");
+            assert_eq!(m.loop_range, Some((1.0, 2.0)));
+            assert!(p.calls.contains(&"seek 5.0".to_string()));
+            m.seek(&mut p, 3.0);
+        }
     }
 }
