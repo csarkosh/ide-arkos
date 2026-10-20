@@ -276,7 +276,8 @@ pub fn opened_line(o: &PaneOutcome, file_name: &str) -> String {
     let verb = if *reused { "shown" } else { "opened" };
     let prefix = if *reloaded { "reloaded, " } else { "" };
     let what = if kind == "video" { format!("video {file_name}") } else { file_name.to_string() };
-    let fresh = if *new_pane && !reused { " (new pane)" } else { "" };
+    // A reused tab can be in a new pane too: one moved out of the agent's own pane.
+    let fresh = if *new_pane { " (new pane)" } else { "" };
     let tail = match (video, kind.as_str()) {
         (Some(v), _) => format!(", {}", detail(v, false)),
         (None, "markdown") => if *raw { ", raw" } else { ", rendered" }.into(),
@@ -792,6 +793,9 @@ mod tests {
         assert_eq!(opened_line(&o, "x.mp4"), "opened video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
         let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(state(path)) };
         assert_eq!(opened_line(&o, "x.mp4"), "reloaded, shown video x.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080");
+        // A reused tab moved out of the agent's pane into a new split says so too.
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: false, new_pane: true, raw: false, video: Some(state(path)) };
+        assert_eq!(opened_line(&o, "x.mp4"), "shown video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
         let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "markdown".into(), reused: false, reloaded: false, new_pane: false, raw: false, video: None };
         assert_eq!(opened_line(&o, "notes.md"), "opened notes.md in pane 2, rendered");
         let o = PaneOutcome::Opened { pane: 3, tab: 1, kind: "markdown".into(), reused: true, reloaded: false, new_pane: false, raw: true, video: None };
