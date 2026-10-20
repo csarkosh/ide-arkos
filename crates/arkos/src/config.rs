@@ -538,6 +538,19 @@ option_as_meta = true
 # "new single-page browser tab" = ""
 # "dock a chrome window" = ""
 # "undock chrome window" = ""
+# "open file in pane" = ""
+# "video play pause" = "space"
+# "video back" = "left"
+# "video forward" = "right"
+# "video back fine" = "shift-left"
+# "video forward fine" = "shift-right"
+# "video step back" = ","
+# "video step forward" = "."
+# "video start" = "home"
+# "video start alt" = "0"
+# "video loop" = "l"
+# "video mute" = "m"
+# "video reload" = "r"
 # "quit" = "cmd-q"
 
 [sidebar]
@@ -784,6 +797,8 @@ pub(crate) mod tests {
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
             ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder,
             NewWindow, NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, DockChromeWindowAt(0), UndockChromeWindow,
+            OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
+            VideoStart, VideoLoop, VideoMute, VideoReload,
         ];
         // A variant added to `Command` stops this match from compiling until it is listed above,
         // and then the test below asks for it in `telemetry/events.toml`.
@@ -795,7 +810,8 @@ pub(crate) mod tests {
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
                 | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile
                 | OpenFolder | NewWindow | NewBrowserTab | NewBrowserTabSinglePage | DockChromeWindow | DockChromeWindowAt(_)
-                | UndockChromeWindow => {}
+                | UndockChromeWindow | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
+                | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload => {}
             }
         }
         all

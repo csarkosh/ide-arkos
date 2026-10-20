@@ -634,6 +634,18 @@ pub fn command_name(command: &Command) -> &'static str {
         DockChromeWindow => "dock_chrome_window",
         DockChromeWindowAt(_) => "dock_chrome_window_at",
         UndockChromeWindow => "undock_chrome_window",
+        OpenFileInPane => "open_file_in_pane",
+        VideoPlayPause => "video_play_pause",
+        VideoBack => "video_back",
+        VideoForward => "video_forward",
+        VideoBackFine => "video_back_fine",
+        VideoForwardFine => "video_forward_fine",
+        VideoStepBack => "video_step_back",
+        VideoStepForward => "video_step_forward",
+        VideoStart => "video_start",
+        VideoLoop => "video_loop",
+        VideoMute => "video_mute",
+        VideoReload => "video_reload",
     }
 }
 

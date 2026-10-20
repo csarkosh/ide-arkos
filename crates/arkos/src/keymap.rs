@@ -22,6 +22,9 @@ actions!(
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
         NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit,
+        OpenFileInPane,
+        VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
+        VideoStart, VideoLoop, VideoMute, VideoReload,
         // The Help menu's "What Arkos Sends" has no key and no palette entry, so it is handled
         // outside `Command`.
         WhatArkosSends
@@ -118,6 +121,26 @@ pub enum Command {
     DockChromeWindowAt(usize),
     /// Release the focused browser tab's Chrome window; the tab stays, waiting.
     UndockChromeWindow,
+    /// Ask for a path and open that file in the focused pane, a video as a video tab.
+    OpenFileInPane,
+    /// The focused video tab's commands (spec 3.4): play or pause.
+    VideoPlayPause,
+    /// Five seconds back or forward.
+    VideoBack,
+    VideoForward,
+    /// One second back or forward.
+    VideoBackFine,
+    VideoForwardFine,
+    /// One frame back or forward, pausing first.
+    VideoStepBack,
+    VideoStepForward,
+    /// Back to the start.
+    VideoStart,
+    /// Loop toggle; with a selection on the scrubber, loop that range.
+    VideoLoop,
+    VideoMute,
+    /// Load the file again now, without waiting for a change.
+    VideoReload,
 }
 
 /// Where an action is listed in the Keybindings window, by what it acts on.
@@ -129,14 +152,24 @@ pub enum Section {
     Terminal,
     Sidebar,
     Browser,
+    Video,
     Markdown,
     Maintenance,
 }
 
 impl Section {
     /// Every section, in display order.
-    pub const ALL: [Section; 8] =
-        [Section::Window, Section::Panes, Section::Tabs, Section::Terminal, Section::Sidebar, Section::Browser, Section::Markdown, Section::Maintenance];
+    pub const ALL: [Section; 9] = [
+        Section::Window,
+        Section::Panes,
+        Section::Tabs,
+        Section::Terminal,
+        Section::Sidebar,
+        Section::Browser,
+        Section::Video,
+        Section::Markdown,
+        Section::Maintenance,
+    ];
 
     /// The section's heading in the Keybindings window.
     pub fn title(self) -> &'static str {
@@ -147,6 +180,7 @@ impl Section {
             Section::Terminal => "Terminal",
             Section::Sidebar => "Sidebar and files",
             Section::Browser => "Browser",
+            Section::Video => "Video",
             Section::Markdown => "Viewer and markdown editing",
             Section::Maintenance => "Updates and maintenance",
         }
@@ -222,8 +256,28 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Browser, "new single-page browser tab", ""),
     row(Section::Browser, "dock a chrome window", ""),
     row(Section::Browser, "undock chrome window", ""),
+    row(Section::Sidebar, "open file in pane", ""),
+    // The video keys (spec 3.4) act only in a focused video tab: a terminal never sees this map.
+    // "video start alt" is Home's second key, 0, as "next tab alt" is Cmd+Shift+].
+    video("video play pause", "space"),
+    video("video back", "left"),
+    video("video forward", "right"),
+    video("video back fine", "shift-left"),
+    video("video forward fine", "shift-right"),
+    video("video step back", ","),
+    video("video step forward", "."),
+    video("video start", "home"),
+    video("video start alt", "0"),
+    video("video loop", "l"),
+    video("video mute", "m"),
+    video("video reload", "r"),
     row(Section::Window, "quit", "cmd-q"),
 ];
+
+/// A row that acts only in a focused video tab.
+const fn video(name: &'static str, keys: &'static str) -> ActionSpec {
+    ActionSpec { name, keys, context: Some("Video"), section: Section::Video }
+}
 
 /// The US layout's shifted symbols. gpui on macOS reports a shifted symbol as the shifted
 /// character with Shift cleared (Ctrl+Shift+` arrives as `ctrl-~`), while a shifted letter
@@ -318,6 +372,18 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "new single-page browser tab" => KeyBinding::new(keys, NewBrowserTabSinglePage, context),
         "dock a chrome window" => KeyBinding::new(keys, DockChromeWindow, context),
         "undock chrome window" => KeyBinding::new(keys, UndockChromeWindow, context),
+        "open file in pane" => KeyBinding::new(keys, OpenFileInPane, context),
+        "video play pause" => KeyBinding::new(keys, VideoPlayPause, context),
+        "video back" => KeyBinding::new(keys, VideoBack, context),
+        "video forward" => KeyBinding::new(keys, VideoForward, context),
+        "video back fine" => KeyBinding::new(keys, VideoBackFine, context),
+        "video forward fine" => KeyBinding::new(keys, VideoForwardFine, context),
+        "video step back" => KeyBinding::new(keys, VideoStepBack, context),
+        "video step forward" => KeyBinding::new(keys, VideoStepForward, context),
+        "video start" | "video start alt" => KeyBinding::new(keys, VideoStart, context),
+        "video loop" => KeyBinding::new(keys, VideoLoop, context),
+        "video mute" => KeyBinding::new(keys, VideoMute, context),
+        "video reload" => KeyBinding::new(keys, VideoReload, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -430,6 +496,8 @@ pub fn pretty_keys(keys: &str) -> String {
                 "escape" => "Escape".to_string(),
                 "backspace" => "Backspace".to_string(),
                 "space" => "Space".to_string(),
+                "home" => "Home".to_string(),
+                "end" => "End".to_string(),
                 other => other.to_uppercase(),
             };
             parts.push(key);
@@ -455,10 +523,27 @@ pub fn label_for(name: &str) -> String {
     match command_for(name) {
         Some(Command::About) => "About Arkos IDE".to_string(),
         Some(Command::InstallHooks) => "Install Claude Code hooks".to_string(),
-        Some(Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage) => format!("{}\u{2026}", label(name)),
+        Some(Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage | Command::OpenFileInPane) => format!("{}\u{2026}", label(name)),
         Some(Command::DockChromeWindow) => "Dock a Chrome window\u{2026}".to_string(),
         Some(Command::UndockChromeWindow) => "Undock Chrome window".to_string(),
+        _ if name.starts_with("video ") => format!("Video: {}", video_label(name)),
         _ => label(name),
+    }
+}
+
+/// What a video action does, as the palette's "Video: ..." row says it.
+fn video_label(name: &str) -> &str {
+    match name {
+        "video play pause" => "play or pause",
+        "video back" => "back 5 seconds",
+        "video forward" => "forward 5 seconds",
+        "video back fine" => "back 1 second",
+        "video forward fine" => "forward 1 second",
+        "video step back" => "step back a frame",
+        "video step forward" => "step forward a frame",
+        "video start" => "to the start",
+        "video start alt" => "to the start alt",
+        other => other.strip_prefix("video ").unwrap_or(other),
     }
 }
 
@@ -587,6 +672,18 @@ pub fn command_for(name: &str) -> Option<Command> {
         "new single-page browser tab" => Command::NewBrowserTabSinglePage,
         "dock a chrome window" => Command::DockChromeWindow,
         "undock chrome window" => Command::UndockChromeWindow,
+        "open file in pane" => Command::OpenFileInPane,
+        "video play pause" => Command::VideoPlayPause,
+        "video back" => Command::VideoBack,
+        "video forward" => Command::VideoForward,
+        "video back fine" => Command::VideoBackFine,
+        "video forward fine" => Command::VideoForwardFine,
+        "video step back" => Command::VideoStepBack,
+        "video step forward" => Command::VideoStepForward,
+        "video start" | "video start alt" => Command::VideoStart,
+        "video loop" => Command::VideoLoop,
+        "video mute" => Command::VideoMute,
+        "video reload" => Command::VideoReload,
         _ => return None,
     })
 }
@@ -638,6 +735,11 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
         NewBrowserTab => Command::NewBrowserTab, NewBrowserTabSinglePage => Command::NewBrowserTabSinglePage,
         DockChromeWindow => Command::DockChromeWindow, UndockChromeWindow => Command::UndockChromeWindow,
+        OpenFileInPane => Command::OpenFileInPane,
+        VideoPlayPause => Command::VideoPlayPause, VideoBack => Command::VideoBack, VideoForward => Command::VideoForward,
+        VideoBackFine => Command::VideoBackFine, VideoForwardFine => Command::VideoForwardFine,
+        VideoStepBack => Command::VideoStepBack, VideoStepForward => Command::VideoStepForward,
+        VideoStart => Command::VideoStart, VideoLoop => Command::VideoLoop, VideoMute => Command::VideoMute, VideoReload => Command::VideoReload,
     )
 }
 
@@ -698,6 +800,13 @@ mod tests {
         ("", "new single-page browser tab", "NewBrowserTabSinglePage"),
         ("", "dock a chrome window", "DockChromeWindow"),
         ("", "undock chrome window", "UndockChromeWindow"),
+        ("", "open file in pane", "OpenFileInPane"),
+        ("space", "video play pause", "VideoPlayPause"),
+        ("left", "video back", "VideoBack"), ("right", "video forward", "VideoForward"),
+        ("shift-left", "video back fine", "VideoBackFine"), ("shift-right", "video forward fine", "VideoForwardFine"),
+        (",", "video step back", "VideoStepBack"), (".", "video step forward", "VideoStepForward"),
+        ("home", "video start", "VideoStart"), ("0", "video start alt", "VideoStart"),
+        ("l", "video loop", "VideoLoop"), ("m", "video mute", "VideoMute"), ("r", "video reload", "VideoReload"),
         ("cmd-q", "quit", "Quit"),
     ];
 
@@ -762,7 +871,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 16, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 17, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window, undock chrome window and open file in pane have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -771,7 +880,7 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 15, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window and undock chrome window are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 16, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window, undock chrome window and open file in pane are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
         assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
         assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
@@ -908,7 +1017,34 @@ mod tests {
     #[test]
     fn the_sections_carry_the_window_s_headings() {
         let titles: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
-        assert_eq!(titles, ["Window and app", "Panes", "Tabs", "Terminal", "Sidebar and files", "Browser", "Viewer and markdown editing", "Updates and maintenance"]);
+        assert_eq!(titles, ["Window and app", "Panes", "Tabs", "Terminal", "Sidebar and files", "Browser", "Video", "Viewer and markdown editing", "Updates and maintenance"]);
+    }
+
+    #[test]
+    fn every_video_action_acts_on_the_focused_video_only() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let videos: Vec<&ActionSpec> = ACTIONS.iter().filter(|a| a.name.starts_with("video ")).collect();
+        assert_eq!(videos.len(), 12, "the spec's eleven actions and the second key of video start");
+        for a in &videos {
+            assert_eq!((a.context, a.section), (Some("Video"), Section::Video), "{}", a.name);
+            assert!(command_for(a.name).is_some(), "{} runs a command", a.name);
+            assert!(label_for(a.name).starts_with("Video: "), "{} reads as a video command in the palette", a.name);
+        }
+        assert!(ACTIONS.iter().filter(|a| a.section == Section::Video).all(|a| a.name.starts_with("video ")), "the Video heading lists only the video actions");
+        assert_eq!(command_for("video start alt"), command_for("video start"), "0 goes to the start as Home does");
+        let keymap = Keymap::new(bindings());
+        let terminal = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        let video = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Video").unwrap()];
+        for a in &videos {
+            let k = Keystroke::parse(&as_gpui(a.keys)).unwrap();
+            let (matched, _) = keymap.bindings_for_input(std::slice::from_ref(&k), &terminal);
+            assert!(matched.is_empty(), "{} must reach a terminal as typing, not as {:?}", a.keys, matched.iter().map(|b| b.action().name()).collect::<Vec<_>>());
+            let (matched, _) = keymap.bindings_for_input(&[k], &video);
+            assert_eq!(matched.len(), 1, "{} acts in a focused video", a.keys);
+        }
+        assert_eq!(pretty_keys("home"), "Home");
+        assert_eq!(pretty_keys("shift-left"), "Shift+Left");
+        assert_eq!(pretty_keys(","), ",");
     }
 
     #[test]
@@ -922,6 +1058,10 @@ mod tests {
         assert_eq!(label_for("dock a chrome window"), "Dock a Chrome window\u{2026}");
         assert_eq!(label_for("undock chrome window"), "Undock Chrome window");
         assert_eq!(label_for("keybindings"), "Keybindings");
+        assert_eq!(label_for("open file in pane"), "Open file in pane\u{2026}");
+        assert_eq!(label_for("video play pause"), "Video: play or pause");
+        assert_eq!(label_for("video back fine"), "Video: back 1 second");
+        assert_eq!(label_for("video step forward"), "Video: step forward a frame");
         assert_eq!(label_for("quit"), "Quit", "an action the palette does not list still reads by its name");
     }
 

@@ -87,6 +87,18 @@ command = [
     "dock_chrome_window",
     "dock_chrome_window_at",
     "undock_chrome_window",
+    "open_file_in_pane",
+    "video_play_pause",
+    "video_back",
+    "video_forward",
+    "video_back_fine",
+    "video_forward_fine",
+    "video_step_back",
+    "video_step_forward",
+    "video_start",
+    "video_loop",
+    "video_mute",
+    "video_reload",
 ]
 
 # The config keys, never their values. `font.presets.*` is collapsed to `font.presets` and the

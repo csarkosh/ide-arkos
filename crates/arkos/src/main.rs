@@ -2947,6 +2947,9 @@ impl Root {
             Documentation => aux::open_documentation(cx),
             NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
             NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
+            // The video view and the path prompt come next; until then these do nothing.
+            OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine | VideoStepBack
+            | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload => {}
             DockChromeWindow => self.open_dock_list(cx),
             DockChromeWindowAt(i) => {
                 let _via = telemetry::resumed_via(self.dock_via);

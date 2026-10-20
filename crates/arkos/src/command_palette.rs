@@ -298,6 +298,16 @@ mod tests {
         assert_eq!((markdown.detail.as_str(), &markdown.command), ("Shift+Cmd+M", &Command::ToggleMarkdownView));
         let save = items.iter().find(|i| i.label == "Save file").unwrap();
         assert_eq!((save.detail.as_str(), &save.command), ("Cmd+S", &Command::SaveFile));
+        let open_file = items.iter().find(|i| i.label == "Open file in pane\u{2026}").unwrap();
+        assert_eq!((open_file.detail.as_str(), &open_file.command), ("", &Command::OpenFileInPane), "no key: the palette asks for a path");
+        for a in crate::keymap::ACTIONS.iter().filter(|a| a.name.starts_with("video ")) {
+            let label = crate::keymap::label_for(a.name);
+            assert!(label.starts_with("Video: "), "{label}");
+            let item = items.iter().find(|i| i.label == label).unwrap_or_else(|| panic!("no {label}"));
+            assert_eq!(Some(item.command.clone()), crate::keymap::command_for(a.name), "{label}");
+        }
+        let play = items.iter().find(|i| i.label == "Video: play or pause").unwrap();
+        assert_eq!((play.detail.as_str(), &play.command), ("Space", &Command::VideoPlayPause));
         let ignored = items.iter().find(|i| i.label == "Show ignored files").unwrap();
         assert_eq!((ignored.detail.as_str(), &ignored.command), ("off", &Command::ShowIgnoredFiles));
         let shown = self::items(&cfg, &[], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, true, 0, 0);
