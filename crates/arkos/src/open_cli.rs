@@ -451,7 +451,9 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
             } else {
                 let _ = writeln!(out, "{}", opened_line(&o, &name));
             }
-            0
+            // A reused tab whose new cut did not load still shows the old one: not done.
+            let stale = matches!(&o, PaneOutcome::Opened { video: Some(v), .. } if v.error.as_deref() == Some(crate::video::RELOAD_FAILED));
+            i32::from(stale)
         }
         Ok(_) => finish_error(json, "the window answered something else", out, err),
     }
@@ -791,6 +793,33 @@ mod tests {
         assert_eq!(opened_line(&o, "notes.md"), "opened notes.md in pane 2, rendered");
         let o = PaneOutcome::Opened { pane: 3, tab: 1, kind: "markdown".into(), reused: true, reloaded: false, new_pane: false, raw: true, video: None };
         assert_eq!(opened_line(&o, "notes.md"), "shown notes.md in pane 3, raw");
+    }
+
+    #[test]
+    fn open_exits_1_when_the_reused_tab_could_not_load_the_new_cut_and_status_exits_0() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        std::fs::write(d.join("x.mp4"), b"x").unwrap();
+        let sock = dir.path().join("d.sock");
+        let stale = VideoState { error: Some(crate::video::RELOAD_FAILED.into()), ..state(&d.join("x.mp4")) };
+        let reloaded = |video: VideoState| Response::Directed {
+            pid: 7,
+            project: "/p".into(),
+            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(video) }),
+        };
+        let server = fake_daemon(&sock, vec![reloaded(stale.clone()), reloaded(stale.clone()), reloaded(state(&d.join("x.mp4"))), videos(vec![stale.clone()])]);
+        let ran = run(open_cli_to, &["x.mp4", "--at", "0:12"], &sock, &d, Some(5));
+        assert_eq!(ran.code, 1, "{}", ran.out);
+        assert_eq!(ran.out, "reloaded, shown video x.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080, new file cannot be played yet\n", "the line still prints");
+        let ran = run(open_cli_to, &["x.mp4", "--json"], &sock, &d, Some(5));
+        assert_eq!(ran.code, 1);
+        let v: serde_json::Value = serde_json::from_str(&ran.out).unwrap();
+        assert_eq!(v["video"]["error"], crate::video::RELOAD_FAILED);
+        assert_eq!(run(open_cli_to, &["x.mp4"], &sock, &d, Some(5)).code, 0, "a reload that loaded is done");
+        let ran = run(video_cli_to, &["status"], &sock, &d, Some(5));
+        assert_eq!(ran.code, 0, "status reports, it does not fail");
+        assert!(ran.out.ends_with("ready (new file cannot be played yet)\n"), "{}", ran.out);
+        server.join().unwrap();
     }
 
     #[test]

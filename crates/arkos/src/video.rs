@@ -230,6 +230,8 @@ pub struct VideoModel {
     pub notice: Option<(String, Instant)>,
     /// The tab is not the active one of its pane, or the window is hidden.
     pub inactive: bool,
+    /// The item on screen is older than the file, because the last reload's item failed to load.
+    pub stale: bool,
     /// Where to seek once the item being loaded is ready.
     restore_at: Option<f64>,
     /// An item has been ready at least once, so a reload keeps showing it.
@@ -249,6 +251,7 @@ impl VideoModel {
             prev_fp: None,
             notice: None,
             inactive: false,
+            stale: false,
             restore_at: at,
             loaded: false,
         }
@@ -321,6 +324,7 @@ impl VideoModel {
                     PlayerState::Loading => self.state = PlayerState::Unplayable(why),
                     PlayerState::Reloading => {
                         self.state = PlayerState::Ready;
+                        self.stale = true;
                         self.notice = Some((RELOAD_FAILED.into(), now));
                     }
                     _ => {}
@@ -343,6 +347,7 @@ impl VideoModel {
         let reloaded = self.state == PlayerState::Reloading;
         self.state = PlayerState::Ready;
         self.loaded = true;
+        self.stale = false;
         // AVFoundation reports an indefinite (NaN) duration for a file still being written.
         let duration = Some(duration).filter(|d| d.is_finite() && *d >= 0.0);
         if let Some(at) = self.restore_at.take() {
@@ -475,7 +480,8 @@ impl VideoModel {
         (now.saturating_duration_since(*at) < NOTICE_FOR).then_some(text.as_str())
     }
 
-    /// What the strip shows, and what `arkos video` reports.
+    /// What the strip shows, and what `arkos video` reports. The error is why the file cannot be
+    /// played, or `RELOAD_FAILED` for as long as the cut on screen is older than the file.
     pub fn status(&self, p: &dyn Player, pane: u32, tab: u64, file_mtime: Option<u64>) -> VideoState {
         let (width, height) = p.size().unwrap_or((0, 0));
         VideoState {
@@ -492,6 +498,7 @@ impl VideoModel {
             state: self.state_word().to_string(),
             error: match &self.state {
                 PlayerState::Unplayable(why) => Some(why.clone()),
+                _ if self.stale => Some(RELOAD_FAILED.into()),
                 _ => None,
             },
             file_mtime,
@@ -573,6 +580,24 @@ mod tests {
         assert_eq!(m.notice_at(now), Some("new file cannot be played yet"));
         assert_eq!(m.notice_at(now + NOTICE_FOR), None);
         assert_eq!(p.calls, vec!["load /p/x.mp4"]);
+    }
+
+    #[test]
+    fn a_failed_reload_is_reported_until_a_later_cut_loads() {
+        let (mut m, mut p, now) = opened(10.0);
+        m.reload_at(&mut p, Some((2, 20)));
+        p.pending.push(PlayerEvent::Failed("truncated".into()));
+        m.apply(&mut p, now);
+        assert!(m.stale);
+        let s = m.status(&p, 1, 1, None);
+        assert_eq!((s.state.as_str(), s.error.as_deref()), ("ready", Some(RELOAD_FAILED)), "the old cut is on screen and the status says so");
+        assert_eq!(m.notice_at(now + NOTICE_FOR), None);
+        assert_eq!(m.status(&p, 1, 1, None).error.as_deref(), Some(RELOAD_FAILED), "after the notice has gone too");
+        m.reload_at(&mut p, Some((3, 30)));
+        p.pending.push(ready(12.0));
+        m.apply(&mut p, now);
+        assert!(!m.stale);
+        assert_eq!(m.status(&p, 1, 1, None).error, None, "a cut that loads clears it");
     }
 
     #[test]

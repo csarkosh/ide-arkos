@@ -253,8 +253,6 @@ struct Waiting {
     then: Vec<Settle>,
     /// One more look before answering, so a seek or a play just made shows in the state.
     tick: bool,
-    /// When the request came: a failed reload's notice after it is reported as the error.
-    since: Instant,
     deadline: Instant,
 }
 
@@ -280,7 +278,7 @@ impl Root {
         match answer {
             Err(e) => self.answer_direct(id, command, Err(e)),
             Ok((answer, loads, then, tick)) => {
-                let waiting = Waiting { id, command, answer, loads, then, tick, since: now, deadline: now + READY_WAIT };
+                let waiting = Waiting { id, command, answer, loads, then, tick, deadline: now + READY_WAIT };
                 self.wait_direct(waiting, cx);
             }
         }
@@ -485,27 +483,20 @@ impl Root {
                 let shown = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).ok_or("the tab closed before it loaded")?;
                 let raw = matches!(shown, Tab::Viewer { mode: ViewMode::Raw, .. });
                 let video = match shown {
-                    Tab::Video { .. } => self.video_state(*tab, w.since, cx),
+                    Tab::Video { .. } => self.video_state(*tab, cx),
                     _ => None,
                 };
                 Ok(PaneOutcome::Opened { pane: pane_number(&self.tree, pane), tab: *tab, kind: kind_string(shown).to_string(), reused: *reused, reloaded: *reloaded, new_pane: *new_pane, raw, video })
             }
-            Answer::Videos(touched) => Ok(PaneOutcome::Videos(touched.iter().filter_map(|(tab, kept)| kept.clone().or_else(|| self.video_state(*tab, w.since, cx))).collect())),
+            Answer::Videos(touched) => Ok(PaneOutcome::Videos(touched.iter().filter_map(|(tab, kept)| kept.clone().or_else(|| self.video_state(*tab, cx))).collect())),
         }
     }
 
-    /// A video tab's state now. A reload since `since` whose new file could not be played
-    /// reports the notice as its error, the old item still showing.
-    fn video_state(&self, tab: TabId, since: Instant, cx: &Context<Self>) -> Option<VideoState> {
+    /// A video tab's state now, as the model reports it: a reload whose new file could not be
+    /// played stays in the error until a later cut loads, the old item still showing.
+    fn video_state(&self, tab: TabId, cx: &Context<Self>) -> Option<VideoState> {
         let (pane, _) = self.tree.locate(tab)?;
-        let v = self.videos.get(&tab)?.read(cx);
-        let mut state = v.status(pane_number(&self.tree, pane), tab);
-        if let Some((text, at)) = &v.model.notice {
-            if state.error.is_none() && text == crate::video::RELOAD_FAILED && *at >= since {
-                state.error = Some(text.clone());
-            }
-        }
-        Some(state)
+        Some(self.videos.get(&tab)?.read(cx).status(pane_number(&self.tree, pane), tab))
     }
 
     fn answer_direct(&self, id: u64, command: AgentCommand, outcome: Result<PaneOutcome, String>) {
