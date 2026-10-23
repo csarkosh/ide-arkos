@@ -5,11 +5,23 @@
 //! wraps. Pure, so it is tested.
 use unicode_width::UnicodeWidthStr;
 
+/// How far short of the pane Claude Code's input box wraps: its rows hang two cells in under the
+/// prompt, so a token wider than that is cut two cells short of the pane.
+pub const INPUT_BOX_INSET: usize = 2;
+
 /// Joins the lines a program wrapped for the terminal's width and keeps the ones it broke on
 /// purpose. `columns` is the terminal's width, `first_col` the column the text starts at on
 /// its first line (a selection that starts mid-row), both in cells. Widths are display widths
 /// (`unicode-width`), so CJK and emoji count as the cells they take.
+/// A program that cuts at the pane's width: `reflow_at` with `cut_width = columns`.
+#[cfg(test)]
 pub fn reflow(text: &str, columns: usize, first_col: usize) -> String {
+    reflow_at(text, columns, first_col, columns)
+}
+
+/// `reflow` for text whose program cuts a token wider than its wrap at `cut_width` cells rather
+/// than at the pane's width: Claude Code's input box, two cells short of the pane.
+pub fn reflow_at(text: &str, columns: usize, first_col: usize, cut_width: usize) -> String {
     let body = text.strip_suffix('\n').unwrap_or(text);
     let lines: Vec<&str> = body.split('\n').collect();
     // Twelve columns or fewer leave no room to tell a wrap from a break.
@@ -36,7 +48,9 @@ pub fn reflow(text: &str, columns: usize, first_col: usize) -> String {
     for i in 1..lines.len() {
         let (a, b) = (lines[i - 1], lines[i]);
         let b_t = b.trim_start_matches(' ');
-        match join(a.trim_end(), widths[i - 1], b, b_t, columns, wrap) {
+        // The first line starts `first_col` cells in, so its continuation's indent counts them.
+        let a_col = if i == 1 { first_col } else { 0 };
+        match join(a.trim_end(), a_col, widths[i - 1], b, b_t, columns, wrap, cut_width) {
             Some(sep) => {
                 // The output ends with `a` as the input has it, trailing blanks and all.
                 out.truncate(out.len() - (a.len() - a.trim_end().len()));
@@ -56,11 +70,12 @@ pub fn reflow(text: &str, columns: usize, first_col: usize) -> String {
 }
 
 /// What goes between `a` and `b` when `b` continues the line `a` was wrapped from (a space, or
-/// nothing inside a URL or a path broken mid-word), or None when `a` ends where its program ended
-/// it. `a` is trimmed on the right and `width` cells wide, `b_t` is `b` without its indent. The
-/// box-drawing, table and rule stops on `a` ignore `a`'s leading spaces, so a table indented
-/// under a message counts as one.
-fn join(a: &str, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize) -> Option<&'static str> {
+/// nothing inside a token cut at the program's wrap), or None when `a` ends where its program
+/// ended it. `a` is trimmed on the right, starts `a_col` cells in and is `width` cells wide,
+/// `b_t` is `b` without its indent, `cut_width` is where the program cuts a token wider than its
+/// wrap. The box-drawing, table and rule stops on `a` ignore `a`'s leading spaces, so a table
+/// indented under a message counts as one.
+fn join(a: &str, a_col: usize, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize, cut_width: usize) -> Option<&'static str> {
     if a.is_empty() || b_t.is_empty() {
         return None;
     }
@@ -82,22 +97,29 @@ fn join(a: &str, width: usize, b: &str, b_t: &str, columns: usize, wrap: usize) 
     if width.saturating_add(1).saturating_add(next) <= wrap {
         return None;
     }
-    // A program breaks a word only at the terminal's edge, and only a URL or a path is worth
-    // gluing back. `b` continues the word when nothing but the continuation indent comes before
-    // it: `a`'s own indent, plus its marker's width when `a` opens an item.
+    // A program cuts a word only when the word is wider than its wrap: the piece on `a` then
+    // ends exactly at the wrap (a line that wrapped on a space ends short of it, the space took
+    // the last cell), and the two pieces together are wider than it. `b` continues the word
+    // when nothing but the continuation indent comes before it: `a`'s own indent, plus its
+    // marker's width when `a` opens an item or a prompt. The two pieces are the same kind of
+    // text, unless the word is a URL: a sentence of Chinese or Japanese that fills its row and
+    // the Latin word under it are two words.
     let last = a.rsplit(' ').next().unwrap_or("");
-    let indent = a.len() - a_t.len() + item_marker(a_t).unwrap_or(0);
+    let indent = a_col + a.len() - a_t.len() + item_marker(a_t).unwrap_or(0);
     let rest = match b.get(..indent) {
         Some(lead) if lead.bytes().all(|c| c == b' ') => &b[indent..],
         _ => b,
     };
-    let mid_word = width == columns && last.contains('/') && !rest.starts_with(' ');
+    let same_kind = last.contains("://") || last.chars().last().is_some_and(|c| c.is_ascii()) == rest.chars().next().is_some_and(|c| c.is_ascii());
+    let cut_here = width == cut_width && !rest.starts_with(' ') && same_kind;
+    let mid_word = cut_here && (last.width() + next > cut_width || last.contains('/'));
     Some(if mid_word { "" } else { " " })
 }
 
-/// The width of the list marker a line opens with, its space included: a bullet or a number.
+/// The width of the list marker a line opens with, its space included: a bullet, a number, or
+/// Claude Code's prompt (`\u{276f}` and a no-break space), whose continuation rows share the indent.
 fn item_marker(line: &str) -> Option<usize> {
-    const MARKERS: [&str; 8] = ["- ", "* ", "+ ", "\u{2022} ", "\u{25cf} ", "\u{25cb} ", "\u{25d0} ", "\u{23fa} "];
+    const MARKERS: [&str; 10] = ["- ", "* ", "+ ", "\u{2022} ", "\u{25cf} ", "\u{25cb} ", "\u{25d0} ", "\u{23fa} ", "\u{276f} ", "\u{276f}\u{a0}"];
     if let Some(m) = MARKERS.iter().find(|m| line.starts_with(**m)) {
         return Some(m.width());
     }
@@ -333,6 +355,34 @@ mod tests {
         // An indent that does not match the row before it is a new word.
         let deeper = lines(&["  theme at https://github.com/csarkosh/ide-arkos/blob/main/d", "    ocs/themes.md."]);
         assert_eq!(reflow(&deeper, 60, 0), "  theme at https://github.com/csarkosh/ide-arkos/blob/main/d ocs/themes.md.");
+    }
+
+    #[test]
+    fn a_token_wider_than_the_program_s_wrap_is_cut_there_and_joins_without_a_space() {
+        // Claude Code's input box wraps two cells short of the terminal; a token wider than that
+        // is cut at its width and the rest goes on under the prompt's indent.
+        let text = lines(&["\u{276f}\u{a0}cargo run --features=abcdefghijklmno", "  pqrstuvwxyz0123456789"]);
+        assert_eq!(cells("\u{276f}\u{a0}cargo run --features=abcdefghijklmno"), 38);
+        assert_eq!(reflow_at(&text, 40, 0, 38), "\u{276f}\u{a0}cargo run --features=abcdefghijklmnopqrstuvwxyz0123456789");
+        // Selected from the URL on, so the first line starts two cells in.
+        let from_url = lines(&["https://github.com/csarkosh/ide-arko", "  s/actions/runs/39877328412"]);
+        assert_eq!(reflow_at(&from_url, 40, 2, 38), "https://github.com/csarkosh/ide-arkos/actions/runs/39877328412");
+        // A message cuts at the pane's width: under a bullet's indent, with prose after the token.
+        let bullet = lines(&["\u{25cf} Run --token=abcdefghijklmnopqrstuvwxyz", "  0123456789 now."]);
+        assert_eq!(cells("\u{25cf} Run --token=abcdefghijklmnopqrstuvwxyz"), 40);
+        assert_eq!(reflow(&bullet, 40, 0), "\u{25cf} Run --token=abcdefghijklmnopqrstuvwxyz0123456789 now.");
+        // Two cells short of the pane, a message row wrapped on a space: the words stay apart.
+        let wrapped = lines(&["\u{25cf} Run --token=abcdefghijklmnopqrstuvwx", "  yz0123456789 now."]);
+        assert_eq!(reflow(&wrapped, 40, 0), "\u{25cf} Run --token=abcdefghijklmnopqrstuvwx yz0123456789 now.");
+    }
+
+    #[test]
+    fn a_full_row_that_ends_on_a_short_word_keeps_its_space() {
+        // Two short words across a full row are two words: a program cuts only what is wider
+        // than its wrap.
+        let text = lines(&["The quick brown fox jumps over the lazy", "dog again"]);
+        assert_eq!(cells("The quick brown fox jumps over the lazy"), 39);
+        assert_eq!(reflow(&text, 40, 0), "The quick brown fox jumps over the lazy dog again");
     }
 
     #[test]

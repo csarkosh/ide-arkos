@@ -454,7 +454,10 @@ Things only a person at the screen can check, in order of value:
   window and the name stays; relaunch (Update now): the name is back; close the tab and
   Shift+Cmd+T: the automatic title is back
 - a link in terminal output is underlined before the pointer reaches it; two links on one line
-  are each underlined
+  are each underlined; a URL longer than the pane printed by `echo` is underlined across both
+  rows and Cmd+click opens the whole of it, and so is one pasted into Claude Code's input box,
+  which it cuts two cells short of the pane; Cmd+C on that input box, or on a Claude Code
+  message with a token wider than the pane, pastes the token unbroken, with no space at the cut
 - with two panes side by side, the separator between them is a hairline and the focused pane's
   glow looks the same on its separator side as on its others; hover the separator: a wider
   stripe fades in and the panes do not move; drag it; move away: it fades out
