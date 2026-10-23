@@ -428,7 +428,7 @@ fn spawn_ui(exe: &Path, cwd: &Path) -> std::io::Result<u32> {
     let env = [("ARKOS_RELAUNCH".to_string(), "1".to_string())];
     let pid = {
         let _no_open_pty_inheritable = crate::pty::spawn_lock();
-        crate::spawn::spawn(program, &[], cwd, &env, crate::spawn::Stdio::Output { stdout: out, stderr: out })?
+        crate::spawn::spawn(program, &[], cwd, &env, crate::spawn::Stdio::Output { stdout: out, stderr: out }, crate::spawn::Responsibility::Own)?
     };
     // Reap the child when it exits so it does not linger as a zombie.
     std::thread::spawn(move || {

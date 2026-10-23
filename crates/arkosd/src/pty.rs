@@ -155,15 +155,15 @@ impl Pty {
 }
 
 /// Starts `program` with the slave as its terminal: a new session, the slave as its controlling
-/// terminal and standard streams, and its own responsible process (`spawn.rs`), so what runs in
-/// the shell is checked by macOS as that shell, not as `arkosd`. The slave is closed in the
-/// parent. Returns the pid; the child is reaped through `wait_nohang`, never through a
+/// terminal and standard streams, answering to this daemon's responsible process (`spawn.rs`),
+/// so a permission prompt from a tab is Arkos IDE's and holds for every tab. The slave is closed
+/// in the parent. Returns the pid; the child is reaped through `wait_nohang`, never through a
 /// `std::process::Child`, because the handover execs this process and a `Child` does not survive
 /// that.
 pub fn spawn(slave: OwnedFd, program: &str, args: &[&str], cwd: &Path, env: &[(String, String)]) -> io::Result<libc::pid_t> {
     let path = tty_path(slave.as_raw_fd())?;
     let _no_open_pty_inheritable = spawn_lock();
-    let pid = crate::spawn::spawn(program, args, cwd, env, crate::spawn::Stdio::Terminal(&path))?;
+    let pid = crate::spawn::spawn(program, args, cwd, env, crate::spawn::Stdio::Terminal(&path), crate::spawn::Responsibility::Inherited)?;
     // The child opened its own descriptor on the terminal; ours goes.
     drop(slave);
     Ok(pid)
