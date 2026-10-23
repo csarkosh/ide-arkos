@@ -4,14 +4,17 @@
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 #[cfg(not(any(target_os = "macos")))]
 compile_error!("arkosd's PTY layer is written for macOS (XNU ioctl numbers)");
 
-/// `libc` 0.2 may lack this on Apple targets; the value is XNU's.
+/// `libc` 0.2 may lack these on Apple targets; the values are XNU's.
+const TIOCSCTTY: libc::c_ulong = 0x2000_7461;
 const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
 
 pub struct Pty {
@@ -155,32 +158,54 @@ impl Pty {
 }
 
 /// Starts `program` with the slave as its terminal: a new session, the slave as its controlling
-/// terminal and standard streams, answering to this daemon's responsible process (`spawn.rs`),
-/// so a permission prompt from a tab is Arkos IDE's and holds for every tab. The slave is closed
-/// in the parent. Returns the pid; the child is reaped through `wait_nohang`, never through a
-/// `std::process::Child`, because the handover execs this process and a `Child` does not survive
-/// that.
+/// terminal (claimed with `TIOCSCTTY`) and standard streams, every signal at its default and an
+/// empty mask. A shell answers to this daemon's responsible process, so a permission prompt from
+/// a tab is Arkos IDE's and holds for every tab. The slave is closed in the parent. Returns the
+/// pid; the child is reaped through `wait_nohang`, never through a `std::process::Child`,
+/// because the handover execs this process and a `Child` does not survive that.
+///
+/// Not `posix_spawn`, which the window uses (`spawn.rs`): it cannot claim a controlling terminal,
+/// and macOS does not hand one over when a new session opens the terminal. zsh then runs with
+/// none, so the kernel has no foreground job to send SIGWINCH to, Ctrl+C reaches no one and
+/// `/dev/tty` does not open (0.5.3 to 0.6.1). `/bin/sh` happens to claim it itself, which hid this.
 pub fn spawn(slave: OwnedFd, program: &str, args: &[&str], cwd: &Path, env: &[(String, String)]) -> io::Result<libc::pid_t> {
-    let path = tty_path(slave.as_raw_fd())?;
-    let _no_open_pty_inheritable = spawn_lock();
-    let pid = crate::spawn::spawn(program, args, cwd, env, crate::spawn::Stdio::Terminal(&path), crate::spawn::Responsibility::Inherited)?;
-    // The child opened its own descriptor on the terminal; ours goes.
-    drop(slave);
-    Ok(pid)
-}
-
-/// The device path of a terminal descriptor (`/dev/ttys003`).
-fn tty_path(fd: RawFd) -> io::Result<std::path::PathBuf> {
-    let mut buf = [0 as libc::c_char; 128];
-    // SAFETY: buf is valid for its length; ttyname_r writes a NUL-terminated name into it.
-    let rc = unsafe { libc::ttyname_r(fd, buf.as_mut_ptr(), buf.len()) };
-    if rc != 0 {
-        return Err(io::Error::from_raw_os_error(rc));
+    let stdin = Stdio::from(slave.try_clone()?);
+    let stdout = Stdio::from(slave.try_clone()?);
+    let stderr = Stdio::from(slave);
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(cwd).stdin(stdin).stdout(stdout).stderr(stderr);
+    for (k, v) in env {
+        cmd.env(k, v);
     }
-    use std::os::unix::ffi::OsStrExt;
-    // SAFETY: ttyname_r succeeded, so buf holds a NUL-terminated string.
-    let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
-    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())))
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::ioctl(0, TIOCSCTTY, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // The daemon's dispositions are not the shell's: every signal back at its default
+            // (std resets SIGPIPE and the mask, not the others).
+            // XNU numbers its signals 1 to 31 (`NSIG` is 32).
+            for sig in 1..32 {
+                if sig != libc::SIGKILL && sig != libc::SIGSTOP {
+                    libc::signal(sig, libc::SIG_DFL);
+                }
+            }
+            Ok(())
+        });
+    }
+    let child = {
+        let _no_open_pty_inheritable = spawn_lock();
+        cmd.spawn()?
+    };
+    let pid = child.id() as libc::pid_t;
+    // The Child must not reap on drop; std's Child does not wait in Drop, so forgetting it only
+    // releases its stdio handles (clones of the slave, which we want closed in the parent).
+    std::mem::forget(child);
+    Ok(pid)
 }
 
 /// `waitpid(pid, WNOHANG)`: `None` while running, `Some(code)` once reaped (a signal death is
@@ -257,6 +282,39 @@ mod tests {
         assert!(out.contains("hello-pty"), "{out:?}");
         assert_eq!(wait_draining(&pty, pid), 7);
         assert_eq!(wait_nohang(pid), Some(-1), "a reaped pid is nobody's child");
+    }
+
+    #[test]
+    fn a_zsh_owns_its_terminal_and_hears_a_resize() {
+        // zsh, the shell a tab runs: unlike /bin/sh it never claims the terminal on its own, so
+        // only the spawn's own claim gives it one. Without it there is no foreground job for the
+        // kernel to send SIGWINCH to, and a program in the tab never learns the pane's new size.
+        let (pty, slave) = Pty::open(24, 80).unwrap();
+        let script = "trap 'echo heard-winch' WINCH; (exec 3</dev/tty) 2>/dev/null && echo has-ctty || echo no-ctty; echo fg=$(ps -o tpgid= -p $$); echo ready; sleep 1; sleep 1; echo done";
+        let pid = spawn(slave, "/bin/zsh", &["-f", "-c", script], std::env::temp_dir().as_path(), &[]).unwrap();
+        let before = read_until(&pty, "ready", Duration::from_secs(5));
+        assert!(before.contains("has-ctty"), "{before:?}");
+        assert!(!before.contains("fg=0") && before.contains("fg="), "the terminal has a foreground group: {before:?}");
+        pty.resize(14, 80).unwrap();
+        let after = read_until(&pty, "done", Duration::from_secs(5));
+        assert!(after.contains("heard-winch"), "{after:?}");
+        wait_draining(&pty, pid);
+    }
+
+    #[test]
+    fn a_shell_answers_to_the_daemon_s_responsible_process() {
+        extern "C" {
+            fn responsibility_get_pid_responsible_for_pid(pid: libc::pid_t) -> libc::pid_t;
+        }
+        let (pty, slave) = Pty::open(24, 80).unwrap();
+        let pid = spawn(slave, "/bin/sh", &["-c", "sleep 0.3; echo done"], std::env::temp_dir().as_path(), &[]).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        // SAFETY: plain queries by pid.
+        let (child, mine) = unsafe { (responsibility_get_pid_responsible_for_pid(pid), responsibility_get_pid_responsible_for_pid(libc::getpid())) };
+        assert_eq!(child, mine, "a tab's prompts are the app's");
+        assert_ne!(child, pid);
+        let _ = read_until(&pty, "done", Duration::from_secs(5));
+        wait_draining(&pty, pid);
     }
 
     #[test]

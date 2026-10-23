@@ -318,6 +318,10 @@ Things only a person at the screen can check, in order of value:
   "Update ready" on the bell (or relaunch), run "Update now" from the palette: the window
   reappears with every tab, every history and every agent still running; `arkosd`'s pid in
   `ps` is unchanged and its log shows "upgrading to" and "resumed N sessions" under a second apart
+- in a new tab, `ps -o tty=,stat= -p $$` names a `ttys` and its state has `+`; `sleep 100` stops
+  on Ctrl+C; `claude` with `/tui fullscreen` in that tab, then a pane split below it (or the tab
+  dragged into a shorter pane): its input box stays at the bottom of the smaller pane, and comes
+  back to full height when the split closes
 - `pkill -x arkosd` with the window open: tabs say "reconnecting", and the bell says
   "arkosd reconnecting"; after ten
   seconds a banner appears, a new daemon starts, and each tab comes back as a new shell marked
