@@ -1,10 +1,13 @@
-//! Starting a window or a shell as its own responsible process. macOS checks a process's
-//! permissions (Accessibility, the Documents folder and the rest) against its *responsible*
-//! process, and a child the daemon forks is the daemon's: a window it relaunched after an update
-//! read Accessibility as not granted although Arkos IDE had it, and a shell's file prompts named
-//! `arkosd`. `posix_spawn` with `responsibility_spawnattrs_setdisclaim` (what iTerm2 and VS Code
-//! use) makes the child responsible for itself, so a window is checked as Arkos IDE, and a shell,
-//! with everything run in it, as that shell.
+//! Starting a window or a shell from the daemon. macOS checks a process's permissions
+//! (Accessibility, the Documents folder and the rest) against its *responsible* process, and a
+//! child the daemon forks is the daemon's. A window relaunched after an update that way read
+//! Accessibility as not granted although Arkos IDE had it, so a window is spawned with
+//! `responsibility_spawnattrs_setdisclaim` (what iTerm2 and VS Code use) and is responsible for
+//! itself: checked as Arkos IDE. A shell is not: it stays the daemon's, so a command in a tab that
+//! reaches a protected folder asks once, for Arkos IDE, and the grant holds for every tab. A shell
+//! disclaimed to itself was worse than it looked: Claude Code disclaims itself in turn whenever
+//! its parent shell is its own responsible process, so every prompt named Claude Code and each
+//! session asked again.
 //!
 //! Every child also gets a new session, every signal at its default and an empty mask (the daemon
 //! ignores SIGPIPE, which `Command` would have reset), and only the descriptors named here
@@ -28,6 +31,15 @@ extern "C" {
     fn posix_spawn_file_actions_addchdir_np(actions: *mut libc::posix_spawn_file_actions_t, path: *const libc::c_char) -> libc::c_int;
 }
 
+/// Whose permissions macOS checks the child against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Responsibility {
+    /// The child's own: a window, so Accessibility is Arkos IDE's.
+    Own,
+    /// This process's: a shell, so a file prompt in a tab is Arkos IDE's and holds for every tab.
+    Inherited,
+}
+
 /// What the child's standard streams are.
 pub enum Stdio<'a> {
     /// The terminal at this path (`/dev/ttys003`), opened in the new session, so it becomes the
@@ -38,8 +50,9 @@ pub enum Stdio<'a> {
 }
 
 /// Starts `program` (looked up on `PATH` when it has no slash) with `args` in `cwd`, this
-/// process's environment with `env` set over it, and `stdio`; returns its pid. The caller reaps it.
-pub fn spawn(program: &str, args: &[&str], cwd: &Path, env: &[(String, String)], stdio: Stdio) -> io::Result<libc::pid_t> {
+/// process's environment with `env` set over it, `stdio` and `responsibility`; returns its pid.
+/// The caller reaps it.
+pub fn spawn(program: &str, args: &[&str], cwd: &Path, env: &[(String, String)], stdio: Stdio, responsibility: Responsibility) -> io::Result<libc::pid_t> {
     let c = |s: &[u8]| CString::new(s).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "an argument contains a NUL"));
     let program_c = c(program.as_bytes())?;
     let argv_c: Vec<CString> = std::iter::once(Ok(program_c.clone())).chain(args.iter().map(|a| c(a.as_bytes()))).collect::<io::Result<_>>()?;
@@ -74,7 +87,9 @@ pub fn spawn(program: &str, args: &[&str], cwd: &Path, env: &[(String, String)],
             let mut none: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut none);
             check(libc::posix_spawnattr_setsigmask(&mut attrs, &none))?;
-            check(responsibility_spawnattrs_setdisclaim(&mut attrs, 1))?;
+            if responsibility == Responsibility::Own {
+                check(responsibility_spawnattrs_setdisclaim(&mut attrs, 1))?;
+            }
             match (&stdio, &terminal_c) {
                 (Stdio::Terminal(_), Some(tty)) => {
                     check(libc::posix_spawn_file_actions_addopen(&mut actions, 0, tty.as_ptr(), libc::O_RDWR, 0))?;
@@ -141,7 +156,7 @@ mod tests {
         let script = format!("sleep 0.3; pwd; echo \"$ARKOS_X\"; [ -e /dev/fd/{} ] && echo leaked || echo closed; yes | head -1 >/dev/null; echo ok", leak.as_raw_fd());
         // `yes` dies quietly of SIGPIPE only when the signal is back at its default: ignored (as
         // this test binary has it), it would print "Broken pipe" to the same file.
-        let pid = spawn("sh", &["-c", &script], dir.path(), &[("ARKOS_X".into(), "set".into())], Stdio::Output { stdout: fd, stderr: fd }).unwrap();
+        let pid = spawn("sh", &["-c", &script], dir.path(), &[("ARKOS_X".into(), "set".into())], Stdio::Output { stdout: fd, stderr: fd }, Responsibility::Own).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
         // SAFETY: a plain query by pid.
         assert_eq!(unsafe { responsibility_get_pid_responsible_for_pid(pid) }, pid, "disclaimed");
@@ -152,13 +167,24 @@ mod tests {
     }
 
     #[test]
+    fn a_child_can_stay_this_process_s_responsibility() {
+        let pid = spawn("sh", &["-c", "sleep 0.3"], Path::new("/"), &[], Stdio::Output { stdout: 1, stderr: 2 }, Responsibility::Inherited).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // SAFETY: plain queries by pid.
+        let (child, mine) = unsafe { (responsibility_get_pid_responsible_for_pid(pid), responsibility_get_pid_responsible_for_pid(libc::getpid())) };
+        assert_eq!(child, mine, "the shell answers to whoever this process answers to");
+        assert_ne!(child, pid, "not to itself");
+        assert_eq!(wait(pid), 0);
+    }
+
+    #[test]
     fn a_terminal_becomes_the_childs_controlling_terminal() {
         let (mut master, mut slave) = (0, 0);
         // SAFETY: valid out-pointers; the names and sizes may be null.
         assert_eq!(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
         // SAFETY: slave is an open terminal; ttyname returns a static string or null.
         let path = unsafe { std::ffi::CStr::from_ptr(libc::ttyname(slave)) }.to_str().unwrap().to_string();
-        let pid = spawn("/bin/sh", &["-c", "exec 3</dev/tty && echo ctty"], Path::new("/"), &[], Stdio::Terminal(Path::new(&path))).unwrap();
+        let pid = spawn("/bin/sh", &["-c", "exec 3</dev/tty && echo ctty"], Path::new("/"), &[], Stdio::Terminal(Path::new(&path)), Responsibility::Inherited).unwrap();
         // SAFETY: closes this test's descriptor once.
         unsafe { libc::close(slave) };
         let mut got = Vec::new();
