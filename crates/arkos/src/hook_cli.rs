@@ -18,7 +18,7 @@ const STDIN_CAP: u64 = 64 * 1024;
 /// What the SessionStart hook prints inside Arkos when `arkos` resolves on its PATH. Claude Code
 /// adds a SessionStart hook's standard output to the agent's context, so the agent learns where
 /// the guide is.
-pub const CONTEXT_LINES: &str = "This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `arkos guide` first and follow it.\n";
+pub const CONTEXT_LINES: &str = "This session runs inside Arkos IDE.\nTo show the user a video or a document in a pane beside you, or to change Arkos's theme, fonts or settings, run `arkos guide` first and follow it.\n";
 
 /// The SessionStart hook's two lines: `CONTEXT_LINES` when `on_path`, else the second line names
 /// `exe`, this binary, by its full path, quoted for `sh`, so the command it gives runs as written.
@@ -26,7 +26,7 @@ pub fn context_lines(on_path: bool, exe: &Path) -> String {
     if on_path {
         CONTEXT_LINES.to_string()
     } else {
-        format!("This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `{} guide` first and follow it.\n", shell_quote(exe))
+        format!("This session runs inside Arkos IDE.\nTo show the user a video or a document in a pane beside you, or to change Arkos's theme, fonts or settings, run `{} guide` first and follow it.\n", shell_quote(exe))
     }
 }
 
@@ -570,9 +570,17 @@ mod tests {
         assert_eq!(context_lines(true, Path::new("/anywhere/arkos")), CONTEXT_LINES);
         assert_eq!(
             context_lines(false, Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos")),
-            "This session runs inside Arkos IDE.\nTo change its theme, fonts or settings, run `'/Applications/Arkos IDE.app/Contents/MacOS/arkos' guide` first and follow it.\n"
+            "This session runs inside Arkos IDE.\nTo show the user a video or a document in a pane beside you, or to change Arkos's theme, fonts or settings, run `'/Applications/Arkos IDE.app/Contents/MacOS/arkos' guide` first and follow it.\n"
         );
         assert!(context_lines(false, Path::new("/opt/arkos/bin/arkos")).contains("run `/opt/arkos/bin/arkos guide` first"));
+        assert_eq!(context_lines(false, Path::new("/usr/local/bin/arkos")), CONTEXT_LINES.replace("`arkos guide`", "`/usr/local/bin/arkos guide`"), "the two forms differ only in the binary");
+    }
+
+    #[test]
+    fn the_hook_line_mentions_showing_a_video() {
+        assert!(CONTEXT_LINES.contains("video"), "{CONTEXT_LINES}");
+        assert_eq!(CONTEXT_LINES.lines().count(), 2, "two lines still");
+        assert!(CONTEXT_LINES.ends_with("run `arkos guide` first and follow it.\n"));
     }
 
     #[test]

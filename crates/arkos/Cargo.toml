@@ -23,7 +23,7 @@ sha2.workspace = true
 objc2 = "0.6"
 # Already in the tree through gpui: the AppKit view behind the window, for docking (spec 8).
 raw-window-handle = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime"] }
+objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime", "NSDictionary", "NSValue", "NSURL", "NSError"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing"] }
 similar = "2"
 # Markdown parsing for the editor's block layer (md_blocks).
@@ -36,6 +36,18 @@ unicode-width = "0.2"
 # features off: the full AppKit binding is a long compile, and only these modules are used.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSGraphics", "NSView"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFString", "CFNumber", "CFCGTypes"] }
+# gpui's CoreVideo crate: the pixel buffer type its surface element paints (video tab).
+core-video = "0.4.3"
+# The video tab's player (av_player.rs). Default features off, as for AppKit: only the player, its
+# item, the video output and the asset are used.
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVAsset", "AVAsynchronousKeyValueLoading", "objc2-core-media", "objc2-core-video", "block2", "objc2-core-foundation"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMTime"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVPixelBuffer", "CVBuffer", "CVImageBuffer"] }
+# The seek's completion handler (the version objc2 0.6 pairs with, already in the tree).
+block2 = "0.6"
+# Already in the tree through gpui (which pins 0.10.0): `TCFType`, to wrap a pixel buffer in
+# core-video's type, which does not re-export the trait.
+core-foundation = "0.10"
 
 [dev-dependencies]
 tempfile.workspace = true

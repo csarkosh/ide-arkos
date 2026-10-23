@@ -15,11 +15,11 @@ how = ["normal", "relaunch", "updated", "recovered"]
 [events.window_close]
 
 [events.pane_open]
-kind = ["terminal", "viewer", "browser"]
-how = ["palette", "key", "click", "explorer", "link", "restore"]
+kind = ["terminal", "viewer", "browser", "video"]
+how = ["palette", "key", "click", "explorer", "link", "restore", "agent", "poster"]
 
 [events.pane_close]
-kind = ["terminal", "viewer", "browser"]
+kind = ["terminal", "viewer", "browser", "video"]
 
 [events.view]
 format = ["markdown", "code", "plain", "image", "video", "binary", "too_large"]
@@ -87,6 +87,18 @@ command = [
     "dock_chrome_window",
     "dock_chrome_window_at",
     "undock_chrome_window",
+    "open_file_in_pane",
+    "video_play_pause",
+    "video_back",
+    "video_forward",
+    "video_back_fine",
+    "video_forward_fine",
+    "video_step_back",
+    "video_step_forward",
+    "video_start",
+    "video_loop",
+    "video_mute",
+    "video_reload",
 ]
 
 # The config keys, never their values. `font.presets.*` is collapsed to `font.presets` and the
@@ -131,10 +143,15 @@ step = ["staged", "applied", "failed", "rolled_back"]
 kind = ["update_ready", "updated", "daemon", "config_error", "theme_error"]
 
 [events.error]
-kind = ["daemon_unreachable", "daemon_restarted", "session_lost", "chrome_missing", "mermaid_failed", "save_failed"]
+kind = ["daemon_unreachable", "daemon_restarted", "session_lost", "chrome_missing", "mermaid_failed", "save_failed", "video_unplayable"]
+
+# Which command an agent ran against the window's panes, and whether it succeeded.
+[events.agent_pane]
+command = ["open", "status", "play", "pause", "seek", "step", "loop", "reload", "close", "mute", "panes"]
+ok = "bool"
 
 [events.help]
 what = ["keybindings", "documentation", "about", "telemetry"]
 
 [focus]
-surfaces = ["terminal", "viewer", "browser", "settings"]
+surfaces = ["terminal", "viewer", "browser", "video", "settings"]

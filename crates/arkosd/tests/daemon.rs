@@ -1,6 +1,6 @@
 //! Drives the real arkosd binary over a temp socket.
 use protocol::codec::{read_frame, write_frame};
-use protocol::{AgentRecord, ClientMessage, CustomizeAction, CustomizeOutcome, Event, Report, Request, Response, ServerMessage, SessionId, PROTOCOL_VERSION};
+use protocol::{AgentRecord, ClientMessage, CustomizeAction, CustomizeOutcome, Event, PaneAction, PaneOutcome, PanesReport, Report, Request, Response, ServerMessage, SessionId, WindowTarget, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -2351,6 +2351,67 @@ fn a_customize_request_is_relayed_to_every_project_window_and_answered_when_all_
     }
     // A late answer is still Ok, never an error the window would show.
     assert_eq!(w1.request(Request::CustomizeDone { id: 1, outcome: CustomizeOutcome { pid: base + 1, project: "/p".into(), result: Ok(Report::default()) } }), Response::Ok);
+}
+
+#[test]
+fn a_direct_request_reaches_one_window_and_the_tool_gets_its_answer() {
+    let d = Daemon::start(&[]);
+    let base = std::process::id();
+    let mut w1 = d.connect_as(base + 1);
+    let mut w2 = d.connect_as(base + 2);
+    let sid = w1.create("/bin/sh");
+    w1.attach(sid);
+    let mut tool = d.connect_raw();
+    tool.send(Request::Direct { id: 1, window: WindowTarget::Session(sid), action: PaneAction::Panes });
+    assert_eq!(w1.next_event(), Event::Direct { id: 1, action: PaneAction::Panes, session: Some(sid) });
+    w2.set_read_timeout(Some(Duration::from_millis(300)));
+    loop {
+        match read_frame::<_, ServerMessage>(&mut w2.r) {
+            Ok(Some(ServerMessage::Event(Event::Direct { .. }))) => panic!("the other window was asked"),
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let outcome = Ok(PaneOutcome::Panes(PanesReport { project: "/p".into(), panes: vec![] }));
+    assert_eq!(w1.request(Request::DirectDone { id: 1, outcome: outcome.clone() }), Response::Ok);
+    assert_eq!(tool.response(), Response::Directed { pid: base + 1, project: std::env::temp_dir(), outcome });
+}
+
+#[test]
+fn a_direct_to_a_window_that_never_answers_is_an_error_after_the_wait() {
+    let d = Daemon::start(&[]);
+    let pid = std::process::id() + 1;
+    let mut w = d.connect_as(pid);
+    let mut tool = d.connect_raw();
+    let t0 = Instant::now();
+    tool.send(Request::Direct { id: 2, window: WindowTarget::Only, action: PaneAction::Panes });
+    assert!(matches!(w.next_event(), Event::Direct { id: 2, .. }));
+    assert_eq!(tool.response(), Response::Error(format!("window {pid}: no answer")));
+    assert!(t0.elapsed() >= Duration::from_millis(1900) && t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    // The window answering after the wait is Ok, never an error it would show.
+    let outcome = Ok(PaneOutcome::Panes(PanesReport { project: "/p".into(), panes: vec![] }));
+    assert_eq!(w.request(Request::DirectDone { id: 2, outcome }), Response::Ok);
+}
+
+#[test]
+fn a_direct_id_already_in_flight_is_refused_and_a_second_answer_goes_nowhere() {
+    let d = Daemon::start(&[]);
+    let pid = std::process::id() + 1;
+    let mut w = d.connect_as(pid);
+    let mut tool = d.connect_raw();
+    tool.send(Request::Direct { id: 3, window: WindowTarget::Only, action: PaneAction::Panes });
+    assert!(matches!(w.next_event(), Event::Direct { id: 3, .. }));
+    let mut other = d.connect_raw();
+    assert_eq!(other.request(Request::Direct { id: 3, window: WindowTarget::Only, action: PaneAction::Panes }), Response::Error("direct id in flight".into()));
+    let outcome = Ok(PaneOutcome::Panes(PanesReport { project: "/p".into(), panes: vec![] }));
+    assert_eq!(w.request(Request::DirectDone { id: 3, outcome: outcome.clone() }), Response::Ok);
+    assert_eq!(tool.response(), Response::Directed { pid, project: std::env::temp_dir(), outcome: outcome.clone() });
+    // A second answer, and one for an id never asked, are Ok and reach no one.
+    assert_eq!(w.request(Request::DirectDone { id: 3, outcome: outcome.clone() }), Response::Ok);
+    assert_eq!(w.request(Request::DirectDone { id: 99, outcome }), Response::Ok);
+    // The id is free again once answered.
+    tool.send(Request::Direct { id: 3, window: WindowTarget::Only, action: PaneAction::Panes });
+    assert!(matches!(w.next_event(), Event::Direct { id: 3, .. }));
 }
 
 #[test]

@@ -17,7 +17,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `arkos --help`.
 pub const USAGE: &str = "\
-usage: arkos guide                  how an agent changes the theme and settings; read it first
+usage: arkos guide                  how an agent shows the user a file and changes the theme; read it first
+       arkos open <file> ...        show a video or a document in a pane beside you
+       arkos video <command> ...    status, play, pause, seek, step, loop, reload, close, mute
+       arkos panes                  this window's panes and tabs, numbered as Cmd+1..9
        arkos [<folder>]             open a window on a folder (default: the current one)
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current
        arkos settings get|set ...   read the config, or set a key on the allow-list
@@ -95,7 +98,7 @@ pub enum Reach {
 }
 
 impl Reach {
-    fn line(&self) -> String {
+    pub(crate) fn line(&self) -> String {
         match self {
             Reach::NoWindow => "no window running".into(),
             Reach::OldDaemon => "arkosd is older than this command; use Update now in Arkos IDE, or run pkill -x arkosd (ends every session)".into(),
@@ -114,14 +117,17 @@ pub fn customize(socket: &Path, action: CustomizeAction, wait: Duration) -> Resu
         Ok(Response::Customized { outcomes, missing, too_old }) => Ok(Answer { outcomes, missing, too_old }),
         Ok(Response::Error(e)) => Err(Reach::Io(format!("arkosd answered: {e}"))),
         Ok(other) => Err(Reach::Io(format!("arkosd answered something else: {other:?}"))),
-        Err(e) => Err(match e.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => Reach::NoWindow,
-            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe => Reach::OldDaemon,
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                Reach::Io(format!("arkosd did not answer within {} s", timeout.as_secs()))
-            }
-            _ => Reach::Io(format!("cannot reach arkosd: {e}")),
-        }),
+        Err(e) => Err(reach_from_io(&e, timeout)),
+    }
+}
+
+/// What a failed socket call means: nothing listening, an old daemon, a timeout or another failure.
+pub(crate) fn reach_from_io(e: &std::io::Error, timeout: Duration) -> Reach {
+    match e.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => Reach::NoWindow,
+        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe => Reach::OldDaemon,
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => Reach::Io(format!("arkosd did not answer within {} s", timeout.as_secs())),
+        _ => Reach::Io(format!("cannot reach arkosd: {e}")),
     }
 }
 

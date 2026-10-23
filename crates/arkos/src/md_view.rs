@@ -7,7 +7,8 @@
 //! address's fetch has landed (`remote_image`), several in one paragraph in a row; Cmd+click
 //! follows the link around it, or else shows it in Preview. An image whose path is a local video
 //! is its Quick Look poster with a play glyph, and local audio a box with its name and size
-//! (`media`): Cmd+click plays them. Remote video and audio, and a `webm`, are links. A `mermaid`
+//! (`media`): Cmd+click opens the video in a video tab beside the document and plays the audio
+//! in QuickTime Player. Remote video and audio, and a `webm`, are links. A `mermaid`
 //! code block is its diagram, rendered by headless Chrome into a cache (`mermaid`); until the
 //! PNG is there, or when it cannot be made, the block is its source with a line saying why. An
 //! HTML block that is one `<img>` tag is an image by the same rules, at its `width` and centred
@@ -32,7 +33,7 @@ use crate::mermaid::{self, Diagram, MermaidTheme};
 use crate::palette::Rgb;
 use crate::remote_image::{self, Remote};
 use crate::theme::Theme;
-use crate::viewer::{self, Hit, Span, Viewer, ViewerEvent};
+use crate::viewer::{self, Hit, PosterPress, Span, Viewer, ViewerEvent};
 use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
     canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Div, Element, ElementId, ElementInputHandler,
@@ -1558,7 +1559,7 @@ fn open_in_preview(file: PathBuf, cx: &mut App) {
 /// plain file of the kind its name says, so a link named like audio that leads to an app or a
 /// script is refused, with a line on stderr and nothing shown in the window. A path that is not
 /// absolute is not opened.
-fn open_media(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
+pub(crate) fn open_media(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
     if !file.is_absolute() {
         return;
     }
@@ -1570,6 +1571,24 @@ fn open_media(file: PathBuf, args: fn(&Path) -> Vec<String>, cx: &mut App) {
             }
         })
         .detach();
+}
+
+/// Asks for a local video to open in a video tab (`ViewerEvent::OpenVideo`), once the path is
+/// found on the background executor to be a plain video file (`media::checked_open_path`); the
+/// canonical path is the one sent. A path that fails the check is refused as `open_media` refuses
+/// it. A path that is not absolute is not opened.
+fn open_video(file: PathBuf, viewer: Entity<Viewer>, cx: &mut App) {
+    if !file.is_absolute() {
+        return;
+    }
+    let check = cx.background_executor().spawn(async move { (media::checked_open_path(&file), file) });
+    cx.spawn(async move |cx| match check.await {
+        (Some(canonical), _) => {
+            let _ = viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenVideo(canonical)));
+        }
+        (None, file) => eprintln!("arkos: not opening {}: it is not a plain file of the kind its name says", file.display()),
+    })
+    .detach();
 }
 
 /// Runs `/usr/bin/open` with `args` (made for `file`), blocking the calling thread, and reports a
@@ -1588,24 +1607,24 @@ fn run_open(file: &Path, args: Vec<String>) {
 /// is made (with "loading") and when there is none; audio is a one-line box with a speaker, the
 /// file's name and its size (`Viewer.sizes`); a link (remote media, a `webm`) is its label and its
 /// path in the link colour. A plain press is the row's, which puts the caret in the block.
-/// Cmd+click follows the link around it when there is one, and otherwise plays a video or an audio
-/// file in QuickTime Player, shows a local `webm` in Finder (both through `open_media`'s check),
-/// or opens a web address in the browser; the row stands aside through `press`. The pointer is the hand over it, as over a link.
+/// Cmd+click (`viewer::poster_press`) follows the link around it when there is one, and otherwise
+/// opens a video in a video tab beside the document (`open_video`), plays an audio file in
+/// QuickTime Player or shows a local `webm` in Finder (both through `open_media`'s check), or
+/// opens a web address in the browser; the row stands aside through `press`. The pointer is the hand over it, as over a link.
 fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
     let remote = remote_image::is_remote(&m.path);
     let file = resolve_image(&ctx.base_dir, &m.path);
     let on_press = {
         let (press, link, kind, path, file, base_dir, viewer) = (press.clone(), m.link.clone(), m.kind, m.path.clone(), file.clone(), ctx.base_dir.clone(), ctx.viewer.clone());
         move |ev: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
-            if !ev.modifiers.platform {
-                return;
-            }
-            match (&link, kind, &file) {
-                (Some(link), _, _) => follow_link(link_action(link, &base_dir), &viewer, cx),
-                (None, _, None) if remote => cx.open_url(&path),
-                (None, Some(_), Some(file)) => open_media(file.clone(), media::quicktime_args, cx),
-                (None, None, Some(file)) => open_media(file.clone(), media::reveal_args, cx),
-                (None, _, None) => return,
+            match (viewer::poster_press(ev.modifiers.platform, kind, link.as_deref(), remote), &link, &file) {
+                (PosterPress::Caret, _, _) => return,
+                (PosterPress::Link, Some(link), _) => follow_link(link_action(link, &base_dir), &viewer, cx),
+                (PosterPress::Link, None, _) => cx.open_url(&path),
+                (_, _, None) => return,
+                (PosterPress::OpenVideo, _, Some(file)) => open_video(file.clone(), viewer.clone(), cx),
+                (PosterPress::QuickTime, _, Some(file)) => open_media(file.clone(), media::quicktime_args, cx),
+                (PosterPress::Reveal, _, Some(file)) => open_media(file.clone(), media::reveal_args, cx),
             }
             press.set(true);
         }

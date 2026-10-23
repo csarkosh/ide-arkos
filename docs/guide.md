@@ -148,8 +148,9 @@ shows when the image cannot be drawn.
 
 A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
 opens it: an image in Preview, or the link for a linked image. A video (`.mp4`, `.mov` and the
-like) shows a poster frame made by Quick Look, with "loading" first, and Cmd+click plays it in
-QuickTime Player. Audio shows as a one-line box and plays in QuickTime Player. A local `.webm`
+like) shows a poster frame made by Quick Look, with "loading" first, and Cmd+click opens it in a
+video tab beside the document; a file Arkos cannot play shows why, with a button for QuickTime
+Player. Audio shows as a one-line box and plays in QuickTime Player. A local `.webm`
 is shown in Finder instead, and remote media are links. Every local open resolves symlinks and
 checks the file type first.
 
@@ -213,6 +214,42 @@ arkos never tries to find the old one. A hidden tab's window waits off-screen, a
 it back; after a crash or a kill it stays there, and Chrome's Window > Zoom (or quitting and
 reopening Chrome) brings it back on screen.
 
+## Video pane
+
+A video (`.mp4`, `.mov`, `.m4v`) opens as a tab of its own, drawn by Arkos in the pane like a
+terminal or a document: it moves between panes, splits, reorders, renames, closes and comes back
+with Shift+Cmd+T, and a relaunch brings it back paused on the frame it showed, with its loop.
+There are four ways in: a click on the file in the sidebar previews it (paused) and a double click
+pins it, as for any file; Cmd+click on a video's poster in a markdown file opens it in the pane
+to the right of the document, or splits one off; the palette's "Open file in pane…" asks for a
+path and opens it in the focused pane; and a coding agent can put it beside itself with
+`arkos open` (see Agents, under Config).
+
+Under the picture a strip is always shown: play and pause, the time as `m:ss.f / m:ss.f`, a
+scrubber, the loop toggle and the mute toggle, and a status word at the right. A click on the
+scrubber seeks; a drag scrubs through the frames and resumes playback afterwards if it was
+playing; a Shift+drag selects a range, which L (or the loop toggle) then loops. The loop toggle on
+without a range loops the whole file. With the pane focused (click it first) the keys are Space to
+play or pause, Left and Right for 5 seconds, Shift+Left and Shift+Right for 1 second, comma and
+period for one frame back or forward, Home or 0 for the start, L to loop, M to mute and R to
+reload. Every one can be rebound; the Keybindings window lists them under "Video". Terminals never
+see these keys.
+
+A video plays only while it is the active tab of its pane and the window is not hidden or
+minimized: switching to another tab pauses it and switching back resumes it. Moving to another app
+does not pause it. While a video plays the display does not sleep, as with QuickTime Player.
+
+The tab follows its file. When the file changes on disk and then stays the same for a second, the
+tab reloads it, within about two seconds, holding the position and whether it was playing; the
+strip says "reloading" and then "new cut" for three seconds. A file still being written (an
+`ffmpeg` render, say) is never shown half way. A new file that cannot be played yet leaves the old
+one showing with "new file cannot be played yet", and the next change tries again; a deleted
+file leaves the last frame dimmed with "waiting for file" until it comes back. R reloads at once,
+for a tool that keeps the modification time.
+
+A file Arkos cannot play shows the reason over the picture with a button, "Open in QuickTime
+Player". Audio still opens in QuickTime Player, and a `.webm` is shown in Finder.
+
 ## Keyboard
 
 The VS Code map, in a terminal-friendly form.
@@ -273,6 +310,14 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+click | in a markdown file: open a link, or an image, poster, video or audio |
 | Enter | in a markdown list: start the next item; on an empty item, end the list |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
+| Space | in a video tab: play or pause |
+| Left, Right | in a video tab: back or forward 5 seconds |
+| Shift+Left, Shift+Right | in a video tab: back or forward 1 second |
+| , and . | in a video tab: one frame back or forward, pausing first |
+| Home, 0 | in a video tab: to the start |
+| L | in a video tab: loop on or off; after a Shift+drag on the scrubber, loop that range |
+| M | in a video tab: mute on or off |
+| R | in a video tab: reload the file now |
 | Cmd+O | open folder…: the native picker; the folder opens in a new window |
 | Cmd+N | new window: the project chooser in its own window (also the menu's "New Window"); the folder chosen opens in a new window; a config file that still says `"open recent"` keeps working |
 | Cmd+, | settings |
@@ -465,11 +510,22 @@ edit to the theme's file, a macOS light or dark switch), the window fades from t
 the new over 200 ms; with Reduce Motion on, it switches at once. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
-### Themes for agents
+### Agents
 
-A coding agent running in an Arkos terminal can make a theme, try it, check its contrast and
-switch to it with commands, and change the common settings the same way. `arkos guide` prints
-what the agent needs.
+A coding agent running in an Arkos terminal can show you a video or a document in a pane beside
+it and drive the video, and it can make a theme, try it, check its contrast and switch to it with
+commands, and change the common settings the same way. `arkos guide` prints what the agent needs.
+
+`arkos open <file>` puts a video, a markdown file or any other text file in a pane of the window
+the agent runs in. The first open splits the agent's own pane to the right and later ones reuse
+that pane, so it never covers what you are looking at; `--pane N` (numbered as Cmd+1 to Cmd+9)
+and `--split` choose another place. A file already open is shown where it is rather than opened
+twice. The keyboard focus stays where you are typing unless the agent passes `--focus`. A video
+opens paused unless the agent asks otherwise, and `--at 0:12`, `--loop 0:12-0:18` and `--playing`
+jump to a scene and play it on repeat. `arkos video` plays, pauses, seeks, steps, loops, reloads,
+mutes and closes a video tab, and `arkos panes` lists the panes and their tabs (their titles,
+never what a terminal shows). Nothing on this channel runs a command in a terminal or reaches a
+session.
 
 Inside Arkos shells, `arkos` is on PATH and `$ARKOS_BIN` names the binary; elsewhere use the full
 path, usually `/Applications/Arkos IDE.app/Contents/MacOS/arkos` (the Homebrew cask installs the
@@ -492,6 +548,9 @@ contrast pair, a window that reported an error or none that answered, an old dae
 | `arkos settings get [<key>]` | the config file, or one key's value | 0, 1 |
 | `arkos settings set <key> <value>` | sets a key on the allow-list, then reloads every window | 0, 1, 2 |
 | `arkos config reload` | asks every window to read `config.toml` now | 0, 1, 3 |
+| `arkos open <file>` | shows a video, a markdown file or a text file in a pane beside the agent | 0, 1, 2, 3 |
+| `arkos video <command> [<file>]` | `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `unmute` on a video tab | 0, 1, 2, 3 |
+| `arkos panes` | the window's panes in Cmd+1 order with their tabs; `--all` for every window | 0, 1, 3 |
 | `arkos guide` | prints the agent guide; `--path` writes it to a file and prints the path; `--install` installs it as a Claude Code skill | 0, 1 |
 
 Every command that talks to windows prints one line per window, `window {pid} ({project}): ...`,
@@ -518,8 +577,9 @@ default answers `no such key`.
 An agent finds `arkos guide` in three ways, from no setup to one command:
 
 1. The SessionStart hook ("Install Claude Code hooks" in the palette, or the doctor). In an Arkos
-   shell it prints two lines telling the session it runs inside Arkos IDE and to run `arkos guide`
-   first (by the binary's full path when `arkos` is not on the hook's PATH). It also installs the
+   shell it prints two lines telling the session it runs inside Arkos IDE and, to show you a video
+   or a document or to change the theme or settings, to run `arkos guide` first (by the binary's
+   full path when `arkos` is not on the hook's PATH). It also installs the
    guide as a skill into the starting Claude Code's own config folder (`CLAUDE_CONFIG_DIR`, else
    `~/.claude`); that Claude Code loads the skill at its next start.
 2. `arkos guide --install` writes the skill (`skills/arkos-ide/SKILL.md`) into the config folder of
@@ -528,13 +588,15 @@ An agent finds `arkos guide` in three ways, from no setup to one command:
    palette's "Install agent guide" installs it too. It never overwrites a skill it did not write.
    `arkos guide --path` writes the guide to `~/Library/Application Support/arkos/agent-guide.md`
    for agents that take a file.
-3. `arkos --help` lists `guide` first, and `arkos theme` with no arguments says `see: arkos guide`.
+3. `arkos --help` lists `guide` first and `open`, `video` and `panes` after it, and `arkos theme`,
+   `arkos open` and `arkos video` with no arguments say `see: arkos guide`.
 
 The doctor ("Agent guide for Claude Code" in the wrench's list) offers to install or refresh the
 skill, and `arkos doctor` has a `themes:` section: `{n} themes, all valid` or one line per theme
 file that does not load (ending with the `arkos theme validate` command to run on it), a
 `theme.dark` or `theme.light` that names no theme, and the skill's state (installed, not
-installed, older than this build, or a different skill). The doctor row checks only the folder of
+installed, older than this build, or a different skill; an older one means agents will not know
+about video panes until it is reinstalled). The doctor row checks only the folder of
 the environment Arkos runs in.
 
 `arkos config`, `arkos settings` and `arkos guide` are commands, so they win over a folder of the

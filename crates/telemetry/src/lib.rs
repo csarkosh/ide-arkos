@@ -193,9 +193,9 @@ mod tests {
             ("window_close", &[]),
             (
                 "pane_open",
-                &[("kind", &["terminal", "viewer", "browser"]), ("how", &["palette", "key", "click", "explorer", "link", "restore"])],
+                &[("kind", &["terminal", "viewer", "browser", "video"]), ("how", &["palette", "key", "click", "explorer", "link", "restore", "agent", "poster"])],
             ),
-            ("pane_close", &[("kind", &["terminal", "viewer", "browser"])]),
+            ("pane_close", &[("kind", &["terminal", "viewer", "browser", "video"])]),
             (
                 "view",
                 &[("format", &["markdown", "code", "plain", "image", "video", "binary", "too_large"]), ("mode", &["rendered", "raw"])],
@@ -207,7 +207,7 @@ mod tests {
             ("notice", &[("kind", &["update_ready", "updated", "daemon", "config_error", "theme_error"])]),
             (
                 "error",
-                &[("kind", &["daemon_unreachable", "daemon_restarted", "session_lost", "chrome_missing", "mermaid_failed", "save_failed"])],
+                &[("kind", &["daemon_unreachable", "daemon_restarted", "session_lost", "chrome_missing", "mermaid_failed", "save_failed", "video_unplayable"])],
             ),
             ("help", &[("what", &["keybindings", "documentation", "about", "telemetry"])]),
         ];
@@ -227,7 +227,7 @@ mod tests {
         let events = file()["events"].as_table().unwrap().clone();
         let mut want = spec_table();
         let names: Vec<&str> = events.keys().map(String::as_str).collect();
-        let mut spec_names: Vec<&str> = want.keys().copied().chain(["palette", "settings", "theme"]).collect();
+        let mut spec_names: Vec<&str> = want.keys().copied().chain(["palette", "settings", "theme", "agent_pane"]).collect();
         spec_names.sort();
         assert_eq!(names, spec_names, "the file's events are the spec's");
         for (name, keys) in &events {

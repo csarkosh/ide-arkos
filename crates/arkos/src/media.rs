@@ -1,9 +1,9 @@
 //! Video and audio in the rendered view (spec 5). An image whose path is a local video (`mp4`,
 //! `mov`, `m4v`) is drawn as a poster that Quick Look's thumbnailer (`qlmanage`, part of macOS)
 //! makes once per file and version, cached at `<cache>/posters/<sha256 of the path and its
-//! mtime>.png`; local audio (`mp3`, `m4a`, `wav`, `aac`) is a one-line box. Cmd+click plays a video
-//! or an audio file in QuickTime Player, never through a bare `open`, and only once the path is
-//! found to be a plain file of the same kind (`checked_open_path`). A `webm` (which neither Quick
+//! mtime>.png`; local audio (`mp3`, `m4a`, `wav`, `aac`) is a one-line box. Cmd+click opens a
+//! video in a video tab and plays an audio file in QuickTime Player, never through a bare `open`,
+//! and only once the path is found to be a plain file of the same kind (`checked_open_path`). A `webm` (which neither Quick
 //! Look nor QuickTime takes) and remote video or audio are links instead, and nothing is fetched;
 //! a local `webm` is shown in Finder. One poster is made
 //! at a time in the process (a window is a process), through the `queue()` gate; the folder is

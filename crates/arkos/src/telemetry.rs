@@ -51,11 +51,11 @@ values! {
 }
 values! {
     /// What a tab shows.
-    PaneKind { Terminal => "terminal", Viewer => "viewer", Browser => "browser" }
+    PaneKind { Terminal => "terminal", Viewer => "viewer", Browser => "browser", Video => "video" }
 }
 values! {
     /// How a tab was opened.
-    Opened { Palette => "palette", Key => "key", Click => "click", Explorer => "explorer", Link => "link", Restore => "restore" }
+    Opened { Palette => "palette", Key => "key", Click => "click", Explorer => "explorer", Link => "link", Restore => "restore", Agent => "agent", Poster => "poster" }
 }
 values! {
     /// What kind of file the viewer showed.
@@ -63,10 +63,9 @@ values! {
         Markdown => "markdown",
         Code => "code",
         Plain => "plain",
-        // No call site yet: an image or a video opened as a file is shown as a binary.
+        // No call site yet: an image opened as a file is shown as a binary.
         #[allow(dead_code)]
         Image => "image",
-        #[allow(dead_code)]
         Video => "video",
         Binary => "binary",
         TooLarge => "too_large",
@@ -98,7 +97,31 @@ values! {
 }
 values! {
     /// Something that went wrong where the person would have seen it.
-    Failure { DaemonUnreachable => "daemon_unreachable", DaemonRestarted => "daemon_restarted", SessionLost => "session_lost", ChromeMissing => "chrome_missing", MermaidFailed => "mermaid_failed", SaveFailed => "save_failed" }
+    Failure {
+        DaemonUnreachable => "daemon_unreachable",
+        DaemonRestarted => "daemon_restarted",
+        SessionLost => "session_lost",
+        ChromeMissing => "chrome_missing",
+        MermaidFailed => "mermaid_failed",
+        SaveFailed => "save_failed",
+        VideoUnplayable => "video_unplayable",
+    }
+}
+values! {
+    /// Which command an agent ran against the window's panes.
+    AgentCommand {
+        Open => "open",
+        Status => "status",
+        Play => "play",
+        Pause => "pause",
+        Seek => "seek",
+        Step => "step",
+        Loop => "loop",
+        Reload => "reload",
+        Close => "close",
+        Mute => "mute",
+        Panes => "panes",
+    }
 }
 values! {
     /// A Help surface.
@@ -111,7 +134,7 @@ values! {
 }
 values! {
     /// What foreground time is counted against.
-    Surface { Terminal => "terminal", Viewer => "viewer", Browser => "browser", Settings => "settings" }
+    Surface { Terminal => "terminal", Viewer => "viewer", Browser => "browser", Video => "video", Settings => "settings" }
 }
 
 /// The moment a call happens: unix seconds for the journal, and the monotonic clock the focus
@@ -465,6 +488,10 @@ impl Recorder {
         self.record(events::error(kind), now);
     }
 
+    pub fn agent_pane(&mut self, command: AgentCommand, ok: bool, now: Now) {
+        self.record(events::agent_pane(command, ok), now);
+    }
+
     pub fn help(&mut self, what: Help, now: Now) {
         self.record(events::help(what), now);
     }
@@ -540,6 +567,10 @@ mod events {
         ev("error", &[("kind", kind.as_str())])
     }
 
+    pub fn agent_pane(command: AgentCommand, ok: bool) -> Event {
+        Event { n: "agent_pane".into(), t: 0, d: [("command".to_string(), DValue::Str(command.as_str().into())), ("ok".to_string(), DValue::Bool(ok))].into() }
+    }
+
     pub fn help(what: Help) -> Event {
         ev("help", &[("what", what.as_str())])
     }
@@ -598,6 +629,18 @@ pub fn command_name(command: &Command) -> &'static str {
         DockChromeWindow => "dock_chrome_window",
         DockChromeWindowAt(_) => "dock_chrome_window_at",
         UndockChromeWindow => "undock_chrome_window",
+        OpenFileInPane => "open_file_in_pane",
+        VideoPlayPause => "video_play_pause",
+        VideoBack => "video_back",
+        VideoForward => "video_forward",
+        VideoBackFine => "video_back_fine",
+        VideoForwardFine => "video_forward_fine",
+        VideoStepBack => "video_step_back",
+        VideoStepForward => "video_step_forward",
+        VideoStart => "video_start",
+        VideoLoop => "video_loop",
+        VideoMute => "video_mute",
+        VideoReload => "video_reload",
     }
 }
 
@@ -679,6 +722,7 @@ pub fn kind_of(tab: &Tab) -> PaneKind {
         Tab::Terminal { .. } => PaneKind::Terminal,
         Tab::Viewer { .. } => PaneKind::Viewer,
         Tab::Browser { .. } => PaneKind::Browser,
+        Tab::Video { .. } => PaneKind::Video,
     }
 }
 
@@ -689,6 +733,7 @@ impl Surface {
             PaneKind::Terminal => Surface::Terminal,
             PaneKind::Viewer => Surface::Viewer,
             PaneKind::Browser => Surface::Browser,
+            PaneKind::Video => Surface::Video,
         }
     }
 }
@@ -974,6 +1019,16 @@ pub fn error(kind: Failure) {
     with(|r, now| r.error(kind, now));
 }
 
+/// A video tab showed its first frame.
+pub fn video_shown() {
+    with(|r, now| r.view(Format::Video, Shown::Rendered, now));
+}
+
+/// An agent's `arkos open`, `arkos video` or `arkos panes`, and whether the window did it.
+pub fn agent_pane(command: AgentCommand, ok: bool) {
+    with(|r, now| r.agent_pane(command, ok, now));
+}
+
 pub fn help(what: Help) {
     with(|r, now| r.help(what, now));
 }
@@ -1190,6 +1245,11 @@ mod tests {
         }
         for &what in Help::ALL {
             admitted(&events::help(what));
+        }
+        for &command in AgentCommand::ALL {
+            for ok in [true, false] {
+                admitted(&events::agent_pane(command, ok));
+            }
         }
         for &surface in Surface::ALL {
             assert!(::telemetry::allowlist().allows_surface(surface.as_str()), "{surface:?}");
@@ -1743,10 +1803,11 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_is_a_terminal_a_viewer_or_a_browser() {
+    fn a_tab_is_a_terminal_a_viewer_a_browser_or_a_video() {
         assert_eq!(kind_of(&Tab::Terminal { session: protocol::SessionId(1), cwd: None }), PaneKind::Terminal);
         assert_eq!(kind_of(&Tab::Viewer { path: "/p/a.md".into(), mode: crate::tree::ViewMode::Raw }), PaneKind::Viewer);
         assert_eq!(kind_of(&Tab::Browser { url: None, app_mode: true }), PaneKind::Browser);
+        assert_eq!(kind_of(&Tab::Video { path: "/p/a.mp4".into(), at: None, loop_range: None }), PaneKind::Video);
     }
 
     /// Review Focus 5: the invitation shows on a later UTC day than the install, in a release

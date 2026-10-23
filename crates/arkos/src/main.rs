@@ -2,6 +2,7 @@ mod about;
 mod agent_cli;
 mod app_nap;
 mod aux;
+mod av_player;
 mod ax;
 mod cache;
 mod chooser_sessions;
@@ -14,6 +15,7 @@ mod config_watch;
 mod connection;
 mod crash_dialog;
 mod diff;
+mod direct;
 mod dock;
 mod doctor;
 mod doctor_panel;
@@ -46,6 +48,7 @@ mod mermaid;
 mod motion;
 mod mouse;
 mod notices;
+mod open_cli;
 mod palette;
 mod pane_view;
 mod paths;
@@ -68,6 +71,9 @@ mod tree;
 mod update;
 mod update_check;
 mod viewer;
+mod video;
+mod video_element;
+mod video_view;
 mod viewer_element;
 mod workspace;
 mod worktrees;
@@ -211,6 +217,10 @@ pub struct Root {
     /// The tab a single click previews into; the next single click replaces it. `None` once
     /// pinned or closed.
     pub preview_tab: Option<TabId>,
+    /// Each agent session's preview pane (spec 5): where its plain `arkos open` goes while the
+    /// pane lives. `None` is the key of an open sent without a session. Not saved: after a
+    /// relaunch the first open splits again.
+    pub preview_panes: HashMap<Option<SessionId>, PaneId>,
     /// The file tree's right-click menu while it is open, and while it fades out.
     pub context_menu: Transient<sidebar::ContextMenu>,
     /// A terminal link's right-click menu while it is open, and while it fades out.
@@ -298,6 +308,9 @@ pub struct Root {
     pub highlighter: Option<Arc<highlight::Highlighter>>,
     /// Each viewer tab's file, loaded when the tab is first shown; dropped with the tab.
     pub viewers: HashMap<TabId, Entity<Viewer>>,
+    /// Each video tab's player view, made when the tab is first shown; dropped with the tab,
+    /// which releases its player at once.
+    pub videos: HashMap<TabId, Entity<video_view::VideoView>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
@@ -539,7 +552,7 @@ fn focused_session_of(tree: &Tree) -> Option<SessionId> {
     let p = tree.pane(tree.focused)?;
     match p.tabs.get(p.active)? {
         Tab::Terminal { session, .. } => Some(*session),
-        Tab::Viewer { .. } | Tab::Browser { .. } => None,
+        Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
     }
 }
 
@@ -598,6 +611,7 @@ impl Root {
             sidebar_focused: false,
             explorer,
             preview_tab: None,
+            preview_panes: HashMap::new(),
             context_menu: Transient::Hidden,
             link_menu: Transient::Hidden,
             notices: Default::default(),
@@ -638,6 +652,7 @@ impl Root {
             painted: false,
             highlighter: None,
             viewers: HashMap::new(),
+            videos: HashMap::new(),
             system_is_dark,
             installed,
             invitation,
@@ -1552,7 +1567,7 @@ impl Root {
         let p = self.tree.pane(self.tree.focused)?;
         match p.tabs.get(p.active)? {
             Tab::Terminal { session, .. } => self.sessions.terminals.get(session).cloned(),
-            Tab::Viewer { .. } | Tab::Browser { .. } => None,
+            Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
         }
     }
 
@@ -1646,10 +1661,20 @@ impl Root {
                 return;
             }
         }
+        // A video's place and loop go with it into the closed stack, so a reopen comes back there,
+        // and it pauses now, so the sound and the display token end at once (spec 3.5: no grace)
+        // even while something still holds the view.
+        if let Some(video) = self.videos.get(&id).cloned() {
+            let (at, loop_range) = video.read(cx).saved_state();
+            self.tree.set_video_state(pane, idx, at, loop_range);
+            video.update(cx, |v, cx| v.pause(cx));
+        }
         let Some(tab) = self.tree.close_tab(pane, idx) else { return };
         telemetry::pane_close(&tab);
         self.preview_tab = after_close(self.preview_tab, id);
         self.viewers.remove(&id);
+        // The only strong hold on the view: dropping it releases the player (`AvPlayer::drop`).
+        self.videos.remove(&id);
         self.tab_widths.remove(&id);
         if let Tab::Terminal { session, cwd } = tab {
             if session != SessionId(0) {
@@ -1683,15 +1708,11 @@ impl Root {
             // A shell still starting for this tab is killed when it arrives (`handle_outcome`).
             self.sessions.tab_closed(id);
         } else {
-            let closed = match tab {
-                Tab::Viewer { path, .. } => Closed::Viewer(path),
-                Tab::Browser { url, app_mode } => {
-                    // Its window is released where it was last shown; arkos never closes it.
-                    self.release_browser_tab(id, cx);
-                    Closed::Browser { url, app_mode }
-                }
-                Tab::Terminal { .. } => unreachable!("handled above"),
-            };
+            if matches!(tab, Tab::Browser { .. }) {
+                // Its window is released where it was last shown; arkos never closes it.
+                self.release_browser_tab(id, cx);
+            }
+            let closed = closed_entry(tab).expect("a terminal is handled above");
             for old in self.closed.push(ClosedTab { closed, pane, closed_at: Instant::now(), daemon_timed: false }) {
                 eprintln!("arkos: more than {MAX_CLOSED} closed tabs, ending session {}", old.0);
                 self.sessions.kill(old);
@@ -1764,7 +1785,7 @@ impl Root {
         let (pane, idx) = self.tree.locate(tab)?;
         match self.tree.pane(pane)?.tabs.get(idx)? {
             Tab::Terminal { cwd, .. } => cwd.clone(),
-            Tab::Viewer { .. } | Tab::Browser { .. } => None,
+            Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
         }
     }
 
@@ -2068,6 +2089,147 @@ impl Root {
         cx.notify();
     }
 
+    /// A video tab's view, made the first time the tab is shown: it loads the file (or waits for
+    /// it) and comes up paused where the tab was saved. Its pauses, seeks and loops are written
+    /// into the tab and saved.
+    pub fn video_for(&mut self, tab: TabId, path: &Path, cx: &mut Context<Self>) -> Entity<video_view::VideoView> {
+        if let Some(v) = self.videos.get(&tab) {
+            return v.clone();
+        }
+        let (at, loop_range) = match self.tree.locate(tab).and_then(|(pane, idx)| self.tree.pane(pane)?.tabs.get(idx)) {
+            Some(Tab::Video { at, loop_range, .. }) => (*at, *loop_range),
+            _ => (None, None),
+        };
+        let path = path.to_path_buf();
+        let v = cx.new(|cx| video_view::VideoView::new(path, at, loop_range, Box::new(av_player::AvPlayer::new()), cx));
+        cx.subscribe(&v, move |root, v, _event: &video_view::VideoEvent, cx| {
+            // A view no longer the tab's (a preview whose tab now shows another file, paused as it
+            // was let go) must not write its place into the tab's new file.
+            if root.videos.get(&tab).map(|own| own.entity_id()) != Some(v.entity_id()) {
+                return;
+            }
+            let (at, loop_range) = v.read(cx).saved_state();
+            if let Some((pane, idx)) = root.tree.locate(tab) {
+                root.tree.set_video_state(pane, idx, at, loop_range);
+                root.save(cx);
+            }
+        })
+        .detach();
+        self.videos.insert(tab, v.clone());
+        v
+    }
+
+    /// The focused pane's video, when its active tab is one.
+    pub fn active_video(&self) -> Option<Entity<video_view::VideoView>> {
+        let p = self.tree.pane(self.tree.focused)?;
+        match p.tabs.get(p.active)? {
+            Tab::Video { .. } => self.videos.get(p.ids.get(p.active)?).cloned(),
+            Tab::Terminal { .. } | Tab::Viewer { .. } | Tab::Browser { .. } => None,
+        }
+    }
+
+    /// Runs a video command on the focused pane's video; nothing when it shows something else.
+    fn with_active_video(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut video_view::VideoView, &mut Context<video_view::VideoView>)) {
+        if let Some(v) = self.active_video() {
+            v.update(cx, f);
+        }
+    }
+
+    /// A video plays only while it is the active tab of a pane on screen in a window that is not
+    /// hidden or minimized (spec 3.5): every other video view is made inactive, which pauses it
+    /// (and lets the display sleep) until it is shown again. It runs at the top of every render,
+    /// which covers a tab switch, a pane closed and a maximize, and from the once a second poll
+    /// (`tick_videos`) and the window's activation, since a hidden window draws nothing.
+    pub fn update_video_activity(&mut self, cx: &mut Context<Self>) {
+        let shown: Vec<PaneId> = self.layout().panes.into_iter().map(|(p, _)| p).collect();
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| ax::screen::window_hidden(ns));
+        for (tab, v) in &self.videos {
+            let plays = video_plays(&self.tree, &shown, *tab, hidden);
+            v.update(cx, |v, cx| v.set_inactive(!plays, cx));
+        }
+    }
+
+    /// Opens `path` in `pane` as the kind its name says (`sidebar::file_tab`): a video as a video
+    /// tab, else the viewer, pinned. A tab already on the file there is reused. The tab becomes
+    /// the pane's active one without moving the focus (`Tree::activate_quiet`); a caller that
+    /// wants the keys there focuses the pane itself. `how` is recorded for a new tab.
+    pub fn open_path_in_pane(&mut self, path: &Path, pane: PaneId, how: telemetry::Opened, cx: &mut Context<Self>) -> (usize, bool) {
+        let reused = self.tree.find_path(pane, path);
+        let idx = match reused {
+            Some(idx) => {
+                // Opened on purpose: a preview it was is kept.
+                if self.tree.tab_id(pane, idx) == self.preview_tab {
+                    self.preview_tab = None;
+                }
+                idx
+            }
+            None => {
+                let tab = sidebar::file_tab(path);
+                telemetry::pane_open(telemetry::kind_of(&tab), how);
+                self.tree.add_tab(pane, tab)
+            }
+        };
+        self.tree.activate_quiet(pane, idx);
+        if let Some(h) = self.bar_scroll.get(&pane) {
+            h.scroll_to_item(idx);
+        }
+        self.save(cx);
+        cx.notify();
+        (idx, reused.is_some())
+    }
+
+    /// "Open file in pane...": `path` in the focused pane, pinned and focused
+    /// (`open_path_in_pane`). A path that is not a file says so.
+    pub fn open_file_in_pane(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let path = match std::fs::canonicalize(path) {
+            Ok(p) if p.is_file() => p,
+            _ => {
+                self.show_notice(format!("no such file: {}", path.display()), cx);
+                return;
+            }
+        };
+        let pane = self.tree.focused;
+        let (idx, _) = self.open_path_in_pane(&path, pane, telemetry::Opened::Palette, cx);
+        self.tree.focus(pane);
+        self.activate_tab(pane, idx, cx);
+    }
+
+    /// A poster's Cmd+click in the document shown by tab `doc` (spec 9): the video opens paused
+    /// in the pane after the document's (`pane_after`), else in a new pane split to its right. A
+    /// video tab already on the file in another pane is brought forward instead (one in the
+    /// document's own pane would hide the document). The keys stay in the document either way;
+    /// a maximize that would hide the video ends, since the click asked to see it.
+    pub fn open_poster_video(&mut self, doc: TabId, path: &Path, cx: &mut Context<Self>) {
+        let focused = self.tree.focused;
+        let doc_pane = self.tree.locate(doc).map_or(focused, |(pane, _)| pane);
+        let existing = self.tree.tabs_on(path).into_iter().find(|(pane, idx)| *pane != doc_pane && matches!(self.tree.pane(*pane).and_then(|p| p.tabs.get(*idx)), Some(Tab::Video { .. })));
+        let target = existing.map(|(pane, _)| pane).or_else(|| pane_after(&self.tree, doc_pane));
+        if self.tree.maximized.is_some() && self.tree.maximized != target {
+            self.tree.maximized = None;
+        }
+        match (existing, target) {
+            (Some((pane, idx)), _) => {
+                self.tree.activate_quiet(pane, idx);
+                self.save(cx);
+                cx.notify();
+            }
+            (None, Some(pane)) => {
+                self.open_path_in_pane(path, pane, telemetry::Opened::Poster, cx);
+            }
+            (None, None) => {
+                let tab = sidebar::file_tab(path);
+                let kind = telemetry::kind_of(&tab);
+                if self.tree.split(doc_pane, Side::Right, tab).is_some() {
+                    telemetry::pane_open(kind, telemetry::Opened::Poster);
+                    // A split focuses its new pane; the keys go back to the document.
+                    self.tree.focus(focused);
+                }
+                self.save(cx);
+                cx.notify();
+            }
+        }
+    }
+
     /// A browser tab in `pane` (the focused pane when that one is gone) that opens `url` (`None`:
     /// a blank window), active and focused. Chrome opens a window for it, which docks.
     pub fn new_browser_tab(&mut self, pane: PaneId, url: Option<String>, app_mode: bool, cx: &mut Context<Self>) {
@@ -2098,11 +2260,12 @@ impl Root {
         id
     }
 
-    /// Opens the URL prompt over the focused pane. `target` is the waiting browser tab to point
-    /// at the URL; `None` opens a new tab. Already open, it keeps what was typed.
-    pub fn open_url_prompt(&mut self, app_mode: bool, target: Option<TabId>, cx: &mut Context<Self>) {
-        if self.url_prompt.value().is_none() {
-            self.url_prompt.show(pane_view::UrlPrompt::new(app_mode, target), Instant::now());
+    /// Opens the URL prompt over the focused pane, asking for what `kind` says. `target` is the
+    /// waiting browser tab to point at the URL; `None` opens a new tab. Already open for the same
+    /// kind, it keeps what was typed.
+    pub fn open_url_prompt(&mut self, kind: pane_view::PromptKind, target: Option<TabId>, cx: &mut Context<Self>) {
+        if self.url_prompt.value().map(|p| p.kind) != Some(kind) {
+            self.url_prompt.show(pane_view::UrlPrompt::new(kind, target), Instant::now());
         }
         self.sidebar_focused = false;
         self.wt_focused = false;
@@ -2171,8 +2334,16 @@ impl Root {
             }
             return;
         }
-        let (app_mode, target, via) = (p.app_mode, p.target, p.via);
+        let (app_mode, target, via) = (p.kind == pane_view::PromptKind::Url { app_mode: true }, p.target, p.via);
         match p.key(ks, &configured) {
+            pane_view::UrlStep::OpenPath(typed) => {
+                let _via = telemetry::resumed_via(via);
+                self.url_prompt.hide(Instant::now());
+                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                if let Some(path) = pane_view::prompt_path(&typed, &self.project, &home) {
+                    self.open_file_in_pane(&path, cx);
+                }
+            }
             pane_view::UrlStep::Stay => {}
             pane_view::UrlStep::Cancel => {
                 self.url_prompt.hide(Instant::now());
@@ -2767,6 +2938,13 @@ impl Root {
                     Closed::Browser { url, app_mode } => {
                         self.add_browser_tab(pane, url, app_mode, false, cx);
                     }
+                    video @ Closed::Video { .. } => {
+                        let Some(tab) = reopened_video(video) else { return };
+                        let idx = self.tree.add_tab(pane, tab);
+                        telemetry::pane_open(telemetry::PaneKind::Video, telemetry::Opened::Key);
+                        self.tree.focus(pane);
+                        self.activate_tab(pane, idx, cx);
+                    }
                     Closed::Session(session, cwd) if in_grace => self.reopen_session(pane, session, cwd, cx),
                     Closed::Session(session, cwd) => {
                         eprintln!("arkos: session {} closed more than {}s ago, ending it and opening a new shell", session.0, CLOSE_GRACE.as_secs());
@@ -2936,8 +3114,20 @@ impl Root {
             OpenSettings => aux::open_settings(cx),
             Keybindings => aux::open_keybindings(cx),
             Documentation => aux::open_documentation(cx),
-            NewBrowserTab => self.open_url_prompt(self.config.browser.app_mode, None, cx),
-            NewBrowserTabSinglePage => self.open_url_prompt(true, None, cx),
+            NewBrowserTab => self.open_url_prompt(pane_view::PromptKind::Url { app_mode: self.config.browser.app_mode }, None, cx),
+            NewBrowserTabSinglePage => self.open_url_prompt(pane_view::PromptKind::Url { app_mode: true }, None, cx),
+            OpenFileInPane => self.open_url_prompt(pane_view::PromptKind::Path, None, cx),
+            VideoPlayPause => self.with_active_video(cx, |v, cx| v.play_pause(cx)),
+            VideoBack => self.with_active_video(cx, |v, cx| v.back(video_view::SKIP, cx)),
+            VideoForward => self.with_active_video(cx, |v, cx| v.forward(video_view::SKIP, cx)),
+            VideoBackFine => self.with_active_video(cx, |v, cx| v.back(video_view::SKIP_FINE, cx)),
+            VideoForwardFine => self.with_active_video(cx, |v, cx| v.forward(video_view::SKIP_FINE, cx)),
+            VideoStepBack => self.with_active_video(cx, |v, cx| v.step(-1, cx)),
+            VideoStepForward => self.with_active_video(cx, |v, cx| v.step(1, cx)),
+            VideoStart => self.with_active_video(cx, |v, cx| v.to_start(cx)),
+            VideoLoop => self.with_active_video(cx, |v, cx| v.toggle_loop(cx)),
+            VideoMute => self.with_active_video(cx, |v, cx| v.mute(cx)),
+            VideoReload => self.with_active_video(cx, |v, cx| v.reload_now(cx)),
             DockChromeWindow => self.open_dock_list(cx),
             DockChromeWindowAt(i) => {
                 let _via = telemetry::resumed_via(self.dock_via);
@@ -3284,8 +3474,8 @@ impl Root {
         self.sessions.apply_update(version);
     }
 
-    /// A batch of daemon events: the window's own (`UpdateStaged`, `Customize`) first, then the
-    /// sessions'.
+    /// A batch of daemon events: the window's own (`UpdateStaged`, `Customize`, `Direct`) first,
+    /// then the sessions'.
     pub fn route_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
         for ev in events {
             match ev {
@@ -3299,6 +3489,7 @@ impl Root {
                     self.start_idle_timer(cx);
                 }
                 Event::Customize { id, action } => self.customize(*id, action.clone(), cx),
+                Event::Direct { id, action, session } => self.handle_direct(*id, action.clone(), *session, cx),
                 _ => {}
             }
         }
@@ -3691,6 +3882,40 @@ fn pick_grid(visible: bool, own: Option<(usize, usize)>, maximized: Option<(usiz
     }
 }
 
+/// What the closed stack keeps for a closed tab: the file, the page or the video with its place.
+/// A terminal's session is `close_tab`'s own (`None` here).
+fn closed_entry(tab: Tab) -> Option<Closed> {
+    match tab {
+        Tab::Viewer { path, .. } => Some(Closed::Viewer(path)),
+        Tab::Browser { url, app_mode } => Some(Closed::Browser { url, app_mode }),
+        Tab::Video { path, at, loop_range } => Some(Closed::Video { path, at, loop_range }),
+        Tab::Terminal { .. } => None,
+    }
+}
+
+/// The tab a reopened video comes back as: its file, where it was and its loop. Anything else
+/// reopens its own way.
+fn reopened_video(closed: Closed) -> Option<Tab> {
+    match closed {
+        Closed::Video { path, at, loop_range } => Some(Tab::Video { path, at, loop_range }),
+        Closed::Session(..) | Closed::Viewer(_) | Closed::Browser { .. } => None,
+    }
+}
+
+/// Whether the video tab `tab` plays (spec 3.5): it is its pane's active tab, the pane is on
+/// screen (`shown`: not hidden by another's maximize) and the window is not hidden or minimized.
+fn video_plays(tree: &Tree, shown: &[PaneId], tab: TabId, window_hidden: bool) -> bool {
+    !window_hidden && tree.locate(tab).is_some_and(|(pane, idx)| shown.contains(&pane) && tree.pane(pane).is_some_and(|p| p.active == idx))
+}
+
+/// The pane after `pane` in reading order, where a poster's video opens (spec 9); `None` when
+/// it is the last, and the video splits it instead.
+fn pane_after(tree: &Tree, pane: PaneId) -> Option<PaneId> {
+    let panes = tree.panes();
+    let i = panes.iter().position(|p| *p == pane)?;
+    panes.get(i + 1).copied()
+}
+
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
@@ -3742,6 +3967,8 @@ impl Render for Root {
         }
         // The invitation hangs under the first pane drawn, while it is due.
         self.invite_pane = if self.invitation_shows() { self.layout().panes.first().map(|(pane, _)| *pane) } else { None };
+        // Only the video tabs on screen play; the rest pause until they are shown again.
+        self.update_video_activity(cx);
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
         let side_col = sidebar::render(self, window, cx);
@@ -3763,16 +3990,17 @@ impl Render for Root {
         } else if self.sidebar_focused {
             Some(self.sidebar.focus.clone())
         } else {
-            match (self.active_terminal(cx), self.active_viewer()) {
-                (Some(t), _) => {
+            match (self.active_terminal(cx), self.active_viewer(), self.active_video()) {
+                (Some(t), _, _) => {
                     let t = t.read(cx);
                     Some(t.find.as_ref().map_or_else(|| t.focus.clone(), |f| f.focus.clone()))
                 }
-                (None, Some(v)) => {
+                (None, Some(v), _) => {
                     let v = v.read(cx);
                     Some(v.find.as_ref().map_or_else(|| v.focus.clone(), |f| f.focus.clone()))
                 }
-                (None, None) => self.pane_focus.get(&self.tree.focused).cloned(),
+                (None, None, Some(v)) => Some(v.read(cx).focus.clone()),
+                (None, None, None) => self.pane_focus.get(&self.tree.focused).cloned(),
             }
         };
         if let Some(f) = wanted {
@@ -4061,6 +4289,9 @@ fn main() {
     // before the folder argument below, so a folder named `config` opens as `arkos ./config`.
     match args.get(1).map(String::as_str) {
         Some("guide") => std::process::exit(guide::guide_cli(&args[2..])),
+        Some("open") => std::process::exit(open_cli::open_cli(&args[2..])),
+        Some("video") => std::process::exit(open_cli::video_cli(&args[2..])),
+        Some("panes") => std::process::exit(open_cli::panes_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
@@ -4480,6 +4711,9 @@ fn open_project_window(
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
                             root.note_focus();
+                            // A minimize deactivates first: a video pauses as soon as the window
+                            // reads as hidden, here or on the next poll.
+                            root.update_video_activity(cx);
                             // Another window may have had the invitation's answer meanwhile.
                             if root.window_active {
                                 root.recheck_invitation(cx);
@@ -4668,7 +4902,7 @@ fn open_project_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{after_window_closed, daemon_label, menus, pick_grid, quit_forced, says_goodbye, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
+    use super::{after_window_closed, closed_entry, daemon_label, menus, pane_after, pick_grid, quit_forced, reopened_video, says_goodbye, video_plays, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
     use crate::keymap;
     use gpui::{Action, MenuItem};
 
@@ -4906,5 +5140,47 @@ mod tests {
         let refused = format!("{ERROR_PREFIX}protocol version mismatch: daemon speaks 1 to 2, client 3");
         assert_eq!(disconnect_mark(is_final(&refused)), "daemon refused");
         assert_eq!(disconnect_mark(is_final("daemon closed the connection")), "reconnecting");
+    }
+
+    #[test]
+    fn a_closed_video_reopens_with_its_position() {
+        use crate::closed_stack::Closed;
+        use crate::tree::Tab;
+        let tab = Tab::Video { path: "/p/cut.mp4".into(), at: Some(12.0), loop_range: Some((2.0, 4.5)) };
+        let closed = closed_entry(tab.clone()).unwrap();
+        assert_eq!(closed, Closed::Video { path: "/p/cut.mp4".into(), at: Some(12.0), loop_range: Some((2.0, 4.5)) });
+        assert_eq!(reopened_video(closed), Some(tab));
+        assert_eq!(reopened_video(Closed::Viewer("/p/a.rs".into())), None, "a viewer reopens through the viewer's own path");
+        assert_eq!(closed_entry(Tab::Terminal { session: protocol::SessionId(1), cwd: None }), None, "a session's close is its own");
+    }
+
+    #[test]
+    fn a_video_plays_only_as_the_active_tab_of_a_shown_pane_in_a_shown_window() {
+        use crate::tree::{Side, Tab, Tree};
+        let video = |name: &str| Tab::Video { path: format!("/p/{name}.mp4").into(), at: None, loop_range: None };
+        let mut t = Tree::new(video("a"));
+        let left = t.focused;
+        t.add_tab(left, video("b"));
+        let right = t.split(left, Side::Right, video("c")).unwrap();
+        let (a, b, c) = (t.tab_id(left, 0).unwrap(), t.tab_id(left, 1).unwrap(), t.tab_id(right, 0).unwrap());
+        let both = [left, right];
+        assert!(!video_plays(&t, &both, a, false), "a tab behind another in its pane");
+        assert!(video_plays(&t, &both, b, false), "the active tab of a pane on screen");
+        assert!(video_plays(&t, &both, c, false), "a pane without the focus plays too");
+        assert!(!video_plays(&t, &[left], c, false), "a pane hidden by another's maximize");
+        assert!(!video_plays(&t, &both, b, true), "a hidden or minimized window");
+        assert!(!video_plays(&t, &both, 999, false), "a tab that has closed");
+    }
+
+    #[test]
+    fn a_poster_opens_its_video_in_the_next_pane_or_splits() {
+        use crate::tree::{Side, Tab, Tree};
+        let term = |n| Tab::Terminal { session: protocol::SessionId(n), cwd: None };
+        let mut t = Tree::new(term(1));
+        let doc = t.focused;
+        assert_eq!(pane_after(&t, doc), None, "the only pane: split");
+        let below = t.split(doc, Side::Bottom, term(2)).unwrap();
+        assert_eq!(pane_after(&t, doc), Some(below), "the next pane in reading order");
+        assert_eq!(pane_after(&t, below), None, "the last pane: split");
     }
 }

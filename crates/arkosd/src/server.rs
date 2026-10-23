@@ -4,7 +4,7 @@ use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, CustomizeOutcome, Event, Request, Response, ServerMessage, SessionId, StagedUpdate, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, PROTOCOL_MIN, PROTOCOL_VERSION};
+use protocol::{ClientMessage, CustomizeOutcome, Event, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, PROTOCOL_MIN, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
@@ -78,6 +78,22 @@ pub struct CustomizeWait {
     pub started: Instant,
 }
 
+/// A tool client's `Direct` waiting for its one window's answer (video pane spec). The daemon
+/// only relays: it knows nothing of panes.
+pub struct DirectWait {
+    /// The tool client that asked; its leaving drops the record.
+    pub client: ClientId,
+    /// The id of the tool's `Direct` message, which the `Directed` answer carries.
+    pub msg_id: u32,
+    /// Where the answer goes.
+    pub tx: ClientSink,
+    /// The pid and folder of the window asked.
+    pub pid: u32,
+    pub project: PathBuf,
+    /// When the window was asked: only a wait this old is flushed by the deadline.
+    pub started: Instant,
+}
+
 #[derive(Default)]
 pub struct State {
     pub sessions: HashMap<SessionId, Arc<Session>>,
@@ -101,6 +117,8 @@ pub struct State {
     pub update: crate::updates::UpdateState,
     /// The `Customize` requests waiting for windows, by the tool's own id.
     pub customize: HashMap<u64, CustomizeWait>,
+    /// The `Direct` requests waiting for their window, by the tool's own id.
+    pub direct: HashMap<u64, DirectWait>,
     /// The watchdog's silent relaunches in a row, by window (its binary and folder), so the
     /// count survives the window's reconnects; a daemon restart starts it again.
     pub relaunches: HashMap<crate::watchdog::WindowId, crate::watchdog::Relaunches>,
@@ -169,6 +187,39 @@ fn customize_targets(st: &State) -> (Vec<(ClientId, u32)>, Vec<u32>) {
     (targets, too_old)
 }
 
+/// The one project window a `Direct` goes to, as (client, pid, folder), or why none does. A
+/// session shown in several windows goes to the newest, the highest client id.
+pub fn direct_target(st: &State, target: &WindowTarget) -> Result<(ClientId, u32, PathBuf), String> {
+    let mut windows: Vec<(ClientId, u32, PathBuf, u32, bool)> = st
+        .clients
+        .iter()
+        .filter(|(_, r)| r.connected)
+        .filter_map(|(id, r)| Some((*id, r.ui_pid?, r.ui_cwd.clone()?, r.protocol, match target {
+            WindowTarget::Session(s) => r.attached.contains(s),
+            _ => true,
+        })))
+        .collect();
+    windows.sort_by_key(|w| w.0);
+    let (client, pid, project, protocol, _) = match target {
+        WindowTarget::Only => match windows.len() {
+            0 => return Err("no window running".into()),
+            1 => windows.remove(0),
+            _ => {
+                let mut pids: Vec<u32> = windows.iter().map(|w| w.1).collect();
+                pids.sort_unstable();
+                let list: Vec<String> = pids.iter().map(u32::to_string).collect();
+                return Err(format!("several windows: pids {}; pass --window", list.join(", ")));
+            }
+        },
+        WindowTarget::Session(s) => windows.into_iter().filter(|w| w.4).last().ok_or_else(|| format!("session {} is not shown in a window", s.0))?,
+        WindowTarget::Pid(pid) => windows.into_iter().find(|w| w.1 == *pid).ok_or_else(|| format!("no window with pid {pid}"))?,
+    };
+    if protocol < DIRECT_FROM {
+        return Err(format!("window {pid}: too old for this command"));
+    }
+    Ok((client, pid, project))
+}
+
 /// Sends a finished wait's `Customized` answer: whoever is still waiting is `missing`. A tool
 /// that hung up meanwhile is skipped by its closed sink.
 fn answer_customize(w: CustomizeWait) {
@@ -184,6 +235,17 @@ fn flush_customize(state: &Shared, id: u64) {
     if st.customize.get(&id).is_some_and(|w| w.started.elapsed() >= CUSTOMIZE_WAIT) {
         if let Some(w) = st.customize.remove(&id) {
             answer_customize(w);
+        }
+    }
+}
+
+/// The deadline of the `Direct` `id`: answers it with an error if its window is still silent
+/// and the wait is as old as `CUSTOMIZE_WAIT`.
+fn flush_direct(state: &Shared, id: u64) {
+    let mut st = state.lock().unwrap();
+    if st.direct.get(&id).is_some_and(|w| w.started.elapsed() >= CUSTOMIZE_WAIT) {
+        if let Some(w) = st.direct.remove(&id) {
+            w.tx.send(ServerMessage::Response { id: w.msg_id, response: Response::Error(format!("window {}: no answer", w.pid)) });
         }
     }
 }
@@ -428,6 +490,7 @@ fn disconnect(state: &Shared, client_id: ClientId, update: &crate::updates::Upda
         // A tool that hung up wants no answer; a window that left will not answer, and a wait
         // left with nobody to hear from is answered now.
         st.customize.retain(|_, w| w.client != client_id);
+        st.direct.retain(|_, w| w.client != client_id);
         if let Some(pid) = ui_pid {
             let mut done = Vec::new();
             for (id, w) in st.customize.iter_mut() {
@@ -964,6 +1027,44 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 .expect("spawn customize deadline");
             return None;
         }
+        // Relayed to the one window `direct_target` finds; the answer goes later through `tx`
+        // with this message's id, when the window answers or `CUSTOMIZE_WAIT` is over.
+        Request::Direct { id: direct_id, window, action } => {
+            let mut st = state.lock().unwrap();
+            if st.direct.contains_key(&direct_id) {
+                return Some(Response::Error("direct id in flight".into()));
+            }
+            let (client, pid, project) = match direct_target(&st, &window) {
+                Ok(found) => found,
+                Err(text) => return Some(Response::Error(text)),
+            };
+            let session = match window {
+                WindowTarget::Session(s) => Some(s),
+                _ => None,
+            };
+            let sent = st.clients.get(&client).is_some_and(|r| r.tx.send(ServerMessage::Event(Event::Direct { id: direct_id, action, session })));
+            if !sent {
+                return Some(Response::Error(format!("window {pid}: no answer")));
+            }
+            st.direct.insert(direct_id, DirectWait { client: client_id, msg_id: id, tx: tx.clone(), pid, project, started: Instant::now() });
+            drop(st);
+            let state = state.clone();
+            std::thread::Builder::new()
+                .name(format!("direct-{direct_id}"))
+                .spawn(move || {
+                    std::thread::sleep(CUSTOMIZE_WAIT);
+                    flush_direct(&state, direct_id);
+                })
+                .expect("spawn direct deadline");
+            return None;
+        }
+        // Always `Ok`: a late or unknown id is dropped, never an error the window would show.
+        Request::DirectDone { id: direct_id, outcome } => {
+            if let Some(w) = state.lock().unwrap().direct.remove(&direct_id) {
+                w.tx.send(ServerMessage::Response { id: w.msg_id, response: Response::Directed { pid: w.pid, project: w.project, outcome } });
+            }
+            Response::Ok
+        }
         // Always `Ok`: an answer after the wait, or a second one, is dropped, never an error the
         // window would show as a banner.
         Request::CustomizeDone { id: customize_id, outcome } => {
@@ -1052,6 +1153,39 @@ mod tests {
         Request::Hello { protocol_version, ui_pid: 0, ui_exe: None, ui_cwd: PathBuf::new() }
     }
 
+    /// A project window for `direct_target`: said Hello with a pid and a folder, then attached.
+    fn add_window(state: &Shared, client: ClientId, pid: u32, protocol: u32, attached: &[SessionId]) {
+        let tx = add_client(state, client);
+        let mut st = state.lock().unwrap();
+        let rec = st.clients.get_mut(&client).unwrap();
+        rec.ui_pid = Some(pid);
+        rec.ui_cwd = Some(PathBuf::from("/p"));
+        rec.protocol = protocol;
+        rec.attached = attached.to_vec();
+        drop(tx);
+    }
+
+    #[test]
+    fn direct_target_picks_the_newest_window_of_a_session_and_names_the_rest() {
+        let state = test_state();
+        let (s, other) = (SessionId(5), SessionId(6));
+        assert_eq!(direct_target(&state.lock().unwrap(), &WindowTarget::Only), Err("no window running".into()));
+        add_window(&state, 1, 100, 8, &[s]);
+        let st = state.lock().unwrap();
+        assert_eq!(direct_target(&st, &WindowTarget::Only), Ok((1, 100, PathBuf::from("/p"))));
+        drop(st);
+        add_window(&state, 2, 90, 8, &[s]);
+        add_window(&state, 3, 95, 7, &[other]);
+        let st = state.lock().unwrap();
+        assert_eq!(direct_target(&st, &WindowTarget::Only), Err("several windows: pids 90, 95, 100; pass --window".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Session(s)), Ok((2, 90, PathBuf::from("/p"))));
+        assert_eq!(direct_target(&st, &WindowTarget::Session(SessionId(7))), Err("session 7 is not shown in a window".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(9)), Err("no window with pid 9".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(100)), Ok((1, 100, PathBuf::from("/p"))));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(95)), Err("window 95: too old for this command".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Session(other)), Err("window 95: too old for this command".into()));
+    }
+
     /// The sid a protocol 7 window sends after its Hello is what the daemon later seals that
     /// window's journal from; a second one (the journal restarted on an opt-in) replaces it.
     #[test]
@@ -1059,7 +1193,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (state, opts) = (test_state(), test_options(dir.path()));
         let tx = add_client(&state, 1);
-        assert!(matches!(dispatch(&state, 1, &tx, 1, hello(7), &opts), Some(Response::Hello { protocol_max: 7, .. })));
+        assert!(matches!(dispatch(&state, 1, &tx, 1, hello(7), &opts), Some(Response::Hello { protocol_max: PROTOCOL_VERSION, .. })));
         assert_eq!(state.lock().unwrap().clients[&1].sid, None, "no sid before the window sends one");
         let first = "0123456789abcdef0123456789abcdef";
         assert_eq!(dispatch(&state, 1, &tx, 2, Request::Session { sid: first.into() }, &opts), Some(Response::Ok));

@@ -57,7 +57,7 @@ pub enum ViewMode {
     Raw,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Tab {
     /// `cwd` is the folder its shell was started in when that is not the project (a worktree):
     /// a restart reattaches the session only if the daemon says it lives there. Absent in files
@@ -83,6 +83,23 @@ pub enum Tab {
         #[serde(default)]
         app_mode: bool,
     },
+    /// A video file, played in the pane. Its saved position (seconds) and loop range come back
+    /// with the window; absent means the start and no loop.
+    Video {
+        path: PathBuf,
+        #[serde(default)]
+        at: Option<f64>,
+        #[serde(default)]
+        loop_range: Option<(f64, f64)>,
+    },
+}
+
+/// The file a tab shows, if it shows one.
+fn tab_path(tab: &Tab) -> Option<&Path> {
+    match tab {
+        Tab::Viewer { path, .. } | Tab::Video { path, .. } => Some(path),
+        Tab::Terminal { .. } | Tab::Browser { .. } => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -434,6 +451,14 @@ impl Tree {
         }
     }
 
+    /// Writes a video tab's saved position and loop; any other tab is left alone.
+    pub fn set_video_state(&mut self, pane: PaneId, idx: usize, at: Option<f64>, loop_range: Option<(f64, f64)>) {
+        if let Some(Tab::Video { at: a, loop_range: l, .. }) = self.pane_mut(pane).and_then(|p| p.tabs.get_mut(idx)) {
+            *a = at;
+            *l = loop_range;
+        }
+    }
+
     /// Swaps a tab's content in place; the tab keeps its id.
     pub fn replace_tab(&mut self, pane: PaneId, idx: usize, tab: Tab) {
         if let Some(p) = self.pane_mut(pane) {
@@ -444,6 +469,14 @@ impl Tree {
     }
 
     pub fn activate(&mut self, pane: PaneId, idx: usize) {
+        self.activate_quiet(pane, idx);
+        self.focus(pane);
+    }
+
+    /// Makes a tab its pane's active one (and the most recent) without moving the focus or
+    /// leaving a maximize: for a tab opened on another's behalf (a poster's Cmd+click, an
+    /// agent's open) while the keys stay where they are.
+    pub fn activate_quiet(&mut self, pane: PaneId, idx: usize) {
         if let Some(p) = self.pane_mut(pane) {
             if idx < p.tabs.len() {
                 p.active = idx;
@@ -451,7 +484,6 @@ impl Tree {
                 p.mru.insert(0, idx);
             }
         }
-        self.focus(pane);
     }
 
     /// Focuses a pane. Focusing a pane hidden by another's maximize exits the maximize, so the
@@ -526,9 +558,14 @@ impl Tree {
         self.pane(pane)?.ids.get(idx).copied()
     }
 
-    /// The index of the viewer tab showing `path` in `pane`, if any.
-    pub fn find_viewer(&self, pane: PaneId, path: &Path) -> Option<usize> {
-        self.pane(pane)?.tabs.iter().position(|t| matches!(t, Tab::Viewer { path: p, .. } if p == path))
+    /// The first tab in `pane` on `path`, whatever its kind.
+    pub fn find_path(&self, pane: PaneId, path: &Path) -> Option<usize> {
+        self.pane(pane)?.tabs.iter().position(|t| tab_path(t) == Some(path))
+    }
+
+    /// Every tab on `path` in the tree, in reading order.
+    pub fn tabs_on(&self, path: &Path) -> Vec<(PaneId, usize)> {
+        self.tabs().into_iter().filter(|(_, _, t)| tab_path(t) == Some(path)).map(|(pane, idx, _)| (pane, idx)).collect()
     }
 
     /// Where a tab is now: its pane and index. `None` once it has closed.
@@ -743,14 +780,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn find_viewer_locates_a_tab_by_path_in_one_pane() {
+    fn find_path_locates_a_tab_by_path_in_one_pane() {
         let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = t.panes()[0];
         t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
         let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into(), mode: ViewMode::default() }).unwrap();
-        assert_eq!(t.find_viewer(root, Path::new("/p/a.rs")), Some(1));
-        assert_eq!(t.find_viewer(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
-        assert_eq!(t.find_viewer(right, Path::new("/p/b.rs")), Some(0));
+        assert_eq!(t.find_path(root, Path::new("/p/a.rs")), Some(1));
+        assert_eq!(t.find_path(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
+        assert_eq!(t.find_path(right, Path::new("/p/b.rs")), Some(0));
+    }
+
+    #[test]
+    fn set_video_state_writes_only_a_video_tab() {
+        let mut t = Tree::new(Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None });
+        let root = t.panes()[0];
+        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        t.set_video_state(root, 0, Some(12.5), Some((12.0, 18.0)));
+        t.set_video_state(root, 1, Some(3.0), Some((1.0, 2.0)));
+        let tabs = &t.pane(root).unwrap().tabs;
+        assert_eq!(tabs[0], Tab::Video { path: "/p/cut.mp4".into(), at: Some(12.5), loop_range: Some((12.0, 18.0)) });
+        assert_eq!(tabs[1], Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+    }
+
+    #[test]
+    fn find_path_and_tabs_on_see_every_kind() {
+        let mut t = Tree::new(Tab::Viewer { path: "/p/cut.mp4".into(), mode: ViewMode::default() });
+        let root = t.panes()[0];
+        t.add_tab(root, Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None });
+        t.add_tab(root, Tab::Viewer { path: "/p/other.rs".into(), mode: ViewMode::default() });
+        let right = t.split(root, Side::Right, Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None }).unwrap();
+        assert_eq!(t.find_path(root, Path::new("/p/cut.mp4")), Some(0));
+        assert_eq!(t.find_path(root, Path::new("/p/none.mp4")), None);
+        assert_eq!(t.tabs_on(Path::new("/p/cut.mp4")), vec![(root, 0), (root, 1), (right, 0)]);
     }
 
     #[test]
@@ -1070,6 +1131,23 @@ mod tests {
         assert_eq!(t.panes().len(), 2, "numbering still counts every pane");
         t.toggle_maximize(b);
         assert_eq!(t.layout(bounds()).panes.len(), 2);
+    }
+
+    #[test]
+    fn a_quiet_activation_leaves_the_focus_and_the_maximize_alone() {
+        let mut t = Tree::new(term(1));
+        let a = t.focused;
+        let b = t.split(a, Side::Right, term(2)).unwrap();
+        t.add_tab(b, term(3));
+        t.activate(b, 0);
+        t.focus(a);
+        t.toggle_maximize(a);
+        t.activate_quiet(b, 1);
+        assert_eq!((t.focused, t.maximized), (a, Some(a)), "the hidden pane is not shown and the keys stay put");
+        let p = t.pane(b).unwrap();
+        assert_eq!((p.active, p.mru.clone()), (1, vec![1, 0]));
+        t.activate_quiet(b, 9);
+        assert_eq!(t.pane(b).unwrap().active, 1, "an index past the end changes nothing");
     }
 
     #[test]

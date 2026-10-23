@@ -150,7 +150,7 @@ pub fn reconcile(tree: &Tree, list: &[SessionInfo], project: &Path) -> Vec<Recon
             match tab {
                 Tab::Terminal { session, cwd } if reattachable(*session, list, cwd.as_deref().unwrap_or(project)) => Some(Reconcile::Attach { tab: id, session: *session }),
                 Tab::Terminal { cwd, .. } => Some(Reconcile::Create { tab: id, cwd: cwd.clone() }),
-                Tab::Viewer { .. } | Tab::Browser { .. } => None,
+                Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
             }
         })
         .collect()
@@ -164,7 +164,7 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
             // Not a session's: the root shows it (`Root::route_events`).
-            Event::UpdateStaged { .. } | Event::Customize { .. } => continue,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => continue,
         };
         match out.iter_mut().find(|(s, _)| *s == sid) {
             Some((_, list)) => list.push(ev.clone()),
@@ -539,7 +539,7 @@ impl SessionManager {
     pub fn stash_if_restoring(&mut self, ev: &Event) -> bool {
         let sid = match ev {
             Event::Output { session, .. } | Event::Exited { session, .. } | Event::State { session, .. } => *session,
-            Event::UpdateStaged { .. } | Event::Customize { .. } => return false,
+            Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => return false,
         };
         if !self.restoring.contains(&sid) {
             return false;
@@ -591,7 +591,7 @@ impl SessionManager {
                     self.states.remove(session);
                 }
                 // The root reads `UpdateStaged` and `Customize` itself (`Root::route_events`).
-                Event::Output { .. } | Event::UpdateStaged { .. } | Event::Customize { .. } => {}
+                Event::Output { .. } | Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => {}
             }
         }
     }
