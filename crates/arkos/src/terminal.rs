@@ -52,6 +52,9 @@ pub struct RowsForPaint {
     /// The line just above the viewport, present when scrolled into history.
     pub above: Option<Vec<(char, CellStyle, CellKind)>>,
     pub visible: Vec<Vec<(char, CellStyle, CellKind)>>,
+    /// Every link in the visible rows, one span per row it takes, URLs wrapped across rows and
+    /// across the viewport's edges included.
+    pub links: Vec<crate::links::Span>,
 }
 
 pub const MAX_MATCHES: usize = 10_000;
@@ -484,15 +487,20 @@ impl TerminalCore {
     }
 
     /// The text Cmd+C copies: the selection with the lines a program wrapped for this width
-    /// joined (`reflow`). A block selection is a rectangle of cells, so it stays as it is.
+    /// joined (`reflow`); in Claude Code's input box, which wraps two cells short of the pane,
+    /// a token cut there is joined too. A block selection is a rectangle of cells, so it stays
+    /// as it is.
     pub fn copy_text(&self) -> Option<String> {
         let text = self.selection_text()?;
         let selection = self.term.selection.as_ref()?;
         if selection.ty == SelectionType::Block {
             return Some(text);
         }
-        let first_col = selection.to_range(&self.term).map_or(0, |r| r.start.column.0);
-        Some(crate::reflow::reflow(&text, self.columns(), first_col))
+        let range = selection.to_range(&self.term);
+        let first_col = range.as_ref().map_or(0, |r| r.start.column.0);
+        let input_box = range.as_ref().is_some_and(|r| self.in_input_box(r.start.line));
+        let cut_width = self.columns() - if input_box { crate::reflow::INPUT_BOX_INSET } else { 0 };
+        Some(crate::reflow::reflow_at(&text, self.columns(), first_col, cut_width))
     }
 
     /// The selection's on-screen parts at the current display offset.
@@ -578,18 +586,59 @@ impl TerminalCore {
             .collect()
     }
 
-    /// The link covering a viewport cell, found on that row's characters the way the element
-    /// finds the hovered one. Read from the grid at the time of the call, not from the last
-    /// paint, so a right-click acts on what is under the press. Nothing changes: the selection
-    /// stays as it was.
+    /// The link covering a viewport cell, found on the visible rows the way the element finds
+    /// the hovered one, so a URL wrapped across rows is whole. Read from the grid at the time of
+    /// the call, not from the last paint, so a right-click acts on what is under the press.
+    /// Nothing changes: the selection stays as it was.
     pub fn link_at(&self, col: usize, row: usize) -> Option<HoveredLink> {
         if row >= self.screen_lines() {
             return None;
         }
-        let chars: Vec<char> = self.row_cells(Line(row as i32 - self.display_offset() as i32)).iter().map(|c| c.0).collect();
-        let links = crate::links::links_in_row(&chars);
-        let l = crate::links::link_at(&links, col)?;
-        Some(HoveredLink { row, start: l.start, end: l.end, url: l.url.clone() })
+        let spans = self.links_in_view();
+        let s = crate::links::span_at(&spans, row, col)?;
+        Some(HoveredLink { row, start: s.start, end: s.end, url: s.url.clone() })
+    }
+
+    /// Every link in the viewport, as spans on viewport rows. The scan takes in a few rows above
+    /// and below the viewport (`links::LINK_CONTEXT`), so a URL that runs across its edge is
+    /// whole on the rows that show.
+    fn links_in_view(&self) -> Vec<crate::links::Span> {
+        let off = self.display_offset() as i32;
+        let screen = self.term.screen_lines() as i32;
+        let context = crate::links::LINK_CONTEXT as i32;
+        let top = (-off - context).max(-(self.history_size() as i32));
+        let bottom = (screen - 1 - off + context).min(screen - 1);
+        let lines: Vec<Line> = (top..=bottom).map(Line).collect();
+        let rows: Vec<Vec<char>> = lines.iter().map(|l| self.row_chars(*l)).collect();
+        let wrapped: Vec<bool> = lines.iter().map(|l| self.row_wraps(*l)).collect();
+        crate::links::links_in_rows(&rows, &wrapped)
+            .into_iter()
+            .filter_map(|mut s| {
+                let row = top + s.row as i32 + off;
+                (0..screen).contains(&row).then(|| {
+                    s.row = row as usize;
+                    s
+                })
+            })
+            .collect()
+    }
+
+    /// A row's characters, hidden cells as blanks.
+    fn row_chars(&self, line: Line) -> Vec<char> {
+        self.row_cells(line).iter().map(|c| c.0).collect()
+    }
+
+    /// Whether the terminal wrapped `line` onto the next one (its last cell carries the flag).
+    fn row_wraps(&self, line: Line) -> bool {
+        self.term.grid()[line][Column(self.term.columns() - 1)].flags.contains(Flags::WRAPLINE)
+    }
+
+    /// Whether `line` is in Claude Code's input box (see `links::in_input_box`), looking up to
+    /// 64 rows up for its prompt.
+    fn in_input_box(&self, line: Line) -> bool {
+        let top = (line.0 - 63).max(-(self.history_size() as i32));
+        let rows: Vec<Vec<char>> = (top..=line.0).map(|l| self.row_chars(Line(l))).collect();
+        crate::links::in_input_box(&rows, rows.len() - 1)
     }
 
     pub fn rows_for_paint(&self) -> RowsForPaint {
@@ -597,7 +646,7 @@ impl TerminalCore {
         let screen = self.term.screen_lines() as i32;
         let visible = (0..screen).map(|i| self.row_cells(Line(i - off))).collect();
         let above = if off < self.history_size() as i32 { Some(self.row_cells(Line(-off - 1))) } else { None };
-        RowsForPaint { display_offset: off as usize, above, visible }
+        RowsForPaint { display_offset: off as usize, above, visible, links: self.links_in_view() }
     }
 }
 
@@ -1122,6 +1171,51 @@ mod tests {
         t.selection_clear();
         assert_eq!(t.selection_text(), None);
         assert!(t.selection_spans().is_empty());
+    }
+
+    #[test]
+    fn the_link_under_a_cell_runs_on_where_the_terminal_wrapped() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        t.apply_output(b"see https://csarko.sh/abc/def now");
+        let url = "https://csarko.sh/abc/def".to_string();
+        assert_eq!(t.link_at(4, 0), Some(HoveredLink { row: 0, start: 4, end: 20, url: url.clone() }), "the first row's piece carries the whole URL");
+        assert_eq!(t.link_at(3, 1), Some(HoveredLink { row: 1, start: 0, end: 9, url }), "so does the second");
+        assert_eq!(t.link_at(10, 1), None, "the space after it");
+        assert_eq!(t.rows_for_paint().links.iter().map(|s| (s.row, s.start, s.end)).collect::<Vec<_>>(), vec![(0, 4, 20), (1, 0, 9)]);
+    }
+
+    #[test]
+    fn a_link_across_the_viewport_s_edge_is_whole_on_the_rows_that_show() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        // Seven lines on a three-line screen: the URL takes the third and fourth.
+        t.apply_output(b"a\r\nb\r\nsee https://csarko.sh/abc/def now\r\nmore\r\nlines\r\nx");
+        // Scrolled so the URL's second row is the top row: its piece has no scheme of its own.
+        t.set_display_offset(1);
+        let url = "https://csarko.sh/abc/def".to_string();
+        assert_eq!(t.link_at(3, 0), Some(HoveredLink { row: 0, start: 0, end: 9, url: url.clone() }));
+        assert_eq!(t.link_at(3, 1), None, "the row under it");
+        // Scrolled so the URL's first row is the bottom row: the URL still ends below.
+        t.set_display_offset(4);
+        assert_eq!(t.link_at(5, 2), Some(HoveredLink { row: 2, start: 4, end: 20, url }));
+    }
+
+    #[test]
+    fn copying_from_the_input_box_joins_a_token_cut_two_cells_short() {
+        let mut t = TerminalCore::new(40, 6, 100);
+        // The input box as Claude Code draws it at 40 columns: a rule, the prompt row, two
+        // continuation rows under a two-cell indent, a rule. The URL is cut at 38.
+        let rows = ["\u{2500}".repeat(40), "\u{276f}\u{a0}YZ0123456789abcdef".into(), "  https://github.com/csarkosh/ide-arko".into(), "  s/actions/runs/39877328412".into(), "\u{2500}".repeat(40)];
+        t.apply_output(rows.join("\r\n").as_bytes());
+        t.selection_start(0, Line(1), Side::Left, SelectionType::Simple);
+        t.selection_update(39, Line(3), Side::Right);
+        assert_eq!(t.copy_text().as_deref(), Some("\u{276f}\u{a0}YZ0123456789abcdef https://github.com/csarkosh/ide-arkos/actions/runs/39877328412"));
+        // The same rows under a bullet are a message, which cuts at the pane's width: the row
+        // two cells short wrapped on a space.
+        let mut m = TerminalCore::new(40, 6, 100);
+        m.apply_output(b"\xe2\x97\x8f YZ0123456789abcdef\r\n  https://github.com/csarkosh/ide-arko\r\n  s/actions/runs/39877328412");
+        m.selection_start(0, Line(0), Side::Left, SelectionType::Simple);
+        m.selection_update(39, Line(2), Side::Right);
+        assert_eq!(m.copy_text().as_deref(), Some("\u{25cf} YZ0123456789abcdef https://github.com/csarkosh/ide-arko s/actions/runs/39877328412"));
     }
 
     #[test]
