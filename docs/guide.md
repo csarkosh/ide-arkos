@@ -213,7 +213,10 @@ screen through a failed retry. A download is refused with a notice; use "open in
 A PDF shows.
 
 Keys, while the tab's pane has the focus: Cmd+L puts the cursor in the address field (Enter goes,
-Escape puts the page's address back), Cmd+R reloads, Cmd+[ and Cmd+] go back and forward, Cmd+=
+Escape puts the page's address back; inside it the keys are a browser's: a first click selects the
+whole address, a later one places the cursor, Option and the arrows move by word, Shift extends,
+Option+Delete and Option+Backspace remove a word, and the cursor blinks, steady under Reduce
+Motion), Cmd+R reloads, Cmd+[ and Cmd+] go back and forward, Cmd+=
 and Cmd+- zoom the page through Safari's steps and Cmd+0 resets it, Cmd+Shift+O opens the page in
 your default browser. A click in the page gives the page the keyboard, as a click in a terminal
 gives the terminal; Arkos's own shortcuts (Cmd+1 to 9, Cmd+W, Cmd+T, Cmd+B, Cmd+Shift+P and the

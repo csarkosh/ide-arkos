@@ -320,6 +320,8 @@ pub struct Root {
     pub web_titles: HashMap<TabId, String>,
     /// gpui's own `NSView` in the project window, which takes the keys back from a web view.
     pub ns_view: Option<objc2::rc::Retained<objc2_app_kit::NSView>>,
+    /// The repaint scheduled for a text field's cursor to blink (`line_edit::take_blink_wake`).
+    caret_wake: Option<Instant>,
     /// The Cmd key monitor (`screen::install_cmd_monitor`), alive while the window is.
     cmd_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
@@ -611,6 +613,7 @@ impl Root {
             web_titles: HashMap::new(),
             ns_view: None,
             cmd_monitor: None,
+            caret_wake: None,
             system_is_dark,
             installed,
             invitation,
@@ -3415,6 +3418,25 @@ impl Root {
         }
     }
 
+    /// Repaints at `at` for a cursor's blink, unless a repaint already comes sooner.
+    fn schedule_blink(&mut self, at: Instant, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if self.caret_wake.is_some_and(|w| w > now && w <= at) {
+            return;
+        }
+        self.caret_wake = Some(at);
+        cx.spawn(async move |root, cx| {
+            cx.background_executor().timer(at.saturating_duration_since(Instant::now())).await;
+            let _ = root.update(cx, |root, cx| {
+                if root.caret_wake == Some(at) {
+                    root.caret_wake = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Runs a web command on the focused pane's web tab; nothing when it shows something else.
     fn with_active_web(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut web_view::WebView, &mut Context<web_view::WebView>)) {
         if let Some(v) = self.active_web() {
@@ -3771,6 +3793,13 @@ impl Render for Root {
         // One request per frame while anything eases; an idle window asks for none.
         if self.any_motion(now) {
             window.request_animation_frame();
+        }
+        // A text field's cursor blinks: one repaint at its next change, never a frame loop, and
+        // none while the window is in the background (its cursor rests where it was).
+        if let Some(at) = line_edit::take_blink_wake() {
+            if self.window_active {
+                self.schedule_blink(at, cx);
+            }
         }
         let root_div = root_div.on_action(cx.listener(|root: &mut Root, _: &keymap::WhatArkosSends, _window, cx| root.open_disclosure(cx)));
         keymap::attach(root_div, cx)

@@ -5,6 +5,39 @@
 //! unit tested; the clipboard is the caller's.
 use crate::theme::Theme;
 use gpui::{div, prelude::*, px, Div, Keystroke, SharedString};
+use std::cell::Cell;
+use std::time::{Duration, Instant};
+
+/// How long the cursor is shown, then hidden, as it blinks: Chromium's interval. It is shown for
+/// this long after every key and click, so it never hides while you type.
+pub const BLINK: Duration = Duration::from_millis(530);
+
+thread_local! {
+    /// The earliest moment a drawn cursor changes phase, set by `render_with` during a window's
+    /// render and taken by `Root` at the end of it (`take_blink_wake`), which repaints then.
+    static BLINK_WAKE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Whether a cursor last moved `since` ago is drawn now, and when that changes: shown for
+/// `BLINK`, hidden for `BLINK`, and so on; always shown under Reduce Motion, with nothing to wake
+/// for.
+pub fn caret_phase(since: Duration, reduce_motion: bool) -> (bool, Option<Duration>) {
+    if reduce_motion {
+        return (true, None);
+    }
+    let n = since.as_nanos() / BLINK.as_nanos();
+    let next = BLINK * (n as u32 + 1) - since;
+    (n % 2 == 0, Some(next))
+}
+
+/// The moment the next cursor phase change is due, from the fields drawn since the last call.
+pub fn take_blink_wake() -> Option<Instant> {
+    BLINK_WAKE.with(|w| w.take())
+}
+
+fn note_blink_wake(at: Instant) {
+    BLINK_WAKE.with(|w| w.set(Some(w.get().map_or(at, |old| old.min(at)))));
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineEdit {
@@ -13,6 +46,8 @@ pub struct LineEdit {
     pub cursor: usize,
     /// The selection's other end, in chars, while one is held; the cursor is the end that moves.
     pub anchor: Option<usize>,
+    /// When the cursor last moved or the text last changed: the blink restarts, shown, from then.
+    pub touched: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +70,7 @@ impl LineEdit {
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
         self.anchor = None;
+        self.touched = Some(Instant::now());
     }
 
     pub fn clear(&mut self) {
@@ -45,6 +81,7 @@ impl LineEdit {
 
     /// Selects the whole text, the cursor at its end (Cmd+A, a click into an address field).
     pub fn select_all(&mut self) {
+        self.touched = Some(Instant::now());
         self.cursor = self.len();
         self.anchor = (self.cursor > 0).then_some(0);
     }
@@ -52,6 +89,7 @@ impl LineEdit {
     /// A click at char `at`: the cursor goes there and the selection goes, or, with `extend` (a
     /// drag, or Shift held), the selection runs from where it started to there.
     pub fn place(&mut self, at: usize, extend: bool) {
+        self.touched = Some(Instant::now());
         let at = at.min(self.len());
         if extend {
             if self.anchor.is_none() {
@@ -130,14 +168,15 @@ impl LineEdit {
         Edit::Changed
     }
 
-    /// The char index where the word before the cursor starts: skip spaces, then non-spaces.
+    /// The char index where the word before the cursor starts: skip what is not a word, then the
+    /// word. A word is letters, digits and `_`, so in an address `/`, `.`, `:` and `-` end one.
     fn word_start(&self) -> usize {
         let chars: Vec<char> = self.text.chars().collect();
         let mut i = self.cursor;
-        while i > 0 && chars[i - 1] == ' ' {
+        while i > 0 && !is_word(chars[i - 1]) {
             i -= 1;
         }
-        while i > 0 && chars[i - 1] != ' ' {
+        while i > 0 && is_word(chars[i - 1]) {
             i -= 1;
         }
         i
@@ -157,7 +196,26 @@ impl LineEdit {
         Edit::Unchanged
     }
 
+    /// The char index where the word after the cursor ends: skip what is not a word, then the
+    /// word, as Option+Right does in a browser's address field.
+    fn word_end(&self) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut i = self.cursor;
+        while i < chars.len() && !is_word(chars[i]) {
+            i += 1;
+        }
+        while i < chars.len() && is_word(chars[i]) {
+            i += 1;
+        }
+        i
+    }
+
     pub fn handle(&mut self, ks: &Keystroke) -> Edit {
+        self.touched = Some(Instant::now());
+        self.handle_key(ks)
+    }
+
+    fn handle_key(&mut self, ks: &Keystroke) -> Edit {
         let m = &ks.modifiers;
         let key = ks.key.as_str();
         match (key, m.platform, m.control, m.alt, m.shift) {
@@ -174,6 +232,20 @@ impl LineEdit {
             ("right", true, ..) | ("end", ..) => return self.go(self.len(), m.shift),
             ("a", false, true, ..) => return self.go(0, m.shift),
             ("e", false, true, ..) => return self.go(self.len(), m.shift),
+            // Option and the arrows move by word, Shift extending, as in Chrome and every Mac field.
+            // Without Shift a selection first collapses to its edge on that side, as on a Mac.
+            ("left", false, false, true, shift) => {
+                if let (false, Some((from, _))) = (shift, self.selection()) {
+                    self.cursor = from;
+                }
+                return self.go(self.word_start(), shift);
+            }
+            ("right", false, false, true, shift) => {
+                if let (false, Some((_, to))) = (shift, self.selection()) {
+                    self.cursor = to;
+                }
+                return self.go(self.word_end(), shift);
+            }
             ("left", false, _, _, false) => {
                 // A selection collapses to its left end, as in every Mac field.
                 let to = self.selection().map_or(self.cursor.saturating_sub(1), |(from, _)| from);
@@ -191,6 +263,7 @@ impl LineEdit {
             }
             ("backspace", true, ..) => return self.remove(0, self.cursor),
             ("backspace", false, _, true, _) => return self.remove(self.word_start(), self.cursor),
+            ("delete", false, _, true, _) => return self.remove(self.cursor, self.word_end()),
             ("backspace", ..) => return self.remove(self.cursor.saturating_sub(1), self.cursor),
             ("delete", ..) => return self.remove(self.cursor, (self.cursor + 1).min(self.len())),
             _ => {}
@@ -206,6 +279,11 @@ impl LineEdit {
             _ => Edit::Unchanged,
         }
     }
+}
+
+/// A word's char, for Option and the arrows and Option+Delete.
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// How wide the cursor is: two pixels, as macOS draws its insertion point, so it reads at a
@@ -224,6 +302,18 @@ pub fn render_with(edit: &LineEdit, placeholder: &str, theme: &Theme, family: Sh
     // The accent, as macOS colours its insertion point; it is drawn in the space it takes, so the
     // text beside it never moves when it hides.
     let ring = theme.chrome.focus_ring.hsla();
+    // The blink: shown, hidden, from the last key or click; the next change is noted so the
+    // window repaints for it and for nothing else.
+    let caret = caret && {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        let now = Instant::now();
+        let since = now.saturating_duration_since(edit.touched.unwrap_or_else(|| *START.get_or_init(Instant::now)));
+        let (on, next) = caret_phase(since, crate::motion::reduce_motion());
+        if let Some(next) = next {
+            note_blink_wake(now + next);
+        }
+        on
+    };
     let bar = move || div().flex_none().w(px(CARET_W)).h(px(size * 1.35)).rounded(px(1.0)).bg(if caret { ring } else { gpui::transparent_black() });
     let row = div().flex().flex_row().items_center().font_family(family).text_size(px(size)).text_color(text);
     if edit.text.is_empty() {
@@ -310,7 +400,7 @@ mod tests {
         assert_eq!(e.selected_text(), "ps://", "back past where it started, the other way");
         e.place(99, false);
         assert_eq!(e.cursor, 19, "past the end is the end");
-        let w = LineEdit { text: "héllo".into(), cursor: 0, anchor: None };
+        let w = LineEdit { text: "héllo".into(), cursor: 0, anchor: None, touched: None };
         assert_eq!((w.char_at_byte(0), w.char_at_byte(1), w.char_at_byte(3), w.char_at_byte(6)), (0, 1, 2, 5), "bytes to chars across a two-byte é");
     }
 
@@ -343,6 +433,43 @@ mod tests {
         assert_eq!(e.handle(&ks("delete", None, none())), Edit::Changed);
         assert_eq!(e.handle(&ks("delete", None, none())), Edit::Unchanged);
         assert_eq!(e.text, "");
+    }
+
+    #[test]
+    fn option_and_the_arrows_move_by_word_and_shift_extends_as_in_chrome() {
+        let mut e = LineEdit::new();
+        e.set("https://docs.rs/gpui-component");
+        assert_eq!(e.handle(&ks("left", None, alt())), Edit::Unchanged);
+        assert_eq!(e.cursor, 21, "to the start of `component`");
+        e.handle(&ks("left", None, alt()));
+        assert_eq!(e.cursor, 16, "past the `-` to `gpui`");
+        e.handle(&ks("left", None, alt()));
+        assert_eq!(e.cursor, 13, "`rs`");
+        e.handle(&ks("left", None, Modifiers { alt: true, shift: true, ..Modifiers::default() }));
+        assert_eq!(e.selected_text(), "docs.", "Shift extends by word too");
+        e.handle(&ks("right", None, alt()));
+        assert_eq!((e.cursor, e.selection()), (15, None), "Option+Right leaves the selection from its right edge, to the end of the next word");
+        e.handle(&ks("right", None, alt()));
+        assert_eq!(e.cursor, 20);
+        e.handle(&ks("delete", None, alt()));
+        assert_eq!(e.text, "https://docs.rs/gpui", "Option+Delete removes the word after the cursor");
+        e.set("https://docs.rs/");
+        e.handle(&ks("backspace", None, alt()));
+        assert_eq!(e.text, "https://docs.", "Option+Backspace stops at the punctuation, as a browser does");
+    }
+
+    #[test]
+    fn the_cursor_blinks_from_its_last_move_and_holds_still_under_reduce_motion() {
+        assert_eq!(caret_phase(Duration::ZERO, false), (true, Some(BLINK)));
+        assert_eq!(caret_phase(BLINK / 2, false), (true, Some(BLINK / 2)));
+        assert_eq!(caret_phase(BLINK, false), (false, Some(BLINK)), "hidden for the second interval");
+        assert_eq!(caret_phase(BLINK * 2 + BLINK / 4, false).0, true);
+        assert_eq!(caret_phase(BLINK * 3, false), (false, Some(BLINK)), "hidden again on the fourth");
+        assert_eq!(caret_phase(BLINK * 7, true), (true, None), "Reduce Motion: always shown, no wake");
+        let mut e = LineEdit::new();
+        assert_eq!(e.touched, None);
+        e.handle(&ks("x", Some("x"), none()));
+        assert!(e.touched.is_some(), "a key restarts the blink, shown");
     }
 
     #[test]
