@@ -33,7 +33,7 @@ pub use mac::*;
 mod mac {
     use super::Frame;
     use objc2::rc::Retained;
-    use objc2::MainThreadMarker;
+    use objc2::{MainThreadMarker, Message};
     use objc2_app_kit::{NSScreen, NSView, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
@@ -49,6 +49,24 @@ mod mac {
     /// The window is minimized to the Dock or hidden (Cmd+H, or not on screen at all).
     pub fn window_hidden(window: &NSWindow) -> bool {
         window.isMiniaturized() || !window.isVisible()
+    }
+
+    /// gpui's own `NSView` in a gpui window, from its AppKit window handle: the view that takes
+    /// the keys back from a web view (`make_first_responder`).
+    pub fn ns_view_of(window: &impl raw_window_handle::HasWindowHandle) -> Option<Retained<NSView>> {
+        let handle = window.window_handle().ok()?;
+        let raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return None };
+        // SAFETY: an AppKit handle's `ns_view` is the window's live `NSView`, valid while the
+        // window is; retained here for as long as the window keeps it.
+        let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+        Some(view.retain())
+    }
+
+    /// Gives `view` the keyboard: what a web view took on a click comes back to gpui.
+    pub fn make_first_responder(window: &NSWindow, view: &NSView) {
+        if window.firstResponder().is_none_or(|r| !std::ptr::eq(&*r as *const _ as *const NSView, view)) {
+            window.makeFirstResponder(Some(view));
+        }
     }
 
     /// The `NSWindow` behind a gpui window, from its AppKit window handle (the content view).

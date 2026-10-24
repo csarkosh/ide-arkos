@@ -74,6 +74,9 @@ mod video;
 mod video_element;
 mod video_view;
 mod viewer_element;
+mod web;
+mod web_element;
+mod web_view;
 mod wk_web_view;
 mod workspace;
 mod worktrees;
@@ -311,6 +314,12 @@ pub struct Root {
     /// Each video tab's player view, made when the tab is first shown; dropped with the tab,
     /// which releases its player at once.
     pub videos: HashMap<TabId, Entity<video_view::VideoView>>,
+    /// Each web tab's view, made the first time the tab is shown (web pane spec, section 3.2).
+    pub webs: HashMap<TabId, Entity<web_view::WebView>>,
+    /// Each web tab's title as its view last reported it, for the tab label.
+    pub web_titles: HashMap<TabId, String>,
+    /// gpui's own `NSView` in the project window, which takes the keys back from a web view.
+    pub ns_view: Option<objc2::rc::Retained<objc2_app_kit::NSView>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
@@ -596,6 +605,9 @@ impl Root {
             highlighter: None,
             viewers: HashMap::new(),
             videos: HashMap::new(),
+            webs: HashMap::new(),
+            web_titles: HashMap::new(),
+            ns_view: None,
             system_is_dark,
             installed,
             invitation,
@@ -1159,6 +1171,11 @@ impl Root {
             });
         }
         aux::push_theme(cx, &self.theme);
+        // The colour behind a page, pushed once from the final theme (never the per-frame blend).
+        let under = self.theme.chrome.window_bg;
+        for v in self.webs.values() {
+            v.update(cx, |v, _| v.set_under_color((under.r, under.g, under.b)));
+        }
     }
 
     /// The final theme of a switch, and everything derived from a theme once: the highlighter is
@@ -1599,6 +1616,9 @@ impl Root {
         self.viewers.remove(&id);
         // The only strong hold on the view: dropping it releases the player (`AvPlayer::drop`).
         self.videos.remove(&id);
+        // The only strong hold on the web view: dropping it removes the WKWebView from the window.
+        self.webs.remove(&id);
+        self.web_titles.remove(&id);
         self.tab_widths.remove(&id);
         if let Tab::Terminal { session, cwd } = tab {
             if session != SessionId(0) {
@@ -3328,6 +3348,129 @@ fn reopened_video(closed: Closed) -> Option<Tab> {
 
 /// Whether the video tab `tab` plays (spec 3.5): it is its pane's active tab, the pane is on
 /// screen (`shown`: not hidden by another's maximize) and the window is not hidden or minimized.
+impl Root {
+    /// A web tab's view, made the first time the tab is shown: it loads the tab's page. Its
+    /// navigations are written into the tab and saved; its title feeds the tab label.
+    pub fn web_for(&mut self, tab: TabId, url: &str, cx: &mut Context<Self>) -> Entity<web_view::WebView> {
+        if let Some(v) = self.webs.get(&tab) {
+            return v.clone();
+        }
+        let web: Box<dyn web::Web> = match self.ns_window.as_ref().and_then(|ns| wk_web_view::Host::new(ns)) {
+            Some(host) => Box::new(host),
+            None => Box::new(web::NoWeb),
+        };
+        let project = self.project.clone();
+        let under = self.theme.chrome.window_bg;
+        let v = cx.new(|cx| {
+            let mut v = web_view::WebView::new(url.to_string(), project, web, cx);
+            v.set_under_color((under.r, under.g, under.b));
+            v
+        });
+        cx.subscribe(&v, move |root, v, event: &web_view::WebEvent, cx| {
+            if root.webs.get(&tab).map(|own| own.entity_id()) != Some(v.entity_id()) {
+                return;
+            }
+            match event {
+                web_view::WebEvent::Save(url) => {
+                    if root.tree.set_browser_url(tab, url) {
+                        root.save(cx);
+                    }
+                }
+                web_view::WebEvent::Title(title) => {
+                    root.web_titles.insert(tab, title.clone());
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        self.webs.insert(tab, v.clone());
+        v
+    }
+
+    /// The focused pane's web tab, when its active tab is one.
+    pub fn active_web(&self) -> Option<Entity<web_view::WebView>> {
+        let p = self.tree.pane(self.tree.focused)?;
+        match p.tabs.get(p.active)? {
+            Tab::Browser { .. } => self.webs.get(p.ids.get(p.active)?).cloned(),
+            Tab::Terminal { .. } | Tab::Viewer { .. } | Tab::Video { .. } => None,
+        }
+    }
+
+    /// Something of Arkos is drawn over the panes, so no web view may show (web pane spec,
+    /// section 3.2). A new overlay adds itself here, as a new animation adds itself to
+    /// `any_motion`.
+    pub fn covered(&self) -> bool {
+        self.palette.value().is_some()
+            || self.url_prompt.value().is_some()
+            || self.tab_menu.value().is_some()
+            || self.popover.value().is_some()
+            || self.context_menu.value().is_some()
+            || self.link_menu.value().is_some()
+            || self.wt_prompt.value().is_some()
+            || self.wt_menu.value().is_some()
+            || self.drop_target.is_some()
+            || self.reorder.is_some()
+            || self.picking_folder
+    }
+
+    /// Where a web tab's content was laid out this frame, from its `canvas`: the view goes over
+    /// it, under the bar, unless an overlay covers the panes, the window is hidden or the tab
+    /// shows one of Arkos's own screens.
+    pub fn place_web(&mut self, tab: TabId, bounds: Bounds<gpui::Pixels>, cx: &mut Context<Self>) {
+        let Some(v) = self.webs.get(&tab).cloned() else { return };
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
+        let frame = if self.covered() || hidden || !v.read(cx).shows_page() {
+            None
+        } else {
+            self.ns_window.as_ref().map(|ns| {
+                let (h, flipped) = screen::content_geometry(ns);
+                let b = (f64::from(f32::from(bounds.origin.x)), f64::from(f32::from(bounds.origin.y)), f64::from(f32::from(bounds.size.width)), f64::from(f32::from(bounds.size.height)));
+                screen::appkit_frame(b, 0.0, h, flipped)
+            })
+        };
+        v.update(cx, |v, _| v.place(frame));
+    }
+
+    /// At the top of every render: a web view whose tab is not on screen (not the active tab of
+    /// a shown pane, an overlay open, the window hidden) is hidden now; the ones on screen are
+    /// placed by their canvas as it paints. A page that took the keyboard with a click (gpui saw
+    /// no press) makes its pane the focused one.
+    pub fn update_web_visibility(&mut self, cx: &mut Context<Self>) {
+        if self.webs.is_empty() {
+            return;
+        }
+        let shown: Vec<PaneId> = self.layout().panes.into_iter().map(|(p, _)| p).collect();
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
+        let covered = self.covered();
+        let mut focus = None;
+        for (tab, v) in &self.webs {
+            let on_screen = video_plays(&self.tree, &shown, *tab, hidden) && !covered && v.read(cx).shows_page();
+            if !on_screen {
+                v.update(cx, |v, _| v.place(None));
+            } else if v.read(cx).has_keys() {
+                if let Some((pane, _)) = self.tree.locate(*tab) {
+                    if self.tree.focused != pane {
+                        focus = Some(pane);
+                    }
+                }
+            }
+        }
+        if let Some(pane) = focus {
+            self.sidebar_focused = false;
+            self.wt_focused = false;
+            self.tree.focus(pane);
+        }
+    }
+
+    /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
+    pub fn keys_back_to_arkos(&self) {
+        if let (Some(ns), Some(view)) = (&self.ns_window, &self.ns_view) {
+            screen::make_first_responder(ns, view);
+        }
+    }
+
+}
+
 fn video_plays(tree: &Tree, shown: &[PaneId], tab: TabId, window_hidden: bool) -> bool {
     !window_hidden && tree.locate(tab).is_some_and(|(pane, idx)| shown.contains(&pane) && tree.pane(pane).is_some_and(|p| p.active == idx))
 }
@@ -3393,6 +3536,7 @@ impl Render for Root {
         self.invite_pane = if self.invitation_shows() { self.layout().panes.first().map(|(pane, _)| *pane) } else { None };
         // Only the video tabs on screen play; the rest pause until they are shown again.
         self.update_video_activity(cx);
+        self.update_web_visibility(cx);
         // Built first: it creates the focus handles of panes that show no terminal.
         let body = split_view::render_tree(self, window, cx);
         let side_col = sidebar::render(self, window, cx);
@@ -4141,6 +4285,7 @@ fn open_project_window(
                         .detach();
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = screen::ns_window_of(window);
+                        root.ns_view = screen::ns_view_of(window);
                         // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
                         // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,
                         // since macOS stops drawing a window another one covers entirely, and

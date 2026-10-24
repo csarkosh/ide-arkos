@@ -462,6 +462,18 @@ impl Tree {
         }
     }
 
+    /// A web tab's page changed (a navigation committed): the tab keeps the new URL.
+    pub fn set_browser_url(&mut self, tab: TabId, url: &str) -> bool {
+        let Some((pane, idx)) = self.locate(tab) else { return false };
+        match self.pane_mut(pane).and_then(|p| p.tabs.get_mut(idx)) {
+            Some(Tab::Browser { url: u }) if u != url => {
+                *u = url.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Swaps a tab's content in place; the tab keeps its id.
     pub fn replace_tab(&mut self, pane: PaneId, idx: usize, tab: Tab) {
         if let Some(p) = self.pane_mut(pane) {

@@ -94,31 +94,6 @@ pub fn menu_rows(p: &Pane, labels: &[String]) -> Vec<(usize, String, bool)> {
     labels.iter().enumerate().map(|(i, l)| (i, l.clone(), i == p.active)).collect()
 }
 
-/// The host of an absolute URL, without user info or port; `None` when there is none.
-fn url_host(url: &str) -> Option<&str> {
-    let (_, rest) = url.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if host_port.starts_with('[') {
-        host_port.split_inclusive(']').next().unwrap_or(host_port)
-    } else {
-        host_port.split(':').next().unwrap_or(host_port)
-    };
-    (!host.is_empty()).then_some(host)
-}
-
-/// A web tab's label while its page has no title: the URL's host, a local page's file name,
-/// or "New tab" for a blank one.
-pub fn browser_label(url: &str) -> String {
-    if url.is_empty() {
-        return "New tab".to_string();
-    }
-    if let Some(path) = url.strip_prefix("file://") {
-        return path.rsplit('/').next().filter(|n| !n.is_empty()).map_or_else(|| "page".to_string(), |n| n.to_string());
-    }
-    url_host(url).unwrap_or("page").to_string()
-}
-
 /// A URL as typed, with a scheme added when it has none: `http://` for this machine (a dev
 /// server rarely has TLS), `https://` otherwise. `localhost:3000` has none: a scheme is only
 /// what comes before `://`, or one of the few Chrome opens without it.
@@ -375,7 +350,7 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab) -> (String, Tab
             }
         }
         Tab::Viewer { path, .. } | Tab::Video { path, .. } => (path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), TabMark::None),
-        Tab::Browser { url } => (browser_label(url), TabMark::None),
+        Tab::Browser { url } => (p.ids.get(idx).and_then(|id| root.web_titles.get(id)).cloned().unwrap_or_else(|| crate::web::title_for(None, url)), TabMark::None),
     }
 }
 
@@ -1275,34 +1250,21 @@ fn render_video(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pat
         .child(crate::video_element::render(&view, &theme, family, cx))
 }
 
-/// A web tab's content: the rectangle its web view is placed over, reported every frame (a
-/// `canvas`, like the pane's grid measure; it paints nothing and asks for no frames). The bar
-/// and the screens come with the web view (web pane spec, section 4).
+/// A web tab: its view, made the first time the tab is shown, drawn by `web_element` (the bar,
+/// the screens and the rectangle the web view is placed over). A press anywhere in it focuses
+/// the pane; a press on the page itself never reaches gpui (the web view takes it), so the
+/// page's focus is read back each frame (`Root::update_web_visibility`).
 fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: String, cx: &mut Context<Root>) -> Div {
-    let focus = pane_focus(root, pane, cx);
+    let view = root.web_for(tab, &url, cx);
     let theme = root.theme.clone();
     let family = root.ui_family();
-    let c = &theme.chrome;
-    let weak = cx.weak_entity();
-    let report = canvas(
-        move |bounds, _window, cx| {
-            let _ = weak.update(cx, |root, _| root.report_browser_rect(tab, bounds));
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full();
-    let dim = c.text_dim.hsla();
     div()
         .size_full()
-        .relative()
-        .track_focus(&focus)
-        .bg(c.window_bg.hsla())
-        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
-        .child(report)
-        .child(div().size_full().flex().items_center().justify_center().font_family(family).text_size(px(13.0)).text_color(dim).child(if url.is_empty() { "New tab".to_string() } else { url }))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+            root.focus_pane(pane, cx);
+            root.keys_back_to_arkos();
+        }))
+        .child(crate::web_element::render(&view, pane, tab, &theme, family, cx))
 }
 
 /// The URL prompt, at the top of the focused pane's content while it is open and while it fades
@@ -1538,15 +1500,6 @@ mod tests {
         assert_eq!(p.key(&key("escape"), ""), UrlStep::Cancel);
     }
 
-    #[test]
-    fn a_web_tab_without_a_title_is_labelled_by_its_host_file_name_or_new_tab() {
-        assert_eq!(browser_label("https://example.com/docs?q=1"), "example.com");
-        assert_eq!(browser_label("http://me@localhost:3000/x"), "localhost");
-        assert_eq!(browser_label("https://[::1]:8080/"), "[::1]");
-        assert_eq!(browser_label("file:///Users/me/out/report.html"), "report.html");
-        assert_eq!(browser_label("about:blank"), "page");
-        assert_eq!(browser_label(""), "New tab");
-    }
 
     #[test]
     fn overflow_menu_lists_every_tab_from_two() {
