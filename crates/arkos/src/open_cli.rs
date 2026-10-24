@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const OPEN_USAGE: &str = "usage: arkos open <file> [--pane N | --split right|down|left|up] [--at TIME] [--paused | --playing]\n                  [--loop A-B | --loop off] [--raw] [--new] [--wait] [--focus] [--window PID] [--json]\nsee: arkos guide\n";
+pub const OPEN_USAGE: &str = "usage: arkos open <file | url> [--pane N | --split right|down|left|up] [--at TIME] [--paused | --playing]\n                  [--loop A-B | --loop off] [--raw] [--new] [--wait] [--focus] [--window PID] [--json]\nsee: arkos guide\n";
 
 pub const VIDEO_USAGE: &str = "\
 usage: arkos video status [<file>] [--json]
@@ -147,8 +147,15 @@ fn extension(path: &Path) -> String {
 /// The file checks before anything is sent: canonical path and kind, or the refusal text.
 pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(PathBuf, OpenKind), String> {
     let given = path.to_string_lossy();
+    // A web address (web pane spec, section 8): the window opens it in a web tab as given.
     if remote_image::is_remote(&given) {
-        return Err("a web address is not a file; open it in the browser pane (Cmd+Shift+B)".into());
+        return Ok((PathBuf::from(given.as_ref()), OpenKind::Web));
+    }
+    if let Some(local) = crate::web::file_path(&given) {
+        return match local.canonicalize() {
+            Ok(abs) if abs.is_file() => Ok((abs, OpenKind::Web)),
+            _ => Err(format!("no such file: {}", local.display())),
+        };
     }
     // Every check reads one path, the canonical one when the file exists: the one the tab shows.
     let abs = absolute(cwd, &given);
@@ -175,6 +182,8 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
     }
     let kind = if is_video {
         OpenKind::Video
+    } else if matches!(extension(&abs).as_str(), "html" | "htm") {
+        OpenKind::Web
     } else if viewer::is_markdown(&abs) {
         OpenKind::Markdown { raw }
     } else {
@@ -270,17 +279,25 @@ pub fn status_line(v: &VideoState, file_name: &str) -> String {
 
 /// What `arkos open` prints; the window says whether it made a pane and whether a document is raw.
 pub fn opened_line(o: &PaneOutcome, file_name: &str) -> String {
-    let PaneOutcome::Opened { pane, kind, reused, reloaded, new_pane, raw, video, .. } = o else {
+    let PaneOutcome::Opened { pane, kind, reused, reloaded, new_pane, raw, video, web, .. } = o else {
         return String::new();
     };
     let verb = if *reused { "shown" } else { "opened" };
     let prefix = if *reloaded { "reloaded, " } else { "" };
-    let what = if kind == "video" { format!("video {file_name}") } else { file_name.to_string() };
+    let what = match kind.as_str() {
+        "video" => format!("video {file_name}"),
+        "browser" => format!("page {file_name}"),
+        _ => file_name.to_string(),
+    };
     // A reused tab can be in a new pane too: one moved out of the agent's own pane.
     let fresh = if *new_pane { " (new pane)" } else { "" };
-    let tail = match (video, kind.as_str()) {
-        (Some(v), _) => format!(", {}", detail(v, false)),
-        (None, "markdown") => if *raw { ", raw" } else { ", rendered" }.into(),
+    let tail = match (video, web, kind.as_str()) {
+        (Some(v), _, _) => format!(", {}", detail(v, false)),
+        (_, Some(w), _) => match w.error.as_deref() {
+            Some(e) => format!(", failed: {e}"),
+            None => format!(", {}", w.state),
+        },
+        (None, None, "markdown") => if *raw { ", raw" } else { ", rendered" }.into(),
         _ => String::new(),
     };
     format!("{prefix}{verb} {what} in pane {pane}{fresh}{tail}")
@@ -294,7 +311,7 @@ pub fn panes_lines(r: &PanesReport) -> Vec<String> {
             let tabs: Vec<String> = p
                 .tabs
                 .iter()
-                .map(|t| format!("{} {}{}{}", t.kind, t.title, if t.you { " (you)" } else { "" }, if t.active { " (active)" } else { "" }))
+                .map(|t| format!("{} {}{}{}{}", t.kind, t.title, t.url.as_deref().map(|u| format!(" {u}")).unwrap_or_default(), if t.you { " (you)" } else { "" }, if t.active { " (active)" } else { "" }))
                 .collect();
             let head = format!("pane {}{}", p.n, if p.focused { " (focused)" } else { "" });
             if tabs.is_empty() {
@@ -353,6 +370,9 @@ fn panes_json(r: &PanesReport) -> Json {
                     if let Some(s) = t.session {
                         o["session"] = json!(s.0);
                     }
+                    if let Some(url) = &t.url {
+                        o["url"] = json!(url);
+                    }
                     o
                 })
                 .collect();
@@ -366,9 +386,10 @@ fn panes_json(r: &PanesReport) -> Json {
 /// video is the flat object; several are under `videos`.
 pub fn outcome_json(pid: u32, o: &PaneOutcome) -> Json {
     let mut v = match o {
-        PaneOutcome::Opened { pane, tab, kind, reused, reloaded, video, .. } => json!({
+        PaneOutcome::Opened { pane, tab, kind, reused, reloaded, video, web, .. } => json!({
             "pane": pane, "tab": tab, "kind": kind, "reused": reused, "reloaded": reloaded,
             "video": video.as_ref().map(video_json),
+            "web": web.as_ref().map(|w| json!({ "url": w.url, "state": w.state, "error": w.error })),
         }),
         PaneOutcome::Videos(list) if list.len() == 1 => state_json(&list[0]),
         PaneOutcome::Videos(list) => json!({ "videos": list.iter().map(state_json).collect::<Vec<_>>() }),
@@ -435,6 +456,18 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
         Ok(c) => c,
         Err(text) => return finish_error(json, &text, out, err),
     };
+    if kind == OpenKind::Web {
+        // A page takes only where it goes; the video and markdown flags are refused up front.
+        let video_only = ["--at", "--loop", "--paused", "--playing", "--wait"].into_iter().find(|f| p.value(f).is_some() || p.has(f));
+        if let Some(flag) = video_only {
+            let _ = writeln!(err, "`{flag}` is for a video; a web page takes --pane, --split, --new, --focus and --window\nsee: arkos guide");
+            return 2;
+        }
+        if raw {
+            let _ = writeln!(err, "`--raw` is for a markdown file; a web page takes --pane, --split, --new, --focus and --window\nsee: arkos guide");
+            return 2;
+        }
+    }
     let playing = if p.has("--playing") {
         Some(true)
     } else if p.has("--paused") {
@@ -442,7 +475,7 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
     } else {
         None
     };
-    let name = file_name(&path);
+    let name = if kind == OpenKind::Web && remote_image::is_remote(&path.to_string_lossy()) { path.to_string_lossy().into_owned() } else { file_name(&path) };
     let action = PaneAction::Open { path, kind, place, at, playing, loop_change, reuse: !p.has("--new"), wait_for_file: p.has("--wait"), focus: p.has("--focus") };
     match direct(env.socket, target_from(env, window), action, env.wait) {
         Err(reach) => report_reach(&reach, json, out, err),
@@ -646,7 +679,7 @@ mod tests {
         Response::Directed {
             pid: 7,
             project: "/p".into(),
-            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused, reloaded: false, new_pane: false, raw: false, video }),
+            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused, reloaded: false, new_pane: false, raw: false, video, web: None }),
         }
     }
 
@@ -694,7 +727,6 @@ mod tests {
             (vec!["a.png"], format!("images are not shown in a pane yet; open it with `open {}` (Preview)", d.join("a.png").display())),
             (vec!["a.mp3"], format!("audio is not shown in a pane yet; play it with `open -a 'QuickTime Player' {}`", d.join("a.mp3").display())),
             (vec!["a.webm"], format!("a .webm is not shown in a pane; show it with `open -R {}` (Finder)", d.join("a.webm").display())),
-            (vec!["https://example.com/x.mp4"], "a web address is not a file; open it in the browser pane (Cmd+Shift+B)".into()),
             (vec!["folder"], format!("{} is a folder", d.join("folder").display())),
             (vec!["a.mp4", "--at", "1:60"], "not a time: \"1:60\"".into()),
             (vec!["a.mp4", "--pane", "x"], "not a pane number: x".into()),
@@ -704,6 +736,19 @@ mod tests {
             assert_eq!(ran.code, 1, "{args:?}: {}", ran.err);
             assert_eq!(ran.err.trim(), text, "{args:?}");
             assert_eq!(ran.out, "");
+        }
+        // A web address or a page is a web tab (web pane spec, section 8); the video and markdown
+        // flags are refused with it before anything is sent, as a usage error.
+        std::fs::write(d.join("page.html"), b"<p>hi</p>").unwrap();
+        let (path, kind) = classify_open(Path::new("page.html"), &d, false, false).unwrap();
+        assert_eq!((path.file_name().unwrap().to_str().unwrap(), kind), ("page.html", OpenKind::Web));
+        assert_eq!(classify_open(Path::new("https://example.com/x"), &d, false, false), Ok((PathBuf::from("https://example.com/x"), OpenKind::Web)));
+        assert!(classify_open(Path::new("file:///nowhere/x.html"), &d, false, false).unwrap_err().starts_with("no such file"));
+        assert!(classify_open(Path::new("missing.html"), &d, false, true).unwrap_err().starts_with("no such file"), "no --wait for a page");
+        for flag in [vec!["https://example.com/", "--at", "1"], vec!["page.html", "--loop", "1-2"], vec!["page.html", "--paused"], vec!["page.html", "--raw"]] {
+            let ran = run(open_cli_to, &flag, &sock, &d, None);
+            assert_eq!(ran.code, 2, "{flag:?}: {}", ran.err);
+            assert!(ran.err.contains("is for a") && ran.err.ends_with("see: arkos guide\n"), "{flag:?}: {}", ran.err);
         }
         // --json prints the refusal on stdout and nothing on stderr.
         let ran = run(open_cli_to, &["nope.mp4", "--json"], &sock, &d, None);
@@ -789,16 +834,16 @@ mod tests {
     #[test]
     fn open_says_new_pane_for_a_split_and_reloaded_and_shown_for_a_reuse() {
         let path = Path::new("/v/x.mp4");
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: false, reloaded: false, new_pane: true, raw: false, video: Some(state(path)) };
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: false, reloaded: false, new_pane: true, raw: false, video: Some(state(path)), web: None };
         assert_eq!(opened_line(&o, "x.mp4"), "opened video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(state(path)) };
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(state(path)), web: None };
         assert_eq!(opened_line(&o, "x.mp4"), "reloaded, shown video x.mp4 in pane 2, 0:12.0 of 1:48.5, paused, 1920x1080");
         // A reused tab moved out of the agent's pane into a new split says so too.
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: false, new_pane: true, raw: false, video: Some(state(path)) };
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "video".into(), reused: true, reloaded: false, new_pane: true, raw: false, video: Some(state(path)), web: None };
         assert_eq!(opened_line(&o, "x.mp4"), "shown video x.mp4 in pane 2 (new pane), 0:12.0 of 1:48.5, paused, 1920x1080");
-        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "markdown".into(), reused: false, reloaded: false, new_pane: false, raw: false, video: None };
+        let o = PaneOutcome::Opened { pane: 2, tab: 1, kind: "markdown".into(), reused: false, reloaded: false, new_pane: false, raw: false, video: None, web: None };
         assert_eq!(opened_line(&o, "notes.md"), "opened notes.md in pane 2, rendered");
-        let o = PaneOutcome::Opened { pane: 3, tab: 1, kind: "markdown".into(), reused: true, reloaded: false, new_pane: false, raw: true, video: None };
+        let o = PaneOutcome::Opened { pane: 3, tab: 1, kind: "markdown".into(), reused: true, reloaded: false, new_pane: false, raw: true, video: None, web: None };
         assert_eq!(opened_line(&o, "notes.md"), "shown notes.md in pane 3, raw");
     }
 
@@ -812,7 +857,7 @@ mod tests {
         let reloaded = |video: VideoState| Response::Directed {
             pid: 7,
             project: "/p".into(),
-            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(video) }),
+            outcome: Ok(PaneOutcome::Opened { pane: 2, tab: 9, kind: "video".into(), reused: true, reloaded: true, new_pane: false, raw: false, video: Some(video), web: None }),
         };
         let server = fake_daemon(&sock, vec![reloaded(stale.clone()), reloaded(stale.clone()), reloaded(state(&d.join("x.mp4"))), videos(vec![stale.clone()])]);
         let ran = run(open_cli_to, &["x.mp4", "--at", "0:12"], &sock, &d, Some(5));
@@ -991,7 +1036,7 @@ mod tests {
 
     #[test]
     fn panes_prints_one_line_per_pane_with_you_active_and_focused() {
-        let tab = |id: u64, kind: &str, title: &str, active: bool, you: bool| TabRow { id, kind: kind.into(), title: title.into(), active, you, path: None, session: None };
+        let tab = |id: u64, kind: &str, title: &str, active: bool, you: bool| TabRow { id, kind: kind.into(), title: title.into(), active, you, path: None, session: None, url: None };
         let r = PanesReport {
             project: "/p".into(),
             panes: vec![
@@ -1052,6 +1097,6 @@ mod tests {
             assert!(text.ends_with("see: arkos guide\n"));
         }
         assert_eq!(VIDEO_USAGE.lines().filter(|l| l.contains("arkos video")).count(), 8);
-        assert!(crate::agent_cli::USAGE.contains("arkos open <file>"));
+        assert!(crate::agent_cli::USAGE.contains("arkos open <file | url>"));
     }
 }

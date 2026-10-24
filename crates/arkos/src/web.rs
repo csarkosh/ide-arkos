@@ -170,6 +170,25 @@ pub fn title_for(page_title: Option<&str>, url: &str) -> String {
     url_host(url).unwrap_or("page").to_string()
 }
 
+/// Two addresses name the same page when they differ only by a fragment or a trailing slash
+/// (spec 8's reuse rule).
+pub fn same_url(a: &str, b: &str) -> bool {
+    let norm = |u: &str| u.split('#').next().unwrap_or("").trim_end_matches('/').to_string();
+    norm(a) == norm(b)
+}
+
+/// The URL a `PaneAction::Open` of kind `Web` means: an `http(s)` address as given, else the
+/// `file://` URL of the absolute path.
+pub fn web_url_of(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("file://") {
+        text.into_owned()
+    } else {
+        file_url(path)
+    }
+}
+
 /// The scheme of a URL, for the counters: `http`, `https`, `file` or `other`.
 pub fn scheme_of(url: &str) -> &'static str {
     match url.split_once("://").map(|(s, _)| s) {
@@ -596,6 +615,16 @@ mod tests {
         assert_eq!(title_for(None, ""), "New tab");
         assert_eq!(scheme_of("file:///x"), "file");
         assert_eq!(scheme_of("about:blank"), "other");
+    }
+
+    #[test]
+    fn the_same_page_ignores_a_fragment_and_a_trailing_slash() {
+        assert!(same_url("http://localhost:4173", "http://localhost:4173/"));
+        assert!(same_url("https://a.dev/x#top", "https://a.dev/x"));
+        assert!(!same_url("https://a.dev/x", "https://a.dev/y"));
+        assert!(!same_url("https://a.dev/x?q=1", "https://a.dev/x"));
+        assert_eq!(web_url_of(Path::new("http://localhost:4173/")), "http://localhost:4173/");
+        assert_eq!(web_url_of(Path::new("/p/out/a b.html")), "file:///p/out/a%20b.html");
     }
 
     #[test]

@@ -71,6 +71,17 @@ impl WebView {
         &self.model.url
     }
 
+    /// What `arkos open` and `arkos panes` report for this tab.
+    pub fn status(&self) -> protocol::WebState {
+        let (state, error) = match &self.model.state {
+            LoadState::Blank => ("blank", None),
+            LoadState::Loading { .. } => ("loading", None),
+            LoadState::Ready => ("ready", None),
+            LoadState::Failed { reason } => ("failed", Some(reason.clone())),
+        };
+        protocol::WebState { url: self.model.shown_address().to_string(), state: state.to_string(), error }
+    }
+
     /// The page has the keyboard (the window's first responder is inside the web view).
     pub fn has_keys(&self) -> bool {
         self.web.has_keys()

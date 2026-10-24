@@ -42,7 +42,7 @@ the window's panes so you can choose one. The forms, exactly as `arkos open`, `a
 `arkos panes` with no arguments print them:
 
 ```
-arkos open <file> [--pane N | --split right|down|left|up] [--at TIME] [--paused | --playing]
+arkos open <file | url> [--pane N | --split right|down|left|up] [--at TIME] [--paused | --playing]
                   [--loop A-B | --loop off] [--raw] [--new] [--wait] [--focus] [--window PID] [--json]
 arkos video status [<file>] [--json]
 arkos video play|pause [<file>] [--json]
@@ -83,7 +83,6 @@ These are refused before anything is sent, with exit 1 and a line saying what to
 - audio (`.mp3`, `.m4a`, `.wav`, `.aac`):
   ``audio is not shown in a pane yet; play it with `open -a 'QuickTime Player' {path}` ``
 - a `.webm`: ``a .webm is not shown in a pane; show it with `open -R {path}` (Finder)``
-- a web address: `a web address is not a file; open it in the browser pane (Cmd+Shift+B)`
 - a folder: `{path} is a folder`
 - anything else that is not text: `{path} is not a text file; Arkos shows text, markdown and video`
 

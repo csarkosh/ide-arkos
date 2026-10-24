@@ -486,8 +486,13 @@ pub fn open_plan(tree: &Tree, pane: PaneId, path: &Path, preview_tab: Option<Tab
 /// The tab a file opens in, by the kind its name says (spec 9): a video as a video tab at its
 /// start, anything else in the viewer.
 pub fn file_tab(path: &Path) -> Tab {
+    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
     if crate::media::kind(&path.to_string_lossy()) == Some(crate::media::Media::Video) {
         Tab::Video { path: path.to_path_buf(), at: None, loop_range: None }
+    } else if matches!(ext.as_deref(), Some("html" | "htm")) {
+        // A page opens as a web tab (web pane spec, section 7); its source is a text file too,
+        // which the viewer shows when the page is opened as text some other way.
+        Tab::Browser { url: crate::web::file_url(path) }
     } else {
         Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() }
     }
@@ -1720,6 +1725,7 @@ mod tests {
         let cut = Path::new("/p/cut.mp4");
         assert_eq!(file_tab(cut), Tab::Video { path: cut.into(), at: None, loop_range: None }, "a video opens as a video tab");
         assert_eq!(file_tab(Path::new("/p/a.rs")), Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        assert_eq!(file_tab(Path::new("/p/out/report.html")), Tab::Browser { url: "file:///p/out/report.html".into() }, "a page opens as a web tab");
         let v = tree.add_tab(pane, file_tab(cut));
         let v_id = tree.tab_id(pane, v).unwrap();
         // A single click and a double click on the same file both bring the open tab forward.

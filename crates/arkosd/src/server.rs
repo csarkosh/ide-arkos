@@ -4,7 +4,7 @@ use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, CustomizeOutcome, Event, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, PROTOCOL_MIN, PROTOCOL_VERSION};
+use protocol::{ClientMessage, CustomizeOutcome, Event, OpenKind, PaneAction, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, PROTOCOL_MIN, PROTOCOL_VERSION, WEB_OPEN_FROM};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
@@ -189,7 +189,7 @@ fn customize_targets(st: &State) -> (Vec<(ClientId, u32)>, Vec<u32>) {
 
 /// The one project window a `Direct` goes to, as (client, pid, folder), or why none does. A
 /// session shown in several windows goes to the newest, the highest client id.
-pub fn direct_target(st: &State, target: &WindowTarget) -> Result<(ClientId, u32, PathBuf), String> {
+pub fn direct_target(st: &State, target: &WindowTarget, action: &PaneAction) -> Result<(ClientId, u32, PathBuf), String> {
     let mut windows: Vec<(ClientId, u32, PathBuf, u32, bool)> = st
         .clients
         .iter()
@@ -215,6 +215,9 @@ pub fn direct_target(st: &State, target: &WindowTarget) -> Result<(ClientId, u32
         WindowTarget::Pid(pid) => windows.into_iter().find(|w| w.1 == *pid).ok_or_else(|| format!("no window with pid {pid}"))?,
     };
     if protocol < DIRECT_FROM {
+        return Err(format!("window {pid}: too old for this command"));
+    }
+    if protocol < WEB_OPEN_FROM && matches!(action, PaneAction::Open { kind: OpenKind::Web, .. }) {
         return Err(format!("window {pid}: too old for this command"));
     }
     Ok((client, pid, project))
@@ -1034,7 +1037,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             if st.direct.contains_key(&direct_id) {
                 return Some(Response::Error("direct id in flight".into()));
             }
-            let (client, pid, project) = match direct_target(&st, &window) {
+            let (client, pid, project) = match direct_target(&st, &window, &action) {
                 Ok(found) => found,
                 Err(text) => return Some(Response::Error(text)),
             };
@@ -1169,21 +1172,27 @@ mod tests {
     fn direct_target_picks_the_newest_window_of_a_session_and_names_the_rest() {
         let state = test_state();
         let (s, other) = (SessionId(5), SessionId(6));
-        assert_eq!(direct_target(&state.lock().unwrap(), &WindowTarget::Only), Err("no window running".into()));
+        assert_eq!(direct_target(&state.lock().unwrap(), &WindowTarget::Only, &PaneAction::Panes), Err("no window running".into()));
         add_window(&state, 1, 100, 8, &[s]);
         let st = state.lock().unwrap();
-        assert_eq!(direct_target(&st, &WindowTarget::Only), Ok((1, 100, PathBuf::from("/p"))));
+        assert_eq!(direct_target(&st, &WindowTarget::Only, &PaneAction::Panes), Ok((1, 100, PathBuf::from("/p"))));
         drop(st);
         add_window(&state, 2, 90, 8, &[s]);
         add_window(&state, 3, 95, 7, &[other]);
         let st = state.lock().unwrap();
-        assert_eq!(direct_target(&st, &WindowTarget::Only), Err("several windows: pids 90, 95, 100; pass --window".into()));
-        assert_eq!(direct_target(&st, &WindowTarget::Session(s)), Ok((2, 90, PathBuf::from("/p"))));
-        assert_eq!(direct_target(&st, &WindowTarget::Session(SessionId(7))), Err("session 7 is not shown in a window".into()));
-        assert_eq!(direct_target(&st, &WindowTarget::Pid(9)), Err("no window with pid 9".into()));
-        assert_eq!(direct_target(&st, &WindowTarget::Pid(100)), Ok((1, 100, PathBuf::from("/p"))));
-        assert_eq!(direct_target(&st, &WindowTarget::Pid(95)), Err("window 95: too old for this command".into()));
-        assert_eq!(direct_target(&st, &WindowTarget::Session(other)), Err("window 95: too old for this command".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Only, &PaneAction::Panes), Err("several windows: pids 90, 95, 100; pass --window".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Session(s), &PaneAction::Panes), Ok((2, 90, PathBuf::from("/p"))));
+        assert_eq!(direct_target(&st, &WindowTarget::Session(SessionId(7)), &PaneAction::Panes), Err("session 7 is not shown in a window".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(9), &PaneAction::Panes), Err("no window with pid 9".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(100), &PaneAction::Panes), Ok((1, 100, PathBuf::from("/p"))));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(95), &PaneAction::Panes), Err("window 95: too old for this command".into()));
+        // A web open (protocol 9) is refused to a window on protocol 8, which takes every other open.
+        let web = PaneAction::Open { path: "https://a.dev/".into(), kind: OpenKind::Web, place: protocol::Placement::Preview, at: None, playing: None, loop_change: protocol::LoopChange::Keep, reuse: true, wait_for_file: false, focus: false };
+        let text = PaneAction::Open { path: "/p/a.txt".into(), kind: OpenKind::Text, place: protocol::Placement::Preview, at: None, playing: None, loop_change: protocol::LoopChange::Keep, reuse: true, wait_for_file: false, focus: false };
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(100), &web).map(|t| t.1), Ok(100));
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(90), &text).map(|t| t.1), Ok(90), "a protocol 8 window still opens a file");
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(90), &web), Err("window 90: too old for this command".into()));
+        assert_eq!(direct_target(&st, &WindowTarget::Session(other), &PaneAction::Panes), Err("window 95: too old for this command".into()));
     }
 
     /// The sid a protocol 7 window sends after its Hello is what the daemon later seals that
