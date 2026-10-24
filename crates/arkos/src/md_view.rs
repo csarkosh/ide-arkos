@@ -1150,6 +1150,8 @@ pub enum LinkAction {
     Reveal(PathBuf),
     /// A markdown file: a viewer tab opens it.
     OpenMarkdown(PathBuf),
+    /// A local HTML page: a web tab opens it beside the document (web pane spec, section 7).
+    OpenPage(PathBuf),
     /// A link to a heading in this file, an empty target, or a scheme arkos does not follow.
     Nothing,
 }
@@ -1164,8 +1166,11 @@ pub fn link_action(target: &str, base_dir: &Path) -> LinkAction {
             return LinkAction::Nothing;
         }
         let Some(resolved) = resolve_image(base_dir, &path) else { return LinkAction::Nothing };
+        let page = resolved.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
         if viewer::is_markdown(&resolved) {
             LinkAction::OpenMarkdown(resolved)
+        } else if page {
+            LinkAction::OpenPage(resolved)
         } else {
             LinkAction::Reveal(resolved)
         }
@@ -1236,6 +1241,7 @@ fn follow_link(action: LinkAction, viewer: &Entity<Viewer>, cx: &mut App) {
             })
             .detach(),
         LinkAction::OpenMarkdown(path) => viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenPath(path))),
+        LinkAction::OpenPage(path) => viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenPage(path))),
         LinkAction::Nothing => {}
     }
 }
@@ -2225,6 +2231,9 @@ mod tests {
         assert_eq!(link_action("../Notes.MARKDOWN#part", base), LinkAction::OpenMarkdown(PathBuf::from("/p/Notes.MARKDOWN")), "the fragment goes");
         assert_eq!(link_action("my%20notes.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/my notes.md")), "escapes decoded");
         assert_eq!(link_action("run.sh", base), LinkAction::Reveal(PathBuf::from("/p/docs/run.sh")), "never run");
+        assert_eq!(link_action("out/report.html#charts", base), LinkAction::OpenPage(PathBuf::from("/p/docs/out/report.html")), "a local page opens as a web tab");
+        assert_eq!(link_action("file:///tmp/Index.HTM", base), LinkAction::OpenPage(PathBuf::from("/tmp/Index.HTM")));
+        assert_eq!(link_action("https://example.com/page.html", base), url("https://example.com/page.html"), "a remote page stays the browser's");
         assert_eq!(link_action("/Applications/Calculator.app", base), LinkAction::Reveal(PathBuf::from("/Applications/Calculator.app")));
         assert_eq!(link_action("file:///tmp/x.command", base), LinkAction::Reveal(PathBuf::from("/tmp/x.command")), "a file URL is a path");
         assert_eq!(link_action("file://localhost/tmp/a%20b.md", base), LinkAction::OpenMarkdown(PathBuf::from("/tmp/a b.md")));

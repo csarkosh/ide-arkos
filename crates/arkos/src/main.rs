@@ -2145,9 +2145,22 @@ impl Root {
     /// document's own pane would hide the document). The keys stay in the document either way;
     /// a maximize that would hide the video ends, since the click asked to see it.
     pub fn open_poster_video(&mut self, doc: TabId, path: &Path, cx: &mut Context<Self>) {
+        self.open_beside_document(doc, path, telemetry::Opened::Poster, cx);
+    }
+
+    /// Opens `path` beside the document tab `doc`, as its kind says (`sidebar::file_tab`: a video
+    /// tab, a web tab for a page): a tab on the file in another pane is shown again; else it goes
+    /// into the pane after the document's, or a new pane split off it to the right. The keys stay
+    /// with the document.
+    pub fn open_beside_document(&mut self, doc: TabId, path: &Path, how: telemetry::Opened, cx: &mut Context<Self>) {
         let focused = self.tree.focused;
         let doc_pane = self.tree.locate(doc).map_or(focused, |(pane, _)| pane);
-        let existing = self.tree.tabs_on(path).into_iter().find(|(pane, idx)| *pane != doc_pane && matches!(self.tree.pane(*pane).and_then(|p| p.tabs.get(*idx)), Some(Tab::Video { .. })));
+        let shows = |t: &Tab| match t {
+            Tab::Video { path: p, .. } => p == path,
+            Tab::Browser { url } => web::file_path(url).is_some_and(|p| p == path),
+            Tab::Terminal { .. } | Tab::Viewer { .. } => false,
+        };
+        let existing = self.tree.tabs().into_iter().find(|(pane, _, t)| *pane != doc_pane && shows(t)).map(|(pane, idx, _)| (pane, idx));
         let target = existing.map(|(pane, _)| pane).or_else(|| pane_after(&self.tree, doc_pane));
         if self.tree.maximized.is_some() && self.tree.maximized != target {
             self.tree.maximized = None;
@@ -2159,13 +2172,13 @@ impl Root {
                 cx.notify();
             }
             (None, Some(pane)) => {
-                self.open_path_in_pane(path, pane, telemetry::Opened::Poster, cx);
+                self.open_path_in_pane(path, pane, how, cx);
             }
             (None, None) => {
                 let tab = sidebar::file_tab(path);
                 let kind = telemetry::kind_of(&tab);
                 if self.tree.split(doc_pane, Side::Right, tab).is_some() {
-                    telemetry::pane_open(kind, telemetry::Opened::Poster);
+                    telemetry::pane_open(kind, how);
                     // A split focuses its new pane; the keys go back to the document.
                     self.tree.focus(focused);
                 }
@@ -2175,8 +2188,6 @@ impl Root {
         }
     }
 
-    /// A browser tab in `pane` (the focused pane when that one is gone) that opens `url` (`None`:
-    /// a blank window), active and focused. Chrome opens a window for it, which docks.
     /// A web tab on `url` (empty: a blank tab) in `pane`, or in the focused pane when that one is
     /// gone; it becomes the pane's active tab and the pane takes the focus.
     pub fn new_browser_tab(&mut self, pane: PaneId, url: String, cx: &mut Context<Self>) {

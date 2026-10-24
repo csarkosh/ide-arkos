@@ -88,6 +88,8 @@ pub enum ViewerEvent {
     /// A local video's poster was Cmd+clicked: the file (canonical, checked by
     /// `media::checked_open_path`) opens in a video tab beside the document.
     OpenVideo(PathBuf),
+    /// A link to a local HTML page was Cmd+clicked: it opens in a web tab beside the document.
+    OpenPage(PathBuf),
     /// A `<details>` section was opened or closed: the file's section states now, for the
     /// workspace file.
     DetailsToggled(Vec<DetailsOpen>),
@@ -2728,6 +2730,7 @@ impl Root {
                     root.open_viewer(path, true, cx)
                 }
                 ViewerEvent::OpenVideo(path) => root.open_poster_video(tab, path, cx),
+                ViewerEvent::OpenPage(path) => root.open_beside_document(tab, path, crate::telemetry::Opened::Link, cx),
                 // The state is the file's: every other tab on it shows the same sections open.
                 ViewerEvent::DetailsToggled(open) => {
                     let path = v.read(cx).path.clone();

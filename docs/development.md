@@ -464,6 +464,8 @@ Things only a person at the screen can check, in order of value:
 - web pane: a page that calls `window.open`: it opens in the same tab; back returns
 - web pane: a page with a download link: the notice says downloads are not supported, and "open
   in your browser" opens the page in the default browser
+- web pane: in a markdown document, Cmd+click a link to a local `.html` file: the page opens in a
+  web tab in the pane to the right (or a new pane split off), and the keys stay with the document
 - web pane: Reduce Motion on: nothing of the web pane changes, and every text field's cursor
   (the address field, the palette, a find bar) stops blinking and stays shown; off again: it blinks
   about twice a second, shown at once after every key or click

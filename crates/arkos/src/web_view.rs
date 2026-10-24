@@ -99,7 +99,7 @@ impl WebView {
             match event {
                 ModelEvent::Save(url) => cx.emit(WebEvent::Save(url)),
                 ModelEvent::Notice(text) => self.set_notice(text, now),
-                ModelEvent::Loaded { .. } => {}
+                ModelEvent::Loaded { ok, scheme } => crate::telemetry::web_load(ok, scheme),
             }
         }
         let title = self.title();

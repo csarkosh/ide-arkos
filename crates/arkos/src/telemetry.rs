@@ -107,9 +107,19 @@ values! {
     }
 }
 values! {
+    /// How a web tab's page load ended (web pane spec, section 11).
+    WebOutcome { Ready => "ready", Failed => "failed" }
+}
+values! {
+    /// The scheme of the address a web tab loaded; never the address.
+    WebScheme { Http => "http", Https => "https", File => "file" }
+}
+values! {
     /// Which command an agent ran against the window's panes.
     AgentCommand {
         Open => "open",
+        /// `arkos open` of a web address or an HTML file.
+        OpenWeb => "open_web",
         Status => "status",
         Play => "play",
         Pause => "pause",
@@ -487,6 +497,10 @@ impl Recorder {
         self.record(events::error(kind), now);
     }
 
+    pub fn web_load(&mut self, outcome: WebOutcome, scheme: WebScheme, now: Now) {
+        self.record(events::web_load(outcome, scheme), now);
+    }
+
     pub fn agent_pane(&mut self, command: AgentCommand, ok: bool, now: Now) {
         self.record(events::agent_pane(command, ok), now);
     }
@@ -564,6 +578,10 @@ mod events {
 
     pub fn error(kind: Failure) -> Event {
         ev("error", &[("kind", kind.as_str())])
+    }
+
+    pub fn web_load(outcome: WebOutcome, scheme: WebScheme) -> Event {
+        ev("web_load", &[("outcome", outcome.as_str()), ("scheme", scheme.as_str())])
     }
 
     pub fn agent_pane(command: AgentCommand, ok: bool) -> Event {
@@ -1026,6 +1044,19 @@ pub fn video_shown() {
 }
 
 /// An agent's `arkos open`, `arkos video` or `arkos panes`, and whether the window did it.
+/// A web tab's page loaded, or failed to: by the address's scheme alone. A scheme outside the
+/// three (`about:`, `data:`) is not counted.
+pub fn web_load(ok: bool, scheme: &str) {
+    let scheme = match scheme {
+        "http" => WebScheme::Http,
+        "https" => WebScheme::Https,
+        "file" => WebScheme::File,
+        _ => return,
+    };
+    let outcome = if ok { WebOutcome::Ready } else { WebOutcome::Failed };
+    with(|r, now| r.web_load(outcome, scheme, now));
+}
+
 pub fn agent_pane(command: AgentCommand, ok: bool) {
     with(|r, now| r.agent_pane(command, ok, now));
 }
@@ -1250,6 +1281,11 @@ mod tests {
         for &command in AgentCommand::ALL {
             for ok in [true, false] {
                 admitted(&events::agent_pane(command, ok));
+            }
+        }
+        for &outcome in WebOutcome::ALL {
+            for &scheme in WebScheme::ALL {
+                admitted(&events::web_load(outcome, scheme));
             }
         }
         for &surface in Surface::ALL {

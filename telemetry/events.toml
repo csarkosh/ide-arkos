@@ -149,8 +149,13 @@ kind = ["daemon_unreachable", "daemon_restarted", "session_lost", "mermaid_faile
 
 # Which command an agent ran against the window's panes, and whether it succeeded.
 [events.agent_pane]
-command = ["open", "status", "play", "pause", "seek", "step", "loop", "reload", "close", "mute", "panes"]
+command = ["open", "open_web", "status", "play", "pause", "seek", "step", "loop", "reload", "close", "mute", "panes"]
 ok = "bool"
+
+# A web tab's page loaded or failed to, by the address's scheme alone, never the address.
+[events.web_load]
+outcome = ["ready", "failed"]
+scheme = ["http", "https", "file"]
 
 [events.help]
 what = ["keybindings", "documentation", "about", "telemetry"]

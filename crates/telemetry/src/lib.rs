@@ -209,6 +209,7 @@ mod tests {
                 "error",
                 &[("kind", &["daemon_unreachable", "daemon_restarted", "session_lost", "mermaid_failed", "save_failed", "video_unplayable"])],
             ),
+            ("web_load", &[("outcome", &["ready", "failed"]), ("scheme", &["http", "https", "file"])]),
             ("help", &[("what", &["keybindings", "documentation", "about", "telemetry"])]),
         ];
         rows.iter().map(|(n, keys)| (*n, keys.iter().map(|(k, vs)| (*k, vs.to_vec())).collect())).collect()

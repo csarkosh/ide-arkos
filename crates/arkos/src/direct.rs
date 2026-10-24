@@ -231,6 +231,7 @@ pub fn defer_op(state: &PlayerState, op: VideoOp) -> bool {
 /// The telemetry name of an action.
 pub fn command_of(action: &PaneAction) -> AgentCommand {
     match action {
+        PaneAction::Open { kind: OpenKind::Web, .. } => AgentCommand::OpenWeb,
         PaneAction::Open { .. } => AgentCommand::Open,
         PaneAction::Panes => AgentCommand::Panes,
         PaneAction::Video { op, .. } => match op {
@@ -847,6 +848,9 @@ mod tests {
         assert_eq!(new_tab(Path::new("https://a.dev/x"), OpenKind::Web, None, LoopChange::Keep), Tab::Browser { url: "https://a.dev/x".into() });
         assert_eq!(new_tab(Path::new("/p/out/r.html"), OpenKind::Web, None, LoopChange::Keep), Tab::Browser { url: "file:///p/out/r.html".into() });
         assert_eq!(kind_string(&Tab::Browser { url: String::new() }), "browser");
+        let open = |kind| PaneAction::Open { path: "/p/a".into(), kind, place: Placement::Preview, at: None, playing: None, loop_change: LoopChange::Keep, reuse: true, wait_for_file: false, focus: false };
+        assert_eq!(command_of(&open(OpenKind::Web)), AgentCommand::OpenWeb, "a page is counted apart from a file");
+        assert_eq!(command_of(&open(OpenKind::Text)), AgentCommand::Open);
         let report = panes_report(&tree, Path::new("/p"), None, &|_, _| "t".into());
         assert_eq!(report.panes[1].tabs[0].url.as_deref(), Some("http://localhost:4173"));
         assert_eq!(report.panes[1].tabs[0].path, None, "a remote page has no file");

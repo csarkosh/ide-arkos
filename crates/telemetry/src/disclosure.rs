@@ -175,6 +175,7 @@ pub const EVENT_WHEN: &[(&str, &str)] = &[
     ("notice", "The bell got a notice."),
     ("error", "Something went wrong where you would have seen it."),
     ("agent_pane", "An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded."),
+    ("web_load", "A web tab's page loaded, or failed to: the scheme of its address (`http`, `https` or `file`), never the address, the page or its title."),
     ("help", "A Help surface opened."),
 ];
 

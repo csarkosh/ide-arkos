@@ -94,7 +94,8 @@ An event is one of these names, with only these keys, each taking only the value
 | `update` | `step`: `staged`, `applied`, `failed`, `rolled_back` | The updater moved a step. |
 | `notice` | `kind`: `update_ready`, `updated`, `daemon`, `config_error`, `theme_error` | The bell got a notice. |
 | `error` | `kind`: `daemon_unreachable`, `daemon_restarted`, `session_lost`, `mermaid_failed`, `save_failed`, `video_unplayable` | Something went wrong where you would have seen it. |
-| `agent_pane` | `command`: `open`, `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `panes`; `ok`: `true`, `false` | An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded. |
+| `agent_pane` | `command`: `open`, `open_web`, `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `panes`; `ok`: `true`, `false` | An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded. |
+| `web_load` | `outcome`: `ready`, `failed`; `scheme`: `http`, `https`, `file` | A web tab's page loaded, or failed to: the scheme of its address (`http`, `https` or `file`), never the address, the page or its title. |
 | `help` | `what`: `keybindings`, `documentation`, `about`, `telemetry` | A Help surface opened. |
 
 The keys of `focus` are these surfaces only: `terminal`, `viewer`, `browser`, `video`, `settings`.
