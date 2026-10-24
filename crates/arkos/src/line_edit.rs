@@ -208,11 +208,23 @@ impl LineEdit {
     }
 }
 
-/// The text with a 1 px cursor bar at the cursor and the selection highlighted, or
-/// `placeholder` dimmed when empty.
+/// How wide the cursor is: two pixels, as macOS draws its insertion point, so it reads at a
+/// glance in a small field.
+pub const CARET_W: f32 = 2.0;
+
+/// The text with the cursor and the selection highlighted, or `placeholder` dimmed when empty.
 pub fn render(edit: &LineEdit, placeholder: &str, theme: &Theme, family: SharedString, size: f32) -> Div {
+    render_with(edit, placeholder, theme, family, size, true)
+}
+
+/// `render`, with the cursor drawn only when `caret` (a field that has the keys): a field that
+/// does not shows its text alone, as a browser's address bar does until it is clicked.
+pub fn render_with(edit: &LineEdit, placeholder: &str, theme: &Theme, family: SharedString, size: f32, caret: bool) -> Div {
     let text = theme.chrome.text.hsla();
-    let bar = || div().w(px(1.0)).h(px(size * 1.2)).bg(text);
+    // The accent, as macOS colours its insertion point; it is drawn in the space it takes, so the
+    // text beside it never moves when it hides.
+    let ring = theme.chrome.focus_ring.hsla();
+    let bar = move || div().flex_none().w(px(CARET_W)).h(px(size * 1.35)).rounded(px(1.0)).bg(if caret { ring } else { gpui::transparent_black() });
     let row = div().flex().flex_row().items_center().font_family(family).text_size(px(size)).text_color(text);
     if edit.text.is_empty() {
         return row.child(bar()).child(div().text_color(theme.chrome.text_dim.hsla()).child(placeholder.to_string()));

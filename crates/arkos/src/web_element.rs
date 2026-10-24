@@ -201,7 +201,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
                     .left_0()
                     .size_full(),
                 )
-                .child(crate::line_edit::render(&address, "an address, like localhost:4173 or example.com", theme, family.clone(), ADDRESS_SIZE)),
+                .child(crate::line_edit::render_with(&address, "an address, like localhost:4173 or example.com", theme, family.clone(), ADDRESS_SIZE, editing)),
         );
     let hairline = progress.map(|p| {
         div().absolute().left_0().bottom_0().h(px(PROGRESS_H)).bg(accent).w_full().child(
