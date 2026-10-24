@@ -33,8 +33,9 @@ pub use mac::*;
 mod mac {
     use super::Frame;
     use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, Message};
-    use objc2_app_kit::{NSScreen, NSView, NSWindow};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSScreen, NSView, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     /// The menu bar's height in points, from the main display (every display carries one of the
@@ -60,6 +61,38 @@ mod mac {
         // window is; retained here for as long as the window keeps it.
         let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
         Some(view.retain())
+    }
+
+    /// The Cmd chords a page keeps while it has the keyboard: its own editing. Every other Cmd
+    /// chord is Arkos's (web pane spec, ruling 9).
+    const PAGE_CHORDS: &[&str] = &["c", "v", "x", "a", "z"];
+
+    /// A key equivalent does not pass through a focused `WKWebView` to gpui's view (spec ruling
+    /// 9, found by the probe), so a local monitor looks at every key press with Cmd held: when
+    /// the window's first responder is not gpui's `view` (a page has the keys) and the chord is
+    /// not the page's own, the keys come back to `view` before the event is dispatched, and the
+    /// event then reaches gpui's keymap as any other. The monitor lives as long as the returned
+    /// token; the window is its own, so a second window installs its own.
+    pub fn install_cmd_monitor(window: Retained<NSWindow>, view: Retained<NSView>) -> Option<Retained<AnyObject>> {
+        let block = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit hands a live event for the call; it is read, never kept.
+            let ev: &NSEvent = unsafe { event.as_ref() };
+            let flags = ev.modifierFlags();
+            if flags.contains(NSEventModifierFlags::Command) {
+                let page_has_keys = window.firstResponder().is_some_and(|r| {
+                    let r: Option<&NSView> = r.downcast_ref();
+                    r.is_some_and(|r| !std::ptr::eq(r, &*view) && !r.isDescendantOf(&view))
+                });
+                let chord = ev.charactersIgnoringModifiers().map(|s| s.to_string().to_ascii_lowercase()).unwrap_or_default();
+                if page_has_keys && !PAGE_CHORDS.contains(&chord.as_str()) {
+                    window.makeFirstResponder(Some(&view));
+                }
+            }
+            event.as_ptr()
+        });
+        // SAFETY: a local monitor on the main thread; the block is retained by AppKit through the
+        // token and by `RcBlock` until both are gone.
+        unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) }
     }
 
     /// Gives `view` the keyboard: what a web view took on a click comes back to gpui.

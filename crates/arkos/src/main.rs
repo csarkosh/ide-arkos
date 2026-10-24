@@ -320,6 +320,8 @@ pub struct Root {
     pub web_titles: HashMap<TabId, String>,
     /// gpui's own `NSView` in the project window, which takes the keys back from a web view.
     pub ns_view: Option<objc2::rc::Retained<objc2_app_kit::NSView>>,
+    /// The Cmd key monitor (`screen::install_cmd_monitor`), alive while the window is.
+    cmd_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
@@ -608,6 +610,7 @@ impl Root {
             webs: HashMap::new(),
             web_titles: HashMap::new(),
             ns_view: None,
+            cmd_monitor: None,
             system_is_dark,
             installed,
             invitation,
@@ -3447,7 +3450,11 @@ impl Root {
         } else {
             self.ns_window.as_ref().map(|ns| {
                 let (h, flipped) = screen::content_geometry(ns);
-                let b = (f64::from(f32::from(bounds.origin.x)), f64::from(f32::from(bounds.origin.y)), f64::from(f32::from(bounds.size.width)), f64::from(f32::from(bounds.size.height)));
+                // Inset by the focus glow's reach on the left, right and bottom, so the pane's
+                // glow stays visible around the page (the bar is above it).
+                let (w, hh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                let g = pane_view::glow_width(w, hh, 1.0);
+                let b = (f64::from(f32::from(bounds.origin.x) + g), f64::from(f32::from(bounds.origin.y)), f64::from((w - 2.0 * g).max(0.0)), f64::from((hh - g).max(0.0)));
                 screen::appkit_frame(b, 0.0, h, flipped)
             })
         };
@@ -3591,9 +3598,25 @@ impl Render for Root {
                     Some(v.find.as_ref().map_or_else(|| v.focus.clone(), |f| f.focus.clone()))
                 }
                 (None, None, Some(v)) => Some(v.read(cx).focus.clone()),
-                (None, None, None) => self.pane_focus.get(&self.tree.focused).cloned(),
+                (None, None, None) => match self.active_web() {
+                    // A web tab: its address field while it is being edited, else its content.
+                    Some(w) => {
+                        let w = w.read(cx);
+                        Some(if w.editing { w.address_focus.clone() } else { w.focus.clone() })
+                    }
+                    None => self.pane_focus.get(&self.tree.focused).cloned(),
+                },
             }
         };
+        // A page holds the window's keyboard after a click into it; whenever Arkos wants the keys
+        // anywhere but that page's own content (a prompt, the palette, another pane), they come
+        // back to gpui first, or the typing would go into the page.
+        if let Some(f) = &wanted {
+            let page = self.webs.values().find(|v| v.read(cx).has_keys()).map(|v| v.read(cx).focus.clone());
+            if page.is_some_and(|p| p != *f) {
+                self.keys_back_to_arkos();
+            }
+        }
         if let Some(f) = wanted {
             if !f.is_focused(window) {
                 window.focus(&f);
@@ -3891,10 +3914,6 @@ fn main() {
     // Read-only diagnostics for a failed update: no window, no daemon start, nothing written.
     if args.get(1).map(String::as_str) == Some("doctor") {
         std::process::exit(doctor::run());
-    }
-    // Web pane spec, section 14: a one-off check of the WKWebView host, run by hand.
-    if args.get(1).map(String::as_str) == Some("web-probe") {
-        std::process::exit(wk_web_view::probe::run());
     }
     if args.iter().any(|a| a == "--version") {
         println!("{}", version_string());
@@ -4309,6 +4328,9 @@ fn open_project_window(
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = screen::ns_window_of(window);
                         root.ns_view = screen::ns_view_of(window);
+                        if let (Some(ns), Some(view)) = (&root.ns_window, &root.ns_view) {
+                            root.cmd_monitor = screen::install_cmd_monitor(ns.clone(), view.clone());
+                        }
                         // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
                         // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,
                         // since macOS stops drawing a window another one covers entirely, and

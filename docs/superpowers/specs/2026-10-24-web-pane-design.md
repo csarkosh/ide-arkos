@@ -496,8 +496,8 @@ Status rows (what only a person at the screen can check), replacing the five doc
 
 ## 14. The probe (Task 1 of the plan)
 
-Three facts are checked on the machine before the rest is built, with a throwaway
-`arkos web-probe` subcommand that opens one gpui window with one `WKWebView` child on
+Three facts were checked on the machine with a throwaway `arkos web-probe` subcommand (deleted
+once rulings 7 to 9 were written; the real pane answered them in the end) that opens one gpui window with one `WKWebView` child on
 `https://example.com` and prints what it saw, then is deleted in the same task:
 
 1. A `WKWebView` added as a subview of gpui's content view draws above gpui's Metal layer, and
@@ -518,9 +518,18 @@ The answers are rulings 7 to 9, written into this spec by the implementer.
 4. The address field never searches; a non-address is refused.
 5. The tab persists its current URL and nothing else of the page.
 6. Switching tabs hides the view and does not pause its media; closing the tab stops it.
-7. (probe) Stacking: to be written.
-8. (probe) Flipped: to be written.
-9. (probe) Key equivalents: to be written.
+7. (probe, 2026-10-24) Stacking: a `WKWebView` added to the content view after gpui's view draws
+   above gpui's Metal layer and follows the pane through splits, drags and window moves;
+   `setHidden` hides it with no flash. It also covers the pane's focus glow, so the view is
+   inset by the glow's reach on its three free sides (`Root::place_web`).
+8. (probe, 2026-10-24) Flipped: the content view is not flipped; `appkit_frame` takes the flag
+   from `isFlipped` either way.
+9. (probe, 2026-10-24) Key equivalents do not reach gpui while the page is first responder:
+   Cmd+W, Cmd+B and Cmd+Shift+B did nothing with a page focused. The fallback named in 3.2 is
+   built: `screen::install_cmd_monitor` is a local `NSEvent` monitor that, for a key press with
+   Cmd held while a page has the keys, gives the keys back to gpui's view before dispatch
+   unless the chord is the page's own (Cmd+C, V, X, A, Z). The page loses the keyboard on such a
+   chord, which is the accepted seam. The probe subcommand is deleted.
 10. A local page may read its project, or its own folder outside one; never more.
 11. Downloads are refused with a pointer to the default browser; a PDF is shown.
 12. `arkos open` on a URL already shown reuses and reloads the tab; `--new` makes another.
