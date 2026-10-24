@@ -6,7 +6,7 @@
 # keychain ("Developer ID Application: Name (TEAMID)"); then each binary and the bundle are
 # signed with it, with the hardened runtime and a timestamp, which is what notarization
 # (notarize.sh) needs. An ad-hoc signature's identity is the binary's hash, so every update
-# makes macOS forget the app's permissions (Accessibility, for the browser pane); a Developer
+# makes macOS forget the app's permissions (the protected folders it was allowed); a Developer
 # ID signature's is the certificate, and they stay.
 #
 # Channel: with ARKOS_CHANNEL=release (the release workflows and release.sh set it), the bundle

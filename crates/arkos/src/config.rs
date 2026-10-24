@@ -127,14 +127,14 @@ pub enum WideTables {
     Scroll,
 }
 
-/// What "New browser tab" opens when its prompt is left empty, and how.
+/// What "New browser tab" opens when its prompt is left empty.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserConfig {
-    /// Empty: a blank Chrome window.
+    /// Empty: a blank tab.
     pub url: String,
-    /// Open new browser tabs' windows as single pages (Chrome's app mode: no tab strip, no
-    /// address bar). "New single-page browser tab" does so whatever this says.
+    /// Chrome's app mode, from 0.6's Chrome docking. Ignored since 0.7 (the web pane); kept so a
+    /// config that sets it still reads.
     pub app_mode: bool,
 }
 
@@ -535,9 +535,6 @@ option_as_meta = true
 # "open folder" = "cmd-o"
 # "new window" = "cmd-n"
 # "new browser tab" = "cmd-shift-b"
-# "new single-page browser tab" = ""
-# "dock a chrome window" = ""
-# "undock chrome window" = ""
 # "open file in pane" = ""
 # "video play pause" = "space"
 # "video back" = "left"
@@ -566,12 +563,11 @@ highlight_limit_bytes = 5242880
 # wide_tables = "wrap"
 
 [browser]
-# A browser tab is a placeholder a real Chrome window docks onto. "New browser tab" (Cmd+Shift+B)
-# asks for a URL; left empty it opens this one, and this empty opens a blank window. A URL
-# without a scheme gets https://.
+# A browser tab shows a web page inside the pane. "New browser tab" (Cmd+Shift+B) asks for a
+# URL; left empty it opens this one, and this empty opens a blank tab. A URL without a scheme
+# gets https:// (http:// for this machine).
 url = ""
-# true opens new browser tabs' windows as single pages (Chrome's app mode: no tab strip, no
-# address bar). "New single-page browser tab" in the command palette always does.
+# From 0.6's Chrome docking; ignored since 0.7 and kept so an older config still reads.
 app_mode = false
 
 [daemon]
@@ -738,7 +734,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_browser_table_defaults_and_accepts_app_mode() {
+    fn the_browser_table_defaults_and_still_accepts_the_retired_app_mode() {
         let c = parse("").unwrap();
         assert_eq!(c.browser, BrowserConfig { url: String::new(), app_mode: false });
         let c = parse(DEFAULT_CONFIG).unwrap();
@@ -796,8 +792,7 @@ pub(crate) mod tests {
             Documentation, OpenConfig, TextPreset(String::new()), ReloadConfig, ExtractThemes, CommandPalette, SetTheme(String::new()), Find,
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
             ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder,
-            NewWindow, NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, DockChromeWindowAt(0), UndockChromeWindow,
-            OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
+            NewWindow, NewBrowserTab, OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
             VideoStart, VideoLoop, VideoMute, VideoReload,
         ];
         // A variant added to `Command` stops this match from compiling until it is listed above,
@@ -809,8 +804,7 @@ pub(crate) mod tests {
                 | Documentation | OpenConfig | TextPreset(_) | ReloadConfig | ExtractThemes | CommandPalette | SetTheme(_) | Find | CopyAsShown
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
                 | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile
-                | OpenFolder | NewWindow | NewBrowserTab | NewBrowserTabSinglePage | DockChromeWindow | DockChromeWindowAt(_)
-                | UndockChromeWindow | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
+                | OpenFolder | NewWindow | NewBrowserTab | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
                 | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload => {}
             }
         }

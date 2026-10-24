@@ -1,5 +1,5 @@
 # The web developer: a project with a worktree, Claude Code on a feature branch and on the
-# main checkout, the app's page docked in Chrome, tests in a shell.
+# main checkout, the app's page in a web tab, tests in a shell.
 
 [scene]
 name = "web-developer"
@@ -53,4 +53,3 @@ wait = { "rate limit" = "working", durations = "waiting" }
 changed = { "rate limit" = 3 }
 after_secs = 30
 timeout_secs = 360
-chrome = true

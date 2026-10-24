@@ -119,8 +119,8 @@ fn default_sidebar_width() -> f32 {
 }
 
 /// A tab: a shell in the demo (or in a folder of it, `cwd`, a worktree's `.worktrees/<name>`
-/// included) that runs `claude` with a prompt or a plain command; a browser tab waiting for a
-/// Chrome window on `browser`; or a file of the demo open in the viewer (`view`).
+/// included) that runs `claude` with a prompt or a plain command; a web tab on `browser`; or a
+/// file of the demo open in the viewer (`view`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pane {
@@ -133,10 +133,6 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn is_browser(&self) -> bool {
-        self.browser.is_some()
-    }
-
     /// A shell: a session is created for it.
     pub fn is_terminal(&self) -> bool {
         self.browser.is_none() && self.view.is_none()
@@ -194,9 +190,6 @@ pub struct Shot {
     /// status) before the shot: work on screen, whatever the clock says.
     #[serde(default)]
     pub changed: BTreeMap<String, usize>,
-    /// Open the browser pane's page in Chrome while a session works, so Arkos docks it.
-    #[serde(default)]
-    pub chrome: bool,
     #[serde(default, rename = "crop")]
     pub crops: Vec<Crop>,
     /// A click at `[x, y]`, fractions of the window, before the keys: it gives a pane the
@@ -348,9 +341,6 @@ impl Story {
                     bail!("shot {:?}: changed names {pane:?}, which is not a shell pane", s.name);
                 }
             }
-            if s.chrome && !self.panes.iter().any(|p| p.is_browser()) {
-                bail!("shot {:?}: chrome = true, but no pane is a browser", s.name);
-            }
             for c in &s.crops {
                 let [x, y, w, h] = c.rect;
                 if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) || w <= 0.0 || h <= 0.0 || x + w > 1.0 + 1e-9 || y + h > 1.0 + 1e-9 {
@@ -446,7 +436,7 @@ fn node_json(node: &Node, story: &Story, project: &Path, sessions: &BTreeMap<Str
                 tab_ids.push(tab_id);
                 names.push((tab_id, name.clone()));
                 tab_json.push(if let Some(url) = &pane.browser {
-                    serde_json::json!({ "Browser": { "url": url, "app_mode": true } })
+                    serde_json::json!({ "Browser": { "url": url } })
                 } else if let Some(file) = &pane.view {
                     serde_json::json!({ "Viewer": { "path": project.join(file) } })
                 } else {
@@ -526,7 +516,6 @@ second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second
 [[shot]]
 name = "hero"
 wait = { work = "working", tests = "waiting" }
-chrome = true
 
 [[shot.crop]]
 name = "tabs"
@@ -593,7 +582,7 @@ theme = "light"
         assert_eq!(ws["sidebar"]["collapsed"], false);
         let right = &root["second"]["Split"];
         assert_eq!(right["orientation"], "Vertical");
-        assert_eq!(right["first"]["Leaf"]["tabs"][0]["Browser"], serde_json::json!({ "url": "http://localhost:4173/", "app_mode": true }));
+        assert_eq!(right["first"]["Leaf"]["tabs"][0]["Browser"], serde_json::json!({ "url": "http://localhost:4173/" }));
         assert_eq!(right["second"]["Leaf"]["tabs"][0]["Terminal"]["session"], 13);
         // Every pane, split and tab id is distinct and below next_id; the names follow the tab ids.
         let next = ws["tree"]["next_id"].as_u64().unwrap();

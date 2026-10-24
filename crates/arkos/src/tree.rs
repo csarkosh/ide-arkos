@@ -74,14 +74,12 @@ pub enum Tab {
         #[serde(default)]
         mode: ViewMode,
     },
-    /// Milestone 5's browser pane: a placeholder a docked Chrome window sits on. Only the URL it
-    /// opens with is kept (`None`: a blank window), never the window. `app_mode` opens it as a
-    /// single-page window with no tab strip or address bar; absent in older files, which means a
-    /// normal window.
+    /// A web tab (web pane spec, section 3.1): the page it shows, kept current as it navigates;
+    /// empty is a blank tab. Files from 0.6 wrote `null` for a blank tab and an `app_mode` flag,
+    /// which read as blank and nothing.
     Browser {
-        url: Option<String>,
-        #[serde(default)]
-        app_mode: bool,
+        #[serde(default, deserialize_with = "url_or_blank")]
+        url: String,
     },
     /// A video file, played in the pane. Its saved position (seconds) and loop range come back
     /// with the window; absent means the start and no loop.
@@ -92,6 +90,11 @@ pub enum Tab {
         #[serde(default)]
         loop_range: Option<(f64, f64)>,
     },
+}
+
+/// A web tab's URL as 0.6 wrote it (`null` for a blank tab) or as it is written now.
+fn url_or_blank<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 
 /// The file a tab shows, if it shows one.
@@ -827,12 +830,16 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_tab_round_trips_and_an_old_file_without_app_mode_reads_false() {
-        let t = Tab::Browser { url: Some("https://example.com".into()), app_mode: true };
+    fn a_0_6_browser_tab_reads_as_a_web_tab() {
+        let blank: Tab = serde_json::from_str(r#"{"Browser":{"url":null,"app_mode":true}}"#).unwrap();
+        assert_eq!(blank, Tab::Browser { url: String::new() }, "a blank 0.6 tab, its app mode dropped");
+        let page: Tab = serde_json::from_str(r#"{"Browser":{"url":"https://x.dev","app_mode":false}}"#).unwrap();
+        assert_eq!(page, Tab::Browser { url: "https://x.dev".into() });
+        let missing: Tab = serde_json::from_str(r#"{"Browser":{}}"#).unwrap();
+        assert_eq!(missing, Tab::Browser { url: String::new() });
+        let t = Tab::Browser { url: "file:///p/a.html".into() };
         let json = serde_json::to_string(&t).unwrap();
         assert_eq!(serde_json::from_str::<Tab>(&json).unwrap(), t);
-        let old: Tab = serde_json::from_str(r#"{"Browser":{"url":null}}"#).unwrap();
-        assert_eq!(old, Tab::Browser { url: None, app_mode: false });
     }
 
     #[test]

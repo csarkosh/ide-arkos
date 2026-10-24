@@ -439,19 +439,19 @@ mod tests {
         let mut tree = tree_with_two();
         let pane = tree.focused;
         tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some(PathBuf::from("/projects/x-feat")) });
-        tree.add_tab(pane, Tab::Browser { url: Some("https://example.com/docs".into()), app_mode: true });
-        tree.add_tab(pane, Tab::Browser { url: None, app_mode: false });
+        tree.add_tab(pane, Tab::Browser { url: "https://example.com/docs".into() });
+        tree.add_tab(pane, Tab::Browser { url: String::new() });
         let ws = Workspace { version: FORMAT_VERSION, project: project.to_path_buf(), tree, text_preset: None, sidebar: None, window: None, details_open: BTreeMap::new() };
         save_to(&file, &ws).unwrap();
         let loaded = load_from(&file, project).unwrap();
         let tabs = &loaded.tree.pane(loaded.tree.focused).unwrap().tabs;
-        assert!(tabs.contains(&Tab::Browser { url: Some("https://example.com/docs".into()), app_mode: true }), "a browser tab keeps its URL and mode");
-        assert!(tabs.contains(&Tab::Browser { url: None, app_mode: false }), "a blank browser tab stays blank");
+        assert!(tabs.contains(&Tab::Browser { url: "https://example.com/docs".into() }), "a web tab keeps its URL");
+        assert!(tabs.contains(&Tab::Browser { url: String::new() }), "a blank web tab stays blank");
         assert_eq!(Some(loaded), Some(ws), "a worktree terminal keeps its folder");
-        // A browser tab saved before app_mode existed reads as a normal window.
-        std::fs::write(&file, r#"{ "version": 3, "project": "/projects/x", "tree": { "root": { "Leaf": { "id": 1, "tabs": [ { "Browser": { "url": "https://x.dev" } } ], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
+        // A browser tab saved by 0.6 (a URL or null, and an app-mode flag) reads as a web tab.
+        std::fs::write(&file, r#"{ "version": 3, "project": "/projects/x", "tree": { "root": { "Leaf": { "id": 1, "tabs": [ { "Browser": { "url": "https://x.dev", "app_mode": true } }, { "Browser": { "url": null } } ], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
         let ws = load_from(&file, project).unwrap();
-        assert_eq!(ws.tree.pane(1).unwrap().tabs, vec![Tab::Browser { url: Some("https://x.dev".into()), app_mode: false }]);
+        assert_eq!(ws.tree.pane(1).unwrap().tabs, vec![Tab::Browser { url: "https://x.dev".into() }, Tab::Browser { url: String::new() }]);
         // A file from before 4b has no cwd on its terminal tabs: they belong to the project.
         std::fs::write(&file, r#"{ "version": 3, "project": "/projects/x", "tree": { "root": { "Leaf": { "id": 1, "tabs": [ { "Terminal": { "session": 7 } } ], "active": 0 } }, "next_id": 2, "focused": 1, "maximized": null } }"#).unwrap();
         let ws = load_from(&file, project).unwrap();

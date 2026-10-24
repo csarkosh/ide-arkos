@@ -12,9 +12,7 @@
 # What a scene needs: your Claude Code account for a few minutes (the prompts run for real), the
 # Screen Recording permission for "Arkos Shoot" (the tool runs as an app of its own, so macOS
 # attributes the capture to it rather than to whatever shell started it; allow it when asked the
-# first time), and the Accessibility permission for the shoot's copy of Arkos (the browser pane;
-# System Settings > Privacy & Security > Accessibility, add ~/Library/Caches/arkos-shoot/app). The
-# window need not stay in front: captures go by window id. Progress captures and the panes'
+# first time). The window need not stay in front: captures go by window id. Progress captures and the panes'
 # states land in docs/images/progress/<scene>/ every 20 s.
 set -eu
 cd "$(dirname "$0")/.."

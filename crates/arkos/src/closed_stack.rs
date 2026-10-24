@@ -23,9 +23,8 @@ pub enum Closed {
     /// The session, and the worktree its tab was opened in (`None`: the project).
     Session(SessionId, Option<PathBuf>),
     Viewer(PathBuf),
-    /// A browser tab: what it opened with. It reopens waiting for a Chrome window, whenever it
-    /// is popped; the window it had was never arkos's to keep.
-    Browser { url: Option<String>, app_mode: bool },
+    /// A web tab: the page it was on. It reopens on that page, whenever it is popped.
+    Browser { url: String },
     /// A video tab: the file, and the position and loop it had.
     Video { path: PathBuf, at: Option<f64>, loop_range: Option<(f64, f64)> },
 }
@@ -150,13 +149,13 @@ mod tests {
     fn a_closed_browser_pops_as_a_browser_like_a_viewer() {
         let t0 = Instant::now();
         let mut s = ClosedStack::default();
-        let browser = |url: Option<&str>, app_mode| ClosedTab { closed: Closed::Browser { url: url.map(String::from), app_mode }, pane: 3, closed_at: t0, daemon_timed: false };
+        let browser = |url: &str| ClosedTab { closed: Closed::Browser { url: url.to_string() }, pane: 3, closed_at: t0, daemon_timed: false };
         assert!(s.push(closed(1, 4, t0)).is_empty());
-        assert!(s.push(browser(Some("https://example.com"), true)).is_empty());
+        assert!(s.push(browser("https://example.com")).is_empty());
         assert_eq!(s.expired(t0 + CLOSE_GRACE * 10), vec![SessionId(1)]);
         assert_eq!(s.len(), 1, "the browser tab outlives the grace: it has no session to end");
-        assert_eq!(s.pop(), Some(browser(Some("https://example.com"), true)));
-        assert!(s.push(browser(None, false)).is_empty());
+        assert_eq!(s.pop(), Some(browser("https://example.com")));
+        assert!(s.push(browser("")).is_empty());
         assert_eq!(s.drain_all(), Vec::<SessionId>::new(), "quitting ends only sessions");
     }
 

@@ -787,7 +787,7 @@ mod tests {
         let right = tree.split(left, Side::Right, video("/p/cut.mp4")).unwrap();
         tree.add_tab(right, viewer("/p/notes.md"));
         tree.add_tab(right, viewer("/p/main.rs"));
-        tree.add_tab(right, Tab::Browser { url: None, app_mode: false });
+        tree.add_tab(right, Tab::Browser { url: String::new() });
         tree.activate_quiet(right, 0);
         tree.focused = left;
         let titles = |pane: PaneId, idx: usize| format!("t{pane}.{idx}");

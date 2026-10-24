@@ -15,7 +15,6 @@ pub enum CheckId {
     ClaudeTheme,
     StartAtLogin,
     TitleHook,
-    Accessibility,
     AgentGuide,
 }
 
@@ -43,7 +42,6 @@ pub struct Probe<'a> {
     pub exe: &'a Path,
     pub start_at_login: StartAtLogin,
     pub login_item_installed: bool,
-    pub accessibility: bool,
     pub scroll_applied: bool,
     /// The skills folder of this process's Claude config (`guide::skills_dir`).
     pub skills: &'a Path,
@@ -76,11 +74,6 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
         Ok(false) => (State::Fix("missing: tabs show no Claude Code state".into()), Some("Install")),
         Err(e) => (State::Broken(e), None),
     };
-    let (ax_state, ax_button) = if p.accessibility {
-        (State::Good("granted".into()), None)
-    } else {
-        (State::Fix("not granted: browser tabs cannot dock".into()), Some("Open System Settings"))
-    };
     let dir = p.skills.display();
     let (guide_state, guide_button) = match (&p.skill, p.claude_present) {
         (_, false) => (State::Pinned("no Claude Code config found".into()), None),
@@ -94,7 +87,6 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
         Check { id: CheckId::ClaudeTheme, title: "Claude Code: follows the Arkos theme", state: theme_state, button: theme_button },
         Check { id: CheckId::StartAtLogin, title: "Start at login", state: login_state, button: login_button },
         Check { id: CheckId::TitleHook, title: "Claude Code title hook", state: hook_state, button: hook_button },
-        Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: ax_state, button: ax_button },
         Check { id: CheckId::AgentGuide, title: "Agent guide for Claude Code", state: guide_state, button: guide_button },
     ]
 }
@@ -116,7 +108,6 @@ mod tests {
             exe,
             start_at_login: StartAtLogin::Ask,
             login_item_installed: false,
-            accessibility: true,
             scroll_applied: false,
             skills: Path::new("/h/.claude/skills"),
             skill: SkillState::Current,
@@ -130,14 +121,13 @@ mod tests {
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
         let checks = probe_all(&probe(&settings, exe));
-        assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::ClaudeTheme, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::Accessibility, CheckId::AgentGuide]);
+        assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::ClaudeTheme, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::AgentGuide]);
         assert_eq!(checks[0], Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: State::Fix("off: fast scrolls jump in Claude Code".into()), button: Some("Apply") });
         assert_eq!(checks[2].state, State::Fix("off: sessions do not come back after a restart".into()));
         assert_eq!(checks[2].button, Some("Install"));
         assert_eq!(checks[3].state, State::Fix("missing: tabs show no Claude Code state".into()));
         assert_eq!(checks[3].button, Some("Install"));
         assert_eq!(checks[3].title, "Claude Code title hook");
-        assert_eq!(checks[4], Check { id: CheckId::Accessibility, title: "Accessibility for browser docking", state: State::Good("granted".into()), button: None });
         assert_eq!(checks[1], Check { id: CheckId::ClaudeTheme, title: "Claude Code: follows the Arkos theme", state: State::Fix("not set: Claude Code keeps its own colours, unreadable on some Arkos themes".into()), button: Some("Apply") });
         assert_eq!(needs_fix(&checks), 4);
     }
@@ -175,20 +165,17 @@ mod tests {
     }
 
     #[test]
-    fn config_pins_start_at_login_and_accessibility_opens_settings() {
+    fn config_pins_start_at_login() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/x/arkos");
         let mut p = probe(&settings, exe);
         p.start_at_login = StartAtLogin::Off;
-        p.accessibility = false;
         let checks = probe_all(&p);
         assert_eq!(checks[2], Check { id: CheckId::StartAtLogin, title: "Start at login", state: State::Pinned("off, set in config.toml ([recovery] start_at_login)".into()), button: None });
-        assert_eq!(checks[4].state, State::Fix("not granted: browser tabs cannot dock".into()));
-        assert_eq!(checks[4].button, Some("Open System Settings"));
         p.start_at_login = StartAtLogin::On;
         assert_eq!(probe_all(&p)[2].state, State::Pinned("on, set in config.toml ([recovery] start_at_login)".into()));
-        assert_eq!(needs_fix(&probe_all(&p)), 4, "pinned rows never count; scroll, theme, hook and accessibility do");
+        assert_eq!(needs_fix(&probe_all(&p)), 3, "pinned rows never count; scroll, theme and hook do");
     }
 
     #[test]

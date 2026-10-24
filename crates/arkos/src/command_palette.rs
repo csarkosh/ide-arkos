@@ -119,7 +119,7 @@ impl Palette {
         Self::list(items, "type a command", focus)
     }
 
-    /// The palette over a list of choices of one kind (the Chrome windows to dock), each row
+    /// The palette over a list of choices of one kind (a list a command offers), each row
     /// running its own command; filtered and picked like the commands.
     pub fn list(items: Vec<Item>, placeholder: &'static str, focus: FocusHandle) -> Self {
         let mut p = Self { query: LineEdit::new(), selected: 0, items, visible: vec![], focus: Some(focus), placeholder };
@@ -291,9 +291,7 @@ mod tests {
         assert_eq!((window.detail.as_str(), &window.command), ("Cmd+N", &Command::NewWindow));
         let browser = items.iter().find(|i| i.label == "New browser tab\u{2026}").unwrap();
         assert_eq!((browser.detail.as_str(), &browser.command), ("Shift+Cmd+B", &Command::NewBrowserTab));
-        assert_eq!(items.iter().find(|i| i.label == "New single-page browser tab\u{2026}").unwrap().command, Command::NewBrowserTabSinglePage);
-        assert_eq!(items.iter().find(|i| i.label == "Dock a Chrome window\u{2026}").unwrap().command, Command::DockChromeWindow);
-        assert_eq!(items.iter().find(|i| i.label == "Undock Chrome window").unwrap().command, Command::UndockChromeWindow);
+        assert!(items.iter().all(|i| !i.label.contains("Chrome")), "the docking commands are gone");
         let markdown = items.iter().find(|i| i.label == "Toggle markdown view").unwrap();
         assert_eq!((markdown.detail.as_str(), &markdown.command), ("Shift+Cmd+M", &Command::ToggleMarkdownView));
         let save = items.iter().find(|i| i.label == "Save file").unwrap();

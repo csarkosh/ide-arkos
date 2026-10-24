@@ -23,7 +23,7 @@ sha2.workspace = true
 objc2 = "0.6"
 # Already in the tree through gpui: the AppKit view behind the window, for docking (spec 8).
 raw-window-handle = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime", "NSDictionary", "NSValue", "NSURL", "NSError"] }
+objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime", "NSDictionary", "NSValue", "NSURL", "NSURLRequest", "NSGeometry", "NSError"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing"] }
 similar = "2"
 # Markdown parsing for the editor's block layer (md_blocks).
@@ -34,7 +34,10 @@ unicode-segmentation = "1"
 unicode-width = "0.2"
 # The browser pane (spec 8): Chrome's pid, the mouse, the screens and arkos's own window. Default
 # features off: the full AppKit binding is a long compile, and only these modules are used.
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSGraphics", "NSView"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSEvent", "NSRunningApplication", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSGraphics", "NSView", "NSColor", "NSPasteboard"] }
+# The web pane (web pane spec, section 3): a WKWebView child of the window. Default features off,
+# as for AppKit: only the view, its configuration, the two delegates and the data store.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKPreferences", "WKWebpagePreferences", "WKNavigation", "WKNavigationDelegate", "WKUIDelegate", "WKWebsiteDataStore", "WKProcessPool", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKWindowFeatures", "WKBackForwardList", "WKUserContentController", "WKError", "WKFoundation", "objc2-app-kit", "objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFString", "CFNumber", "CFCGTypes"] }
 # gpui's CoreVideo crate: the pixel buffer type its surface element paints (video tab).
 core-video = "0.4.3"

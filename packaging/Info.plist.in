@@ -24,5 +24,12 @@
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
+	<!-- The web pane: an http:// page on a LAN host loads in the WKWebView (loopback already
+	     may). Web content only; nothing of Arkos's own uses the exception. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
