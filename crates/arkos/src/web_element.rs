@@ -10,13 +10,28 @@ use crate::tree::{PaneId, TabId};
 use crate::web::{LoadState, BAR_H};
 use crate::web_view::WebView;
 use crate::Root;
-use gpui::{canvas, div, prelude::*, px, ClickEvent, Context, Div, Entity, KeyDownEvent, MouseButton, MouseDownEvent, SharedString};
+use gpui::{canvas, div, prelude::*, px, ClickEvent, Context, Div, Entity, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString};
 use std::time::Instant;
 
 /// The glyph buttons' width.
 const BUTTON_W: f32 = 24.0;
 /// The progress hairline's height, along the bar's bottom edge.
 const PROGRESS_H: f32 = 2.0;
+
+/// The address field's text size.
+const ADDRESS_SIZE: f32 = 12.0;
+
+/// The char of the address under a pointer at window x `x`, the text starting at `left`: the
+/// text is shaped as the field draws it and hit-tested at the nearest boundary.
+fn address_char_at(edit: &crate::line_edit::LineEdit, left: gpui::Pixels, x: gpui::Pixels, family: &SharedString, window: &mut gpui::Window) -> usize {
+    if edit.text.is_empty() {
+        return 0;
+    }
+    let run = gpui::TextRun { len: edit.text.len(), font: gpui::font(family.clone()), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
+    let shaped = window.text_system().shape_line(edit.text.clone().into(), px(ADDRESS_SIZE), &[run], None);
+    let byte = shaped.closest_index_for_x((x - left).max(px(0.0)));
+    edit.char_at_byte(byte)
+}
 
 /// How wide the progress hairline is on a bar `bar_w` wide: the load's share of it, never past
 /// the bar, nothing for a value that is not one.
@@ -105,12 +120,43 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
         .on_mouse_down(MouseButton::Left, {
             let weak = view.downgrade();
             let address_focus = address_focus.clone();
-            cx.listener(move |root, _ev: &MouseDownEvent, window, cx| {
+            let family = family.clone();
+            cx.listener(move |root, ev: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 root.focus_pane(pane, cx);
                 root.keys_back_to_arkos();
                 window.focus(&address_focus);
-                let _ = weak.update(cx, |v, cx| v.begin_edit(cx));
+                // The first press into the field selects the whole address; a press while it is
+                // already being edited puts the cursor under the pointer, as in a browser.
+                let editing = weak.read_with(cx, |v, _| v.editing).unwrap_or(false);
+                if editing && ev.click_count < 2 {
+                    let at = weak.read_with(cx, |v, _| address_char_at(&v.address, v.address_x, ev.position.x, &family, window)).unwrap_or(0);
+                    let _ = weak.update(cx, |v, cx| v.press_address(at, ev.modifiers.shift, cx));
+                } else {
+                    let _ = weak.update(cx, |v, cx| v.begin_edit(cx));
+                }
+            })
+        })
+        .on_mouse_move({
+            let weak = view.downgrade();
+            let family = family.clone();
+            cx.listener(move |_root, ev: &MouseMoveEvent, window, cx| {
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    if weak.read_with(cx, |v, _| v.address_drag).unwrap_or(false) {
+                        let _ = weak.update(cx, |v, _| v.release_address());
+                    }
+                    return;
+                }
+                if weak.read_with(cx, |v, _| v.address_drag).unwrap_or(false) {
+                    let at = weak.read_with(cx, |v, _| address_char_at(&v.address, v.address_x, ev.position.x, &family, window)).unwrap_or(0);
+                    let _ = weak.update(cx, |v, cx| v.drag_address(at, cx));
+                }
+            })
+        })
+        .on_mouse_up(MouseButton::Left, {
+            let weak = view.downgrade();
+            cx.listener(move |_root, _ev: &MouseUpEvent, _window, cx| {
+                let _ = weak.update(cx, |v, _| v.release_address());
             })
         })
         .on_click({
@@ -134,7 +180,29 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
                 }
             }
         }))
-        .child(crate::line_edit::render(&address, "an address, like localhost:4173 or example.com", theme, family.clone(), 12.0));
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    // Where the text starts this frame, for placing a click's cursor.
+                    canvas(
+                        {
+                            let weak = view.downgrade();
+                            move |bounds, _window, cx| {
+                                let _ = weak.update(cx, |v, _| v.address_x = bounds.origin.x);
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .child(crate::line_edit::render(&address, "an address, like localhost:4173 or example.com", theme, family.clone(), ADDRESS_SIZE)),
+        );
     let hairline = progress.map(|p| {
         div().absolute().left_0().bottom_0().h(px(PROGRESS_H)).bg(accent).w_full().child(
             canvas(

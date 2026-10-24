@@ -34,6 +34,10 @@ pub struct WebView {
     pub address: LineEdit,
     pub address_focus: FocusHandle,
     pub editing: bool,
+    /// The address text's left edge in window pixels, from the last paint, and whether a press
+    /// in the field is being dragged: a click places the cursor by it.
+    pub address_x: gpui::Pixels,
+    pub address_drag: bool,
     /// The bar's notice and when it was set (`NOTICE_FOR`).
     pub notice: Option<(String, Instant)>,
     /// The title last reported, so `Root` hears each change once.
@@ -58,7 +62,7 @@ impl WebView {
             }
         })
         .detach();
-        WebView { model, web, focus: cx.focus_handle(), address, address_focus: cx.focus_handle(), editing: false, notice: None, title_sent: None, notice_timer: None }
+        WebView { model, web, focus: cx.focus_handle(), address, address_focus: cx.focus_handle(), editing: false, address_x: gpui::px(0.0), address_drag: false, notice: None, title_sent: None, notice_timer: None }
     }
 
     /// The tab's title (spec 3.1).
@@ -235,6 +239,28 @@ impl WebView {
             self.address.select_all();
         }
         cx.notify();
+    }
+
+    /// A press in the address field while it is being edited, at char `at`: as in a browser,
+    /// the cursor goes there and a selection goes (or extends with Shift), and a drag from it
+    /// selects (`drag_address`).
+    pub fn press_address(&mut self, at: usize, shift: bool, cx: &mut Context<Self>) {
+        self.address.place(at, shift);
+        self.address_drag = true;
+        cx.notify();
+    }
+
+    /// The pointer moved with the button down after `press_address`: the selection follows it.
+    pub fn drag_address(&mut self, at: usize, cx: &mut Context<Self>) {
+        if self.address_drag {
+            self.address.place(at, true);
+            cx.notify();
+        }
+    }
+
+    /// The pointer came up: the drag ends.
+    pub fn release_address(&mut self) {
+        self.address_drag = false;
     }
 
     /// A double click in the address field selects the whole address.

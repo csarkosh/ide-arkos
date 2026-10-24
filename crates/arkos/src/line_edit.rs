@@ -49,6 +49,26 @@ impl LineEdit {
         self.anchor = (self.cursor > 0).then_some(0);
     }
 
+    /// A click at char `at`: the cursor goes there and the selection goes, or, with `extend` (a
+    /// drag, or Shift held), the selection runs from where it started to there.
+    pub fn place(&mut self, at: usize, extend: bool) {
+        let at = at.min(self.len());
+        if extend {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = at;
+    }
+
+    /// The char index of a byte offset into `text` (a shaped line's hit test answers in bytes),
+    /// rounded down to the char it falls in.
+    pub fn char_at_byte(&self, byte: usize) -> usize {
+        self.text.char_indices().take_while(|(b, _)| *b < byte).count()
+    }
+
     /// The selection as `[from, to)` in chars, when it is not empty.
     pub fn selection(&self) -> Option<(usize, usize)> {
         let a = self.anchor?;
@@ -263,6 +283,23 @@ mod tests {
         e.select_all();
         e.insert_str("v");
         assert_eq!(e.text, "v", "a paste replaces the selection");
+    }
+
+    #[test]
+    fn a_click_places_the_cursor_and_drops_the_selection_and_a_drag_extends_it() {
+        let mut e = LineEdit::new();
+        e.set("https://example.com");
+        e.select_all();
+        e.place(8, false);
+        assert_eq!((e.cursor, e.selection()), (8, None), "a click in a selected address deselects it");
+        e.place(15, true);
+        assert_eq!(e.selected_text(), "example", "a drag from there selects to the pointer");
+        e.place(3, true);
+        assert_eq!(e.selected_text(), "ps://", "back past where it started, the other way");
+        e.place(99, false);
+        assert_eq!(e.cursor, 19, "past the end is the end");
+        let w = LineEdit { text: "héllo".into(), cursor: 0, anchor: None };
+        assert_eq!((w.char_at_byte(0), w.char_at_byte(1), w.char_at_byte(3), w.char_at_byte(6)), (0, 1, 2, 5), "bytes to chars across a two-byte é");
     }
 
     #[test]
