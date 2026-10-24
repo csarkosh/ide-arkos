@@ -207,7 +207,7 @@ mod tests {
             ("notice", &[("kind", &["update_ready", "updated", "daemon", "config_error", "theme_error"])]),
             (
                 "error",
-                &[("kind", &["daemon_unreachable", "daemon_restarted", "session_lost", "chrome_missing", "mermaid_failed", "save_failed", "video_unplayable"])],
+                &[("kind", &["daemon_unreachable", "daemon_restarted", "session_lost", "mermaid_failed", "save_failed", "video_unplayable"])],
             ),
             ("help", &[("what", &["keybindings", "documentation", "about", "telemetry"])]),
         ];

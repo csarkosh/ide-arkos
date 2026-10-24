@@ -847,7 +847,7 @@ mod tests {
         let mut t = Tree::new(term(1));
         let a = t.focused;
         t.add_tab(a, Tab::Viewer { path: PathBuf::from("/x"), mode: crate::tree::ViewMode::default() });
-        t.add_tab(a, Tab::Browser { url: Some("https://example.com".into()), app_mode: false });
+        t.add_tab(a, Tab::Browser { url: "https://example.com".into() });
         let plan = reconcile(&t, &[info(1, here.path(), true)], here.path());
         assert_eq!(plan, vec![Reconcile::Attach { tab: t.tab_id(a, 0).unwrap(), session: SessionId(1) }]);
     }

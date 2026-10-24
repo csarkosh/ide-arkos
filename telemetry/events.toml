@@ -83,10 +83,6 @@ command = [
     "open_folder",
     "new_window",
     "new_browser_tab",
-    "new_browser_tab_single_page",
-    "dock_chrome_window",
-    "dock_chrome_window_at",
-    "undock_chrome_window",
     "open_file_in_pane",
     "video_play_pause",
     "video_back",
@@ -99,6 +95,12 @@ command = [
     "video_loop",
     "video_mute",
     "video_reload",
+    "page_back",
+    "page_forward",
+    "reload_page",
+    "focus_address",
+    "open_in_browser",
+    "zoom_reset",
 ]
 
 # The config keys, never their values. `font.presets.*` is collapsed to `font.presets` and the
@@ -143,7 +145,7 @@ step = ["staged", "applied", "failed", "rolled_back"]
 kind = ["update_ready", "updated", "daemon", "config_error", "theme_error"]
 
 [events.error]
-kind = ["daemon_unreachable", "daemon_restarted", "session_lost", "chrome_missing", "mermaid_failed", "save_failed", "video_unplayable"]
+kind = ["daemon_unreachable", "daemon_restarted", "session_lost", "mermaid_failed", "save_failed", "video_unplayable"]
 
 # Which command an agent ran against the window's panes, and whether it succeeded.
 [events.agent_pane]

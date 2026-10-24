@@ -73,24 +73,30 @@ pub fn plan_open(tree: &Tree, path: &Path, place: &Placement, reuse: bool, ancho
 
 /// Every tab on `path`, in reading order: an exact match, else one whose path canonicalizes to
 /// it (a tab opened from the sidebar under a symlinked folder such as `/tmp` keeps the path as
-/// clicked, while the command line sends the canonical one).
+/// clicked, while the command line sends the canonical one). A web address (an `http(s)`
+/// "path") matches the web tabs on that page (`web::same_url`).
 fn tabs_on_file(tree: &Tree, path: &Path) -> Vec<(PaneId, usize)> {
+    let text = path.to_string_lossy();
+    if text.starts_with("http://") || text.starts_with("https://") {
+        return tree.tabs().into_iter().filter(|(_, _, t)| matches!(t, Tab::Browser { url } if crate::web::same_url(url, &text))).map(|(pane, idx, _)| (pane, idx)).collect();
+    }
     let exact = tree.tabs_on(path);
     if !exact.is_empty() {
         return exact;
     }
     tree.tabs()
         .into_iter()
-        .filter(|(_, _, t)| tab_file(t).and_then(|p| std::fs::canonicalize(p).ok()).is_some_and(|p| p == path))
+        .filter(|(_, _, t)| tab_file(t).map(|p| std::fs::canonicalize(&p).unwrap_or(p)).is_some_and(|p| p == path))
         .map(|(pane, idx, _)| (pane, idx))
         .collect()
 }
 
-/// The file a viewer or video tab shows.
-fn tab_file(tab: &Tab) -> Option<&Path> {
+/// The file a viewer, video or local web tab shows.
+fn tab_file(tab: &Tab) -> Option<PathBuf> {
     match tab {
-        Tab::Viewer { path, .. } | Tab::Video { path, .. } => Some(path),
-        Tab::Terminal { .. } | Tab::Browser { .. } => None,
+        Tab::Viewer { path, .. } | Tab::Video { path, .. } => Some(path.clone()),
+        Tab::Browser { url } => crate::web::file_path(url),
+        Tab::Terminal { .. } => None,
     }
 }
 
@@ -171,8 +177,12 @@ pub fn panes_report(tree: &Tree, project: &Path, you: Option<SessionId>, titles:
                         title: titles(id, idx),
                         active: p.active == idx,
                         you: you.is_some() && session == you,
-                        path: tab_file(tab).map(Path::to_path_buf),
+                        path: tab_file(tab),
                         session,
+                        url: match tab {
+                            Tab::Browser { url } => Some(url.clone()),
+                            _ => None,
+                        },
                     }
                 })
                 .collect();
@@ -204,7 +214,7 @@ pub fn pick_videos(tree: &Tree, path: Option<&Path>, op_is_status: bool) -> Resu
     let lines: Vec<String> = videos
         .iter()
         .map(|(pane, idx)| {
-            let name = tree.pane(*pane).and_then(|p| tab_file(p.tabs.get(*idx)?)).and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = tree.pane(*pane).and_then(|p| tab_file(p.tabs.get(*idx)?)).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
             format!("pane {}: {name}", pane_number(tree, *pane))
         })
         .collect();
@@ -251,6 +261,7 @@ pub fn new_tab(path: &Path, kind: OpenKind, at: Option<f64>, loop_change: LoopCh
         }
         OpenKind::Markdown { raw: true } => Tab::Viewer { path, mode: ViewMode::Raw },
         OpenKind::Markdown { raw: false } | OpenKind::Text => Tab::Viewer { path, mode: ViewMode::Rendered },
+        OpenKind::Web => Tab::Browser { url: crate::web::web_url_of(&path) },
     }
 }
 
@@ -389,6 +400,13 @@ impl Root {
             }
             self.save(cx);
             cx.notify();
+        }
+        if let Some(Tab::Browser { url }) = &shown {
+            // A page already shown is loaded again (web pane spec, section 8): the agent says it
+            // changed it. A local page reloads only when its file is newer than the one shown.
+            let view = self.web_for(tab, url, cx);
+            let reloaded = reused && view.update(cx, |v, cx| v.reload_if_changed(cx));
+            return Ok((Answer::Opened { tab, reused, reloaded, new_pane }, Vec::new(), Vec::new(), false));
         }
         let Some(Tab::Video { path, .. }) = shown else {
             return Ok((Answer::Opened { tab, reused, reloaded: false, new_pane }, Vec::new(), Vec::new(), false));
@@ -535,7 +553,11 @@ impl Root {
                     Tab::Video { .. } => self.video_state(*tab, cx),
                     _ => None,
                 };
-                Ok(PaneOutcome::Opened { pane: pane_number(&self.tree, pane), tab: *tab, kind: kind_string(shown).to_string(), reused: *reused, reloaded: *reloaded, new_pane: *new_pane, raw, video })
+                let web = match shown {
+                    Tab::Browser { .. } => self.webs.get(tab).map(|v| v.read(cx).status()),
+                    _ => None,
+                };
+                Ok(PaneOutcome::Opened { pane: pane_number(&self.tree, pane), tab: *tab, kind: kind_string(shown).to_string(), reused: *reused, reloaded: *reloaded, new_pane: *new_pane, raw, video, web })
             }
             Answer::Videos(touched) => videos_answer(touched.iter().map(|(tab, kept)| kept.clone().or_else(|| self.video_state(*tab, cx))).collect()),
         }
@@ -787,7 +809,7 @@ mod tests {
         let right = tree.split(left, Side::Right, video("/p/cut.mp4")).unwrap();
         tree.add_tab(right, viewer("/p/notes.md"));
         tree.add_tab(right, viewer("/p/main.rs"));
-        tree.add_tab(right, Tab::Browser { url: None, app_mode: false });
+        tree.add_tab(right, Tab::Browser { url: String::new() });
         tree.activate_quiet(right, 0);
         tree.focused = left;
         let titles = |pane: PaneId, idx: usize| format!("t{pane}.{idx}");
@@ -800,7 +822,7 @@ mod tests {
         let row = |p: &PaneRow, i: usize| p.tabs[i].clone();
         assert_eq!(
             row(p1, 0),
-            TabRow { id: tree.tab_id(left, 0).unwrap(), kind: "terminal".into(), title: format!("t{left}.0"), active: false, you: true, path: None, session: Some(SessionId(1)) }
+            TabRow { id: tree.tab_id(left, 0).unwrap(), kind: "terminal".into(), title: format!("t{left}.0"), active: false, you: true, path: None, session: Some(SessionId(1)), url: None }
         );
         assert_eq!((row(p1, 1).active, row(p1, 1).you, row(p1, 1).session), (true, false, Some(SessionId(2))));
         assert_eq!((row(p2, 0).kind.as_str(), row(p2, 0).active, row(p2, 0).path), ("video", true, Some(PathBuf::from("/p/cut.mp4"))));
@@ -811,6 +833,23 @@ mod tests {
         // Without a session no tab is "you".
         let report = panes_report(&tree, Path::new("/proj"), None, &titles);
         assert!(report.panes.iter().flat_map(|p| &p.tabs).all(|t| !t.you));
+    }
+
+    #[test]
+    fn a_web_address_already_shown_is_reused_whatever_its_slash_or_fragment() {
+        let mut tree = Tree::new(terminal(1));
+        let left = tree.focused;
+        let right = tree.split(left, Side::Right, Tab::Browser { url: "http://localhost:4173".into() }).unwrap();
+        assert!(matches!(plan_open(&tree, Path::new("http://localhost:4173/"), &Placement::Preview, true, Some(left), None), Ok(OpenStep::Reuse { pane, idx: 0 }) if pane == right));
+        assert!(matches!(plan_open(&tree, Path::new("http://localhost:4173/#top"), &Placement::Preview, true, Some(left), None), Ok(OpenStep::Reuse { pane, idx: 0 }) if pane == right));
+        assert!(matches!(plan_open(&tree, Path::new("http://localhost:4173/other"), &Placement::Preview, true, Some(left), None), Ok(OpenStep::SplitFrom { .. })), "another page is a new tab");
+        assert!(matches!(plan_open(&tree, Path::new("http://localhost:4173/"), &Placement::Preview, false, Some(left), None), Ok(OpenStep::SplitFrom { .. })), "--new");
+        assert_eq!(new_tab(Path::new("https://a.dev/x"), OpenKind::Web, None, LoopChange::Keep), Tab::Browser { url: "https://a.dev/x".into() });
+        assert_eq!(new_tab(Path::new("/p/out/r.html"), OpenKind::Web, None, LoopChange::Keep), Tab::Browser { url: "file:///p/out/r.html".into() });
+        assert_eq!(kind_string(&Tab::Browser { url: String::new() }), "browser");
+        let report = panes_report(&tree, Path::new("/p"), None, &|_, _| "t".into());
+        assert_eq!(report.panes[1].tabs[0].url.as_deref(), Some("http://localhost:4173"));
+        assert_eq!(report.panes[1].tabs[0].path, None, "a remote page has no file");
     }
 
     #[test]

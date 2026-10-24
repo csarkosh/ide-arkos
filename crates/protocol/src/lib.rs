@@ -19,7 +19,7 @@ use std::time::Duration;
 /// Version 7 adds telemetry: the window's `Session` after its Hello, the `TelemetryStatus`
 /// request and answer, and `SessionQuit`. Version 8 adds the targeted channel: a tool client's
 /// `Direct`, the window's `Event::Direct` and `DirectDone`, and the `Directed` answer.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -38,6 +38,8 @@ pub const TELEMETRY_FROM: u32 = 7;
 /// The first protocol whose windows answer `Event::Direct`. An older project window is never
 /// the target of a `Direct`.
 pub const DIRECT_FROM: u32 = 8;
+/// The first protocol whose windows open a web page (`OpenKind::Web`, web pane spec section 8).
+pub const WEB_OPEN_FROM: u32 = 9;
 /// How long the daemon waits for the windows' answers to a `Customize` before it replies with
 /// the silent ones as `missing`.
 pub const CUSTOMIZE_WAIT: Duration = Duration::from_secs(2);
@@ -164,6 +166,9 @@ pub enum OpenKind {
     /// A markdown document, raw source when `raw` and rendered otherwise.
     Markdown { raw: bool },
     Text,
+    /// A web page (web pane spec, section 8): `path` is an absolute `.html` file, or an `http`
+    /// or `https` address as text.
+    Web,
 }
 
 /// Where `PaneAction::Open` puts the new tab.
@@ -253,6 +258,17 @@ pub struct VideoState {
     pub file_mtime: Option<u64>,
 }
 
+/// A web tab's state as its window reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebState {
+    /// The page, or the address being loaded.
+    pub url: String,
+    /// One of "blank", "loading", "ready" or "failed".
+    pub state: String,
+    /// The reason when `state` is "failed".
+    pub error: Option<String>,
+}
+
 /// One tab as `PaneAction::Panes` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabRow {
@@ -265,6 +281,8 @@ pub struct TabRow {
     pub you: bool,
     pub path: Option<PathBuf>,
     pub session: Option<SessionId>,
+    /// A web tab's page.
+    pub url: Option<String>,
 }
 
 /// One pane as `PaneAction::Panes` lists it.
@@ -290,7 +308,7 @@ pub enum PaneOutcome {
     /// The answer to `PaneAction::Open`: where the tab is, whether an existing tab was reused or
     /// reloaded, whether a pane was created for it, whether a markdown tab shows its source, and
     /// the video's state when it is one.
-    Opened { pane: u32, tab: u64, kind: String, reused: bool, reloaded: bool, new_pane: bool, raw: bool, video: Option<VideoState> },
+    Opened { pane: u32, tab: u64, kind: String, reused: bool, reloaded: bool, new_pane: bool, raw: bool, video: Option<VideoState>, web: Option<WebState> },
     /// The answer to `PaneAction::Video`: the videos it touched.
     Videos(Vec<VideoState>),
     /// The answer to `PaneAction::Panes`.
@@ -476,7 +494,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -526,7 +544,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
         let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         assert_eq!(CUSTOMIZE_FROM, 6);
         assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
         assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
@@ -540,7 +558,7 @@ mod tests {
 
     #[test]
     fn telemetry_messages_round_trip_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         assert_eq!(TELEMETRY_FROM, 7);
         let session = Request::Session { sid: "0123456789abcdef0123456789abcdef".into() };
         let status = Response::TelemetryStatus {
@@ -587,8 +605,10 @@ mod tests {
 
     #[test]
     fn direct_messages_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         assert_eq!(DIRECT_FROM, 8);
+        assert_eq!(WEB_OPEN_FROM, 9);
+        assert_eq!(first_byte(&OpenKind::Web), 3, "the web kind sits after the three of protocol 8");
         let action = PaneAction::Panes;
         let outcome = Ok(PaneOutcome::Videos(vec![]));
         assert_eq!(first_byte(&Request::Direct { id: 1, window: WindowTarget::Only, action: action.clone() }), 26);
@@ -610,8 +630,8 @@ mod tests {
             wait_for_file: true,
             focus: true,
         };
-        let opened = PaneOutcome::Opened { pane: 2, tab: 41, kind: "video".into(), reused: false, reloaded: true, new_pane: true, raw: false, video: Some(sample_video()) };
-        let tab = |id: u64, you: bool| TabRow { id, kind: "terminal".into(), title: "claude".into(), active: you, you, path: None, session: Some(SessionId(7)) };
+        let opened = PaneOutcome::Opened { pane: 2, tab: 41, kind: "video".into(), reused: false, reloaded: true, new_pane: true, raw: false, video: Some(sample_video()), web: None };
+        let tab = |id: u64, you: bool| TabRow { id, kind: "terminal".into(), title: "claude".into(), active: you, you, path: None, session: Some(SessionId(7)), url: None };
         let report = PanesReport {
             project: "/p".into(),
             panes: vec![

@@ -28,7 +28,6 @@ pub fn ratio_from_pointer(area: Rect, orientation: Orientation, x: f32, y: f32) 
 pub fn render_tree(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let layout = root.layout();
     root.pane_order = root.tree.panes();
-    root.pane_rects.clear();
     root.forget_closed_panes();
     let (ox, oy) = (root.content.x, root.content.y);
     // A handle not drawn this frame (its pane maximized or closed) gets no leave event: forget

@@ -109,7 +109,7 @@ fn say(msg: &str) {
 }
 
 /// Set by SIGINT or SIGTERM: the run stops at its next step and ends everything it started
-/// (the window, the daemon, the sessions, the site, the Chrome window), as it would at the end.
+/// (the window, the daemon, the sessions, the site), as it would at the end.
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -143,13 +143,8 @@ struct Running {
     site: Option<Child>,
     client: Option<Daemon>,
     sessions: Vec<SessionId>,
-    chrome_url: Option<String>,
-    /// The browser panes' pages, closed in Chrome at the end whatever happened.
-    pages: Vec<String>,
     /// The demo's folder once it exists: processes still working in it are ended at the end.
     demo: Option<PathBuf>,
-    /// Chrome's windows before the shoot opened its page: the docked one is the new one.
-    chrome_before: Option<Vec<u32>>,
 }
 
 fn run(opts: Opts) -> Result<()> {
@@ -166,11 +161,8 @@ fn run(opts: Opts) -> Result<()> {
     std::fs::create_dir_all(&opts.out)?;
     let out = opts.out.canonicalize()?;
     clean(&dirs)?;
-    // A previous run that was killed may have left its page open in Chrome, or a process in
-    // the demo folder (which is about to be remade).
-    for url in story.panes.iter().filter_map(|p| p.browser.as_deref()) {
-        close_chrome_windows(url);
-    }
+    // A previous run that was killed may have left a process in the demo folder (which is
+    // about to be remade).
     let demo_dir = match &story.demo.dir {
         Some(d) => PathBuf::from(expand_home(d)),
         None => dirs.cache.join(&story.demo.name),
@@ -186,7 +178,7 @@ fn run(opts: Opts) -> Result<()> {
         None => make_bundle(&repo, &bin, &dirs.cache.join("app"))?,
     };
     install_signal_handlers();
-    let mut running = Running { pages: story.panes.iter().filter_map(|p| p.browser.clone()).collect(), ..Running::default() };
+    let mut running = Running::default();
     let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, &mut running);
     stop(&mut running, &dirs);
     // The verdict as a file too: started through Launch Services (scripts/shoot.sh), the
@@ -350,7 +342,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             theme = shot.theme.clone();
             pause(Duration::from_millis(1500))?;
         }
-        let unmet = wait_for(shot, story, &sessions, client, &mut running.chrome_url, &mut running.chrome_before, repo, &progress, &demo)?;
+        let unmet = wait_for(shot, story, &sessions, client, &progress, &demo)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
@@ -365,17 +357,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         let picture = format!("{}-{}", story.scene.name, shot.name);
         let raw = progress.dir.join(format!("{picture}.raw.png"));
         capture_steady(repo, window_id, &raw)?;
-        // The Chrome window Arkos docked is another app's window: captured on its own and laid
-        // over the pane it sits on.
-        let overlay = match running.chrome_before.as_deref().map(|before| docked_chrome(repo, frame, before)).transpose()?.flatten() {
-            Some((id, x, y)) => {
-                let path = progress.dir.join(format!("{picture}.chrome.png"));
-                capture_window(id, &path)?;
-                Some((path, x - frame.0, y - frame.1))
-            }
-            None => None,
-        };
-        frame_image(repo, &raw, &out.join(format!("{picture}.png")), shot, overlay.as_ref())?;
+        frame_image(repo, &raw, &out.join(format!("{picture}.png")), shot, None)?;
         say(&format!("{}: {}", shot.name, out.join(format!("{picture}.png")).display()));
     }
     if !failures.is_empty() {
@@ -385,35 +367,21 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 }
 
 /// Polls the sessions' states until the shot's are all as asked (or its timeout passes), and
-/// opens the browser pane's page in Chrome the first time a session works, which is when
-/// Arkos docks a new Chrome window. Returns what was not as asked.
+/// Returns what was not as asked.
 #[allow(clippy::too_many_arguments)]
-fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, chrome_url: &mut Option<String>, chrome_before: &mut Option<Vec<u32>>, repo: &Path, progress: &Progress, demo: &Path) -> Result<Vec<String>> {
+fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, progress: &Progress, demo: &Path) -> Result<Vec<String>> {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(shot.timeout_secs);
-    let mut settle_until = None;
+    let settle_until: Option<Instant> = None;
     let claude_panes: Vec<&str> = story.panes.iter().filter(|p| p.claude.is_some()).map(|p| p.name.as_str()).collect();
     loop {
         let states = client.states()?;
         let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
-        progress.note(&shot.name, &story.panes.iter().filter(|p| p.is_terminal()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "), chrome_url.is_some());
+        progress.note(&shot.name, &story.panes.iter().filter(|p| p.is_terminal()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "));
         // Claude Code says it is working within seconds of a prompt (its UserPromptSubmit
         // hook). Every pane still idle a minute on: it never started, and waiting is waste.
         if !claude_panes.is_empty() && started.elapsed() > Duration::from_secs(60) && claude_panes.iter().all(|p| state_of(p) == ClaudeState::Idle) {
             bail!("{}: no Claude Code pane has reported working after a minute; the latest capture in {} shows what happened", shot.name, progress.dir.display());
-        }
-        if shot.chrome && chrome_url.is_none() && states.values().any(|s| *s == ClaudeState::Working) {
-            if let Some(url) = story.panes.iter().find_map(|p| p.browser.clone()) {
-                *chrome_before = Some(window_list(repo)?.into_iter().filter(|w| w.owner == "Google Chrome").map(|w| w.id).collect());
-                // -g: Chrome does not come to the front, so the Arkos window keeps its place. A
-                // query that differs each run keeps Chrome from showing a cached copy of the page
-                // (the demo is remade every run; the last run's page may have changed).
-                let fresh = format!("{url}{}t={}", if url.contains('?') { "&" } else { "?" }, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
-                Command::new("open").args(["-g", "-na", "Google Chrome", "--args", &format!("--app={fresh}")]).status().context("open Chrome")?;
-                *chrome_url = Some(url);
-                settle_until = Some(Instant::now() + Duration::from_secs(4));
-                say("opened the page in Chrome for Arkos to dock");
-            }
         }
         let mut unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
         for (pane, want) in &shot.changed {
@@ -422,18 +390,13 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
                 unmet.push(format!("{pane} has changed {n} files, not {want}"));
             }
         }
-        let chrome_pending = shot.chrome && chrome_url.is_none();
         let settling = settle_until.is_some_and(|t| Instant::now() < t);
         let too_early = progress.started.elapsed() < Duration::from_secs(shot.after_secs);
-        if unmet.is_empty() && !chrome_pending && !settling && !too_early {
+        if unmet.is_empty() && !settling && !too_early {
             return Ok(Vec::new());
         }
         if Instant::now() > deadline {
-            let mut all = unmet;
-            if chrome_pending {
-                all.push("no session worked, so Chrome was never opened".into());
-            }
-            return Ok(all);
+            return Ok(unmet);
         }
         pause(Duration::from_millis(500))?;
     }
@@ -577,11 +540,8 @@ fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
 struct Win {
     id: u32,
     pid: u32,
-    x: f64,
-    y: f64,
     w: f64,
     h: f64,
-    owner: String,
 }
 
 fn window_list(repo: &Path) -> Result<Vec<Win>> {
@@ -596,7 +556,7 @@ fn window_list(repo: &Path) -> Result<Vec<Win>> {
             if f.len() < 8 {
                 return None;
             }
-            Some(Win { id: f[0].parse().ok()?, pid: f[1].parse().ok()?, x: f[2].parse().ok()?, y: f[3].parse().ok()?, w: f[4].parse().ok()?, h: f[5].parse().ok()?, owner: f[7].to_string() })
+            Some(Win { id: f[0].parse().ok()?, pid: f[1].parse().ok()?, w: f[4].parse().ok()?, h: f[5].parse().ok()? })
         })
         .collect())
 }
@@ -616,15 +576,6 @@ fn arkos_window_id(repo: &Path, pid: u32) -> Result<u32> {
     }
 }
 
-/// The Chrome window Arkos docked, if any: a Chrome window that was not there before the
-/// shoot opened its page (`before`), lying inside the window's frame. Its id and top-left
-/// corner in points.
-fn docked_chrome(repo: &Path, frame: (f64, f64, f64, f64), before: &[u32]) -> Result<Option<(u32, f64, f64)>> {
-    let (fx, fy, fw, fh) = frame;
-    let inside = |w: &Win| w.owner == "Google Chrome" && !before.contains(&w.id) && w.x >= fx - 2.0 && w.y >= fy - 2.0 && w.x + w.w <= fx + fw + 2.0 && w.y + w.h <= fy + fh + 2.0;
-    Ok(window_list(repo)?.into_iter().find(inside).map(|w| (w.id, w.x, w.y)))
-}
-
 /// Progress for whoever watches the run: every 20 s a capture of the window into
 /// `<out>/progress/` and a line of the panes' states in `log.txt` there, so a run that has gone
 /// wrong shows it long before its timeout.
@@ -638,7 +589,7 @@ struct Progress {
 impl Progress {
     const EVERY: Duration = Duration::from_secs(20);
 
-    fn note(&self, shot: &str, states: &str, chrome_opened: bool) {
+    fn note(&self, shot: &str, states: &str) {
         let due = match &self.last {
             Some(last) => last.get().elapsed() >= Self::EVERY,
             None => true,
@@ -649,7 +600,7 @@ impl Progress {
         let secs = self.started.elapsed().as_secs();
         let file = self.dir.join(format!("{shot}-{secs:04}s.png"));
         let captured = capture_window(self.window_id, &file).is_ok();
-        let line = format!("{secs:4}s {shot}: {states}{}{}", if chrome_opened { " chrome=opened" } else { "" }, if captured { "" } else { " (capture failed)" });
+        let line = format!("{secs:4}s {shot}: {states}{}", if captured { "" } else { " (capture failed)" });
         if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("log.txt")) {
             use std::io::Write;
             let _ = writeln!(log, "{line}");
@@ -911,14 +862,14 @@ fn claude_settings(arkos_exe: &Path, claude_theme: &str) -> serde_json::Value {
 
 /// The dev binaries in the release's bundle shape (`packaging/bundle.sh` without the zip), at a
 /// fixed place, with its own bundle id so macOS keeps its permissions apart from the installed
-/// app's: Launch Services starts a bundle, and the browser pane needs Accessibility.
+/// app's: Launch Services starts a bundle.
 fn make_bundle(repo: &Path, bin: &Path, dir: &Path) -> Result<PathBuf> {
     let app = dir.join("Arkos IDE.app");
     let cargo = std::fs::read_to_string(repo.join("Cargo.toml")).with_context(|| format!("read {}", repo.join("Cargo.toml").display()))?;
     let version = cargo.lines().find_map(|l| l.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"'))).context("version in Cargo.toml")?;
     let template = repo.join("packaging/Info.plist.in");
-    // Its own bundle id and name: macOS keeps permissions (Accessibility, for the browser pane)
-    // by app, and the installed Arkos IDE's must not be mistaken for this bundle's.
+    // Its own bundle id and name: macOS keeps permissions by app, and the installed Arkos
+    // IDE's must not be mistaken for this bundle's.
     let plist = std::fs::read_to_string(&template)
         .with_context(|| format!("read {}", template.display()))?
         .replace("@VERSION@", version)
@@ -971,8 +922,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ends what the run started: the sessions, the window, the daemon, the site, and the Chrome
-/// window Arkos docked (an Apple event to Chrome; when macOS refuses it, the window stays).
+/// Ends what the run started: the sessions, the window, the daemon, the site.
 fn stop(running: &mut Running, dirs: &Dirs) {
     if let Some(client) = running.client.as_mut() {
         for id in &running.sessions {
@@ -1003,9 +953,6 @@ fn stop(running: &mut Running, dirs: &Dirs) {
         let _ = s.wait();
     }
     // Every page the run may have opened, whether it got to the capture or not.
-    for url in running.pages.drain(..) {
-        close_chrome_windows(&url);
-    }
     // Whatever a session left running in the demo (a server a Claude Code smoke test started in
     // the background outlives its shell).
     if let Some(demo) = running.demo.take() {
@@ -1097,17 +1044,6 @@ fn end_processes_in(dir: &Path) {
     }
     if ended > 0 {
         say(&format!("ended {ended} process(es) a session left running in {}", dir.display()));
-    }
-}
-
-/// Closes Chrome's windows on `url` (the page the shoot opened, docked or not): an Apple
-/// event to Chrome, which macOS may refuse until the Automation permission is granted; then
-/// the windows stay and the run says so.
-fn close_chrome_windows(url: &str) {
-    let script = format!("tell application \"Google Chrome\" to close (every window whose URL of active tab starts with \"{url}\")");
-    let ok = Command::new("osascript").args(["-e", &script]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-    if !ok {
-        say(&format!("could not close Chrome's {url} windows (Automation permission for Chrome?); close them yourself"));
     }
 }
 

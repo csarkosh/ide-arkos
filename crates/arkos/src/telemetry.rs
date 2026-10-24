@@ -101,7 +101,6 @@ values! {
         DaemonUnreachable => "daemon_unreachable",
         DaemonRestarted => "daemon_restarted",
         SessionLost => "session_lost",
-        ChromeMissing => "chrome_missing",
         MermaidFailed => "mermaid_failed",
         SaveFailed => "save_failed",
         VideoUnplayable => "video_unplayable",
@@ -625,10 +624,6 @@ pub fn command_name(command: &Command) -> &'static str {
         OpenFolder => "open_folder",
         NewWindow => "new_window",
         NewBrowserTab => "new_browser_tab",
-        NewBrowserTabSinglePage => "new_browser_tab_single_page",
-        DockChromeWindow => "dock_chrome_window",
-        DockChromeWindowAt(_) => "dock_chrome_window_at",
-        UndockChromeWindow => "undock_chrome_window",
         OpenFileInPane => "open_file_in_pane",
         VideoPlayPause => "video_play_pause",
         VideoBack => "video_back",
@@ -641,6 +636,12 @@ pub fn command_name(command: &Command) -> &'static str {
         VideoLoop => "video_loop",
         VideoMute => "video_mute",
         VideoReload => "video_reload",
+        PageBack => "page_back",
+        PageForward => "page_forward",
+        ReloadPage => "reload_page",
+        FocusAddress => "focus_address",
+        OpenInBrowser => "open_in_browser",
+        ZoomReset => "zoom_reset",
     }
 }
 
@@ -1297,7 +1298,7 @@ mod tests {
         r.md(MdFeature::InlineDiff, now);
         r.agent_launch(7, Agent::Claude, AgentHow::Resume, now);
         r.agent_state_waiting(7, Agent::Claude, now);
-        r.palette(&Command::DockChromeWindowAt(3), now);
+        r.palette(&Command::FocusPane(3), now);
         r.theme(false, now);
         r.update(UpdateStep::RolledBack, now);
         r.notice(Notice::ThemeError, now);
@@ -1312,7 +1313,7 @@ mod tests {
         let events = events_in(dir.path(), &sid);
         assert_eq!(events[2].1, serde_json::json!({ "kind": "viewer", "how": "explorer" }));
         assert_eq!(events[7].1, serde_json::json!({ "agent": "claude", "state": "waiting" }));
-        assert_eq!(events[8].1, serde_json::json!({ "command": "dock_chrome_window_at" }), "the name, never the argument");
+        assert_eq!(events[8].1, serde_json::json!({ "command": "focus_pane" }), "the name, never the argument");
         assert_eq!(events[9].1, serde_json::json!({ "builtin": false }), "a boolean, as the allowlist says");
     }
 
@@ -1806,7 +1807,7 @@ mod tests {
     fn a_tab_is_a_terminal_a_viewer_a_browser_or_a_video() {
         assert_eq!(kind_of(&Tab::Terminal { session: protocol::SessionId(1), cwd: None }), PaneKind::Terminal);
         assert_eq!(kind_of(&Tab::Viewer { path: "/p/a.md".into(), mode: crate::tree::ViewMode::Raw }), PaneKind::Viewer);
-        assert_eq!(kind_of(&Tab::Browser { url: None, app_mode: true }), PaneKind::Browser);
+        assert_eq!(kind_of(&Tab::Browser { url: String::new() }), PaneKind::Browser);
         assert_eq!(kind_of(&Tab::Video { path: "/p/a.mp4".into(), at: None, loop_range: None }), PaneKind::Video);
     }
 

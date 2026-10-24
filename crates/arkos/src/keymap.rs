@@ -21,10 +21,11 @@ actions!(
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
         ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
-        NewBrowserTab, NewBrowserTabSinglePage, DockChromeWindow, UndockChromeWindow, Quit,
+        NewBrowserTab, Quit,
         OpenFileInPane,
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
         VideoStart, VideoLoop, VideoMute, VideoReload,
+        PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
         // The Help menu's "What Arkos Sends" has no key and no palette entry, so it is handled
         // outside `Command`.
         WhatArkosSends
@@ -111,16 +112,8 @@ pub enum Command {
     /// Show the project chooser in its own window (the "New Window" item in the Arkos IDE menu);
     /// the folder chosen opens in a new window.
     NewWindow,
-    /// Ask for a URL and open a browser tab for it in the focused pane.
+    /// Ask for a URL and open a web tab for it in the focused pane.
     NewBrowserTab,
-    /// `NewBrowserTab` with the window opened as a single page (Chrome's app mode).
-    NewBrowserTabSinglePage,
-    /// List Chrome's windows in the palette, to dock one into a browser tab.
-    DockChromeWindow,
-    /// Dock the dock list's row: `Root.dock_choices[i]` (the palette runs it).
-    DockChromeWindowAt(usize),
-    /// Release the focused browser tab's Chrome window; the tab stays, waiting.
-    UndockChromeWindow,
     /// Ask for a path and open that file in the focused pane, a video as a video tab.
     OpenFileInPane,
     /// The focused video tab's commands (spec 3.4): play or pause.
@@ -141,6 +134,17 @@ pub enum Command {
     VideoMute,
     /// Load the file again now, without waiting for a change.
     VideoReload,
+    /// The web tab's history, back and forward (web pane spec, section 4).
+    PageBack,
+    PageForward,
+    /// Reload the page, or retry a failed load.
+    ReloadPage,
+    /// Put the keys in the address field, the address selected.
+    FocusAddress,
+    /// The page in the default browser.
+    OpenInBrowser,
+    /// Page zoom back to 1; "font bigger" and "font smaller" step it in a web tab.
+    ZoomReset,
 }
 
 /// Where an action is listed in the Keybindings window, by what it acts on.
@@ -253,10 +257,13 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Window, "open folder", "cmd-o"),
     row(Section::Window, "new window", "cmd-n"),
     row(Section::Browser, "new browser tab", "cmd-shift-b"),
-    row(Section::Browser, "new single-page browser tab", ""),
-    row(Section::Browser, "dock a chrome window", ""),
-    row(Section::Browser, "undock chrome window", ""),
     row(Section::Sidebar, "open file in pane", ""),
+    browser("page back", "cmd-["),
+    browser("page forward", "cmd-]"),
+    browser("reload page", "cmd-r"),
+    browser("focus address", "cmd-l"),
+    browser("open in browser", "cmd-shift-o"),
+    browser("zoom reset", "cmd-0"),
     // The video keys (spec 3.4) act only in a focused video tab: a terminal never sees this map.
     // "video start alt" is Home's second key, 0, as "next tab alt" is Cmd+Shift+].
     video("video play pause", "space"),
@@ -277,6 +284,11 @@ pub const ACTIONS: &[ActionSpec] = &[
 /// A row that acts only in a focused video tab.
 const fn video(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: Some("Video"), section: Section::Video }
+}
+
+/// A web tab's key (web pane spec, section 4): acts only in a focused web tab.
+const fn browser(name: &'static str, keys: &'static str) -> ActionSpec {
+    ActionSpec { name, keys, context: Some("Browser"), section: Section::Browser }
 }
 
 /// The US layout's shifted symbols. gpui on macOS reports a shifted symbol as the shifted
@@ -369,9 +381,6 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "open folder" => KeyBinding::new(keys, OpenFolder, context),
         "new window" => KeyBinding::new(keys, NewWindow, context),
         "new browser tab" => KeyBinding::new(keys, NewBrowserTab, context),
-        "new single-page browser tab" => KeyBinding::new(keys, NewBrowserTabSinglePage, context),
-        "dock a chrome window" => KeyBinding::new(keys, DockChromeWindow, context),
-        "undock chrome window" => KeyBinding::new(keys, UndockChromeWindow, context),
         "open file in pane" => KeyBinding::new(keys, OpenFileInPane, context),
         "video play pause" => KeyBinding::new(keys, VideoPlayPause, context),
         "video back" => KeyBinding::new(keys, VideoBack, context),
@@ -384,6 +393,12 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "video loop" => KeyBinding::new(keys, VideoLoop, context),
         "video mute" => KeyBinding::new(keys, VideoMute, context),
         "video reload" => KeyBinding::new(keys, VideoReload, context),
+        "page back" => KeyBinding::new(keys, PageBack, context),
+        "page forward" => KeyBinding::new(keys, PageForward, context),
+        "reload page" => KeyBinding::new(keys, ReloadPage, context),
+        "focus address" => KeyBinding::new(keys, FocusAddress, context),
+        "open in browser" => KeyBinding::new(keys, OpenInBrowser, context),
+        "zoom reset" => KeyBinding::new(keys, ZoomReset, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -409,6 +424,11 @@ fn keystroke_error(keys: &str) -> Option<String> {
 /// before the rename keeps working: the old name and the one it means now.
 const ALIASES: &[(&str, &str)] = &[("open recent", "new window")];
 
+/// Names of actions that no longer exist (Chrome docking, removed with the web pane): a
+/// `[keybindings]` entry for one is ignored rather than refused, so a config written for 0.6
+/// still loads.
+pub const RETIRED: &[&str] = &["new single-page browser tab", "dock a chrome window", "undock chrome window"];
+
 /// The current name of an action, from either its name or an old one.
 pub fn canonical(name: &str) -> &str {
     ALIASES.iter().find(|(old, _)| *old == name).map_or(name, |(_, new)| *new)
@@ -421,6 +441,9 @@ pub fn validate(overrides: &BTreeMap<String, String>) -> Vec<String> {
     let mut errors = Vec::new();
     for (name, keys) in overrides {
         let name = canonical(name);
+        if RETIRED.contains(&name) {
+            continue;
+        }
         if !ACTIONS.iter().any(|a| a.name == name) {
             errors.push(format!("unknown action \"{name}\" in [keybindings]"));
             continue;
@@ -523,9 +546,7 @@ pub fn label_for(name: &str) -> String {
     match command_for(name) {
         Some(Command::About) => "About Arkos IDE".to_string(),
         Some(Command::InstallHooks) => "Install Claude Code hooks".to_string(),
-        Some(Command::OpenFolder | Command::NewBrowserTab | Command::NewBrowserTabSinglePage | Command::OpenFileInPane) => format!("{}\u{2026}", label(name)),
-        Some(Command::DockChromeWindow) => "Dock a Chrome window\u{2026}".to_string(),
-        Some(Command::UndockChromeWindow) => "Undock Chrome window".to_string(),
+        Some(Command::OpenFolder | Command::NewBrowserTab | Command::OpenFileInPane) => format!("{}\u{2026}", label(name)),
         _ if name.starts_with("video ") => format!("Video: {}", video_label(name)),
         _ => label(name),
     }
@@ -669,9 +690,6 @@ pub fn command_for(name: &str) -> Option<Command> {
         "open folder" => Command::OpenFolder,
         "new window" => Command::NewWindow,
         "new browser tab" => Command::NewBrowserTab,
-        "new single-page browser tab" => Command::NewBrowserTabSinglePage,
-        "dock a chrome window" => Command::DockChromeWindow,
-        "undock chrome window" => Command::UndockChromeWindow,
         "open file in pane" => Command::OpenFileInPane,
         "video play pause" => Command::VideoPlayPause,
         "video back" => Command::VideoBack,
@@ -684,6 +702,12 @@ pub fn command_for(name: &str) -> Option<Command> {
         "video loop" => Command::VideoLoop,
         "video mute" => Command::VideoMute,
         "video reload" => Command::VideoReload,
+        "page back" => Command::PageBack,
+        "page forward" => Command::PageForward,
+        "reload page" => Command::ReloadPage,
+        "focus address" => Command::FocusAddress,
+        "open in browser" => Command::OpenInBrowser,
+        "zoom reset" => Command::ZoomReset,
         _ => return None,
     })
 }
@@ -733,13 +757,14 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
         ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile,
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
-        NewBrowserTab => Command::NewBrowserTab, NewBrowserTabSinglePage => Command::NewBrowserTabSinglePage,
-        DockChromeWindow => Command::DockChromeWindow, UndockChromeWindow => Command::UndockChromeWindow,
+        NewBrowserTab => Command::NewBrowserTab,
         OpenFileInPane => Command::OpenFileInPane,
         VideoPlayPause => Command::VideoPlayPause, VideoBack => Command::VideoBack, VideoForward => Command::VideoForward,
         VideoBackFine => Command::VideoBackFine, VideoForwardFine => Command::VideoForwardFine,
         VideoStepBack => Command::VideoStepBack, VideoStepForward => Command::VideoStepForward,
         VideoStart => Command::VideoStart, VideoLoop => Command::VideoLoop, VideoMute => Command::VideoMute, VideoReload => Command::VideoReload,
+        PageBack => Command::PageBack, PageForward => Command::PageForward, ReloadPage => Command::ReloadPage, FocusAddress => Command::FocusAddress,
+        OpenInBrowser => Command::OpenInBrowser, ZoomReset => Command::ZoomReset,
     )
 }
 
@@ -797,9 +822,6 @@ mod tests {
         ("cmd-o", "open folder", "OpenFolder"),
         ("cmd-n", "new window", "NewWindow"),
         ("cmd-shift-b", "new browser tab", "NewBrowserTab"),
-        ("", "new single-page browser tab", "NewBrowserTabSinglePage"),
-        ("", "dock a chrome window", "DockChromeWindow"),
-        ("", "undock chrome window", "UndockChromeWindow"),
         ("", "open file in pane", "OpenFileInPane"),
         ("space", "video play pause", "VideoPlayPause"),
         ("left", "video back", "VideoBack"), ("right", "video forward", "VideoForward"),
@@ -807,8 +829,19 @@ mod tests {
         (",", "video step back", "VideoStepBack"), (".", "video step forward", "VideoStepForward"),
         ("home", "video start", "VideoStart"), ("0", "video start alt", "VideoStart"),
         ("l", "video loop", "VideoLoop"), ("m", "video mute", "VideoMute"), ("r", "video reload", "VideoReload"),
+        ("cmd-[", "page back", "PageBack"), ("cmd-]", "page forward", "PageForward"), ("cmd-r", "reload page", "ReloadPage"),
+        ("cmd-l", "focus address", "FocusAddress"), ("cmd-shift-o", "open in browser", "OpenInBrowser"), ("cmd-0", "zoom reset", "ZoomReset"),
         ("cmd-q", "quit", "Quit"),
     ];
+
+    #[test]
+    fn a_retired_action_in_the_config_is_ignored_not_refused() {
+        let mut o = BTreeMap::new();
+        o.insert("dock a chrome window".to_string(), "cmd-shift-k".to_string());
+        o.insert("undock chrome window".to_string(), "".to_string());
+        assert!(validate(&o).is_empty(), "{:?}", validate(&o));
+        assert_eq!(bindings_for(&o).len(), bindings().len(), "nothing is bound for a retired name");
+    }
 
     #[test]
     fn an_old_action_name_in_the_config_still_binds_the_renamed_action() {
@@ -871,7 +904,7 @@ mod tests {
         o.insert("font bigger".to_string(), "".to_string());
         assert!(validate(&o).is_empty());
         let b = bindings_for(&o);
-        assert_eq!(b.len(), ACTIONS.len() - 17, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window, undock chrome window and open file in pane have no default keys");
+        assert_eq!(b.len(), ACTIONS.len() - 14, "an empty string unbinds, and about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files and open file in pane have no default keys");
         let split = b.iter().find(|kb| kb.action().name() == "arkos::SplitRight").unwrap();
         assert_eq!(keys_of(split), "cmd-d");
         assert!(!b.iter().any(|kb| kb.action().name() == "arkos::FontBigger"));
@@ -880,11 +913,9 @@ mod tests {
         assert_eq!(keys_for("font smaller", &o).as_deref(), Some("cmd--"));
         assert_eq!(keys_for("no such action", &o), None);
         assert_eq!(keys_for("update now", &BTreeMap::new()), None, "unbound by default");
-        assert_eq!(bindings().len(), ACTIONS.len() - 16, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files, new single-page browser tab, dock a chrome window, undock chrome window and open file in pane are unbound by default");
+        assert_eq!(bindings().len(), ACTIONS.len() - 13, "only about, documentation, open config, update now, check for updates, notifications, doctor, retry update, start at login, install hooks, install agent guide, show ignored files and open file in pane are unbound by default");
         assert_eq!(command_for("new browser tab"), Some(Command::NewBrowserTab));
-        assert_eq!(command_for("new single-page browser tab"), Some(Command::NewBrowserTabSinglePage));
-        assert_eq!(command_for("dock a chrome window"), Some(Command::DockChromeWindow));
-        assert_eq!(command_for("undock chrome window"), Some(Command::UndockChromeWindow));
+        assert_eq!(command_for("dock a chrome window"), None, "a retired action is no command");
         assert_eq!(command_for("notifications"), Some(Command::Notifications));
         assert_eq!(command_for("doctor"), Some(Command::Doctor));
     }
@@ -1054,9 +1085,6 @@ mod tests {
         assert_eq!(label_for("install agent guide"), "Install agent guide");
         assert_eq!(label_for("open folder"), "Open folder\u{2026}");
         assert_eq!(label_for("new browser tab"), "New browser tab\u{2026}");
-        assert_eq!(label_for("new single-page browser tab"), "New single-page browser tab\u{2026}");
-        assert_eq!(label_for("dock a chrome window"), "Dock a Chrome window\u{2026}");
-        assert_eq!(label_for("undock chrome window"), "Undock Chrome window");
         assert_eq!(label_for("keybindings"), "Keybindings");
         assert_eq!(label_for("open file in pane"), "Open file in pane\u{2026}");
         assert_eq!(label_for("video play pause"), "Video: play or pause");

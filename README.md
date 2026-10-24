@@ -3,16 +3,16 @@
 <p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
-  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with a docked browser and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-dark.png" width="900">
+  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with the app's page in a web tab and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-dark.png" width="900">
 </picture>
 
 <p align="center">
-<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a docked Chrome pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b> · <b>a video pane</b>
+<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a web pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b> · <b>a video pane</b>
 </p>
 
 Arkos is a terminal layout manager built for Claude Code: a grid of terminal panes with tabs
-that say which session is working and which is waiting on you, a Chrome window docked into a
-pane beside the code, a file tree and git worktree explorer, and a markdown editor for the
+that say which session is working and which is waiting on you, a web page in a pane beside the
+code, a file tree and git worktree explorer, and a markdown editor for the
 documents the sessions write. Every session lives in a separate daemon, so a frozen window, an
 update or a restart never loses work: the window comes back and every tab is where you left
 it, with Claude Code resumed. Written in Rust with GPUI, it stays light on memory and scrolls
@@ -46,11 +46,11 @@ which session is working and which is waiting on you.
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
-checkout, the app's page docked in Chrome next to the code, and the tests in a shell; the file
+checkout, the app's page in a web tab next to the code, and the tests in a shell; the file
 tree and the worktree list show what changed.
 
 <picture>
-  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a docked Chrome window showing a web page and a shell running tests on the right" src="docs/images/web-developer-dark.png" width="760">
+  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a web tab showing the app's page and a shell running tests on the right" src="docs/images/web-developer-dark.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table

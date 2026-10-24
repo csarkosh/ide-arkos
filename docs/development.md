@@ -94,10 +94,10 @@ features are added:
 ## Releasing
 
 Every release is signed with the Developer ID and notarized, so macOS opens the download without
-the quarantine step and updates keep the app's permissions (Accessibility for the browser pane).
-macOS keys those permissions to the signature, so a release signed any other way makes every Mac
-forget them: until 0.5.1 releases alternated between an ad-hoc workflow and the notarized one,
-and each switch asked for Accessibility again. That `release` workflow is retired (it only
+the quarantine step and updates keep the app's permissions (the protected folders a tab was
+allowed). macOS keys those permissions to the signature, so a release signed any other way makes
+every Mac forget them: until 0.5.1 releases alternated between an ad-hoc workflow and the
+notarized one, and each switch asked for Accessibility (then needed by the browser pane) again. That `release` workflow is retired (it only
 refuses now), and a Developer ID copy's daemon refuses to stage an update its team did not sign
 (`check_signer` in `crates/arkosd/src/updates/stage.rs`), so a wrongly signed release cannot cost
 anyone their permissions. Two ways, the same steps:
@@ -175,8 +175,7 @@ storyboard to change its picture, and `scripts/shoot.sh <scene>` redoes that sce
 names its state folder, under `~/Library/Caches/arkos-shoot`), so the Arkos in use is untouched,
 and runs as an app of its own ("Arkos Shoot", signed with the Developer ID from your keychain, as
 is the shoot's copy of Arkos), so macOS attributes its captures to it whatever shell starts it:
-grant it Screen Recording once, and the shoot's copy of Arkos Accessibility once (the browser
-pane). Each scene spends a few minutes of your Claude Code account. Progress captures and the
+grant it Screen Recording once. Each scene spends a few minutes of your Claude Code account. Progress captures and the
 panes' states land in `docs/images/progress/<scene>/` every 20 s while it runs, and a scene whose
 Claude Code panes never start is ended after a minute.
 
@@ -194,8 +193,8 @@ doing (a breathing glyph while it works, a warm dot when it waits on you, a mute
 shell ended), the tab marks show which sessions wait, and with "Start at login" on, a restart
 brings every session back on its own: the same folders, the history on screen under a divider, and
 each Claude Code conversation resumed. The sidebar shows git status in the tree and the
-worktrees, and the viewer marks a file's changes against HEAD. The browser pane docks a Chrome
-window into a pane (Accessibility permission needed). Milestone 6a made the update path and the
+worktrees, and the viewer marks a file's changes against HEAD. The browser pane shows a web page
+inside the pane (a WKWebView, 0.7; before it a Chrome window was docked over the pane). Milestone 6a made the update path and the
 launcher trustworthy: "Check for updates" waits for the check and says what it found, the chooser
 opens before the daemon answers and reconnects, and a closed tab's minute is kept by the daemon.
 Milestones 6b and 6c are next. Milestone telemetry added anonymous usage reports and crash reports.
@@ -262,8 +261,7 @@ Things only a person at the screen can check, in order of value:
 - a `mermaid` block renders within two seconds and again after an edit; with Google Chrome
   missing, the source shows with a message; the docking check: start a slow render (a large
   diagram) and run `lsappinfo list | grep -B2 -A8 com.google.Chrome` to see how the headless child
-  registers ("Foreground" is a regular app; "UIElement" or "BackgroundOnly" is not), then quit the
-  real Chrome and dock the browser pane during a render: the pane must not grab the headless child
+  registers ("Foreground" is a regular app; "UIElement" or "BackgroundOnly" is not)
 - a `<details>` block opens and closes and is still open after a relaunch; `<details open>` starts
   open until you close it
 - a 5 MB markdown file with a large table stays responsive (the milestone 7 gate)
@@ -448,12 +446,29 @@ Things only a person at the screen can check, in order of value:
 - the window minimized for two minutes keeps its sessions: compare the `arkos` pid before and
   after, and look for no "relaunching" line in `~/Library/Application Support/arkos/arkosd.log`
 - `ps` after thirty seconds idle with four terminals
-- run `/Applications/Arkos IDE.app/Contents/MacOS/arkos browser-probe` once and grant access when
-  asked: it moves a Chrome window for a few seconds and prints what it saw
-- open a browser tab while Claude is working: the next Chrome window Claude opens lands in it
-- drag a Chrome window into a pane; drag its title bar out again
-- switch tabs away and back: the window hides and returns
-- revoke Accessibility in System Settings: the pane shows the permission screen within a second
+- web pane: Cmd+Shift+B, type `localhost:4173`, Enter: the page is drawn inside the pane under
+  the bar; split the pane, drag the handle, toggle the sidebar, move and resize the window: the
+  page follows with no gap and no flash
+- web pane: switch to another tab in the pane and back: the page is where it was, scrolled as it
+  was; open the palette over a web tab: the palette is on top of the page; Escape: the page is back
+- web pane: `arkos open out/report.html` from a session, the page holding `<video>` elements that
+  point at files beside it: the videos play with sound; edit the file: the page reloads within
+  two seconds; `arkos open` of the same file again after an edit prints "reloaded"
+- web pane: click into a page's text field and type: the page gets it; Cmd+1: the first pane takes
+  the focus; click the tab bar: the pane's keys work again; Cmd+L: the address field has the cursor
+- web pane: `arkos open http://localhost:1/`: the pane says "Could not connect to the server" with
+  Retry; start the server, Retry: the page
+- web pane: right-click a page, Inspect Element: the Web Inspector opens as its own window
+- web pane: quit and relaunch: the web tab comes back on the page it was on, not the one it
+  opened with
+- web pane: a page that calls `window.open`: it opens in the same tab; back returns
+- web pane: a page with a download link: the notice says downloads are not supported, and "open
+  in your browser" opens the page in the default browser
+- web pane: Reduce Motion on: nothing of the web pane changes, and every text field's cursor
+  (the address field, the palette, a find bar) stops blinking and stays shown; off again: it blinks
+  about twice a second, shown at once after every key or click
+- web pane: in the address field, Option+Left and Option+Right stop at each `/`, `.`, `:` and `-`
+  of `https://docs.rs/gpui-component`, Shift with them selects
 - open from the Dock: the chooser shows the five most recent folders; Show all; Open another
   folder; Escape quits; Cmd+O from a window opens a second window
 - with three tabs in a pane, drag the first slowly to the right: its slot closes, the others

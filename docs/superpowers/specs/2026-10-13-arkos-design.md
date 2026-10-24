@@ -25,14 +25,15 @@ easy to tinker with, and that can never lose a session because its UI froze.
 | Minimal memory and CPU | Budgets in section 9; no web engine, no JIT, bounded scrollback, virtualized rendering |
 | Terminals only, for Claude Code sessions | Tabs hold a terminal or a read-only file viewer; no editor |
 | Must self-recover when CPU/GPU is pegged; never lose sessions | Sessions live in a separate daemon; a daemon-side watchdog relaunches a stuck UI (section 2) |
-| Embedded browser like Cursor's, to watch Claude work | A real Chrome window docked over a pane via the Accessibility API (section 8) |
+| Embedded browser like Cursor's, to watch Claude work | A real Chrome window docked over a pane via the Accessibility API (section 8); since 2026-10-24 a `WKWebView` in the pane (`2026-10-24-web-pane-design.md`) |
 | Smooth scrolling that stays smooth in long sessions; virtualization is fine | Fractional scroll position, eased animation, visible rows only (section 3) |
 | Later additions during design | Tabs within panes; a left sidebar with a file tree and a lazy git worktree explorer; a read-only viewer with diff gutters; Claude Code session state icons on tabs; VS Code keybindings; friendly empty states; headache-proof defaults from the research (section 7.1) |
 
 ### 1.2 Non-goals
 
 No text editing, no search across files, no git staging or committing, no extensions, no
-Linux or Windows support in the first version, no embedded Chromium (CEF), no WKWebView.
+Linux or Windows support in the first version, no embedded Chromium (CEF), no WKWebView
+(amended 2026-10-24: the web pane is a WKWebView; `2026-10-24-web-pane-design.md` says why).
 
 ### 1.3 Language and stack
 
@@ -49,7 +50,8 @@ Rejected: winit plus wgpu with a hand-rolled toolkit (lightest, but months of to
 before any UX); egui (fastest to prototype, but no system font fallback, weaker Retina text);
 Swift/AppKit shell over a Rust core (best native integration, but a second language and an
 FFI seam exactly where tinkering happens); WKWebView via `wry` (Safari engine quirks, and
-Claude Code's browser tools drive real Chrome, so it would show nothing of Claude's work);
+Claude Code's browser tools drive real Chrome, so it would show nothing of Claude's work;
+reversed 2026-10-24 for the pane itself, through `objc2-web-kit` rather than `wry`);
 CEF (hundreds of MB, the Electron footprint being escaped).
 
 Known risk accepted: all three UI stacks render through Metal. When inference saturates the
@@ -381,83 +383,13 @@ physician first. The README links the research doc.
 
 ## 8. Browser pane (Chrome docking)
 
-A browser tab's content area is a placeholder rectangle; a real Chrome window is kept
-positioned exactly over it, so it reads as embedded.
-
-**Which window.** Claude Code's browser tools bring their own windows. The Claude in Chrome
-extension works inside an "MCP tab group" and, when none exists, creates a new Chrome window
-to hold it; the Chrome DevTools MCP launches its own Chrome instance. So Claude already has a
-default window, and arkos docks that one rather than launching a window and hoping Claude
-uses it. Nothing has to be said to Claude. The rule: while any session in the workspace is in
-the **working** state (section 5) and a browser pane exists with nothing docked, the first new
-Chrome window to appear is docked automatically. A palette command, "Dock a Chrome window",
-lists open Chrome windows for the keyboard-only case, and "Undock" releases one. A browser pane can
-also be opened by the user with a URL, in which case arkos launches a normal Chrome window
-(not app mode, so the tab strip stays and tabs Claude adds remain visible) in the existing
-profile and docks it.
-
-**The unit is a window, never a Chrome tab.** A docked Chrome window keeps its own tab strip
-at the top of the pane with every tab it had; switching tabs happens in Chrome, with Chrome's
-shortcuts when that window has focus. arkos has one browser tab per docked window, titled
-after the active Chrome tab (the window title). Exploding a window's tabs into separate arkos
-tabs was rejected: it would need one Chrome window per tab, tabs cannot be moved between
-windows through the Accessibility API, and it would fight Chrome's tab groups, which is also
-where Claude's tool keeps its tabs.
-
-**Vertical space.** A normal Chrome window spends about 80 px on its tab strip and
-toolbar. Two mitigations: the browser pane's first-run screen recommends Chrome's native
-"Show Tabs Vertically" (a right-click option on the tab strip in current stable Chrome), which
-removes the tab strip row and leaves only the toolbar; and when a browser tab is active, the
-arkos tab bar for that pane collapses to a slim strip, since Chrome's toolbar already shows a
-title. Stock Chrome offers no supported way to hide the toolbar in a windowed mode, and arkos
-does not try. For a window the user opens by URL, the prompt offers "open as a single page",
-which launches Chrome in app mode (thin title bar, no toolbar, one tab); windows Claude's tools
-create are never app mode.
-
-**Dock by dragging a window in.** Any independent Chrome window can be dragged into arkos.
-While a Chrome window is being moved by the user (an AX window-moved notification with the
-mouse button down, read from a global pointer monitor, which the Accessibility permission
-already allows), and the pointer is over the arkos window, arkos shows the same five-zone
-drop overlay used for tab drags (section 4). Releasing over a zone creates a browser tab in
-that pane, or splits the pane, and docks the window there. Releasing elsewhere leaves the
-window alone.
-
-**Undock by dragging out.** Two symmetric gestures release a docked window: dragging the
-browser tab out of its arkos tab bar and dropping it outside the arkos window, or dragging
-the Chrome window's own title bar (which stays visible at the top of the pane) so that the
-window leaves the pane rectangle by more than a threshold. Either way the Chrome window
-becomes independent again at the drop position, the browser tab closes, and nothing in Chrome
-changes. Dragging a Chrome tab out of a docked window's tab strip is Chrome's own gesture and
-makes a new independent window as usual; the auto-dock rule ignores windows that appear while
-the mouse button is down, so a user's drag-out is never re-captured.
-
-**Identification.** Chrome windows are found through the Accessibility API (the Chrome
-application's window list; titles are the active tab's title). The docked window is tracked by
-its AX element, not its title, so tab changes do not lose it. Window creation is detected by
-polling the window list at a low rate while a browser pane is waiting, and stopped otherwise.
-
-**Tracking.** Whenever the placeholder's screen rectangle changes (split drag, sidebar toggle,
-window move or resize), arkos writes the Chrome window's `AXPosition` and `AXSize`. When the
-browser tab is not active in its pane, or the arkos window is minimized or hidden, the Chrome
-window is hidden. Closing the tab undocks the window and leaves it where it is; it does not
-close Claude's window.
-
-**Focus and stacking.** Clicking the placeholder raises and focuses the Chrome window.
-Clicking elsewhere in arkos raises the arkos window and immediately re-raises the Chrome
-window above it. A brief flash during that re-raise is the accepted seam.
-
-**Permissions.** The first browser pane triggers the one-time Accessibility permission prompt,
-with an explanation screen. Without permission the pane shows instructions instead.
-
-**Rulings, 2026-10-15** (taken while planning the implementation):
-
-1. Hiding a docked window moves it off every display, to x = primary width + 64 at its current y and size, and remembers where it was; showing it moves it back onto the placeholder. `AXMinimized` would animate to the Dock on every tab switch and app hiding would hide all of Chrome.
-2. Drag-in detection polls the Chrome windows' frames (20 Hz while the mouse button is down and a browser pane exists) instead of using an `AXObserver`: a frame that changes between two ticks while the button is down is a drag. The same loop serves tracking.
-3. Geometry comes from AppKit (the arkos `NSWindow`'s content rect in screen coordinates, flipped against the primary display's height), not from gpui's `window_bounds()`.
-4. The Accessibility prompt for a development binary can only be answered at the screen, so `arkos browser-probe` is run once by the user to confirm rulings 1 and 3 and the raise behaviour. The engine is pure and tested with a fake.
-5. A window asked for by URL is launched with `open -na "Google Chrome" --args --new-window <url>` (or `--app=<url>` for a single page); the first new Chrome window within 10 s docks into that tab regardless of the working state, after which the tab waits like any other.
-6. Persisted state is the URL and the app-mode flag only. After a relaunch a browser tab waits; it never looks for the old window by title.
-7. The slim tab bar is 14 px: the pane number and one dot per tab, no titles. It stays a drop target for tab drags.
+**Superseded 2026-10-24** by `2026-10-24-web-pane-design.md`: the browser tab is a `WKWebView`
+drawn inside the Arkos window, with a bar of Arkos's own above it. Chrome docking, which this
+section described (a placeholder a real Chrome window was kept positioned over through the
+Accessibility API, with its rulings of 2026-10-15), shipped in 0.5 and was removed in 0.7. It
+worked, and it showed: the other app's window flashed on every raise, spent 80 px on Chrome's
+own tab strip and toolbar, let nothing of Arkos draw over it, and needed the Accessibility
+permission. The history of the design is in git (`git show 0.6.3:docs/superpowers/specs/2026-10-13-arkos-design.md`).
 
 ## 9. Resilience and performance budgets
 

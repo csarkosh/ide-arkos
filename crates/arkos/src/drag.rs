@@ -121,15 +121,6 @@ pub fn zone_for(bounds: Bounds<Pixels>, pos: Point<Pixels>) -> Zone {
     candidates.iter().fold((f32::MAX, Zone::Center), |best, (d, z)| if *d < best.0 { (*d, *z) } else { best }).1
 }
 
-/// The pane under a global `pointer` and its zone; `panes` are the panes' bodies in global
-/// coordinates (a Chrome window dragged over arkos, spec 8).
-pub fn zone_and_pane_for(panes: &[(PaneId, crate::ax::Rect)], pointer: (f64, f64)) -> Option<(PaneId, Zone)> {
-    let (x, y) = pointer;
-    let (pane, r) = panes.iter().find(|(_, r)| r.contains(x, y))?;
-    let bounds = Bounds { origin: gpui::point(gpui::px(r.x as f32), gpui::px(r.y as f32)), size: gpui::size(gpui::px(r.w as f32), gpui::px(r.h as f32)) };
-    Some((*pane, zone_for(bounds, gpui::point(gpui::px(x as f32), gpui::px(y as f32)))))
-}
-
 /// Hovering the left half of tab `idx` inserts before it, the right half after it.
 pub fn insert_index(tab_bounds: Bounds<Pixels>, pos: Point<Pixels>, idx: usize) -> usize {
     let mid = tab_bounds.origin.x + tab_bounds.size.width / 2.0;
@@ -305,14 +296,4 @@ mod tests {
         assert_eq!(insert_index(tab, point(px(290.0), px(10.0)), 3), 4);
     }
 
-    #[test]
-    fn the_pane_and_zone_under_a_global_pointer() {
-        let panes = [(1u64, crate::ax::Rect { x: 100.0, y: 100.0, w: 400.0, h: 200.0 }), (2u64, crate::ax::Rect { x: 500.0, y: 100.0, w: 400.0, h: 200.0 })];
-        assert_eq!(zone_and_pane_for(&panes, (300.0, 200.0)), Some((1u64, Zone::Center)));
-        assert_eq!(zone_and_pane_for(&panes, (490.0, 200.0)), Some((1u64, Zone::Right)));
-        assert_eq!(zone_and_pane_for(&panes, (510.0, 200.0)), Some((2u64, Zone::Left)));
-        assert_eq!(zone_and_pane_for(&panes, (700.0, 295.0)), Some((2u64, Zone::Bottom)));
-        assert_eq!(zone_and_pane_for(&panes, (700.0, 50.0)), None, "above the panes");
-        assert_eq!(zone_and_pane_for(&panes, (950.0, 200.0)), None, "right of them");
-    }
 }

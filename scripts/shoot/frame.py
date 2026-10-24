@@ -3,7 +3,7 @@
 out, a soft shadow under it, on a transparent background, at the capture's 2x scale. Any
 `--crop name:x,y,w,h` (fractions of the window) is also written beside the output as
 <output stem>-<name>.png, unframed, with small rounded corners. `--overlay file:x,y` lays
-another capture (the Chrome window Arkos docked) over the window at those pixels first.
+another capture over the window at those pixels first.
 
     python3 -I scripts/shoot/frame.py <raw.png> <out.png> [--overlay chrome.png:1810,70] [--crop tabs:0,0,0.6,0.12]...
 
