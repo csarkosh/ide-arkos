@@ -10,7 +10,6 @@ use crate::line_edit::{self, Edit, LineEdit};
 use crate::link_menu::{press_kind, LinkMenu, PressKind};
 use crate::md_view;
 use crate::motion;
-use crate::pulse;
 use crate::sessions::Note;
 use crate::terminal::Terminal;
 use crate::terminal_element::{grid_for, TerminalElement};
@@ -380,7 +379,7 @@ fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark
         .iter()
         .enumerate()
         .map(|(idx, tab)| {
-            let (label, mark) = automatic_label(root, p, idx, tab, cx);
+            let (label, mark) = automatic_label(root, p, idx, tab);
             let named = p.ids.get(idx).and_then(|id| root.tree.tab_name(*id)).map(str::to_string);
             let dirty = matches!(tab, Tab::Viewer { .. }) && p.ids.get(idx).and_then(|id| root.viewers.get(id)).is_some_and(|v| v.read(cx).dirty);
             let label = named.unwrap_or(label);
@@ -392,23 +391,23 @@ fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark
 /// The title a tab shows in its bar, without the unsaved mark: the name the user gave it, else
 /// its automatic label (for a terminal the program's title, never what the terminal shows).
 /// `arkos panes` lists it.
-pub fn tab_title(root: &Root, pane: PaneId, idx: usize, cx: &gpui::App) -> String {
+pub fn tab_title(root: &Root, pane: PaneId, idx: usize) -> String {
     let Some(p) = root.tree.pane(pane) else { return String::new() };
     let Some(tab) = p.tabs.get(idx) else { return String::new() };
     match p.ids.get(idx).and_then(|id| root.tree.tab_name(*id)) {
         Some(name) => name.to_string(),
-        None => automatic_label(root, p, idx, tab, cx).0,
+        None => automatic_label(root, p, idx, tab).0,
     }
 }
 
-fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab, cx: &gpui::App) -> (String, TabMark) {
+fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab) -> (String, TabMark) {
     match tab {
         Tab::Terminal { session, .. } => {
             let busy = p.ids.get(idx).and_then(|id| root.sessions.busy.get(id)).copied();
             let note = root.sessions.notes.get(session).copied();
-            match root.sessions.terminals.get(session) {
+            // The label kept beside the terminal, never the terminal itself (`TermLabel`).
+            match root.sessions.labels.get(session) {
                 Some(t) => {
-                    let t = t.read(cx);
                     let mark = TabMark::of(root.sessions.states.get(session).copied(), t.alive);
                     (tab_label(&t.title, &root.shell_name, t.alive, t.exit_code, note, busy), mark)
                 }
@@ -571,7 +570,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     // one's fades in. The glow breathes slowly, brighter and a little wider at the peak.
     // A window not in front rests: it repaints once on deactivation, and a breath caught
     // mid-way would freeze there.
-    let breath = if root.window_active { pulse::glow(now.saturating_duration_since(root.pulse_epoch), crate::motion::reduce_motion()) } else { 0.0 };
+    let breath = if root.window_active { root.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
     let glow = root.glow.sync(pane, focused.then_some(()), now).map(|(_, opacity)| {
         let g = glow_width(rect.w, rect.h, breath);
         let mut from = theme.chrome.focus_ring.alpha(GLOW_ALPHA * (GLOW_BREATH_FLOOR + (1.0 - GLOW_BREATH_FLOOR) * breath));
@@ -651,7 +650,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     let c = &theme.chrome;
     let (fg, dim) = (c.text, c.text_dim);
     // One phase for the whole bar, so every working tab breathes together.
-    let alpha = pulse::alpha(root.pulse_epoch.elapsed(), crate::motion::reduce_motion());
+    let alpha = root.breath.alpha(root.frame_now, crate::motion::reduce_motion());
     let mut muted = dim.hsla();
     muted.a *= 0.6;
     let mut bar = div()

@@ -174,6 +174,17 @@ pub fn group_by_session(events: &[Event]) -> Vec<(SessionId, Vec<Event>)> {
     out
 }
 
+/// What a terminal tab's label is made of, kept here so the tab bar never reads the terminal
+/// itself. A frame that reads an entity repaints whenever that entity changes, and every output
+/// changes a terminal, so reading it for a label would repaint the whole window for output in a
+/// tab nobody can see.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TermLabel {
+    pub title: String,
+    pub alive: bool,
+    pub exit_code: Option<i32>,
+}
+
 pub struct SessionManager {
     pub transport: Arc<dyn Transport>,
     /// The real client, for building `Terminal` entities. Tests pass `None`.
@@ -188,6 +199,8 @@ pub struct SessionManager {
     /// What each session's agent is doing (spec 5), from the list at connect and `Event::State`
     /// after; a BEL marks waiting too. A session not here is idle.
     pub states: HashMap<SessionId, ClaudeState>,
+    /// Each shown terminal's label (`TermLabel`), there exactly when its terminal is.
+    pub labels: HashMap<SessionId, TermLabel>,
     /// Sessions whose replay is being parsed; their live events wait in `backlog`.
     restoring: HashSet<SessionId>,
     backlog: HashMap<SessionId, Vec<Event>>,
@@ -205,7 +218,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(transport: Arc<dyn Transport>, client: Option<Arc<Client>>, project: PathBuf) -> Self {
-        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
+        Self { transport, client, project, terminals: HashMap::new(), pending: HashMap::new(), busy: HashMap::new(), notes: HashMap::new(), states: HashMap::new(), labels: HashMap::new(), restoring: HashSet::new(), backlog: HashMap::new(), offline: false, kills_to_resend: Vec::new(), scrollback: SCROLLBACK, shell: None, nice: 0 }
     }
 
     /// A new connection: requests go to it from now on.
@@ -254,6 +267,7 @@ impl SessionManager {
         });
         self.kills_to_resend.extend(unanswered);
         self.terminals.clear();
+        self.labels.clear();
         self.pending.clear();
         self.busy.clear();
         self.notes.clear();
@@ -416,6 +430,7 @@ impl SessionManager {
     /// What the window held for a session it no longer shows.
     fn forget(&mut self, session: SessionId) {
         self.terminals.remove(&session);
+        self.labels.remove(&session);
         self.notes.remove(&session);
         // No tab shows it now and no `State` event reaches it: a reopen starts from idle rather
         // than from a stale state.
@@ -576,30 +591,54 @@ impl SessionManager {
             }
         }
         self.terminals.insert(session, terminal);
+        self.sync_label(session, cx);
+    }
+
+    /// Records `label` for `session`; true when it differs from the one recorded, so the tab bar
+    /// has something new to show.
+    pub fn note_label(&mut self, session: SessionId, label: TermLabel) -> bool {
+        if self.labels.get(&session) == Some(&label) {
+            return false;
+        }
+        self.labels.insert(session, label);
+        true
+    }
+
+    /// Copies a terminal's label out of it (`note_label`). Called outside any frame, so reading
+    /// the terminal here ties no window to it.
+    fn sync_label(&mut self, session: SessionId, cx: &App) -> bool {
+        let Some(t) = self.terminals.get(&session) else { return false };
+        let t = t.read(cx);
+        let label = TermLabel { title: t.title.clone(), alive: t.alive, exit_code: t.exit_code };
+        self.note_label(session, label)
     }
 
     /// The window's half of a batch: what each session's agent is doing. Recorded at once, even
     /// for a session mid-restore or with no terminal yet; a shell that ended runs no agent.
-    pub fn note_events(&mut self, events: &[Event]) {
+    pub fn note_events(&mut self, events: &[Event]) -> bool {
+        let mut changed = false;
         for ev in events {
             match ev {
                 Event::State { session, state } => {
                     crate::telemetry::agent_state(session.0, *state);
-                    self.states.insert(*session, *state);
+                    changed |= self.states.insert(*session, *state) != Some(*state);
                 }
                 Event::Exited { session, .. } => {
-                    self.states.remove(session);
+                    changed |= self.states.remove(session).is_some();
                 }
                 // The root reads `UpdateStaged` and `Customize` itself (`Root::route_events`).
                 Event::Output { .. } | Event::UpdateStaged { .. } | Event::Customize { .. } | Event::Direct { .. } => {}
             }
         }
+        changed
     }
 
     /// Applies a batch of daemon events: one grid update and at most one notify per terminal.
-    /// Events for a session that is still restoring wait in its backlog.
-    pub fn route_events(&mut self, events: &[Event], cx: &mut App) {
-        self.note_events(events);
+    /// Events for a session that is still restoring wait in its backlog. True when a tab's
+    /// label or mark changed: output alone repaints only the terminals shown, so the window
+    /// must be told about these itself.
+    pub fn route_events(&mut self, events: &[Event], cx: &mut App) -> bool {
+        let mut changed = self.note_events(events);
         let live: Vec<Event> = events.iter().filter(|ev| !self.stash_if_restoring(ev)).cloned().collect();
         for (session, batch) in group_by_session(&live) {
             if let Some(t) = self.terminals.get(&session) {
@@ -609,10 +648,12 @@ impl SessionManager {
                 });
                 if rang {
                     // Spec 5: a BEL means "needs you" even without hooks.
-                    self.states.insert(session, ClaudeState::Waiting);
+                    changed |= self.states.insert(session, ClaudeState::Waiting) != Some(ClaudeState::Waiting);
                 }
+                changed |= self.sync_label(session, cx);
             }
         }
+        changed
     }
 }
 
@@ -687,6 +728,45 @@ mod tests {
         m.note_state(SessionId(3), ClaudeState::Working);
         assert!(!m.acknowledge(SessionId(3)), "working is not waiting");
         assert_eq!(rec.requests().len(), 1);
+    }
+
+    fn label(title: &str, alive: bool, exit_code: Option<i32>) -> TermLabel {
+        TermLabel { title: title.into(), alive, exit_code }
+    }
+
+    #[test]
+    fn a_tab_label_counts_as_a_change_only_when_it_differs() {
+        let mut m = SessionManager::new(Recorder::new(), None, PathBuf::from("/p"));
+        let s = SessionId(1);
+        assert!(m.note_label(s, label("zsh", true, None)), "the first label is news");
+        assert!(!m.note_label(s, label("zsh", true, None)), "output that kept the title is not");
+        assert!(m.note_label(s, label("vim", true, None)));
+        assert!(m.note_label(s, label("vim", false, Some(1))), "the shell ended");
+        assert_eq!(m.labels.get(&s), Some(&label("vim", false, Some(1))));
+    }
+
+    #[test]
+    fn a_state_event_counts_as_a_change_only_when_the_state_differs() {
+        let mut m = SessionManager::new(Recorder::new(), None, PathBuf::from("/p"));
+        let s = SessionId(1);
+        let working = Event::State { session: s, state: ClaudeState::Working };
+        assert!(m.note_events(&[working.clone()]));
+        assert!(!m.note_events(&[working]), "the same state again repaints nothing");
+        assert!(!m.note_events(&[Event::Output { session: s, bytes: b"x".to_vec() }]), "output is not a state");
+        assert!(m.note_events(&[Event::Exited { session: s, code: Some(0) }]), "an ended shell drops its state");
+        assert!(!m.note_events(&[Event::Exited { session: s, code: Some(0) }]));
+    }
+
+    #[test]
+    fn a_session_the_window_lets_go_of_drops_its_tab_label() {
+        let mut m = SessionManager::new(Recorder::new(), None, PathBuf::from("/p"));
+        m.note_label(SessionId(1), label("zsh", true, None));
+        m.note_label(SessionId(2), label("zsh", true, None));
+        m.detach_for_grace(SessionId(1), 60);
+        assert_eq!(m.labels.get(&SessionId(1)), None, "a closed tab's label goes with it");
+        assert!(m.labels.contains_key(&SessionId(2)));
+        m.disconnect();
+        assert!(m.labels.is_empty(), "a lost connection drops every terminal, and so every label");
     }
 
     #[test]

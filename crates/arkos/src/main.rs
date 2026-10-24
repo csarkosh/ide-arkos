@@ -432,8 +432,9 @@ pub struct Root {
     pub vertical_tabs_tip_seen: bool,
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
     pub window_active: bool,
-    /// Where the working glyph's pulse starts; every working tab shares its phase.
-    pub pulse_epoch: Instant,
+    /// The breath of the working glyphs, the focus glow and the icon dots (`pulse::Breath`):
+    /// at rest unless something shown is working.
+    pub breath: pulse::Breath,
     /// When this frame is drawn: every transition in one render reads the same instant, and
     /// `any_motion` asks for the next frame with it.
     pub frame_now: Instant,
@@ -703,7 +704,7 @@ impl Root {
             tab_rename_focus: cx.focus_handle(),
             vertical_tabs_tip_seen: false,
             window_active: true,
-            pulse_epoch: Instant::now(),
+            breath: pulse::Breath::default(),
             frame_now: Instant::now(),
             user_closing: false,
             said_goodbye: false,
@@ -3493,7 +3494,9 @@ impl Root {
                 _ => {}
             }
         }
-        self.sessions.route_events(events, cx);
+        if self.sessions.route_events(events, cx) {
+            cx.notify();
+        }
     }
 
     /// Asks the daemon to start the installed window in this project once we are gone. The window
@@ -4009,7 +4012,7 @@ impl Render for Root {
             }
         }
         // The dots breathe with the focused pane's glow, on its clock; a window not in front rests.
-        let breath = if self.window_active { pulse::glow(now.saturating_duration_since(self.pulse_epoch), crate::motion::reduce_motion()) } else { 0.0 };
+        let breath = if self.window_active { self.breath.glow(now, crate::motion::reduce_motion()) } else { 0.0 };
         let right = chrome::Right { bell_dot: self.notices.dot(), doctor_dot: self.doctor_needs_fix() > 0, open: self.popover.value().copied().unwrap_or_default(), hover: self.icon_hover, breath };
         let hover = |which: chrome::Popover| {
             Box::new(cx.listener(move |root, on: &bool, _, cx| {
