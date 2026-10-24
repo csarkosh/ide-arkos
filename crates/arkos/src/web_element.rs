@@ -113,6 +113,17 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
                 let _ = weak.update(cx, |v, cx| v.begin_edit(cx));
             })
         })
+        .on_click({
+            let weak = view.downgrade();
+            cx.listener(move |_root, ev: &ClickEvent, _window, cx| {
+                // A double click selects the whole address, as in a browser.
+                if let ClickEvent::Mouse(m) = ev {
+                    if m.up.click_count >= 2 {
+                        let _ = weak.update(cx, |v, cx| v.select_address(cx));
+                    }
+                }
+            })
+        })
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, window, cx| {
             cx.stop_propagation();
             let done = field_weak.update(cx, |v, cx| v.address_key(&ev.keystroke, cx)).unwrap_or(false);

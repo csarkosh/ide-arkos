@@ -226,24 +226,53 @@ impl WebView {
         }
     }
 
-    /// The user clicked into the address field: it edits what it shows, cursor at the end.
+    /// The user clicked into the address field, or pressed Cmd+L: as in a browser, the first
+    /// click into the field selects the whole address, so typing replaces it; a click while it
+    /// is already being edited leaves the selection to the keys.
     pub fn begin_edit(&mut self, cx: &mut Context<Self>) {
+        if !self.editing {
+            self.editing = true;
+            self.address.select_all();
+        }
+        cx.notify();
+    }
+
+    /// A double click in the address field selects the whole address.
+    pub fn select_address(&mut self, cx: &mut Context<Self>) {
         self.editing = true;
-        let text = self.address.text.clone();
-        self.address.set(&text);
+        self.address.select_all();
         cx.notify();
     }
 
     /// A key in the address field: Enter goes, Escape puts the page's address back. True when the
     /// field is done with the keys (Enter or Escape) and the pane should have them.
     pub fn address_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if ks.modifiers.platform && ks.key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.address.insert_str(&text);
-                self.editing = true;
-                cx.notify();
+        // The clipboard chords, as in a browser's address field: the selection is copied or cut,
+        // and a paste goes over it.
+        if ks.modifiers.platform && !ks.modifiers.shift && !ks.modifiers.alt && !ks.modifiers.control {
+            match ks.key.as_str() {
+                "v" => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.address.insert_str(&text);
+                        self.editing = true;
+                        cx.notify();
+                    }
+                    return false;
+                }
+                "c" | "x" => {
+                    let selected = self.address.selected_text();
+                    if !selected.is_empty() {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(selected));
+                        if ks.key == "x" {
+                            self.address.delete_selection();
+                            self.editing = true;
+                            cx.notify();
+                        }
+                    }
+                    return false;
+                }
+                _ => {}
             }
-            return false;
         }
         match self.address.handle(ks) {
             Edit::Submit | Edit::SubmitBack => {

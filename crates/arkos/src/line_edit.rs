@@ -1,6 +1,8 @@
-//! One line of editable text with a cursor, for the command palette and the find bar. gpui
-//! 0.2.2 has no input element, so this is the smallest hand-built one: the keys a Mac user
-//! expects in a search field, nothing more. Pure, so every key is unit tested.
+//! One line of editable text with a cursor and a selection, for the command palette, the find
+//! bar, the prompts and the web tab's address field. gpui 0.2.2 has no input element, so this is
+//! the smallest hand-built one: the keys a Mac user expects in a text field (a selection with
+//! Shift and the arrows, Cmd+A, typing over a selection), nothing more. Pure, so every key is
+//! unit tested; the clipboard is the caller's.
 use crate::theme::Theme;
 use gpui::{div, prelude::*, px, Div, Keystroke, SharedString};
 
@@ -9,6 +11,8 @@ pub struct LineEdit {
     pub text: String,
     /// In chars, 0 to `text.chars().count()`.
     pub cursor: usize,
+    /// The selection's other end, in chars, while one is held; the cursor is the end that moves.
+    pub anchor: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,11 +34,47 @@ impl LineEdit {
     pub fn set(&mut self, text: &str) {
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
+        self.anchor = None;
     }
 
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.anchor = None;
+    }
+
+    /// Selects the whole text, the cursor at its end (Cmd+A, a click into an address field).
+    pub fn select_all(&mut self) {
+        self.cursor = self.len();
+        self.anchor = (self.cursor > 0).then_some(0);
+    }
+
+    /// The selection as `[from, to)` in chars, when it is not empty.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?;
+        (a != self.cursor).then(|| (a.min(self.cursor), a.max(self.cursor)))
+    }
+
+    /// The selected text, empty without a selection.
+    pub fn selected_text(&self) -> String {
+        match self.selection() {
+            Some((from, to)) => self.text.chars().skip(from).take(to - from).collect(),
+            None => String::new(),
+        }
+    }
+
+    /// Removes the selection, if any; true when there was one.
+    pub fn delete_selection(&mut self) -> bool {
+        match self.selection() {
+            Some((from, to)) => {
+                self.remove(from, to);
+                true
+            }
+            None => {
+                self.anchor = None;
+                false
+            }
+        }
     }
 
     fn byte_at(&self, chars: usize) -> usize {
@@ -45,12 +85,14 @@ impl LineEdit {
         self.text.chars().count()
     }
 
-    /// Inserts at the cursor. Newlines and other control characters are dropped: this is one line.
+    /// Inserts at the cursor, over the selection when there is one. Newlines and other control
+    /// characters are dropped: this is one line.
     pub fn insert_str(&mut self, s: &str) {
         let clean: String = s.chars().filter(|c| !c.is_control()).collect();
         if clean.is_empty() {
             return;
         }
+        self.delete_selection();
         let at = self.byte_at(self.cursor);
         self.text.insert_str(at, &clean);
         self.cursor += clean.chars().count();
@@ -58,6 +100,7 @@ impl LineEdit {
 
     /// Removes the chars in `[from, to)` and puts the cursor at `from`.
     fn remove(&mut self, from: usize, to: usize) -> Edit {
+        self.anchor = None;
         if from >= to {
             return Edit::Unchanged;
         }
@@ -80,6 +123,20 @@ impl LineEdit {
         i
     }
 
+    /// Moves the cursor to `to`: with Shift the selection grows from where it was (or starts at
+    /// the old cursor), without it the selection goes.
+    fn go(&mut self, to: usize, shift: bool) -> Edit {
+        if shift {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = to.min(self.len());
+        Edit::Unchanged
+    }
+
     pub fn handle(&mut self, ks: &Keystroke) -> Edit {
         let m = &ks.modifiers;
         let key = ks.key.as_str();
@@ -89,29 +146,28 @@ impl LineEdit {
             ("escape", ..) => return Edit::Cancel,
             ("up", false, false, false, false) => return Edit::Up,
             ("down", false, false, false, false) => return Edit::Down,
-            ("left", true, ..) | ("home", ..) => {
-                self.cursor = 0;
+            ("a", true, false, false, false) => {
+                self.select_all();
                 return Edit::Unchanged;
             }
-            ("right", true, ..) | ("end", ..) => {
-                self.cursor = self.len();
-                return Edit::Unchanged;
+            ("left", true, ..) | ("home", ..) => return self.go(0, m.shift),
+            ("right", true, ..) | ("end", ..) => return self.go(self.len(), m.shift),
+            ("a", false, true, ..) => return self.go(0, m.shift),
+            ("e", false, true, ..) => return self.go(self.len(), m.shift),
+            ("left", false, _, _, false) => {
+                // A selection collapses to its left end, as in every Mac field.
+                let to = self.selection().map_or(self.cursor.saturating_sub(1), |(from, _)| from);
+                return self.go(to, false);
             }
-            ("a", false, true, ..) => {
-                self.cursor = 0;
-                return Edit::Unchanged;
+            ("right", false, _, _, false) => {
+                let to = self.selection().map_or((self.cursor + 1).min(self.len()), |(_, to)| to);
+                return self.go(to, false);
             }
-            ("e", false, true, ..) => {
-                self.cursor = self.len();
-                return Edit::Unchanged;
-            }
-            ("left", false, ..) => {
-                self.cursor = self.cursor.saturating_sub(1);
-                return Edit::Unchanged;
-            }
-            ("right", false, ..) => {
-                self.cursor = (self.cursor + 1).min(self.len());
-                return Edit::Unchanged;
+            ("left", false, _, _, true) => return self.go(self.cursor.saturating_sub(1), true),
+            ("right", false, _, _, true) => return self.go((self.cursor + 1).min(self.len()), true),
+            ("backspace", ..) | ("delete", ..) if self.selection().is_some() => {
+                self.delete_selection();
+                return Edit::Changed;
             }
             ("backspace", true, ..) => return self.remove(0, self.cursor),
             ("backspace", false, _, true, _) => return self.remove(self.word_start(), self.cursor),
@@ -132,17 +188,29 @@ impl LineEdit {
     }
 }
 
-/// The text with a 1 px cursor bar at the cursor, or `placeholder` dimmed when empty.
+/// The text with a 1 px cursor bar at the cursor and the selection highlighted, or
+/// `placeholder` dimmed when empty.
 pub fn render(edit: &LineEdit, placeholder: &str, theme: &Theme, family: SharedString, size: f32) -> Div {
-    let at = edit.byte_at(edit.cursor);
-    let (before, after) = edit.text.split_at(at);
-    let row = div().flex().flex_row().items_center().font_family(family).text_size(px(size)).text_color(theme.chrome.text.hsla());
+    let text = theme.chrome.text.hsla();
+    let bar = || div().w(px(1.0)).h(px(size * 1.2)).bg(text);
+    let row = div().flex().flex_row().items_center().font_family(family).text_size(px(size)).text_color(text);
     if edit.text.is_empty() {
-        return row
-            .child(div().w(px(1.0)).h(px(size * 1.2)).bg(theme.chrome.text.hsla()))
-            .child(div().text_color(theme.chrome.text_dim.hsla()).child(placeholder.to_string()));
+        return row.child(bar()).child(div().text_color(theme.chrome.text_dim.hsla()).child(placeholder.to_string()));
     }
-    row.child(before.to_string()).child(div().w(px(1.0)).h(px(size * 1.2)).bg(theme.chrome.text.hsla())).child(after.to_string())
+    let (from, to) = edit.selection().unwrap_or((edit.cursor, edit.cursor));
+    let (a, b) = (edit.byte_at(from), edit.byte_at(to));
+    let (before, selected, after) = (&edit.text[..a], &edit.text[a..b], &edit.text[b..]);
+    let mut row = row.child(before.to_string());
+    if edit.cursor == from {
+        row = row.child(bar());
+    }
+    if !selected.is_empty() {
+        row = row.child(div().bg(theme.chrome.focus_ring.hsla().opacity(0.35)).child(selected.to_string()));
+    }
+    if edit.cursor == to && from != to {
+        row = row.child(bar());
+    }
+    row.child(after.to_string())
 }
 
 #[cfg(test)]
@@ -164,6 +232,37 @@ mod tests {
             let k = c.to_string();
             assert_eq!(e.handle(&ks(&k, Some(&k), none())), Edit::Changed);
         }
+    }
+
+    #[test]
+    fn a_selection_grows_with_shift_collapses_with_an_arrow_and_is_typed_over() {
+        let mut e = LineEdit::new();
+        typed(&mut e, "localhost:4173");
+        assert_eq!(e.handle(&ks("a", None, cmd())), Edit::Unchanged);
+        assert_eq!(e.selection(), Some((0, 14)));
+        assert_eq!(e.selected_text(), "localhost:4173");
+        assert_eq!(e.handle(&ks("left", None, none())), Edit::Unchanged);
+        assert_eq!((e.cursor, e.selection()), (0, None), "an arrow collapses to the selection's end on that side");
+        assert_eq!(e.handle(&ks("right", None, shift())), Edit::Unchanged);
+        assert_eq!(e.handle(&ks("right", None, shift())), Edit::Unchanged);
+        assert_eq!(e.selected_text(), "lo");
+        assert_eq!(e.handle(&ks("right", None, Modifiers { platform: true, shift: true, ..Modifiers::default() })), Edit::Unchanged);
+        assert_eq!(e.selected_text(), "localhost:4173", "Cmd+Shift+Right extends to the end");
+        assert_eq!(e.handle(&ks("x", Some("x"), none())), Edit::Changed);
+        assert_eq!((e.text.as_str(), e.cursor, e.anchor), ("x", 1, None), "typing replaces the selection");
+        typed(&mut e, "yz");
+        e.select_all();
+        assert_eq!(e.handle(&ks("backspace", None, none())), Edit::Changed);
+        assert_eq!(e.text, "", "backspace removes the selection");
+        typed(&mut e, "ab");
+        assert_eq!(e.handle(&ks("left", None, shift())), Edit::Unchanged);
+        assert_eq!(e.handle(&ks("end", None, none())), Edit::Unchanged);
+        assert_eq!(e.selection(), None, "a plain move drops the selection");
+        e.set("set");
+        assert_eq!(e.selection(), None, "set clears it too");
+        e.select_all();
+        e.insert_str("v");
+        assert_eq!(e.text, "v", "a paste replaces the selection");
     }
 
     #[test]
