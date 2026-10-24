@@ -287,7 +287,7 @@ fn is_word(c: char) -> bool {
 }
 
 /// How wide the cursor is: two pixels, as macOS draws its insertion point, so it reads at a
-/// glance in a small field.
+/// glance in a small field. It is painted over the text and takes no room in the line.
 pub const CARET_W: f32 = 2.0;
 
 /// The text with the cursor and the selection highlighted, or `placeholder` dimmed when empty.
@@ -299,9 +299,9 @@ pub fn render(edit: &LineEdit, placeholder: &str, theme: &Theme, family: SharedS
 /// does not shows its text alone, as a browser's address bar does until it is clicked.
 pub fn render_with(edit: &LineEdit, placeholder: &str, theme: &Theme, family: SharedString, size: f32, caret: bool) -> Div {
     let text = theme.chrome.text.hsla();
-    // The accent, as macOS colours its insertion point; it is drawn in the space it takes, so the
-    // text beside it never moves when it hides.
+    // The accent, as macOS colours its insertion point.
     let ring = theme.chrome.focus_ring.hsla();
+    let wash = ring.opacity(0.35);
     // The blink: shown, hidden, from the last key or click; the next change is noted so the
     // window repaints for it and for nothing else.
     let caret = caret && {
@@ -314,25 +314,70 @@ pub fn render_with(edit: &LineEdit, placeholder: &str, theme: &Theme, family: Sh
         }
         on
     };
-    let bar = move || div().flex_none().w(px(CARET_W)).h(px(size * 1.35)).rounded(px(1.0)).bg(if caret { ring } else { gpui::transparent_black() });
-    let row = div().flex().flex_row().items_center().font_family(family).text_size(px(size)).text_color(text);
-    if edit.text.is_empty() {
-        return row.child(bar()).child(div().text_color(theme.chrome.text_dim.hsla()).child(placeholder.to_string()));
-    }
+    // The text is one run, laid out once, so moving the cursor or the selection never moves a
+    // letter (a run split at the cursor loses the kerning across the cut, and a bar laid out
+    // between the halves pushes the rest along). The selection's wash is painted under it and the
+    // cursor over it, both at the x the text system gives for their char, taking no room.
     let (from, to) = edit.selection().unwrap_or((edit.cursor, edit.cursor));
-    let (a, b) = (edit.byte_at(from), edit.byte_at(to));
-    let (before, selected, after) = (&edit.text[..a], &edit.text[a..b], &edit.text[b..]);
-    let mut row = row.child(before.to_string());
-    if edit.cursor == from {
-        row = row.child(bar());
-    }
-    if !selected.is_empty() {
-        row = row.child(div().bg(theme.chrome.focus_ring.hsla().opacity(0.35)).child(selected.to_string()));
-    }
-    if edit.cursor == to && from != to {
-        row = row.child(bar());
-    }
-    row.child(after.to_string())
+    let (a, b, at) = (edit.byte_at(from), edit.byte_at(to), edit.byte_at(edit.cursor));
+    let shown: SharedString = edit.text.clone().into();
+    let shape_family = family.clone();
+    let x_of = move |window: &mut gpui::Window, byte: usize| -> gpui::Pixels {
+        if shown.is_empty() || byte == 0 {
+            return px(0.0);
+        }
+        let run = gpui::TextRun { len: shown.len(), font: gpui::font(shape_family.clone()), color: text, background_color: None, underline: None, strikethrough: None };
+        window.text_system().shape_line(shown.clone(), px(size), &[run], None).x_for_index(byte)
+    };
+    let x_under = x_of.clone();
+    let under = gpui::canvas(
+        move |bounds, window, _cx| (a != b).then(|| (bounds, x_under(window, a), x_under(window, b))),
+        move |_, sel, window, _cx| {
+            if let Some((bounds, x0, x1)) = sel {
+                let h = px(size * 1.35);
+                let y = bounds.origin.y + (bounds.size.height - h) / 2.0;
+                window.paint_quad(gpui::fill(gpui::Bounds { origin: gpui::point(bounds.origin.x + x0, y), size: gpui::size(x1 - x0, h) }, wash));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let over = gpui::canvas(
+        move |bounds, window, _cx| caret.then(|| (bounds, x_of(window, at))),
+        move |_, bar, window, _cx| {
+            if let Some((bounds, x)) = bar {
+                let h = px(size * 1.35);
+                let y = bounds.origin.y + (bounds.size.height - h) / 2.0;
+                // Centred on the boundary, so it sits between two letters and covers neither.
+                let left = (bounds.origin.x + x - px(CARET_W / 2.0)).max(bounds.origin.x);
+                window.paint_quad(gpui::fill(gpui::Bounds { origin: gpui::point(left, y), size: gpui::size(px(CARET_W), h) }, ring).corner_radii(px(1.0)));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full();
+    let line = if edit.text.is_empty() {
+        div().text_color(theme.chrome.text_dim.hsla()).child(placeholder.to_string())
+    } else {
+        div().child(edit.text.clone())
+    };
+    div()
+        .relative()
+        .flex()
+        .flex_row()
+        .items_center()
+        .h(px(size * 1.35))
+        .font_family(family)
+        .text_size(px(size))
+        .text_color(text)
+        .whitespace_nowrap()
+        .child(under)
+        .child(line)
+        .child(over)
 }
 
 #[cfg(test)]
