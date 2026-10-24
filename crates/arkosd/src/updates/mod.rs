@@ -118,6 +118,10 @@ pub struct UpdateState {
     pub last_error: Option<String>,
     pub checking: bool,
     pub check_now: bool,
+    /// The person asked for this check ("Check for updates"): releases that failed before are
+    /// tried again, since a failure can be the machine's (a version probe that ran out of time
+    /// while the Mac was busy) rather than the release's.
+    pub retry_failed: bool,
     /// Whether a poll thread runs (`--check-every-secs` is not zero); `CheckForUpdates` is
     /// refused when not.
     pub polling: bool,

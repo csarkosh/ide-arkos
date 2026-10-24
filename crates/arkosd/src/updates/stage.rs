@@ -19,6 +19,11 @@ const DITTO_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long codesign may take to read or check a bundle's signature.
 const CODESIGN_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a staged arkosd has to print its version. A freshly unpacked binary's first run waits
+/// on macOS's own assessment of it, which on a busy Mac took more than the 2 s this once was and
+/// cost 0.7.1 its staging (2026-10-24); a binary that answers at all answers in milliseconds
+/// after that.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// `<dir>/<version>/Arkos IDE.app` from the zip, or an error with the folder removed.
 pub fn stage(dir: &Path, m: &Manifest, zip: &Path, ditto: &Path) -> Result<Staged, String> {
@@ -51,7 +56,7 @@ pub fn check_bundle(bundle: &Path, want_version: &str) -> Result<(), String> {
             return Err(format!("{name}: not an executable file"));
         }
     }
-    let said = probe_version(&bundle.join("Contents/MacOS/arkosd"), Duration::from_secs(2)).ok_or("the staged arkosd did not print its version")?;
+    let said = probe_version(&bundle.join("Contents/MacOS/arkosd"), PROBE_TIMEOUT).ok_or("the staged arkosd did not print its version")?;
     match super::version::parse_version_string(&said) {
         Some(v) if format!("{}.{}.{}", v.major, v.minor, v.patch) == want_version => Ok(()),
         _ => Err(format!("the staged arkosd says {said:?}, the manifest {want_version}")),

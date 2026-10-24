@@ -896,6 +896,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             let mut st = state.lock().unwrap();
             if st.update.polling {
                 st.update.check_now = true;
+                st.update.retry_failed = true;
                 Response::Ok
             } else {
                 Response::Error("update checks are off".into())
@@ -1196,6 +1197,19 @@ mod tests {
         let st = state.lock().unwrap();
         assert_eq!(direct_target(&st, &WindowTarget::Pid(110), &web).map(|t| t.1), Ok(110), "a protocol 9 window opens a page");
         assert_eq!(direct_target(&st, &WindowTarget::Session(other), &PaneAction::Panes), Err("window 95: too old for this command".into()));
+    }
+
+    /// "Check for updates" asks for a check now and for releases that failed before to be tried
+    /// again: 0.7.1's staging failed once on a busy Mac and was skipped until the daemon restarted.
+    #[test]
+    fn check_for_updates_retries_a_release_that_failed_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, opts) = (test_state(), test_options(dir.path()));
+        let tx = add_client(&state, 1);
+        state.lock().unwrap().update.polling = true;
+        assert_eq!(dispatch(&state, 1, &tx, 1, Request::CheckForUpdates, &opts), Some(Response::Ok));
+        let st = state.lock().unwrap();
+        assert!(st.update.check_now && st.update.retry_failed, "a check now, failures forgotten");
     }
 
     /// The sid a protocol 7 window sends after its Hello is what the daemon later seals that

@@ -373,6 +373,9 @@ pub fn start(state: Shared, f: Fetcher, telemetry: Telemetry, dir: PathBuf, keys
                     let mut st = state.lock().unwrap();
                     let due = st.update.check_now || last.is_none_or(|t| t.elapsed() >= every);
                     st.update.check_now = false;
+                    if std::mem::take(&mut st.update.retry_failed) {
+                        bad.clear();
+                    }
                     if due {
                         st.update.checking = true;
                     }
