@@ -1189,9 +1189,12 @@ mod tests {
         // A web open (protocol 9) is refused to a window on protocol 8, which takes every other open.
         let web = PaneAction::Open { path: "https://a.dev/".into(), kind: OpenKind::Web, place: protocol::Placement::Preview, at: None, playing: None, loop_change: protocol::LoopChange::Keep, reuse: true, wait_for_file: false, focus: false };
         let text = PaneAction::Open { path: "/p/a.txt".into(), kind: OpenKind::Text, place: protocol::Placement::Preview, at: None, playing: None, loop_change: protocol::LoopChange::Keep, reuse: true, wait_for_file: false, focus: false };
-        assert_eq!(direct_target(&st, &WindowTarget::Pid(100), &web).map(|t| t.1), Ok(100));
         assert_eq!(direct_target(&st, &WindowTarget::Pid(90), &text).map(|t| t.1), Ok(90), "a protocol 8 window still opens a file");
         assert_eq!(direct_target(&st, &WindowTarget::Pid(90), &web), Err("window 90: too old for this command".into()));
+        drop(st);
+        add_window(&state, 4, 110, 9, &[]);
+        let st = state.lock().unwrap();
+        assert_eq!(direct_target(&st, &WindowTarget::Pid(110), &web).map(|t| t.1), Ok(110), "a protocol 9 window opens a page");
         assert_eq!(direct_target(&st, &WindowTarget::Session(other), &PaneAction::Panes), Err("window 95: too old for this command".into()));
     }
 
