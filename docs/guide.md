@@ -227,15 +227,15 @@ to the right of the document, or splits one off; the palette's "Open file in pan
 path and opens it in the focused pane; and a coding agent can put it beside itself with
 `arkos open` (see Agents, under Config).
 
-Under the picture a strip is always shown: play and pause, the time as `m:ss.f / m:ss.f`, a
-scrubber, the loop toggle and the mute toggle, and a status word at the right. A click on the
-scrubber seeks; a drag scrubs through the frames and resumes playback afterwards if it was
-playing; a Shift+drag selects a range, which L (or the loop toggle) then loops. The loop toggle on
-without a range loops the whole file. With the pane focused (click it first) the keys are Space to
-play or pause, Left and Right for 5 seconds, Shift+Left and Shift+Right for 1 second, comma and
-period for one frame back or forward, Home or 0 for the start, L to loop, M to mute and R to
-reload. Every one can be rebound; the Keybindings window lists them under "Video". Terminals never
-see these keys.
+A click on the picture plays or pauses it, as in QuickTime Player. Under the picture a strip is
+always shown: play and pause, the time as `m:ss.f / m:ss.f`, a scrubber, the loop toggle and the
+mute toggle, and a status word at the right. A click on the scrubber seeks; a drag scrubs through
+the frames and resumes playback afterwards if it was playing; a Shift+drag selects a range, which
+L (or the loop toggle) then loops. The loop toggle on without a range loops the whole file. With
+the pane focused (click it first) the keys are Space to play or pause, Left and Right for 5
+seconds, Shift+Left and Shift+Right for 1 second, comma and period for one frame back or forward,
+Home or 0 for the start, L to loop, M to mute and R to reload. Every one can be rebound; the
+Keybindings window lists them under "Video". Terminals never see these keys.
 
 A video plays only while it is the active tab of its pane and the window is not hidden or
 minimized: switching to another tab pauses it and switching back resumes it. Moving to another app

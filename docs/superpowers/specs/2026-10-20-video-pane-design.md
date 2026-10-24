@@ -159,6 +159,10 @@ is a hunt), on `chrome.tab_bar` with `chrome.text` and `chrome.text_dim`:
   "waiting for file" while the file is missing (section 4); the reason when the file cannot be
   played ("no video track", "cannot play: <AVFoundation's localized description>").
 
+2026-10-24: a click on the picture toggles play and pause, as the play button does (a tap, not a
+press that travels; the strip below is its own element, so the scrubber and the buttons are
+untouched, and the "Open in QuickTime Player" button's click stays its own).
+
 Over the picture, centred, when the file cannot be played: the reason and a button "Open in
 QuickTime Player" (`media::quicktime_args`), the same fallback the markdown poster has today.
 

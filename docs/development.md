@@ -241,6 +241,8 @@ Things only a person at the screen can check, in order of value:
 - video pane, the strip: Space plays with sound; the scrubber moves and a click seeks; a drag
   scrubs showing frames and resumes playback if it was playing; comma and period step one frame;
   L loops (Shift+drag on the scrubber selects a range); M mutes; R reloads
+- video pane: click the picture of a playing video: it pauses; click again: it plays; a click on
+  the strip's scrubber still seeks
 - video pane, the strip: it stays legible in a narrow pane, and the Unplayable text is legible
   over a poster
 - video pane: a paused seek shows its frame within half a second on a 4K HEVC file, and a

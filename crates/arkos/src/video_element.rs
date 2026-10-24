@@ -1,8 +1,9 @@
 //! Draws a video tab (spec 3.2 and 3.3): the picture (the player's frame through gpui's
-//! `surface`, letterboxed on the window's colour), the control strip under it, and the reason
-//! with a way out when the file cannot be played. The strip's arithmetic (`scrub_x`,
-//! `scrub_time`, `strip_time`, `status_word`) is pure and tested; the rest reads the view and
-//! the theme as they are at this draw, never keeping a colour.
+//! `surface`, letterboxed on the window's colour; a click on it plays or pauses), the control
+//! strip under it, and the reason with a way out when the file cannot be played. The strip's
+//! arithmetic (`scrub_x`, `scrub_time`, `strip_time`, `status_word`) and the picture's click
+//! (`picture_click_toggles`) are pure and tested; the rest reads the view and the theme as they
+//! are at this draw, never keeping a colour.
 
 use crate::theme::Theme;
 use crate::video::{fmt_time, PlayerState, VideoModel};
@@ -10,7 +11,7 @@ use crate::video_view::VideoView;
 use crate::Root;
 use gpui::{
     canvas, div, img, point, prelude::*, px, size, surface, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels, SharedString, Window,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels, Point, SharedString, Window,
 };
 use std::time::Instant;
 
@@ -22,6 +23,16 @@ const LOOP_H: f32 = 8.0;
 const KNOB: f32 = 10.0;
 /// The play glyph's box.
 const GLYPH: f32 = 12.0;
+/// How far a press on the picture may travel before its release and still be a click; further
+/// is a drag, which toggles nothing.
+const TAP: f32 = 4.0;
+
+/// Whether a left press on the picture at `down`, released at `up`, plays or pauses: only a tap
+/// does. gpui's `on_click` fires for any release inside the element, however far the pointer
+/// went between, so the travel is checked here.
+pub fn picture_click_toggles(down: Point<Pixels>, up: Point<Pixels>) -> bool {
+    (up - down).magnitude() <= TAP as f64
+}
 
 /// How far through `duration` `secs` is, from 0 to 1; 0 for a length that is not known, not
 /// finite or not positive. Never `clamp`: a player value may be NaN.
@@ -169,7 +180,11 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
                     .text_color(text)
                     .cursor_pointer()
                     .child("Open in QuickTime Player")
-                    .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| crate::md_view::open_media(path.clone(), crate::media::quicktime_args, cx))),
+                    // The button's click is its own, not the picture's under it.
+                    .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        crate::md_view::open_media(path.clone(), crate::media::quicktime_args, cx)
+                    })),
             )
     });
     let (border, span_bg) = (c.border.hsla(), c.focus_ring.hsla().opacity(0.4));
@@ -250,7 +265,7 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
     };
     let looping = toggle("video-loop", "loop", loop_range.is_some(), VideoView::toggle_loop, cx);
     let mute = toggle("video-mute", "mute", muted, VideoView::mute, cx);
-    let play_target = view.downgrade();
+    let (play_target, tap) = (view.downgrade(), view.downgrade());
     let play_button = div()
         .id(("video-play", eid))
         .flex_none()
@@ -286,7 +301,28 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
         .key_context("Video")
         .track_focus(&focus)
         .bg(bg)
-        .child(div().flex_1().min_h_0().relative().overflow_hidden().child(picture).children(dimmed).children(fallback))
+        .child(
+            div()
+                .id(("video-picture", eid))
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .overflow_hidden()
+                // A tap on the picture plays or pauses, as the play button does (the pane is
+                // focused by the press, in `render_video`). The strip is its own element below,
+                // so a scrub never arrives here; a press that travels is a drag and toggles
+                // nothing. A video that cannot play or is waiting for its file: `play` refuses.
+                .on_click(cx.listener(move |_root, ev: &ClickEvent, _window, cx| {
+                    if let ClickEvent::Mouse(m) = ev {
+                        if picture_click_toggles(m.down.position, m.up.position) {
+                            let _ = tap.update(cx, |v, cx| v.play_pause(cx));
+                        }
+                    }
+                }))
+                .child(picture)
+                .children(dimmed)
+                .children(fallback),
+        )
         .child(strip)
 }
 
@@ -320,6 +356,16 @@ mod tests {
         assert_eq!(scrub_time(5.0, d, 0.0), 0.0);
         assert_eq!(scrub_time(f32::NAN, d, w), 0.0);
         assert_eq!(scrub_x(f64::NAN, d, w), 0.0);
+    }
+
+    #[test]
+    fn a_tap_on_the_picture_toggles_and_a_drag_across_it_does_not() {
+        let at = |x: f32, y: f32| point(px(x), px(y));
+        assert!(picture_click_toggles(at(100.0, 80.0), at(100.0, 80.0)));
+        assert!(picture_click_toggles(at(100.0, 80.0), at(102.0, 81.0)), "a trackpad tap wobbles a pixel or two");
+        assert!(!picture_click_toggles(at(100.0, 80.0), at(140.0, 80.0)), "a drag across the picture is not a click");
+        assert!(!picture_click_toggles(at(100.0, 80.0), at(100.0, 30.0)), "nor is one up it");
+        assert!(!picture_click_toggles(at(f32::NAN, 80.0), at(100.0, 80.0)), "a position that is not one toggles nothing");
     }
 
     #[test]
