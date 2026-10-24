@@ -81,8 +81,9 @@ diff" chip) shows the deleted lines in red between the current ones.
 
 Menus, the palette, notices, find bars and the drop preview ease in over 120 ms and out over
 90 ms; Reduce Motion turns that off. The drop preview glides between zones, the focus glow
-cross-fades as focus moves and breathes slowly while the window is active (six seconds a
-breath, a little brighter and wider at the peak; Reduce Motion rests it), a section's rows fade
+cross-fades as focus moves and breathes slowly while a session in the window is working (six
+seconds a breath, a little brighter and wider at the peak, finishing its breath when the work
+stops; at rest otherwise, and under Reduce Motion), a section's rows fade
 in as it opens, and Cmd+B slides the sidebar
 over 150 ms with the panes following. Something on its way out is only drawn: it takes no
 keys, focus or clicks.

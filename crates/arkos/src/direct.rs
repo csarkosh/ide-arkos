@@ -312,7 +312,7 @@ impl Root {
             PaneAction::Video { path, op } => self.direct_video(path.as_deref(), op, cx),
             PaneAction::Panes => {
                 let tree = &self.tree;
-                let titles = |pane: PaneId, idx: usize| crate::pane_view::tab_title(self, pane, idx, cx);
+                let titles = |pane: PaneId, idx: usize| crate::pane_view::tab_title(self, pane, idx);
                 Ok((Answer::Now(PaneOutcome::Panes(panes_report(tree, &self.project, session, &titles))), Vec::new(), Vec::new(), false))
             }
         };

@@ -82,7 +82,11 @@ features are added:
   never per frame. Per-frame work is limited to swapping what the next paint reads.
 - A new animated thing adds its `animating(now)` to `Root::any_motion`, so the one
   `request_animation_frame` in `Root::render` serves every transition and an idle window still
-  paints nothing. Read `now` once per frame (`Root::frame_now`); never call `Instant::now()` per
+  paints nothing. Nothing repaints the window on a timer to pick up changes: whoever changes
+  what the window shows calls `cx.notify()` (a daemon event's tab state, `route_events`; a
+  response's outcome, the connection pump). A frame reads only the entities it draws (a tab's
+  label comes from `SessionManager::labels`, not its terminal), because gpui repaints a window
+  whenever an entity it read changes. Read `now` once per frame (`Root::frame_now`); never call `Instant::now()` per
   element.
 - A new surface that reads the palette or the theme (a window, a panel, a program told about
   the theme) is checked by hand with a theme switch: it must fade with the window, not jump.
@@ -465,10 +469,12 @@ Things only a person at the screen can check, in order of value:
 - with two panes side by side, the separator between them is a hairline and the focused pane's
   glow looks the same on its separator side as on its others; hover the separator: a wider
   stripe fades in and the panes do not move; drag it; move away: it fades out
-- the focused pane's glow reaches all four edges, the bottom and right included, and breathes
-  slowly; click another pane: the glow cross-fades; Reduce Motion in System Settings: it rests;
-  `ps` with four idle terminals and the window in front: the breath's ten repaints a second
-  cost a few percent of one core, and none once another app is in front
+- the focused pane's glow reaches all four edges, the bottom and right included; it breathes
+  slowly while a tab in the window is working and, once the work stops, comes to rest at the
+  end of its breath with no jump; click another pane: the glow cross-fades; Reduce Motion in
+  System Settings: it rests; with the window in front and nothing working, the window draws no
+  frames: `python3 scripts/frames.py <arkos pid>` reads about zero, and output in a tab that is
+  not showing (`sleep 1; while :; do date; sleep 0.2; done` there) keeps it about zero too
 - `pkill -x arkosd`, then open from the Dock: the chooser is up at once with "connecting to the
   daemon…" under the list, and the session counts arrive a moment later; `pkill -x arkosd` again
   with the chooser open: the footer says "reconnecting to the daemon…" and the counts come back

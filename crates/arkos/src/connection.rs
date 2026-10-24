@@ -230,7 +230,14 @@ async fn pump(root: &Entity<Root>, client: &Client, events: &mut UnboundedReceiv
                         }
                         let is_error = matches!(response, Response::Error(_));
                         let outcome = root.sessions.handle_response(id, response);
+                        // An answer that means something (a tab's shell started, the session
+                        // list, a failure) may change what a tab shows; the heartbeat's do not.
+                        // Nothing else repaints for it now that an idle window draws no frames.
+                        let news = !matches!(outcome, crate::sessions::Outcome::None);
                         root.handle_outcome(outcome, cx);
+                        if news {
+                            cx.notify();
+                        }
                         // A later success means the error was transient.
                         if !is_error && root.status.starts_with(ERROR_PREFIX) {
                             root.status.clear();
