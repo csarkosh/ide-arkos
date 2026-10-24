@@ -14,9 +14,9 @@ pub const TEXT: &str = include_str!("../../../docs/agent-guide.md");
 /// The skill's folder name and its front matter `name`.
 pub const SKILL_NAME: &str = "arkos-ide";
 /// The skill's front matter `description`, which is how an agent decides to load it.
-pub const SKILL_DESCRIPTION: &str = "Show a video or a markdown file in an Arkos IDE pane, control its playback, or customize Arkos: themes, fonts and settings. Use when the user asks to see, preview, play or watch a video or a document, or to change how Arkos looks or behaves.";
+pub const SKILL_DESCRIPTION: &str = "Show a video, a markdown file or a web page in an Arkos IDE pane, control a video's playback, or customize Arkos: themes, fonts and settings. Use when the user asks to see, preview, play or watch a video, a document or a page (a local HTML file or a dev server), or to change how Arkos looks or behaves.";
 /// The line `arkos guide --install` offers for `AGENTS.md` or `CLAUDE.md`.
-pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before showing the user a file in a pane or changing its theme or settings.";
+pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before showing the user a file or a web page in a pane or changing its theme or settings.";
 
 const USAGE: &str = "usage: arkos guide [--path | --install]\n";
 const STAMP_PREFIX: &str = "<!-- arkos-guide: ";
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(i.path, dir.path().join("arkos-ide").join("SKILL.md"));
         assert!(!i.replaced);
         let text = std::fs::read_to_string(&i.path).unwrap();
-        assert!(text.starts_with("---\nname: arkos-ide\ndescription: \"Show a video or a markdown file in an Arkos IDE pane"), "{text}");
+        assert!(text.starts_with("---\nname: arkos-ide\ndescription: \"Show a video, a markdown file or a web page in an Arkos IDE pane"), "{text}");
         assert!(text.contains(&format!("<!-- arkos-guide: {} -->\n", stamp())));
         assert!(text.ends_with(TEXT));
         assert_eq!(skill_state(dir.path()), SkillState::Current);
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn the_agents_md_line_names_showing_a_file_as_well_as_the_theme() {
-        assert_eq!(AGENTS_MD_LINE, "Arkos IDE: run `arkos guide` before showing the user a file in a pane or changing its theme or settings.");
+        assert_eq!(AGENTS_MD_LINE, "Arkos IDE: run `arkos guide` before showing the user a file or a web page in a pane or changing its theme or settings.");
         assert!(TEXT.contains(AGENTS_MD_LINE), "the guide quotes the line as printed");
     }
 

@@ -180,41 +180,52 @@ every other HTML.
 
 ## Browser pane
 
-A browser tab is a placeholder in a pane with a real Chrome window sitting on top of it. Arkos
-does not render the web: it moves and sizes the Chrome window through the Accessibility API so
-that it follows the placeholder as you split, drag a handle, toggle the sidebar or move the
-window, hides it when the tab is not the active one (or arkos is minimized or hidden), and
-raises it when you click the pane.
+A browser tab shows a web page inside the pane, drawn by WebKit (the engine behind Safari) in a
+view of Arkos's own window: it resizes with the pane, hides behind the palette and the menus,
+moves between panes, closes and comes back with Shift+Cmd+T, and a relaunch brings it back on the
+page it was on. Above the page sits a 28 px bar: back, forward, reload (stop while a page
+loads), the address, a thin progress line along the bar's bottom edge while a page loads, and
+"open in your browser" at the right for a page that wants a real browser (a passkey login, a
+download).
 
-A window gets docked in one of four ways. While a Claude Code session is working, the next Chrome
-window it opens lands in a browser tab on its own. The palette's "Dock a Chrome window…" lists
-Chrome's windows and docks the one you pick into the focused pane. "New browser tab…" (Cmd+Shift+B) asks for a URL
-and opens it in a new Chrome window that docks into the tab; "New single-page browser tab…"
-does the same in Chrome's app mode (no tab strip, no address bar), as does `app_mode` in the
-config. Or drag any Chrome window by its title bar into a pane and drop it.
+There are five ways in. "New browser tab…" (Cmd+Shift+B) asks for an address; left empty it
+opens `[browser] url` from the config, or a blank tab. A double click on an `.html` file in the
+sidebar opens it as a page. Cmd+click on a link to a local `.html` file in a markdown document
+opens it beside the document. A coding agent can put a page beside itself with
+`arkos open http://localhost:4173/` or `arkos open out/report.html` (see Agents, under Config).
+And a page's own links open in the same tab, as does a window it tries to open.
 
-It is released four ways: close the tab (the window stays where it is; arkos never closes it),
-the palette's "Undock Chrome window", drag the tab out of the arkos window and drop it there, or
-drag the window's title bar more than 40 px away from the placeholder. Dropping the tab in
-another pane moves it, still docked. Chrome's own tab dragging is left alone.
+The address field takes `http://` and `https://` addresses, an absolute path or a `file://` URL
+of a page on disk, `localhost`, `127.0.0.1`, a `.local` host or any host with a port (those get
+`http://`), and a dotted name like `example.com` (which gets `https://`). It never searches the
+web: anything else is refused with a notice. Another kind of address (`mailto:`, an app's own
+scheme) is handed to macOS, which opens whatever handles it.
 
-Moving another app's window needs the Accessibility permission. Arkos asks once, when the first
-browser pane needs it; until it is granted the pane explains what is missing and links to System
-Settings. Revoking it later brings the explanation back within a second. The grant is Arkos IDE's,
-and holds for every window, including one the daemon reopens after an update. A command in a tab
-that reaches a protected folder (Documents, Desktop, Downloads) makes macOS ask for Arkos IDE,
-once, and that grant holds for every tab and every agent run in one. As in Terminal.app, a
-command in a tab shares every permission the app holds, Accessibility among them.
+A local page may read the files beside it: everything under the project folder when the page is
+inside it, else the page's own folder. So a report at `out/report.html` can show `out/clips/a.mp4`
+and `../assets/logo.png`, and a page in `/tmp` cannot read the project. `<video>` and `<audio>`
+play with the system's decoders, autoplay included, and keep playing when you switch to another
+tab in the pane; closing the tab stops them. A local page follows its file: when the file changes
+and holds still for a second, the page reloads, so an agent that rewrites a report sees it refresh
+within about two seconds. A page that fails to load (a dev server that is not up yet) says why,
+with the address and a Retry button; a reload of a page that loaded once keeps the old page on
+screen through a failed retry. A download is refused with a notice; use "open in your browser".
+A PDF shows.
 
-A pane holding a browser tab shows a slim 14 px tab bar: the pane number and one dot per tab, no
-titles, since Chrome shows the page's own title. Dragging a tab still drops onto it. To get the
-vertical space back, a tip (once per run) suggests right-clicking Chrome's tab strip and choosing
-Show Tabs Vertically.
+Keys, while the tab's pane has the focus: Cmd+L puts the cursor in the address field (Enter goes,
+Escape puts the page's address back), Cmd+R reloads, Cmd+[ and Cmd+] go back and forward, Cmd+=
+and Cmd+- zoom the page through Safari's steps and Cmd+0 resets it, Cmd+Shift+O opens the page in
+your default browser. A click in the page gives the page the keyboard, as a click in a terminal
+gives the terminal; Arkos's own shortcuts (Cmd+1 to 9, Cmd+W, Cmd+T, Cmd+B, Cmd+Shift+P and the
+rest) still work, and a click on the bar, the tab bar or another pane takes the keys back. The
+trackpad's two-finger swipe goes back and forward. Right-click, Inspect Element opens WebKit's
+Web Inspector as its own window.
 
-Only the URL and the app-mode flag are saved. After a relaunch a browser tab waits for a window;
-arkos never tries to find the old one. A hidden tab's window waits off-screen, and quitting puts
-it back; after a crash or a kill it stays there, and Chrome's Window > Zoom (or quitting and
-reopening Chrome) brings it back on screen.
+Pages live in a profile of their own, apart from Safari and Chrome: no cookies, logins or
+extensions come along, so sign in by hand when a page needs it, and what you sign into stays
+signed in across relaunches. The data lives in `~/Library/WebKit/sh.csarko.arkos` and nothing in
+Arkos reads it; the telemetry counts a page load's kind (http, https, file) and whether it loaded,
+never an address. Only the page's address is saved in the workspace; a relaunch loads it afresh.
 
 ## Video pane
 
@@ -287,7 +298,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+K then Shift+Cmd+Left | move tab left |
 | Cmd+K then Shift+Cmd+Right | move tab right |
 | Ctrl+Shift+` | new terminal tab |
-| Cmd+Shift+B | new browser tab: asks for a URL, opens it in a Chrome window docked into the tab |
+| Cmd+Shift+B | new browser tab: asks for an address and opens it in a web tab (see Browser pane for the tab's own keys: Cmd+L, Cmd+R, Cmd+[ and ], Cmd+Shift+O, zoom) |
 | Cmd+K | clear to start: history and screen go, the prompt line moves to the top, as in Terminal.app |
 | Cmd+= | font bigger |
 | Cmd+- | font smaller |
@@ -476,8 +487,8 @@ Sections: `font` (family, the default text preset, and the presets), `terminal`
 and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
 whether it starts collapsed), `viewer` (`highlight_limit_bytes`, and `wide_tables`: `wrap` or `scroll`), and `browser` (`url`, the page a new
-browser tab opens when its prompt is left empty, and `app_mode`, which opens user URLs as a single
-page).
+browser tab opens when its prompt is left empty; `app_mode` is left over from 0.6's Chrome docking
+and is ignored).
 
 ```toml
 [update]

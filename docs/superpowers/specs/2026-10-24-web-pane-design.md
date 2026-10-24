@@ -146,9 +146,10 @@ so Cmd+1 to 9, Cmd+W, Cmd+T, Cmd+B, Cmd+Shift+B, Cmd+K and the rest keep working
 focused; a chord gpui does not bind falls through to the page (Cmd+C, Cmd+V, Cmd+A, Cmd+Z,
 Cmd+F for the page's own find, Cmd+plus and minus, section 4). The probe confirms this order
 (section 14); if it turns out wrong, the fallback is a local `NSEvent` monitor that hands Cmd
-chords to the content view first. Escape with the page focused gives the keyboard back to the
-pane (the Arkos tab bar and keymap), as Escape leaves the URL field. Tab from the address field
-goes into the page.
+chords to the content view first. A click on the bar, the tab bar or another pane gives the
+keyboard back to gpui (`screen::make_first_responder`); Escape in a page is the page's own, since
+only key equivalents pass through it (ruling 15, which replaces an earlier "Escape returns"
+rule). Cmd+L takes the keys back and puts them in the address field.
 
 Theme: the bar reads `root.theme` at paint time like every other element. The page has its own
 colours. Before a page paints, and behind a page with no background, the view shows
@@ -320,9 +321,9 @@ reloads it (section 8).
   with app mode.
 - **The palette**: "New browser tab…" stays; "New single-page browser tab…", "Dock a Chrome
   window…" and "Undock Chrome window" go.
-- **The sidebar**: a double click on a `.html` or `.htm` file opens it as a web tab in the focused
-  pane (a single click still previews it in the viewer as text, the rule for every file). The
-  explorer's existing open path gains the case.
+- **The sidebar**: a click on a `.html` or `.htm` file opens it as a web tab in the focused pane,
+  previewed on a single click and pinned on a double click as every file is (`sidebar::file_tab`
+  decides the tab's kind by the name, as it does for a video; ruling 16).
 - **The markdown editor**: a link to a local `.html` file Cmd+clicked opens a web tab beside the
   document, as a poster opens a video tab; an `http(s)` link in the editor still opens in the
   default browser (a doc's links are to the web; the user has a browser; unchanged).
@@ -526,3 +527,10 @@ The answers are rulings 7 to 9, written into this spec by the implementer.
 13. `[browser] app_mode` stays in the config struct, ignored, so 0.6 configs read.
 14. Agent control of the page is the next milestone; this one leaves the two calls it needs
     unbuilt and named.
+15. Only key equivalents reach gpui while a page has the keyboard, so there is no Escape rule;
+    a click outside the page, or Cmd+L, takes the keys back.
+16. An `.html` file opens as a web tab from the sidebar on a single click too (a preview), the
+    way a video does; the file's source is a text file the viewer shows when opened as text.
+17. Retired keybinding names are ignored silently by `validate` (`keymap::RETIRED`), not
+    reported: a report would need a notice path that `Config::load` does not have, and the
+    names mean nothing any more.

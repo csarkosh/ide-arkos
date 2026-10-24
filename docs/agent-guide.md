@@ -8,8 +8,8 @@ your own config folder as the skill `arkos-ide` (`$CLAUDE_CONFIG_DIR/skills`, el
 ## 1. What you can change, and what you cannot
 
 Arkos is a macOS IDE of terminal panes, a file tree, a markdown editor and a video pane. Through
-this guide you may show the user a video or a document in a pane of their window and control a
-video there (play, pause, seek, step, loop, reload, mute, close), and you may change its theme (the
+this guide you may show the user a video, a document or a web page in a pane of their window and
+control a video there (play, pause, seek, step, loop, reload, mute, close), and you may change its theme (the
 colours and the optional fonts) and the settings on a short allow-list. Nothing else is supported:
 you may not run commands in its terminals or reach a session, and nothing here writes the files
 you show. Do not edit the app bundle. Do not look for the built-in theme files: they are compiled in
@@ -36,8 +36,8 @@ daemon running, so you can prepare a theme before Arkos is even started. `arkos 
 
 ## 3. Showing the user a file
 
-Three commands put a file in front of the user and drive it: `arkos open` shows a video, a
-markdown file or any text file in a pane; `arkos video` controls a video tab; `arkos panes` lists
+Three commands put a file or a page in front of the user and drive it: `arkos open` shows a
+video, a markdown file, any text file or a web page in a pane; `arkos video` controls a video tab; `arkos panes` lists
 the window's panes so you can choose one. The forms, exactly as `arkos open`, `arkos video` and
 `arkos panes` with no arguments print them:
 
@@ -68,13 +68,23 @@ the one Arkos window is used, and with several the command exits 1 with
 your session's, so there is no pane of yours in it: the rules below then anchor on its focused
 pane, and `arkos panes` marks no tab `(you)`.
 
-### `arkos open <file>`
+### `arkos open <file | url>`
 
 What opens depends on the file:
 
 - A video (`.mp4`, `.mov`, `.m4v`) opens as a video tab, paused at 0 unless you say otherwise.
 - A markdown file opens in the editor, rendered; `--raw` shows its raw text.
 - Any other text file opens in the read-only viewer, highlighted.
+- A web address (`http://`, `https://`) or an `.html` file opens as a web tab: the page drawn in
+  the pane with a bar above it. A local page may read the files beside it (everything under the
+  project when it is inside the project, else its own folder), so `out/report.html` can show
+  `out/clips/a.mp4`. The page follows its file: an edit reloads it within about two seconds, and
+  `arkos open` of the same file or address again reloads it at once (`reloaded: true`). The video
+  and markdown flags (`--at`, `--paused`, `--playing`, `--loop`, `--wait`, `--raw`) are refused
+  with a page, exit 2. The answer says `opened` when the page has been asked for, not when it has
+  loaded: a dev server that compiles on its first request takes as long as it takes; `arkos panes
+  --json` and a second `arkos open` report `loading`, `ready` or `failed` with the reason (a server
+  that is not up reads "Could not connect to the server").
 
 These are refused before anything is sent, with exit 1 and a line saying what to do instead:
 
@@ -215,7 +225,8 @@ pane 2: video ranger-radio-animatic.mp4 (active), markdown notes.md
 
 `(you)` is your own tab, `(active)` the tab a pane shows, `(focused)` the pane with the keyboard
 focus. A tab's kind is `terminal`, `markdown`, `text`, `browser` or `video`, and its title is the
-title on the tab (the program, or the user's name for it), never what a terminal shows.
+title on the tab (the program, or the user's name for it), never what a terminal shows; a browser
+tab's line carries its page's address after the title.
 `--all` prints every window, each headed `window {pid} ({project})`; it cannot be given with
 `--window` (exit 2).
 
@@ -240,8 +251,9 @@ that does not exist, no such video tab, several to choose from, several windows,
 With `--json` the command prints one JSON value on stdout and nothing else, and an error is
 `{ "error": text, "exit": n }` there (with the same exit code). Times are seconds.
 
-- `arkos open`: `{ "window": pid, "pane": n, "tab": id, "kind": "video" | "markdown" | "text",
-  "reused": bool, "reloaded": bool, "video": { "duration": seconds | null, "position": seconds,
+- `arkos open`: `{ "window": pid, "pane": n, "tab": id, "kind": "video" | "markdown" | "text" |
+  "browser", "reused": bool, "reloaded": bool, "web": { "url", "state": "blank" | "loading" |
+  "ready" | "failed", "error"? } | null, "video": { "duration": seconds | null, "position": seconds,
   "playing": bool, "loop": [a, b] | null, "width", "height", "state": "ready" | "loading" |
   "reloading" | "waiting" | "unplayable", "error"? } | null }`. `video` is null for a document;
   `width` and `height` are 0 until the video has loaded. `error` is there only with something to
@@ -253,8 +265,9 @@ With `--json` the command prints one JSON value on stdout and nothing else, and 
   `"muted"` and `"file_mtime"` (seconds since 1970, or null) added; several (a bare `status`) are
   `{ "window": pid, "videos": [...] }`, one such object each.
 - `arkos panes`: `{ "window": pid, "project", "panes": [{ "n", "id", "focused", "tabs": [{ "id",
-  "kind", "title", "active", "you"?, "path"?, "session"? }] }] }`; `you` is there only on your
-  tab, `path` on a document or a video, `session` on a terminal. `--all --json` is an array of
+  "kind", "title", "active", "you"?, "path"?, "session"?, "url"? }] }] }`; `you` is there only on
+  your tab, `path` on a document, a video or a local page, `session` on a terminal, `url` on a
+  browser tab. `--all --json` is an array of
   these, one per window, with `{ "window": pid, "error" }` for a window that did not answer.
 
 ### A video tab follows its file
@@ -289,6 +302,11 @@ python3 tools/cinema/animatic.py tools/cinema/ranger-radio.json              # t
 arkos open out/ranger-radio/ranger-radio-animatic.mp4 --at 0:12 --loop 0:12-0:18 --playing   # exit 0, no error: the new cut shows
 arkos video status out/ranger-radio/ranger-radio-animatic.mp4 --json
 ```
+
+A web page works the same way: `arkos open out/report.html` shows a report with its media beside
+you, a rewrite of the file reloads it, and `arkos open http://localhost:4173/` shows the dev
+server's page (when the server is not up yet the pane says so with a Retry button, and the same
+command again once it is up shows the page).
 
 The first `open` splits your pane and shows the cut paused on 0:12; tell the user it is in pane 2
 (the number the line printed). The second `open` reuses that tab: it makes sure the tab shows the
@@ -410,7 +428,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   the path; `--install` installs the skill into your Claude config folder (or prints
   `already current: {path}` and writes nothing when it is up to date) and prints a line to paste
   into `AGENTS.md` or `CLAUDE.md`:
-  ``Arkos IDE: run `arkos guide` before showing the user a file in a pane or changing its theme or settings.``
+  ``Arkos IDE: run `arkos guide` before showing the user a file or a web page in a pane or changing its theme or settings.``
 
 ## 6. The theme workflow
 
