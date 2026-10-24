@@ -548,6 +548,14 @@ option_as_meta = true
 # "video loop" = "l"
 # "video mute" = "m"
 # "video reload" = "r"
+# In a web tab: back and forward in its history, reload, the address field, the page in the default
+# browser, zoom back to 1 ("font bigger" and "font smaller" step the zoom there).
+# "page back" = "cmd-["
+# "page forward" = "cmd-]"
+# "reload page" = "cmd-r"
+# "focus address" = "cmd-l"
+# "open in browser" = "cmd-shift-o"
+# "zoom reset" = "cmd-0"
 # "quit" = "cmd-q"
 
 [sidebar]
@@ -793,7 +801,7 @@ pub(crate) mod tests {
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
             ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder,
             NewWindow, NewBrowserTab, OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
-            VideoStart, VideoLoop, VideoMute, VideoReload,
+            VideoStart, VideoLoop, VideoMute, VideoReload, PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
         ];
         // A variant added to `Command` stops this match from compiling until it is listed above,
         // and then the test below asks for it in `telemetry/events.toml`.
@@ -805,7 +813,8 @@ pub(crate) mod tests {
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
                 | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile
                 | OpenFolder | NewWindow | NewBrowserTab | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
-                | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload => {}
+                | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload | PageBack | PageForward | ReloadPage
+                | FocusAddress | OpenInBrowser | ZoomReset => {}
             }
         }
         all

@@ -95,6 +95,12 @@ command = [
     "video_loop",
     "video_mute",
     "video_reload",
+    "page_back",
+    "page_forward",
+    "reload_page",
+    "focus_address",
+    "open_in_browser",
+    "zoom_reset",
 ]
 
 # The config keys, never their values. `font.presets.*` is collapsed to `font.presets` and the

@@ -2437,6 +2437,8 @@ impl Root {
                     });
                 }
             }
+            // In a web tab the page zooms a step instead (web pane spec, section 4).
+            FontDelta(d) if self.active_web().is_some() => self.with_active_web(cx, move |v, cx| v.zoom(if d > 0.0 { 1 } else { -1 }, cx)),
             FontDelta(d) => {
                 // Only the focused terminal changes (spec 7); its element resizes the grid and
                 // the PTY on the next paint. Nudges are not saved, and a preset change resets them.
@@ -2586,6 +2588,20 @@ impl Root {
             VideoLoop => self.with_active_video(cx, |v, cx| v.toggle_loop(cx)),
             VideoMute => self.with_active_video(cx, |v, cx| v.mute(cx)),
             VideoReload => self.with_active_video(cx, |v, cx| v.reload_now(cx)),
+            PageBack => self.with_active_web(cx, |v, cx| v.back(cx)),
+            PageForward => self.with_active_web(cx, |v, cx| v.forward(cx)),
+            ReloadPage => self.with_active_web(cx, |v, cx| v.reload(cx)),
+            OpenInBrowser => self.with_active_web(cx, |v, cx| v.open_outside(cx)),
+            ZoomReset => self.with_active_web(cx, |v, cx| v.zoom(0, cx)),
+            FocusAddress => {
+                if let Some(v) = self.active_web() {
+                    // The page may hold the keys: they come back to gpui before the field takes them.
+                    self.keys_back_to_arkos();
+                    let focus = v.read(cx).address_focus.clone();
+                    window.focus(&focus);
+                    v.update(cx, |v, cx| v.begin_edit(cx));
+                }
+            }
         }
         let _ = window;
     }
@@ -3393,6 +3409,13 @@ impl Root {
         match p.tabs.get(p.active)? {
             Tab::Browser { .. } => self.webs.get(p.ids.get(p.active)?).cloned(),
             Tab::Terminal { .. } | Tab::Viewer { .. } | Tab::Video { .. } => None,
+        }
+    }
+
+    /// Runs a web command on the focused pane's web tab; nothing when it shows something else.
+    fn with_active_web(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut web_view::WebView, &mut Context<web_view::WebView>)) {
+        if let Some(v) = self.active_web() {
+            v.update(cx, f);
         }
     }
 

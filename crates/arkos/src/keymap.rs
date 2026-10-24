@@ -25,6 +25,7 @@ actions!(
         OpenFileInPane,
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
         VideoStart, VideoLoop, VideoMute, VideoReload,
+        PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
         // The Help menu's "What Arkos Sends" has no key and no palette entry, so it is handled
         // outside `Command`.
         WhatArkosSends
@@ -133,6 +134,17 @@ pub enum Command {
     VideoMute,
     /// Load the file again now, without waiting for a change.
     VideoReload,
+    /// The web tab's history, back and forward (web pane spec, section 4).
+    PageBack,
+    PageForward,
+    /// Reload the page, or retry a failed load.
+    ReloadPage,
+    /// Put the keys in the address field, the address selected.
+    FocusAddress,
+    /// The page in the default browser.
+    OpenInBrowser,
+    /// Page zoom back to 1; "font bigger" and "font smaller" step it in a web tab.
+    ZoomReset,
 }
 
 /// Where an action is listed in the Keybindings window, by what it acts on.
@@ -246,6 +258,12 @@ pub const ACTIONS: &[ActionSpec] = &[
     row(Section::Window, "new window", "cmd-n"),
     row(Section::Browser, "new browser tab", "cmd-shift-b"),
     row(Section::Sidebar, "open file in pane", ""),
+    browser("page back", "cmd-["),
+    browser("page forward", "cmd-]"),
+    browser("reload page", "cmd-r"),
+    browser("focus address", "cmd-l"),
+    browser("open in browser", "cmd-shift-o"),
+    browser("zoom reset", "cmd-0"),
     // The video keys (spec 3.4) act only in a focused video tab: a terminal never sees this map.
     // "video start alt" is Home's second key, 0, as "next tab alt" is Cmd+Shift+].
     video("video play pause", "space"),
@@ -266,6 +284,11 @@ pub const ACTIONS: &[ActionSpec] = &[
 /// A row that acts only in a focused video tab.
 const fn video(name: &'static str, keys: &'static str) -> ActionSpec {
     ActionSpec { name, keys, context: Some("Video"), section: Section::Video }
+}
+
+/// A web tab's key (web pane spec, section 4): acts only in a focused web tab.
+const fn browser(name: &'static str, keys: &'static str) -> ActionSpec {
+    ActionSpec { name, keys, context: Some("Browser"), section: Section::Browser }
 }
 
 /// The US layout's shifted symbols. gpui on macOS reports a shifted symbol as the shifted
@@ -370,6 +393,12 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "video loop" => KeyBinding::new(keys, VideoLoop, context),
         "video mute" => KeyBinding::new(keys, VideoMute, context),
         "video reload" => KeyBinding::new(keys, VideoReload, context),
+        "page back" => KeyBinding::new(keys, PageBack, context),
+        "page forward" => KeyBinding::new(keys, PageForward, context),
+        "reload page" => KeyBinding::new(keys, ReloadPage, context),
+        "focus address" => KeyBinding::new(keys, FocusAddress, context),
+        "open in browser" => KeyBinding::new(keys, OpenInBrowser, context),
+        "zoom reset" => KeyBinding::new(keys, ZoomReset, context),
         "quit" => KeyBinding::new(keys, Quit, context),
         _ => return None,
     })
@@ -673,6 +702,12 @@ pub fn command_for(name: &str) -> Option<Command> {
         "video loop" => Command::VideoLoop,
         "video mute" => Command::VideoMute,
         "video reload" => Command::VideoReload,
+        "page back" => Command::PageBack,
+        "page forward" => Command::PageForward,
+        "reload page" => Command::ReloadPage,
+        "focus address" => Command::FocusAddress,
+        "open in browser" => Command::OpenInBrowser,
+        "zoom reset" => Command::ZoomReset,
         _ => return None,
     })
 }
@@ -728,6 +763,8 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         VideoBackFine => Command::VideoBackFine, VideoForwardFine => Command::VideoForwardFine,
         VideoStepBack => Command::VideoStepBack, VideoStepForward => Command::VideoStepForward,
         VideoStart => Command::VideoStart, VideoLoop => Command::VideoLoop, VideoMute => Command::VideoMute, VideoReload => Command::VideoReload,
+        PageBack => Command::PageBack, PageForward => Command::PageForward, ReloadPage => Command::ReloadPage, FocusAddress => Command::FocusAddress,
+        OpenInBrowser => Command::OpenInBrowser, ZoomReset => Command::ZoomReset,
     )
 }
 
@@ -792,6 +829,8 @@ mod tests {
         (",", "video step back", "VideoStepBack"), (".", "video step forward", "VideoStepForward"),
         ("home", "video start", "VideoStart"), ("0", "video start alt", "VideoStart"),
         ("l", "video loop", "VideoLoop"), ("m", "video mute", "VideoMute"), ("r", "video reload", "VideoReload"),
+        ("cmd-[", "page back", "PageBack"), ("cmd-]", "page forward", "PageForward"), ("cmd-r", "reload page", "ReloadPage"),
+        ("cmd-l", "focus address", "FocusAddress"), ("cmd-shift-o", "open in browser", "OpenInBrowser"), ("cmd-0", "zoom reset", "ZoomReset"),
         ("cmd-q", "quit", "Quit"),
     ];
 

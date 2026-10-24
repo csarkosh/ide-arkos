@@ -636,6 +636,12 @@ pub fn command_name(command: &Command) -> &'static str {
         VideoLoop => "video_loop",
         VideoMute => "video_mute",
         VideoReload => "video_reload",
+        PageBack => "page_back",
+        PageForward => "page_forward",
+        ReloadPage => "reload_page",
+        FocusAddress => "focus_address",
+        OpenInBrowser => "open_in_browser",
+        ZoomReset => "zoom_reset",
     }
 }
 
