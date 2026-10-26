@@ -93,7 +93,7 @@ pub fn links_in_rows(rows: &[Vec<char>], wrapped: &[bool]) -> Vec<Span> {
             if wrapped.get(i).copied().unwrap_or(false) {
                 pieces.push((i + 1, 0, next.len()));
                 joined.extend_from_slice(next);
-            } else if let Some((end, indent)) = cut(&joined, pieces.last().copied().expect("a group has a row"), &rows[i], next, cut_width(rows, i)) {
+            } else if let Some((end, indent)) = cut_at(&joined, pieces.last().copied().expect("a group has a row"), rows, i) {
                 let piece = pieces.last_mut().expect("a group has a row");
                 let blanks = (piece.1 + piece.2).saturating_sub(end);
                 piece.2 -= blanks;
@@ -123,10 +123,17 @@ pub fn links_in_rows(rows: &[Vec<char>], wrapped: &[bool]) -> Vec<Span> {
     out
 }
 
-/// Where Claude Code cuts a token wider than its wrap on row `i`: the pane's width, or two cells
-/// short of it in the input box, whose rows hang under a `\u{276f}` prompt with a two-cell indent.
-fn cut_width(rows: &[Vec<char>], i: usize) -> usize {
-    rows[i].len() - if in_input_box(rows, i) { crate::reflow::INPUT_BOX_INSET } else { 0 }
+/// Whether Claude Code cut a URL at the end of row `i` (`cut`): at the pane's full width, where
+/// its messages wrap, or two cells short of it in the input box, whose rows hang under a
+/// `\u{276f}` prompt with a two-cell indent. The full width is tried first and for every row: a
+/// past prompt in the transcript opens with the same `\u{276f}`, so a message under it looks like
+/// the input box, but the input box never fills its last two cells.
+fn cut_at(joined: &[char], piece: (usize, usize, usize), rows: &[Vec<char>], i: usize) -> Option<(usize, usize)> {
+    let (row, next) = (&rows[i], &rows[i + 1]);
+    cut(joined, piece, row, next, row.len()).or_else(|| {
+        let inset = row.len().checked_sub(crate::reflow::INPUT_BOX_INSET)?;
+        in_input_box(rows, i).then(|| cut(joined, piece, row, next, inset)).flatten()
+    })
 }
 
 /// Whether row `i` is in Claude Code's input box: it, or a run of two-cell-indented rows above
@@ -156,7 +163,9 @@ fn cut(joined: &[char], (_, skip, _): (usize, usize, usize), row: &[char], next:
         return None;
     }
     let prefix = &joined[..joined.len() - (row.len() - end)];
-    let link = links_in_row(prefix).pop().filter(|l| l.end == prefix.len())?;
+    // The URL runs to the row's end: what `links_in_row` trimmed off its tail (a `.`, a `;`, an
+    // unmatched `)`) may be the middle of the URL the next row goes on with.
+    let link = links_in_row(prefix).pop().filter(|l| prefix[l.end..].iter().all(|c| !ends_link(*c)))?;
     let piece_start = prefix.len() - (end - skip);
     let col = link.start.saturating_sub(piece_start) + skip;
     let indent = next.iter().take_while(|c| **c == ' ').count();
@@ -272,6 +281,32 @@ mod tests {
     fn a_wrapped_row_whose_url_ended_at_a_space_does_not_take_the_next_row() {
         assert_eq!(spans(&["https://a.io/x then some more words!", "https://b.io"], &[true, false]), [(0, 0, 14, "https://a.io/x".to_string()), (1, 0, 12, "https://b.io".to_string())]);
         assert!(spans(&["plain", "rows"], &[true, false]).is_empty());
+    }
+
+    #[test]
+    fn a_url_cut_just_after_a_full_stop_or_before_its_closing_paren_runs_on() {
+        // Claude Code's message wrap fell right after a `.` inside the URL: the `.` would end a
+        // URL at the end of a sentence, but here the URL goes on in the next row.
+        let url = "https://a.io/pq?x=52.1;y=2".to_string();
+        let rows = ["  (https://a.io/pq?x=52.", "  1;y=2)                "];
+        assert_eq!(spans(&rows, &[false; 2]), [(0, 3, 24, url.clone()), (1, 2, 7, url)], "the closing paren is still left out");
+        let rows = ["  (https://a.io/pqr?x=5;", "  y=2&abcdefgh)         "];
+        assert_eq!(spans(&rows, &[false; 2]).len(), 2, "a `;` at the cut too");
+    }
+
+    #[test]
+    fn a_message_under_an_earlier_prompt_is_not_taken_for_the_input_box() {
+        // A past prompt in the transcript opens with the same `\u{276f}`, and Claude Code's answer
+        // under it is two-cell indented: it is a message, cut at the pane's full width.
+        let url = "https://fps.web.app/dayhike/game/25b465d9-d33b-4de8".to_string();
+        let rows = [
+            "\u{276f} open me a preview of the tree flutter",
+            "  Tree flutter: Today (1)               ",
+            "  Link: open                            ",
+            "  (https://fps.web.app/dayhike/game/25b4",
+            "  65d9-d33b-4de8)                       ",
+        ];
+        assert_eq!(spans(&rows, &[false; 5]), [(3, 3, 40, url.clone()), (4, 2, 16, url)]);
     }
 
     #[test]
