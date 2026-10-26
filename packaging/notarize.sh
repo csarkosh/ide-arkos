@@ -35,7 +35,18 @@ if [ "$STATUS" != "Accepted" ]; then
   exit 1
 fi
 # Only the zip's path goes to stdout: callers capture it (ZIP=$(... notarize.sh ...)).
-xcrun stapler staple "$APP" >&2
+# Apple has accepted the submission by now; the staple only fetches its ticket from Apple's
+# CloudKit service, which drops the connection from GitHub's runners now and then ("The network
+# connection was lost", error 68: 0.6.4's and 0.7.3's first runs). The ticket is there, so the
+# fetch is tried again rather than the release thrown away.
+for TRY in 1 2 3 4 5; do
+  if xcrun stapler staple "$APP" >&2; then
+    break
+  fi
+  [ "$TRY" -lt 5 ] || { echo "notarize.sh: the staple failed five times" >&2; exit 1; }
+  echo "notarize.sh: the staple failed (try $TRY of 5); again in $((TRY * 20)) s" >&2
+  sleep $((TRY * 20))
+done
 xcrun stapler validate "$APP" >&2
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
