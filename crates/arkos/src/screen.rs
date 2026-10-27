@@ -26,6 +26,22 @@ pub fn appkit_frame(bounds: (f64, f64, f64, f64), bar_h: f64, content_h: f64, fl
     Frame { x, y, w: w.max(0.0), h }
 }
 
+/// What tells one key event from another: AppKit's timestamp for it, the key, the modifier
+/// flags and the window it was sent to. A key held down repeats with a new timestamp each time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyPress {
+    pub time: f64,
+    pub code: u16,
+    pub flags: usize,
+    pub window: isize,
+}
+
+/// The same key event handed to the window a second time: after the Mac woke, a window was seen
+/// to get every key press twice, so the second one is dropped before gpui hears it.
+pub fn delivered_again(last: Option<KeyPress>, next: KeyPress) -> bool {
+    last == Some(next)
+}
+
 #[cfg(target_os = "macos")]
 pub use mac::*;
 
@@ -72,12 +88,22 @@ mod mac {
     /// the window's first responder is not gpui's `view` (a page has the keys) and the chord is
     /// not the page's own, the keys come back to `view` before the event is dispatched, and the
     /// event then reaches gpui's keymap as any other. The monitor lives as long as the returned
-    /// token; the window is its own, so a second window installs its own.
+    /// token; the window is its own, so a second window installs its own. The monitor also drops
+    /// a key event handed over a second time (`delivered_again`), and says so once in the log.
     pub fn install_cmd_monitor(window: Retained<NSWindow>, view: Retained<NSView>) -> Option<Retained<AnyObject>> {
+        let last = std::cell::Cell::new(None::<super::KeyPress>);
+        let told = std::cell::Cell::new(false);
         let block = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit hands a live event for the call; it is read, never kept.
             let ev: &NSEvent = unsafe { event.as_ref() };
             let flags = ev.modifierFlags();
+            let press = super::KeyPress { time: ev.timestamp(), code: ev.keyCode(), flags: flags.0, window: ev.windowNumber() };
+            if super::delivered_again(last.replace(Some(press)), press) {
+                if !told.replace(true) {
+                    eprintln!("arkos: a key press was handed to the window twice; the second is dropped");
+                }
+                return std::ptr::null_mut();
+            }
             if flags.contains(NSEventModifierFlags::Command) {
                 let page_has_keys = window.firstResponder().is_some_and(|r| {
                     let r: Option<&NSView> = r.downcast_ref();
@@ -139,6 +165,25 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn press(time: f64, code: u16) -> KeyPress {
+        KeyPress { time, code, flags: 0, window: 7 }
+    }
+
+    #[test]
+    fn a_key_event_handed_over_twice_is_dropped_the_second_time() {
+        assert!(delivered_again(Some(press(10.5, 0)), press(10.5, 0)));
+    }
+
+    #[test]
+    fn a_held_key_a_double_letter_and_the_first_press_all_come_through() {
+        // A repeat and "ee" typed quickly are the same key at a later time.
+        assert!(!delivered_again(Some(press(10.5, 14)), press(10.53, 14)));
+        assert!(!delivered_again(Some(press(10.5, 14)), press(10.5, 15)), "another key at the same instant");
+        assert!(!delivered_again(None, press(10.5, 14)));
+        let other_window = KeyPress { window: 8, ..press(10.5, 14) };
+        assert!(!delivered_again(Some(press(10.5, 14)), other_window));
+    }
 
     #[test]
     fn an_element_under_a_bar_flips_against_the_content_height() {
