@@ -51,10 +51,13 @@ float fbm(float2 p) {
     return v;
 }
 
-// A pigment pulled 40% of the way to its own grey: dustier, as a muted palette is.
-float3 muted(float3 c) {
-    float l = dot(c, float3(0.299, 0.587, 0.114));
-    return mix(c, float3(l), 0.4);
+// A pigment as it looks thinned with water: the theme's deep accent lifted 40% of the way to
+// white, then pushed away from its own grey so it stays clear rather than dusty (ochre reads as
+// golden apricot, plum as rosy lavender).
+float3 bright(float3 c) {
+    float3 lifted = 1.0 - (1.0 - c) * 0.6;
+    float l = dot(lifted, float3(0.299, 0.587, 0.114));
+    return saturate(mix(float3(l), lifted, 1.55));
 }
 
 float sd_box(float2 q, float2 hb) {
@@ -89,7 +92,7 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
     float gap = smoothstep(0.08, 0.2, vnoise(p * 0.028 + 3.0));
 
     // Paper with grain.
-    float3 col = u.paper.rgb * (0.975 + 0.035 * speck + 0.02 * gran);
+    float3 col = u.paper.rgb * (0.992 + 0.012 * speck + 0.008 * gran);
 
     // Bubbles behind everything.
     int nb = int(u.bubble_count);
@@ -103,8 +106,8 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
         }
         float body = 1.0 - smoothstep(r * 0.5, r, dist);
         float rim = smoothstep(r * 0.75, r * 0.96, dist) * (1.0 - smoothstep(r * 0.96, r * 1.02, dist));
-        float a = (0.24 * body + 0.22 * rim) * (0.65 + 0.5 * gran);
-        col *= mix(float3(1.0), muted(u.tints[int(b.w)].rgb), clamp(a, 0.0, 0.9));
+        float a = (0.32 * body + 0.28 * rim) * (0.65 + 0.5 * gran);
+        col *= mix(float3(1.0), bright(u.tints[int(b.w)].rgb), clamp(a, 0.0, 0.9));
     }
 
     // Washes, then ink, for every block.
@@ -125,7 +128,7 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
                 float pool = smoothstep(-5.0, -0.4, edge) * cover;
                 float blotch = 0.72 + 0.5 * fract(gran + seed * 0.37);
                 float a = m.y * (cover * blotch + 0.5 * pool);
-                col *= mix(float3(1.0), muted(u.tints[int(m.x)].rgb), clamp(a, 0.0, 0.85));
+                col *= mix(float3(1.0), bright(u.tints[int(m.x)].rgb), clamp(a, 0.0, 0.85));
             }
         }
         uint edges = uint(m.z);

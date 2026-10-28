@@ -3544,9 +3544,9 @@ impl Root {
         let c = self.content;
         let bar = chrome::TITLE_BAR_H;
         let tab = pane_view::TAB_BAR_H;
-        let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.36, ink: INK_BOTTOM }];
+        let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.46, ink: INK_BOTTOM }];
         if c.x > 1.0 {
-            regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.22, ink: INK_RIGHT });
+            regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.3, ink: INK_RIGHT });
             // The line between Explorer and Worktrees: an ink stroke with no wash.
             if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
                 regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP });
@@ -3556,8 +3556,8 @@ impl Root {
         // wash on the tab bar, a faint one on the body, both outlined in ink.
         for (i, (_, r)) in self.layout().panes.iter().enumerate() {
             let tint = [0, 1, 3, 2][i % 4];
-            regions.push(Region { x: r.x, y: r.y, w: r.w, h: tab, tint, strength: 0.44, ink: INK_TOP | INK_RIGHT | INK_BOTTOM | INK_LEFT });
-            regions.push(Region { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0), tint, strength: 0.12, ink: INK_RIGHT | INK_BOTTOM | INK_LEFT });
+            regions.push(Region { x: r.x, y: r.y, w: r.w, h: tab, tint, strength: 0.56, ink: INK_TOP | INK_RIGHT | INK_BOTTOM | INK_LEFT });
+            regions.push(Region { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0), tint, strength: 0.14, ink: INK_RIGHT | INK_BOTTOM | INK_LEFT });
         }
         let t = &self.theme;
         // The pigments are the theme's own accents: burnt orange, ochre, brick and plum, which
