@@ -165,6 +165,9 @@ The glyph shader's contract is gpui's sprite stage, through the fork's hook (sec
 the signatures of gpui's `monochrome_sprite_vertex` and `_fragment`, plus the two `[[flat]]`
 fields the spike added (the glyph's atlas rectangle and its height). The preamble for glyph
 shaders is the fork's own sprite declarations; `arkos effect contract --glyphs` prints them.
+Added after 0.7.6: the window declares `constant float ARKOS_SCALE` (its pixels per point) ahead
+of the glyph shader's source and rebuilds it when the scale changes, since gpui's sprite stage
+works in device pixels and the built-in ink, tuned at 2x, came out twice as heavy at 1x.
 
 What is not in the contract, on purpose: the panes' tabs one by one, the text's positions, the
 Explorer's rows. Blocks are what the shader may paint; highlights are the only elements that

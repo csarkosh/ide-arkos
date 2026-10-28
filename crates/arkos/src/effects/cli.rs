@@ -13,7 +13,7 @@ use protocol::{CustomizeAction, CustomizeOutcome, WindowDetail};
 use serde_json::{json, Value as Json};
 
 use super::manifest::{self, Effect, Highlights, Source};
-use super::{bench, layer, BUILTIN, PREAMBLE};
+use super::{active, bench, layer, BUILTIN, PREAMBLE};
 use crate::agent_cli::{self, fail, split, subcommand, usage, DetailedAnswer, Env, Reach};
 use crate::config::{self, EffectChoice};
 use crate::theme;
@@ -105,7 +105,7 @@ fn contract(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     if !a.words.is_empty() || a.has("--json") {
         return usage(err, EFFECT_USAGE);
     }
-    let _ = if a.has("--glyphs") { write!(out, "{}{GLYPH_SIGNATURES}", gpui::GLYPH_SHADER_PRELUDE) } else { write!(out, "{PREAMBLE}") };
+    let _ = if a.has("--glyphs") { write!(out, "{}{} // the window's pixels per point: 2 on a Retina screen, 1 on most others\n{GLYPH_SIGNATURES}", gpui::GLYPH_SHADER_PRELUDE, active::scale_line(2.0)) } else { write!(out, "{PREAMBLE}") };
     0
 }
 
@@ -189,8 +189,9 @@ fn compile(effect: &Effect) -> Result<(), String> {
 /// Builds the glyph stages from `source` (the file `file`) appended to gpui's own shader source,
 /// as `Window::set_glyph_shader` does.
 fn compile_glyphs(device: &DeviceRef, source: &str, file: &str) -> Result<(), String> {
-    let base = gpui::GLYPH_SHADER_BASE;
-    let library = device.new_library_with_source(&format!("{base}\n{source}"), &CompileOptions::new()).map_err(|e| layer::point_into(&e, base, "gpui", file))?;
+    // A window puts its scale's line first; a Retina one stands in for every window here.
+    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::scale_line(2.0));
+    let library = device.new_library_with_source(&format!("{base}\n{source}"), &CompileOptions::new()).map_err(|e| layer::point_into(&e, &base, "gpui", file))?;
     let function = |name: &str| library.get_function(name, None).map_err(|_| format!("{file}: the glyph shader has no function named {name}"));
     let (vs, fs) = (function("arkos_glyph_vertex")?, function("arkos_glyph_fragment")?);
     let desc = RenderPipelineDescriptor::new();
@@ -487,7 +488,9 @@ mod tests {
         assert_eq!(code, 0);
         assert!(out.starts_with(gpui::GLYPH_SHADER_PRELUDE), "the prelude comes first");
         let last = out.lines().last().unwrap();
-        assert_eq!(out.lines().count(), gpui::GLYPH_SHADER_PRELUDE.lines().count() + 1, "then one line");
+        assert_eq!(out.lines().count(), gpui::GLYPH_SHADER_PRELUDE.lines().count() + 2, "then two lines");
+        let scale = out.lines().nth(gpui::GLYPH_SHADER_PRELUDE.lines().count()).unwrap();
+        assert!(scale.starts_with("constant float ARKOS_SCALE"), "the window's scale is declared: {scale}");
         assert!(last.contains("vertex Out arkos_glyph_vertex(uint unit_vertex_id [[vertex_id]]"), "{last}");
         assert!(last.contains("fragment float4 arkos_glyph_fragment(In input [[stage_in]]"), "{last}");
         assert!(!out.contains("struct ArkosInputs"), "the wash's contract is not the glyphs'");

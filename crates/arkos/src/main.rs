@@ -334,6 +334,9 @@ pub struct Root {
     /// The glyph shader the project window is to draw with, set at its next frame (`render`
     /// holds the window); `None` when nothing has changed.
     glyphs_pending: Option<Option<gpui::GlyphShader>>,
+    /// The window's pixels per point as the glyph shader was last built for, so a move to a
+    /// screen of another scale builds it again.
+    glyph_scale: f32,
     /// The wash's timer (`ensure_effect_timer`): `None` while it is stopped, else whether it
     /// rests (waits `effects::active::REST` because the wash could not be seen). It ends once
     /// `effect` is `None`, and under Reduce Motion once nothing moves.
@@ -648,6 +651,7 @@ impl Root {
             key_monitor: None,
             effect: None,
             glyphs_pending: None,
+            glyph_scale: 2.0,
             effect_timer: None,
             effect_timer_gen: 0,
             transparent: false,
@@ -3695,7 +3699,7 @@ impl Root {
     /// The glyph shader a window of `kind` draws with: the effect's, in the project window
     /// only. The aux windows never ask, so they keep gpui's own glyphs.
     pub fn glyph_shader_for(&self, kind: effects::active::WindowKind) -> Option<gpui::GlyphShader> {
-        effects::active::glyph_shader_for(kind, self.effect.as_ref())
+        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale)
     }
 
     /// How far the text is deepened: the effect's `text_contrast` while it is settled on, else
@@ -3836,6 +3840,14 @@ impl Render for Root {
         self.step_effect_fade(now, cx);
         // The wash reads what this frame lays out; its timer ticks once the frame is done.
         self.ensure_effect_timer(cx);
+        // A window moved to a screen of another scale has its ink rebuilt for it.
+        let scale = window.scale_factor();
+        if scale != self.glyph_scale {
+            self.glyph_scale = scale;
+            if self.effect.as_ref().is_some_and(|e| e.settled()) {
+                self.glyphs_pending = Some(self.glyph_shader_for(effects::active::WindowKind::Project));
+            }
+        }
         if let Some(shader) = self.glyphs_pending.take() {
             let applied = match &self.effect {
                 Some(e) => effects::active::apply_glyphs(window, &e.effect, shader),

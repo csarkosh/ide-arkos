@@ -1,10 +1,16 @@
 // Glyphs as if written in ink on watercolor paper. This is appended to gpui's own shader source
 // (its sprite declarations come first), and stands in for its monochrome sprite stages. The
-// vertex stage widens each glyph's quad by INK_REACH device pixels so the ink can bleed past the
-// stroke, and passes the glyph's own tile so samples never pick up a neighbouring glyph in the
-// atlas. However dry the pen runs, a stroke's core keeps at least 55% of its coverage, so thin
-// text stays legible.
-constant float INK_REACH = 3.0;
+// vertex stage widens each glyph's quad by INK_REACH so the ink can bleed past the stroke, and
+// passes the glyph's own tile so samples never pick up a neighbouring glyph in the atlas.
+// However dry the pen runs, a stroke's core keeps at least 55% of its coverage, so thin text
+// stays legible.
+//
+// gpui hands a glyph shader device pixels. Every distance and size below was drawn on a Retina
+// screen, two pixels a point, so each is measured in those half points: PER_PX turns them into
+// this screen's pixels (ARKOS_SCALE, the window's pixels per point, is declared by the window),
+// and a 1x screen sees the same ink rather than one twice as heavy.
+constant float PER_PX = ARKOS_SCALE / 2.0;
+constant float INK_REACH = 3.0 * PER_PX;
 
 struct MonochromeInkVertexOutput {
   float4 position [[position]];
@@ -59,7 +65,7 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
       tile_rect,
-      float(sprite.bounds.size.height)};
+      float(sprite.bounds.size.height) / PER_PX};
 }
 
 float arkos_hash(float2 p) {
@@ -90,7 +96,8 @@ fragment float4 arkos_glyph_fragment(
     return float4(0.0);
   }
   constexpr sampler smp(mag_filter::linear, min_filter::linear);
-  float2 px = input.position.xy;
+  // The pixel's place in half points, so the noise below has the same grain on any screen.
+  float2 px = input.position.xy / PER_PX;
   float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
   float4 rect = input.tile_rect;
 
@@ -102,7 +109,7 @@ fragment float4 arkos_glyph_fragment(
 
   // The hand: the stroke drifts by up to a pixel along smooth noise.
   float2 wob = (float2(arkos_noise(px * 0.07 * small), arkos_noise(px * 0.07 * small + 17.0)) - 0.5) * 1.8;
-  float2 uv = input.tile_position + wob * texel;
+  float2 uv = input.tile_position + wob * PER_PX * texel;
 
   float core = ink_at(atlas_texture, smp, uv, rect);
   // Two rings of samples: a near one for the stroke's own edge, a far one for the bleed.
@@ -111,8 +118,8 @@ fragment float4 arkos_glyph_fragment(
   for (int k = 0; k < 8; k++) {
     float ang = float(k) * 0.785398 + 0.3;
     float2 d = float2(cos(ang), sin(ang));
-    near += ink_at(atlas_texture, smp, uv + d * 1.2 * texel, rect);
-    far += ink_at(atlas_texture, smp, uv + d * 2.7 * texel, rect);
+    near += ink_at(atlas_texture, smp, uv + d * 1.2 * PER_PX * texel, rect);
+    far += ink_at(atlas_texture, smp, uv + d * 2.7 * PER_PX * texel, rect);
   }
   near *= 0.125;
   far *= 0.125;
