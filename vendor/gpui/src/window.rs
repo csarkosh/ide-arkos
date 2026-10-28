@@ -832,6 +832,12 @@ pub struct GlyphShader {
 /// structs through `monochrome_sprite_fragment`: what a glyph shader replaces and may build on.
 pub const GLYPH_SHADER_PRELUDE: &str = glyph_prelude::PRELUDE;
 
+/// gpui's whole Metal shader source, which a glyph shader's `source` is appended to (after a
+/// newline) before it is compiled, so a tool can compile a glyph shader as a window would
+/// without opening one.
+#[cfg(all(target_os = "macos", not(feature = "macos-blade"), feature = "runtime_shaders"))]
+pub const GLYPH_SHADER_BASE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"));
+
 mod glyph_prelude {
     const SHADERS: &[u8] = include_bytes!("platform/mac/shaders.metal");
     const START: usize = find(SHADERS, b"struct MonochromeSprite", 0);

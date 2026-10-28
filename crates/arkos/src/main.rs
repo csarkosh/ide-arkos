@@ -1419,10 +1419,25 @@ impl Root {
             project: self.project.clone(),
             result: customize_outcome(&action, parsed, self.report()),
         };
-        // The event came through the client, so there is one; the daemon matches the pid.
+        // The event came through the client, so there is one; the daemon matches the pid. A
+        // daemon that speaks the detail is told what the window draws too.
         if let Some(client) = &self.sessions.client {
-            client.send(Request::CustomizeDone { id, outcome });
+            if self.daemon_protocol_max >= protocol::EFFECT_REPORT_FROM {
+                client.send(Request::CustomizeDoneDetailed { id, outcome, detail: self.window_detail() });
+            } else {
+                client.send(Request::CustomizeDone { id, outcome });
+            }
         }
+    }
+
+    /// What the window draws, for `arkos effect current` and `bench`: its effect with the GPU's
+    /// time per frame, and its content's size in points.
+    fn window_detail(&self) -> protocol::WindowDetail {
+        let size = self.ns_window.as_ref().and_then(|ns| ns.contentView()).map(|v| {
+            let b = v.bounds();
+            (b.size.width as f32, b.size.height as f32)
+        });
+        protocol::WindowDetail { effect: effects::active::reported(self.effect.as_ref(), |l| l.gpu_ms()), size }
     }
 
     /// The terminal font: the theme's when it names one, else the config's.
@@ -4202,6 +4217,7 @@ fn main() {
         Some("video") => std::process::exit(open_cli::video_cli(&args[2..])),
         Some("panes") => std::process::exit(open_cli::panes_cli(&args[2..])),
         Some("theme") => std::process::exit(agent_cli::theme_cli(&args[2..])),
+        Some("effect") => std::process::exit(agent_cli::effect_cli(&args[2..])),
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
         Some("telemetry") => std::process::exit(telemetry_cli::telemetry_cli(&args[2..])),

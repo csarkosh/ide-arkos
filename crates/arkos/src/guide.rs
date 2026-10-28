@@ -14,7 +14,7 @@ pub const TEXT: &str = include_str!("../../../docs/agent-guide.md");
 /// The skill's folder name and its front matter `name`.
 pub const SKILL_NAME: &str = "arkos-ide";
 /// The skill's front matter `description`, which is how an agent decides to load it.
-pub const SKILL_DESCRIPTION: &str = "Show a video, a markdown file or a web page in an Arkos IDE pane, control a video's playback, or customize Arkos: themes, fonts and settings. Use when the user asks to see, preview, play or watch a video, a document or a page (a local HTML file or a dev server), or to change how Arkos looks or behaves.";
+pub const SKILL_DESCRIPTION: &str = "Show a video, a markdown file or a web page in an Arkos IDE pane, control a video's playback, or customize Arkos: themes, effects, fonts and settings. Use when the user asks to see, preview, play or watch a video, a document or a page (a local HTML file or a dev server), or to change how Arkos looks or behaves.";
 /// The line `arkos guide --install` offers for `AGENTS.md` or `CLAUDE.md`.
 pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before showing the user a file or a web page in a pane or changing its theme or settings.";
 
@@ -276,6 +276,18 @@ mod tests {
         }
         assert!(SKILL_DESCRIPTION.contains("video"), "{SKILL_DESCRIPTION}");
         assert!(SKILL_DESCRIPTION.contains(": "), "it stays quoted in the front matter");
+    }
+
+    #[test]
+    fn the_guide_gives_every_effect_command_as_its_usage_prints_it_and_the_budget() {
+        for line in crate::effects::cli::EFFECT_USAGE.lines().filter(|l| l.contains("arkos ")) {
+            let form = line.trim_start_matches("usage:").trim();
+            assert!(TEXT.contains(form), "the guide gives the form {form}");
+        }
+        for s in ["## 8. Effects", "within budget", "too heavy", "highlights: effect", "text_contrast", "paper_alpha", "arkos effect contract --glyphs"] {
+            assert!(TEXT.contains(s), "the guide names {s}");
+        }
+        assert!(SKILL_DESCRIPTION.contains("effects"), "{SKILL_DESCRIPTION}");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 use crate::config::{self, AppearanceMode, TextPreset};
 use crate::{hook_cli, theme};
 use ::telemetry::visits_app::{Queue, Usage};
-use protocol::{CustomizeAction, CustomizeOutcome, Report, Request, Response};
+use protocol::{CustomizeAction, CustomizeOutcome, Report, Request, Response, WindowDetail};
 use serde_json::{json, Value as Json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ usage: arkos guide                  how an agent shows the user a file and chang
        arkos panes                  this window's panes and tabs, numbered as Cmd+1..9
        arkos [<folder>]             open a window on a folder (default: the current one)
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current
+       arkos effect <command> ...   list, contract, template, check, bench, use, current
        arkos settings get|set ...   read the config, or set a key on the allow-list
        arkos config reload          ask every window to read its config again now
        arkos telemetry <command>    status, on, off, local, view, crashes: what Arkos sends
@@ -123,6 +124,27 @@ pub fn customize(socket: &Path, action: CustomizeAction, wait: Duration) -> Resu
     }
 }
 
+/// The daemon's answer to one `CustomizeDetailed`: `Answer` with what each window draws.
+#[derive(Debug)]
+pub struct DetailedAnswer {
+    pub outcomes: Vec<(CustomizeOutcome, WindowDetail)>,
+    pub missing: Vec<u32>,
+    pub too_old: Vec<u32>,
+}
+
+/// `customize`, asking for each window's detail too. A daemon older than `EFFECT_REPORT_FROM`
+/// cannot decode the request and hangs up: `Reach::OldDaemon`.
+pub fn customize_detailed(socket: &Path, action: CustomizeAction, wait: Duration) -> Result<DetailedAnswer, Reach> {
+    let id = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+    let timeout = wait + Duration::from_secs(1);
+    match hook_cli::send_one_with(socket, Request::CustomizeDetailed { id, action }, timeout) {
+        Ok(Response::CustomizedDetailed { outcomes, missing, too_old }) => Ok(DetailedAnswer { outcomes, missing, too_old }),
+        Ok(Response::Error(e)) => Err(Reach::Io(format!("arkosd answered: {e}"))),
+        Ok(other) => Err(Reach::Io(format!("arkosd answered something else: {other:?}"))),
+        Err(e) => Err(reach_from_io(&e, timeout)),
+    }
+}
+
 /// What a failed socket call means: nothing listening, an old daemon, a timeout or another failure.
 pub(crate) fn reach_from_io(e: &std::io::Error, timeout: Duration) -> Reach {
     match e.kind() {
@@ -147,6 +169,11 @@ impl Env<'_> {
     pub fn telemetry_dir(&self) -> PathBuf {
         crate::paths::telemetry_dir_beside(self.socket)
     }
+
+    /// The effects folder beside the themes folder, as `effects::effects_dir` is for the real paths.
+    pub fn effects_dir(&self) -> PathBuf {
+        self.themes.with_file_name("effects")
+    }
 }
 
 type Command = fn(&[String], &Env, &mut dyn Write, &mut dyn Write) -> i32;
@@ -167,25 +194,30 @@ pub fn settings_cli(args: &[String]) -> i32 {
     with_real_env(settings_cli_to, args)
 }
 
+/// `arkos effect ...` with the real paths and the process's streams.
+pub fn effect_cli(args: &[String]) -> i32 {
+    with_real_env(crate::effects::cli::effect_cli_to, args)
+}
+
 /// `arkos config ...` with the real paths and the process's streams.
 pub fn config_cli(args: &[String]) -> i32 {
     with_real_env(config_cli_to, args)
 }
 
 /// The positional words and the `--flags` of a command's arguments.
-struct Args<'a> {
-    words: Vec<&'a str>,
-    flags: Vec<&'a str>,
+pub(crate) struct Args<'a> {
+    pub(crate) words: Vec<&'a str>,
+    pub(crate) flags: Vec<&'a str>,
 }
 
 impl Args<'_> {
-    fn has(&self, flag: &str) -> bool {
+    pub(crate) fn has(&self, flag: &str) -> bool {
         self.flags.contains(&flag)
     }
 }
 
 /// Splits `args`; a flag other than `--json` and those in `allowed` is a usage error (`None`).
-fn split<'a>(args: &'a [String], allowed: &[&str]) -> Option<Args<'a>> {
+pub(crate) fn split<'a>(args: &'a [String], allowed: &[&str]) -> Option<Args<'a>> {
     let mut a = Args { words: Vec::new(), flags: Vec::new() };
     for arg in args {
         if arg.starts_with("--") {
@@ -201,7 +233,7 @@ fn split<'a>(args: &'a [String], allowed: &[&str]) -> Option<Args<'a>> {
 }
 
 /// The first word (the subcommand) and every other argument, flags before it included.
-fn subcommand(args: &[String]) -> (Option<&str>, Vec<String>) {
+pub(crate) fn subcommand(args: &[String]) -> (Option<&str>, Vec<String>) {
     match args.iter().position(|a| !a.starts_with("--")) {
         Some(i) => (Some(args[i].as_str()), args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, a)| a.clone()).collect()),
         None => (None, args.to_vec()),
@@ -276,7 +308,7 @@ fn schema_json() -> Json {
 
 /// A theme by name (`unknown theme: {name}` when it is neither a file in the folder nor built
 /// in; a broken file's own error otherwise).
-fn load_name(name: &str, themes: &Path) -> Result<theme::Theme, String> {
+pub(crate) fn load_name(name: &str, themes: &Path) -> Result<theme::Theme, String> {
     if theme::is_bare_name(name) && !themes.join(format!("{name}.toml")).exists() && theme::builtin(name).is_none() {
         return Err(format!("unknown theme: {name}"));
     }
@@ -789,7 +821,7 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
 }
 
 /// An `f32` as the shortest decimal that reads back to it (1.3, not 1.2999999523162842).
-fn tidy(v: f32) -> f64 {
+pub(crate) fn tidy(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
 }
 

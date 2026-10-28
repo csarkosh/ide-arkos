@@ -238,6 +238,13 @@ Things only a person at the screen can check, in order of value:
   the About, Settings and Keybindings windows and the chooser keep gpui's plain glyphs
 - effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
   `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
+- effects: Settings, Appearance lists Effect under the themes ("Theme's choice (watercolor)"
+  under Peach Light, None, watercolor, an invalid folder dimmed as "(invalid)"); a click switches
+  the window with a fade, the Intensity stepper moves the wash's strength by a tenth, and "Show
+  effects folder" creates and reveals the folder
+- effects: with a window open, `arkos effect current` names its effect and a cost in
+  milliseconds after a few seconds, and `arkos effect bench watercolor` benches at the window's
+  size and theme
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching

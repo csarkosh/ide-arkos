@@ -115,13 +115,12 @@ pub struct Effect {
 pub enum Source {
     BuiltIn,
     Folder(PathBuf),
-    // Made only by `list`, which the Settings list and `arkos effect list` read (a later task).
-    #[cfg_attr(not(test), allow(dead_code))]
     Invalid(String),
 }
 
-/// Reads the effect in `folder`: its manifest and the shaders it names. Errors name the file.
-fn load_folder(folder: &Path) -> Result<Effect, String> {
+/// Reads the effect in `folder`: its manifest and the shaders it names. An effect's name is its
+/// folder's, so a manifest naming another is refused. Errors name the file.
+pub fn load_folder(folder: &Path) -> Result<Effect, String> {
     let read = |file: &str| -> Result<String, String> {
         let path = folder.join(file);
         std::fs::read_to_string(&path).map_err(|e| match e.kind() {
@@ -129,7 +128,12 @@ fn load_folder(folder: &Path) -> Result<Effect, String> {
             _ => format!("cannot read {}: {e}", path.display()),
         })
     };
-    let manifest = parse(&read("effect.toml")?).map_err(|e| format!("{}: {e}", folder.join("effect.toml").display()))?;
+    let at = |e: String| format!("{}: {e}", folder.join("effect.toml").display());
+    let manifest = parse(&read("effect.toml")?).map_err(at)?;
+    let own = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if manifest.name != own {
+        return Err(at(format!("name '{}' does not match its folder '{own}'", manifest.name)));
+    }
     let wash = read(&manifest.wash)?;
     let glyphs = manifest.glyphs.as_deref().map(read).transpose()?;
     Ok(Effect { manifest, wash, glyphs, source: Source::Folder(folder.to_path_buf()) })
@@ -156,8 +160,6 @@ pub fn load(name: &str, dir: &Path) -> Result<Effect, String> {
 
 /// Every effect by name: the built-ins first, then the folder's others sorted. A folder that
 /// shadows a built-in is listed once, in the built-in's place, as a folder.
-// Read by the Settings list and `arkos effect list` (a later task).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn list(dir: &Path) -> Vec<(String, Source)> {
     let from_folder = |name: &str| -> Option<Source> {
         let folder = dir.join(name);
@@ -302,6 +304,19 @@ mod tests {
         assert!(why("half").contains("glyphs.metal: not found"), "{}", why("half"));
         assert!(why("empty").contains("effect.toml: not found"), "{}", why("empty"));
         assert!(load("hollow", dir.path()).unwrap_err().contains("wash.metal: not found"));
+    }
+
+    #[test]
+    fn a_folder_whose_manifest_names_another_effect_is_invalid_for_list_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        folder(dir.path(), "foo", "name = \"bar\"\nwash = \"wash.metal\"\n", &["wash.metal"]);
+        let listed = list(dir.path());
+        match listed.iter().find(|(n, _)| n == "foo") {
+            Some((_, Source::Invalid(e))) => assert!(e.contains("name 'bar' does not match its folder 'foo'"), "{e}"),
+            other => panic!("foo should be invalid, was {other:?}"),
+        }
+        assert!(load("foo", dir.path()).unwrap_err().contains("name 'bar' does not match its folder 'foo'"));
+        assert!(load_folder(&dir.path().join("foo")).is_err());
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::handover::Handover;
 use crate::session::{Backpressure, ClientId, ClientSink, Session, SpawnSpec};
 use anyhow::{Context, Result};
 use protocol::codec::{read_frame, write_frame};
-use protocol::{ClientMessage, CustomizeOutcome, Event, OpenKind, PaneAction, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, PROTOCOL_MIN, PROTOCOL_VERSION, WEB_OPEN_FROM};
+use protocol::{ClientMessage, CustomizeOutcome, Event, OpenKind, PaneAction, Request, Response, ServerMessage, SessionId, StagedUpdate, WindowDetail, WindowTarget, CUSTOMIZE_FROM, CUSTOMIZE_WAIT, DIRECT_FROM, PROTOCOL_MIN, PROTOCOL_VERSION, WEB_OPEN_FROM};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::os::fd::{AsRawFd, RawFd};
@@ -70,8 +70,11 @@ pub struct CustomizeWait {
     pub tx: ClientSink,
     /// The pids of the windows asked that have not answered yet.
     pub waiting: Vec<u32>,
-    /// The answers so far, in arrival order.
-    pub outcomes: Vec<CustomizeOutcome>,
+    /// The answers so far, in arrival order, each with what its window draws (empty from a
+    /// window that answered with a plain `CustomizeDone`).
+    pub outcomes: Vec<(CustomizeOutcome, WindowDetail)>,
+    /// The tool asked with `CustomizeDetailed`, so the answer is `CustomizedDetailed`.
+    pub detailed: bool,
     /// The project windows on a protocol before `CUSTOMIZE_FROM`, which were not asked.
     pub too_old: Vec<u32>,
     /// When the windows were asked: only a wait this old is flushed by a deadline.
@@ -223,11 +226,21 @@ pub fn direct_target(st: &State, target: &WindowTarget, action: &PaneAction) -> 
     Ok((client, pid, project))
 }
 
-/// Sends a finished wait's `Customized` answer: whoever is still waiting is `missing`. A tool
-/// that hung up meanwhile is skipped by its closed sink.
+/// Sends a finished wait's `Customized` answer, or `CustomizedDetailed` when the tool asked for
+/// the detail: whoever is still waiting is `missing`. A tool that hung up meanwhile is skipped by
+/// its closed sink.
 fn answer_customize(w: CustomizeWait) {
-    let response = Response::Customized { outcomes: w.outcomes, missing: w.waiting, too_old: w.too_old };
+    let response = customized(w.detailed, w.outcomes, w.waiting, w.too_old);
     w.tx.send(ServerMessage::Response { id: w.msg_id, response });
+}
+
+/// The answer to a `Customize`, plain or detailed.
+fn customized(detailed: bool, outcomes: Vec<(CustomizeOutcome, WindowDetail)>, missing: Vec<u32>, too_old: Vec<u32>) -> Response {
+    if detailed {
+        Response::CustomizedDetailed { outcomes, missing, too_old }
+    } else {
+        Response::Customized { outcomes: outcomes.into_iter().map(|(o, _)| o).collect(), missing, too_old }
+    }
 }
 
 /// The deadline of the `Customize` `id`: answers it if it is still waiting and as old as
@@ -587,6 +600,8 @@ pub fn is_arkos_binary(p: &Path) -> bool {
 /// Handles one request. Returns the response to queue, or None when it was already queued.
 fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, request: Request, opts: &Options) -> Option<Response> {
     let session = |sid: SessionId| -> Option<Arc<Session>> { state.lock().unwrap().sessions.get(&sid).cloned() };
+    // A `CustomizeDetailed` is relayed as a `Customize` is and answered with the windows' detail.
+    let detailed = matches!(request, Request::CustomizeDetailed { .. });
     let response = match request {
         Request::Hello { protocol_version, ui_pid, ui_exe, ui_cwd } => {
             let mut st = state.lock().unwrap();
@@ -1003,7 +1018,7 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
         },
         // Relayed to every project window under one lock; the answer goes later through `tx`
         // with this message's id, when every window has answered or `CUSTOMIZE_WAIT` is over.
-        Request::Customize { id: customize_id, action } => {
+        Request::Customize { id: customize_id, action } | Request::CustomizeDetailed { id: customize_id, action } => {
             let mut st = state.lock().unwrap();
             if st.customize.contains_key(&customize_id) {
                 return Some(Response::Error("customize id in flight".into()));
@@ -1017,9 +1032,9 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
                 .map(|(_, pid)| pid)
                 .collect();
             if waiting.is_empty() {
-                return Some(Response::Customized { outcomes: vec![], missing: vec![], too_old });
+                return Some(customized(detailed, vec![], vec![], too_old));
             }
-            st.customize.insert(customize_id, CustomizeWait { client: client_id, msg_id: id, tx: tx.clone(), waiting, outcomes: vec![], too_old, started });
+            st.customize.insert(customize_id, CustomizeWait { client: client_id, msg_id: id, tx: tx.clone(), waiting, outcomes: vec![], detailed, too_old, started });
             drop(st);
             let state = state.clone();
             std::thread::Builder::new()
@@ -1069,25 +1084,30 @@ fn dispatch(state: &Shared, client_id: ClientId, tx: &ClientSink, id: u32, reque
             }
             Response::Ok
         }
-        // Always `Ok`: an answer after the wait, or a second one, is dropped, never an error the
-        // window would show as a banner.
-        Request::CustomizeDone { id: customize_id, outcome } => {
-            let mut st = state.lock().unwrap();
-            if let Some(w) = st.customize.get_mut(&customize_id) {
-                if let Some(i) = w.waiting.iter().position(|p| *p == outcome.pid) {
-                    w.waiting.remove(i);
-                    w.outcomes.push(outcome);
-                }
-                if w.waiting.is_empty() {
-                    if let Some(w) = st.customize.remove(&customize_id) {
-                        answer_customize(w);
-                    }
-                }
-            }
-            Response::Ok
-        }
+        // A window before `EFFECT_REPORT_FROM` answers with no detail, so its own is empty.
+        Request::CustomizeDone { id: customize_id, outcome } => customize_done(state, customize_id, outcome, WindowDetail::default()),
+        Request::CustomizeDoneDetailed { id: customize_id, outcome, detail } => customize_done(state, customize_id, outcome, detail),
     };
     Some(response)
+}
+
+/// Keeps one window's answer to the `Customize` `customize_id` and answers the tool once every
+/// window asked has answered. Always `Ok`: an answer after the wait, or a second one, is
+/// dropped, never an error the window would show as a banner.
+fn customize_done(state: &Shared, customize_id: u64, outcome: CustomizeOutcome, detail: WindowDetail) -> Response {
+    let mut st = state.lock().unwrap();
+    if let Some(w) = st.customize.get_mut(&customize_id) {
+        if let Some(i) = w.waiting.iter().position(|p| *p == outcome.pid) {
+            w.waiting.remove(i);
+            w.outcomes.push((outcome, detail));
+        }
+        if w.waiting.is_empty() {
+            if let Some(w) = st.customize.remove(&customize_id) {
+                answer_customize(w);
+            }
+        }
+    }
+    Response::Ok
 }
 
 #[cfg(test)]

@@ -18,8 +18,11 @@ use std::time::Duration;
 /// `Customize`, the windows' `Event::Customize` and `CustomizeDone`, and the `Customized` answer.
 /// Version 7 adds telemetry: the window's `Session` after its Hello, the `TelemetryStatus`
 /// request and answer, and `SessionQuit`. Version 8 adds the targeted channel: a tool client's
-/// `Direct`, the window's `Event::Direct` and `DirectDone`, and the `Directed` answer.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// `Direct`, the window's `Event::Direct` and `DirectDone`, and the `Directed` answer. Version 9
+/// adds the web page. Version 10 adds the detailed customize relay: a tool client's
+/// `CustomizeDetailed`, the window's `CustomizeDoneDetailed` with what it draws (its effect and
+/// size), and the `CustomizedDetailed` answer.
+pub const PROTOCOL_VERSION: u32 = 10;
 /// The oldest window a daemon still serves. Version 1 is milestone 2b's.
 pub const PROTOCOL_MIN: u32 = 1;
 /// The first protocol with `UpdateStatus` and `Event::UpdateStaged`.
@@ -40,6 +43,9 @@ pub const TELEMETRY_FROM: u32 = 7;
 pub const DIRECT_FROM: u32 = 8;
 /// The first protocol whose windows open a web page (`OpenKind::Web`, web pane spec section 8).
 pub const WEB_OPEN_FROM: u32 = 9;
+/// The first protocol whose windows answer a `Customize` with `CustomizeDoneDetailed` when the
+/// daemon speaks it too. An older window's `CustomizeDone` is relayed with an empty detail.
+pub const EFFECT_REPORT_FROM: u32 = 10;
 /// How long the daemon waits for the windows' answers to a `Customize` before it replies with
 /// the silent ones as `missing`.
 pub const CUSTOMIZE_WAIT: Duration = Duration::from_secs(2);
@@ -137,6 +143,16 @@ pub struct CustomizeOutcome {
     pub project: PathBuf,
     /// The window's state after the action, or why the action failed.
     pub result: Result<Report, String>,
+}
+
+/// What a window draws, beside its `Report`: the extra a `CustomizeDetailed` answer carries.
+/// Empty for a window older than `EFFECT_REPORT_FROM`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WindowDetail {
+    /// The effect under the window by name, with the GPU's milliseconds per frame once measured.
+    pub effect: Option<(String, Option<f32>)>,
+    /// The window's content in points.
+    pub size: Option<(f32, f32)>,
 }
 
 /// Which window a `Direct` is aimed at.
@@ -396,6 +412,11 @@ pub enum Request {
     /// A window's answer to `Event::Direct { id, .. }`. Answered `Ok` whether or not the id is
     /// still waited for.
     DirectDone { id: u64, outcome: Result<PaneOutcome, String> },
+    /// `Customize` answered `CustomizedDetailed`: every window's outcome with what it draws.
+    CustomizeDetailed { id: u64, action: CustomizeAction },
+    /// `CustomizeDone` with what the window draws. Sent instead of `CustomizeDone` by a window on
+    /// `EFFECT_REPORT_FROM` to a daemon that speaks it; answered `Ok` as that one is.
+    CustomizeDoneDetailed { id: u64, outcome: CustomizeOutcome, detail: WindowDetail },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -459,6 +480,9 @@ pub enum Response {
     /// The answer to `Direct`: the target window's process id and folder, and what it did or why
     /// it could not.
     Directed { pid: u32, project: PathBuf, outcome: Result<PaneOutcome, String> },
+    /// The answer to `CustomizeDetailed`: `Customized` with each window's detail beside its
+    /// outcome, an empty one for a window older than `EFFECT_REPORT_FROM`.
+    CustomizedDetailed { outcomes: Vec<(CustomizeOutcome, WindowDetail)>, missing: Vec<u32>, too_old: Vec<u32> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -494,7 +518,7 @@ mod tests {
     /// postcard writes an enum's variant index first; appended variants keep every older index.
     #[test]
     fn new_variants_are_appended_after_the_old_ones() {
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         assert_eq!(PROTOCOL_MIN, 1);
         assert_eq!(postcard::to_allocvec(&Request::RelaunchClient { exe: "/x".into(), cwd: "/y".into() }).unwrap()[0], 11);
         assert_eq!(postcard::to_allocvec(&Request::Goodbye).unwrap()[0], 12);
@@ -544,7 +568,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
         let resp = Response::Customized { outcomes: vec![o.clone()], missing: vec![8], too_old: vec![] };
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         assert_eq!(CUSTOMIZE_FROM, 6);
         assert_eq!(CUSTOMIZE_WAIT, Duration::from_secs(2));
         assert_eq!(first_byte(&Request::Customize { id: 9, action: a }), 21);
@@ -558,7 +582,7 @@ mod tests {
 
     #[test]
     fn telemetry_messages_round_trip_and_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         assert_eq!(TELEMETRY_FROM, 7);
         let session = Request::Session { sid: "0123456789abcdef0123456789abcdef".into() };
         let status = Response::TelemetryStatus {
@@ -605,7 +629,7 @@ mod tests {
 
     #[test]
     fn direct_messages_sit_at_the_end_of_their_enums() {
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         assert_eq!(DIRECT_FROM, 8);
         assert_eq!(WEB_OPEN_FROM, 9);
         assert_eq!(first_byte(&OpenKind::Web), 3, "the web kind sits after the three of protocol 8");
@@ -664,6 +688,28 @@ mod tests {
         let bytes = postcard::to_allocvec(&ev).unwrap();
         assert_eq!(postcard::from_bytes::<Event>(&bytes).unwrap(), ev);
         assert_eq!(serde_json::from_str::<Event>(&serde_json::to_string(&ev).unwrap()).unwrap(), ev);
+    }
+
+    #[test]
+    fn detailed_customize_messages_carry_what_a_window_draws_and_sit_at_the_end_of_their_enums() {
+        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(EFFECT_REPORT_FROM, 10);
+        let o = CustomizeOutcome { pid: 7, project: "/p".into(), result: Ok(Report::default()) };
+        let drawn = WindowDetail { effect: Some(("watercolor".into(), Some(2.5))), size: Some((1200.0, 800.0)) };
+        let ask = Request::CustomizeDetailed { id: 9, action: CustomizeAction::ReportState };
+        let done = Request::CustomizeDoneDetailed { id: 9, outcome: o.clone(), detail: drawn.clone() };
+        assert_eq!(first_byte(&ask), 28);
+        assert_eq!(first_byte(&done), 29);
+        let plain = WindowDetail { effect: Some(("ink".into(), None)), size: None };
+        let resp = Response::CustomizedDetailed { outcomes: vec![(o.clone(), drawn), (o, plain)], missing: vec![8], too_old: vec![] };
+        assert_eq!(first_byte(&resp), 12);
+        assert_eq!(WindowDetail::default(), WindowDetail { effect: None, size: None });
+        for req in [ask, done] {
+            assert_eq!(postcard::from_bytes::<Request>(&postcard::to_allocvec(&req).unwrap()).unwrap(), req);
+            assert_eq!(serde_json::from_str::<Request>(&serde_json::to_string(&req).unwrap()).unwrap(), req);
+        }
+        assert_eq!(postcard::from_bytes::<Response>(&postcard::to_allocvec(&resp).unwrap()).unwrap(), resp);
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&resp).unwrap()).unwrap(), resp);
     }
 
     /// The bytes a protocol 6 window writes for its Hello, spelled out rather than encoded by

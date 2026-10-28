@@ -166,6 +166,14 @@ pub fn glyph_shader_for<L>(kind: WindowKind, effect: Option<&ActiveEffect<L>>) -
     })
 }
 
+/// What a window reports drawing under it (`arkos effect current`): the effect's name and the
+/// GPU's time per frame, `gpu_ms` of its layer, while it is on or coming in; nothing once it is
+/// leaving.
+pub fn reported<L>(effect: Option<&ActiveEffect<L>>, gpu_ms: impl Fn(&L) -> Option<f32>) -> Option<(String, Option<f32>)> {
+    let e = effect.filter(|e| !e.leaving())?;
+    Some((e.effect.manifest.name.clone(), gpu_ms(&e.layer)))
+}
+
 /// Sets `shader` on `window`. A shader the window refuses gives the notice to show, naming the
 /// effect's glyphs file and the compiler's first error; the window keeps the glyphs it had.
 pub fn apply_glyphs(window: &mut impl GlyphSink, effect: &Effect, shader: Option<GlyphShader>) -> Result<(), String> {
@@ -514,6 +522,17 @@ mod tests {
         let notice = apply_glyphs(&mut refusing, &cut.effect, glyph_shader_for(WindowKind::Project, Some(&cut))).unwrap_err();
         assert_eq!(notice, "effect watercolor: glyphs.metal: unknown type 'flaot'");
         assert_eq!(cut.style(t0).paper_alpha, 0.5, "still on");
+    }
+
+    #[test]
+    fn a_window_reports_its_effect_and_cost_until_the_effect_starts_to_leave() {
+        let t0 = Instant::now();
+        let mut e = on(watercolor(), t0);
+        assert_eq!(reported(None::<&ActiveEffect<()>>, |_| Some(1.0)), None);
+        assert_eq!(reported(Some(&e), |_| Some(2.5)), Some(("watercolor".to_string(), Some(2.5))));
+        assert_eq!(reported(Some(&e), |_| None), Some(("watercolor".to_string(), None)), "not measured yet");
+        e.leave(t0);
+        assert_eq!(reported(Some(&e), |_| Some(2.5)), None, "on its way out it is no longer the window's");
     }
 
     #[test]

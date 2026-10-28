@@ -2,7 +2,9 @@
 //! a folder with a manifest and Metal shaders; the built-ins are compiled in, and a folder of
 //! the same name in the effects folder replaces one.
 pub mod active;
+pub mod bench;
 pub mod blocks;
+pub mod cli;
 pub mod inputs;
 pub mod layer;
 pub mod manifest;

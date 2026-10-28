@@ -10,7 +10,8 @@ your own config folder as the skill `arkos-ide` (`$CLAUDE_CONFIG_DIR/skills`, el
 Arkos is a macOS IDE of terminal panes, a file tree, a markdown editor and a video pane. Through
 this guide you may show the user a video, a document or a web page in a pane of their window and
 control a video there (play, pause, seek, step, loop, reload, mute, close), and you may change its theme (the
-colours and the optional fonts) and the settings on a short allow-list. Nothing else is supported:
+colours and the optional fonts), write and choose its effect (the shaders that paint the window,
+section 8) and change the settings on a short allow-list. Nothing else is supported:
 you may not run commands in its terminals or reach a session, and nothing here writes the files
 you show. Do not edit the app bundle. Do not look for the built-in theme files: they are compiled in
 and do not exist on disk. Keep the user's comments in `config.toml`; the commands below do that
@@ -20,6 +21,8 @@ for you, so never write the file by hand when a command exists.
 
 - The config: `~/.config/arkos/config.toml` (`$XDG_CONFIG_HOME/arkos/config.toml` when that is set).
 - Theme files: `~/.config/arkos/themes/<name>.toml`. A file shadows a built-in of the same name.
+- Effects: `~/.config/arkos/effects/<name>/`, a folder each. A folder shadows a built-in of the
+  same name.
 - The daemon's socket: `~/Library/Application Support/arkos/arkosd.sock`.
 - The logs, in the same folder: `window.log`, `arkosd.log`, and `updates/journal.log`.
 - The binary: inside an Arkos shell, `arkos` is on your PATH and `$ARKOS_BIN` holds its full
@@ -466,7 +469,181 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
   enough for the foreground to keep 5.7:1, 7.7:1 and 4.6:1 on them; the accent was too light to
   carry white text, so it is not used as a background.
 
-## 8. What Arkos sends
+## 8. Effects
+
+An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
+surface, and optionally the text itself. Peach Light recommends the built-in `watercolor`; the
+user may pick any effect for any theme, or none, in Settings or through `arkos effect use`. An
+effect reads the theme's colours on every frame, so write it to suit any theme rather than one.
+
+What an effect can touch:
+
+- The wash under everything: one fragment shader drawn under the whole window, handed the
+  theme's colours and the blocks of the UI (the title bar, the sidebar and its divider, each
+  pane's tab bar and body, and, when the manifest asks for them, the Explorer's selected and
+  hovered rows and the hovered tab with their fades).
+- The text, through the glyph shader: it replaces gpui's own stages for the project window's
+  glyphs.
+- The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars
+  and the sidebar, the active tab. The window's background and the pane bodies go clear, so the
+  wash shows wherever nothing is painted over it.
+- The borders: with `ink_borders` the app stops drawing its 1 px borders and tells the wash which
+  edges of each block it no longer draws.
+- The UI text size, a few points larger.
+- The text contrast: how far the text colours move towards ink while the effect is on.
+
+What it cannot touch: anything else gpui draws (icons, the cursor, selections, images, the
+terminal's cells one by one), the About, Settings and Keybindings windows and the launch chooser
+(they keep the plain look), and the layout (no size or position changes).
+
+### The folder
+
+An effect is a folder in `~/.config/arkos/effects/` (`$XDG_CONFIG_HOME/arkos/effects/` when that
+is set), named for the effect: `effect.toml`, the wash shader and an optional glyph shader beside
+it. A folder named like a built-in replaces it. Every key but `name` and `wash` has the default
+shown; a value out of range or an unknown key makes the effect invalid, and the error names the
+key and the range.
+
+| Key | Range | Default | What it does |
+| --- | --- | --- | --- |
+| `name` | the folder's name | required | A manifest that names another folder is invalid: `name 'bar' does not match its folder 'foo'`. |
+| `description` | text | `""` | One sentence for the user. |
+| `wash` | a file beside `effect.toml` | required | The wash shader, usually `wash.metal`. |
+| `glyphs` | a file beside `effect.toml` | absent | The glyph shader; absent, gpui draws text as always. |
+| `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
+| `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
+| `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
+| `ink_borders` | true, false | false | The app hides its own 1 px borders and the wash draws the edges. |
+| `highlights` | `"effect"`, `"app"` | `"app"` | `"effect"`: the wash paints the selected and hovered rows and the hovered tab from the highlight blocks, and the app stops filling them. `"app"`: the app keeps its own fills and the wash gets no highlight blocks. |
+| `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's or a document's paper over the wash. It never goes below 0.5, so text keeps its ground. |
+| `chrome_alpha` | 0.0 to 1.0 | 0.0 | The title bar, the tab bars, the inactive tabs and the sidebar over the wash. |
+| `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |
+| `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
+
+Changing effects fades the wash and the surfaces' alphas in and out over 200 ms (it cuts under
+Reduce Motion); the glyph shader, the text size, the borders, the highlights and the text
+contrast switch at the end of a fade in and at the start of a fade out.
+
+### The contract
+
+`arkos effect contract` prints the whole contract for the wash, `arkos.metal`, which is put
+before your wash file when it is compiled. It declares the theme's colours by index
+(`ARKOS_WINDOW_BG` to the sixteen ANSI colours from `ARKOS_ANSI`), the block kinds
+(`ARKOS_TITLE_BAR_BLOCK` and the rest), the edge bits (`ARKOS_EDGE_TOP` and the rest),
+`ArkosBlock`, `ArkosInputs` and `ArkosVertex`. Your wash supplies one function:
+
+```metal
+fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]);
+```
+
+What it is handed: `u.time`, seconds since the effect started, frozen under Reduce Motion (the
+wash then draws only when something changes); `u.intensity`, the user's slider from 0 to 1;
+`u.size`, the window in points; `u.scale`, the drawable's pixels per point; `u.colors`, the
+theme's colours, opaque; and `u.blocks`, the first `u.block_count` of up to 48 blocks, each a
+rectangle in window points from the top left with its kind, the edges the app no longer draws, a
+`seed` fixed for the block's life, a `value` (a highlight's fade from 0 to 1, else 1) and an
+`ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both). `in.uv` runs
+from (0, 0) at the top left to (1, 1) at the bottom right. What the wash returns is the window's
+opaque ground; the app's surfaces are drawn over it with the manifest's alphas. Derive every
+shade from the theme's colours, so the effect reads right in a dark theme as in a light one.
+Strengths are yours: a highlight block says its kind, fade and state, and the wash decides how
+strongly to paint it.
+
+`arkos effect contract --glyphs` prints gpui's sprite declarations, which your glyph shader is
+compiled after (gpui's whole shader source comes first, so it may use any of them), then one
+line naming the two functions it supplies, `arkos_glyph_vertex` and `arkos_glyph_fragment`, with
+their signatures. The built-in's `glyphs.metal` (from `arkos effect template`) is a worked one:
+it widens each glyph's quad so the ink can bleed, and keeps a stroke's core at least 55% of its
+coverage so thin text stays legible. Keep to that floor in any glyph shader you write.
+
+### The steps
+
+1. `arkos effect template --as <name>` copies the built-in `watercolor` into the effects folder
+   under the new name and prints the folder. Start from it even for a different look: it shows
+   the noise fields, the blocks, the highlights and the glyphs at work.
+2. Edit `effect.toml` and the shaders.
+3. `arkos effect check <folder>` until it prints `ok: <name>`; a compile error names your file
+   and line. Read its `highlights:` line: with `app` the wash gets no highlight blocks.
+4. `arkos effect bench <name>` until it says `within budget`.
+5. `arkos effect use <name>`, then `arkos effect current` to see what each window draws and what
+   it costs.
+
+A window loads an effect when it puts it on. To see an edit to the effect it already shows, run
+`arkos effect use none`, wait a second for the fade, then `arkos effect use <name>` again. To
+revert, `arkos effect use theme` (the theme's choice) or `arkos effect use none`. The window log
+(`window.log`) says `effect {name}: {ms} ms per frame at {w}x{h}` once a minute while the cost
+changes by more than a tenth.
+
+### The budget
+
+The costs, measured on a MacBook Air at 1200 by 800 points, Retina:
+
+| Technique | GPU per frame | Of a 30 fps frame |
+| --- | --- | --- |
+| Per-pixel noise evaluated once per block (22 blocks, 3-octave fbm each), quarter scale | 8.5 ms | 25% |
+| The same with the noise fields shared by every block, quarter scale | 0.64 ms | 2% |
+| Shared fields plus ink outlines, half scale (the outlines need it) | 3.6 ms | 11% |
+| Ink glyphs on top (gpui's own pass; only when text changes) | about 0.1 ms per repaint | |
+
+The budget: stay under 4 ms per frame at half scale; `bench` says `within budget`, `heavy` from
+4 to 8, `too heavy` above 8. Rules of thumb:
+
+- Compute a noise field once per pixel and read it per block, never per block per pixel.
+- Draw at the lowest `scale` the look allows (the ink needs 0.5, a soft wash 0.25).
+- Keep `frame_rate` at 30 unless something fast moves.
+- Place anything that moves on the CPU side of the contract when it is per block, and in the
+  shader from `time` when it is per pixel.
+- Pick every block's grain from `seed`, never from its index, or a highlight coming and going
+  will reshape the panes.
+
+Nothing turns a slow effect off on its own: the cost is reported and the choice is the user's.
+Tell them what `bench` said.
+
+### The effect commands
+
+Exit codes, `--json` and the window lines are as in section 5. Every command works with no
+window open; `bench` and `current` ask the running windows, and `use` asks them to reload.
+
+- `arkos effect list [--json]`: every effect, the built-ins first, then the folders sorted:
+  `{name} (built in)`, `{name} (folder)` or `{name} (folder, invalid: {error})`. JSON
+  `[{ "name", "source": "built-in" | "folder" | "invalid", "path"?, "error"? }]`.
+- `arkos effect contract [--glyphs]`: the wash's contract, or with `--glyphs` gpui's sprite
+  declarations and the line naming the glyph shader's two functions. No JSON.
+- `arkos effect template --as <new-name> [<built-in>]`: writes a copy of the built-in (default
+  `watercolor`) to the effects folder as `<new-name>`, with the manifest's `name` set to it and
+  its comments kept, and prints the folder's path. `exists: {path}` when that folder is there
+  already, `unknown built-in effect: {name}`, or a name that is not a bare folder name: exit 1
+  and nothing written. No JSON.
+- `arkos effect check <folder> [--json]`: reads the manifest and the files it names, then
+  compiles the wash against the contract and the glyph shader after gpui's source, as a window
+  would. `ok: {name}` and `highlights: effect` or `highlights: app`, exit 0; or the error, exit 1.
+  A compiler error reads `{file}:{line}:{column}: error: {text}` with the line in your own file
+  (a note inside the contract reads `arkos.metal:{line}`, inside gpui's source `gpui:{line}`).
+  JSON `{ "ok": true, "name", "highlights": "effect" | "app" }` or `{ "ok": false, "error" }`.
+- `arkos effect bench <folder-or-name> [--seconds N] [--json]`: an argument with a `/` is a
+  folder, anything else an effect's name. Draws the wash off-screen with the window's own
+  pipeline at the manifest's `scale` and `frame_rate`, on a Retina target, for N seconds (above 0,
+  at most 60; default 3), and times every frame on the GPU. It draws a window as it opens: the
+  title bar, the sidebar and one pane, with a selected Explorer row when the manifest says
+  `highlights = "effect"`; every pane or highlight more adds its blocks' cost. The size and the theme are those of
+  the first window that answers; without one, 1200 by 800 points and Peach Light. Prints
+  `{name}: {ms} ms per frame at {w}x{h} ({share}% of a frame at {rate} fps): {verdict}`, the
+  verdict `within budget`, `heavy` or `too heavy`. Exit 1 when the effect does not load or
+  compile. JSON `{ "name", "ms", "size": [w, h], "theme", "frame_rate", "share", "verdict" }`,
+  `share` in percent.
+- `arkos effect use <name|none|theme> [--json]`: an effect's name must load (else its error,
+  exit 1, nothing written); then it is `arkos settings set effect.name <value>`, with its lines,
+  exit codes and JSON `{ "key": "effect.name", "value", "saved", "windows", "missing", "too_old" }`:
+  `window {pid} ({project}): effect.name applied`, or `saved; no window running`.
+- `arkos effect current [--json]`: `config: effect {theme|none|name}, intensity {i}`, then per
+  window `window {pid} ({project}): {name}, {ms} ms per frame`, `{name}, not measured yet` (the
+  cost is read every sixtieth frame), `none`, or `too old to report its effect`, then the
+  `no answer` and `too old for this command` lines. Exit 0 with no window; 1 when the daemon is
+  older than this command. JSON `{ "config": { "name", "intensity" } | { "error" }, "windows":
+  [{ "pid", "project", "effect": name | null, "gpu_ms": ms | null, "size": [w, h] | null } |
+  { "pid", "project", "error" }], "missing": [pids], "too_old": [pids] }`.
+
+## 9. What Arkos sends
 
 When the user asks what Arkos sends, whether it collects data, or how to turn that off, answer
 from the disclosure page and not from memory. It is `docs/telemetry.md` in the Arkos source
@@ -480,7 +657,7 @@ Never change the setting on your own: not with `arkos telemetry`, not with
 table. Whether Arkos records or sends anything is the user's choice. Tell them the command and
 let them run it, or run it only when they have asked you to in so many words.
 
-## 9. Rules
+## 10. Rules
 
 For files in panes:
 
@@ -500,3 +677,14 @@ For themes and settings:
 - Never turn usage or crash reports on or off unless the user asked you to.
 - Prefer `--json` when you parse output, and branch on the exit code.
 - When you finish, run `arkos theme current` and report its lines to the user.
+
+For effects:
+
+- Check, then bench, then use; never put on an effect that `check` refuses.
+- Tell the user what `bench` said, in milliseconds and its verdict, before you put the effect on,
+  and say so plainly when it is `heavy` or `too heavy`.
+- Keep the text readable: leave `paper_alpha` at 0.5 or more under text, and keep a glyph's core
+  at least 55% of its coverage.
+- Never write into a built-in's place unless the user asked to replace it: template under a new
+  name.
+- When you finish, run `arkos effect current` and report its lines to the user.

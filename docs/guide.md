@@ -266,6 +266,25 @@ for a tool that keeps the modification time.
 A file Arkos cannot play shows the reason over the picture with a button, "Open in QuickTime
 Player". Audio still opens in QuickTime Player, and a `.webm` is shown in Finder.
 
+## Effects
+
+An effect is a shader that paints the project window: a wash under every surface, and
+optionally the text itself. Peach Light comes with `watercolor`: washes that hug each block with
+a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
+and hovered rows and the hovered tab as fading strokes of pigment, glyphs written in ink, and UI
+text two points larger. Any theme can carry any effect, since an effect reads the theme's
+colours. Pick one in Settings, Appearance (or `arkos effect use <name>`); "Theme's choice"
+follows the theme's own recommendation, which is none for every built-in theme but Peach Light.
+Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
+Under Reduce Motion the wash holds still and draws only when something changes, and a hidden or
+covered window draws none.
+
+Effects you add live in `~/.config/arkos/effects/<name>/` (or under `$XDG_CONFIG_HOME`), one
+folder each with an `effect.toml` and Metal shaders; a folder named like a built-in replaces it.
+You need not write one by hand: ask a coding agent in an Arkos shell, which learns the contract
+from `arkos guide` and builds the effect with `arkos effect` (template, check, bench, use), then
+reports what it costs the GPU.
+
 ## Keyboard
 
 The VS Code map, in a terminal-friendly form.
@@ -443,7 +462,12 @@ Settings (menu or Cmd+,) has the shared title bar and six sections.
   existing {name}?" before overwriting a theme file or shadowing a built-in of that name. A new
   theme is set as the dark or light theme by the mode in force. "Show themes folder" creates the
   folder, then reveals it. A configured theme that is neither built in nor a file is listed
-  first as "(not installed)".
+  first as "(not installed)". Under the themes: Effect, a list of "Theme's choice" (the theme's
+  recommendation, named, as in "Theme's choice (watercolor)"), "None", then every installed
+  effect (a configured one that is missing is listed after None as "(not installed)", and a
+  broken one as "(invalid)", not choosable); an Intensity stepper from 0.0 to 1.0 by a tenth; and
+  "Show effects folder", which creates the folder, then reveals it. A change fades in or out
+  over a fifth of a second, or cuts under Reduce Motion.
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
   write both values of the preset together and show the file's values as they are. The preset

@@ -1,6 +1,6 @@
 //! Drives the real arkosd binary over a temp socket.
 use protocol::codec::{read_frame, write_frame};
-use protocol::{AgentRecord, ClientMessage, CustomizeAction, CustomizeOutcome, Event, PaneAction, PaneOutcome, PanesReport, Report, Request, Response, ServerMessage, SessionId, WindowTarget, PROTOCOL_VERSION};
+use protocol::{AgentRecord, ClientMessage, CustomizeAction, CustomizeOutcome, Event, PaneAction, PaneOutcome, PanesReport, Report, Request, Response, ServerMessage, SessionId, WindowDetail, WindowTarget, PROTOCOL_VERSION};
 use std::io::{BufReader, BufWriter};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -2351,6 +2351,37 @@ fn a_customize_request_is_relayed_to_every_project_window_and_answered_when_all_
     }
     // A late answer is still Ok, never an error the window would show.
     assert_eq!(w1.request(Request::CustomizeDone { id: 1, outcome: CustomizeOutcome { pid: base + 1, project: "/p".into(), result: Ok(Report::default()) } }), Response::Ok);
+}
+
+#[test]
+fn a_detailed_customize_carries_what_each_window_draws_and_a_plain_one_drops_it() {
+    let d = Daemon::start(&[]);
+    let base = std::process::id();
+    let mut w1 = d.connect_as(base + 1);
+    let mut w2 = d.connect_as(base + 2);
+    let mut tool = d.connect_raw();
+    let outcome = |pid: u32| CustomizeOutcome { pid, project: "/p".into(), result: Ok(Report::default()) };
+    let drawn = WindowDetail { effect: Some(("watercolor".into(), Some(2.5))), size: Some((1200.0, 800.0)) };
+    tool.send(Request::CustomizeDetailed { id: 4, action: CustomizeAction::ReportState });
+    assert_eq!(w1.next_event(), Event::Customize { id: 4, action: CustomizeAction::ReportState });
+    assert_eq!(w2.next_event(), Event::Customize { id: 4, action: CustomizeAction::ReportState });
+    assert_eq!(w1.request(Request::CustomizeDoneDetailed { id: 4, outcome: outcome(base + 1), detail: drawn.clone() }), Response::Ok);
+    // A window that answers the plain way, as one before the detail does, gets an empty detail.
+    assert_eq!(w2.request(Request::CustomizeDone { id: 4, outcome: outcome(base + 2) }), Response::Ok);
+    assert_eq!(
+        tool.response(),
+        Response::CustomizedDetailed { outcomes: vec![(outcome(base + 1), drawn.clone()), (outcome(base + 2), WindowDetail::default())], missing: vec![], too_old: vec![] }
+    );
+    // A plain `Customize` answered with a detail is answered plain.
+    tool.send(Request::Customize { id: 5, action: CustomizeAction::ReportState });
+    let _ = w1.next_event();
+    let _ = w2.next_event();
+    assert_eq!(w1.request(Request::CustomizeDoneDetailed { id: 5, outcome: outcome(base + 1), detail: drawn }), Response::Ok);
+    assert_eq!(w2.request(Request::CustomizeDone { id: 5, outcome: outcome(base + 2) }), Response::Ok);
+    assert_eq!(tool.response(), Response::Customized { outcomes: vec![outcome(base + 1), outcome(base + 2)], missing: vec![], too_old: vec![] });
+    // No window at all is answered at once, in the detailed form.
+    let d2 = Daemon::start(&[]);
+    assert_eq!(d2.connect_raw().request(Request::CustomizeDetailed { id: 1, action: CustomizeAction::ReportState }), Response::CustomizedDetailed { outcomes: vec![], missing: vec![], too_old: vec![] });
 }
 
 #[test]

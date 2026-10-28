@@ -4,7 +4,7 @@
 
 use super::inputs::Inputs;
 use metal::foreign_types::{ForeignType, ForeignTypeRef};
-use metal::{CommandQueue, CompileOptions, Device, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLStoreAction, MetalLayer, RenderPassDescriptor, RenderPipelineDescriptor, RenderPipelineState};
+use metal::{CommandBufferRef, CommandQueue, CompileOptions, Device, DeviceRef, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLStoreAction, MetalLayer, RenderPassDescriptor, RenderPipelineDescriptor, RenderPipelineState};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, MainThreadMarker};
@@ -20,24 +20,60 @@ pub fn drawable_size(points: (f64, f64), backing: f64, scale: f64) -> (f64, f64)
 }
 
 /// The Metal compiler's `message` for `format!("{preamble}\n{wash}")`, with every
-/// `program_source:LINE:` inside the wash renumbered to the wash's own line.
+/// `program_source:LINE:` inside the wash renumbered to the wash's own line, and one inside the
+/// preamble named `arkos.metal:LINE:`, the contract's own file.
 pub fn point_into_wash(message: &str, preamble: &str) -> String {
+    point_into(message, preamble, "arkos.metal", "program_source")
+}
+
+/// The Metal compiler's `message` for `format!("{before}\n{source}")`, with every
+/// `program_source:LINE:` written `{file}:LINE:` with the source's own line when it falls in
+/// `source`, and `{before_name}:LINE:` when it falls in `before`.
+pub fn point_into(message: &str, before: &str, before_name: &str, file: &str) -> String {
     const TAG: &str = "program_source:";
-    let offset = preamble.matches('\n').count() + 1;
+    let offset = before.matches('\n').count() + 1;
     let mut out = String::with_capacity(message.len());
     let mut rest = message;
     while let Some(at) = rest.find(TAG) {
-        let (before, after) = rest.split_at(at + TAG.len());
-        out.push_str(before);
+        out.push_str(&rest[..at]);
+        let after = &rest[at + TAG.len()..];
         let digits = after.chars().take_while(char::is_ascii_digit).count();
         match after[..digits].parse::<usize>() {
-            Ok(line) if line > offset => out.push_str(&(line - offset).to_string()),
-            _ => out.push_str(&after[..digits]),
+            Ok(line) if line > offset => out.push_str(&format!("{file}:{}", line - offset)),
+            Ok(line) => out.push_str(&format!("{before_name}:{line}")),
+            Err(_) => out.push_str(TAG),
         }
         rest = &after[digits..];
     }
     out.push_str(rest);
     out
+}
+
+/// The wash's render pipeline on `device`: `wash` compiled after `preamble` with the app's vertex
+/// stage, drawing into a BGRA8 target. The window's layer draws with it, `arkos effect bench`
+/// renders with it and `arkos effect check` builds it. `Err` carries the compiler's message, its
+/// lines pointing into the wash, or what else went wrong.
+pub fn pipeline(device: &DeviceRef, preamble: &str, wash: &str) -> Result<RenderPipelineState, String> {
+    let source = format!("{preamble}\n{wash}\n{VERTEX}");
+    let library = device.new_library_with_source(&source, &CompileOptions::new()).map_err(|e| point_into_wash(&e, preamble))?;
+    let vs = library.get_function("arkos_vertex", None)?;
+    let fs = library.get_function("arkos_wash", None).map_err(|_| "the wash has no fragment function named arkos_wash".to_string())?;
+    let desc = RenderPipelineDescriptor::new();
+    desc.set_vertex_function(Some(&vs));
+    desc.set_fragment_function(Some(&fs));
+    desc.color_attachments().object_at(0).ok_or("no colour attachment")?.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    device.new_render_pipeline_state(&desc)
+}
+
+/// The GPU's time in milliseconds for a command buffer that has completed.
+pub fn gpu_ms(cmd: &CommandBufferRef) -> f32 {
+    // SAFETY: GPUStartTime and GPUEndTime are CFTimeInterval properties of a command buffer,
+    // read once it has completed.
+    let (start, end): (f64, f64) = unsafe {
+        let b = cmd.as_ptr() as *mut AnyObject;
+        (msg_send![b, GPUStartTime], msg_send![b, GPUEndTime])
+    };
+    ((end - start) * 1000.0) as f32
 }
 
 /// The wash's layer in one window. Dropping it takes the view out of the window.
@@ -61,15 +97,7 @@ impl Layer {
         let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
         let content = window.contentView().ok_or("the window has no content view")?;
         let device = Device::system_default().ok_or("no Metal device")?;
-        let source = format!("{preamble}\n{wash}\n{VERTEX}");
-        let library = device.new_library_with_source(&source, &CompileOptions::new()).map_err(|e| point_into_wash(&e, preamble))?;
-        let vs = library.get_function("arkos_vertex", None)?;
-        let fs = library.get_function("arkos_wash", None).map_err(|_| "the wash has no fragment function named arkos_wash".to_string())?;
-        let desc = RenderPipelineDescriptor::new();
-        desc.set_vertex_function(Some(&vs));
-        desc.set_fragment_function(Some(&fs));
-        desc.color_attachments().object_at(0).ok_or("no colour attachment")?.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-        let pipeline = device.new_render_pipeline_state(&desc)?;
+        let pipeline = pipeline(&device, preamble, wash)?;
         let layer = MetalLayer::new();
         layer.set_device(&device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
@@ -133,13 +161,7 @@ impl Layer {
         self.frames += 1;
         if self.frames % 60 == 0 {
             cmd.wait_until_completed();
-            // SAFETY: GPUStartTime and GPUEndTime are CFTimeInterval properties of a completed
-            // command buffer, read on the main thread.
-            let (start, end): (f64, f64) = unsafe {
-                let b = cmd.as_ptr() as *mut AnyObject;
-                (msg_send![b, GPUStartTime], msg_send![b, GPUEndTime])
-            };
-            let ms = ((end - start) * 1000.0) as f32;
+            let ms = gpu_ms(cmd);
             self.gpu_ms = Some(self.gpu_ms.map_or(ms, |avg| avg * 0.75 + ms * 0.25));
         }
     }
@@ -167,7 +189,9 @@ mod tests {
         // The wash's first line follows the preamble and the blank line that joins them.
         let message = "Compilation failed: \n\nprogram_source:5:3: error: x\nprogram_source:12:1: note: y";
         assert_eq!(point_into_wash(message, preamble), "Compilation failed: \n\nprogram_source:1:3: error: x\nprogram_source:8:1: note: y");
-        // A line before the wash (the preamble's own) is left as it is.
-        assert_eq!(point_into_wash("program_source:2:1: error: z", preamble), "program_source:2:1: error: z");
+        // A line before the wash is the preamble's own, in the contract's file.
+        assert_eq!(point_into_wash("program_source:2:1: note: z", preamble), "arkos.metal:2:1: note: z");
+        // Any source after any other, each line named for its own file.
+        assert_eq!(point_into("program_source:6:2: error: x\nprogram_source:1:1: note: y", preamble, "gpui", "glyphs.metal"), "glyphs.metal:2:2: error: x\ngpui:1:1: note: y");
     }
 }

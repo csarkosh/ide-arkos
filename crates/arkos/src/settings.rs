@@ -3,9 +3,9 @@
 //! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
 //! was last handed (`set_shown`), so an edit made in an editor shows here too.
 use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
-use crate::config::{self, AppearanceMode, Config, FontConfig, StartAtLogin, WideTables};
+use crate::config::{self, AppearanceMode, Config, EffectChoice, FontConfig, StartAtLogin, WideTables};
 use crate::theme::{self, Theme};
-use crate::{aux, keymap, paths, telemetry_cli};
+use crate::{aux, effects, keymap, paths, telemetry_cli};
 use ::telemetry::visits_app::{Crashes, Mode, Usage};
 use gpui::{
     div, prelude::*, px, size, AnyElement, App, Bounds, ClipboardItem, Context, ElementId, FocusHandle, Hsla, KeyDownEvent, PathPromptOptions, SharedString,
@@ -35,6 +35,9 @@ const SIZE_RANGE: (f64, f64) = (10.0, 32.0);
 const LINE_RANGE: (f64, f64) = (1.2, 2.0);
 const SIZE_STEP: f64 = 1.0;
 const LINE_STEP: f64 = 0.1;
+/// The effect's Intensity stepper: 0.0 to 1.0 by a tenth.
+const INTENSITY_RANGE: (f64, f64) = (0.0, 1.0);
+const INTENSITY_STEP: f64 = 0.1;
 
 /// Families that pass the advance check but draw symbols, and the font macOS draws missing glyphs
 /// with: never offered as a text font.
@@ -174,6 +177,42 @@ fn not_installed(current: &str, listed: &[String]) -> Option<String> {
     (!listed.iter().any(|n| n == current)).then(|| format!("{current} (not installed)"))
 }
 
+/// One row of the Effect list: its label, the `effect.name` a click writes (`None`: not
+/// clickable), and whether it is the configured choice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectRow {
+    pub label: String,
+    pub value: Option<String>,
+    pub current: bool,
+}
+
+/// The Effect list: "Theme's choice" first, naming what the theme recommends, then "None", then
+/// a configured effect that is not installed, then every effect `listed`, an invalid one shown
+/// but not clickable.
+pub fn effect_rows(choice: &EffectChoice, recommended: Option<&str>, listed: &[(String, effects::manifest::Source)]) -> Vec<EffectRow> {
+    let row = |label: String, value: Option<&str>, current: bool| EffectRow { label, value: value.map(str::to_string), current };
+    let mut rows = vec![
+        row(format!("Theme's choice ({})", recommended.unwrap_or("none")), Some("theme"), *choice == EffectChoice::Theme),
+        row("None".into(), Some("none"), *choice == EffectChoice::None),
+    ];
+    if let EffectChoice::Named(name) = choice {
+        let names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
+        rows.extend(not_installed(name, &names).map(|label| row(label, None, true)));
+    }
+    for (name, source) in listed {
+        rows.push(match source {
+            effects::manifest::Source::Invalid(_) => row(format!("{name} (invalid)"), None, false),
+            _ => row(name.clone(), Some(name), *choice == EffectChoice::Named(name.clone())),
+        });
+    }
+    rows
+}
+
+/// The edit for the Intensity stepper.
+fn intensity_edit(value: f64) -> Edit {
+    edit(&["effect", "intensity"], value)
+}
+
 /// Which `[theme]` key an imported theme is selected under: the mode's, or with the mode System,
 /// the one for what macOS shows now.
 pub fn theme_key_for(mode: AppearanceMode, system_is_dark: bool) -> &'static str {
@@ -211,6 +250,8 @@ pub struct SettingsWindow {
     shown: Shown,
     section: Section,
     themes: Vec<(String, theme::Source)>,
+    /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
+    effects: Vec<(String, effects::manifest::Source)>,
     fonts: Vec<String>,
     /// Why the last "Add theme…" failed, shown under the button.
     import_error: Option<String>,
@@ -282,6 +323,7 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
                 shown,
                 section: Section::Appearance,
                 themes: theme::list(&paths::themes_dir()),
+                effects: effects::manifest::list(&effects::effects_dir()),
                 fonts,
                 import_error: None,
                 pending_replace: None,
@@ -420,11 +462,13 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Shows a newly loaded config (or its error) and the themes folder as it is now.
+    /// Shows a newly loaded config (or its error) and the themes and effects folders as they are
+    /// now.
     pub fn set_shown(&mut self, shown: Shown, cx: &mut Context<Self>) {
         self.shown = shown;
         self.privacy.forget();
         self.themes = theme::list(&paths::themes_dir());
+        self.effects = effects::manifest::list(&effects::effects_dir());
         cx.notify();
     }
 
@@ -636,6 +680,48 @@ impl SettingsWindow {
         if let Some(e) = &self.import_error {
             out.push(div().text_color(c.dim).child(e.clone()).into_any_element());
         }
+        out.extend(self.effect_controls(enabled, c, cx));
+        out
+    }
+
+    /// The Appearance section's effect controls, under the themes: the Effect list, the
+    /// Intensity stepper and "Show effects folder".
+    fn effect_controls(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let cfg = &self.shown.config.effect;
+        let mut out = vec![heading("Effect", c).into_any_element()];
+        let mut list = div().flex().flex_col();
+        for (ix, r) in effect_rows(&cfg.name, self.theme.recommended_effect(), &self.effects).into_iter().enumerate() {
+            let clickable = enabled && r.value.is_some();
+            let mut row = list_row(("effect", ix), r.label, r.current, clickable, c);
+            if let (true, false, Some(value)) = (clickable, r.current, r.value) {
+                row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["effect", "name"], value.as_str())], cx)));
+            }
+            list = list.child(row);
+        }
+        out.push(list.into_any_element());
+        out.push(heading("Intensity", c).into_any_element());
+        let value = f64::from(cfg.intensity);
+        let press = |ix: usize, sign: &'static str, delta: f64| {
+            let mut p = pill(("intensity-step", ix), sign, false, enabled, c);
+            if enabled {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![intensity_edit(step(value, delta, INTENSITY_RANGE))], cx)));
+            }
+            p
+        };
+        let (minus, plus) = (press(0, "−", -INTENSITY_STEP), press(1, "+", INTENSITY_STEP));
+        let shown = div().min_w(px(28.0)).flex().justify_center().child(number(value));
+        out.push(div().flex().items_center().gap(px(8.0)).child(minus).child(shown).child(plus).into_any_element());
+        let mut folder = pill("effects-folder", "Show effects folder", false, enabled, c);
+        if enabled {
+            folder = folder.on_click(|_, _, cx| {
+                let dir = effects::effects_dir();
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    eprintln!("arkos: cannot create {}: {e}", dir.display());
+                }
+                cx.reveal_path(&dir);
+            });
+        }
+        out.push(div().pt(px(10.0)).flex().gap(px(6.0)).child(folder).into_any_element());
         out
     }
 
@@ -928,6 +1014,51 @@ mod tests {
         assert_eq!(theme_key_for(AppearanceMode::System, true), "dark");
         assert_eq!(theme_key_for(AppearanceMode::System, false), "light");
         assert_eq!(theme_key_for(AppearanceMode::Light, true), "light");
+    }
+
+    #[test]
+    fn the_effect_list_offers_the_theme_s_choice_none_and_each_effect_and_marks_the_current_one() {
+        use crate::config::EffectChoice;
+        use crate::effects::manifest::Source;
+        let listed = vec![
+            ("watercolor".to_string(), Source::BuiltIn),
+            ("neon".to_string(), Source::Folder("/e/neon".into())),
+            ("broken".to_string(), Source::Invalid("scale must be 0.1 to 1.0".into())),
+        ];
+        let rows = |choice: &EffectChoice, recommended: Option<&str>| -> Vec<(String, Option<String>, bool)> {
+            effect_rows(choice, recommended, &listed).into_iter().map(|r| (r.label, r.value, r.current)).collect()
+        };
+        let row = |label: &str, value: Option<&str>, current: bool| (label.to_string(), value.map(str::to_string), current);
+        assert_eq!(
+            rows(&EffectChoice::Theme, Some("watercolor")),
+            vec![
+                row("Theme's choice (watercolor)", Some("theme"), true),
+                row("None", Some("none"), false),
+                row("watercolor", Some("watercolor"), false),
+                row("neon", Some("neon"), false),
+                row("broken (invalid)", None, false),
+            ]
+        );
+        let named = rows(&EffectChoice::Named("neon".into()), None);
+        assert_eq!(named[0], row("Theme's choice (none)", Some("theme"), false));
+        assert_eq!(named[3], row("neon", Some("neon"), true));
+        assert_eq!(rows(&EffectChoice::None, None)[1], row("None", Some("none"), true));
+        // A configured effect that is not installed is listed after None, current and not
+        // clickable.
+        let gone = rows(&EffectChoice::Named("gone".into()), None);
+        assert_eq!(gone[2], row("gone (not installed)", None, true));
+        assert_eq!(gone.len(), 6);
+    }
+
+    #[test]
+    fn the_intensity_stepper_moves_by_a_tenth_within_zero_and_one() {
+        assert_eq!(step(1.0, INTENSITY_STEP, INTENSITY_RANGE), 1.0);
+        assert_eq!(step(f64::from(0.7f32), -INTENSITY_STEP, INTENSITY_RANGE), 0.6);
+        assert_eq!(step(0.0, -INTENSITY_STEP, INTENSITY_RANGE), 0.0);
+        assert_eq!(step(f64::from(0.25f32), INTENSITY_STEP, INTENSITY_RANGE), 0.4, "rounded to a tenth");
+        let (keys, value) = intensity_edit(0.6);
+        assert_eq!(keys, vec!["effect".to_string(), "intensity".to_string()]);
+        assert_eq!(value.as_float(), Some(0.6));
     }
 
     #[test]
