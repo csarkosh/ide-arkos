@@ -6,6 +6,7 @@
 //! are at this draw, never keeping a colour.
 
 use crate::theme::Theme;
+use crate::tree::Rect;
 use crate::video::{fmt_time, PlayerState, VideoModel};
 use crate::video_view::VideoView;
 use crate::Root;
@@ -32,6 +33,17 @@ const TAP: f32 = 4.0;
 /// went between, so the travel is checked here.
 pub fn picture_click_toggles(down: Point<Pixels>, up: Point<Pixels>) -> bool {
     (up - down).magnitude() <= TAP as f64
+}
+
+/// Where a picture `w` by `h` pixels lands in `area` when fitted whole and centred, as
+/// `ObjectFit::Contain` draws it; `None` before the size is known or while the area is empty.
+pub fn fitted(area: Rect, w: u32, h: u32) -> Option<Rect> {
+    if w == 0 || h == 0 || !(area.w > 0.0 && area.h > 0.0) {
+        return None;
+    }
+    let scale = (area.w / w as f32).min(area.h / h as f32);
+    let (fw, fh) = (w as f32 * scale, h as f32 * scale);
+    Some(Rect { x: area.x + (area.w - fw) / 2.0, y: area.y + (area.h - fh) / 2.0, w: fw, h: fh })
 }
 
 /// How far through `duration` `secs` is, from 0 to 1; 0 for a length that is not known, not
@@ -123,7 +135,7 @@ fn paint_glyph(b: Bounds<Pixels>, playing: bool, color: Hsla, window: &mut Windo
 /// The video tab's body: the picture over the control strip, holding the keys of the "Video"
 /// context while focused. Every draw takes the newest frame; display frames are asked for only
 /// while the view needs them (`VideoView::frame_step`), so a paused tab paints nothing.
-pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Div {
+pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::active::Style, family: SharedString, cx: &mut Context<Root>) -> Div {
     let now = Instant::now();
     let more = view.update(cx, |v, cx| v.frame_step(now, cx));
     let v = view.read(cx);
@@ -149,6 +161,8 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
         PlayerState::Unplayable(_) => "",
         PlayerState::Loading | PlayerState::Ready => "loading",
     };
+    // The frame's size in pixels, for the outline an effect draws around the picture.
+    let frame_px = v.frame.as_ref().map(|f| (f.get_width() as u32, f.get_height() as u32));
     let picture = match (&v.frame, &v.poster) {
         (Some(frame), _) => surface(frame.clone()).object_fit(ObjectFit::Contain).size_full().into_any_element(),
         (None, Some(poster)) => img(poster.clone()).object_fit(ObjectFit::Contain).size_full().into_any_element(),
@@ -284,7 +298,7 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
         .items_center()
         .gap(px(10.0))
         .px(px(10.0))
-        .bg(c.tab_bar.hsla())
+        .bg(c.tab_bar.alpha(style.chrome_alpha))
         .text_color(text)
         .font_family(family)
         .text_size(px(12.0))
@@ -300,7 +314,9 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
         .flex_col()
         .key_context("Video")
         .track_focus(&focus)
-        .bg(bg)
+        // The letterbox is the window's ground: gone under an effect, so the wash shows beside
+        // the picture as it does around the other panes.
+        .bg(c.window_bg.alpha(style.ground_alpha))
         .child(
             div()
                 .id(("video-picture", eid))
@@ -320,6 +336,25 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, family: SharedString, cx:
                     }
                 }))
                 .child(picture)
+                // Under an effect that inks the borders, the fitted picture reports where it
+                // is, and the wash outlines it.
+                .when_some(frame_px.filter(|_| style.ink_borders), |el, (w, h)| {
+                    let root = cx.weak_entity();
+                    let key = eid.as_u64();
+                    el.child(
+                        canvas(
+                            move |b, _, cx| {
+                                let area = Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+                                if let Some(r) = fitted(area, w, h) {
+                                    let _ = root.update(cx, |root, _| root.effect_frames.push((key, r)));
+                                }
+                            },
+                            |_, _, _, _| (),
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                })
                 .children(dimmed)
                 .children(fallback),
         )

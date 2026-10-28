@@ -18,7 +18,8 @@ constant int ARKOS_COLORS = 35;
 constant int ARKOS_TITLE_BAR_BLOCK = 1;  constant int ARKOS_SIDEBAR_BLOCK = 2;
 constant int ARKOS_DIVIDER_BLOCK = 3;    constant int ARKOS_TAB_BAR_BLOCK = 4;
 constant int ARKOS_PANE_BODY_BLOCK = 5;  constant int ARKOS_ROW_HIGHLIGHT_BLOCK = 6;
-constant int ARKOS_TAB_HIGHLIGHT_BLOCK = 7;
+constant int ARKOS_TAB_HIGHLIGHT_BLOCK = 7; constant int ARKOS_MEDIA_BLOCK = 8;
+// A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.
 
 // Which of a block's edges the app no longer draws (ink_borders): a bit each.
 constant uint ARKOS_EDGE_TOP = 1;  constant uint ARKOS_EDGE_RIGHT = 2;

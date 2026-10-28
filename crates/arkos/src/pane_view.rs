@@ -1271,11 +1271,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
 fn render_video(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
     let view = root.video_for(tab, path, cx);
     let theme = root.theme.clone();
+    let style = root.effect_style();
     let family = root.family();
     div()
         .size_full()
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
-        .child(crate::video_element::render(&view, &theme, family, cx))
+        .child(crate::video_element::render(&view, &theme, style, family, cx))
 }
 
 /// A web tab: its view, made the first time the tab is shown, drawn by `web_element` (the bar,

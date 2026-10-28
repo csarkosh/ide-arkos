@@ -115,7 +115,7 @@ fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
         let row = Rect { x: 0.0, y: top + 60.0, w: SIDEBAR_W, h: 22.0 };
         strokes.push((Mark { key: 11, rect: row, kind: Kind::RowHighlight, state: HighlightState::Selected }, 1.0));
     }
-    let scene = active::scene(content, Some(top + content.h * 0.6), &panes, &strokes);
+    let scene = active::scene(content, Some(top + content.h * 0.6), &panes, &[], &strokes);
     blocks::blocks(&scene, effect.manifest.ink_borders)
 }
 

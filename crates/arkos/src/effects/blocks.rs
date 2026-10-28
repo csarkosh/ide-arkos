@@ -1,5 +1,6 @@
 //! The blocks of the UI a frame hands the wash shader (spec 4.4): the title bar, the sidebar and
-//! its divider, each pane's tab bar and body, and the highlights that fade (spec 4.6). Pure over
+//! its divider, each pane's tab bar and body, each video's picture, and the highlights that fade
+//! (spec 4.6). Pure over
 //! the layout and the highlight registry, so which blocks, which edges and which seeds are tested.
 
 use crate::tree::{PaneId, Rect};
@@ -14,6 +15,8 @@ pub enum Kind {
     PaneBody = 5,
     RowHighlight = 6,
     TabHighlight = 7,
+    /// A video's picture as fitted in its tab, opaque over the wash.
+    Media = 8,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -85,15 +88,20 @@ pub fn hover_after(hover: Option<u64>, key: u64, over: bool) -> Option<u64> {
     }
 }
 
+/// How far a video's outline sits outside its picture, in points: about the ink's own weight, so
+/// the line is seen whole beside the picture rather than half under it.
+const MEDIA_OUTSET: f32 = 1.5;
+
 /// What the blocks are made from: the content area right of the sidebar and below the title bar,
-/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, and the
-/// highlights with their fades.
+/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, the video
+/// pictures on screen by their keys, and the highlights with their fades.
 pub struct Scene<'a> {
     pub content: Rect,
     pub title_bar_h: f32,
     pub tab_bar_h: f32,
     pub divider_y: Option<f32>,
     pub panes: &'a [(PaneId, Rect)],
+    pub frames: &'a [(u64, Rect)],
     pub strokes: &'a [(Mark, f32)],
 }
 
@@ -154,6 +162,17 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: i as f32,
         });
     }
+    // A video's picture is opaque over the wash, so its outline is drawn just outside it.
+    for (key, r) in scene.frames {
+        out.push(Block {
+            rect: Rect { x: r.x - MEDIA_OUTSET, y: r.y - MEDIA_OUTSET, w: r.w + 2.0 * MEDIA_OUTSET, h: r.h + 2.0 * MEDIA_OUTSET },
+            kind: Kind::Media,
+            edges: edges(EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT),
+            seed: 30.0 + (key % 997) as f32 * 0.53,
+            value: 1.0,
+            ordinal: 0.0,
+        });
+    }
     // The highlights last: past the cap, a transient stroke goes before a pane does.
     for (mark, value) in scene.strokes {
         let r = mark.rect;
@@ -179,7 +198,7 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, frames: &[], strokes }
     }
 
     fn kinds(blocks: &[Block]) -> Vec<Kind> {
@@ -279,6 +298,29 @@ mod tests {
         let wash = crate::effects::manifest::load("watercolor", std::path::Path::new("/nonexistent/effects")).unwrap().wash;
         assert!(!wash.contains("r.x + 3.0"), "the wash insets a highlight a second time");
         assert!(!wash.contains("r = float4("), "the wash reshapes a block's rect");
+    }
+
+    #[test]
+    fn a_video_s_picture_is_a_media_block_inked_on_all_four_sides_just_outside_the_picture() {
+        let panes = [(1, rect(0.0, 38.0, 800.0, 562.0))];
+        let frames = [(42, rect(200.0, 68.0, 400.0, 500.0))];
+        let row = Mark { key: 1, rect: rect(0.0, 100.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
+        let strokes = [(row, 1.0)];
+        let inked = blocks(&Scene { frames: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &strokes) }, true);
+        // After the panes and before the highlights, so the cap still drops a stroke first.
+        assert_eq!(kinds(&inked), vec![Kind::TitleBar, Kind::TabBar, Kind::PaneBody, Kind::Media, Kind::RowHighlight]);
+        let media = inked.iter().find(|b| b.kind == Kind::Media).unwrap();
+        // The picture is opaque over the wash, so the line sits just outside it to be seen whole.
+        assert_eq!(media.rect, rect(198.5, 66.5, 403.0, 503.0));
+        assert_eq!(media.edges, EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT);
+        assert_eq!((media.value, media.ordinal), (1.0, 0.0));
+        // Seeded by its key, so a picture that moves keeps its grain.
+        let moved_frames = [(42, rect(10.0, 68.0, 400.0, 500.0))];
+        let moved = blocks(&Scene { frames: &moved_frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        assert_eq!(moved.iter().find(|b| b.kind == Kind::Media).unwrap().seed, media.seed);
+        // Without inked borders the block is still reported, with no edges.
+        let plain = blocks(&Scene { frames: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, false);
+        assert_eq!(plain.iter().find(|b| b.kind == Kind::Media).unwrap().edges, 0);
     }
 
     #[test]

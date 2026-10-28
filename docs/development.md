@@ -262,6 +262,10 @@ Things only a person at the screen can check, in order of value:
 - effects: with a window open, `arkos effect current` names its effect and a cost in
   milliseconds after a few seconds, and `arkos effect bench watercolor` benches at the window's
   size and theme
+- effects: under Peach Light a video tab shows the wash beside the picture (no cream bars at its
+  sides or above and below), an ink outline just outside the picture that follows it through a
+  resize and a split, and the control strip clear over the wash; with `effect.name none` the bars
+  come back in the window's colour
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching
