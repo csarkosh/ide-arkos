@@ -523,7 +523,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .relative()
         .flex()
         .flex_col()
-        .bg(if crate::effect::active() { theme.chrome.window_bg.alpha(crate::effect::SURFACE_ALPHA) } else { theme.chrome.window_bg.hsla() })
+        .bg(if crate::effect::active() { theme.chrome.window_bg.alpha(0.0) } else { theme.chrome.window_bg.hsla() })
         .border_1()
         .border_color(theme.chrome.border.hsla())
         .on_mouse_down(
@@ -720,7 +720,13 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         strip = strip.child(
             tab.px(pad_x)
                 .gap(if slot_width.is_some() { px(0.0) } else { px(6.0) })
-                .bg(if is_active { c.tab_active } else { c.tab_inactive }.hsla())
+                .bg(match (crate::effect::active(), is_active) {
+                    // SPIKE: the wash is the bar's colour; the active tab is a lighter patch on it.
+                    (true, true) => c.tab_active.alpha(crate::effect::ACTIVE_TAB_ALPHA),
+                    (true, false) => c.tab_inactive.alpha(0.0),
+                    (false, true) => c.tab_active.hsla(),
+                    (false, false) => c.tab_inactive.hsla(),
+                })
                 .text_color(text)
                 .when_some(glyph, |el, g| el.child(g))
                 .child(match renaming {

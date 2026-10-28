@@ -3537,9 +3537,31 @@ impl Root {
     /// theme fade reads the blend). A hidden window draws none.
     pub fn effect_tick(&mut self) {
         let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
-        if let Some(e) = self.effect.as_mut().filter(|_| !hidden) {
-            let t = &self.theme;
-            e.draw(t.chrome.window_bg, [t.chrome.tab_bar, t.terminal.selection, t.semantic.find_current, t.chrome.banner]);
+        if hidden || self.effect.is_none() {
+            return;
+        }
+        use effect::{Region, INK_BOTTOM, INK_LEFT, INK_RIGHT, INK_TOP};
+        let c = self.content;
+        let bar = chrome::TITLE_BAR_H;
+        let tab = pane_view::TAB_BAR_H;
+        let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.5, ink: INK_BOTTOM }];
+        if c.x > 1.0 {
+            regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.32, ink: INK_RIGHT });
+        }
+        // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
+        // wash on the tab bar, a faint one on the body, both outlined in ink.
+        for (i, (_, r)) in self.layout().panes.iter().enumerate() {
+            let tint = [0, 1, 3, 2][i % 4];
+            regions.push(Region { x: r.x, y: r.y, w: r.w, h: tab, tint, strength: 0.62, ink: INK_TOP | INK_RIGHT | INK_BOTTOM | INK_LEFT });
+            regions.push(Region { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0), tint, strength: 0.16, ink: INK_RIGHT | INK_BOTTOM | INK_LEFT });
+        }
+        let t = &self.theme;
+        // The pigments are the theme's own accents: burnt orange, ochre, brick and plum, which
+        // thin out over the cream into peach, apricot, dusty rose and mauve.
+        let pigments = [t.chrome.focus_ring, t.semantic.waiting, t.terminal.red, t.terminal.magenta];
+        let (paper, ink) = (t.chrome.window_bg, t.chrome.text);
+        if let Some(e) = self.effect.as_mut() {
+            e.draw(paper, ink, pigments, &regions);
         }
     }
 
