@@ -287,6 +287,30 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_space_parses_with_its_fixed_values() {
+        let b = BUILTIN.iter().find(|b| b.name == "space").expect("space is built in");
+        let m = parse(b.manifest).unwrap();
+        assert_eq!(m.name, "space");
+        assert!(!m.description.is_empty());
+        assert_eq!(m.wash, "wash.metal");
+        assert_eq!(m.glyphs.as_deref(), Some("glyphs.metal"));
+        assert_eq!(m.frame_rate, 30);
+        assert_eq!(m.scale, 0.5);
+        assert_eq!(m.ui_text_bump, 0.0);
+        assert!(m.ink_borders);
+        assert_eq!(m.highlights, Highlights::Effect);
+        assert_eq!(m.paper_alpha, 0.8);
+        assert_eq!(m.chrome_alpha, 0.0);
+        assert_eq!(m.active_tab_alpha, 0.5);
+        assert_eq!(m.text_contrast, 0.0);
+        assert!(m.glyph_motion, "the holo text moves");
+        assert!(b.wash.contains("fragment float4 arkos_wash("));
+        let e = load("space", Path::new("/nonexistent/effects")).unwrap();
+        assert_eq!(e.source, Source::BuiltIn);
+        assert_eq!(e.glyphs.as_deref(), b.glyphs);
+    }
+
+    #[test]
     fn a_folder_in_the_effects_dir_is_listed_and_shadows_a_built_in() {
         let dir = tempfile::tempdir().unwrap();
         let mine = folder(dir.path(), "watercolor", "name = \"watercolor\"\nwash = \"wash.metal\"\n", &["wash.metal"]);
@@ -296,7 +320,10 @@ mod tests {
         assert_eq!(named.len(), 1, "{listed:?}");
         assert_eq!(named[0].1, Source::Folder(mine));
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
-        assert_eq!(list(Path::new("/nonexistent/effects")), vec![("watercolor".to_string(), Source::BuiltIn)]);
+        assert_eq!(
+            list(Path::new("/nonexistent/effects")),
+            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn)]
+        );
     }
 
     #[test]

@@ -273,6 +273,27 @@ Things only a person at the screen can check, in order of value:
   a line under the header from the wash, and inner lines in ink; scrolled half out of the pane,
   its outline stops at the pane's edge; with `effect.name none` the cream fills and grey lines
   come back
+- effects, space: Navy (`effect.name = "theme"`) shows the night sky; over ten minutes a
+  shooting star crosses every 20 to 40 seconds (one at a time, in under a second, no bright
+  flash), the aurora rises over the top quarter over about 20 seconds, holds about a minute,
+  fades over about 20 and stays away one to two minutes, and a planet drifts across over
+  several minutes; the stars twinkle slowly
+- effects, space: the pane edges, the divider, a video's picture and a markdown table's outline
+  and header line are thin glowing lines in the focus ring's blue; the hovered and selected rows
+  and the hovered tab glow softly; the bars and the sidebar read clearly over the sky
+- effects, space: the project window's text is the holo display (a cyan tint, faint scanlines,
+  a soft halo not clipped at the letters' boxes) and a faint ripple of light runs along it; the
+  ripple moving confirms the glyph clock reaches the GPU
+- effects, space: with Reduce Motion on the sky is a still picture with the aurora in it and no
+  shooting star, the text is still, and Activity Monitor shows the window idle
+- effects, space: a window wholly covered by another app's window, or minimised, stops the text's
+  redraws (the process idle in Activity Monitor), and the ripple moves again once the window is
+  seen and drawn again
+- effects, space: a light theme (Peach Light) with `effect.name = "space"` keeps its text dark
+  and readable (a deep teal lean, no glow, not dimmed)
+- effects, space: in a release build with Navy and space on, the window idle in front, Activity
+  Monitor's CPU for the process stays under 10% (write the figure here; over 10%, the text's
+  rate is halved)
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching

@@ -4998,6 +4998,7 @@ mod tests {
         let mut edited = theme::builtin("lavender-light").unwrap();
         edited.name = "navy".into();
         edited.font = theme::ThemeFont::default(); // the blend takes the target's fonts, and navy names none
+        edited.effect = navy.effect.clone(); // and its effect: the edited file keeps navy's space
         let light = Arc::new(edited);
         // The screen at the start of that fade: navy's colours under the edited theme's name.
         let shown = Arc::new(theme::blend(&navy, &light, 0.0));

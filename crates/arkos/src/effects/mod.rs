@@ -8,6 +8,9 @@ pub mod cli;
 pub mod inputs;
 pub mod layer;
 pub mod manifest;
+/// The space wash's event schedule mirrored in Rust, for its tests alone: the app never runs it.
+#[cfg(test)]
+pub mod space;
 pub mod strokes;
 
 use std::path::PathBuf;
@@ -29,12 +32,20 @@ pub struct BuiltIn {
 }
 
 /// The built-in effects, by folder name.
-pub const BUILTIN: &[BuiltIn] = &[BuiltIn {
-    name: "watercolor",
-    manifest: include_str!("../../effects/watercolor/effect.toml"),
-    wash: include_str!("../../effects/watercolor/wash.metal"),
-    glyphs: Some(include_str!("../../effects/watercolor/glyphs.metal")),
-}];
+pub const BUILTIN: &[BuiltIn] = &[
+    BuiltIn {
+        name: "watercolor",
+        manifest: include_str!("../../effects/watercolor/effect.toml"),
+        wash: include_str!("../../effects/watercolor/wash.metal"),
+        glyphs: Some(include_str!("../../effects/watercolor/glyphs.metal")),
+    },
+    BuiltIn {
+        name: "space",
+        manifest: include_str!("../../effects/space/effect.toml"),
+        wash: include_str!("../../effects/space/wash.metal"),
+        glyphs: Some(include_str!("../../effects/space/glyphs.metal")),
+    },
+];
 
 /// The name of the effect to draw for the config's choice under `theme`: the theme's own
 /// recommendation, nothing, or the name given. It does not check the effect exists; the window
@@ -61,8 +72,10 @@ mod tests {
         use crate::config::EffectChoice;
         let peach = crate::theme::builtin("peach-light").unwrap();
         let navy = crate::theme::builtin("navy").unwrap();
+        let purple = crate::theme::builtin("timo-purple").unwrap();
         assert_eq!(resolve(&EffectChoice::Theme, &peach), Some("watercolor".to_string()));
-        assert_eq!(resolve(&EffectChoice::Theme, &navy), None);
+        assert_eq!(resolve(&EffectChoice::Theme, &navy), Some("space".to_string()));
+        assert_eq!(resolve(&EffectChoice::Theme, &purple), None);
         assert_eq!(resolve(&EffectChoice::None, &peach), None);
         assert_eq!(resolve(&EffectChoice::Named("ink".into()), &navy), Some("ink".to_string()));
     }

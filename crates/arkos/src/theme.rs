@@ -677,14 +677,17 @@ mod tests {
     }
 
     #[test]
-    fn a_theme_may_recommend_an_effect_and_peach_light_recommends_watercolor() {
+    fn navy_recommends_space_and_peach_light_watercolor() {
+        assert_eq!(builtin("navy").unwrap().recommended_effect(), Some("space"));
         assert_eq!(builtin("peach-light").unwrap().recommended_effect(), Some("watercolor"));
-        for other in ["navy", "timo-purple", "lavender-light"] {
+        for other in ["timo-purple", "lavender-light"] {
             assert_eq!(builtin(other).unwrap().recommended_effect(), None, "{other}");
         }
-        let text = BUILTIN[0].1.to_string() + "\n[effect]\nname = \"ink\"\n";
+        // Any theme may recommend one: Timo Purple, which recommends none, given a table.
+        let purple = BUILTIN.iter().find(|(n, _)| *n == "timo-purple").unwrap().1;
+        let text = purple.to_string() + "\n[effect]\nname = \"ink\"\n";
         assert_eq!(parse(&text).unwrap().recommended_effect(), Some("ink"));
-        assert!(parse(&(BUILTIN[0].1.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
+        assert!(parse(&(purple.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
     }
 
     #[test]

@@ -4,6 +4,9 @@
 # background are sampled from docs/reference/ and lifted 12 per channel to the #11161f floor.
 name = "navy"
 
+[effect]
+name = "space"
+
 [chrome]
 window_bg = "#0e1723"
 title_bar = "#1e2537"

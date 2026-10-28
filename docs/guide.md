@@ -272,9 +272,14 @@ An effect is a shader that paints the project window: a wash under every surface
 optionally the text itself. Peach Light comes with `watercolor`: washes that hug each block with
 a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
 and hovered rows and the hovered tab as fading strokes of pigment, glyphs written in ink, and UI
-text two points larger. Any theme can carry any effect, since an effect reads the theme's
-colours. Pick one in Settings, Appearance (or `arkos effect use <name>`); "Theme's choice"
-follows the theme's own recommendation, which is none for every built-in theme but Peach Light.
+text two points larger. Navy comes with `space`: a calm night sky of twinkling stars, a faint
+nebula, a planet drifting across over several minutes, an aurora along the top that comes for a
+couple of minutes and goes, and a shooting star every half minute or so; pane edges, videos and
+tables outlined in thin glowing lines, the highlights glowing softly, and the text as a holo
+display with a faint ripple of light running along it (still under Reduce Motion). Any theme can
+carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
+`arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
+for Peach Light, `space` for Navy, and none for the other built-in themes.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, and a hidden,
 covered or occluded window (one wholly behind other windows) draws none.
