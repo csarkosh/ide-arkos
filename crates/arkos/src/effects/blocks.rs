@@ -1,6 +1,6 @@
 //! The blocks of the UI a frame hands the wash shader (spec 4.4): the title bar, the sidebar and
-//! its divider, each pane's tab bar and body, each video's picture, and the highlights that fade
-//! (spec 4.6). Pure over
+//! its divider, each pane's tab bar and body, the shapes inside panes (a video's picture, a
+//! markdown table and its header), and the highlights that fade (spec 4.6). Pure over
 //! the layout and the highlight registry, so which blocks, which edges and which seeds are tested.
 
 use crate::tree::{PaneId, Rect};
@@ -17,6 +17,10 @@ pub enum Kind {
     TabHighlight = 7,
     /// A video's picture as fitted in its tab, opaque over the wash.
     Media = 8,
+    /// A markdown table, its fills clear under an effect.
+    Table = 9,
+    /// A markdown table's header row.
+    TableHeader = 10,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -88,20 +92,30 @@ pub fn hover_after(hover: Option<u64>, key: u64, over: bool) -> Option<u64> {
     }
 }
 
+/// Something inside a pane that reports itself to the wash as it is laid out: a video's picture
+/// (`Kind::Media`), a markdown table (`Kind::Table`) or its header row (`Kind::TableHeader`),
+/// keyed by what draws it so its grain stays put as it moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape {
+    pub key: u64,
+    pub rect: Rect,
+    pub kind: Kind,
+}
+
 /// How far a video's outline sits outside its picture, in points: about the ink's own weight, so
 /// the line is seen whole beside the picture rather than half under it.
 const MEDIA_OUTSET: f32 = 1.5;
 
 /// What the blocks are made from: the content area right of the sidebar and below the title bar,
-/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, the video
-/// pictures on screen by their keys, and the highlights with their fades.
+/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, the shapes
+/// laid out inside them, and the highlights with their fades.
 pub struct Scene<'a> {
     pub content: Rect,
     pub title_bar_h: f32,
     pub tab_bar_h: f32,
     pub divider_y: Option<f32>,
     pub panes: &'a [(PaneId, Rect)],
-    pub frames: &'a [(u64, Rect)],
+    pub shapes: &'a [Shape],
     pub strokes: &'a [(Mark, f32)],
 }
 
@@ -162,13 +176,20 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             ordinal: i as f32,
         });
     }
-    // A video's picture is opaque over the wash, so its outline is drawn just outside it.
-    for (key, r) in scene.frames {
+    for shape in scene.shapes {
+        let (r, all) = (shape.rect, EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT);
+        let (rect, bits) = match shape.kind {
+            // A video's picture is opaque over the wash, so its outline is drawn just outside it.
+            Kind::Media => (Rect { x: r.x - MEDIA_OUTSET, y: r.y - MEDIA_OUTSET, w: r.w + 2.0 * MEDIA_OUTSET, h: r.h + 2.0 * MEDIA_OUTSET }, all),
+            // A header is set off by the line under it; the table's outline draws the rest.
+            Kind::TableHeader => (r, EDGE_BOTTOM),
+            _ => (r, all),
+        };
         out.push(Block {
-            rect: Rect { x: r.x - MEDIA_OUTSET, y: r.y - MEDIA_OUTSET, w: r.w + 2.0 * MEDIA_OUTSET, h: r.h + 2.0 * MEDIA_OUTSET },
-            kind: Kind::Media,
-            edges: edges(EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT),
-            seed: 30.0 + (key % 997) as f32 * 0.53,
+            rect,
+            kind: shape.kind,
+            edges: edges(bits),
+            seed: 30.0 + (shape.key % 997) as f32 * 0.53 + shape.kind as u32 as f32 * 0.29,
             value: 1.0,
             ordinal: 0.0,
         });
@@ -198,7 +219,7 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, frames: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, shapes: &[], strokes }
     }
 
     fn kinds(blocks: &[Block]) -> Vec<Kind> {
@@ -303,10 +324,10 @@ mod tests {
     #[test]
     fn a_video_s_picture_is_a_media_block_inked_on_all_four_sides_just_outside_the_picture() {
         let panes = [(1, rect(0.0, 38.0, 800.0, 562.0))];
-        let frames = [(42, rect(200.0, 68.0, 400.0, 500.0))];
+        let frames = [Shape { key: 42, rect: rect(200.0, 68.0, 400.0, 500.0), kind: Kind::Media }];
         let row = Mark { key: 1, rect: rect(0.0, 100.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
         let strokes = [(row, 1.0)];
-        let inked = blocks(&Scene { frames: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &strokes) }, true);
+        let inked = blocks(&Scene { shapes: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &strokes) }, true);
         // After the panes and before the highlights, so the cap still drops a stroke first.
         assert_eq!(kinds(&inked), vec![Kind::TitleBar, Kind::TabBar, Kind::PaneBody, Kind::Media, Kind::RowHighlight]);
         let media = inked.iter().find(|b| b.kind == Kind::Media).unwrap();
@@ -315,12 +336,31 @@ mod tests {
         assert_eq!(media.edges, EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT);
         assert_eq!((media.value, media.ordinal), (1.0, 0.0));
         // Seeded by its key, so a picture that moves keeps its grain.
-        let moved_frames = [(42, rect(10.0, 68.0, 400.0, 500.0))];
-        let moved = blocks(&Scene { frames: &moved_frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        let moved_frames = [Shape { rect: rect(10.0, 68.0, 400.0, 500.0), ..frames[0] }];
+        let moved = blocks(&Scene { shapes: &moved_frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
         assert_eq!(moved.iter().find(|b| b.kind == Kind::Media).unwrap().seed, media.seed);
         // Without inked borders the block is still reported, with no edges.
-        let plain = blocks(&Scene { frames: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, false);
+        let plain = blocks(&Scene { shapes: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, false);
         assert_eq!(plain.iter().find(|b| b.kind == Kind::Media).unwrap().edges, 0);
+    }
+
+    #[test]
+    fn a_table_is_inked_round_its_outline_and_its_header_under_its_last_line() {
+        let panes = [(1, rect(0.0, 38.0, 800.0, 562.0))];
+        let shapes = [
+            Shape { key: 7, rect: rect(20.0, 200.0, 576.0, 200.0), kind: Kind::Table },
+            Shape { key: 7, rect: rect(20.0, 200.0, 576.0, 40.0), kind: Kind::TableHeader },
+        ];
+        let inked = blocks(&Scene { shapes: &shapes, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        assert_eq!(kinds(&inked), vec![Kind::TitleBar, Kind::TabBar, Kind::PaneBody, Kind::Table, Kind::TableHeader]);
+        let (table, header) = (inked[3], inked[4]);
+        // A table's fills are clear under an effect, so its outline is drawn on its edge.
+        assert_eq!(table.rect, shapes[0].rect);
+        assert_eq!(table.edges, EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT);
+        assert_eq!((header.rect, header.edges), (shapes[1].rect, EDGE_BOTTOM));
+        assert_ne!(table.seed, header.seed, "the header has its own grain");
+        let plain = blocks(&Scene { shapes: &shapes, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, false);
+        assert!(plain.iter().all(|b| b.edges == 0));
     }
 
     #[test]

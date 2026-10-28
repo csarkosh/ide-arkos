@@ -266,6 +266,11 @@ Things only a person at the screen can check, in order of value:
   sides or above and below), an ink outline just outside the picture that follows it through a
   resize and a split, and the control strip clear over the wash; with `effect.name none` the bars
   come back in the window's colour
+- effects: under Peach Light a rendered markdown table shows the wash through its cells (an
+  apricot band over the header, a light wash over the body, the stripe kept), an ink outline and
+  a line under the header from the wash, and inner lines in ink; scrolled half out of the pane,
+  its outline stops at the pane's edge; with `effect.name none` the cream fills and grey lines
+  come back
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching

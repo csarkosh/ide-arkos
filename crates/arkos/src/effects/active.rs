@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use gpui::GlyphShader;
 
-use super::blocks::{Mark, Scene};
+use super::blocks::{Mark, Scene, Shape};
 use super::inputs::Inputs;
 use super::layer::Layer;
 use super::manifest::{Effect, Highlights, Manifest};
@@ -103,10 +103,10 @@ pub fn next_wait(frame_rate: u32, seen: bool, moving: bool, fading: bool, reduce
 }
 
 /// What a frame's blocks are made from in the project window: the panes' content area, the
-/// window's bars, the sidebar's divider when laid out, the panes, the video pictures on screen
-/// and the highlights' strokes.
-pub fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], frames: &'a [(u64, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, divider_y, panes, frames, strokes }
+/// window's bars, the sidebar's divider when laid out, the panes, the shapes laid out inside
+/// them and the highlights' strokes.
+pub fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
+    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, divider_y, panes, shapes, strokes }
 }
 
 /// Whether the GPU's time per frame is worth a line in the window log: the first reading, then

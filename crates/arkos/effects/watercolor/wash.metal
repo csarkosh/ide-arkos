@@ -58,6 +58,10 @@ float strength_of(ArkosBlock b, thread int& tint) {
     if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.3; }
     if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.56; }
     if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.14; }
+    // A table: a light wash over its body and an apricot band over its header, as a ruled
+    // sheet in a sketchbook is tinted.
+    if (kind == ARKOS_TABLE_BLOCK) { tint = 3; return 0.1; }
+    if (kind == ARKOS_TABLE_HEADER_BLOCK) { tint = 1; return 0.34; }
     if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
         return HIGHLIGHT_STRENGTH[min(ordinal, 2)];
     }

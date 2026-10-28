@@ -352,9 +352,10 @@ pub struct Root {
     /// The highlights laid out this frame (spec 4.6): cleared at the start of each render and
     /// pushed by the Explorer rows' and the tabs' canvases while the effect paints highlights.
     pub effect_marks: Vec<effects::blocks::Mark>,
-    /// The video pictures laid out this frame, by their views' ids: cleared at the start of each
-    /// render and pushed by the video tabs, so the wash outlines each picture.
-    pub effect_frames: Vec<(u64, Rect)>,
+    /// The shapes inside the panes laid out this frame (a video's picture, a markdown table and
+    /// its header): cleared at the start of each render and pushed as they are laid out, so the
+    /// wash paints and outlines each.
+    pub effect_shapes: Vec<effects::blocks::Shape>,
     /// The Explorer row or tab under the pointer, by its mark's key, set by their `on_hover`.
     pub effect_hover: Option<u64>,
     /// The highlights' fades, fed `effect_marks` each frame the wash draws.
@@ -657,7 +658,7 @@ impl Root {
             transparent: false,
             effect_divider: None,
             effect_marks: Vec::new(),
-            effect_frames: Vec::new(),
+            effect_shapes: Vec::new(),
             effect_hover: None,
             effect_strokes: effects::strokes::Strokes::default(),
             caret_wake: None,
@@ -3774,7 +3775,7 @@ impl Root {
         let (strokes, strokes_moving) = self.effect_strokes.sync(&self.effect_marks, now);
         let e = self.effect.as_mut()?;
         let style = e.style(now);
-        let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &self.effect_frames, &strokes);
+        let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &self.effect_shapes, &strokes);
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
         let inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
@@ -3828,7 +3829,7 @@ impl Render for Root {
         let size = window.viewport_size();
         // The highlights report themselves again as this frame lays out.
         self.effect_marks.clear();
-        self.effect_frames.clear();
+        self.effect_shapes.clear();
         self.window_active = window.is_window_active();
         self.note_focus();
         let now = Instant::now();

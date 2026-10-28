@@ -480,11 +480,14 @@ What an effect can touch:
 
 - The wash under everything: one fragment shader drawn under the whole window, handed the
   theme's colours and the blocks of the UI (the title bar, the sidebar and its divider, each
-  pane's tab bar and body, each video's picture as fitted in its tab, and, when the manifest
-  asks for them, the Explorer's selected and hovered rows and the hovered tab with their fades).
+  pane's tab bar and body, each video's picture as fitted in its tab, each markdown table and
+  its header row as far as they are seen, and, when the manifest asks for them, the Explorer's selected and hovered rows and the hovered tab with their fades).
   A video's picture (`ARKOS_MEDIA_BLOCK`) is opaque over the wash, so only what the wash draws
   outside it shows; with `ink_borders` it comes with all four edges, its rectangle a point and a
-  half outside the picture so the outline is seen whole.
+  half outside the picture so the outline is seen whole. A table (`ARKOS_TABLE_BLOCK`) has
+  clear fills under an effect and comes with all four edges; its header
+  (`ARKOS_TABLE_HEADER_BLOCK`) with the edge under it. The app draws the table's inner lines
+  itself, in ink.
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars

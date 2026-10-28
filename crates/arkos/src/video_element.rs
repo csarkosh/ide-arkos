@@ -346,7 +346,7 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
                             move |b, _, cx| {
                                 let area = Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
                                 if let Some(r) = fitted(area, w, h) {
-                                    let _ = root.update(cx, |root, _| root.effect_frames.push((key, r)));
+                                    let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect: r, kind: crate::effects::blocks::Kind::Media }));
                                 }
                             },
                             |_, _, _, _| (),

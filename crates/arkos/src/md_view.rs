@@ -38,7 +38,7 @@ use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
     canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Div, Element, ElementId, ElementInputHandler,
     Entity, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, Pixels, Point, ScrollHandle, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
+    PathBuilder, Pixels, Point, ScrollHandle, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, WeakEntity, Window,
 };
 use std::cell::Cell;
 use std::ops::Range;
@@ -696,6 +696,46 @@ pub struct BlockCtx {
     pub selection: Rgb,
     pub find_current: Rgb,
     pub caret: Rgb,
+    /// The window's ground under an effect (`Style::ground_alpha`): 1 plain, 0 under an effect.
+    /// A table's fills go with it, so the wash shows through them.
+    pub ground: f32,
+    /// The effect inks the borders, so a table draws only its inner lines, in ink.
+    pub ink: bool,
+    /// Where a table reports itself to the wash while an effect is on.
+    pub shapes: Option<WeakEntity<crate::Root>>,
+}
+
+/// A table row's fill: the header's for the first row, the paper on odd rows and the faint tint
+/// on even ones. The header and the paper go with the window's `ground`, so under an effect the
+/// wash shows through them; the tint is already clear enough to keep its stripe.
+pub fn row_fill(r: usize, header: Hsla, paper: Hsla, tint: Hsla, ground: f32) -> Hsla {
+    match r {
+        0 => header.opacity(ground),
+        r if r % 2 == 1 => paper.opacity(ground),
+        _ => tint,
+    }
+}
+
+/// `bounds` as a window rectangle, cut to the part inside `clip`: a table scrolled half out of
+/// its pane is outlined only where it is seen. `None` when none of it is.
+fn seen(bounds: Bounds<Pixels>, clip: Bounds<Pixels>) -> Option<crate::tree::Rect> {
+    let b = bounds.intersect(&clip);
+    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+    (w > 0.0 && h > 0.0).then(|| crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w, h })
+}
+
+/// A canvas over its parent that reports the parent to the wash as a shape of `kind`.
+fn shape_reporter(root: WeakEntity<crate::Root>, key: u64, kind: crate::effects::blocks::Kind) -> impl IntoElement {
+    canvas(
+        move |bounds, window, cx| {
+            if let Some(rect) = seen(bounds, window.content_mask().bounds) {
+                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind }));
+            }
+        },
+        |_, _, _, _| (),
+    )
+    .absolute()
+    .inset_0()
 }
 
 /// The rendered view of a document: a `list` with one row per block, each built from the block's
@@ -705,7 +745,19 @@ pub struct BlockCtx {
 /// A code block over `highlight_limit` bytes (`viewer.highlight_limit_bytes`) is drawn plain, and a
 /// table wider than the view wraps or scrolls by `wide_tables` (`viewer.wide_tables`).
 #[allow(clippy::too_many_arguments)]
-pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, mono_family: SharedString, font_size: f32, highlighter: Option<Arc<Highlighter>>, highlight_limit: usize, wide_tables: WideTables, cx: &mut App) -> AnyElement {
+pub fn render(
+    viewer: &Entity<Viewer>,
+    theme: &Theme,
+    ui_family: SharedString,
+    mono_family: SharedString,
+    font_size: f32,
+    highlighter: Option<Arc<Highlighter>>,
+    highlight_limit: usize,
+    wide_tables: WideTables,
+    style: crate::effects::active::Style,
+    root: WeakEntity<crate::Root>,
+    cx: &mut App,
+) -> AnyElement {
     // The raw blocks of this frame record their layouts as they are laid out.
     viewer.update(cx, |v, _| v.raw_blocks.clear());
     let v = viewer.read(cx);
@@ -736,6 +788,9 @@ pub fn render(viewer: &Entity<Viewer>, theme: &Theme, ui_family: SharedString, m
         selection: theme.semantic.find_match,
         find_current: theme.semantic.find_current,
         caret: theme.chrome.text,
+        ground: style.ground_alpha,
+        ink: style.ink_borders,
+        shapes: (style.ground_alpha < 1.0).then_some(root),
     });
     let input = input_canvas(viewer.clone(), view_w, drew_grid);
     div()
@@ -1401,12 +1456,12 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
     let floors = if widths.floors.len() == columns { widths.floors.clone() } else { vec![0.0; columns] };
     let drawn = column_widths(&natural, &floors, view, ctx.wide_tables);
     let tint = ctx.text.opacity(0.04);
+    // Under an effect that inks the borders, the inner lines are ink and the wash draws the
+    // outline and the line under the header.
+    let (rule, outline) = if ctx.ink { (ctx.text.opacity(0.45), gpui::transparent_black()) } else { (ctx.border, ctx.border) };
+    let key = ctx.viewer.entity_id().as_u64().wrapping_mul(1009).wrapping_add(ix as u64);
     let rows = grid.rows.iter().enumerate().map(|(r, row)| {
-        let bg = match r {
-            0 => ctx.code_bg,
-            r if r % 2 == 1 => ctx.on_accent,
-            _ => tint,
-        };
+        let bg = row_fill(r, ctx.code_bg, ctx.on_accent, tint, ctx.ground);
         // The header is the block's first line, the body rows start below the delimiter row.
         let line = if r == 0 { 0 } else { r + 1 };
         let cells = row.iter().zip(&grid.align).zip(&drawn).enumerate().map(|(c, ((cell, align), w))| {
@@ -1417,7 +1472,7 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
                 .flex_none()
                 .w(px(*w))
                 .min_w_0()
-                .when(c > 0, |d| d.border_l_1().border_color(ctx.border))
+                .when(c > 0, |d| d.border_l_1().border_color(rule))
                 .px(px(CELL_PAD_X))
                 .py(px(CELL_PAD_Y))
                 .map(|d| match align {
@@ -1443,19 +1498,29 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
                     })
                 })
         });
-        div().flex().flex_row().bg(bg).when(r > 0, |d| d.border_t_1().border_color(ctx.border)).children(cells)
+        let above = if r == 1 { outline } else { rule };
+        div()
+            .flex()
+            .flex_row()
+            .relative()
+            .bg(bg)
+            .when(r > 0, |d| d.border_t_1().border_color(above))
+            .children(cells)
+            .when_some(ctx.shapes.clone().filter(|_| r == 0), |d, root| d.child(shape_reporter(root, key, crate::effects::blocks::Kind::TableHeader)))
     });
     let table = div()
         .flex_none()
         .flex()
         .flex_col()
         .w(px(drawn.iter().sum::<f32>() + 2.0))
+        .relative()
         .border_1()
-        .border_color(ctx.border)
+        .border_color(outline)
         .font_family(ctx.ui.clone())
         .text_size(px(ctx.font_size * PARA))
         .line_height(relative(PARA_LINE))
-        .children(rows);
+        .children(rows)
+        .when_some(ctx.shapes.clone(), |d, root| d.child(shape_reporter(root, key, crate::effects::blocks::Kind::Table)));
     match ctx.wide_tables {
         WideTables::Wrap => table.into_any_element(),
         WideTables::Scroll => {
@@ -2039,6 +2104,21 @@ pub fn breaks_for_paragraph(lines: &[String]) -> usize {
 mod tests {
     use super::*;
     use crate::md_blocks::split;
+
+    #[test]
+    fn a_table_s_fills_clear_with_the_ground_under_an_effect_and_keep_their_stripe() {
+        let (header, paper) = (gpui::hsla(0.1, 0.5, 0.8, 1.0), gpui::hsla(0.1, 0.5, 0.97, 1.0));
+        let tint = gpui::hsla(0.0, 0.0, 0.1, 0.04);
+        // Plain: the header's fill, the paper on odd rows and the faint tint on even ones.
+        assert_eq!(row_fill(0, header, paper, tint, 1.0), header);
+        assert_eq!(row_fill(1, header, paper, tint, 1.0), paper);
+        assert_eq!(row_fill(2, header, paper, tint, 1.0), tint);
+        // Under an effect the header and the paper rows go with the ground, so the wash shows.
+        assert_eq!(row_fill(0, header, paper, tint, 0.0).a, 0.0);
+        assert_eq!(row_fill(1, header, paper, tint, 0.0).a, 0.0);
+        assert_eq!(row_fill(2, header, paper, tint, 0.0), tint, "the stripe stays");
+        assert_eq!(row_fill(0, header, paper, tint, 0.5).a, 0.5, "halfway through a fade");
+    }
 
     #[test]
     fn column_widths_cap_shrink_to_fit_in_wrap_mode_and_keep_natural_in_scroll_mode() {
