@@ -3559,7 +3559,7 @@ impl Root {
         // The pigments are the theme's own accents: burnt orange, ochre, brick and plum, which
         // thin out over the cream into peach, apricot, dusty rose and mauve.
         let pigments = [t.chrome.focus_ring, t.semantic.waiting, t.terminal.red, t.terminal.magenta];
-        let (paper, ink) = (t.chrome.window_bg, t.chrome.text);
+        let (paper, ink) = (t.chrome.window_bg, t.terminal.foreground);
         if let Some(e) = self.effect.as_mut() {
             e.draw(paper, ink, pigments, &regions);
         }
@@ -4375,6 +4375,8 @@ fn open_project_window(
         // SPIKE: a theme that carries the wash gets a transparent window, so the Metal layer
         // under gpui's view shows through the surfaces painted with some alpha.
         let wash = effect::wanted(&theme.name);
+        // SPIKE: the wash's theme has its text deepened towards ink.
+        let theme = if wash { effect::inked(theme) } else { theme };
         let (view_config, view_theme) = (config, theme);
         let window = cx
             .open_window(

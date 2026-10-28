@@ -252,7 +252,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .flex_col()
         .bg(if crate::effect::active() { c.sidebar.alpha(crate::effect::CHROME_ALPHA) } else { c.sidebar.hsla() })
         .border_r_1()
-        .border_color(c.border.hsla())
+        // SPIKE: the effect's ink line is the sidebar's edge.
+        .border_color(if crate::effect::active() { c.border.alpha(0.0) } else { c.border.hsla() })
         .font_family(family)
         .text_size(px(13.0))
         .text_color(c.text.hsla())

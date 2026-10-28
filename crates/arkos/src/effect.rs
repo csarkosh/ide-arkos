@@ -34,6 +34,23 @@ pub fn wanted(theme_name: &str) -> bool {
     theme_name == "peach-light" || std::env::var_os("ARKOS_EFFECT").is_some()
 }
 
+/// The pen's ink: a deep sepia the text moves towards, so it holds its own against the washes.
+const SEPIA: Rgb = Rgb { r: 0x24, g: 0x15, b: 0x0f };
+
+fn toward(c: Rgb, to: Rgb, t: f32) -> Rgb {
+    let m = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Rgb { r: m(c.r, to.r), g: m(c.g, to.g), b: m(c.b, to.b) }
+}
+
+/// The theme as the wash wants it: its text, dim text and terminal text deepened towards sepia
+/// ink, for contrast over the pigments.
+pub fn inked(mut theme: crate::theme::Theme) -> crate::theme::Theme {
+    theme.chrome.text = toward(theme.chrome.text, SEPIA, 0.6);
+    theme.chrome.text_dim = toward(theme.chrome.text_dim, SEPIA, 0.45);
+    theme.terminal.foreground = toward(theme.terminal.foreground, SEPIA, 0.55);
+    theme
+}
+
 /// The alpha of a terminal's paper over the wash (the text must stay easy to read), of the bars
 /// and the sidebar (none: the wash is their colour), and of the active tab (a lighter patch).
 pub const SURFACE_ALPHA: f32 = 0.5;
@@ -204,11 +221,16 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
             if (edges & 2u) { dmin = min(dmin, ink_v(p, x1, y0, y1, wob, over)); }
             if (edges & 4u) { dmin = min(dmin, ink_h(p, y1, x0, x1, wob, over)); }
             if (edges & 8u) { dmin = min(dmin, ink_v(p, x0, y0, y1, wob, over)); }
-            float line = 1.0 - smoothstep(weight - 0.55, weight + 0.55, dmin);
-            inked = max(inked, line * gap);
+            // A crisp core with a thin feathered bleed beside it, as ink spreads into damp paper.
+            float core = 1.0 - smoothstep(weight - 0.3, weight + 0.3, dmin);
+            float halo = (1.0 - smoothstep(weight, weight + 2.2, dmin)) * 0.22;
+            // Strokes add up where they cross, so the corners pool darker.
+            inked += max(core, halo) * gap;
         }
     }
-    col = mix(col, u.ink.rgb, inked * 0.82);
+    // Dry-brush: the pen skips a little on the paper's tooth, more on lighter strokes.
+    float tooth = 0.78 + 0.22 * smoothstep(0.25, 0.75, speck);
+    col = mix(col, u.ink.rgb, clamp(inked * tooth, 0.0, 1.0) * 0.96);
     return float4(col, 1.0);
 }
 "#;

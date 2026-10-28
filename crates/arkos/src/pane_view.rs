@@ -525,7 +525,8 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .flex_col()
         .bg(if crate::effect::active() { theme.chrome.window_bg.alpha(0.0) } else { theme.chrome.window_bg.hsla() })
         .border_1()
-        .border_color(theme.chrome.border.hsla())
+        // SPIKE: the effect's ink line is the pane's outline.
+        .border_color(if crate::effect::active() { theme.chrome.border.alpha(0.0) } else { theme.chrome.border.hsla() })
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
