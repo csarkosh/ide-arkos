@@ -1,21 +1,15 @@
 // The space wash under the Arkos window: a night sky made from the theme's colours, with
-// twinkling stars, a faint nebula, a slow planet, an aurora that comes and goes and the odd
-// shooting star; and for the UI's blocks, a glow line on every edge the app no longer draws, a
+// twinkling stars, a faint nebula, a slow planet and the odd shooting star; and for the UI's blocks, a glow line on every edge the app no longer draws, a
 // soft glow fill on the highlights and a faint darkening under the bars. The preamble
 // (arkos.metal) is prepended before this is compiled, and declares ArkosInputs, ArkosBlock,
 // ArkosVertex and the ARKOS_* indices used here.
 //
 // Every event is a pure function of the clock, so Reduce Motion (which freezes it) shows a still
-// picture. The clock's zero falls in an aurora's hold and between two shooting stars.
+// picture. The clock's zero falls between two shooting stars. (An aurora was removed on
+// 2026-10-28: Cyrus did not like it.)
 
-// The event schedule. It is mirrored in crates/arkos/src/effects/space.rs (aurora_level and
-// meteor_visible), which tests it: a change here is made there too.
-constant float AURORA_CYCLE = 190.0;
-constant float AURORA_SLACK = 30.0;
-constant float AURORA_RISE = 20.0;
-constant float AURORA_HOLD = 60.0;
-constant float AURORA_FADE = 20.0;
-constant float AURORA_OFFSET = 50.0;
+// The event schedule. It is mirrored in crates/arkos/src/effects/space.rs (meteor_visible),
+// which tests it: a change here is made there too.
 constant float METEOR_CYCLE = 30.0;
 constant float METEOR_SLACK = 10.0;
 constant float METEOR_FLIGHT = 0.8;
@@ -63,16 +57,6 @@ float fbm(float2 p) {
     return v;
 }
 
-// The aurora's strength at t, 0 (absent) to 1 (its hold): rising, holding, fading, then absent
-// for the rest of its cycle.
-float aurora_level(float t) {
-    float tau = t + AURORA_OFFSET;
-    float n = floor(tau / AURORA_CYCLE);
-    float x = tau - n * AURORA_CYCLE - AURORA_SLACK * hash01(uint(n));
-    float end = AURORA_RISE + AURORA_HOLD;
-    return smoothstep(0.0, AURORA_RISE, x) * (1.0 - smoothstep(end, end + AURORA_FADE, x));
-}
-
 float sd_box(float2 q, float2 hb) {
     float2 d = abs(q) - hb;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
@@ -109,7 +93,6 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 star_c = u.colors[ARKOS_ANSI + 15].rgb;
     float3 magenta = u.colors[ARKOS_ANSI + 5].rgb;
     float3 cyan = u.colors[ARKOS_ANSI + 6].rgb;
-    float3 green = u.colors[ARKOS_ANSI + 2].rgb;
 
     // The sky: the window's background, slightly deepened toward the top.
     float3 col = bg * mix(1.0, 0.72 + 0.28 * smoothstep(0.0, H, p.y), k);
@@ -165,19 +148,6 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             col = mix(col, pc, haze * k);
             col = mix(col, shade, body * 0.85 * k);
         }
-    }
-
-    // The aurora: a soft curtain in the top quarter, green at its hem and cyan above it.
-    float level = aurora_level(t) * k;
-    float top = H * 0.25;
-    if (level > 0.0 && p.y < top) {
-        float fy = p.y / top;
-        float fold = vnoise(float2(p.x * 0.004 + t * 0.01, t * 0.02));
-        float rays = vnoise(float2(p.x * 0.03 + fold * 6.0, t * 0.05));
-        float hem = 0.55 + 0.33 * vnoise(float2(p.x * 0.006 - t * 0.012, 3.0));
-        float shape = (1.0 - smoothstep(hem - 0.1, hem, fy)) * mix(0.2, 1.0, saturate(fy / hem)) * smoothstep(0.0, 0.12, fy);
-        float3 ac = mix(cyan, green, saturate(fy / hem));
-        col = mix(col, ac, shape * (0.35 + 0.65 * rays) * level * 0.3);
     }
 
     // A shooting star: a short streak with a fading tail, fading in and out across its flight.

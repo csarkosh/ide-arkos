@@ -275,17 +275,15 @@ Things only a person at the screen can check, in order of value:
   come back
 - effects, space: Navy (`effect.name = "theme"`) shows the night sky; over ten minutes a
   shooting star crosses every 20 to 40 seconds (one at a time, in under a second, no bright
-  flash), the aurora rises over the top quarter over about 20 seconds, holds about a minute,
-  fades over about 20 and stays away one to two minutes, and a planet drifts across over
-  several minutes; the stars twinkle slowly
+  flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is
+  no aurora
 - effects, space: the pane edges, the divider, a video's picture and a markdown table's outline
   and header line are thin glowing lines in the focus ring's blue; the hovered and selected rows
   and the hovered tab glow softly; the bars and the sidebar read clearly over the sky
 - effects, space: the project window's text is the holo display (a cyan tint, faint scanlines,
   a soft halo not clipped at the letters' boxes) and does not move; adjacent letters' strokes
   look as crisp as under plain Navy (a later glyph's halo is drawn over its neighbour's strokes)
-- effects, space: with Reduce Motion on the sky is a still picture with the aurora in it and no
-  shooting star, the text is still, and Activity Monitor shows the window idle
+- effects, space: with Reduce Motion on the sky is a still picture with no shooting star, the text is still, and Activity Monitor shows the window idle
 - effects, space: a window wholly covered by another app's window, or minimised, draws no wash
   frames (the process idle in Activity Monitor), and the sky moves again within half a second of
   the window being seen, without any input

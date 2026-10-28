@@ -160,3 +160,8 @@ The text's movement is removed: Cyrus found the shimmer hard on the eyes. The ho
 the other tuned values (brightness 0.80, tint 0.25, keep 0.15, scanlines 0.08, glow 0.90) and is
 still. `space` no longer sets `glyph_motion`, so nothing redraws the text on a timer. The clock
 hook (`v0.2.2-arkos.2`), `glyph_motion` and the timer stay for effects that want them.
+
+## Amendment 2 (2026-10-28, Cyrus)
+
+The aurora is removed: Cyrus did not like it. The sky keeps its stars, nebula, planets and
+shooting stars; ruling 6 now only asks that a frozen clock shows no shooting star mid-flight.

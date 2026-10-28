@@ -1,5 +1,5 @@
 name = "space"
-description = "A calm night sky: stars, a passing aurora, shooting stars, glowing edges and holo text."
+description = "A calm night sky: stars, planets, shooting stars, glowing edges and holo text."
 wash = "wash.metal"
 glyphs = "glyphs.metal"       # optional; absent, gpui draws text as always
 frame_rate = 30               # 1 to 60; the wash's frames per second while anything moves

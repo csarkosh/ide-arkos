@@ -2,17 +2,6 @@
 //! (`effects/space/wash.metal`) so the timings can be tested without a GPU. The constants and the
 //! arithmetic here are the shader's own; a change to one is made to both.
 
-/// Seconds from one aurora's cycle to the next. Each aurora starts up to `AURORA_SLACK` into its
-/// cycle, so the gap between two is 90 seconds give or take 30.
-pub const AURORA_CYCLE: f32 = 190.0;
-pub const AURORA_SLACK: f32 = 30.0;
-pub const AURORA_RISE: f32 = 20.0;
-pub const AURORA_HOLD: f32 = 60.0;
-pub const AURORA_FADE: f32 = 20.0;
-/// Where the clock's zero falls in the aurora's schedule: within the first one's hold, whatever
-/// its start, so a frozen clock (Reduce Motion) shows the aurora.
-pub const AURORA_OFFSET: f32 = 50.0;
-
 /// Seconds from one shooting star's cycle to the next; each starts up to `METEOR_SLACK` into its
 /// cycle, so the gap between two is 20 to 40 seconds.
 pub const METEOR_CYCLE: f32 = 30.0;
@@ -33,21 +22,6 @@ pub fn hash01(n: u32) -> f32 {
     h = ((h >> ((h >> 28) + 4)) ^ h).wrapping_mul(277_803_737);
     h ^= h >> 22;
     (h >> 8) as f32 * (1.0 / 16_777_216.0)
-}
-
-/// GLSL's smoothstep.
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// The aurora's strength at `t` seconds of the effect's clock, 0 (absent) to 1 (its hold).
-pub fn aurora_level(t: f32) -> f32 {
-    let tau = t + AURORA_OFFSET;
-    let n = (tau / AURORA_CYCLE).floor();
-    let x = tau - n * AURORA_CYCLE - AURORA_SLACK * hash01(n as u32);
-    let end = AURORA_RISE + AURORA_HOLD;
-    smoothstep(0.0, AURORA_RISE, x) * (1.0 - smoothstep(end, end + AURORA_FADE, x))
 }
 
 /// Whether a shooting star is crossing at `t` seconds of the effect's clock.
@@ -87,28 +61,8 @@ mod tests {
     }
 
     #[test]
-    fn a_frozen_clock_shows_the_aurora_at_its_hold() {
-        assert_eq!(aurora_level(0.0), 1.0);
+    fn a_frozen_clock_shows_no_shooting_star_mid_flight_and_they_come_every_20_to_40_seconds() {
         assert!(!meteor_visible(0.0));
-
-        // Over an hour: each aurora rises over about 20 seconds, holds about a minute and fades
-        // over about 20; between two the sky is clear for one to two minutes.
-        let dt = 0.25;
-        let shown = runs(3600.0, dt, |t| aurora_level(t) > 0.0);
-        assert!(shown.len() >= 15, "{shown:?}");
-        for w in shown.windows(2) {
-            let gap = w[1].0 - w[0].1;
-            assert!((60.0 - dt..=120.0 + dt).contains(&gap), "aurora gap {gap} in {shown:?}");
-        }
-        // The first is cut by the clock's start; every other is whole.
-        for &(a, b) in &shown[1..shown.len() - 1] {
-            assert!(((AURORA_RISE + AURORA_HOLD + AURORA_FADE) - (b - a)).abs() <= 2.0 * dt, "aurora {a}..{b}");
-        }
-        let holds = runs(3600.0, dt, |t| aurora_level(t) == 1.0);
-        for &(a, b) in &holds[1..holds.len() - 1] {
-            assert!((AURORA_HOLD - (b - a)).abs() <= 2.0 * dt, "hold {a}..{b}");
-        }
-        assert!(shown[0].0 == 0.0 && holds[0].0 == 0.0, "the clock starts in the first hold");
 
         // A shooting star every 20 to 40 seconds, each across in under a second.
         let dt = 0.01;
@@ -127,13 +81,8 @@ mod tests {
     fn the_wash_carries_the_schedule_s_constants_and_names_this_mirror() {
         let wash = space().wash;
         assert!(wash.contains("effects/space.rs"), "the shader names its mirror");
+        assert!(!wash.to_lowercase().contains("aurora_"), "the aurora is gone");
         for line in [
-            "constant float AURORA_CYCLE = 190.0;",
-            "constant float AURORA_SLACK = 30.0;",
-            "constant float AURORA_RISE = 20.0;",
-            "constant float AURORA_HOLD = 60.0;",
-            "constant float AURORA_FADE = 20.0;",
-            "constant float AURORA_OFFSET = 50.0;",
             "constant float METEOR_CYCLE = 30.0;",
             "constant float METEOR_SLACK = 10.0;",
             "constant float METEOR_FLIGHT = 0.8;",
