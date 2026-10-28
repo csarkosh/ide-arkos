@@ -375,13 +375,12 @@ Notes:
   Claude Code's fullscreen renderer, it scrolls the program's view instead, and Cmd+C copies
   everything the drag passed over, with the sticky header, the "Jump to bottom" overlay and the
   prompt box left out; the selection keeps its place on its text while the program scrolls.
-  Programs that take the whole screen without reporting the mouse (vim, `less`) do not scroll
-  from a drag. A program that asks for mouse reports, such as Claude
-  Code's fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and
-  its options can be clicked; a drag still selects locally and the program never sees it, though
-  the first click of a double click has already reached it. On the alternate screen without mouse
-  reports (`less`, for one) the wheel sends arrow keys (xterm's alternate scroll, `?1007`, on by
-  default), and Shift+wheel always scrolls Arkos's own history.
+  Programs that take the whole screen without reporting the mouse (vim, `less`) do not scroll from
+  a drag. A program that asks for mouse reports gets the wheel and single clicks, so its view
+  scrolls and its options can be clicked; a drag still selects locally and the program never sees
+  it, though the first click of a double click has already reached it. On the alternate screen
+  without mouse reports (`less`, for one) the wheel sends arrow keys (xterm's alternate scroll,
+  `?1007`, on by default), and Shift+wheel always scrolls Arkos's own history.
 - Claude Code wraps its own prose to the pane's width and ends each row with a real newline, so
   Cmd+C joins those rows back into one line per paragraph or list item: a row joins the next when
   the next one's first word would not have fit on it. A row that ends early, a blank line, a list

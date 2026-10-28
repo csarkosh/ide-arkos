@@ -288,8 +288,7 @@ Things only a person at the screen can check, in order of value:
   scrolls, the tint grows to the top and never covers the prompt box; release, Cmd+C, paste: the
   whole answer, no "Jump to bottom" text, no prompt box, no repeated header line; wheel after the
   release and the tint stays on its text; vim and `less` still do not scroll from a drag; a wheel
-  notch while dragging moves the
-  selection's end with the text
+  notch while dragging moves the selection's end with the text
 - in Claude Code: Option+Enter and Shift+Enter each add a line to the prompt instead of sending
   it; Option+P opens the model picker; Esc still cancels; in zsh, Shift+Enter runs the line
 - `claude` with `/tui default`, a long answer, then a two-finger scroll: the text follows the
