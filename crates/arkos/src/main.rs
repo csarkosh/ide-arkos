@@ -20,6 +20,7 @@ mod doctor_panel;
 mod drag;
 mod edit;
 mod effect;
+mod effects;
 mod empty_pane;
 mod explorer;
 mod explorer_watch;

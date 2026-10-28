@@ -1,0 +1,14 @@
+name = "watercolor"
+description = "A watercolor sketch: washes that hug each block, ink outlines, drifting bubbles."
+wash = "wash.metal"
+glyphs = "glyphs.metal"       # optional; absent, gpui draws text as always
+frame_rate = 30               # 1 to 60; the wash's frames per second while anything moves
+scale = 0.5                   # 0.1 to 1.0; the wash's pixels per window pixel, each side
+ui_text_bump = 2              # 0 to 4 points added to the project window's UI text
+ink_borders = true            # the app hides its own 1 px borders; the wash draws the edges
+highlights = "effect"         # "effect": the wash paints the selected and hovered rows and the
+                              # hovered tab from the highlight blocks; "app" (the default): the
+                              # app keeps its own fills and reports no highlight blocks
+paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper over the wash
+chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
+active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash
