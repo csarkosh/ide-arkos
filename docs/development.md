@@ -236,6 +236,7 @@ the markdown poster's Cmd+click and the palette's "Open file in pane…" open it
 
 Things only a person at the screen can check, in order of value:
 
+- colours: vim or htop with a 256-colour scheme (`:set t_Co=256`, or htop's colour themes) shows the theme's colours (the cube blends the background, foreground and ANSI hues; the greys run from background to foreground), not the fixed xterm ones, in Navy and in Peach Light.
 - effects: Peach Light (`effect.name = "theme"`) shows the watercolor wash under the window,
   the ink line between Explorer and Worktrees, and strokes that fade in and out on the
   selected and hovered Explorer rows and the hovered tab; the window log says `effect

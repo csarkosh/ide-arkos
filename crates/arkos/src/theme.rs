@@ -581,6 +581,7 @@ impl Theme {
                 t.black, t.red, t.green, t.yellow, t.blue, t.magenta, t.cyan, t.white,
                 t.bright_black, t.bright_red, t.bright_green, t.bright_yellow, t.bright_blue, t.bright_magenta, t.bright_cyan, t.bright_white,
             ],
+            derived: Default::default(),
         }
     }
 

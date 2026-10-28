@@ -75,6 +75,73 @@ pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     (hi + 0.05) / (lo + 0.05)
 }
 
+fn to_linear(v: u8) -> f32 {
+    let v = v as f32 / 255.0;
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+fn from_linear(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// A colour as Oklab [L, a, b] (Bjorn Ottosson's matrices).
+pub fn to_oklab(c: Rgb) -> [f32; 3] {
+    let (r, g, b) = (to_linear(c.r), to_linear(c.g), to_linear(c.b));
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+    [
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ]
+}
+
+fn from_oklab(lab: [f32; 3]) -> Rgb {
+    let [ll, a, b] = lab;
+    let l = (ll + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+    let m = (ll - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+    let s = (ll - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+    Rgb {
+        r: from_linear(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+        g: from_linear(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+        b: from_linear(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+    }
+}
+
+#[cfg(test)]
+fn oklab_dist(a: Rgb, b: Rgb) -> f32 {
+    let (a, b) = (to_oklab(a), to_oklab(b));
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Blends two colours in Oklab, so the blend keeps even lightness. `t` of 0 gives `a`, 1 gives `b`.
+pub fn oklab_mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let (a, b) = (to_oklab(a), to_oklab(b));
+    from_oklab([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t])
+}
+
+/// Colours 16 to 255 derived from a palette's background, foreground and six hues. Filled on
+/// first use and left out of equality; a clone starts empty so it derives from its own colours.
+#[derive(Debug, Default)]
+pub struct Derived(std::sync::OnceLock<Box<[Rgb; 240]>>);
+
+impl Clone for Derived {
+    fn clone(&self) -> Self {
+        Derived::default()
+    }
+}
+
+impl PartialEq for Derived {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Derived {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
     pub bg: Rgb,
@@ -84,6 +151,7 @@ pub struct Palette {
     pub find_match: Rgb,
     pub find_current: Rgb,
     pub ansi: [Rgb; 16],
+    pub derived: Derived,
 }
 
 pub const NAVY: Palette = Palette {
@@ -111,22 +179,51 @@ pub const NAVY: Palette = Palette {
         rgb(0x9ee2e2), // bright cyan
         rgb(0xe8ebf0), // bright white
     ],
+    derived: Derived(std::sync::OnceLock::new()),
 };
 
 impl Palette {
     pub fn indexed(&self, i: u8) -> Rgb {
         match i {
             0..=15 => self.ansi[i as usize],
-            16..=231 => {
-                let i = i - 16;
-                let steps = [0u8, 95, 135, 175, 215, 255];
-                Rgb { r: steps[(i / 36) as usize], g: steps[((i % 36) / 6) as usize], b: steps[(i % 6) as usize] }
-            }
-            232..=255 => {
-                let v = 8 + (i - 232) * 10;
-                Rgb { r: v, g: v, b: v }
-            }
+            _ => self.derived.0.get_or_init(|| Box::new(self.derive_256()))[i as usize - 16],
         }
+    }
+
+    /// The 6x6x6 cube as a trilinear blend in Oklab of eight corners (the background, the
+    /// foreground and the theme's six hues), then a 24-step grey ramp strictly between them.
+    fn derive_256(&self) -> [Rgb; 240] {
+        let hue = |i: usize| to_oklab(self.ansi[i]);
+        let (k, w) = (to_oklab(self.bg), to_oklab(self.fg));
+        // Corner at (r, g, b) in {0,1}: black, blue, green, cyan, red, magenta, yellow, white.
+        let corner = |r: usize, g: usize, b: usize| match (r, g, b) {
+            (0, 0, 0) => k,
+            (0, 0, 1) => hue(4),
+            (0, 1, 0) => hue(2),
+            (0, 1, 1) => hue(6),
+            (1, 0, 0) => hue(1),
+            (1, 0, 1) => hue(5),
+            (1, 1, 0) => hue(3),
+            _ => w,
+        };
+        let mut out = [self.bg; 240];
+        for i in 0..216usize {
+            let t = [(i / 36) as f32 / 5.0, ((i % 36) / 6) as f32 / 5.0, (i % 6) as f32 / 5.0];
+            let mut lab = [0.0f32; 3];
+            for c in 0..8usize {
+                let (r, g, b) = (c >> 2, (c >> 1) & 1, c & 1);
+                let wt = [r, g, b].iter().zip(t).map(|(&bit, t)| if bit == 1 { t } else { 1.0 - t }).product::<f32>();
+                let v = corner(r, g, b);
+                for ch in 0..3 {
+                    lab[ch] += wt * v[ch];
+                }
+            }
+            out[i] = from_oklab(lab);
+        }
+        for k in 0..24usize {
+            out[216 + k] = oklab_mix(self.bg, self.fg, (k + 1) as f32 / 25.0);
+        }
+        out
     }
 
     pub fn resolve(&self, c: &Color) -> Rgb {
@@ -180,14 +277,67 @@ mod tests {
         }
     }
 
+    fn themes() -> Vec<Palette> {
+        vec![NAVY, crate::theme::builtin("navy").unwrap().palette(), crate::theme::builtin("peach-light").unwrap().palette()]
+    }
+
+    fn l_of(c: Rgb) -> f32 {
+        to_oklab(c)[0]
+    }
+
     #[test]
-    fn indexed_cube_and_grey_ramp() {
-        assert_eq!(NAVY.indexed(16), rgb(0x000000));
-        assert_eq!(NAVY.indexed(231), rgb(0xffffff));
-        assert_eq!(NAVY.indexed(196), rgb(0xff0000));
-        assert_eq!(NAVY.indexed(232), rgb(0x080808));
-        assert_eq!(NAVY.indexed(255), rgb(0xeeeeee));
-        assert_eq!(NAVY.indexed(1), NAVY.ansi[1]);
+    fn the_cube_s_corners_are_the_theme_s_own_colours() {
+        for p in themes() {
+            let near = |a: Rgb, b: Rgb| {
+                let d = |x: u8, y: u8| (x as i32 - y as i32).abs();
+                d(a.r, b.r) <= 1 && d(a.g, b.g) <= 1 && d(a.b, b.b) <= 1
+            };
+            assert!(near(p.indexed(16), p.bg), "000 is the background");
+            assert!(near(p.indexed(231), p.fg), "555 is the foreground");
+            assert!(near(p.indexed(196), p.ansi[1]), "500 is red");
+            assert!(near(p.indexed(46), p.ansi[2]), "050 is green");
+            assert!(near(p.indexed(21), p.ansi[4]), "005 is blue");
+            assert!(near(p.indexed(226), p.ansi[3]), "550 is yellow");
+            assert!(near(p.indexed(201), p.ansi[5]), "505 is magenta");
+            assert!(near(p.indexed(51), p.ansi[6]), "055 is cyan");
+            assert_eq!(p.indexed(1), p.ansi[1]);
+        }
+    }
+
+    #[test]
+    fn the_cube_s_low_steps_are_tints_of_the_background_toward_their_hue() {
+        for p in themes() {
+            let (idx, green) = (22u8, p.ansi[2]); // 0,1,0
+            let c = p.indexed(idx);
+            let (dc, dg) = (oklab_dist(c, p.bg), oklab_dist(c, green));
+            assert!(dc > 0.0, "not the background itself");
+            assert!(dc < dg, "index 22 is nearer the background ({dc:.3}) than green ({dg:.3})");
+        }
+    }
+
+    #[test]
+    fn the_grey_ramp_runs_evenly_from_just_off_the_background_to_just_short_of_the_foreground() {
+        for p in themes() {
+            assert_ne!(p.indexed(232), p.bg);
+            assert_ne!(p.indexed(255), p.fg);
+            let dir = (l_of(p.fg) - l_of(p.bg)).signum();
+            let mut prev = l_of(p.bg);
+            for i in 232..=255u8 {
+                let l = l_of(p.indexed(i));
+                assert!((l - prev) * dir > 0.0, "step {i} moves from the background toward the foreground");
+                prev = l;
+            }
+            assert!((l_of(p.fg) - prev) * dir > 0.0);
+        }
+    }
+
+    #[test]
+    fn a_cloned_palette_with_a_new_background_derives_its_own_cube() {
+        let p = NAVY;
+        let _ = p.indexed(100);
+        let mut q = p.clone();
+        q.bg = rgb(0xfff4e8);
+        assert_ne!(q.indexed(16), p.indexed(16));
     }
 
     #[test]
@@ -197,7 +347,8 @@ mod tests {
         assert_eq!(NAVY.resolve(&Color::Named(NamedColor::Red)), NAVY.ansi[1]);
         assert_eq!(NAVY.resolve(&Color::Named(NamedColor::BrightBlue)), NAVY.ansi[12]);
         assert_eq!(NAVY.resolve(&Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 })), Rgb { r: 1, g: 2, b: 3 });
-        assert_eq!(NAVY.resolve(&Color::Indexed(196)), rgb(0xff0000));
+        assert_eq!(NAVY.resolve(&Color::Indexed(196)), NAVY.indexed(196));
+        assert_eq!(NAVY.resolve(&Color::Indexed(5)), NAVY.ansi[5]);
     }
 
     #[test]
