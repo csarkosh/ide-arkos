@@ -102,6 +102,22 @@ pub fn next_wait(frame_rate: u32, seen: bool, moving: bool, fading: bool, reduce
     }
 }
 
+/// The most frames a second the text is redrawn at while a glyph shader moves: gpui redraws
+/// every view for each, so it is kept well under the wash's top rate.
+pub const GLYPH_RATE_CAP: u32 = 20;
+
+/// What the text's timer waits after a frame, or `None` to stop it. The text is redrawn only
+/// while the effect's glyph shader `motion` is on, the effect is `settled` (not fading in or
+/// out), the window is `seen` and Reduce Motion is off; the wait is one frame at the manifest's
+/// `frame_rate`, at most `GLYPH_RATE_CAP` a second.
+pub fn glyph_wait(frame_rate: u32, motion: bool, settled: bool, seen: bool, reduce: bool) -> Option<Duration> {
+    if motion && settled && seen && !reduce {
+        Some(Duration::from_secs_f64(1.0 / frame_rate.clamp(1, GLYPH_RATE_CAP) as f64))
+    } else {
+        None
+    }
+}
+
 /// What a frame's blocks are made from in the project window: the panes' content area, the
 /// window's bars, the sidebar's divider when laid out, the panes, the shapes laid out inside
 /// them and the highlights' strokes.
@@ -167,8 +183,6 @@ pub enum WindowKind {
 pub trait GlyphSink {
     fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String>;
     /// Sets the seconds the glyph stages read at Metal buffer index 5 on their next draws.
-    // Root sets it before each frame once an effect moves its glyphs (the space effect's plan).
-    #[cfg_attr(not(test), allow(dead_code))]
     fn set_glyph_time(&mut self, seconds: f32);
 }
 
@@ -354,6 +368,17 @@ impl<L> ActiveEffect<L> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
+        assert_eq!(glyph_wait(30, false, true, true, false), None);
+        assert_eq!(glyph_wait(30, true, false, true, false), None);
+        assert_eq!(glyph_wait(30, true, true, false, false), None);
+        assert_eq!(glyph_wait(30, true, true, true, true), None);
+        assert_eq!(glyph_wait(30, true, true, true, false), Some(Duration::from_millis(50)));
+        assert_eq!(glyph_wait(60, true, true, true, false), Some(Duration::from_millis(50)));
+        assert_eq!(glyph_wait(12, true, true, true, false), Some(Duration::from_secs_f64(1.0 / 12.0)));
+    }
+
     use super::*;
     use crate::effects::blocks::{self, Kind};
     use crate::effects::inputs;

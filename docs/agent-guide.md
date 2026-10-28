@@ -521,6 +521,7 @@ key and the range.
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
 | `ink_borders` | true, false | false | The app hides its own 1 px borders and the wash draws the edges. |
 | `highlights` | `"effect"`, `"app"` | `"app"` | `"effect"`: the wash paints the selected and hovered rows and the hovered tab from the highlight blocks, and the app stops filling them. `"app"`: the app keeps its own fills and the wash gets no highlight blocks. |
+| `glyph_motion` | `true`, `false` | `false` | `true`: the glyph shader moves with time, so the app redraws the text up to 20 times a second while the effect is on and the window is seen (never under Reduce Motion), and the shader reads the seconds at Metal buffer index 5. `false`: the text is drawn only when something changes. |
 | `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's or a document's paper over the wash. It never goes below 0.5, so text keeps its ground. |
 | `chrome_alpha` | 0.0 to 1.0 | 0.0 | The title bar, the tab bars, the inactive tabs and the sidebar over the wash. |
 | `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |

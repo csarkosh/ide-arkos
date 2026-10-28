@@ -34,6 +34,9 @@ pub struct Manifest {
     /// How far the text moves towards ink (black on a light theme, white on a dark one) while
     /// the effect is on.
     pub text_contrast: f32,
+    /// The glyph shader moves with time, so the text is redrawn on a timer while the effect is
+    /// on (at most `active::GLYPH_RATE_CAP` frames a second).
+    pub glyph_motion: bool,
 }
 
 impl Default for Manifest {
@@ -52,6 +55,7 @@ impl Default for Manifest {
             chrome_alpha: 0.0,
             active_tab_alpha: 0.55,
             text_contrast: 0.0,
+            glyph_motion: false,
         }
     }
 }
@@ -253,6 +257,14 @@ mod tests {
         assert!(e.contains("wash"), "{e}");
         let e = parse(&with("highlights = \"sometimes\"")).unwrap_err();
         assert!(e.contains("sometimes"), "{e}");
+    }
+
+    #[test]
+    fn a_manifest_may_say_its_glyphs_move_and_watercolor_s_do_not() {
+        assert!(!parse(MINIMAL).unwrap().glyph_motion);
+        assert!(parse(&with("glyph_motion = true")).unwrap().glyph_motion);
+        let b = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap();
+        assert!(!parse(b.manifest).unwrap().glyph_motion);
     }
 
     #[test]

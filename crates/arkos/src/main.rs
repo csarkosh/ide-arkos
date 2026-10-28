@@ -343,6 +343,11 @@ pub struct Root {
     effect_timer: Option<bool>,
     /// Counts the timers started, so a timer started afresh ends the one it replaces.
     effect_timer_gen: u64,
+    /// Whether the text's timer (`ensure_glyph_timer`) runs. It stops itself when
+    /// `effects::active::glyph_wait` says so, and `render` starts it again.
+    glyph_timer: bool,
+    /// Counts the text's timers started, so a timer started afresh ends the one it replaces.
+    glyph_timer_gen: u64,
     /// Whether the window's background is transparent, as `render` last set it: while an effect
     /// is on, so the wash shows through.
     transparent: bool,
@@ -655,6 +660,8 @@ impl Root {
             glyph_scale: 2.0,
             effect_timer: None,
             effect_timer_gen: 0,
+            glyph_timer: false,
+            glyph_timer_gen: 0,
             transparent: false,
             effect_divider: None,
             effect_marks: Vec::new(),
@@ -3758,6 +3765,49 @@ impl Root {
         .detach();
     }
 
+    /// What the text's timer waits before the next frame, or `None` when the text need not be
+    /// redrawn: see `effects::active::glyph_wait`.
+    fn glyph_wait(&self) -> Option<std::time::Duration> {
+        let e = self.effect.as_ref()?;
+        let seen = !self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns)) && !self.covered();
+        effects::active::glyph_wait(e.effect.manifest.frame_rate, e.effect.manifest.glyph_motion, e.settled(), seen, motion::reduce_motion())
+    }
+
+    /// Starts the text's timer unless it runs: while the effect's glyphs move it asks for a
+    /// frame (`cx.notify()`) after each wait, so the text is redrawn at the glyph rate. It
+    /// stops itself once `glyph_wait` is `None`; `render` starts it again when needed.
+    fn ensure_glyph_timer(&mut self, cx: &mut Context<Self>) {
+        if self.glyph_timer || self.glyph_wait().is_none() {
+            return;
+        }
+        self.glyph_timer_gen += 1;
+        let generation = self.glyph_timer_gen;
+        self.glyph_timer = true;
+        cx.spawn(async move |root, cx| loop {
+            let Ok(wait) = root.update(cx, |root, _| {
+                if root.glyph_timer_gen != generation {
+                    return None;
+                }
+                let wait = root.glyph_wait();
+                root.glyph_timer = wait.is_some();
+                wait
+            }) else {
+                break;
+            };
+            let Some(d) = wait else { break };
+            cx.background_executor().timer(d).await;
+            let more = root.update(cx, |root, cx| {
+                if root.glyph_timer_gen == generation {
+                    cx.notify();
+                }
+            });
+            if more.is_err() {
+                break;
+            }
+        })
+        .detach();
+    }
+
     /// One frame of the wash at `now`: the blocks from the current layout, the divider and the
     /// highlights' strokes, with the theme as it is now (a theme fade reads the blend). Nothing
     /// is built or drawn while the window is hidden, occluded or covered, and `None` says so;
@@ -3849,6 +3899,14 @@ impl Render for Root {
                 self.glyphs_pending = Some(self.glyph_shader_for(effects::active::WindowKind::Project));
             }
         }
+        // The seconds a moving glyph shader reads, wrapped at an hour so f32 keeps its
+        // sub-frame precision in a long session (the text jumps a little once an hour).
+        let glyph_seconds = match &self.effect {
+            Some(e) => e.time(now, motion::reduce_motion()) % 3600.0,
+            None => 0.0,
+        };
+        effects::active::GlyphSink::set_glyph_time(window, glyph_seconds);
+        self.ensure_glyph_timer(cx);
         if let Some(shader) = self.glyphs_pending.take() {
             let applied = match &self.effect {
                 Some(e) => effects::active::apply_glyphs(window, &e.effect, shader),
