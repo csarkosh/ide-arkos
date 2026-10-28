@@ -135,6 +135,8 @@ pub struct Ledger {
     last_moved: Option<Range<usize>>,
     anchor: End,
     end: Option<End>,
+    /// Whether `set_range` gave the anchor its side; otherwise the side follows the end.
+    anchor_side_set: bool,
 }
 
 impl Ledger {
@@ -154,7 +156,110 @@ impl Ledger {
             last_moved: None,
             anchor: End { line: anchor_line, col: anchor_col, side: Side::Left },
             end: None,
+            anchor_side_set: false,
         }
+    }
+
+    /// Moves the selection's free end; the anchor's side follows it again.
+    pub fn set_end(&mut self, end: End) {
+        self.end = Some(end);
+        self.anchor_side_set = false;
+    }
+
+    /// Sets both ends with their sides as given, for a word or a line.
+    pub fn set_range(&mut self, start: End, end: End) {
+        self.anchor = start;
+        self.end = Some(end);
+        self.anchor_side_set = true;
+    }
+
+    /// Whether the selection has an end yet.
+    pub fn has_end(&self) -> bool {
+        self.end.is_some()
+    }
+
+    /// The selected cells, first and last inclusive, ordered by line and column. A start on
+    /// its cell's right side begins at the next cell and an end on its cell's left side stops
+    /// at the cell before, wrapping across lines at `columns`. None without an end or when no
+    /// cell is left between them.
+    pub fn range(&self, columns: usize) -> Option<(End, End)> {
+        let end = self.end?;
+        let mut anchor = self.anchor;
+        if !self.anchor_side_set {
+            let after = (anchor.line, anchor.col) > (end.line, end.col);
+            anchor.side = if after { Side::Right } else { Side::Left };
+        }
+        let (mut start, mut last) =
+            if (anchor.line, anchor.col) <= (end.line, end.col) { (anchor, end) } else { (end, anchor) };
+        if start.side == Side::Right {
+            if start.col + 1 >= columns {
+                start.line += 1;
+                start.col = 0;
+            } else {
+                start.col += 1;
+            }
+        }
+        if last.side == Side::Left {
+            if last.col == 0 {
+                last.line -= 1;
+                last.col = columns.saturating_sub(1);
+            } else {
+                last.col -= 1;
+            }
+        }
+        if (start.line, start.col) > (last.line, last.col) {
+            return None;
+        }
+        start.side = Side::Left;
+        last.side = Side::Right;
+        Some((start, last))
+    }
+
+    /// The selected text: each recorded line of the range, the first from the start column and
+    /// the last to the end column, joined by newlines. Lines the record lacks are skipped and
+    /// spacers are dropped. None when nothing is selected or no line of it is recorded.
+    pub fn text(&self, columns: usize) -> Option<String> {
+        let (start, end) = self.range(columns)?;
+        let mut parts = Vec::new();
+        for line in start.line..=end.line {
+            let Some(text) = self.line_text(line) else { continue };
+            let from = if line == start.line { start.col } else { 0 };
+            let to = if line == end.line { end.col + 1 } else { usize::MAX };
+            let part: String = text
+                .chars()
+                .enumerate()
+                .filter(|(i, c)| *i >= from && *i < to && *c != SPACER)
+                .map(|(_, c)| c)
+                .collect();
+            parts.push(part);
+        }
+        if parts.is_empty() { None } else { Some(parts.join("\n")) }
+    }
+
+    /// The column the selection's first cell is in, or the anchor's when nothing is selected.
+    pub fn first_col(&self, columns: usize) -> usize {
+        self.range(columns).map_or(self.anchor.col, |(start, _)| start.col)
+    }
+
+    /// The selected cells as grid (row, column) pairs, clamped to the rows that moved with the
+    /// text: a start above them begins at their first row's first column and an end below them
+    /// stops at their last row's last column. None when the range lies wholly outside them.
+    pub fn projection(&self, columns: usize) -> Option<((usize, usize), (usize, usize))> {
+        let (start, end) = self.range(columns)?;
+        let moved = self.moved_rows();
+        let (top, bottom) = (moved.start as i32, moved.end as i32);
+        let start_row = self.row_of_line(start.line);
+        let end_row = self.row_of_line(end.line);
+        if start_row >= bottom || end_row < top {
+            return None;
+        }
+        let first = if start_row < top { (top as usize, 0) } else { (start_row as usize, start.col) };
+        let last = if end_row >= bottom {
+            (bottom as usize - 1, columns.saturating_sub(1))
+        } else {
+            (end_row as usize, end.col)
+        };
+        Some((first, last))
     }
 
     /// Follows one batch of output, `new` being the grid's rows after it was applied.
@@ -479,5 +584,71 @@ mod tests {
         assert_eq!(l.offset(), 0);
         assert_eq!(l.line_text(0), Some("l10"));
         assert_eq!(l.line_text(-2), Some("l8"));
+    }
+
+    #[test]
+    fn the_text_runs_from_the_anchor_to_the_end_with_the_simple_cell_rules() {
+        let mut l = Ledger::open(grid(&["alpha beta","gamma delta","epsilon","status"]), 2, 3);
+        // Dragged up and left: the end is the start of the range and its left side keeps its cell;
+        // the anchor is after it, so its side is Right and its cell is included.
+        l.set_end(End { line: 0, col: 6, side: Side::Left });
+        assert_eq!(l.text(20).as_deref(), Some("beta\ngamma delta\nepsi"));
+        // Dragged down: the anchor's left side includes its cell, the end's right side includes its cell.
+        let mut l = Ledger::open(grid(&["alpha beta","gamma delta","epsilon","status"]), 0, 6);
+        l.set_end(End { line: 1, col: 4, side: Side::Right });
+        assert_eq!(l.text(20).as_deref(), Some("beta\ngamma"));
+        assert_eq!(l.first_col(20), 6);
+        // Nothing yet, and a selection of no cells.
+        let mut l = Ledger::open(grid(&["alpha beta"]), 0, 2);
+        assert_eq!(l.text(20), None);
+        l.set_end(End { line: 0, col: 2, side: Side::Left });
+        assert_eq!(l.text(20), None);
+    }
+
+    #[test]
+    fn missing_lines_are_skipped_and_rows_past_the_text_read_as_blank() {
+        let mut l = Ledger::open(grid(&["l1","l2","l3","l4","l5","l6","─","❯"]), 0, 0);
+        l.output(&grid(&["l0","l1","l2","l3","l4","l5","─","❯"]));
+        l.output(&grid(&["l-1","l0","l1","l2","l3","l4","─","❯"]));
+        // The end is on the prompt box's row; its lines were dropped at the commit, so the copy
+        // ends with the last line of text, whole (column 10 is past its end).
+        l.set_end(End { line: 7, col: 10, side: Side::Right });
+        assert_eq!(l.text(20).as_deref(), Some("l1\nl2\nl3\nl4\nl5\nl6"), "the prompt box lines were dropped");
+    }
+
+    #[test]
+    fn a_word_or_a_line_is_recorded_as_the_cells_it_covers() {
+        let mut l = Ledger::open(grid(&["alpha beta","gamma","delta","eps","zeta","eta"]), 0, 7);
+        l.set_range(End { line: 0, col: 6, side: Side::Left }, End { line: 0, col: 9, side: Side::Right });
+        assert_eq!(l.text(20).as_deref(), Some("beta"));
+        l.output(&grid(&["pre","alpha beta","gamma","delta","eps","zeta"]));
+        assert_eq!(l.text(20).as_deref(), Some("beta"), "the word moved with the text");
+        assert_eq!(l.projection(20), Some(((1, 6), (1, 9))));
+    }
+
+    #[test]
+    fn wide_glyphs_survive_the_copy_and_its_clipping() {
+        let mut l = Ledger::open(vec!["字\0a字\0".to_string(), "b".to_string()], 0, 0);
+        l.set_end(End { line: 0, col: 3, side: Side::Right });
+        assert_eq!(l.text(20).as_deref(), Some("字a字"));
+        l.set_end(End { line: 0, col: 1, side: Side::Right });
+        assert_eq!(l.text(20).as_deref(), Some("字"), "the spacer cell adds nothing");
+    }
+
+    #[test]
+    fn the_tint_is_the_range_on_the_grid_clamped_to_the_rows_that_moved() {
+        let c: Vec<String> = (0..40).map(|i| format!("l{i}")).collect();
+        let c: Vec<&str> = c.iter().map(String::as_str).collect();
+        let mut l = Ledger::open(scrolled(&c, 30, 12, &["─","❯"]), 9, 2);
+        l.set_end(End { line: 0, col: 0, side: Side::Left });
+        // The anchor is after the end, so its side is Right and its cell is in.
+        assert_eq!(l.projection(20), Some(((0, 0), (9, 2))));
+        l.output(&scrolled(&c, 27, 12, &["─","❯"]));
+        l.output(&scrolled(&c, 24, 12, &["─","❯"]));
+        l.set_end(End { line: -6, col: 0, side: Side::Left });
+        // The anchor (line 9) is at row 15, under the prompt box: the tint stops at the last row that moved.
+        assert_eq!(l.projection(20), Some(((0, 0), (9, 19))));
+        l.set_range(End { line: -20, col: 0, side: Side::Left }, End { line: -15, col: 3, side: Side::Right });
+        assert_eq!(l.projection(20), None, "entirely above the screen");
     }
 }
