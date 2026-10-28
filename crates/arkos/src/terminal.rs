@@ -4,6 +4,7 @@
 use crate::client::Client;
 use crate::keys::{keystroke_to_bytes, KeyMode};
 use crate::layout::{CellKind, CellStyle};
+use crate::ledger::{self, End, Ledger, Outcome};
 use crate::mouse::{self, Clicks, Gesture, MouseMode, WheelCarry};
 use crate::palette::{Palette, NAVY};
 use crate::scroll::ScrollAnimator;
@@ -101,6 +102,12 @@ pub struct TerminalCore {
     theme_updates: bool,
     /// The end of the last chunk when it stopped inside a `CSI ?` sequence, read with the next.
     csi_tail: Vec<u8>,
+    /// The record of a selection made in a program that reports the mouse on the alternate
+    /// screen, open from the press until the selection is cleared (see `ledger::Ledger`). While
+    /// it is open it is the selection, and alacritty's selection is only its tint.
+    ledger: Option<Ledger>,
+    /// The fraction of a line a drag held past the edge owes the program, reset at each press.
+    drag_carry: WheelCarry,
 }
 
 /// The longest `CSI ?` sequence the theme scan waits for across chunks; anything longer is not
@@ -170,7 +177,7 @@ impl TerminalCore {
         // the key encoding it asked for; see `key_mode`.
         let config = Config { scrolling_history: scrollback, kitty_keyboard: true, ..Config::default() };
         let term = Term::new(config, &TermSize::new(cols, rows), listener.clone());
-        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new() }
+        Self { term, parser: Processor::new(), listener, palette: Arc::new(NAVY), scroll: ScrollAnimator::new(), theme_updates: false, csi_tail: Vec::new(), ledger: None, drag_carry: WheelCarry::default() }
     }
 
     pub fn apply_output(&mut self, bytes: &[u8]) -> Wakeup {
@@ -246,7 +253,8 @@ impl TerminalCore {
         &self.palette
     }
 
-    /// Applies chunks in order and merges their wakeups into one.
+    /// Applies chunks in order and merges their wakeups into one. The chunks are one batch for
+    /// an open record: it reads the grid after them (see `follow_output`).
     pub fn apply_all<'a>(&mut self, chunks: impl IntoIterator<Item = &'a [u8]>) -> Wakeup {
         let mut out = Wakeup::default();
         for c in chunks {
@@ -258,6 +266,7 @@ impl TerminalCore {
             out.bell |= w.bell;
             out.pty_write.extend_from_slice(&w.pty_write);
         }
+        self.follow_output();
         out
     }
 
@@ -278,6 +287,8 @@ impl TerminalCore {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // The program redraws for the new size, which no shift describes.
+        self.ledger = None;
         self.term.resize(TermSize::new(cols.max(2), rows.max(1)));
         self.scroll.clamp_max(self.history_size() as f32);
     }
@@ -299,6 +310,7 @@ impl TerminalCore {
         self.term.grid_mut().clear_history();
         // The grid moved under alacritty's feet above, so its selection bookkeeping did not run.
         self.term.selection = None;
+        self.ledger = None;
         self.set_display_offset(0);
         self.scroll.jump_to(0.0);
         self.scroll.clamp_max(0.0);
@@ -426,12 +438,36 @@ impl TerminalCore {
 
     /// Starts a selection at a grid cell: characters from a drag, a word from a double click, a
     /// line from a triple. Alacritty owns it from here, so it follows its text as output scrolls.
+    /// With a record open, a drag keeps the anchor the press gave the record, and a word or a
+    /// line found by alacritty becomes the record's range.
     pub fn selection_start(&mut self, col: usize, line: Line, side: Side, ty: SelectionType) {
+        if self.ledger.is_some() && ty == SelectionType::Simple {
+            self.retint();
+            return;
+        }
         self.term.selection = Some(Selection::new(ty, self.grid_point(col, line), side));
+        if self.ledger.is_none() {
+            return;
+        }
+        let Some(range) = self.term.selection.as_ref().and_then(|s| s.to_range(&self.term)) else { return };
+        let start = self.record_end(range.start.column.0, range.start.line, Side::Left);
+        let end = self.record_end(range.end.column.0, range.end.line, Side::Right);
+        if let Some(ledger) = self.ledger.as_mut() {
+            ledger.set_range(start, end);
+        }
+        self.retint();
     }
 
-    /// Moves the selection's end to a grid cell.
+    /// Moves the selection's end to a grid cell; with a record open, the record's end.
     pub fn selection_update(&mut self, col: usize, line: Line, side: Side) {
+        if self.ledger.is_some() {
+            let end = self.record_end(col, line, side);
+            if let Some(ledger) = self.ledger.as_mut() {
+                ledger.set_end(end);
+            }
+            self.retint();
+            return;
+        }
         let p = self.grid_point(col, line);
         if let Some(s) = self.term.selection.as_mut() {
             s.update(p, side);
@@ -472,18 +508,29 @@ impl TerminalCore {
         }
     }
 
+    /// Clears the selection, and with it any open record.
     pub fn selection_clear(&mut self) {
         self.term.selection = None;
+        self.ledger = None;
     }
 
-    /// True while a selection exists, even one that covers nothing yet.
+    /// True while a selection exists, even one that covers nothing yet. With a record open, once
+    /// it has an end: the press alone selects nothing.
     pub fn selection_active(&self) -> bool {
-        self.term.selection.is_some()
+        match &self.ledger {
+            Some(ledger) => ledger.has_end(),
+            None => self.term.selection.is_some(),
+        }
     }
 
-    /// The selected text, or None when nothing is selected.
+    /// The selected text, or None when nothing is selected. With a record open, the record's
+    /// lines, so text the program has scrolled off the screen is still there.
     pub fn selection_text(&self) -> Option<String> {
-        self.term.selection_to_string().filter(|s| !s.is_empty())
+        let text = match &self.ledger {
+            Some(ledger) => ledger.text(self.columns()),
+            None => self.term.selection_to_string(),
+        };
+        text.filter(|s| !s.is_empty())
     }
 
     /// The text Cmd+C copies: the selection with the lines a program wrapped for this width
@@ -492,6 +539,16 @@ impl TerminalCore {
     /// as it is.
     pub fn copy_text(&self) -> Option<String> {
         let text = self.selection_text()?;
+        if let Some(ledger) = &self.ledger {
+            let columns = self.columns();
+            let first_col = ledger.first_col(columns);
+            let input_box = ledger.range(columns).is_some_and(|(start, _)| {
+                let row = ledger.row_of_line(start.line);
+                (0..self.screen_lines() as i32).contains(&row) && self.in_input_box(Line(self.line_at_row(row as usize)))
+            });
+            let cut_width = columns - if input_box { crate::reflow::INPUT_BOX_INSET } else { 0 };
+            return Some(crate::reflow::reflow_at(&text, columns, first_col, cut_width));
+        }
         let selection = self.term.selection.as_ref()?;
         if selection.ty == SelectionType::Block {
             return Some(text);
@@ -520,6 +577,82 @@ impl TerminalCore {
             out.push(SelectionSpan { row: row as usize, start, end });
         }
         out
+    }
+
+    // The record. A program that reports the mouse on the alternate screen scrolls by redrawing,
+    // so alacritty's selection would stay on grid cells while the text moves on. A press there
+    // opens a record (`ledger::Ledger`) that follows the program's scroll batch by batch; while
+    // it is open it is the selection, and alacritty's selection is only its tint.
+
+    /// A left press at viewport cell (`col`, `row`): drops any record, and opens one with the
+    /// press as its anchor when the session is `alive` and its program reports the mouse on the
+    /// alternate screen.
+    pub fn ledger_press(&mut self, col: usize, row: usize, alive: bool) {
+        self.ledger = None;
+        self.drag_carry.reset();
+        let reported = matches!(self.mouse_mode(), MouseMode::Report { .. });
+        if alive && reported && self.term.mode().contains(TermMode::ALT_SCREEN) {
+            self.ledger = Some(Ledger::open(self.rows_text(), row as i32, col));
+        }
+    }
+
+    /// A release or a cancel: a record with no end was a click the program heard, so it goes.
+    pub fn ledger_release(&mut self) {
+        if self.ledger.as_ref().is_some_and(|l| !l.has_end()) {
+            self.ledger = None;
+        }
+    }
+
+    /// Whether a record is open.
+    pub fn record_open(&self) -> bool {
+        self.ledger.is_some()
+    }
+
+    /// The visible rows as the record reads them (`ledger::row_text`), at the display offset.
+    fn rows_text(&self) -> Vec<String> {
+        let off = self.display_offset() as i32;
+        (0..self.screen_lines() as i32).map(|i| ledger::row_text(&self.row_cells(Line(i - off)))).collect()
+    }
+
+    /// A grid cell as one end of the record: the column clamped to the grid, the line the record
+    /// names the cell's viewport row by. Only called with a record open.
+    fn record_end(&self, col: usize, line: Line, side: Side) -> End {
+        let p = self.grid_point(col, line);
+        let row = (p.line.0 + self.display_offset() as i32).max(0) as usize;
+        let line = self.ledger.as_ref().map_or(row as i32, |l| l.line_of_row(row));
+        End { line, col: p.column.0, side }
+    }
+
+    /// Feeds an open record the grid after a batch of output. It closes when the program left
+    /// the alternate screen or redrew beyond recognition; otherwise the tint is rebuilt, which
+    /// also restores it where the output erased a tinted row.
+    fn follow_output(&mut self) {
+        if self.ledger.is_none() {
+            return;
+        }
+        if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+            self.ledger = None;
+            return;
+        }
+        let rows = self.rows_text();
+        if self.ledger.as_mut().is_some_and(|l| l.output(&rows) == Outcome::Closed) {
+            self.ledger = None;
+            return;
+        }
+        self.retint();
+    }
+
+    /// Rebuilds alacritty's selection, the tint, from the open record's range projected onto
+    /// the grid: none when the record has no end or none of its range is on the rows that moved
+    /// with the text. Nothing changes without a record.
+    fn retint(&mut self) {
+        let Some(ledger) = &self.ledger else { return };
+        self.term.selection = ledger.projection(self.columns()).map(|((start_row, start_col), (end_row, end_col))| {
+            let start = Point::new(Line(start_row as i32), Column(start_col));
+            let mut s = Selection::new(SelectionType::Simple, start, Side::Left);
+            s.update(Point::new(Line(end_row as i32), Column(end_col)), Side::Right);
+            s
+        });
     }
 
     /// Scrolls just enough to show `line` (history lines are negative). The animator lands with
@@ -801,12 +934,21 @@ impl Terminal {
     }
 
     /// A left press (see `mouse::Clicks::press`). The click that focused the window is never
-    /// forwarded: it was meant for the window, not for the program.
+    /// forwarded: it was meant for the window, not for the program. In a program that reports
+    /// the mouse on the alternate screen the press opens a record (`TerminalCore::ledger_press`):
+    /// after a single click's clear, which would close it, and before a word or a line is
+    /// selected, which sets its range.
     pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>, click_count: usize, first_mouse: bool, cx: &mut Context<Self>) {
         let Some((col, row, side)) = self.point_at(position) else { return };
         let report = matches!(self.core.mouse_mode(), MouseMode::Report { .. }) && !first_mouse;
         let gesture = self.clicks.press(col, row, self.core.line_at_row(row), side, click_count, report);
-        self.apply(gesture, cx);
+        if gesture == Gesture::Clear {
+            self.apply(gesture, cx);
+            self.core.ledger_press(col, row, self.alive);
+        } else {
+            self.core.ledger_press(col, row, self.alive);
+            self.apply(gesture, cx);
+        }
     }
 
     /// A move (see `mouse::Clicks::moved`); `left_down` is whether the left button is held.
@@ -834,6 +976,7 @@ impl Terminal {
                 self.client.send(Request::Input { session: self.session, bytes });
             }
         }
+        self.core.ledger_release();
     }
 
     /// The left button came up somewhere else, a right button came up (gpui reports a left
@@ -841,6 +984,7 @@ impl Terminal {
     /// link: nothing is held for the program, and the drag is over.
     pub fn mouse_cancelled(&mut self) {
         self.clicks.cancel();
+        self.core.ledger_release();
     }
 
     fn apply(&mut self, gesture: Gesture, cx: &mut Context<Self>) {
@@ -1662,5 +1806,131 @@ mod tests {
         let m = corners.search("ab");
         let ends: Vec<(i32, usize, i32, usize)> = m.iter().map(|m| (m.start().line.0, m.start().column.0, m.end().line.0, m.end().column.0)).collect();
         assert_eq!(ends, vec![(0, 0, 0, 1), (1, 2, 1, 3)], "the first and the last cell of the grid");
+    }
+
+    /// A fullscreen program that reports the mouse: the alternate screen, button reports, SGR.
+    fn fullscreen(cols: usize, rows: usize) -> TerminalCore {
+        let mut t = TerminalCore::new(cols, rows, 100);
+        t.apply_output(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+        t
+    }
+
+    /// Redraws every row in one batch, as a program's frame arrives.
+    fn paint(t: &mut TerminalCore, rows: &[&str]) {
+        let bytes: String = rows.iter().enumerate().map(|(i, text)| format!("\x1b[{};1H{text}\x1b[K", i + 1)).collect();
+        t.apply_all([bytes.as_bytes()]);
+    }
+
+    /// A press at `from` and a drag to `to`, as `Terminal` drives the core (lines equal rows on
+    /// the alternate screen).
+    fn drag(t: &mut TerminalCore, from: (usize, usize), to: (usize, usize)) {
+        t.ledger_press(from.0, from.1, true);
+        t.selection_start(from.0, Line(from.1 as i32), Side::Left, SelectionType::Simple);
+        t.selection_update(to.0, Line(to.1 as i32), Side::Right);
+    }
+
+    #[test]
+    fn a_record_opens_only_for_a_live_program_that_reports_the_mouse_on_the_alternate_screen() {
+        let mut t = TerminalCore::new(20, 5, 100);
+        t.ledger_press(0, 0, true);
+        assert!(!t.record_open(), "the primary screen");
+        t.apply_output(b"\x1b[?1049h");
+        t.ledger_press(0, 0, true);
+        assert!(!t.record_open(), "arrows mode");
+        t.apply_output(b"\x1b[?1000h");
+        t.ledger_press(0, 0, false);
+        assert!(!t.record_open(), "an ended session");
+        t.ledger_press(0, 0, true);
+        assert!(t.record_open());
+        assert!(!t.selection_active(), "an anchor alone selects nothing");
+    }
+
+    #[test]
+    fn a_click_in_a_fullscreen_program_opens_and_closes_the_record_without_a_tint() {
+        let mut t = fullscreen(20, 5);
+        paint(&mut t, &["one", "two", "three", "─", "❯"]);
+        // A press, then the release: no end was ever set, so the record goes.
+        t.ledger_press(1, 1, true);
+        assert!(t.record_open());
+        t.ledger_release();
+        assert!(!t.record_open());
+        assert!(t.selection_spans().is_empty());
+        // The press of a single click clears the selection first, which also closes the record.
+        t.ledger_press(1, 1, true);
+        t.selection_clear();
+        assert!(!t.record_open());
+    }
+
+    #[test]
+    fn a_selection_in_a_fullscreen_program_keeps_its_text_while_the_program_scrolls() {
+        let mut t = fullscreen(20, 8);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "─", "❯"]);
+        drag(&mut t, (0, 1), (2, 2));
+        assert_eq!(t.selection_text().as_deref(), Some("l11\nl12"));
+        paint(&mut t, &["l9", "l10", "l11", "l12", "l13", "l14", "─", "❯"]);
+        paint(&mut t, &["l8", "l9", "l10", "l11", "l12", "l13", "─", "❯"]);
+        assert_eq!(t.selection_text().as_deref(), Some("l11\nl12"));
+        let spans = t.selection_spans();
+        assert_eq!(spans.first().map(|s| s.row), Some(3), "the tint moved with the text");
+        assert_eq!(spans.len(), 2);
+    }
+
+    #[test]
+    fn output_that_erases_a_tinted_row_does_not_lose_the_tint() {
+        let mut t = fullscreen(20, 6);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "⠋ thinking", "❯"]);
+        drag(&mut t, (0, 1), (2, 2));
+        paint(&mut t, &["l10", "l11", "l12", "l13", "⠙ thinking", "❯"]);
+        assert_eq!(t.selection_spans().len(), 2);
+        assert!(t.selection_active());
+    }
+
+    #[test]
+    fn a_double_click_in_a_fullscreen_program_records_the_word() {
+        let mut t = fullscreen(20, 10);
+        paint(&mut t, &["alpha beta", "gamma", "delta", "eps", "zeta", "eta", "theta", "iota", "─", "❯"]);
+        t.ledger_press(7, 0, true);
+        t.selection_start(7, Line(0), Side::Left, SelectionType::Semantic);
+        assert_eq!(t.selection_text().as_deref(), Some("beta"));
+        paint(&mut t, &["pre", "alpha beta", "gamma", "delta", "eps", "zeta", "eta", "theta", "─", "❯"]);
+        assert_eq!(t.selection_text().as_deref(), Some("beta"));
+        assert_eq!(t.selection_spans().first().map(|s| (s.row, s.start, s.end)), Some((1, 6, 9)));
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_closes_the_record_and_the_shell_selects_as_before() {
+        let mut t = fullscreen(20, 5);
+        paint(&mut t, &["one", "two", "three", "─", "❯"]);
+        drag(&mut t, (0, 0), (2, 1));
+        t.apply_all([b"\x1b[?1000l\x1b[?1049l".as_slice()]);
+        assert!(!t.record_open());
+        t.apply_all([b"hello\r\nworld".as_slice()]);
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(4, Line(0), Side::Right);
+        assert_eq!(t.selection_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn a_resize_and_a_redraw_beyond_recognition_close_the_record() {
+        let mut t = fullscreen(20, 6);
+        paint(&mut t, &["l1", "l2", "l3", "l4", "l5", "❯"]);
+        drag(&mut t, (0, 0), (2, 1));
+        t.resize(30, 6);
+        assert!(!t.record_open());
+        let mut t = fullscreen(20, 6);
+        paint(&mut t, &["l1", "l2", "l3", "l4", "l5", "❯"]);
+        drag(&mut t, (0, 0), (2, 1));
+        paint(&mut t, &["x1", "x2", "x3", "x4", "x5", "❯"]);
+        assert!(!t.record_open());
+    }
+
+    #[test]
+    fn copying_from_a_record_joins_the_programs_wraps_as_the_grid_copy_does() {
+        let mut t = fullscreen(30, 5);
+        // The first row runs to within a word of the width: a wrap the program made, joined on copy.
+        paint(&mut t, &["\u{25cf} The limiter is done and all", "  six tests pass.", "", "─", "❯"]);
+        drag(&mut t, (0, 0), (16, 1));
+        assert_eq!(t.selection_text().as_deref(), Some("\u{25cf} The limiter is done and all\n  six tests pass."));
+        assert_eq!(t.copy_text().as_deref(), Some("\u{25cf} The limiter is done and all six tests pass."));
     }
 }

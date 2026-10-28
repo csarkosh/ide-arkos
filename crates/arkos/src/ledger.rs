@@ -5,8 +5,6 @@
 //! them, and that needs one answer from two grids: by how many rows did the content shift, which
 //! rows moved with it (the block), and which rows are new (the band). This module is that answer
 //! and nothing else; it works on rows as strings so it is pure and unit tested.
-// Nothing calls this yet; the record that uses it arrives in a later step, which removes this line.
-#![allow(dead_code)]
 
 use crate::layout::{CellKind, CellStyle};
 use alacritty_terminal::index::Side;
@@ -332,6 +330,8 @@ impl Ledger {
     }
 
     /// The grid's height when the record opened.
+    // Read by the edge step in Task 5 of the fullscreen drag-scroll plan.
+    #[allow(dead_code)]
     pub fn rows(&self) -> usize {
         self.rows
     }
