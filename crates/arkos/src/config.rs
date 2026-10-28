@@ -436,7 +436,8 @@ pub const NAVY_LIGHT_NOTICE: &str = "Navy Light was removed; your light theme is
 
 /// Navy Light is no longer built in. When `text` names it as `theme.light` or `theme.dark` and the
 /// user has no `navy-light.toml` of their own in `themes_dir` (such a file keeps working as any
-/// user theme), returns the text with that value set to `peach-light`, every comment kept. `None`
+/// user theme), returns the text with `theme.light` set to `peach-light` and `theme.dark` set to
+/// `navy` (a dark slot gets a dark theme), every comment kept. `None`
 /// when there is nothing to change or the text is not TOML.
 pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
     if themes_dir.join("navy-light.toml").exists() {
@@ -447,7 +448,7 @@ pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
     let named = |key: &str| theme.get(key).and_then(|v| v.as_str()) == Some("navy-light");
     let mut edits: Vec<(&[&str], toml_edit::Value)> = Vec::new();
     if named("dark") {
-        edits.push((&["theme", "dark"], toml_edit::Value::from("peach-light")));
+        edits.push((&["theme", "dark"], toml_edit::Value::from("navy")));
     }
     if named("light") {
         edits.push((&["theme", "light"], toml_edit::Value::from("peach-light")));
@@ -458,17 +459,44 @@ pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
     apply_edits(text, &edits).ok()
 }
 
-/// Moves the config file at `path` off Navy Light (see `retire_navy_light`), writing it back in
-/// place through a symlink if it is one. True when the file was rewritten.
-pub fn retire_navy_light_file(path: &Path, themes_dir: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else { return false };
-    let Some(new) = retire_navy_light(&text, themes_dir) else { return false };
+/// What `retire_navy_light_file` did to the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retired {
+    /// Nothing named Navy Light, or the file could not be rewritten.
+    No,
+    /// `theme.light` was moved to Peach Light: the window says so once.
+    Light,
+    /// Only `theme.dark` was moved to Navy: rewritten without a notice.
+    DarkOnly,
+}
+
+/// Moves the config file at `path` off Navy Light (see `retire_navy_light`), writing it back to a
+/// temporary file and renaming it over the target (a symlink is followed to its target).
+pub fn retire_navy_light_file(path: &Path, themes_dir: &Path) -> Retired {
+    let Ok(text) = std::fs::read_to_string(path) else { return Retired::No };
+    let Some(new) = retire_navy_light(&text, themes_dir) else { return Retired::No };
+    let light_named = text
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|d| d.get("theme")?.as_table_like()?.get("light")?.as_str().map(|s| s == "navy-light"))
+        .unwrap_or(false);
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    match std::fs::write(&target, new) {
-        Ok(()) => true,
+    let mut tmp = target.clone().into_os_string();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    let written = std::fs::write(&tmp, new)
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    match written {
+        Ok(()) if light_named => Retired::Light,
+        Ok(()) => Retired::DarkOnly,
         Err(e) => {
-            eprintln!("arkos: cannot rewrite {}: {e}", path.display());
-            false
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("arkos: cannot rewrite {}: {e}", target.display());
+            Retired::No
         }
     }
 }
@@ -1191,7 +1219,7 @@ pub(crate) mod tests {
         let new = retire_navy_light(text, dir.path()).unwrap();
         assert_eq!(new, "# mine\n[theme]\ndark = \"navy\" # the night\nlight = \"peach-light\" # the day\n");
         let both = retire_navy_light("[theme]\ndark = \"navy-light\"\nlight = \"navy-light\"\n", dir.path()).unwrap();
-        assert_eq!(parse(&both).unwrap().theme, ThemeConfig { dark: "peach-light".into(), light: "peach-light".into() });
+        assert_eq!(parse(&both).unwrap().theme, ThemeConfig { dark: "navy".into(), light: "peach-light".into() }, "a dark slot gets a dark theme");
         assert_eq!(NAVY_LIGHT_NOTICE, "Navy Light was removed; your light theme is now Peach Light.");
     }
 
@@ -1200,10 +1228,20 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
         std::fs::write(&file, "[theme]\nlight = \"navy-light\" # day\n").unwrap();
-        assert!(retire_navy_light_file(&file, dir.path()));
+        assert_eq!(retire_navy_light_file(&file, dir.path()), Retired::Light);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "[theme]\nlight = \"peach-light\" # day\n");
-        assert!(!retire_navy_light_file(&file, dir.path()), "rewritten once, it never shows again");
-        assert!(!retire_navy_light_file(&dir.path().join("none.toml"), dir.path()));
+        assert_eq!(retire_navy_light_file(&file, dir.path()), Retired::No, "rewritten once, it never shows again");
+        assert_eq!(retire_navy_light_file(&dir.path().join("none.toml"), dir.path()), Retired::No);
+        std::fs::write(&file, "[theme]\ndark = \"navy-light\" # night\n").unwrap();
+        assert_eq!(retire_navy_light_file(&file, dir.path()), Retired::DarkOnly, "the notice is about the light theme");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[theme]\ndark = \"navy\" # night\n");
+        let real = dir.path().join("real.toml");
+        let link = dir.path().join("link.toml");
+        std::fs::write(&real, "[theme]\nlight = \"navy-light\"\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(retire_navy_light_file(&link, dir.path()), Retired::Light);
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "[theme]\nlight = \"peach-light\"\n");
     }
 
     #[test]

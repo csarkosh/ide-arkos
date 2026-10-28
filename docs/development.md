@@ -431,7 +431,7 @@ Things only a person at the screen can check, in order of value:
 - editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
-- System Settings > Appearance: Light switches to Navy Light and back, history included
+- System Settings > Appearance: Light switches to Peach Light and back, history included
 - `mode = "dark"` pins Navy whatever the system says
 - Shift+Cmd+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing

@@ -4349,13 +4349,15 @@ fn main() {
     motion::refresh();
     app_nap::hold();
     let config_path = paths::config_file();
+    // Navy Light is no longer built in: a config naming it is moved to Peach Light (or Navy for
+    // the dark slot) before it is parsed, and the window says so once when the light theme moved
+    // (the file never names it again). Before the fingerprint, so the rewritten file is the one
+    // fingerprinted.
+    let theme_retired = config::retire_navy_light_file(&config_path, &paths::themes_dir()) == config::Retired::Light;
     // Taken before the load: the project window reads the file again when it changed since
     // (Settings opened from the chooser writes it), so a write landing during the load is not
     // missed; at worst it costs one extra reload.
     let fingerprint = config_watch::fingerprint(&config_path);
-    // Navy Light is no longer built in: a config naming it is moved to Peach Light before it is
-    // parsed, and the window says so once (the file never names it again).
-    let theme_retired = config::retire_navy_light_file(&config_path, &paths::themes_dir());
     let (config, config_error) = match config::load(&config_path) {
         Ok(c) => (c, None),
         Err(e) => {

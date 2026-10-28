@@ -628,7 +628,7 @@ pub fn blend(from: &Theme, to: &Theme, t: f32) -> Theme {
 }
 
 /// Which theme name the config picks for the current appearance (spec 7.1: follow the system
-/// by default, Navy for dark and Navy Light for light).
+/// by default, Navy for dark and Peach Light for light).
 pub fn pick_name(mode: crate::config::AppearanceMode, system_is_dark: bool, cfg: &crate::config::ThemeConfig) -> &str {
     use crate::config::AppearanceMode::*;
     match (mode, system_is_dark) {
