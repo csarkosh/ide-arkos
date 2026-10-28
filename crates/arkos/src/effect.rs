@@ -202,6 +202,9 @@ pub struct Region {
     pub tint: u32,
     pub strength: f32,
     pub ink: u32,
+    /// What picks the block's grain pattern and ink overshoot: fixed for the block, so a
+    /// highlight coming and going never changes another block's look.
+    pub seed: f32,
 }
 
 const SHADER: &str = include_str!("../shaders/watercolor.metal");
@@ -341,7 +344,7 @@ impl Watercolor {
         let n = regions.len().min(MAX_REGIONS);
         for (i, r) in regions.iter().take(n).enumerate() {
             rects[i] = [r.x, r.y, r.w, r.h];
-            metas[i] = [r.tint as f32, r.strength, r.ink as f32, 0.0];
+            metas[i] = [r.tint as f32, r.strength, r.ink as f32, r.seed];
         }
         let u = Uniforms {
             time: t,

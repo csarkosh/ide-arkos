@@ -3545,26 +3545,28 @@ impl Root {
         let c = self.content;
         let bar = chrome::TITLE_BAR_H;
         let tab = pane_view::TAB_BAR_H;
-        let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.46, ink: INK_BOTTOM }];
+        let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.46, ink: INK_BOTTOM, seed: 1.0 }];
         if c.x > 1.0 {
-            regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.3, ink: INK_RIGHT });
+            regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.3, ink: INK_RIGHT, seed: 2.0 });
             // The line between Explorer and Worktrees: an ink stroke with no wash.
             if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
-                regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP });
+                regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP, seed: 3.0 });
             }
         }
         // The Explorer's selected and hovered rows: thin strokes of peach, no outline, each at the
         // strength its fade has reached.
         let (strokes, moving) = effect::strokes(Instant::now());
         for ((x, y, w, h), strength) in strokes {
-            regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength, ink: 0 });
+            regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength, ink: 0, seed: 4.0 + y * 0.013 });
         }
         // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
         // wash on the tab bar, a faint one on the body, both outlined in ink.
-        for (i, (_, r)) in self.layout().panes.iter().enumerate() {
+        for (i, (pane, r)) in self.layout().panes.iter().enumerate() {
+            // Seeded by the pane itself, not its place in this frame's list.
+            let seed = 10.0 + (*pane % 997) as f32 * 2.0;
             let tint = [0, 1, 3, 2][i % 4];
-            regions.push(Region { x: r.x, y: r.y, w: r.w, h: tab, tint, strength: 0.56, ink: INK_TOP | INK_RIGHT | INK_BOTTOM | INK_LEFT });
-            regions.push(Region { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0), tint, strength: 0.14, ink: INK_RIGHT | INK_BOTTOM | INK_LEFT });
+            regions.push(Region { x: r.x, y: r.y, w: r.w, h: tab, tint, strength: 0.56, ink: INK_TOP | INK_RIGHT | INK_BOTTOM | INK_LEFT, seed });
+            regions.push(Region { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0), tint, strength: 0.14, ink: INK_RIGHT | INK_BOTTOM | INK_LEFT, seed: seed + 1.0 });
         }
         let t = &self.theme;
         // The pigments are the theme's own accents: burnt orange, ochre, brick and plum, which

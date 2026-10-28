@@ -118,7 +118,8 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
         float4 m = u.metas[i];
         float2 hb = r.zw * 0.5;
         float2 c = r.xy + hb;
-        float seed = float(i) * 1.7;
+        // The block's own seed (stable whatever else is on the paper): its grain and overshoot.
+        float seed = m.w * 1.7;
         if (m.y > 0.0) {
             float d = sd_box(p - c, hb);
             if (d < 12.0) {
