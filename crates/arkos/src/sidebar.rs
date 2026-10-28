@@ -155,7 +155,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .items_center()
             .gap(px(4.0))
             .text_color(c.text_dim.hsla())
-            .text_size(px(11.0))
+            .text_size(px(crate::effect::ui(11.0)))
             .cursor_pointer()
             .child(div().flex_none().w(px(12.0)).child(if open { "\u{25be}" } else { "\u{25b8}" }))
             .child(div().flex_1().child(title.to_uppercase()))
@@ -198,7 +198,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .id("worktree-create")
         .flex_none()
         .px(px(4.0))
-        .text_size(px(13.0))
+        .text_size(px(crate::effect::ui(13.0)))
         .cursor_pointer()
         .hover(|s| s.text_color(c.text.hsla()))
         .child("+")
@@ -261,7 +261,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         // SPIKE: the effect's ink line is the sidebar's edge.
         .border_color(if crate::effect::active() { c.border.alpha(0.0) } else { c.border.hsla() })
         .font_family(family)
-        .text_size(px(13.0))
+        .text_size(px(crate::effect::ui(13.0)))
         .text_color(c.text.hsla())
         .child(explorer)
         .child(worktrees)
@@ -456,7 +456,7 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         .border_1()
         .border_color(c.border.hsla())
         .font_family(root.ui_family())
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .text_color(c.text.hsla())
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
@@ -796,7 +796,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<
         if active {
             line_edit::render(edit, placeholder, theme, family.clone(), 12.0)
         } else {
-            div().text_size(px(12.0)).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
+            div().text_size(px(crate::effect::ui(12.0))).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
         }
     };
     let row = |l: Div, f: Div| div().h(px(ROW_H)).px(px(10.0)).flex().items_center().gap(px(6.0)).child(l).child(div().min_w_0().flex_1().overflow_hidden().child(f));
@@ -808,7 +808,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<
             .relative()
             .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
             .opacity(opacity * section)
-            .text_size(px(12.0))
+            .text_size(px(crate::effect::ui(12.0)))
             .bg(theme.chrome.tab_inactive.hsla())
             // Keys reach `wt_key` through the section's listener; a click here takes them back.
             .when(live, |d| {
@@ -908,7 +908,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     .child(div().flex_none().max_w(px(width * 0.5)).truncate().child(name))
                     .child(div().min_w_0().flex_1().truncate().text_color(dim).child(branch))
                     .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
-                    .children(count.map(|(text, color)| div().flex_none().text_size(px(11.0)).text_color(color).child(text)))
+                    .children(count.map(|(text, color)| div().flex_none().text_size(px(crate::effect::ui(11.0))).text_color(color).child(text)))
                     .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                         root.worktrees.selected = Some(i);
                         root.worktrees.toggle(&p_click);
@@ -985,7 +985,7 @@ pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<D
         .border_1()
         .border_color(c.border.hsla())
         .font_family(root.ui_family())
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .text_color(c.text.hsla())
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
     for (i, (label, action)) in items.into_iter().enumerate() {

@@ -230,7 +230,7 @@ pub fn aux_title_bar(title: &str, theme: &Theme) -> Div {
         .bg(if crate::effect::active() { c.title_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.title_bar.hsla() })
         .text_color(c.text.hsla())
         .font_family(SharedString::from(UI_FONT))
-        .text_size(px(13.0))
+        .text_size(px(crate::effect::ui(13.0)))
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
 }
 
@@ -251,7 +251,7 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
         .bg(if crate::effect::active() { c.title_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.title_bar.hsla() })
         .text_color(c.text.hsla())
         .font_family(bar_font)
-        .text_size(px(13.0))
+        .text_size(px(crate::effect::ui(13.0)))
         .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Arkos IDE"))
         .child(
             div()
@@ -292,7 +292,7 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
         .border_1()
         .border_color(c.border.hsla())
         .font_family(family)
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .text_color(c.text.hsla())
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()))
 }

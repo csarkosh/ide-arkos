@@ -63,7 +63,7 @@ pub fn render_link_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> 
         .border_1()
         .border_color(c.border.hsla())
         .font_family(root.ui_family())
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .text_color(c.text.hsla())
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));

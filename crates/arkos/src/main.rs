@@ -3551,9 +3551,9 @@ impl Root {
             if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
                 regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP });
             }
-            // The Explorer's selected row: a stroke of peach across it, no outline.
+            // The Explorer's selected row: a thin stroke of peach across it, no outline.
             for (x, y, w, h) in effect::marks() {
-                regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength: 0.55, ink: 0 });
+                regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength: 0.3, ink: 0 });
             }
         }
         // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
@@ -3947,7 +3947,7 @@ fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &th
         .bg(theme.chrome.banner.hsla())
         .text_color(theme.chrome.text.hsla())
         .font_family(family)
-        .text_size(px(13.0))
+        .text_size(px(crate::effect::ui(13.0)))
         .child(text)
 }
 

@@ -63,6 +63,14 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
+/// How much larger the project window's UI text is under the wash, in points: room for the ink.
+const UI_BUMP: f32 = 1.0;
+
+/// A UI text size as the wash wants it.
+pub fn ui(size: f32) -> f32 {
+    if active() { size + UI_BUMP } else { size }
+}
+
 /// Whether the wash goes with the theme named: Peach Light carries it; `ARKOS_EFFECT=1` puts it
 /// under any theme for a look.
 pub fn wanted(theme_name: &str) -> bool {

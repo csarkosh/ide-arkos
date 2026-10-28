@@ -471,7 +471,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             .border_1()
             .border_color(theme.chrome.border.hsla())
             .font_family(root.ui_family())
-            .text_size(px(12.0))
+            .text_size(px(crate::effect::ui(12.0)))
             .when(live, |m| m.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
         for (idx, label, active) in menu_rows(&p, &labels) {
             m = m.child(
@@ -565,7 +565,7 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
         .bg(c.banner.hsla())
         .text_color(c.text_dim.hsla())
         .font_family(root.ui_family())
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .child(div().flex_1().min_w_0().truncate().child(crate::telemetry::INVITATION))
         .child(button("invite-turn-on", crate::telemetry::TURN_ON).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::TurnOn, cx))))
         .child(button("invite-not-now", crate::telemetry::NOT_NOW).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::NotNow, cx))))
@@ -593,7 +593,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .bg(if crate::effect::active() { c.tab_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.tab_bar.hsla() })
         .text_color(fg.hsla())
         .font_family(root.ui_family())
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
@@ -960,7 +960,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .border_color(pill_border(&theme))
                 .text_color(theme.chrome.text.hsla())
                 .font_family(family.clone())
-                .text_size(px(12.0))
+                .text_size(px(crate::effect::ui(12.0)))
                 .cursor_pointer()
                 .child("jump to bottom")
                 // The terminal's own mouse-down closes an open find bar; the pill is not a click
@@ -1072,7 +1072,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 .size_full()
                 .flex()
                 .flex_col()
-                .children(plain.filter(|_| !has_doc).map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0)).child(why.banner())))
+                .children(plain.filter(|_| !has_doc).map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(crate::effect::ui(12.0))).child(why.banner())))
                 .child(div().flex_1().min_h_0().child(element))
         }
         Kind::Loading => notice("loading".into()),
@@ -1093,7 +1093,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
     let right_pad = banner_right_pad(editable, has_changes);
-    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(12.0));
+    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(crate::effect::ui(12.0)));
     let mut banners: Vec<Div> = Vec::new();
     if kind_is_text {
         if conflict {
@@ -1139,7 +1139,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .border_color(theme.chrome.border.hsla())
             .text_color(if inline { theme.chrome.text.hsla() } else { dim })
             .font_family(family.clone())
-            .text_size(px(12.0))
+            .text_size(px(crate::effect::ui(12.0)))
             .cursor_pointer()
             .child("inline diff")
             // A press on the chip is not a click in the text below: stopping it keeps the caret
@@ -1170,7 +1170,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .border_color(pill_border(&theme))
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
-            .text_size(px(12.0))
+            .text_size(px(crate::effect::ui(12.0)))
             .cursor_pointer()
             .child(pill_label(mode))
             // A press on the pill is not a click in the text below; stopping it also stops the
@@ -1320,7 +1320,7 @@ fn render_url_prompt(root: &mut Root, pane: PaneId, bar_h: f32, cx: &mut Context
                     .border_color(c.border.hsla())
                     .font_family(family)
                     .child(field)
-                    .child(div().text_size(px(11.0)).text_color(c.text_dim.hsla()).child(hint)),
+                    .child(div().text_size(px(crate::effect::ui(11.0))).text_color(c.text_dim.hsla()).child(hint)),
             ),
     )
 }

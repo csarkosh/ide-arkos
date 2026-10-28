@@ -230,7 +230,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
         .border_b_1()
         .border_color(border)
         .font_family(family.clone())
-        .text_size(px(12.0))
+        .text_size(px(crate::effect::ui(12.0)))
         .text_color(text)
         .child(back)
         .child(forward)
@@ -254,7 +254,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
         (_, true) => None,
         (LoadState::Failed { reason }, _) => Some(
             column(dim, family.clone())
-                .child(div().text_color(text).text_size(px(15.0)).child("Could not load"))
+                .child(div().text_color(text).text_size(px(crate::effect::ui(15.0))).child("Could not load"))
                 .child(div().max_w(px(520.0)).text_center().child(shown_address.clone()))
                 .child(div().max_w(px(520.0)).text_center().child(reason.clone()))
                 .child(
@@ -291,7 +291,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
                 .w_full()
                 .flex()
                 .justify_center()
-                .child(div().px(px(10.0)).py(px(5.0)).rounded(px(6.0)).bg(banner).border_1().border_color(border).text_color(text).text_size(px(12.0)).child(n))
+                .child(div().px(px(10.0)).py(px(5.0)).rounded(px(6.0)).bg(banner).border_1().border_color(border).text_color(text).text_size(px(crate::effect::ui(12.0))).child(n))
         }));
     div()
         .size_full()
@@ -306,7 +306,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
 }
 
 fn column(dim: gpui::Hsla, family: SharedString) -> Div {
-    div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family).text_size(px(13.0)).text_color(dim)
+    div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family).text_size(px(crate::effect::ui(13.0))).text_color(dim)
 }
 
 #[cfg(test)]

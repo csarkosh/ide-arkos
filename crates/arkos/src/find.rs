@@ -177,7 +177,7 @@ pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: 
             .border_color(theme.chrome.border.hsla())
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
-            .text_size(px(12.0))
+            .text_size(px(crate::effect::ui(12.0)))
             .when_some(focus, |d, focus| {
                 d.track_focus(&focus)
                     .on_mouse_down(
