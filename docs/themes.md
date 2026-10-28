@@ -103,6 +103,14 @@ Optional. The one table that is not colours.
 
 A family that is not installed on the Mac is left out: that slot shows what it would without the theme naming a font, and the window's log says which font was missing.
 
+## [effect]
+
+Optional. A shader effect drawn under the window's text.
+
+| Key | What it sets |
+| --- | --- |
+| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-light` sets `watercolor`. |
+
 ## Adding a theme
 
 1. Copy a built-in as a starting point. "Extract built-in themes" in the command palette writes them into the themes folder (`~/.config/arkos/themes/`), or copy one from `crates/arkos/themes/`.

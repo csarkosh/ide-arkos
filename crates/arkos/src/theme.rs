@@ -17,6 +17,24 @@ pub struct Theme {
     /// Optional: the fonts a look asks for. Absent in files from before 0.3.3.
     #[serde(default, skip_serializing_if = "ThemeFont::is_default")]
     pub font: ThemeFont,
+    /// Optional: the effect the theme was designed with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<ThemeEffect>,
+}
+
+/// The `[effect]` table of a theme file: the one effect the look was designed with. The user's
+/// `effect.name` in the config may choose another.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeEffect {
+    pub name: String,
+}
+
+impl Theme {
+    /// The name of the effect this theme recommends, if it does.
+    pub fn recommended_effect(&self) -> Option<&str> {
+        self.effect.as_ref().map(|e| e.name.as_str())
+    }
 }
 
 /// The fonts a theme may name, each a family installed on the Mac. `prose`: the rendered
@@ -538,6 +556,10 @@ const SCHEMA: &[TableDoc] = &[
             surface("terminal", "Optional: the installed monospaced family for the shells and code views; unset, [font] family"),
         ],
     },
+    TableDoc {
+        name: "effect",
+        keys: &[surface("name", "Optional: the effect the theme was designed with, a built-in or an installed effect's folder name; the user's [effect] name in the config may choose another")],
+    },
 ];
 
 /// The theme file's tables and keys as data: the top-level `name` (a table named ""), then
@@ -602,6 +624,7 @@ pub fn blend(from: &Theme, to: &Theme, t: f32) -> Theme {
         viewer: blend_fields!(ViewerColors, a.viewer, b.viewer, t;
             keyword, string, comment, number, function, type_name, constant, operator, punctuation),
         font: to.font.clone(),
+        effect: to.effect.clone(),
     }
 }
 
@@ -644,6 +667,17 @@ mod tests {
         assert_eq!(t.font.ui.as_deref(), Some("Optima"));
         assert_eq!(t.font.terminal.as_deref(), Some("PT Mono"));
         assert!(parse(&(BUILTIN[0].1.to_string() + "\n[font]\nchrome = \"Menlo\"\n")).is_err(), "only prose, ui and terminal are fonts a theme may name");
+    }
+
+    #[test]
+    fn a_theme_may_recommend_an_effect_and_peach_light_recommends_watercolor() {
+        assert_eq!(builtin("peach-light").unwrap().recommended_effect(), Some("watercolor"));
+        for other in ["navy", "navy-light", "timo-purple", "lavender-light"] {
+            assert_eq!(builtin(other).unwrap().recommended_effect(), None, "{other}");
+        }
+        let text = BUILTIN[0].1.to_string() + "\n[effect]\nname = \"ink\"\n";
+        assert_eq!(parse(&text).unwrap().recommended_effect(), Some("ink"));
+        assert!(parse(&(BUILTIN[0].1.to_string() + "\n[effect]\nname = \"a\"\nspeed = 2\n")).is_err(), "name is the only key");
     }
 
     #[test]

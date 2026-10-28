@@ -490,7 +490,7 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings.
 Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
-and `light`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
+and `light`), `effect` (`name`: `theme`, `none` or an effect; `intensity`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
 whether it starts collapsed), `viewer` (`highlight_limit_bytes`, and `wide_tables`: `wrap` or `scroll`), and `browser` (`url`, the page a new
 browser tab opens when its prompt is left empty; `app_mode` is left over from 0.6's Chrome docking
@@ -589,7 +589,8 @@ the preview's colours with the error shown.
 
 `arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
-`font.presets.<name>.line_height` (1.0 to 2.5), `viewer.wide_tables` (wrap, scroll),
+`font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (theme, none, or an installed
+effect's name), `effect.intensity` (0.0 to 1.0), `viewer.wide_tables` (wrap, scroll),
 `update.auto` (true, false), `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
 `telemetry.crashes` (never, ask, always). Any other key exits 2 and lists these. A bad value is
 refused before anything is written. `settings get <key>` reads the file only, so a key left at its

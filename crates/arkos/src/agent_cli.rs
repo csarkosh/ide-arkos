@@ -63,6 +63,8 @@ pub const SETTABLE: &[&str] = &[
     "font.preset",
     "font.presets.*.size",
     "font.presets.*.line_height",
+    "effect.name",
+    "effect.intensity",
     "viewer.wide_tables",
     "update.auto",
     "recovery.start_at_login",
@@ -776,6 +778,9 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         "recovery.start_at_login" => one_of(key, raw, &["ask", "on", "off"]),
         "telemetry.usage" => one_of(key, raw, &["off", "local", "on"]),
         "telemetry.crashes" => one_of(key, raw, &["never", "ask", "always"]),
+        "effect.intensity" => number(key, raw, 0.0..=1.0, "0.0 to 1.0"),
+        "effect.name" if raw == "theme" || raw == "none" || crate::theme::is_bare_name(raw) => Ok(raw.into()),
+        "effect.name" => Err(format!("effect.name must be theme, none or an effect's bare name, not {raw:?}")),
         _ if key.ends_with(".size") => number(key, raw, 8.0..=48.0, "8 to 48"),
         _ if key.ends_with(".line_height") => number(key, raw, 1.0..=2.5, "1.0 to 2.5"),
         _ if raw.trim().is_empty() => Err(format!("{key} must not be empty")),
@@ -1061,6 +1066,31 @@ mod tests {
         assert_eq!(String::from_utf8(err).unwrap(), "no window running\n");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(config_cli_to(&["reload".into()], &env, &mut out, &mut err), 3);
+    }
+
+    #[test]
+    fn settings_set_accepts_effect_name_and_effect_intensity_and_refuses_bad_values() {
+        assert!(settable("effect.name") && settable("effect.intensity") && !settable("effect.speed"));
+        assert_eq!(typed_value("effect.intensity", "0.5").unwrap().as_float(), Some(0.5));
+        assert!(typed_value("effect.intensity", "1.5").is_err());
+        assert!(typed_value("effect.intensity", "-1").is_err());
+        assert_eq!(typed_value("effect.name", "none").unwrap().as_str(), Some("none"));
+        assert!(typed_value("effect.name", "").is_err());
+        assert!(typed_value("effect.name", "../x").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
+        let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
+        let run = |key: &str, value: &str| settings_cli_to(&["set".into(), key.into(), value.into()], &env, &mut Vec::new(), &mut Vec::new());
+        assert_eq!(run("effect.name", "none"), 0);
+        assert_eq!(config::load(&cfg).unwrap().effect.name, config::EffectChoice::None);
+        assert_eq!(run("effect.name", "watercolor"), 0);
+        assert_eq!(config::load(&cfg).unwrap().effect.name, config::EffectChoice::Named("watercolor".into()));
+        assert_eq!(run("effect.intensity", "0.25"), 0);
+        assert_eq!(config::load(&cfg).unwrap().effect.intensity, 0.25);
+        assert_eq!(run("effect.intensity", "1.5"), 1);
+        assert_eq!(run("effect.name", "a/b"), 1);
+        assert_eq!(config::load(&cfg).unwrap().effect.intensity, 0.25, "a refused value writes nothing");
     }
 
     #[test]

@@ -8,7 +8,9 @@ pub mod manifest;
 
 use std::path::PathBuf;
 
+use crate::config::EffectChoice;
 use crate::paths;
+use crate::theme::Theme;
 
 /// The contract every wash shader is compiled with: prepended to its source, and what
 /// `arkos effect contract` prints.
@@ -30,6 +32,17 @@ pub const BUILTIN: &[BuiltIn] = &[BuiltIn {
     glyphs: Some(include_str!("../../effects/watercolor/glyphs.metal")),
 }];
 
+/// The name of the effect to draw for the config's choice under `theme`: the theme's own
+/// recommendation, nothing, or the name given. It does not check the effect exists; the window
+/// does when it installs it.
+pub fn resolve(choice: &EffectChoice, theme: &Theme) -> Option<String> {
+    match choice {
+        EffectChoice::Theme => theme.recommended_effect().map(str::to_string),
+        EffectChoice::None => None,
+        EffectChoice::Named(n) => Some(n.clone()),
+    }
+}
+
 /// Where a user's effects live, one folder each.
 pub fn effects_dir() -> PathBuf {
     paths::config_dir().join("effects")
@@ -38,6 +51,17 @@ pub fn effects_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_follows_the_theme_s_choice_then_none_then_a_name() {
+        use crate::config::EffectChoice;
+        let peach = crate::theme::builtin("peach-light").unwrap();
+        let navy = crate::theme::builtin("navy").unwrap();
+        assert_eq!(resolve(&EffectChoice::Theme, &peach), Some("watercolor".to_string()));
+        assert_eq!(resolve(&EffectChoice::Theme, &navy), None);
+        assert_eq!(resolve(&EffectChoice::None, &peach), None);
+        assert_eq!(resolve(&EffectChoice::Named("ink".into()), &navy), Some("ink".to_string()));
+    }
 
     #[test]
     fn effects_live_in_the_config_folder_and_the_preamble_declares_the_inputs() {

@@ -17,6 +17,7 @@ pub struct Config {
     pub browser: BrowserConfig,
     pub daemon: DaemonConfig,
     pub theme: ThemeConfig,
+    pub effect: EffectConfig,
     pub appearance: AppearanceConfig,
     pub recovery: RecoveryConfig,
     pub update: UpdateConfig,
@@ -165,6 +166,52 @@ impl Default for ThemeConfig {
     }
 }
 
+/// Which effect to draw under the window: the theme's own recommendation, none, or an effect
+/// by name. In the file it is the bare string `theme`, `none` or the name.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum EffectChoice {
+    #[default]
+    Theme,
+    None,
+    Named(String),
+}
+
+impl Serialize for EffectChoice {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            EffectChoice::Theme => "theme",
+            EffectChoice::None => "none",
+            EffectChoice::Named(n) => n,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for EffectChoice {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        match name.as_str() {
+            "theme" => Ok(EffectChoice::Theme),
+            "none" => Ok(EffectChoice::None),
+            n if crate::theme::is_bare_name(n) => Ok(EffectChoice::Named(name)),
+            _ => Err(serde::de::Error::custom(format!("effect.name must be theme, none or an effect's bare name (was {name:?})"))),
+        }
+    }
+}
+
+/// `[effect]`: which effect is drawn and how strongly (1.0 is the effect as designed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EffectConfig {
+    pub name: EffectChoice,
+    pub intensity: f32,
+}
+
+impl Default for EffectConfig {
+    fn default() -> Self {
+        Self { name: EffectChoice::Theme, intensity: 1.0 }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AppearanceMode {
@@ -225,6 +272,7 @@ impl Default for Config {
             browser: BrowserConfig::default(),
             daemon: DaemonConfig::default(),
             theme: ThemeConfig::default(),
+            effect: EffectConfig::default(),
             appearance: AppearanceConfig::default(),
             recovery: RecoveryConfig::default(),
             update: UpdateConfig::default(),
@@ -249,6 +297,9 @@ impl Config {
             if !(1.0..=2.5).contains(&p.line_height) || !p.line_height.is_finite() {
                 return Err(format!("font.presets.{name}.line_height {} must be 1.0 to 2.5", p.line_height));
             }
+        }
+        if !(0.0..=1.0).contains(&self.effect.intensity) {
+            return Err(format!("effect.intensity must be 0.0 to 1.0 (was {})", self.effect.intensity));
         }
         if self.terminal.scrollback == 0 || self.terminal.scrollback > 1_000_000 {
             return Err(format!("terminal.scrollback {} must be 1 to 1000000", self.terminal.scrollback));
@@ -592,6 +643,13 @@ replay_bytes = 16777216
 dark = "navy"
 light = "navy-light"
 
+[effect]
+# A shader drawn under the window's text. "theme" draws the one the theme was designed with (only
+# peach-light has one, the watercolor), "none" draws nothing, or name an effect: a built-in, or a
+# folder in ~/.config/arkos/effects/. intensity runs from 0.0 (invisible) to 1.0 (as designed).
+name = "theme"
+intensity = 1.0
+
 [appearance]
 # "system" follows macOS light and dark: the evidence points at matching the room, which the
 # system setting already tracks. "dark" or "light" fixes one. No warm tint or blue-light mode is
@@ -867,6 +925,38 @@ pub(crate) mod tests {
         keys.insert("terminal.shell".into());
         keys.insert("keybindings".into());
         assert_eq!(allowlisted("settings", "key"), keys, "telemetry/events.toml's settings keys are the config's");
+    }
+
+    #[test]
+    fn the_effect_section_defaults_to_the_theme_s_choice_at_full_intensity() {
+        let cfg = Config::default();
+        assert_eq!(cfg.effect, EffectConfig { name: EffectChoice::Theme, intensity: 1.0 });
+        assert_eq!(parse("").unwrap().effect, cfg.effect);
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap(), cfg, "the commented defaults say the same");
+    }
+
+    #[test]
+    fn effect_name_reads_theme_none_or_a_name_and_writes_them_back_the_same() {
+        for (text, want) in [("theme", EffectChoice::Theme), ("none", EffectChoice::None), ("watercolor", EffectChoice::Named("watercolor".into()))] {
+            let cfg = parse(&format!("[effect]\nname = \"{text}\"\n")).unwrap();
+            assert_eq!(cfg.effect.name, want);
+            let back = toml::to_string(&cfg).unwrap();
+            assert!(back.contains(&format!("name = \"{text}\"")), "{back}");
+            assert_eq!(parse(&back).unwrap().effect.name, want);
+        }
+        let e = parse("[effect]\nname = \"\"\n").unwrap_err().to_string();
+        assert!(e.contains("effect.name"), "{e}");
+        let e = parse("[effect]\nname = \"../x\"\n").unwrap_err().to_string();
+        assert!(e.contains("effect.name"), "{e}");
+    }
+
+    #[test]
+    fn an_intensity_outside_zero_to_one_is_a_config_error_naming_the_key() {
+        assert_eq!(parse("[effect]\nintensity = 0.4\n").unwrap().effect.intensity, 0.4);
+        assert_eq!(parse("[effect]\nintensity = 0.0\n").unwrap().effect.intensity, 0.0);
+        let e = parse("[effect]\nintensity = 1.5\n").unwrap_err().to_string();
+        assert!(e.contains("effect.intensity must be 0.0 to 1.0 (was 1.5)"), "{e}");
+        assert!(parse("[effect]\nintensity = -0.1\n").is_err());
     }
 
     #[test]

@@ -4,6 +4,9 @@
 # ANSI colours are deepened so each clears 4.5:1 on the cream.
 name = "peach-light"
 
+[effect]
+name = "watercolor"
+
 [font]
 prose = "Baskerville"
 ui = "Optima"

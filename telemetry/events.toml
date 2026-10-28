@@ -125,6 +125,8 @@ key = [
     "daemon.replay_bytes",
     "theme.dark",
     "theme.light",
+    "effect.name",
+    "effect.intensity",
     "appearance.mode",
     "recovery.start_at_login",
     "update.auto",
