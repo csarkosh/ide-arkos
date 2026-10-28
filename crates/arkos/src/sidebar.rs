@@ -221,7 +221,13 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .flex()
         .flex_col()
         .border_t_1()
-        .border_color(c.border.hsla())
+        // SPIKE: the effect's ink line is the divider; the section says where it starts.
+        .border_color(if crate::effect::active() { c.border.alpha(0.0) } else { c.border.hsla() })
+        .child(
+            gpui::canvas(|bounds, _window, _cx| crate::effect::note_divider(f32::from(bounds.origin.y)), |_, _, _, _| {})
+                .w_full()
+                .h(px(0.0)),
+        )
         .key_context("Worktrees")
         .track_focus(&root.wt_focus)
         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.wt_key(&ev.keystroke, cx)))

@@ -3547,6 +3547,10 @@ impl Root {
         let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.36, ink: INK_BOTTOM }];
         if c.x > 1.0 {
             regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.22, ink: INK_RIGHT });
+            // The line between Explorer and Worktrees: an ink stroke with no wash.
+            if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
+                regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP });
+            }
         }
         // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
         // wash on the tab bar, a faint one on the body, both outlined in ink.
@@ -4375,6 +4379,12 @@ fn open_project_window(
         // SPIKE: a theme that carries the wash gets a transparent window, so the Metal layer
         // under gpui's view shows through the surfaces painted with some alpha.
         let wash = effect::wanted(&theme.name);
+        // SPIKE: the vendored gpui draws glyphs as ink when this is set at window creation.
+        if wash && std::env::var("ARKOS_INK").as_deref() != Ok("0") {
+            // SAFETY: set on the main thread before the window (and its renderer) exists; no
+            // other thread reads the environment meanwhile.
+            unsafe { std::env::set_var("GPUI_INK_GLYPHS", "1") };
+        }
         // SPIKE: the wash's theme has its text deepened towards ink.
         let theme = if wash { effect::inked(theme) } else { theme };
         let (view_config, view_theme) = (config, theme);
