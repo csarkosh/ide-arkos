@@ -1322,6 +1322,11 @@ impl Root {
     /// `CustomizeAction::ReloadConfig`. A preview ends here, whether or not the file loads.
     pub fn reload_config(&mut self, cx: &mut Context<Self>) {
         let previewing = self.preview.take().is_some();
+        // The same migration as at launch: a file edited back to Navy Light moves off it.
+        let retired = config::retire_navy_light_file(&paths::config_file(), &paths::themes_dir());
+        if retired == config::Retired::Light {
+            self.notices.set(notices::Kind::ThemeRetired, config::NAVY_LIGHT_NOTICE, None, SystemTime::now());
+        }
         let (cfg, banner) = config::reload_decision(&self.config, config::load(&paths::config_file()));
         self.config_error = banner;
         if let Some(e) = &self.config_error {
@@ -3751,6 +3756,11 @@ impl Root {
                 let now = Instant::now();
                 root.step_effect_fade(now, cx);
                 let seen = root.effect_tick(now);
+                // The text's own timer stops while the window cannot be seen and only `render`
+                // restarts it; uncovering the window brings no render by itself, so this tick does.
+                if seen.is_some() {
+                    root.ensure_glyph_timer(cx);
+                }
                 let wait = root.effect.as_ref().and_then(|e| {
                     effects::active::next_wait(e.effect.manifest.frame_rate, seen.is_some(), seen == Some(true), !e.settled(), motion::reduce_motion())
                 });
@@ -3899,10 +3909,10 @@ impl Render for Root {
                 self.glyphs_pending = Some(self.glyph_shader_for(effects::active::WindowKind::Project));
             }
         }
-        // The seconds a moving glyph shader reads, wrapped at an hour so f32 keeps its
-        // sub-frame precision in a long session (the text jumps a little once an hour).
+        // The seconds a moving glyph shader reads, wrapped in f64 (see
+        // `GLYPH_CLOCK_WRAP`) so f32 keeps its sub-frame precision in a long session.
         let glyph_seconds = match &self.effect {
-            Some(e) => e.time(now, motion::reduce_motion()) % 3600.0,
+            Some(e) => e.glyph_time(now, motion::reduce_motion()),
             None => 0.0,
         };
         effects::active::GlyphSink::set_glyph_time(window, glyph_seconds);
@@ -4668,7 +4678,7 @@ fn open_project_window(
     start: Startup,
     cx: &mut App,
 ) {
-    let Startup { mut config, mut config_error, config_path, daemon_args, save_queue, mut theme, mut theme_error, system_is_dark, updated, theme_retired } = start;
+    let Startup { mut config, mut config_error, config_path, daemon_args, save_queue, mut theme, mut theme_error, system_is_dark, updated, mut theme_retired } = start;
     let now = config_watch::fingerprint(&config_path);
     // `main()` sets the registry up before any window, so a missing one is a wiring bug.
     let launch = cx.global::<aux::Aux>().launch.as_ref().expect("aux::init runs before any window");
@@ -4679,6 +4689,8 @@ fn open_project_window(
         // The Recorder has seen what the chooser's Settings applied; a change made elsewhere
         // meanwhile (`arkos telemetry on`, an editor) reaches it here, a new session id with it.
         let applied = launch.config.clone();
+        // Migrated like the first read, in case the file was edited back to Navy Light meanwhile.
+        theme_retired |= config::retire_navy_light_file(&config_path, &paths::themes_dir()) == config::Retired::Light;
         let (cfg, banner) = config::reload_decision(&config, config::load(&config_path));
         telemetry::opening_config(&applied, &cfg, banner.is_some(), Some(&*client));
         if cfg.keybindings != config.keybindings {

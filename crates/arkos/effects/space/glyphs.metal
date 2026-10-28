@@ -146,7 +146,7 @@ fragment float4 arkos_glyph_fragment(
   float light = (dark ? 1.0 : BRIGHTNESS) * line;
   float halo = dark ? 0.0 : GLOW;
   // The shimmer: a faint ripple of light running along the lines.
-  light *= 1.0 + 0.09 * SHIMMER * sin(q.x * 0.07 - t * 2.2 + q.y * 0.015);
+  light *= 1.0 + 0.09 * SHIMMER * sin(q.x * 0.07 - t * 2.2 + q.y * 0.015); // 2.2 is in step with GLYPH_CLOCK_WRAP (effects/active.rs)
 
   // The mock-up adds the halo to the ground and lays the letter over it:
   //   c = mix(base + gcol * g * halo * 0.55, col * light, a).

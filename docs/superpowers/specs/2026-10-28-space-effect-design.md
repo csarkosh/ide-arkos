@@ -14,7 +14,7 @@ navy theme is the brand, and Peach Light is the light theme people should meet f
 
 1. A built-in effect `space` (folder `crates/arkos/effects/space/`: `effect.toml`, `wash.metal`,
    `glyphs.metal`), listed by `arkos effect list` and Settings beside `watercolor`, and Navy's
-   recommended effect (`[effect] recommends = "space"` in `navy.toml`, as Peach Light names
+   recommended effect (`[effect] name = "space"` (corrected: the theme schema's key is `name`, not `recommends`) in `navy.toml`, as Peach Light names
    watercolor).
 2. The wash: a sky made from the theme's colours, and events, as below.
 3. The glyph shader: the holo display at Cyrus's tuned values, with the shimmer moving.

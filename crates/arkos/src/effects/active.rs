@@ -179,6 +179,11 @@ pub enum WindowKind {
     Chooser,
 }
 
+/// Where the glyph clock wraps: a whole number (1260) of the space shimmer's periods, about
+/// 3598.4 s, so the ripple does not jump at the wrap. The space glyph shader's rate of 2.2
+/// radians per second (`glyphs.metal`) must stay in step with this.
+pub const GLYPH_CLOCK_WRAP: f64 = 1260.0 * std::f64::consts::TAU / 2.2;
+
 /// Where a window's glyph stages are set: gpui's window, or a test's stand-in.
 pub trait GlyphSink {
     fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String>;
@@ -359,6 +364,17 @@ impl<L> ActiveEffect<L> {
         }
     }
 
+    /// The clock the glyph shader reads: seconds since the effect started, wrapped in f64 before
+    /// it is narrowed so an f32 keeps its sub-frame precision in a long session. Zero under
+    /// Reduce Motion.
+    pub fn glyph_time(&self, now: Instant, reduce: bool) -> f32 {
+        if reduce {
+            0.0
+        } else {
+            (now.duration_since(self.started).as_secs_f64() % GLYPH_CLOCK_WRAP) as f32
+        }
+    }
+
     /// Whether a frame with `inputs` is drawn: never while the window is hidden or covered, and
     /// under Reduce Motion only when the inputs differ from the last frame's.
     pub fn should_draw(&self, inputs: &Inputs, hidden: bool, covered: bool, reduce: bool) -> bool {
@@ -368,6 +384,15 @@ impl<L> ActiveEffect<L> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::effects::blocks::{self, Kind};
+    use crate::effects::inputs;
+    use crate::effects::manifest::{self, Effect, Highlights};
+    use crate::motion::{test_lock, THEME_FADE};
+    use crate::tree::{Rect, Side, Tab, Tree};
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
     #[test]
     fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
         assert_eq!(glyph_wait(30, false, true, true, false), None);
@@ -379,14 +404,17 @@ mod tests {
         assert_eq!(glyph_wait(12, true, true, true, false), Some(Duration::from_secs_f64(1.0 / 12.0)));
     }
 
-    use super::*;
-    use crate::effects::blocks::{self, Kind};
-    use crate::effects::inputs;
-    use crate::effects::manifest::{self, Effect, Highlights};
-    use crate::motion::{test_lock, THEME_FADE};
-    use crate::tree::{Rect, Side, Tab, Tree};
-    use std::path::Path;
-    use std::time::{Duration, Instant};
+    #[test]
+    fn the_glyph_clock_stays_precise_to_a_millisecond_after_six_days_and_is_zero_under_reduce_motion() {
+        let start = Instant::now();
+        let e = on(watercolor(), start);
+        let six_days = Duration::from_secs(6 * 24 * 3600) + Duration::from_millis(123);
+        let got = e.glyph_time(start + six_days, false);
+        let want = six_days.as_secs_f64() % GLYPH_CLOCK_WRAP;
+        assert!(got >= 0.0 && (got as f64) < GLYPH_CLOCK_WRAP);
+        assert!((got as f64 - want).abs() < 0.001, "{got} against {want}");
+        assert_eq!(e.glyph_time(start + six_days, true), 0.0);
+    }
 
     fn watercolor() -> Effect {
         manifest::load("watercolor", Path::new("/nonexistent/effects")).unwrap()

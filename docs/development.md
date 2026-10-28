@@ -289,7 +289,8 @@ Things only a person at the screen can check, in order of value:
   shooting star, the text is still, and Activity Monitor shows the window idle
 - effects, space: a window wholly covered by another app's window, or minimised, stops the text's
   redraws (the process idle in Activity Monitor), and the ripple moves again once the window is
-  seen and drawn again
+  seen and drawn again; uncovering the window resumes the shimmer within half a second without
+  any input (no click or keypress needed)
 - effects, space: a light theme (Peach Light) with `effect.name = "space"` keeps its text dark
   and readable (a deep teal lean, no glow, not dimmed)
 - effects, space: in a release build with Navy and space on, the window idle in front, Activity
@@ -460,7 +461,7 @@ Things only a person at the screen can check, in order of value:
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
 - "Theme: peach-light" in the palette, then a config reload: the config's theme wins
-- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Light." once, the file now says `peach-light` with its comments intact, and the next launch shows nothing
+- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Light." once, the file now says `peach-light` with its comments intact, and the next launch shows nothing; a dark slot naming `navy-light` moves silently to `navy`; editing the file back to `navy-light` while the app runs and reloading migrates it again
 - "Extract built-in themes", then editing `~/.config/arkos/themes/navy.toml`'s `window_bg` and
   reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
 - `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
