@@ -322,8 +322,8 @@ pub struct Root {
     pub ns_view: Option<objc2::rc::Retained<objc2_app_kit::NSView>>,
     /// The repaint scheduled for a text field's cursor to blink (`line_edit::take_blink_wake`).
     caret_wake: Option<Instant>,
-    /// The Cmd key monitor (`screen::install_cmd_monitor`), alive while the window is.
-    cmd_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    /// The key monitor (`screen::install_key_monitor`), alive while the window is.
+    key_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
@@ -612,7 +612,7 @@ impl Root {
             webs: HashMap::new(),
             web_titles: HashMap::new(),
             ns_view: None,
-            cmd_monitor: None,
+            key_monitor: None,
             caret_wake: None,
             system_is_dark,
             installed,
@@ -3388,9 +3388,12 @@ impl Root {
         if let Some(v) = self.webs.get(&tab) {
             return v.clone();
         }
-        let web: Box<dyn web::Web> = match self.ns_window.as_ref().and_then(|ns| wk_web_view::Host::new(ns)) {
-            Some(host) => Box::new(host),
-            None => Box::new(web::NoWeb),
+        let web: Box<dyn web::Web> = match (self.ns_window.as_ref(), self.ns_view.as_ref()) {
+            (Some(ns), Some(view)) => match wk_web_view::Host::new(ns, view) {
+                Some(host) => Box::new(host),
+                None => Box::new(web::NoWeb),
+            },
+            _ => Box::new(web::NoWeb),
         };
         let project = self.project.clone();
         let under = self.theme.chrome.window_bg;
@@ -4369,7 +4372,7 @@ fn open_project_window(
                         root.ns_window = screen::ns_window_of(window);
                         root.ns_view = screen::ns_view_of(window);
                         if let (Some(ns), Some(view)) = (&root.ns_window, &root.ns_view) {
-                            root.cmd_monitor = screen::install_cmd_monitor(ns.clone(), view.clone());
+                            root.key_monitor = screen::install_key_monitor(ns.clone(), view.clone());
                         }
                         // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
                         // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,

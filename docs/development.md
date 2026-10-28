@@ -456,6 +456,9 @@ Things only a person at the screen can check, in order of value:
   two seconds; `arkos open` of the same file again after an edit prints "reloaded"
 - web pane: click into a page's text field and type: the page gets it; Cmd+1: the first pane takes
   the focus; click the tab bar: the pane's keys work again; Cmd+L: the address field has the cursor
+- web pane: click into a page, then close its tab (its × or Cmd+W) and type into the terminal
+  that takes its place: every key arrives once (the page handed the keys back as it went; without
+  that, the window was its own first responder and each key reached the terminal twice)
 - web pane: `arkos open http://localhost:1/`: the pane says "Could not connect to the server" with
   Retry; start the server, Retry: the page
 - web pane: right-click a page, Inspect Element: the Web Inspector opens as its own window

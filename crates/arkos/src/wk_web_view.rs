@@ -161,12 +161,15 @@ pub struct Host {
     signals: Signals,
     /// The frame last written, so a still window writes nothing.
     placed: Option<Frame>,
+    /// gpui's view, which takes the keys back when this view leaves the window with them.
+    keys_home: Retained<NSView>,
 }
 
 impl Host {
-    /// Adds a hidden web view to `window`'s content view. `None` without a content view or off
+    /// Adds a hidden web view to `window`'s content view; `keys_home` is gpui's view in that
+    /// window, which gets the keys back when this one goes. `None` without a content view or off
     /// the main thread.
-    pub fn new(window: &NSWindow) -> Option<Host> {
+    pub fn new(window: &NSWindow, keys_home: &NSView) -> Option<Host> {
         let mtm = MainThreadMarker::new()?;
         let content = screen::content_view(window)?;
         let config = configuration(mtm);
@@ -184,7 +187,7 @@ impl Host {
         }
         view.setHidden(true);
         content.addSubview(&view);
-        Some(Host { view, window: window.retain(), _navigation: navigation, _ui: ui, signals, placed: None })
+        Some(Host { view, window: window.retain(), _navigation: navigation, _ui: ui, signals, placed: None, keys_home: keys_home.retain() })
     }
 }
 
@@ -287,6 +290,12 @@ impl Web for Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
+        // A view removed while it has the keys leaves the window as its own first responder,
+        // and gpui's view then hears every key twice (`screen::keys_return`): the keys go home
+        // first. Closing a web tab after a click into its page did exactly this (2026-10-28).
+        if self.has_keys() {
+            screen::make_first_responder(&self.window, &self.keys_home);
+        }
         // SAFETY: the view was added to a superview by `new` and is removed once, here; the
         // delegates are cleared before they go.
         unsafe {

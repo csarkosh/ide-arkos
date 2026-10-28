@@ -26,20 +26,34 @@ pub fn appkit_frame(bounds: (f64, f64, f64, f64), bar_h: f64, content_h: f64, fl
     Frame { x, y, w: w.max(0.0), h }
 }
 
-/// What tells one key event from another: AppKit's timestamp for it, the key, the modifier
-/// flags and the window it was sent to. A key held down repeats with a new timestamp each time.
+/// Who holds the window's keyboard (its first responder) when a key arrives: gpui's view or a
+/// view inside it; a page (a view inside a `WKWebView`); or nobody Arkos knows. The last is the
+/// window itself, which AppKit makes the first responder when the view that had the keys is
+/// removed from the window, or a view of neither kind.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct KeyPress {
-    pub time: f64,
-    pub code: u16,
-    pub flags: usize,
-    pub window: isize,
+pub enum KeysHolder {
+    Gpui,
+    Page,
+    Lost,
 }
 
-/// The same key event handed to the window a second time: after the Mac woke, a window was seen
-/// to get every key press twice, so the second one is dropped before gpui hears it.
-pub fn delivered_again(last: Option<KeyPress>, next: KeyPress) -> bool {
-    last == Some(next)
+/// The Cmd chords a page keeps while it has the keyboard: its own editing. Every other Cmd
+/// chord is Arkos's (web pane spec, ruling 9). `chord` is the key's lowercase character.
+pub const PAGE_CHORDS: &[&str] = &["c", "v", "x", "a", "z"];
+
+/// Whether the keys come back to gpui's view before this key is dispatched. Lost keys always
+/// come back: a window that is its own first responder sends every key through its own
+/// `keyDown:`, which runs the view hierarchy's `performKeyEquivalent:` once more, so gpui's view
+/// hears each key twice (its guard against a duplicate covers the key down that follows a key
+/// equivalent, not a second key equivalent). That was every key press typed twice, after a web
+/// tab that held the keys was closed (2026-10-28, found by sampling the window). A page keeps
+/// the keys except for a Cmd chord that is Arkos's own.
+pub fn keys_return(holder: KeysHolder, cmd: bool, chord: &str) -> bool {
+    match holder {
+        KeysHolder::Lost => true,
+        KeysHolder::Page => cmd && !PAGE_CHORDS.contains(&chord),
+        KeysHolder::Gpui => false,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -47,12 +61,13 @@ pub use mac::*;
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use super::Frame;
+    use super::{keys_return, Frame, KeysHolder};
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, Message};
     use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSScreen, NSView, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use objc2_web_kit::WKWebView;
 
     /// The menu bar's height in points, from the main display (every display carries one of the
     /// same height). Zero off the main thread or without a display.
@@ -79,38 +94,43 @@ mod mac {
         Some(view.retain())
     }
 
-    /// The Cmd chords a page keeps while it has the keyboard: its own editing. Every other Cmd
-    /// chord is Arkos's (web pane spec, ruling 9).
-    const PAGE_CHORDS: &[&str] = &["c", "v", "x", "a", "z"];
+    /// Who has `window`'s keyboard now, for `keys_return`: gpui's `view` or a view inside it, a
+    /// view inside a `WKWebView`, or nobody Arkos knows (the window itself after the view that
+    /// had the keys left the window, or a view of neither kind).
+    pub fn keys_holder(window: &NSWindow, view: &NSView) -> KeysHolder {
+        let Some(responder) = window.firstResponder() else { return KeysHolder::Lost };
+        let Some(r) = responder.downcast_ref::<NSView>() else { return KeysHolder::Lost };
+        if std::ptr::eq(r, view) || r.isDescendantOf(view) {
+            return KeysHolder::Gpui;
+        }
+        let mut up = Some(r.retain());
+        while let Some(v) = up {
+            if v.downcast_ref::<WKWebView>().is_some() {
+                return KeysHolder::Page;
+            }
+            // SAFETY: a live view's superview, read on the main thread and retained for the step.
+            up = unsafe { v.superview() };
+        }
+        KeysHolder::Lost
+    }
 
-    /// A key equivalent does not pass through a focused `WKWebView` to gpui's view (spec ruling
-    /// 9, found by the probe), so a local monitor looks at every key press with Cmd held: when
-    /// the window's first responder is not gpui's `view` (a page has the keys) and the chord is
-    /// not the page's own, the keys come back to `view` before the event is dispatched, and the
-    /// event then reaches gpui's keymap as any other. The monitor lives as long as the returned
-    /// token; the window is its own, so a second window installs its own. The monitor also drops
-    /// a key event handed over a second time (`delivered_again`), and says so once in the log.
-    pub fn install_cmd_monitor(window: Retained<NSWindow>, view: Retained<NSView>) -> Option<Retained<AnyObject>> {
-        let last = std::cell::Cell::new(None::<super::KeyPress>);
-        let told = std::cell::Cell::new(false);
+    /// A local monitor that looks at every key press before the window dispatches it and gives
+    /// the keys back to gpui's `view` when `keys_return` says so. Two reasons it exists. A key
+    /// equivalent does not pass through a focused `WKWebView` to gpui's view (web pane spec,
+    /// ruling 9, found by the probe), so a Cmd chord of Arkos's own takes the keys back from a
+    /// page, and then reaches gpui's keymap as any other. And a window left as its own first
+    /// responder would hand every key to gpui's view twice (`keys_return`), so lost keys come
+    /// back on the first key pressed. The monitor lives as long as the returned token; the
+    /// window is its own, so a second window installs its own.
+    pub fn install_key_monitor(window: Retained<NSWindow>, view: Retained<NSView>) -> Option<Retained<AnyObject>> {
         let block = block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit hands a live event for the call; it is read, never kept.
             let ev: &NSEvent = unsafe { event.as_ref() };
-            let flags = ev.modifierFlags();
-            let press = super::KeyPress { time: ev.timestamp(), code: ev.keyCode(), flags: flags.0, window: ev.windowNumber() };
-            if super::delivered_again(last.replace(Some(press)), press) {
-                if !told.replace(true) {
-                    eprintln!("arkos: a key press was handed to the window twice; the second is dropped");
-                }
-                return std::ptr::null_mut();
-            }
-            if flags.contains(NSEventModifierFlags::Command) {
-                let page_has_keys = window.firstResponder().is_some_and(|r| {
-                    let r: Option<&NSView> = r.downcast_ref();
-                    r.is_some_and(|r| !std::ptr::eq(r, &*view) && !r.isDescendantOf(&view))
-                });
+            let holder = keys_holder(&window, &view);
+            if holder != KeysHolder::Gpui {
+                let cmd = ev.modifierFlags().contains(NSEventModifierFlags::Command);
                 let chord = ev.charactersIgnoringModifiers().map(|s| s.to_string().to_ascii_lowercase()).unwrap_or_default();
-                if page_has_keys && !PAGE_CHORDS.contains(&chord.as_str()) {
+                if keys_return(holder, cmd, &chord) {
                     window.makeFirstResponder(Some(&view));
                 }
             }
@@ -121,7 +141,9 @@ mod mac {
         unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) }
     }
 
-    /// Gives `view` the keyboard: what a web view took on a click comes back to gpui.
+    /// Gives `view` the keyboard: what a web view took on a click comes back to gpui. Also what
+    /// a web view that is about to leave the window does while it still has them, or AppKit
+    /// would make the window its own first responder (`keys_return` says what follows).
     pub fn make_first_responder(window: &NSWindow, view: &NSView) {
         if window.firstResponder().is_none_or(|r| !std::ptr::eq(&*r as *const _ as *const NSView, view)) {
             window.makeFirstResponder(Some(view));
@@ -166,23 +188,34 @@ mod mac {
 mod tests {
     use super::*;
 
-    fn press(time: f64, code: u16) -> KeyPress {
-        KeyPress { time, code, flags: 0, window: 7 }
+    #[test]
+    fn lost_keys_come_back_to_gpui_on_any_key() {
+        // The window is its own first responder: a plain letter, Enter and even a page's own
+        // chord all bring the keys back, or gpui's view hears each of them twice.
+        assert!(keys_return(KeysHolder::Lost, false, "a"));
+        assert!(keys_return(KeysHolder::Lost, false, "\r"));
+        assert!(keys_return(KeysHolder::Lost, true, "c"));
     }
 
     #[test]
-    fn a_key_event_handed_over_twice_is_dropped_the_second_time() {
-        assert!(delivered_again(Some(press(10.5, 0)), press(10.5, 0)));
+    fn a_page_keeps_plain_typing_and_its_own_chords() {
+        assert!(!keys_return(KeysHolder::Page, false, "a"));
+        for chord in ["c", "v", "x", "a", "z"] {
+            assert!(!keys_return(KeysHolder::Page, true, chord), "Cmd+{chord} is the page's");
+        }
     }
 
     #[test]
-    fn a_held_key_a_double_letter_and_the_first_press_all_come_through() {
-        // A repeat and "ee" typed quickly are the same key at a later time.
-        assert!(!delivered_again(Some(press(10.5, 14)), press(10.53, 14)));
-        assert!(!delivered_again(Some(press(10.5, 14)), press(10.5, 15)), "another key at the same instant");
-        assert!(!delivered_again(None, press(10.5, 14)));
-        let other_window = KeyPress { window: 8, ..press(10.5, 14) };
-        assert!(!delivered_again(Some(press(10.5, 14)), other_window));
+    fn a_page_gives_up_the_chords_that_are_arkos_s_own() {
+        assert!(keys_return(KeysHolder::Page, true, "w"));
+        assert!(keys_return(KeysHolder::Page, true, "1"));
+        assert!(keys_return(KeysHolder::Page, true, "b"));
+    }
+
+    #[test]
+    fn gpui_s_own_view_is_left_alone() {
+        assert!(!keys_return(KeysHolder::Gpui, false, "a"));
+        assert!(!keys_return(KeysHolder::Gpui, true, "w"));
     }
 
     #[test]

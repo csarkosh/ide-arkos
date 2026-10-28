@@ -526,13 +526,23 @@ The answers are rulings 7 to 9, written into this spec by the implementer.
    from `isFlipped` either way.
 9. (probe, 2026-10-24) Key equivalents do not reach gpui while the page is first responder:
    Cmd+W, Cmd+B and Cmd+Shift+B did nothing with a page focused. The fallback named in 3.2 is
-   built: `screen::install_cmd_monitor` is a local `NSEvent` monitor that, for a key press with
+   built: `screen::install_key_monitor` is a local `NSEvent` monitor that, for a key press with
    Cmd held while a page has the keys, gives the keys back to gpui's view before dispatch
    unless the chord is the page's own (Cmd+C, V, X, A, Z). The page loses the keyboard on such a
    chord, which is the accepted seam. The probe subcommand is deleted.
 10. A local page may read its project, or its own folder outside one; never more.
 11. Downloads are refused with a pointer to the default browser; a PDF is shown.
 12. `arkos open` on a URL already shown reuses and reloads the tab; `--new` makes another.
+13. (2026-10-28, found by sampling a window that typed every key twice) A web view removed from
+    the window while it has the keys leaves the window as its own first responder. AppKit then
+    sends each key through `-[NSWindow keyDown:]`, which runs the view hierarchy's
+    `performKeyEquivalent:` a second time, and gpui's view hears every key twice: its guard
+    against a duplicate covers only the key down that follows a key equivalent. Closing a web
+    tab after a click into its page did this. Two things now stop it: the host hands the keys
+    to gpui's view before the view leaves (`wk_web_view::Host::drop`), and the key monitor
+    gives lost keys back to gpui's view on the first key pressed whatever took them
+    (`screen::keys_return`). The 2026-10-26 guard that dropped a key event with the same
+    timestamp as the last one was built on a wrong reading of this and never fired; it is gone.
 13. `[browser] app_mode` stays in the config struct, ignored, so 0.6 configs read.
 14. Agent control of the page is the next milestone; this one leaves the two calls it needs
     unbuilt and named.
