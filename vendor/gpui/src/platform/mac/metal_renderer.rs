@@ -224,18 +224,18 @@ impl MetalRenderer {
             "underline_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+        let ink = std::env::var_os("GPUI_INK_GLYPHS").is_some();
+        if ink {
+            eprintln!("gpui: glyphs drawn with the ink shaders");
+        }
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
             &library,
             "monochrome_sprites",
-            "monochrome_sprite_vertex",
-            // ARKOS SPIKE: the ink variant of the glyph shader, when the app asks for it.
-            if std::env::var_os("GPUI_INK_GLYPHS").is_some() {
-                eprintln!("gpui: glyphs drawn with the ink shader");
-                "monochrome_sprite_fragment_ink"
-            } else {
-                "monochrome_sprite_fragment"
-            },
+            // ARKOS SPIKE: the ink variant of the glyph shaders, when the app asks for it: a
+            // wider quad so the ink can bleed past the stroke, and a painted fragment.
+            if ink { "monochrome_sprite_vertex_ink" } else { "monochrome_sprite_vertex" },
+            if ink { "monochrome_sprite_fragment_ink" } else { "monochrome_sprite_fragment" },
             MTLPixelFormat::BGRA8Unorm,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
