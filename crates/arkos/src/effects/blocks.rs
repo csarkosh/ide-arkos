@@ -273,6 +273,15 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_wash_paints_a_highlight_s_rect_as_given_without_insetting_it_again() {
+        // The inset is made once, here in `blocks`; the preamble promises a block's rect is what
+        // the shader paints, and a template copied from the built-in inherits what it does.
+        let wash = crate::effects::manifest::load("watercolor", std::path::Path::new("/nonexistent/effects")).unwrap().wash;
+        assert!(!wash.contains("r.x + 3.0"), "the wash insets a highlight a second time");
+        assert!(!wash.contains("r = float4("), "the wash reshapes a block's rect");
+    }
+
+    #[test]
     fn a_leave_clears_the_hover_only_when_it_is_still_that_element_s() {
         assert_eq!(hover_after(None, 1, true), Some(1));
         assert_eq!(hover_after(Some(1), 2, true), Some(2));

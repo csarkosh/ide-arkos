@@ -140,12 +140,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float inked = 0.0;
     for (int i = 0; i < nb; i++) {
         ArkosBlock blk = u.blocks[i];
+        // A highlight's rect is already its stroke, inset from its row or tab by the app.
         float4 r = blk.rect;
-        int kind = int(blk.kind);
-        if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
-            // A highlight is a thin stroke inside its row or tab, clear of the neighbours.
-            r = float4(r.x + 3.0, r.y + 2.0, max(r.z - 6.0, 0.0), max(r.w - 4.0, 0.0));
-        }
         float2 hb = r.zw * 0.5;
         float2 c = r.xy + hb;
         // The block's own seed (stable whatever else is on the paper): its grain and overshoot.
