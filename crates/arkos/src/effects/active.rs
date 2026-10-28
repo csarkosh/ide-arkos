@@ -166,11 +166,18 @@ pub enum WindowKind {
 /// Where a window's glyph stages are set: gpui's window, or a test's stand-in.
 pub trait GlyphSink {
     fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String>;
+    /// Sets the seconds the glyph stages read at Metal buffer index 5 on their next draws.
+    // Root sets it before each frame once an effect moves its glyphs (the space effect's plan).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_glyph_time(&mut self, seconds: f32);
 }
 
 impl GlyphSink for gpui::Window {
     fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String> {
         gpui::Window::set_glyph_shader(self, shader)
+    }
+    fn set_glyph_time(&mut self, seconds: f32) {
+        gpui::Window::set_glyph_shader_time(self, seconds);
     }
 }
 
@@ -541,6 +548,7 @@ mod tests {
     struct Recorder {
         calls: Vec<Option<GlyphShader>>,
         refuse: Option<String>,
+        times: Vec<f32>,
     }
     impl GlyphSink for Recorder {
         fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String> {
@@ -552,6 +560,21 @@ mod tests {
                 }
             }
         }
+        fn set_glyph_time(&mut self, seconds: f32) {
+            self.times.push(seconds);
+        }
+    }
+
+    #[test]
+    fn a_window_is_handed_the_glyph_time_and_applying_ink_leaves_the_time_alone() {
+        let _lock = test_lock(true);
+        let mut window = Recorder::default();
+        let a = start(watercolor(), &mut Fine, Instant::now(), true).unwrap();
+        apply_glyphs(&mut window, &a.effect, glyph_shader_for(WindowKind::Project, Some(&a), 2.0)).unwrap();
+        assert!(window.times.is_empty(), "setting the stages does not set the clock");
+        window.set_glyph_time(1.5);
+        window.set_glyph_time(1.55);
+        assert_eq!(window.times, vec![1.5, 1.55]);
     }
 
     #[test]

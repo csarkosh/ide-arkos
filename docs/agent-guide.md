@@ -558,9 +558,11 @@ strongly to paint it.
 `arkos effect contract --glyphs` prints gpui's sprite declarations, which your glyph shader is
 compiled after (gpui's whole shader source comes first, so it may use any of them), then one
 line naming the two functions it supplies, `arkos_glyph_vertex` and `arkos_glyph_fragment`, with
-their signatures. Between them it prints `ARKOS_SCALE`, the window's pixels per point (2 on a
-Retina screen, 1 on most others), which the window declares ahead of your source and rebuilds
-when it moves to a screen of another scale. gpui hands a glyph shader device pixels, so measure
+their signatures, and a last line naming the window's glyph clock: either function may declare
+`constant float *time [[buffer(5)]]` and read its seconds in `*time`. Between the declarations
+and the signatures it prints `ARKOS_SCALE`, the window's pixels per point (2 on a Retina screen,
+1 on most others), which the window declares ahead of your source and rebuilds when it moves to
+a screen of another scale. gpui hands a glyph shader device pixels, so measure
 your ink in points through it, or a 1x screen sees every bleed and wobble twice as wide. The
 built-in's `glyphs.metal` (from `arkos effect template`) is a worked one: it widens each glyph's
 quad so the ink can bleed, measures everything in points, and keeps a stroke's core at least 55%

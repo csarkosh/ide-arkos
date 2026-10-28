@@ -487,12 +487,15 @@ mod tests {
         let (code, out, _) = run(&["contract", "--glyphs"], &env);
         assert_eq!(code, 0);
         assert!(out.starts_with(gpui::GLYPH_SHADER_PRELUDE), "the prelude comes first");
-        let last = out.lines().last().unwrap();
-        assert_eq!(out.lines().count(), gpui::GLYPH_SHADER_PRELUDE.lines().count() + 2, "then two lines");
-        let scale = out.lines().nth(gpui::GLYPH_SHADER_PRELUDE.lines().count()).unwrap();
+        let prelude = gpui::GLYPH_SHADER_PRELUDE.lines().count();
+        assert_eq!(out.lines().count(), prelude + 3, "then three lines");
+        let scale = out.lines().nth(prelude).unwrap();
         assert!(scale.starts_with("constant float ARKOS_SCALE"), "the window's scale is declared: {scale}");
-        assert!(last.contains("vertex Out arkos_glyph_vertex(uint unit_vertex_id [[vertex_id]]"), "{last}");
-        assert!(last.contains("fragment float4 arkos_glyph_fragment(In input [[stage_in]]"), "{last}");
+        let signatures = out.lines().nth(prelude + 1).unwrap();
+        assert!(signatures.contains("vertex Out arkos_glyph_vertex(uint unit_vertex_id [[vertex_id]]"), "{signatures}");
+        assert!(signatures.contains("fragment float4 arkos_glyph_fragment(In input [[stage_in]]"), "{signatures}");
+        let clock = out.lines().last().unwrap();
+        assert!(clock.contains("constant float *time [[buffer(5)]]"), "the clock's buffer and its index: {clock}");
         assert!(!out.contains("struct ArkosInputs"), "the wash's contract is not the glyphs'");
         assert_eq!(run(&["contract", "--json"], &env).0, 2);
         assert_eq!(run(&["contract", "watercolor"], &env).0, 2);
@@ -548,6 +551,26 @@ mod tests {
         assert_eq!(code, 1);
         assert!(err.contains("not a folder"), "{err}");
         assert_eq!(run(&["check"], &env).0, 2);
+    }
+
+    #[test]
+    fn effect_check_accepts_a_glyph_shader_that_reads_the_clock_at_buffer_five() {
+        if !metal() {
+            return;
+        }
+        let s = Setup::new();
+        let env = env!(s, s.path("none.sock"));
+        let ink = watercolor().glyphs.unwrap();
+        let own = "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {";
+        assert_eq!(ink.matches(own).count(), 1, "watercolor's fragment ends its parameters so");
+        // The clock's index is gpui's own name for it, and the fragment reads it.
+        let timed = format!(
+            "static_assert(SpriteInputIndex_GlyphTime == 5, \"the glyph clock is buffer 5\");\n{}",
+            ink.replacen(own, "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],\n    constant float *time [[buffer(5)]]) {\n  float tick = *time;\n  (void)tick;", 1)
+        );
+        let manifest = "name = \"ticking\"\nwash = \"wash.metal\"\nglyphs = \"glyphs.metal\"\n";
+        let ticking = folder(&s.effects(), "ticking", manifest, &[("wash.metal", watercolor().wash), ("glyphs.metal", &timed)]);
+        assert_eq!(run(&["check", &ticking.display().to_string()], &env), (0, "ok: ticking\nhighlights: app\n".to_string(), String::new()));
     }
 
     #[test]

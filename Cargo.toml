@@ -40,6 +40,6 @@ strip = "debuginfo"
 [profile.dev.package.pulldown-cmark]
 opt-level = 3
 
-# gpui with the per-window glyph shader hook, from the fork (docs/development.md, "gpui fork").
+# gpui with the per-window glyph shader hook and its clock, from the fork (docs/development.md, "gpui fork").
 [patch.crates-io]
-gpui = { git = "https://github.com/csarkosh/gpui", tag = "v0.2.2-arkos.1" }
+gpui = { git = "https://github.com/csarkosh/gpui", tag = "v0.2.2-arkos.2" }

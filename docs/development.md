@@ -49,10 +49,12 @@ new one) and ends every session, so do it when nothing important is running.
 ### gpui fork
 
 Arkos builds against gpui from its fork, https://github.com/csarkosh/gpui, pinned in the
-workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.1`). The fork is the
-crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with one commit on top, the per-window glyph
-shader hook the effects use (`Window::set_glyph_shader`, `GlyphShader`,
-`GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`). An upgrade goes as the fork's `ARKOS.md` says:
+workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.2`). The fork is the
+crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with two commits on top, the hooks the effects
+use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
+`GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`; tag `v0.2.2-arkos.1`) and its clock
+(`Window::set_glyph_shader_time`, one `float` at Metal buffer index 5 in both glyph stages; tag
+`v0.2.2-arkos.2`). An upgrade goes as the fork's `ARKOS.md` says:
 commit the next tarball as `v<version>`, rebase the patch commits onto it, tag
 `v<version>-arkos.1`, push, point `[patch.crates-io]` at the new tag and run
 `cargo update -p gpui`.
