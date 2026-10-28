@@ -89,6 +89,14 @@ pub struct SelectionSpan {
     pub end: usize,
 }
 
+/// One frame of a drag held past the pane's edge: whether another frame can do more, and the
+/// bytes to send the program (its wheel reports), empty when it is sent nothing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DragStep {
+    pub more: bool,
+    pub pty_write: Vec<u8>,
+}
+
 pub struct TerminalCore {
     term: Term<Listener>,
     parser: Processor,
@@ -474,20 +482,45 @@ impl TerminalCore {
         }
     }
 
-    /// One frame of a drag held past the pane's edge: scrolls `rate * dt` lines (positive is up
-    /// into history) with no glide, moves the grid to match, and extends the selection to the
-    /// top or bottom viewport row at `col`. A drag that left the pane before its first move in
-    /// it has no selection yet, so one starts from `anchor` (the press as a grid cell, its side
-    /// facing the drag). Returns whether another frame can scroll further: false once history
-    /// runs out that way. A program reporting the mouse, or anything on the alternate screen,
-    /// owns the wheel, so nothing happens there and the answer is false. `ended` says the
-    /// session is over: no program hears the mouse then, so its last reporting mode is ignored,
-    /// as `Terminal::wheel` ignores it.
-    pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize, anchor: Option<(usize, i32, Side)>, ended: bool) -> bool {
+    /// One frame of a drag held past the pane's edge at `rate` lines per second (positive is up),
+    /// with the pointer over column `col`. Whatever moves, the selection is extended to the top
+    /// row from its left side or to the bottom row to its right, so the pointer's cell is in it
+    /// either way.
+    ///
+    /// With a record open on the alternate screen, the program scrolls itself: the frame owes it
+    /// `rate * dt` rows, a fraction carried to the next frame, sent as wheel reports at the
+    /// pointer's column on the edge row while the program still reports the mouse, and nothing
+    /// once it has turned reporting off. The record's end becomes the line on the edge row, so
+    /// as the program's output brings older or newer lines there the selection grows with them.
+    /// Another frame can always do more.
+    ///
+    /// Otherwise the local history scrolls `rate * dt` lines with no glide and the grid moves to
+    /// match. A drag that left the pane before its first move in it has no selection yet, so one
+    /// starts from `anchor` (the press as a grid cell, its side facing the drag). Another frame
+    /// can do more until history runs out that way. A program reporting the mouse without a
+    /// record, or anything else on the alternate screen, owns the wheel, so nothing happens there
+    /// and the step is empty.
+    ///
+    /// `ended` says the session is over: no program hears the mouse then, so its last reporting
+    /// mode is ignored, as `Terminal::wheel` ignores it, and a record open on its alternate
+    /// screen gets nothing.
+    pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize, anchor: Option<(usize, i32, Side)>, ended: bool) -> DragStep {
         let alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
+        let (row, side) = if rate > 0.0 { (0, Side::Left) } else { (self.screen_lines().saturating_sub(1), Side::Right) };
+        if rate != 0.0 && !ended && alt_screen && self.ledger.is_some() {
+            let due = self.drag_carry.whole_lines(rate * dt);
+            let mode = self.mouse_mode();
+            let pty_write = if matches!(mode, MouseMode::Report { .. }) { mouse::wheel_bytes(mode, due, col, row) } else { Vec::new() };
+            if let Some(ledger) = self.ledger.as_mut() {
+                let line = ledger.line_of_row(row);
+                ledger.set_end(End { line, col, side });
+            }
+            self.retint();
+            return DragStep { more: true, pty_write };
+        }
         let reported = !ended && matches!(self.mouse_mode(), MouseMode::Report { .. });
         if rate == 0.0 || alt_screen || reported {
-            return false;
+            return DragStep::default();
         }
         let history = self.history_size() as f32;
         self.scroll.scroll_direct(rate * dt, history);
@@ -497,15 +530,9 @@ impl TerminalCore {
                 self.selection_start(acol, Line(aline), aside, SelectionType::Simple);
             }
         }
-        // The top row is taken from its left side and the bottom row to its right, so the
-        // pointer's cell is in the selection either way.
-        let (row, side) = if rate > 0.0 { (0, Side::Left) } else { (self.screen_lines().saturating_sub(1), Side::Right) };
         self.selection_update(col, Line(self.line_at_row(row)), side);
-        if rate > 0.0 {
-            self.scroll.current < history
-        } else {
-            self.scroll.current > 0.0
-        }
+        let more = if rate > 0.0 { self.scroll.current < history } else { self.scroll.current > 0.0 };
+        DragStep { more, pty_write: Vec::new() }
     }
 
     /// Clears the selection, and with it any open record.
@@ -960,12 +987,16 @@ impl Terminal {
 
     /// One frame of a held drag past the element's top or bottom edge at `rate` lines per
     /// second (see `TerminalCore::drag_scroll_step`), with the pointer over column `col`. The
-    /// press is the anchor, its side facing the way the drag went. Returns whether to keep
-    /// scrolling.
+    /// press is the anchor, its side facing the way the drag went. The wheel reports the step
+    /// owes a live program are sent to it. Returns whether to keep scrolling.
     pub fn drag_scroll_step(&mut self, rate: f32, dt: f32, col: usize) -> bool {
         let side = if rate > 0.0 { Side::Right } else { Side::Left };
         let anchor = self.clicks.anchor().map(|(acol, aline)| (acol, aline, side));
-        self.core.drag_scroll_step(rate, dt, col, anchor, !self.alive)
+        let step = self.core.drag_scroll_step(rate, dt, col, anchor, !self.alive);
+        if !step.pty_write.is_empty() && self.alive {
+            self.client.send(Request::Input { session: self.session, bytes: step.pty_write });
+        }
+        step.more
     }
 
     /// A left release over the terminal: a held click reaches a live program now.
@@ -1494,24 +1525,24 @@ mod tests {
         assert!(history > 10, "enough history to scroll through: {history}");
         // Pressed at column 1 of line 2, and the pointer left over the top before any move in the
         // pane: the selection starts from the anchor and runs to the top row at the pointer.
-        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right)), false));
+        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right)), false).more);
         assert_eq!(t.scroll.current, 3.0);
         assert_eq!(t.display_offset(), 3, "the step moves the grid itself");
         assert_eq!(selected_lines(&t), ((-3, 3), (2, 1)));
         // The next frame extends the same selection; the anchor only starts a missing one.
-        assert!(t.drag_scroll_step(6.0, 0.5, 0, Some((9, 4, Side::Right)), false));
+        assert!(t.drag_scroll_step(6.0, 0.5, 0, Some((9, 4, Side::Right)), false).more);
         assert_eq!(t.display_offset(), 6);
         assert_eq!(selected_lines(&t), ((-6, 0), (2, 1)));
         // History runs out: the view stops at its top and the step says so.
-        assert!(!t.drag_scroll_step(60.0, 1.0, 0, None, false));
+        assert!(!t.drag_scroll_step(60.0, 1.0, 0, None, false).more);
         assert_eq!(t.display_offset(), history);
         assert_eq!(t.scroll.current, history as f32);
-        assert!(!t.drag_scroll_step(6.0, 0.1, 0, None, false));
+        assert!(!t.drag_scroll_step(6.0, 0.1, 0, None, false).more);
         assert_eq!(t.display_offset(), history);
         // Below the bottom scrolls back down, to the live view, and selects to the bottom row.
-        assert!(t.drag_scroll_step(-6.0, 0.5, 4, None, false));
+        assert!(t.drag_scroll_step(-6.0, 0.5, 4, None, false).more);
         assert_eq!(t.display_offset(), history - 3);
-        assert!(!t.drag_scroll_step(-60.0, 1.0, 4, None, false));
+        assert!(!t.drag_scroll_step(-60.0, 1.0, 4, None, false).more);
         assert_eq!(t.display_offset(), 0);
         assert_eq!(t.scroll.current, 0.0);
         assert_eq!(selected_lines(&t).1, (4, 4));
@@ -1521,19 +1552,19 @@ mod tests {
     fn a_drag_past_the_edge_never_scrolls_a_program_that_owns_the_mouse() {
         let still = |t: &TerminalCore| t.display_offset() == 0 && t.scroll.current == 0.0 && !t.selection_active();
         let mut t = with_history(20, 5, 30);
-        assert!(!t.drag_scroll_step(0.0, 0.5, 0, Some((1, 2, Side::Right)), false), "a pointer inside is no drag past the edge");
+        assert_eq!(t.drag_scroll_step(0.0, 0.5, 0, Some((1, 2, Side::Right)), false), DragStep::default(), "a pointer inside is no drag past the edge");
         assert!(still(&t));
         // Mouse reporting: the wheel and the drag are the program's.
         t.apply_output(b"\x1b[?1000h");
-        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right)), false));
+        assert_eq!(t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right)), false), DragStep::default());
         assert!(still(&t));
         // The alternate screen, with alternate scroll and without it.
         t.apply_output(b"\x1b[?1000l\x1b[?1049h");
-        assert!(!t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right)), false));
+        assert_eq!(t.drag_scroll_step(6.0, 0.5, 0, Some((1, 2, Side::Right)), false), DragStep::default());
         assert!(still(&t));
         t.apply_output(b"\x1b[?1007l");
         assert_eq!(t.mouse_mode(), MouseMode::Local);
-        assert!(!t.drag_scroll_step(-6.0, 0.5, 0, Some((1, 2, Side::Right)), false));
+        assert_eq!(t.drag_scroll_step(-6.0, 0.5, 0, Some((1, 2, Side::Right)), false), DragStep::default());
         assert!(still(&t));
     }
 
@@ -1544,12 +1575,74 @@ mod tests {
         let mut t = with_history(20, 5, 30);
         t.apply_output(b"\x1b[?1000h");
         assert!(matches!(t.mouse_mode(), MouseMode::Report { .. }));
-        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right)), true));
+        assert!(t.drag_scroll_step(6.0, 0.5, 3, Some((1, 2, Side::Right)), true).more);
         assert_eq!(t.display_offset(), 3);
         assert_eq!(selected_lines(&t), ((-3, 3), (2, 1)));
         // The alternate screen has no history to scroll, ended or not.
         t.apply_output(b"\x1b[?1000l\x1b[?1049h");
-        assert!(!t.drag_scroll_step(6.0, 0.5, 3, None, true));
+        assert_eq!(t.drag_scroll_step(6.0, 0.5, 3, None, true), DragStep::default());
+    }
+
+    #[test]
+    fn a_drag_past_the_top_edge_of_a_fullscreen_program_sends_wheel_reports_and_selects_to_the_edge() {
+        let mut t = fullscreen(20, 9);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "l16", "─", "❯"]);
+        // Pressed on the last line of the text, column 2.
+        t.ledger_press(2, 6, true);
+        // 6 rows per second for half a second: three reports at the pointer's column on the top row.
+        let step = t.drag_scroll_step(6.0, 0.5, 0, None, false);
+        assert!(step.more);
+        assert_eq!(step.pty_write, b"\x1b[<64;1;1M".repeat(3));
+        assert_eq!(t.selection_text().as_deref(), Some("l10\nl11\nl12\nl13\nl14\nl15\nl16"), "from the top row's left side to the pressed cell");
+        // A fraction of a row is carried to the next frame.
+        let step = t.drag_scroll_step(6.0, 0.1, 0, None, false);
+        assert!(step.pty_write.is_empty() && step.more);
+        let step = t.drag_scroll_step(6.0, 0.1, 0, None, false);
+        assert_eq!(step.pty_write, b"\x1b[<64;1;1M");
+        // The program scrolls two rows per frame; the end stays the top row, an older line each time.
+        paint(&mut t, &["l8", "l9", "l10", "l11", "l12", "l13", "l14", "─", "❯"]);
+        paint(&mut t, &["l6", "l7", "l8", "l9", "l10", "l11", "l12", "─", "❯"]);
+        t.drag_scroll_step(6.0, 0.5, 0, None, false);
+        assert_eq!(t.selection_text().as_deref(), Some("l6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16"));
+        assert_eq!(t.selection_spans().len(), 7, "the tint covers the rows that moved, never the prompt box");
+    }
+
+    #[test]
+    fn a_drag_past_the_bottom_edge_sends_wheel_down_reports_in_the_programs_encoding() {
+        let mut t = TerminalCore::new(20, 8, 100);
+        t.apply_output(b"\x1b[?1049h\x1b[?1000h");
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "─", "❯"]);
+        t.ledger_press(0, 0, true);
+        let step = t.drag_scroll_step(-12.0, 0.25, 3, None, false);
+        assert_eq!(step.pty_write, mouse::button_bytes(false, 65, 3, 7, true).repeat(3));
+        // Before anything has moved, the snapshot's prompt box lines are still in the record.
+        assert_eq!(t.selection_text().as_deref(), Some("l10\nl11\nl12\nl13\nl14\nl15\n─\n❯"));
+        // Once the program scrolls, they are dropped and the copy is the text alone.
+        paint(&mut t, &["l11", "l12", "l13", "l14", "l15", "l16", "─", "❯"]);
+        paint(&mut t, &["l12", "l13", "l14", "l15", "l16", "l17", "─", "❯"]);
+        assert_eq!(t.selection_text().as_deref(), Some("l10\nl11\nl12\nl13\nl14\nl15\nl16\nl17"));
+    }
+
+    #[test]
+    fn reporting_turned_off_mid_record_stops_the_reports_but_keeps_the_record() {
+        let mut t = fullscreen(20, 9);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "l16", "─", "❯"]);
+        t.ledger_press(2, 6, true);
+        t.apply_all([b"\x1b[?1000l".as_slice()]);
+        assert!(t.record_open());
+        let step = t.drag_scroll_step(6.0, 0.5, 0, None, false);
+        assert!(step.more && step.pty_write.is_empty());
+        paint(&mut t, &["l8", "l9", "l10", "l11", "l12", "l13", "l14", "─", "❯"]);
+        paint(&mut t, &["l6", "l7", "l8", "l9", "l10", "l11", "l12", "─", "❯"]);
+        assert_eq!(t.selection_text().as_deref(), Some("l10\nl11\nl12\nl13\nl14\nl15\nl16"));
+    }
+
+    #[test]
+    fn an_ended_session_sends_nothing_from_a_drag_past_the_edge() {
+        let mut t = fullscreen(20, 9);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "l16", "─", "❯"]);
+        t.ledger_press(0, 6, true);
+        assert_eq!(t.drag_scroll_step(6.0, 0.5, 0, None, true), DragStep::default());
     }
 
     #[test]

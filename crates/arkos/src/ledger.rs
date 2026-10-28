@@ -329,13 +329,6 @@ impl Ledger {
         Some(&entry.text)
     }
 
-    /// The grid's height when the record opened.
-    // Read by the edge step in Task 5 of the fullscreen drag-scroll plan.
-    #[allow(dead_code)]
-    pub fn rows(&self) -> usize {
-        self.rows
-    }
-
     /// Commits `shift`, found between the baseline and `grid`: the offset moves, the block is
     /// rewritten and confirmed, the band comes in as provisional lines, and every provisional
     /// line whose row showed its text both before and after the shift is dropped.
