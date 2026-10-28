@@ -118,6 +118,12 @@ float fbm(float2 p) {
     return v;
 }
 
+// A pigment pulled 40% of the way to its own grey: dustier, as a muted palette is.
+float3 muted(float3 c) {
+    float l = dot(c, float3(0.299, 0.587, 0.114));
+    return mix(c, float3(l), 0.4);
+}
+
 float sd_box(float2 q, float2 hb) {
     float2 d = abs(q) - hb;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
@@ -164,8 +170,8 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
         }
         float body = 1.0 - smoothstep(r * 0.5, r, dist);
         float rim = smoothstep(r * 0.75, r * 0.96, dist) * (1.0 - smoothstep(r * 0.96, r * 1.02, dist));
-        float a = (0.32 * body + 0.3 * rim) * (0.65 + 0.5 * gran);
-        col *= mix(float3(1.0), u.tints[int(b.w)].rgb, clamp(a, 0.0, 0.9));
+        float a = (0.24 * body + 0.22 * rim) * (0.65 + 0.5 * gran);
+        col *= mix(float3(1.0), muted(u.tints[int(b.w)].rgb), clamp(a, 0.0, 0.9));
     }
 
     // Washes, then ink, for every block.
@@ -179,14 +185,14 @@ fragment float4 watercolor_fragment(VOut in [[stage_in]], constant Uniforms& u [
         float seed = float(i) * 1.7;
         if (m.y > 0.0) {
             float d = sd_box(p - c, hb);
-            if (d < 30.0) {
-                // Out past the edge by a few points, ragged, more along than across.
-                float edge = d - 4.0 + (bleed - 0.5) * 24.0 + (fray - 0.5) * 5.0;
-                float cover = 1.0 - smoothstep(-1.2, 1.2, edge);
-                float pool = smoothstep(-8.0, -0.6, edge) * cover;
-                float blotch = 0.62 + 0.75 * fract(gran + seed * 0.37);
-                float a = m.y * (cover * blotch + 0.75 * pool);
-                col *= mix(float3(1.0), u.tints[int(m.x)].rgb, clamp(a, 0.0, 0.92));
+            if (d < 12.0) {
+                // Close to the edge: a point or two past it, ragged only a little.
+                float edge = d - 1.5 + (bleed - 0.5) * 8.0 + (fray - 0.5) * 2.0;
+                float cover = 1.0 - smoothstep(-0.7, 0.7, edge);
+                float pool = smoothstep(-5.0, -0.4, edge) * cover;
+                float blotch = 0.72 + 0.5 * fract(gran + seed * 0.37);
+                float a = m.y * (cover * blotch + 0.5 * pool);
+                col *= mix(float3(1.0), muted(u.tints[int(m.x)].rgb), clamp(a, 0.0, 0.85));
             }
         }
         uint edges = uint(m.z);
