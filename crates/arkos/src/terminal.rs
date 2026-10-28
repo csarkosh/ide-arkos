@@ -278,11 +278,14 @@ impl TerminalCore {
         out
     }
 
-    /// Ends a synchronized update whose deadline has passed. Returns true when it flushed.
+    /// Ends a synchronized update whose deadline has passed. Returns true when it flushed. The
+    /// held rows reach the grid outside any batch, so an open record follows them here, as
+    /// `apply_all` has it follow a batch.
     pub fn flush_sync_if_due(&mut self) -> bool {
         match self.parser.sync_timeout().sync_timeout() {
             Some(deadline) if deadline <= Instant::now() => {
                 self.parser.stop_sync(&mut self.term);
+                self.follow_output();
                 true
             }
             _ => false,
@@ -604,6 +607,46 @@ impl TerminalCore {
             out.push(SelectionSpan { row: row as usize, start, end });
         }
         out
+    }
+
+    /// Applies a gesture from `mouse::Clicks` to the selection: a clear, a word or a line, a
+    /// drag's start, or its end following the pointer.
+    pub fn apply_gesture(&mut self, gesture: Gesture) {
+        match gesture {
+            Gesture::Nothing => {}
+            Gesture::Clear => self.selection_clear(),
+            Gesture::Select { ty, col, line, side } => self.selection_start(col, Line(line), side, ty),
+            Gesture::Start { anchor: (acol, aline, aside), to: (col, line, side) } => {
+                self.selection_start(acol, Line(aline), aside, SelectionType::Simple);
+                self.selection_update(col, Line(line), side);
+            }
+            Gesture::Extend { col, line, side } => self.selection_update(col, Line(line), side),
+        }
+    }
+
+    /// A left press at viewport cell (`col`, `row`) as `clicks` reads it (see
+    /// `mouse::Clicks::press`); `report` says whether the program hears a single click and
+    /// `alive` whether the session is live. The press opens a record where one belongs
+    /// (`ledger_press`): after a single click's clear, which would close it, and before a word or
+    /// a line is selected, which sets its range.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pressed(&mut self, clicks: &mut Clicks, col: usize, row: usize, side: Side, click_count: usize, report: bool, alive: bool) {
+        let gesture = clicks.press(col, row, self.line_at_row(row), side, click_count, report);
+        if gesture == Gesture::Clear {
+            self.apply_gesture(gesture);
+            self.ledger_press(col, row, alive);
+        } else {
+            self.ledger_press(col, row, alive);
+            self.apply_gesture(gesture);
+        }
+    }
+
+    /// A left release at viewport cell (`col`, `row`): the bytes of the click `clicks` held for
+    /// the program, if any, and a record with no end goes (`ledger_release`).
+    pub fn released(&mut self, clicks: &mut Clicks, col: usize, row: usize) -> Option<Vec<u8>> {
+        let bytes = clicks.release(col, row, self.mouse_mode());
+        self.ledger_release();
+        bytes
     }
 
     // The record. A program that reports the mouse on the alternate screen scrolls by redrawing,
@@ -968,14 +1011,8 @@ impl Terminal {
     pub fn mouse_pressed(&mut self, position: gpui::Point<gpui::Pixels>, click_count: usize, first_mouse: bool, cx: &mut Context<Self>) {
         let Some((col, row, side)) = self.point_at(position) else { return };
         let report = matches!(self.core.mouse_mode(), MouseMode::Report { .. }) && !first_mouse;
-        let gesture = self.clicks.press(col, row, self.core.line_at_row(row), side, click_count, report);
-        if gesture == Gesture::Clear {
-            self.apply(gesture, cx);
-            self.core.ledger_press(col, row, self.alive);
-        } else {
-            self.core.ledger_press(col, row, self.alive);
-            self.apply(gesture, cx);
-        }
+        self.core.pressed(&mut self.clicks, col, row, side, click_count, report, self.alive);
+        cx.notify();
     }
 
     /// A move (see `mouse::Clicks::moved`); `left_down` is whether the left button is held.
@@ -993,6 +1030,10 @@ impl Terminal {
         let side = if rate > 0.0 { Side::Right } else { Side::Left };
         let anchor = self.clicks.anchor().map(|(acol, aline)| (acol, aline, side));
         let step = self.core.drag_scroll_step(rate, dt, col, anchor, !self.alive);
+        if step.more {
+            // The press scrolled the pane, so it is a drag, and the program hears no click.
+            self.clicks.dragged();
+        }
         if !step.pty_write.is_empty() && self.alive {
             self.client.send(Request::Input { session: self.session, bytes: step.pty_write });
         }
@@ -1002,12 +1043,11 @@ impl Terminal {
     /// A left release over the terminal: a held click reaches a live program now.
     pub fn mouse_released(&mut self, position: gpui::Point<gpui::Pixels>) {
         let (col, row, _) = self.point_at(position).unwrap_or((0, 0, Side::Left));
-        if let Some(bytes) = self.clicks.release(col, row, self.core.mouse_mode()) {
+        if let Some(bytes) = self.core.released(&mut self.clicks, col, row) {
             if self.alive {
                 self.client.send(Request::Input { session: self.session, bytes });
             }
         }
-        self.core.ledger_release();
     }
 
     /// The left button came up somewhere else, a right button came up (gpui reports a left
@@ -1018,17 +1058,13 @@ impl Terminal {
         self.core.ledger_release();
     }
 
+    /// Applies a gesture to the core (`TerminalCore::apply_gesture`) and repaints unless it was
+    /// nothing.
     fn apply(&mut self, gesture: Gesture, cx: &mut Context<Self>) {
-        match gesture {
-            Gesture::Nothing => return,
-            Gesture::Clear => self.core.selection_clear(),
-            Gesture::Select { ty, col, line, side } => self.core.selection_start(col, Line(line), side, ty),
-            Gesture::Start { anchor: (acol, aline, aside), to: (col, line, side) } => {
-                self.core.selection_start(acol, Line(aline), aside, SelectionType::Simple);
-                self.core.selection_update(col, Line(line), side);
-            }
-            Gesture::Extend { col, line, side } => self.core.selection_update(col, Line(line), side),
+        if gesture == Gesture::Nothing {
+            return;
         }
+        self.core.apply_gesture(gesture);
         cx.notify();
     }
 
@@ -2025,5 +2061,72 @@ mod tests {
         drag(&mut t, (0, 0), (16, 1));
         assert_eq!(t.selection_text().as_deref(), Some("\u{25cf} The limiter is done and all\n  six tests pass."));
         assert_eq!(t.copy_text().as_deref(), Some("\u{25cf} The limiter is done and all six tests pass."));
+    }
+
+    #[test]
+    fn a_click_in_a_fullscreen_program_reaches_it_at_the_release_and_leaves_no_record() {
+        let mut t = fullscreen(20, 5);
+        paint(&mut t, &["one", "two", "three", "─", "❯"]);
+        let mut clicks = mouse::Clicks::default();
+        t.pressed(&mut clicks, 1, 1, Side::Left, 1, true, true);
+        assert!(t.record_open(), "the press opened a record after the single click's clear");
+        assert!(!t.selection_active());
+        let mut want = mouse::button_bytes(true, 0, 1, 1, true);
+        want.extend(mouse::button_bytes(true, 0, 1, 1, false));
+        assert_eq!(t.released(&mut clicks, 1, 1), Some(want));
+        assert!(!t.record_open());
+        assert!(t.selection_spans().is_empty());
+    }
+
+    #[test]
+    fn a_press_dragged_out_past_the_top_edge_and_back_sends_no_click() {
+        let mut t = fullscreen(20, 9);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "l16", "─", "❯"]);
+        let mut clicks = mouse::Clicks::default();
+        // Pressed on the top row, then out past the top edge without crossing a cell boundary.
+        t.pressed(&mut clicks, 2, 0, Side::Left, 1, true, true);
+        let step = t.drag_scroll_step(6.0, 0.5, 2, None, false);
+        assert!(step.more, "the edge step acted");
+        // As `Terminal::drag_scroll_step` does when the step acts.
+        clicks.dragged();
+        // Back in over the pressed cell, and released there.
+        let gesture = clicks.moved(2, 0, Side::Right, true, t.selection_active());
+        assert_eq!(gesture, Gesture::Extend { col: 2, line: 0, side: Side::Right });
+        t.apply_gesture(gesture);
+        assert_eq!(t.released(&mut clicks, 2, 0), None);
+        assert!(t.selection_text().is_some(), "the record still has its text");
+    }
+
+    #[test]
+    fn a_double_click_in_a_fullscreen_program_records_the_word_through_the_press_path() {
+        let mut t = fullscreen(20, 10);
+        paint(&mut t, &["alpha beta", "gamma", "delta", "eps", "zeta", "eta", "theta", "iota", "─", "❯"]);
+        let mut clicks = mouse::Clicks::default();
+        t.pressed(&mut clicks, 7, 0, Side::Left, 2, true, true);
+        assert_eq!(t.selection_text().as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn a_synchronized_update_that_times_out_still_feeds_the_record() {
+        // A frame held in a synchronized update that never ends: the record follows it when the
+        // update times out, as it would at the end of a batch.
+        let mut t = fullscreen(20, 8);
+        paint(&mut t, &["l10", "l11", "l12", "l13", "l14", "l15", "─", "❯"]);
+        drag(&mut t, (0, 1), (2, 2));
+        let rows = ["l9", "l10", "l11", "l12", "l13", "l14", "─", "❯"];
+        let frame: String = rows.iter().enumerate().map(|(i, text)| format!("\x1b[{};1H{text}\x1b[K", i + 1)).collect();
+        t.apply_all([b"\x1b[?2026h".as_slice(), frame.as_bytes()]);
+        // A program that leaves the alternate screen inside an update that times out.
+        let mut gone = fullscreen(20, 5);
+        paint(&mut gone, &["one", "two", "three", "─", "❯"]);
+        drag(&mut gone, (0, 0), (2, 1));
+        gone.apply_all([b"\x1b[?2026h\x1b[?1000l\x1b[?1049l".as_slice()]);
+        assert!(gone.record_open(), "nothing has reached the grid yet");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(t.flush_sync_if_due());
+        assert_eq!(t.selection_spans().first().map(|s| s.row), Some(2), "the tint moved with the text");
+        assert_eq!(t.selection_text().as_deref(), Some("l11\nl12"));
+        assert!(gone.flush_sync_if_due());
+        assert!(!gone.record_open());
     }
 }
