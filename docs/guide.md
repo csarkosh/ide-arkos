@@ -371,8 +371,12 @@ Notes:
 - Drag across terminal text to select it (double click a word, triple click a line); Cmd+C copies
   it with a program's own line wraps joined (see the next item), Shift+Cmd+C copies it as shown,
   and a click clears it. A selection keeps its place while you scroll, and dragging past the
-  pane's top or bottom edge scrolls the history, except in programs that take the mouse or the
-  whole screen, such as vim or `less`. A program that asks for mouse reports, such as Claude
+  pane's top or bottom edge scrolls the history. In a program that reports the mouse, such as
+  Claude Code's fullscreen renderer, it scrolls the program's view instead, and Cmd+C copies
+  everything the drag passed over, with the sticky header, the "Jump to bottom" overlay and the
+  prompt box left out; the selection keeps its place on its text while the program scrolls.
+  Programs that take the whole screen without reporting the mouse (vim, `less`) do not scroll
+  from a drag. A program that asks for mouse reports, such as Claude
   Code's fullscreen renderer, gets the wheel and single clicks, so its conversation scrolls and
   its options can be clicked; a drag still selects locally and the program never sees it, though
   the first click of a double click has already reached it. On the alternate screen without mouse

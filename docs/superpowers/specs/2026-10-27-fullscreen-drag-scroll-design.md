@@ -1,6 +1,6 @@
 # Drag-selecting past the edge in a fullscreen program
 
-**Date:** 2026-10-27. **Status:** draft for approval. **Extends** section 3 of
+**Date:** 2026-10-27. **Status:** implemented 2026-10-27. **Extends** section 3 of
 `2026-10-13-arkos-design.md` (mouse selection and reporting) and the selection item of
 `docs/guide.md`, which both say that dragging past the pane's edge scrolls the history "except
 in programs that take the mouse or the whole screen". After this milestone that exception is

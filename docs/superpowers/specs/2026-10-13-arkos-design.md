@@ -173,7 +173,7 @@ Enter, Tab, Backspace, Space, Option+key and Ctrl+Shift+key as `CSI code ; mods 
 else keeps its legacy bytes, and the flags leave with the alternate screen (added 2026-10-15). Mouse selection and copy are local (a drag, a double click for
 a word, a triple click for a line; Cmd+C); copy uses the system clipboard. A program that turns
 on mouse reporting gets the wheel and single clicks at the cell under the pointer, in the SGR or
-X10 form it asked for; a drag is a local selection and never a report. On the alternate screen
+X10 form it asked for; a drag is a local selection and never a report. A drag past the pane's edge in a program that reports the mouse scrolls it with wheel reports and the selection is a record of the rows that passed (`2026-10-27-fullscreen-drag-scroll-design.md`, added 2026-10-27). On the alternate screen
 without reporting the wheel sends arrow keys (xterm's alternate scroll, `?1007`, on by default);
 Shift+wheel always scrolls the local history (added 2026-10-15). BEL marks the tab (section 5). A link in the output (`http://` or `https://` to the
 next space or quote, trailing punctuation left out) is underlined under the pointer and opened
