@@ -65,7 +65,7 @@ mod mac {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, Message};
-    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSScreen, NSView, NSWindow};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSScreen, NSView, NSWindow, NSWindowOcclusionState};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use objc2_web_kit::WKWebView;
 
@@ -81,6 +81,12 @@ mod mac {
     /// The window is minimized to the Dock or hidden (Cmd+H, or not on screen at all).
     pub fn window_hidden(window: &NSWindow) -> bool {
         window.isMiniaturized() || !window.isVisible()
+    }
+
+    /// No part of the window can be seen: hidden as `window_hidden` says, or occluded, wholly
+    /// behind other windows or on another Space. The wash draws nothing then (effects spec 4.4).
+    pub fn window_unseen(window: &NSWindow) -> bool {
+        window_hidden(window) || !window.occlusionState().contains(NSWindowOcclusionState::Visible)
     }
 
     /// gpui's own `NSView` in a gpui window, from its AppKit window handle: the view that takes

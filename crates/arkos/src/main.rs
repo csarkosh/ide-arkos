@@ -334,8 +334,12 @@ pub struct Root {
     /// The glyph shader the project window is to draw with, set at its next frame (`render`
     /// holds the window); `None` when nothing has changed.
     glyphs_pending: Option<Option<gpui::GlyphShader>>,
-    /// Whether the effect's timer runs (`ensure_effect_timer`); it ends once `effect` is `None`.
-    effect_timer: bool,
+    /// The wash's timer (`ensure_effect_timer`): `None` while it is stopped, else whether it
+    /// rests (waits `effects::active::REST` because the wash could not be seen). It ends once
+    /// `effect` is `None`, and under Reduce Motion once nothing moves.
+    effect_timer: Option<bool>,
+    /// Counts the timers started, so a timer started afresh ends the one it replaces.
+    effect_timer_gen: u64,
     /// Whether the window's background is transparent, as `render` last set it: while an effect
     /// is on, so the wash shows through.
     transparent: bool,
@@ -641,7 +645,8 @@ impl Root {
             key_monitor: None,
             effect: None,
             glyphs_pending: None,
-            effect_timer: false,
+            effect_timer: None,
+            effect_timer_gen: 0,
             transparent: false,
             effect_divider: None,
             effect_marks: Vec::new(),
@@ -3698,7 +3703,8 @@ impl Root {
     /// Ends an effect's fade that is complete at `now`: at a fade in's end what can only cut
     /// switches; at a fade out's end the effect is dropped, and `render` makes the window opaque
     /// again. Called by `render` and by the wash's timer, since gpui draws no frames for a window
-    /// macOS has hidden behind others, and a fade must end all the same.
+    /// macOS has hidden behind others, and a fade must end all the same (within the timer's
+    /// rest while the window cannot be seen).
     fn step_effect_fade(&mut self, now: Instant, cx: &mut Context<Self>) {
         let Some(e) = self.effect.as_mut() else { return };
         match e.step(now) {
@@ -3709,20 +3715,30 @@ impl Root {
         cx.notify();
     }
 
-    /// Starts the wash's timer unless it runs: a frame at the manifest's rate (sixty a second
-    /// while a highlight fades) until the effect is gone.
+    /// Starts the wash's timer unless it keeps its cadence already: a frame at the manifest's
+    /// rate (sixty a second while a highlight fades) until the effect is gone. A timer that
+    /// rests is replaced, so its first tick comes now rather than at the end of its rest. Called
+    /// by `render`, which runs on every change of what the wash reads, so a timer stopped under
+    /// Reduce Motion ticks once after each such frame, and runs on only while something moves.
     fn ensure_effect_timer(&mut self, cx: &mut Context<Self>) {
-        if self.effect_timer {
+        if self.effect.is_none() || self.effect_timer == Some(false) {
             return;
         }
-        self.effect_timer = true;
+        self.effect_timer_gen += 1;
+        let generation = self.effect_timer_gen;
+        self.effect_timer = Some(false);
         cx.spawn(async move |root, cx| loop {
             let wait = root.update(cx, |root, cx| {
+                if root.effect_timer_gen != generation {
+                    return None;
+                }
                 let now = Instant::now();
                 root.step_effect_fade(now, cx);
-                let moving = root.effect_tick(now);
-                let wait = root.effect.as_ref().map(|e| effects::active::cadence(e.effect.manifest.frame_rate, moving));
-                root.effect_timer = wait.is_some();
+                let seen = root.effect_tick(now);
+                let wait = root.effect.as_ref().and_then(|e| {
+                    effects::active::next_wait(e.effect.manifest.frame_rate, seen.is_some(), seen == Some(true), !e.settled(), motion::reduce_motion())
+                });
+                root.effect_timer = wait.map(|_| seen.is_none());
                 wait
             });
             match wait {
@@ -3735,18 +3751,20 @@ impl Root {
 
     /// One frame of the wash at `now`: the blocks from the current layout, the divider and the
     /// highlights' strokes, with the theme as it is now (a theme fade reads the blend). Nothing
-    /// is drawn while the window is hidden or covered, nor under Reduce Motion when nothing
-    /// changed. True while a highlight's stroke fades, so the next frame comes sooner (the
-    /// surfaces' own fade is gpui's frames, through `any_motion`).
-    pub fn effect_tick(&mut self, now: Instant) -> bool {
-        if self.effect.is_none() {
-            return false;
-        }
-        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
+    /// is built or drawn while the window is hidden, occluded or covered, and `None` says so;
+    /// under Reduce Motion nothing is drawn when nothing changed. `Some(true)` while a
+    /// highlight's stroke fades, so the next frame comes sooner (the surfaces' own fade is
+    /// gpui's frames, through `any_motion`).
+    pub fn effect_tick(&mut self, now: Instant) -> Option<bool> {
+        self.effect.as_ref()?;
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
         let (covered, reduce) = (self.covered(), motion::reduce_motion());
+        if hidden || covered {
+            return None;
+        }
         let layout = self.layout();
         let (strokes, strokes_moving) = self.effect_strokes.sync(&self.effect_marks, now);
-        let Some(e) = self.effect.as_mut() else { return false };
+        let e = self.effect.as_mut()?;
         let style = e.style(now);
         let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &strokes);
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
@@ -3760,7 +3778,7 @@ impl Root {
                 e.logged = Some((now, ms));
             }
         }
-        strokes_moving
+        Some(strokes_moving)
     }
 
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
@@ -3811,6 +3829,8 @@ impl Render for Root {
         // The theme's blend for this frame, before any element reads `self.theme`.
         self.step_theme_fade(now, cx);
         self.step_effect_fade(now, cx);
+        // The wash reads what this frame lays out; its timer ticks once the frame is done.
+        self.ensure_effect_timer(cx);
         if let Some(shader) = self.glyphs_pending.take() {
             let applied = match &self.effect {
                 Some(e) => effects::active::apply_glyphs(window, &e.effect, shader),

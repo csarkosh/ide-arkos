@@ -185,7 +185,8 @@ without one recommends none. Peach Light recommends `watercolor`.
 Settings, Appearance section, under the themes: **Effect**, a list like the theme list ("Theme's
 choice" first, then "None", then every effect, a configured one that is missing listed as "(not
 installed)"), an **Intensity** stepper (0.0 to 1.0 by 0.1), and "Show effects folder". The
-window's current effect, when the file says `theme`, reads "Theme's choice (watercolor)".
+"Theme's choice" is always named with the current theme's recommendation, as in "Theme's choice
+(watercolor)", and reads "Theme's choice (none)" when the theme recommends nothing.
 
 `arkos settings set effect.name <theme|none|name>` and `effect.intensity <0..1>` join the keys.
 
@@ -208,9 +209,14 @@ As the spike: a `CAMetalLayer` in its own `NSView` below gpui's view in the wind
 view; the window's background transparent while an effect is on, opaque otherwise (gpui's
 `set_background_appearance`, live); the app's surfaces painted with the manifest's alphas. The
 layer draws from its own timer at `frame_rate` while anything moves, sixty while a highlight
-fades, and not at all when nothing has changed under Reduce Motion, when the window is hidden
-or minimized, or when it is covered (`Root::covered`, as the web views use). gpui redraws
-nothing for the wash.
+fades, and not at all when nothing has changed under Reduce Motion, when the window is hidden,
+minimized or occluded (its `occlusionState` without `Visible`: wholly behind other windows or on
+another Space), or when it is covered (`Root::covered`, as the web views use). gpui redraws
+nothing for the wash. Not drawing means no work either: while the window cannot be seen the
+timer builds nothing and looks again every half second; under Reduce Motion it stops once
+nothing moves, and `Root::render` (which runs on every change the wash reads: the layout, the
+highlights, the theme's blend, the intensity, the size) starts it for one tick after the frame,
+running on only while a stroke or a fade moves.
 
 The blocks: the title bar; the sidebar and its divider between Explorer and Worktrees; each
 pane's tab bar and body from `Root::layout()`; the Explorer's selected and hovered rows and the
@@ -288,7 +294,8 @@ which the manifest chose, so an author who forgot to paint highlights sees why n
   the contract with Metal; prints `ok: <name>` or the compiler's errors with line numbers
   (offset by the preamble, so they point into the user's file). Exit 1 on an error.
 - `arkos effect bench <folder|name> [--seconds N] [--json]`: runs the wash off-screen at the
-  front window's size for N seconds (default 3) and prints the GPU time per frame, the share of
+  size of the first window to answer (with several open, not necessarily the front one) for N
+  seconds (default 3) and prints the GPU time per frame, the share of
   a frame at the manifest's rate, and a verdict against the budget (4.8). Needs a window for the
   size and the theme; without one, 1200 by 800 and Peach Light.
 - `arkos effect use <name|none|theme> [--json]`: sets `effect.name` and reloads, as `theme use`.

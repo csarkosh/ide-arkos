@@ -276,8 +276,8 @@ text two points larger. Any theme can carry any effect, since an effect reads th
 colours. Pick one in Settings, Appearance (or `arkos effect use <name>`); "Theme's choice"
 follows the theme's own recommendation, which is none for every built-in theme but Peach Light.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
-Under Reduce Motion the wash holds still and draws only when something changes, and a hidden or
-covered window draws none.
+Under Reduce Motion the wash holds still and draws only when something changes, and a hidden,
+covered or occluded window (one wholly behind other windows) draws none.
 
 Effects you add live in `~/.config/arkos/effects/<name>/` (or under `$XDG_CONFIG_HOME`), one
 folder each with an `effect.toml` and Metal shaders; a folder named like a built-in replaces it.

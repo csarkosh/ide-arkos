@@ -83,6 +83,25 @@ pub fn cadence(frame_rate: u32, moving: bool) -> Duration {
     Duration::from_secs_f64(1.0 / rate as f64)
 }
 
+/// How long the wash's timer rests between looks while nothing of the wash can be seen: long
+/// enough that a hidden, occluded or covered window costs next to nothing, short enough that
+/// the wash comes back soon after the window does.
+pub const REST: Duration = Duration::from_millis(500);
+
+/// What the wash's timer waits after a tick, or `None` to stop it. While the window is not
+/// `seen` (hidden, occluded or covered) it rests; under Reduce Motion with no highlight
+/// `moving` and no `fading` it stops, and the next render starts it again; otherwise it keeps
+/// the `cadence`.
+pub fn next_wait(frame_rate: u32, seen: bool, moving: bool, fading: bool, reduce: bool) -> Option<Duration> {
+    if !seen {
+        Some(REST)
+    } else if reduce && !moving && !fading {
+        None
+    } else {
+        Some(cadence(frame_rate, moving))
+    }
+}
+
 /// What a frame's blocks are made from in the project window: the panes' content area, the
 /// window's bars, the sidebar's divider when laid out, the panes and the highlights' strokes.
 pub fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
@@ -404,6 +423,22 @@ mod tests {
         assert_eq!(cadence(30, true), Duration::from_secs_f64(1.0 / 60.0));
         assert_eq!(cadence(10, true), Duration::from_secs_f64(1.0 / 60.0));
         assert_eq!(cadence(60, false), Duration::from_secs_f64(1.0 / 60.0));
+    }
+
+    #[test]
+    fn the_timer_rests_while_nothing_can_be_drawn_and_stops_when_reduce_motion_holds_still() {
+        // Hidden, occluded or covered: a slow look, whatever moves, until the window is seen.
+        assert_eq!(next_wait(30, false, false, false, false), Some(REST));
+        assert_eq!(next_wait(30, false, true, true, false), Some(REST));
+        assert_eq!(next_wait(30, false, false, false, true), Some(REST));
+        assert!(REST >= Duration::from_millis(250));
+        // Seen and in motion: the manifest's rate, sixty while a highlight fades.
+        assert_eq!(next_wait(30, true, false, false, false), Some(cadence(30, false)));
+        assert_eq!(next_wait(30, true, true, false, false), Some(cadence(30, true)));
+        // Under Reduce Motion with nothing moving the timer stops; a render starts it again.
+        assert_eq!(next_wait(30, true, false, false, true), None);
+        assert_eq!(next_wait(30, true, true, false, true), Some(cadence(30, true)));
+        assert_eq!(next_wait(30, true, false, true, true), Some(cadence(30, false)), "a fade still ends");
     }
 
     #[test]

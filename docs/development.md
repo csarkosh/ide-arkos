@@ -106,7 +106,10 @@ features are added:
   highlights, the glyph shader) switches at a fade in's end and a fade out's start. An effect's
   wash is drawn from its own timer at the manifest's rate, sixty while a highlight fades, never
   under Reduce Motion unless its inputs changed (its clock is frozen there), and never while the
-  window is hidden or covered; gpui redraws nothing for it. A surface that paints a fill under
+  window is hidden, occluded or covered; gpui redraws nothing for it. While the window cannot be
+  seen the timer builds nothing and looks again every half second (`effects::active::REST`);
+  under Reduce Motion it stops once nothing moves, and `Root::render` starts it for one tick
+  after each frame. A surface that paints a fill under
   the wash reads its alpha from `Root::effect_style` at paint time, and UI text sizes go
   through `Root::ui_size`.
 
@@ -240,6 +243,9 @@ Things only a person at the screen can check, in order of value:
 - effects: Navy with `effect.name = "watercolor"` reads navy (the wash takes the theme's colours)
 - effects: with Reduce Motion on the wash is still and Activity Monitor shows the window idle; a
   hover still moves its stroke at once
+- effects: a window wholly behind another app's window, or minimized, shows the process idle in
+  Activity Monitor (no wash frames, a few wake-ups a second at most), and its wash moves again
+  within half a second of coming back into view
 - effects: a window covered by the palette or a menu draws no wash frames meanwhile; a resized
   window's wash follows its new size at once, with no stretched or offset blocks
 - effects: a `wash.metal` in the effects folder that fails to compile shows a notice naming the
