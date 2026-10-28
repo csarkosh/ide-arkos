@@ -58,10 +58,12 @@ as a grid, a Mermaid diagram, a checklist and a folded open-questions section, a
 session beside it bringing the plan up to date from the review notes.
 
 The same work stacked, one pane above the other: the file on top with the caret in it, since
-the rendered view is also where you edit, and the session below.
+the rendered view is also where you edit, and the session below. It is shot in Peach Light,
+whose watercolor effect washes the window in the theme's pigments, inks the outlines of the
+panes and the table, and draws the text as if in ink.
 
 <picture>
-  <img alt="An Arkos IDE window with two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid, with the caret in a heading showing its markdown source; below it a Claude Code session updating the plan from the notes" src="docs/images/blogger-dark.png" width="620">
+  <img alt="An Arkos IDE window in Peach Light with its watercolor effect, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with an apricot wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in peach and rose with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
 </picture>
 
 ## Privacy
