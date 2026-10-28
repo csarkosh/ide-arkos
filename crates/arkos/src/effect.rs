@@ -29,9 +29,42 @@ thread_local! {
     static DIVIDER: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
 }
 
+/// A highlight's rectangle in window points: x, y, width, height.
+pub type Rect4 = (f32, f32, f32, f32);
+
+/// How strong the wash under an Explorer row is: selected, hovered, or both.
+pub const SELECTED: f32 = 0.3;
+pub const HOVERED: f32 = 0.2;
+pub const SELECTED_HOVERED: f32 = 0.36;
+
+/// One highlight's stroke as it fades: where it is, and the strength it is moving between.
+struct Stroke {
+    rect: Rect4,
+    from: f32,
+    to: f32,
+    since: Instant,
+}
+
+impl Stroke {
+    /// The strength now: rising eases out over ENTER, falling eases in over EXIT (the app's
+    /// motion rules; instant under Reduce Motion).
+    fn value(&self, now: Instant) -> f32 {
+        if self.to >= self.from {
+            self.from + (self.to - self.from) * crate::motion::enter_progress(self.since, now, crate::motion::ENTER)
+        } else {
+            self.to + (self.from - self.to) * crate::motion::exit_progress(self.since, now, crate::motion::EXIT)
+        }
+    }
+}
+
 thread_local! {
-    /// Highlights laid out this frame (the Explorer's selected row), in window points.
-    static MARKS: std::cell::RefCell<Vec<(f32, f32, f32, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Highlights laid out this frame (the Explorer's selected and hovered rows): a key, the
+    /// rectangle and the strength wanted.
+    static MARKS: std::cell::RefCell<Vec<(u64, Rect4, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Every highlight still on the paper, fading in, at rest, or fading out.
+    static STROKES: std::cell::RefCell<std::collections::HashMap<u64, Stroke>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The Explorer row under the pointer.
+    static HOVER: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Called at the start of the window's render: the frame's highlights are reported afresh.
@@ -39,14 +72,54 @@ pub fn begin_frame() {
     MARKS.with(|m| m.borrow_mut().clear());
 }
 
-/// Called by a highlighted element's layout with its bounds.
-pub fn mark(x: f32, y: f32, w: f32, h: f32) {
-    MARKS.with(|m| m.borrow_mut().push((x, y, w, h)));
+/// Called by a highlighted element's layout with its key, bounds and the strength it wants.
+pub fn mark(key: u64, rect: Rect4, strength: f32) {
+    MARKS.with(|m| m.borrow_mut().push((key, rect, strength)));
 }
 
-/// The highlights laid out in the last frame.
-pub fn marks() -> Vec<(f32, f32, f32, f32)> {
-    MARKS.with(|m| m.borrow().clone())
+/// The pointer entered (`true`) or left the Explorer row `key`.
+pub fn set_hover(key: u64, hovered: bool) {
+    HOVER.with(|h| {
+        if hovered {
+            h.set(Some(key));
+        } else if h.get() == Some(key) {
+            h.set(None);
+        }
+    });
+}
+
+/// The Explorer row under the pointer.
+pub fn hovered() -> Option<u64> {
+    HOVER.with(|h| h.get())
+}
+
+/// The highlights at `now`, each with its current strength, and whether any is still moving.
+/// A highlight that stops being reported fades out from where it was last laid out.
+pub fn strokes(now: Instant) -> (Vec<(Rect4, f32)>, bool) {
+    let reported = MARKS.with(|m| m.borrow().clone());
+    STROKES.with(|s| {
+        let mut s = s.borrow_mut();
+        let retarget = |stroke: &mut Stroke, to: f32| {
+            if (stroke.to - to).abs() > f32::EPSILON {
+                stroke.from = stroke.value(now);
+                stroke.to = to;
+                stroke.since = now;
+            }
+        };
+        for (key, rect, want) in &reported {
+            let stroke = s.entry(*key).or_insert(Stroke { rect: *rect, from: 0.0, to: 0.0, since: now });
+            stroke.rect = *rect;
+            retarget(stroke, *want);
+        }
+        for (key, stroke) in s.iter_mut() {
+            if !reported.iter().any(|(k, _, _)| k == key) {
+                retarget(stroke, 0.0);
+            }
+        }
+        s.retain(|_, stroke| stroke.to > 0.0 || stroke.value(now) > 0.001);
+        let moving = s.values().any(|stroke| (stroke.value(now) - stroke.to).abs() > 0.001);
+        (s.values().map(|stroke| (stroke.rect, stroke.value(now))).collect(), moving)
+    })
 }
 
 /// Called by the Worktrees section's layout with its top edge.

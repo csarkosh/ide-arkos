@@ -3534,11 +3534,12 @@ impl Root {
     }
 
     /// SPIKE: one frame of the watercolor wash, with the theme's colours as they are now (a
-    /// theme fade reads the blend). A hidden window draws none.
-    pub fn effect_tick(&mut self) {
+    /// theme fade reads the blend). A hidden window draws none. True while a highlight is still
+    /// fading, so the next frame comes sooner.
+    pub fn effect_tick(&mut self) -> bool {
         let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
         if hidden || self.effect.is_none() {
-            return;
+            return false;
         }
         use effect::{Region, INK_BOTTOM, INK_LEFT, INK_RIGHT, INK_TOP};
         let c = self.content;
@@ -3551,10 +3552,12 @@ impl Root {
             if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
                 regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP });
             }
-            // The Explorer's selected row: a thin stroke of peach across it, no outline.
-            for (x, y, w, h) in effect::marks() {
-                regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength: 0.3, ink: 0 });
-            }
+        }
+        // The Explorer's selected and hovered rows: thin strokes of peach, no outline, each at the
+        // strength its fade has reached.
+        let (strokes, moving) = effect::strokes(Instant::now());
+        for ((x, y, w, h), strength) in strokes {
+            regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength, ink: 0 });
         }
         // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
         // wash on the tab bar, a faint one on the body, both outlined in ink.
@@ -3571,6 +3574,7 @@ impl Root {
         if let Some(e) = self.effect.as_mut() {
             e.draw(paper, ink, pigments, &regions);
         }
+        moving
     }
 
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
@@ -4437,10 +4441,16 @@ fn open_project_window(
                             if effect::wanted(&root.theme.name) {
                                 root.effect = effect::Watercolor::install(ns, view);
                                 if root.effect.is_some() {
-                                    cx.spawn(async move |root, cx| loop {
-                                        cx.background_executor().timer(Duration::from_millis(33)).await;
-                                        if root.update(cx, |root, _| root.effect_tick()).is_err() {
-                                            break;
+                                    // Sixty a second while a highlight fades, so a 90 ms fade
+                                    // is five or six frames rather than three.
+                                    cx.spawn(async move |root, cx| {
+                                        let mut fast = false;
+                                        loop {
+                                            cx.background_executor().timer(Duration::from_millis(if fast { 16 } else { 33 })).await;
+                                            match root.update(cx, |root, _| root.effect_tick()) {
+                                                Ok(moving) => fast = moving,
+                                                Err(_) => break,
+                                            }
                                         }
                                     })
                                     .detach();

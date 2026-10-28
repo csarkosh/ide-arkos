@@ -370,8 +370,16 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                 let p_click = path.clone();
                 let p_menu = path.clone();
                 let is_dir = row.is_dir;
+                let key = hash_of(&path);
+                let is_hovered = crate::effect::hovered() == Some(key);
+                let stroke = match (is_selected, is_hovered) {
+                    (true, true) => Some(crate::effect::SELECTED_HOVERED),
+                    (true, false) => Some(crate::effect::SELECTED),
+                    (false, true) => Some(crate::effect::HOVERED),
+                    (false, false) => None,
+                };
                 div()
-                    .id(("row", hash_of(&path)))
+                    .id(("row", key))
                     .w_full()
                     .h(px(ROW_H))
                     .pl(px(10.0 + row.depth as f32 * INDENT))
@@ -379,17 +387,31 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    // SPIKE: under the wash the selected row is a stroke of pigment (it reports
-                    // where it is) and a hovered row a translucent patch of paper.
+                    // SPIKE: under the wash a selected or hovered row is a stroke of pigment: it
+                    // reports where it is and how strong it wants the stroke, and the effect
+                    // fades the stroke in and out.
                     .when(is_selected && !crate::effect::active(), |d| d.bg(selected_bg))
-                    .when(is_selected && crate::effect::active(), |d| {
+                    .when(!crate::effect::active(), |d| d.hover(move |s| s.bg(hover_bg)))
+                    .when(crate::effect::active(), |d| {
+                        let w_hover = weak.clone();
+                        d.on_hover(move |hovered: &bool, _window, cx| {
+                            crate::effect::set_hover(key, *hovered);
+                            let _ = w_hover.update(cx, |_root, cx| cx.notify());
+                        })
+                    })
+                    .when_some(stroke.filter(|_| crate::effect::active()), |d, want| {
                         d.relative().child(
-                            gpui::canvas(|b, _window, _cx| crate::effect::mark(f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)), |_, _, _, _| {})
-                                .absolute()
-                                .size_full(),
+                            gpui::canvas(
+                                move |b, _window, _cx| {
+                                    let rect = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
+                                    crate::effect::mark(key, rect, want)
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
                         )
                     })
-                    .hover(move |s| s.bg(if crate::effect::active() { let mut h = hover_bg; h.a = 0.35; h } else { hover_bg }))
                     .text_color(row_color(row.status, row.ignored, &theme).hsla())
                     .cursor_pointer()
                     .on_click(move |ev: &ClickEvent, _window, cx| {
