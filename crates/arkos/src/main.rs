@@ -19,9 +19,6 @@ mod doctor;
 mod doctor_panel;
 mod drag;
 mod edit;
-// The spike, referenced from nowhere now; it leaves the tree with the effects' last task.
-#[allow(dead_code)]
-mod effect;
 mod effects;
 mod empty_pane;
 mod explorer;

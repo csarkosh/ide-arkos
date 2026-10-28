@@ -46,6 +46,17 @@ new workspace format on first launch. A daemon started by milestone 1 keeps runn
 this milestone's lifecycle fixes, though; `pkill -x arkosd` restarts it (the window starts a
 new one) and ends every session, so do it when nothing important is running.
 
+### gpui fork
+
+Arkos builds against gpui from its fork, https://github.com/csarkosh/gpui, pinned in the
+workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.1`). The fork is the
+crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with one commit on top, the per-window glyph
+shader hook the effects use (`Window::set_glyph_shader`, `GlyphShader`,
+`GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`). An upgrade goes as the fork's `ARKOS.md` says:
+commit the next tarball as `v<version>`, rebase the patch commits onto it, tag
+`v<version>-arkos.1`, push, point `[patch.crates-io]` at the new tag and run
+`cargo update -p gpui`.
+
 ## Tests
 
 ```bash

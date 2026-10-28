@@ -1,8 +1,8 @@
 # Effects: shaders under and over the window
 
-Status: draft 2026-10-28, from the watercolor spike on branch `worktree-watercolor-spike`
-(commits 041a5ed to 4ccddba); builder-checked the same day (rulings 9 to 12). The spike is
-throwaway; this is what ships.
+Status: implemented 2026-10-28 (branch worktree-watercolor-spike); the spike it grew from is gone.
+Drafted the same day from the spike (commits 041a5ed to 4ccddba) and builder-checked (rulings 9
+to 12).
 
 ## 1. Intent
 
@@ -189,16 +189,18 @@ window's current effect, when the file says `theme`, reads "Theme's choice (wate
 
 `arkos settings set effect.name <theme|none|name>` and `effect.intensity <0..1>` join the keys.
 
-Switching takes effect live, and as a transition under the Motion rule: the wash's layer
-opacity and the surfaces' alphas cross-fade over `motion::THEME_FADE` (200 ms, in step with a
-theme fade when both change at once), the effect counting in `Root::any_motion` meanwhile; the
-glyph shader and the UI text size, which can only cut, switch at the fade's end, so the layout
-settles once. At the same moments the window's theme fades to one derived from the configured
-theme by the manifest's `text_contrast` (`chrome.text`, `chrome.text_dim` and
-`terminal.foreground` that far, three quarters and nine tenths of the way towards ink), and back. Under Reduce Motion the whole switch cuts. The window's background turns
-transparent at the fade's start when an effect comes and opaque at its end when one goes, so
-nothing shows through meanwhile. A theme switch with `name = "theme"` does the same when the
-recommendation changes. The spike's "relaunch to turn it off" is gone.
+Switching takes effect live, and as a transition under the Motion rule: the cross-fade lives in
+the surfaces' alphas, which move between opaque and the effect's style over
+`motion::THEME_FADE` (200 ms, in step with a theme fade when both change at once) while the
+wash's layer stays at full opacity under them, the effect counting in `Root::any_motion`
+meanwhile; the glyph shader and the UI text size, which can only cut, switch at the fade's end,
+so the layout settles once. At the same moments the window's theme fades to one derived from the
+configured theme by the manifest's `text_contrast` (`chrome.text`, `chrome.text_dim` and
+`terminal.foreground` that far, three quarters and nine tenths of the way towards ink), and
+back. Under Reduce Motion the whole switch cuts. The window's background turns transparent at
+the fade's start when an effect comes and opaque at its end when one goes, so nothing shows
+through meanwhile. A theme switch with `name = "theme"` does the same when the recommendation
+changes. The spike's "relaunch to turn it off" is gone.
 
 ### 4.4 How the wash is drawn
 
@@ -223,8 +225,8 @@ by more than a tenth, and `arkos effect bench` reads the same number (4.7).
 ### 4.5 The gpui fork and the glyph hook
 
 gpui 0.2.2 moves to `https://github.com/csarkosh/gpui`, a repository seeded from the crates.io
-sources of 0.2.2 (what `vendor/gpui` is today, 8 MB, not the Zed monorepo), with Arkos's
-patches as commits on top and tags `v0.2.2-arkos.N`. Arkos depends on it through
+sources of 0.2.2 (what `vendor/gpui` held while it was built, 8 MB, not the Zed monorepo),
+with Arkos's patches as commits on top and tags `v0.2.2-arkos.N`. Arkos depends on it through
 `[patch.crates-io] gpui = { git = ..., tag = ... }`; `vendor/gpui` leaves the tree. An upgrade
 imports the next crates.io sources as a commit and rebases the patches. The repository is
 public (the sources are Apache-2.0 and the release workflow clones it without credentials).

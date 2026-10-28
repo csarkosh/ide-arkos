@@ -21,7 +21,7 @@ serde_json.workspace = true
 # The agent guide skill's version stamp (guide.rs).
 sha2.workspace = true
 objc2 = "0.6"
-# SPIKE (effect.rs): the Metal layer under the window, through gpui's own metal crate and its
+# The effect layer under the window (effects/layer.rs), through gpui's own metal crate and its
 # geometry types.
 metal = "0.29"
 core-graphics-types = "0.1"
