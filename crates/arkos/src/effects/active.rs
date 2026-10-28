@@ -175,9 +175,15 @@ pub fn reported<L>(effect: Option<&ActiveEffect<L>>, gpu_ms: impl Fn(&L) -> Opti
 }
 
 /// Sets `shader` on `window`. A shader the window refuses gives the notice to show, naming the
-/// effect's glyphs file and the compiler's first error; the window keeps the glyphs it had.
+/// effect's glyphs file and the compiler's first error, and the window goes back to gpui's own
+/// glyphs, so no earlier effect's shader is left drawing under this one.
 pub fn apply_glyphs(window: &mut impl GlyphSink, effect: &Effect, shader: Option<GlyphShader>) -> Result<(), String> {
+    let had_shader = shader.is_some();
     window.set_glyph_shader(shader).map_err(|message| {
+        if had_shader {
+            // gpui's own glyphs need no compiling, so this is not refused.
+            let _ = window.set_glyph_shader(None);
+        }
         let file = effect.manifest.glyphs.as_deref().unwrap_or("glyphs.metal");
         let first = message
             .lines()
@@ -469,7 +475,8 @@ mod tests {
         assert_eq!(super::super::layer::drawable_size((1200.0, 800.0), 1.0, 0.25), (300.0, 200.0));
     }
 
-    /// Records what a window was asked to draw its glyphs with, or refuses as a compiler would.
+    /// Records what a window was asked to draw its glyphs with, or refuses a shader as a
+    /// compiler would; going back to gpui's own glyphs is never refused.
     #[derive(Default)]
     struct Recorder {
         calls: Vec<Option<GlyphShader>>,
@@ -477,14 +484,37 @@ mod tests {
     }
     impl GlyphSink for Recorder {
         fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String> {
-            match &self.refuse {
-                Some(m) => Err(m.clone()),
-                None => {
+            match (&self.refuse, &shader) {
+                (Some(m), Some(_)) => Err(m.clone()),
+                _ => {
                     self.calls.push(shader);
                     Ok(())
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_refused_glyph_shader_clears_the_previous_effect_s_ink() {
+        let _lock = test_lock(true);
+        let t0 = Instant::now();
+        let mut window = Recorder::default();
+        // Effect A is on, cut in under Reduce Motion, with its ink.
+        let a = start(watercolor(), &mut Fine, t0, true).unwrap();
+        let ink_a = glyph_shader_for(WindowKind::Project, Some(&a));
+        assert!(ink_a.is_some());
+        apply_glyphs(&mut window, &a.effect, ink_a.clone()).unwrap();
+        // B replaces A at once, and the window refuses B's glyph shader.
+        let mut b_effect = watercolor();
+        b_effect.manifest.name = "b".into();
+        b_effect.glyphs = Some("garbage".into());
+        let b = start(b_effect, &mut Fine, t0, true).unwrap();
+        window.refuse = Some("Compilation failed: \n\nprogram_source:3:1: error: garbage\n".into());
+        let notice = apply_glyphs(&mut window, &b.effect, glyph_shader_for(WindowKind::Project, Some(&b))).unwrap_err();
+        assert_eq!(notice, "effect b: glyphs.metal: garbage");
+        // gpui's own glyphs come back, rather than A's ink staying under B's wash.
+        assert_eq!(window.calls, vec![ink_a, None]);
+        assert!(b.settled() && b.style(t0).paper_alpha > 0.0, "B stays on");
     }
 
     #[test]
