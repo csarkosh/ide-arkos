@@ -307,6 +307,9 @@ pub struct Root {
     pub theme: Arc<theme::Theme>,
     /// The theme cross-fade under way, if any: `theme` is between `from` and `to`.
     pub theme_fade: Option<ThemeFade>,
+    /// The theme the config and the appearance resolve to. The window shows it as it is, or
+    /// with its text deepened by the effect's `text_contrast` while an effect is settled on.
+    base_theme: Arc<theme::Theme>,
     /// Whether a frame has been drawn: a theme set before the first one shows at once.
     pub painted: bool,
     /// The theme's fonts, less any family this Mac lacks (`ThemeFont::installed`).
@@ -331,6 +334,9 @@ pub struct Root {
     key_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     /// The effect under the window (effects spec 4.3), on, or on its way in or out.
     effect: Option<effects::active::ActiveEffect>,
+    /// The glyph shader the project window is to draw with, set at its next frame (`render`
+    /// holds the window); `None` when nothing has changed.
+    glyphs_pending: Option<Option<gpui::GlyphShader>>,
     /// Whether the effect's timer runs (`ensure_effect_timer`); it ends once `effect` is `None`.
     effect_timer: bool,
     /// Whether the window's background is transparent, as `render` last set it: while an effect
@@ -625,6 +631,7 @@ impl Root {
             shell_name: shell_name(config.terminal.shell.as_deref(), std::env::var("SHELL").ok().as_deref()),
             config,
             fonts: installed_fonts(&theme, cx),
+            base_theme: Arc::new(theme.clone()),
             theme: Arc::new(theme),
             theme_fade: None,
             painted: false,
@@ -636,6 +643,7 @@ impl Root {
             ns_view: None,
             key_monitor: None,
             effect: None,
+            glyphs_pending: None,
             effect_timer: false,
             transparent: false,
             effect_divider: None,
@@ -1157,9 +1165,10 @@ impl Root {
     /// from what is on screen over `motion::THEME_FADE`, frame by frame in `step_theme_fade`, and
     /// what is derived from the theme once (the highlighter, the viewers, the push a program
     /// asked for) waits for the fade's end. Under Reduce Motion, or before the first frame, the
-    /// switch is instant. A theme equal to the one being shown or faded to does nothing.
+    /// switch is instant. A theme equal to the one being shown or faded to does nothing. An
+    /// effect settled on deepens its text (`effects::active::contrasted`).
     pub fn set_theme(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
-        if **self.target_theme() == theme {
+        if *self.base_theme == theme {
             return;
         }
         let fonts = installed_fonts(&theme, cx);
@@ -1169,6 +1178,18 @@ impl Root {
             self.grids.clear();
         }
         self.fonts = fonts;
+        let shown = effects::active::contrasted(&theme, self.text_contrast());
+        self.base_theme = Arc::new(theme);
+        self.fade_theme_to(shown, cx);
+    }
+
+    /// Cross-fades the window's colours to `theme` from what is on screen, or switches at once
+    /// under Reduce Motion or before the first frame. A theme already shown or faded to does
+    /// nothing.
+    fn fade_theme_to(&mut self, theme: theme::Theme, cx: &mut Context<Self>) {
+        if **self.target_theme() == theme {
+            return;
+        }
         let to = Arc::new(theme);
         if motion::reduce_motion() || !self.painted {
             self.finish_theme(to, cx);
@@ -1263,9 +1284,10 @@ impl Root {
     /// Switches to `wanted` if it loaded and differs; a load error keeps the current theme and
     /// sets `theme_error`, a success clears it.
     fn switch_theme_to(&mut self, wanted: Result<theme::Theme, String>, cx: &mut Context<Self>) {
-        // Against the target, not the blend on screen: at the fade's first frame the blend has
-        // the old colours under the new name, and a revert to the old theme must still switch.
-        let (switch, banner) = theme::keep_or_switch(self.target_theme(), wanted);
+        // Against the configured theme, not the blend on screen (at the fade's first frame the
+        // blend has the old colours under the new name, and a revert must still switch) nor the
+        // one an effect deepened.
+        let (switch, banner) = theme::keep_or_switch(&self.base_theme, wanted);
         if let Some(t) = switch {
             self.set_theme(t, cx);
         }
@@ -3581,7 +3603,7 @@ impl Root {
 
     /// Puts on the effect the config and the theme name, or takes it off.
     pub fn resolve_effect(&mut self, cx: &mut Context<Self>) {
-        let name = effects::resolve(&self.config.effect.name, self.target_theme());
+        let name = effects::resolve(&self.config.effect.name, &self.base_theme);
         self.set_effect(name, cx);
     }
 
@@ -3611,8 +3633,11 @@ impl Root {
             }
             return;
         }
-        // Another effect goes at once; the new one fades in from plain.
-        self.effect = None;
+        // Another effect goes at once, its glyphs and text with it; the new one fades in from
+        // plain.
+        if self.effect.take().is_some() {
+            self.effect_fade_settled(cx);
+        }
         let (Some(ns), Some(view)) = (self.ns_window.clone(), self.ns_view.clone()) else { return };
         let effect = match effects::manifest::load(&name, &effects::effects_dir()) {
             Ok(e) => e,
@@ -3636,9 +3661,27 @@ impl Root {
     }
 
     /// What can only cut switches here: at the end of a fade in and at the start of a fade
-    /// out (the text size follows `effect_style` by itself). Task 5 sets and clears the
-    /// effect's glyph shader here.
-    fn effect_fade_settled(&mut self, _cx: &mut Context<Self>) {}
+    /// out (the text size follows `effect_style` by itself). The project window's glyph shader
+    /// is set or cleared at its next frame, and its theme fades to the configured one with the
+    /// text deepened by the effect's `text_contrast`, or back.
+    fn effect_fade_settled(&mut self, cx: &mut Context<Self>) {
+        self.glyphs_pending = Some(self.glyph_shader_for(effects::active::WindowKind::Project));
+        let shown = effects::active::contrasted(&self.base_theme, self.text_contrast());
+        self.fade_theme_to(shown, cx);
+        cx.notify();
+    }
+
+    /// The glyph shader a window of `kind` draws with: the effect's, in the project window
+    /// only. The aux windows never ask, so they keep gpui's own glyphs.
+    pub fn glyph_shader_for(&self, kind: effects::active::WindowKind) -> Option<gpui::GlyphShader> {
+        effects::active::glyph_shader_for(kind, self.effect.as_ref())
+    }
+
+    /// How far the text is deepened: the effect's `text_contrast` while it is settled on, else
+    /// nothing.
+    fn text_contrast(&self) -> f32 {
+        self.effect.as_ref().filter(|e| e.settled()).map_or(0.0, |e| e.effect.manifest.text_contrast)
+    }
 
     /// Ends an effect's fade that is complete at `now`: at a fade in's end what can only cut
     /// switches; at a fade out's end the effect is dropped, and `render` makes the window opaque
@@ -3756,6 +3799,16 @@ impl Render for Root {
         // The theme's blend for this frame, before any element reads `self.theme`.
         self.step_theme_fade(now, cx);
         self.step_effect_fade(now, cx);
+        if let Some(shader) = self.glyphs_pending.take() {
+            let applied = match &self.effect {
+                Some(e) => effects::active::apply_glyphs(window, &e.effect, shader),
+                None => effects::active::GlyphSink::set_glyph_shader(window, None),
+            };
+            if let Err(notice) = applied {
+                eprintln!("arkos: {notice}");
+                self.show_notice(notice, cx);
+            }
+        }
         // Transparent while an effect is on, so the wash under gpui's view shows through the
         // surfaces; at the fade's start they are still opaque, and at its end they are again.
         if self.effect.is_some() != self.transparent {

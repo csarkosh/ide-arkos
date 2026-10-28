@@ -40,6 +40,6 @@ strip = "debuginfo"
 [profile.dev.package.pulldown-cmark]
 opt-level = 3
 
-# SPIKE (watercolor): gpui with an ink variant of its glyph shader (vendor/gpui).
+# gpui with the per-window glyph shader hook (vendor/gpui), until the fork is the dependency.
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }

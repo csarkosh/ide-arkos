@@ -31,6 +31,9 @@ pub struct Manifest {
     pub chrome_alpha: f32,
     /// The active tab over the wash.
     pub active_tab_alpha: f32,
+    /// How far the text moves towards ink (black on a light theme, white on a dark one) while
+    /// the effect is on.
+    pub text_contrast: f32,
 }
 
 impl Default for Manifest {
@@ -48,6 +51,7 @@ impl Default for Manifest {
             paper_alpha: 0.5,
             chrome_alpha: 0.0,
             active_tab_alpha: 0.55,
+            text_contrast: 0.0,
         }
     }
 }
@@ -93,6 +97,7 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("paper_alpha", m.paper_alpha, 0.5, 1.0)?;
     in_range("chrome_alpha", m.chrome_alpha, 0.0, 1.0)?;
     in_range("active_tab_alpha", m.active_tab_alpha, 0.0, 1.0)?;
+    in_range("text_contrast", m.text_contrast, 0.0, 1.0)?;
     Ok(m)
 }
 
@@ -214,6 +219,7 @@ mod tests {
         assert_eq!(m.paper_alpha, 0.5);
         assert_eq!(m.chrome_alpha, 0.0);
         assert_eq!(m.active_tab_alpha, 0.55);
+        assert_eq!(m.text_contrast, 0.0);
     }
 
     #[test]
@@ -230,6 +236,8 @@ mod tests {
         assert!(e.contains("chrome_alpha must be 0.0 to 1.0"), "{e}");
         let e = parse(&with("active_tab_alpha = -0.1")).unwrap_err();
         assert!(e.contains("active_tab_alpha must be 0.0 to 1.0"), "{e}");
+        let e = parse(&with("text_contrast = 1.2")).unwrap_err();
+        assert!(e.contains("text_contrast must be 0.0 to 1.0 (was 1.2)"), "{e}");
         assert!(parse(&with("frame_rate = 60\nscale = 1.0\nui_text_bump = 4\npaper_alpha = 1.0")).is_ok());
     }
 
@@ -255,6 +263,7 @@ mod tests {
         assert_eq!(m.highlights, Highlights::Effect);
         assert!(m.ink_borders);
         assert_eq!(m.ui_text_bump, 2.0);
+        assert_eq!(m.text_contrast, 0.6);
         assert!(b.wash.contains("fragment float4 arkos_wash("));
         let glyphs = b.glyphs.expect("watercolor draws its own glyphs");
         assert!(glyphs.contains("arkos_glyph_vertex(") && glyphs.contains("arkos_glyph_fragment("));

@@ -1478,6 +1478,11 @@ impl PlatformWindow for MacWindow {
         self.0.lock().renderer.sprite_atlas().clone()
     }
 
+    #[cfg(not(feature = "macos-blade"))]
+    fn set_glyph_shader(&self, shader: Option<crate::GlyphShader>) -> Result<(), String> {
+        self.0.lock().renderer.set_glyph_shader(shader)
+    }
+
     fn gpu_specs(&self) -> Option<crate::GpuSpecs> {
         None
     }

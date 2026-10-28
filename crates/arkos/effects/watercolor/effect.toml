@@ -12,3 +12,4 @@ highlights = "effect"         # "effect": the wash paints the selected and hover
 paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper over the wash
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash
+text_contrast = 0.6           # 0.0 to 1.0; how far the text moves towards ink while the effect is on

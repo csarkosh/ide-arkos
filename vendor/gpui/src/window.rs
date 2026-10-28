@@ -815,6 +815,50 @@ impl Frame {
     }
 }
 
+/// Glyph (monochrome sprite) stages a window draws its text with instead of gpui's own: a Metal
+/// source appended to gpui's shader source, and the names of the vertex and fragment functions
+/// in it. See [`Window::set_glyph_shader`] and [`GLYPH_SHADER_PRELUDE`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlyphShader {
+    /// Metal source, compiled after gpui's own, so it may use every declaration in it.
+    pub source: String,
+    /// The vertex function's name, with the signature of `monochrome_sprite_vertex`.
+    pub vertex: String,
+    /// The fragment function's name, with the signature of `monochrome_sprite_fragment`.
+    pub fragment: String,
+}
+
+/// gpui's own glyph stages, the lines of its Metal shader source from the sprite stage's
+/// structs through `monochrome_sprite_fragment`: what a glyph shader replaces and may build on.
+pub const GLYPH_SHADER_PRELUDE: &str = glyph_prelude::PRELUDE;
+
+mod glyph_prelude {
+    const SHADERS: &[u8] = include_bytes!("platform/mac/shaders.metal");
+    const START: usize = find(SHADERS, b"struct MonochromeSprite", 0);
+    const FRAGMENT: usize = find(SHADERS, b"fragment float4 monochrome_sprite_fragment(", START);
+    const END: usize = find(SHADERS, b"\n}\n", FRAGMENT) + 3;
+    pub(super) const PRELUDE: &str = match std::str::from_utf8(SHADERS.split_at(END).0.split_at(START).1) {
+        Ok(text) => text,
+        Err(_) => panic!("shaders.metal is not UTF-8"),
+    };
+
+    /// Where `needle` first occurs in `hay` at or after `from`; a build error when it does not.
+    const fn find(hay: &[u8], needle: &[u8], from: usize) -> usize {
+        let mut i = from;
+        while i + needle.len() <= hay.len() {
+            let mut j = 0;
+            while j < needle.len() && hay[i + j] == needle[j] {
+                j += 1;
+            }
+            if j == needle.len() {
+                return i;
+            }
+            i += 1;
+        }
+        panic!("shaders.metal no longer has the glyph stages")
+    }
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -1789,6 +1833,17 @@ impl Window {
     pub fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         self.platform_window
             .set_background_appearance(background_appearance);
+    }
+
+    /// Replaces this window's monochrome sprite (glyph) stages with the named functions from
+    /// the shader's source, which is appended to gpui's own shader source and compiled now.
+    /// `None` restores gpui's own. `Err` carries the Metal compiler's message when the source
+    /// does not compile or lacks a named function, and the stages drawn stay as they were.
+    /// Other windows keep their own. macOS only: elsewhere this is always an `Err`.
+    pub fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String> {
+        self.platform_window.set_glyph_shader(shader)?;
+        self.refresh();
+        Ok(())
     }
 
     /// Mark the window as dirty at the platform level.

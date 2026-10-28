@@ -592,7 +592,7 @@ impl Theme {
 }
 
 /// One colour `t` of the way from `a` to `b`, each channel rounded to the nearest step.
-fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+pub(crate) fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let channel = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
     Rgb { r: channel(a.r, b.r), g: channel(a.g, b.g), b: channel(a.b, b.b) }
 }

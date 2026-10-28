@@ -233,6 +233,11 @@ Things only a person at the screen can check, in order of value:
   window's wash follows its new size at once, with no stretched or offset blocks
 - effects: a `wash.metal` in the effects folder that fails to compile shows a notice naming the
   file and its line, and the theme draws plain
+- effects: under Peach Light the project window's text is ink (feathered, uneven, and deeper
+  than the theme's own, cross-faded) from the fade in's end, and plain from a fade out's start;
+  the About, Settings and Keybindings windows and the chooser keep gpui's plain glyphs
+- effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
+  `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching

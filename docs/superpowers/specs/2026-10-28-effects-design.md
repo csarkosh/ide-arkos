@@ -94,6 +94,8 @@ highlights = "effect"         # "effect": the wash paints the selected and hover
 paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper over the wash
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash
+text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink (black on a
+                              # light theme, white on a dark one) while the effect is on
 ```
 
 Every key but `name` and `wash` has the default shown. Out-of-range values are refused with the
@@ -191,7 +193,9 @@ Switching takes effect live, and as a transition under the Motion rule: the wash
 opacity and the surfaces' alphas cross-fade over `motion::THEME_FADE` (200 ms, in step with a
 theme fade when both change at once), the effect counting in `Root::any_motion` meanwhile; the
 glyph shader and the UI text size, which can only cut, switch at the fade's end, so the layout
-settles once. Under Reduce Motion the whole switch cuts. The window's background turns
+settles once. At the same moments the window's theme fades to one derived from the configured
+theme by the manifest's `text_contrast` (`chrome.text`, `chrome.text_dim` and
+`terminal.foreground` that far, three quarters and nine tenths of the way towards ink), and back. Under Reduce Motion the whole switch cuts. The window's background turns
 transparent at the fade's start when an effect comes and opaque at its end when one goes, so
 nothing shows through meanwhile. A theme switch with `name = "theme"` does the same when the
 recommendation changes. The spike's "relaunch to turn it off" is gone.

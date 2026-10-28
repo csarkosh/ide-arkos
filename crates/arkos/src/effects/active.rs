@@ -4,11 +4,15 @@
 
 use std::time::{Duration, Instant};
 
+use gpui::GlyphShader;
+
 use super::blocks::{Mark, Scene};
 use super::inputs::Inputs;
 use super::layer::Layer;
 use super::manifest::{Effect, Highlights, Manifest};
 use crate::motion;
+use crate::palette::Rgb;
+use crate::theme::{self, Theme};
 use crate::tree::{PaneId, Rect};
 
 /// Whether an effect is coming or going.
@@ -111,6 +115,74 @@ pub fn compile_notice(name: &str, file: &str, message: &str) -> String {
     }
 }
 
+/// The theme an effect with `text_contrast = c` shows: the text `c`, the dim text three quarters
+/// of `c` and the terminal's foreground nine tenths of `c` of the way towards ink, black on a
+/// light theme and white on a dark one. Every other colour is the theme's own.
+pub fn contrasted(theme: &Theme, c: f32) -> Theme {
+    let ink = if theme.is_light() { Rgb { r: 0, g: 0, b: 0 } } else { Rgb { r: 255, g: 255, b: 255 } };
+    let c = c.clamp(0.0, 1.0);
+    let mut out = theme.clone();
+    out.chrome.text = theme::mix(theme.chrome.text, ink, c);
+    out.chrome.text_dim = theme::mix(theme.chrome.text_dim, ink, 0.75 * c);
+    out.terminal.foreground = theme::mix(theme.terminal.foreground, ink, 0.9 * c);
+    out
+}
+
+/// Which of the app's windows a glyph shader is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowKind {
+    Project,
+    // The aux windows never ask: they keep gpui's own glyphs. Named so the rule is tested.
+    #[cfg_attr(not(test), allow(dead_code))]
+    About,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Settings,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Keybindings,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Chooser,
+}
+
+/// Where a window's glyph stages are set: gpui's window, or a test's stand-in.
+pub trait GlyphSink {
+    fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String>;
+}
+
+impl GlyphSink for gpui::Window {
+    fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String> {
+        gpui::Window::set_glyph_shader(self, shader)
+    }
+}
+
+/// The glyph shader a window of `kind` draws with under `effect`: the effect's own, only in the
+/// project window, only once it has faded in fully and until it starts to leave (glyphs can
+/// only cut), and only when the effect has a glyphs file.
+pub fn glyph_shader_for<L>(kind: WindowKind, effect: Option<&ActiveEffect<L>>) -> Option<GlyphShader> {
+    let e = effect.filter(|e| kind == WindowKind::Project && e.settled())?;
+    Some(GlyphShader {
+        source: e.effect.glyphs.clone()?,
+        vertex: "arkos_glyph_vertex".into(),
+        fragment: "arkos_glyph_fragment".into(),
+    })
+}
+
+/// Sets `shader` on `window`. A shader the window refuses gives the notice to show, naming the
+/// effect's glyphs file and the compiler's first error; the window keeps the glyphs it had.
+pub fn apply_glyphs(window: &mut impl GlyphSink, effect: &Effect, shader: Option<GlyphShader>) -> Result<(), String> {
+    window.set_glyph_shader(shader).map_err(|message| {
+        let file = effect.manifest.glyphs.as_deref().unwrap_or("glyphs.metal");
+        let first = message
+            .lines()
+            .map(str::trim)
+            .find(|l| l.contains("error"))
+            .or_else(|| message.lines().map(str::trim).find(|l| !l.is_empty()))
+            .unwrap_or("could not be drawn");
+        // The compiler's line numbers count gpui's own source first, so only the text is kept.
+        let text = first.split_once("error:").map_or(first, |(_, rest)| rest.trim());
+        format!("effect {}: {file}: {text}", effect.manifest.name)
+    })
+}
+
 /// What puts an effect's layer in the window. The window's own puts a Metal layer under gpui's
 /// view; a test's stands in for it.
 pub trait Installer {
@@ -166,6 +238,11 @@ impl<L> ActiveEffect<L> {
             Some((since, Direction::In)) => motion::fade_progress(since, now, motion::THEME_FADE),
             Some((since, Direction::Out)) => 1.0 - motion::fade_progress(since, now, motion::THEME_FADE),
         }
+    }
+
+    /// Whether it is fully on, with no fade under way: what can only cut is the effect's.
+    pub fn settled(&self) -> bool {
+        self.fade.is_none()
     }
 
     /// Whether it is on its way out.
@@ -382,6 +459,103 @@ mod tests {
         assert_eq!(super::super::layer::drawable_size((1200.0, 800.0), 2.0, 0.5), (1200.0, 800.0));
         assert_eq!(super::super::layer::drawable_size((901.0, 600.0), 2.0, 0.5), (901.0, 600.0));
         assert_eq!(super::super::layer::drawable_size((1200.0, 800.0), 1.0, 0.25), (300.0, 200.0));
+    }
+
+    /// Records what a window was asked to draw its glyphs with, or refuses as a compiler would.
+    #[derive(Default)]
+    struct Recorder {
+        calls: Vec<Option<GlyphShader>>,
+        refuse: Option<String>,
+    }
+    impl GlyphSink for Recorder {
+        fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String> {
+            match &self.refuse {
+                Some(m) => Err(m.clone()),
+                None => {
+                    self.calls.push(shader);
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_glyph_shader_is_applied_at_the_end_of_a_fade_in_and_removed_at_the_start_of_a_fade_out() {
+        let _lock = test_lock(false);
+        let t0 = Instant::now();
+        let mut window = Recorder::default();
+        let mut e = start(watercolor(), &mut Fine, t0, false).unwrap();
+        // Midway in, the glyphs are still gpui's own: they can only cut, at the fade's end.
+        assert_eq!(e.step(t0 + THEME_FADE / 2), None);
+        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&e)), None);
+        assert_eq!(e.step(t0 + THEME_FADE), Some(Direction::In));
+        apply_glyphs(&mut window, &e.effect, glyph_shader_for(WindowKind::Project, Some(&e))).unwrap();
+        let ink = GlyphShader {
+            source: watercolor().glyphs.unwrap(),
+            vertex: "arkos_glyph_vertex".into(),
+            fragment: "arkos_glyph_fragment".into(),
+        };
+        assert_eq!(window.calls, vec![Some(ink.clone())]);
+        // The fade out's first frame already draws gpui's own.
+        let t1 = t0 + THEME_FADE * 2;
+        e.leave(t1);
+        apply_glyphs(&mut window, &e.effect, glyph_shader_for(WindowKind::Project, Some(&e))).unwrap();
+        assert_eq!(window.calls, vec![Some(ink.clone()), None]);
+        assert_eq!(glyph_shader_for::<()>(WindowKind::Project, None), None, "no effect, no ink");
+        // A cut in has the ink at once.
+        let cut = start(watercolor(), &mut Fine, t0, true).unwrap();
+        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&cut)), Some(ink));
+        // An effect without a glyphs file leaves gpui's own.
+        let mut plain = watercolor();
+        plain.glyphs = None;
+        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&on(plain, t0))), None);
+        // A shader the window refuses is a notice naming the file; the effect stays on.
+        let mut refusing = Recorder { refuse: Some("Compilation failed: \n\nprogram_source:1290:3: error: unknown type 'flaot'\n".into()), ..Default::default() };
+        let notice = apply_glyphs(&mut refusing, &cut.effect, glyph_shader_for(WindowKind::Project, Some(&cut))).unwrap_err();
+        assert_eq!(notice, "effect watercolor: glyphs.metal: unknown type 'flaot'");
+        assert_eq!(cut.style(t0).paper_alpha, 0.5, "still on");
+    }
+
+    #[test]
+    fn the_glyph_shader_is_the_window_s_own() {
+        let e = on(watercolor(), Instant::now());
+        assert!(glyph_shader_for(WindowKind::Project, Some(&e)).is_some());
+        for kind in [WindowKind::About, WindowKind::Settings, WindowKind::Keybindings, WindowKind::Chooser] {
+            assert_eq!(glyph_shader_for(kind, Some(&e)), None, "{kind:?} keeps gpui's own glyphs");
+        }
+    }
+
+    #[test]
+    fn a_light_theme_s_text_moves_towards_black_and_a_dark_one_s_towards_white() {
+        use crate::palette::Rgb;
+        let peach = crate::theme::builtin("peach-light").unwrap();
+        assert!(peach.is_light());
+        let deep = contrasted(&peach, 0.6);
+        let towards = |from: Rgb, to: u8, by: f32| {
+            let c = |x: u8| (f32::from(x) + (f32::from(to) - f32::from(x)) * by).round() as u8;
+            Rgb { r: c(from.r), g: c(from.g), b: c(from.b) }
+        };
+        assert_eq!(deep.chrome.text, towards(peach.chrome.text, 0, 0.6));
+        assert_eq!(deep.chrome.text_dim, towards(peach.chrome.text_dim, 0, 0.75 * 0.6));
+        assert_eq!(deep.terminal.foreground, towards(peach.terminal.foreground, 0, 0.9 * 0.6));
+        // Nothing else moves: the backgrounds, the palette, the name.
+        assert_eq!(deep.chrome.window_bg, peach.chrome.window_bg);
+        assert_eq!(deep.terminal.black, peach.terminal.black);
+        assert_eq!(deep.name, peach.name);
+        let navy = crate::theme::builtin("navy").unwrap();
+        assert!(!navy.is_light());
+        let bright = contrasted(&navy, 1.0);
+        assert_eq!(bright.chrome.text, Rgb { r: 255, g: 255, b: 255 });
+        assert_eq!(bright.chrome.text_dim, towards(navy.chrome.text_dim, 255, 0.75));
+        assert_eq!(bright.terminal.foreground, towards(navy.terminal.foreground, 255, 0.9));
+    }
+
+    #[test]
+    fn zero_contrast_leaves_the_theme_as_it_was() {
+        for name in ["peach-light", "navy"] {
+            let t = crate::theme::builtin(name).unwrap();
+            assert_eq!(contrasted(&t, 0.0), t);
+        }
     }
 
     #[test]
