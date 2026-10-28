@@ -40,6 +40,6 @@ strip = "debuginfo"
 [profile.dev.package.pulldown-cmark]
 opt-level = 3
 
-# gpui with the per-window glyph shader hook (vendor/gpui), until the fork is the dependency.
+# gpui with the per-window glyph shader hook, from the fork (docs/development.md, "gpui fork").
 [patch.crates-io]
-gpui = { path = "vendor/gpui" }
+gpui = { git = "https://github.com/csarkosh/gpui", tag = "v0.2.2-arkos.1" }
