@@ -144,7 +144,8 @@ impl Clicks {
 
     /// A move to grid cell (`col`, `line`); `left_down` is whether the left button is held,
     /// `selecting` whether a selection exists. Leaving the pressed cell makes the press a drag,
-    /// which is no click.
+    /// which is no click; so does a move that extends a selection, however that selection began
+    /// (a drag past the pane's edge can start one before the pointer leaves the pressed cell).
     pub fn moved(&mut self, col: usize, line: i32, side: Side, left_down: bool, selecting: bool) -> Gesture {
         if !left_down {
             self.anchor = None;
@@ -152,6 +153,7 @@ impl Clicks {
         }
         let Some((acol, aline)) = self.anchor else { return Gesture::Nothing };
         if selecting {
+            self.pending = None;
             return Gesture::Extend { col, line, side };
         }
         if (col, line) == (acol, aline) {
@@ -162,6 +164,11 @@ impl Clicks {
         // straight drag; a drag that turns back past it leaves it out.
         let anchor_side = if (line, col) > (aline, acol) { Side::Left } else { Side::Right };
         Gesture::Start { anchor: (acol, aline, anchor_side), to: (col, line, side) }
+    }
+
+    /// The press scrolled the pane from past its edge: it is a drag now, so no click is held.
+    pub fn dragged(&mut self) {
+        self.pending = None;
     }
 
     /// True between a press and its release, cancel, or a move with the button up: a drag past
@@ -247,6 +254,23 @@ mod tests {
         // Into history: lines above the screen are negative.
         k.press(2, 0, 0, Side::Left, 1, false);
         assert_eq!(k.moved(2, -4, Side::Left, true, false), Gesture::Start { anchor: (2, 0, Side::Right), to: (2, -4, Side::Left) });
+    }
+
+    #[test]
+    fn an_edge_scroll_turns_the_press_into_a_drag_so_the_release_sends_no_click() {
+        let mut k = Clicks::default();
+        assert_eq!(k.press(2, 0, 0, Side::Left, 1, true), Gesture::Clear);
+        k.dragged();
+        assert!(k.held(), "the press is still down");
+        assert_eq!(k.release(2, 0, REPORT), None);
+    }
+
+    #[test]
+    fn a_move_that_extends_a_selection_is_no_click_either() {
+        let mut k = Clicks::default();
+        k.press(2, 0, 0, Side::Left, 1, true);
+        assert_eq!(k.moved(2, 0, Side::Right, true, true), Gesture::Extend { col: 2, line: 0, side: Side::Right });
+        assert_eq!(k.release(2, 0, REPORT), None);
     }
 
     #[test]

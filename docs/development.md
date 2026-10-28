@@ -283,9 +283,12 @@ Things only a person at the screen can check, in order of value:
   that was under the press; drag past the pane's bottom edge, and above its top edge: the history
   scrolls and the selection grows until the button comes up; auto-scroll stops when the pointer
   comes back inside and when the button is released outside the pane; a right-click or a
-  Control-release in the middle of a drag ends the drag and stops any auto-scroll; no auto-scroll
-  in Claude Code's fullscreen renderer, vim or `less`; a wheel notch while dragging moves the
-  selection's end with the text
+  Control-release in the middle of a drag ends the drag and stops any auto-scroll; in a fullscreen
+  `claude` with a long answer, drag from the last line up past the top edge: the conversation
+  scrolls, the tint grows to the top and never covers the prompt box; release, Cmd+C, paste: the
+  whole answer, no "Jump to bottom" text, no prompt box, no repeated header line; wheel after the
+  release and the tint stays on its text; vim and `less` still do not scroll from a drag; a wheel
+  notch while dragging moves the selection's end with the text
 - in Claude Code: Option+Enter and Shift+Enter each add a line to the prompt instead of sending
   it; Option+P opens the model picker; Esc still cancels; in zsh, Shift+Enter runs the line
 - `claude` with `/tui default`, a long answer, then a two-finger scroll: the text follows the

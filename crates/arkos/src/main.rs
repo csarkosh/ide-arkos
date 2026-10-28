@@ -37,6 +37,7 @@ mod link_menu;
 mod links;
 mod launch_agent;
 mod layout;
+mod ledger;
 mod line_edit;
 mod md_blocks;
 mod md_table;
