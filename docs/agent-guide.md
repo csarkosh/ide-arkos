@@ -572,7 +572,8 @@ A window loads an effect when it puts it on. To see an edit to the effect it alr
 `arkos effect use none`, wait a second for the fade, then `arkos effect use <name>` again. To
 revert, `arkos effect use theme` (the theme's choice) or `arkos effect use none`. The window log
 (`window.log`) says `effect {name}: {ms} ms per frame at {w}x{h}` once a minute while the cost
-changes by more than a tenth.
+changes by more than a tenth. It can read higher than `bench` on a GPU with little else to do,
+which slows its clock between the wash's frames; `bench` measures the work at the working clock.
 
 ### The budget
 
@@ -622,8 +623,9 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
   JSON `{ "ok": true, "name", "highlights": "effect" | "app" }` or `{ "ok": false, "error" }`.
 - `arkos effect bench <folder-or-name> [--seconds N] [--json]`: an argument with a `/` is a
   folder, anything else an effect's name. Draws the wash off-screen with the window's own
-  pipeline at the manifest's `scale` and `frame_rate`, on a Retina target, for N seconds (above 0,
-  at most 60; default 3), and times every frame on the GPU. It draws a window as it opens: the
+  pipeline at the manifest's `scale`, on a Retina target, for a second's warm-up and then N
+  seconds (above 0, at most 60; default 3), frames back to back so the GPU stays at its working
+  clock, and times every frame on the GPU. It draws a window as it opens: the
   title bar, the sidebar and one pane, with a selected Explorer row when the manifest says
   `highlights = "effect"`; every pane or highlight more adds its blocks' cost. The size and the theme are those of
   the first window that answers; without one, 1200 by 800 points and Peach Light. Prints
