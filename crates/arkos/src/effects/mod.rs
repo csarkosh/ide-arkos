@@ -1,11 +1,10 @@
 //! Effects: shaders drawn under the window and, optionally, over its text (spec 4). An effect is
 //! a folder with a manifest and Metal shaders; the built-ins are compiled in, and a folder of
 //! the same name in the effects folder replaces one.
-// Nothing outside the tests reads these until the wash is drawn from them (a later task).
-#![cfg_attr(not(test), allow(dead_code))]
-
+pub mod active;
 pub mod blocks;
 pub mod inputs;
+pub mod layer;
 pub mod manifest;
 pub mod strokes;
 

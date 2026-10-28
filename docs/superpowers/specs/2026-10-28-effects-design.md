@@ -210,7 +210,7 @@ The blocks: the title bar; the sidebar and its divider between Explorer and Work
 pane's tab bar and body from `Root::layout()`; the Explorer's selected and hovered rows and the
 hovered tab from the highlight registry (4.6). `effect::blocks(&Root) -> Vec<Block>` is pure over
 the layout and the registry, and tested: which blocks for which layout, which edges, the stable
-seeds (a pane's id, a row's position), the ordinals.
+seeds (a pane's id, a highlight's key), the ordinals.
 
 Every sixtieth frame the command buffer's GPU time is read and kept as a running average; the
 window log says `effect watercolor: {ms} ms per frame at {w}x{h}` once a minute while it changes

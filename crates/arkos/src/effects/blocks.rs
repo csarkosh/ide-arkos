@@ -133,17 +133,6 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             });
         }
     }
-    for (mark, value) in scene.strokes {
-        let r = mark.rect;
-        out.push(Block {
-            rect: Rect { x: r.x + 3.0, y: r.y + 2.0, w: (r.w - 6.0).max(0.0), h: (r.h - 4.0).max(0.0) },
-            kind: mark.kind,
-            edges: 0,
-            seed: 4.0 + r.y * 0.013,
-            value: *value,
-            ordinal: mark.state as u32 as f32,
-        });
-    }
     let tab = scene.tab_bar_h;
     for (i, (pane, r)) in scene.panes.iter().enumerate() {
         // Seeded by the pane itself, not its place in this frame's list.
@@ -163,6 +152,19 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             seed: seed + 1.0,
             value: 1.0,
             ordinal: i as f32,
+        });
+    }
+    // The highlights last: past the cap, a transient stroke goes before a pane does.
+    for (mark, value) in scene.strokes {
+        let r = mark.rect;
+        out.push(Block {
+            rect: Rect { x: r.x + 3.0, y: r.y + 2.0, w: (r.w - 6.0).max(0.0), h: (r.h - 4.0).max(0.0) },
+            kind: mark.kind,
+            edges: 0,
+            // Seeded by its key, not its place, so a row that scrolls keeps its grain.
+            seed: 4.0 + (mark.key % 997) as f32 * 0.37,
+            value: *value,
+            ordinal: mark.state as u32 as f32,
         });
     }
     out
@@ -256,7 +258,13 @@ mod tests {
         assert_eq!(row_block.value, 0.5);
         assert_eq!(row_block.ordinal, 2.0);
         assert_eq!(row_block.edges, 0);
-        assert_eq!(row_block.seed, 4.0 + 100.0 * 0.013);
+        // Seeded by its key, so a row that scrolls keeps its grain.
+        assert_eq!(row_block.seed, 4.0 + (1 % 997) as f32 * 0.37);
+        let scrolled = Mark { rect: rect(0.0, 140.0, 240.0, 22.0), ..row };
+        let moved = blocks(&scene(rect(240.0, 38.0, 960.0, 562.0), None, &panes, &[(scrolled, 0.5)]), true);
+        assert_eq!(moved.iter().find(|b| b.kind == Kind::RowHighlight).unwrap().seed, row_block.seed);
+        // The panes come before the highlights, so the cap drops a transient stroke first.
+        assert_eq!(kinds(&out), vec![Kind::TitleBar, Kind::Sidebar, Kind::TabBar, Kind::PaneBody, Kind::RowHighlight, Kind::TabHighlight]);
         let tab_block = out.iter().find(|b| b.kind == Kind::TabHighlight).unwrap();
         assert_eq!((tab_block.value, tab_block.ordinal), (1.0, 0.0));
         assert_eq!(tab_block.rect, rect(303.0, 40.0, 114.0, 26.0));

@@ -1,5 +1,6 @@
 //! Find in a terminal (spec 4: Cmd+F). The state lives on the `Terminal`, the search runs in
 //! `TerminalCore`, and the bar is drawn at the top right of the pane.
+use crate::effects::active::Style;
 use crate::keymap::tab_cycle;
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::terminal::{Match, Terminal, MAX_MATCHES};
@@ -148,7 +149,7 @@ pub const BAR_TOP: f32 = 6.0;
 /// The bar: query, count, close. Keys go to the terminal's `find_key`; Cmd+V pastes. `pane` is
 /// the pane showing `terminal`, which a click on the bar focuses. It fades and slides in as it
 /// opens and out as it closes; while closing it is only drawn (no focus, keys or clicks).
-pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: SharedString, bars: &mut Fades<EntityId, FindLook>, now: Instant, cx: &mut Context<Root>) -> Option<Div> {
+pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, style: Style, family: SharedString, bars: &mut Fades<EntityId, FindLook>, now: Instant, cx: &mut Context<Root>) -> Option<Div> {
     let open = terminal.update(cx, |t, _| {
         t.refresh_find();
         let f = t.find.as_ref()?;
@@ -177,7 +178,7 @@ pub fn render(terminal: &Entity<Terminal>, pane: PaneId, theme: &Theme, family: 
             .border_color(theme.chrome.border.hsla())
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
-            .text_size(px(crate::effect::ui(12.0)))
+            .text_size(px(style.ui(12.0)))
             .when_some(focus, |d, focus| {
                 d.track_focus(&focus)
                     .on_mouse_down(

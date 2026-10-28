@@ -5,6 +5,7 @@
 //! (`progress_width`) is pure and tested; the rest reads the view and the theme as they are at
 //! this draw, never keeping a colour.
 
+use crate::effects::active::Style;
 use crate::theme::Theme;
 use crate::tree::{PaneId, TabId};
 use crate::web::{LoadState, BAR_H};
@@ -42,7 +43,7 @@ pub fn progress_width(progress: f64, bar_w: f32) -> f32 {
     (progress.max(0.0).min(1.0) * f64::from(bar_w)) as f32
 }
 
-pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, family: SharedString, cx: &mut Context<Root>) -> Div {
+pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, family: SharedString, cx: &mut Context<Root>) -> Div {
     let now = Instant::now();
     let more = view.update(cx, |v, cx| v.frame_step(now, cx));
     let v = view.read(cx);
@@ -230,7 +231,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
         .border_b_1()
         .border_color(border)
         .font_family(family.clone())
-        .text_size(px(crate::effect::ui(12.0)))
+        .text_size(px(style.ui(12.0)))
         .text_color(text)
         .child(back)
         .child(forward)
@@ -253,8 +254,8 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
     let screen = match (&state, shows_page) {
         (_, true) => None,
         (LoadState::Failed { reason }, _) => Some(
-            column(dim, family.clone())
-                .child(div().text_color(text).text_size(px(crate::effect::ui(15.0))).child("Could not load"))
+            column(dim, family.clone(), style)
+                .child(div().text_color(text).text_size(px(style.ui(15.0))).child("Could not load"))
                 .child(div().max_w(px(520.0)).text_center().child(shown_address.clone()))
                 .child(div().max_w(px(520.0)).text_center().child(reason.clone()))
                 .child(
@@ -273,8 +274,8 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
                         .on_click(target(|v, cx| v.reload(cx))),
                 ),
         ),
-        (LoadState::Blank, _) => Some(column(dim, family.clone()).child("Type an address, or `arkos open page.html` from a session")),
-        (LoadState::Loading { .. } | LoadState::Ready, _) => Some(column(dim, family.clone()).child("loading")),
+        (LoadState::Blank, _) => Some(column(dim, family.clone(), style).child("Type an address, or `arkos open page.html` from a session")),
+        (LoadState::Loading { .. } | LoadState::Ready, _) => Some(column(dim, family.clone(), style).child("loading")),
     };
     let content = div()
         .flex_1()
@@ -291,7 +292,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
                 .w_full()
                 .flex()
                 .justify_center()
-                .child(div().px(px(10.0)).py(px(5.0)).rounded(px(6.0)).bg(banner).border_1().border_color(border).text_color(text).text_size(px(crate::effect::ui(12.0))).child(n))
+                .child(div().px(px(10.0)).py(px(5.0)).rounded(px(6.0)).bg(banner).border_1().border_color(border).text_color(text).text_size(px(style.ui(12.0))).child(n))
         }));
     div()
         .size_full()
@@ -305,8 +306,8 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, f
         .child(content)
 }
 
-fn column(dim: gpui::Hsla, family: SharedString) -> Div {
-    div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family).text_size(px(crate::effect::ui(13.0))).text_color(dim)
+fn column(dim: gpui::Hsla, family: SharedString, style: Style) -> Div {
+    div().size_full().flex().flex_col().items_center().justify_center().gap(px(10.0)).px(px(24.0)).font_family(family).text_size(px(style.ui(13.0))).text_color(dim)
 }
 
 #[cfg(test)]

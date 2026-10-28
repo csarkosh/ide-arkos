@@ -4,6 +4,7 @@
 //! with a dot and a popover. The old top bar and status bar are gone, so every row of height
 //! goes to the panes.
 
+use crate::effects::active::Style;
 use crate::theme::Theme;
 use gpui::{canvas, div, point, prelude::*, px, App, ClickEvent, Div, FontWeight, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, SharedString, Window};
 use std::path::Path;
@@ -227,17 +228,18 @@ pub fn aux_title_bar(title: &str, theme: &Theme) -> Div {
         .items_center()
         .pl(px(TRAFFIC_LIGHTS_W))
         .pr(px(BAR_RIGHT_PAD))
-        .bg(if crate::effect::active() { c.title_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.title_bar.hsla() })
+        .bg(c.title_bar.hsla())
         .text_color(c.text.hsla())
         .font_family(SharedString::from(UI_FONT))
-        .text_size(px(crate::effect::ui(13.0)))
+        .text_size(px(13.0))
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
 }
 
 /// The bar. Dragging it moves the window and a double click zooms it, as the native bar did.
 /// In full screen the traffic lights are gone, so the text starts at the edge.
-/// `bar_font` is the theme's ui font when it names one this Mac has, else the system's.
-pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
+/// `bar_font` is the theme's ui font when it names one this Mac has, else the system's; `style`
+/// is the window's effect's.
+pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
     let c = &theme.chrome;
     drag_to_move(div())
         .h(px(TITLE_BAR_H))
@@ -248,10 +250,10 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
         .pl(px(if fullscreen { 12.0 } else { TRAFFIC_LIGHTS_W }))
         .pr(px(BAR_RIGHT_PAD))
         .gap(px(10.0))
-        .bg(if crate::effect::active() { c.title_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.title_bar.hsla() })
+        .bg(c.title_bar.alpha(style.chrome_alpha))
         .text_color(c.text.hsla())
         .font_family(bar_font)
-        .text_size(px(crate::effect::ui(13.0)))
+        .text_size(px(style.ui(13.0)))
         .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Arkos IDE"))
         .child(
             div()
@@ -276,7 +278,7 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
 
 /// The card a popover's rows go in, styled like the context menu and hung under its icon.
 /// Only a live (open, not fading) card occludes and takes presses.
-pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, theme: &Theme, family: SharedString) -> Div {
+pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, theme: &Theme, style: Style, family: SharedString) -> Div {
     let c = &theme.chrome;
     div()
         .absolute()
@@ -292,7 +294,7 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
         .border_1()
         .border_color(c.border.hsla())
         .font_family(family)
-        .text_size(px(crate::effect::ui(12.0)))
+        .text_size(px(style.ui(12.0)))
         .text_color(c.text.hsla())
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()))
 }

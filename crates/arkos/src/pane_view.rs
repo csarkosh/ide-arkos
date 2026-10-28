@@ -2,6 +2,7 @@
 //! tab's placeholder, a busy notice while a shell starts or a replay is parsed, or the empty
 //! state), and the URL prompt over the focused pane.
 
+use crate::effects::active::Style;
 use crate::drag;
 use crate::effects::blocks;
 use crate::find;
@@ -356,6 +357,7 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab) -> (String, Tab
 }
 
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
+    let style = root.effect_style();
     let focused = root.tree.focused == pane;
     let theme = root.theme.clone();
     let Some(p) = root.tree.pane(pane).cloned() else { return div() };
@@ -379,7 +381,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => {
                 let family = root.family();
                 let now = root.frame_now;
-                render_terminal(terminal, pane, family, &theme, &mut root.find_bars, now, cx)
+                render_terminal(terminal, pane, family, &theme, style, &mut root.find_bars, now, cx)
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
@@ -472,7 +474,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             .border_1()
             .border_color(theme.chrome.border.hsla())
             .font_family(root.ui_family())
-            .text_size(px(crate::effect::ui(12.0)))
+            .text_size(px(style.ui(12.0)))
             .when(live, |m| m.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
         for (idx, label, active) in menu_rows(&p, &labels) {
             m = m.child(
@@ -524,10 +526,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .relative()
         .flex()
         .flex_col()
-        .bg(if crate::effect::active() { theme.chrome.window_bg.alpha(0.0) } else { theme.chrome.window_bg.hsla() })
+        .bg(theme.chrome.window_bg.alpha(style.ground_alpha))
         .border_1()
-        // SPIKE: the effect's ink line is the pane's outline.
-        .border_color(if crate::effect::active() { theme.chrome.border.alpha(0.0) } else { theme.chrome.border.hsla() })
+        // An effect that inks the borders draws the pane's outline itself.
+        .border_color(if style.ink_borders { theme.chrome.border.alpha(0.0) } else { theme.chrome.border.hsla() })
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
@@ -551,6 +553,7 @@ pub const INVITE_H: f32 = 24.0;
 /// background, so it reads as the app's own and not as a terminal's output. Turn on and Not now
 /// answer it for good; What is sent opens the disclosure page in a viewer tab and leaves it up.
 fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
+    let style = root.effect_style();
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let text = c.text.hsla();
@@ -566,7 +569,7 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
         .bg(c.banner.hsla())
         .text_color(c.text_dim.hsla())
         .font_family(root.ui_family())
-        .text_size(px(crate::effect::ui(12.0)))
+        .text_size(px(style.ui(12.0)))
         .child(div().flex_1().min_w_0().truncate().child(crate::telemetry::INVITATION))
         .child(button("invite-turn-on", crate::telemetry::TURN_ON).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::TurnOn, cx))))
         .child(button("invite-not-now", crate::telemetry::NOT_NOW).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.answer_invitation(crate::telemetry::Answer::NotNow, cx))))
@@ -576,6 +579,7 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
 /// The tab bar, `height` tall: the pane number, a tab per entry, the + and the overflow menu;
 /// every tab clicks, drags and takes drops.
 fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], height: f32, cx: &mut Context<Root>) -> Stateful<Div> {
+    let style = root.effect_style();
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let (fg, dim) = (c.text, c.text_dim);
@@ -592,10 +596,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .flex()
         .flex_row()
         .items_center()
-        .bg(if crate::effect::active() { c.tab_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.tab_bar.hsla() })
+        .bg(c.tab_bar.alpha(style.chrome_alpha))
         .text_color(fg.hsla())
         .font_family(root.ui_family())
-        .text_size(px(crate::effect::ui(12.0)))
+        .text_size(px(style.ui(12.0)))
         .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
@@ -741,13 +745,8 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         strip = strip.child(
             tab.px(pad_x)
                 .gap(if slot_width.is_some() { px(0.0) } else { px(6.0) })
-                .bg(match (crate::effect::active(), is_active) {
-                    // SPIKE: the wash is the bar's colour; the active tab is a lighter patch on it.
-                    (true, true) => c.tab_active.alpha(crate::effect::ACTIVE_TAB_ALPHA),
-                    (true, false) => c.tab_inactive.alpha(0.0),
-                    (false, true) => c.tab_active.hsla(),
-                    (false, false) => c.tab_inactive.hsla(),
-                })
+                // Under an effect the wash is the bar's colour; the active tab is a lighter patch on it.
+                .bg(if is_active { c.tab_active.alpha(style.active_tab_alpha) } else { c.tab_inactive.alpha(style.chrome_alpha) })
                 .text_color(text)
                 .when_some(glyph, |el, g| el.child(g))
                 .child(match renaming {
@@ -834,7 +833,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     true
 }
 
-fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, style: Style, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let (font_size, line_height) = {
         let t = terminal.read(cx);
@@ -963,7 +962,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .id(("term-hover", pane))
                 .size_full()
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
-                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone())),
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha)),
         )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
@@ -980,7 +979,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .border_color(pill_border(&theme))
                 .text_color(theme.chrome.text.hsla())
                 .font_family(family.clone())
-                .text_size(px(crate::effect::ui(12.0)))
+                .text_size(px(style.ui(12.0)))
                 .cursor_pointer()
                 .child("jump to bottom")
                 // The terminal's own mouse-down closes an open find bar; the pill is not a click
@@ -994,7 +993,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 )
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
-        .children(find::render(&terminal, pane, theme, family, find_bars, now, cx))
+        .children(find::render(&terminal, pane, theme, style, family, find_bars, now, cx))
 }
 
 /// The width of a markdown tab's mode pill: fixed, so the inline-diff chip can sit beside it.
@@ -1051,6 +1050,7 @@ enum Kind {
 /// smoothly. An editable markdown document shows rendered (`md_view`, a list that scrolls itself)
 /// or raw, with a pill at the top right that switches between the two.
 fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
+    let style = root.effect_style();
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
     let family = root.family();
@@ -1074,7 +1074,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let body = match kind {
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, cx);
-            div().size_full().child(element)
+            div().size_full().bg(theme.chrome.window_bg.alpha(style.paper_alpha)).child(element)
         }
         Kind::Text { plain } => {
             let element = ViewerElement::new(
@@ -1087,12 +1087,13 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 theme.semantic.find_current,
                 MarkColors { added: theme.tree.added, modified: theme.tree.modified, deleted: theme.tree.deleted },
                 RawColors { text: theme.chrome.text, dim: theme.chrome.text_dim, code: theme.tree.modified, link: theme.chrome.focus_ring },
-            );
+            )
+            .paper_alpha(style.paper_alpha);
             div()
                 .size_full()
                 .flex()
                 .flex_col()
-                .children(plain.filter(|_| !has_doc).map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(crate::effect::ui(12.0))).child(why.banner())))
+                .children(plain.filter(|_| !has_doc).map(|why| div().flex_none().px(px(12.0)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(style.ui(12.0))).child(why.banner())))
                 .child(div().flex_1().min_h_0().child(element))
         }
         Kind::Loading => notice("loading".into()),
@@ -1113,7 +1114,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
     let right_pad = banner_right_pad(editable, has_changes);
-    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(crate::effect::ui(12.0)));
+    let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(style.ui(12.0)));
     let mut banners: Vec<Div> = Vec::new();
     if kind_is_text {
         if conflict {
@@ -1159,7 +1160,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .border_color(theme.chrome.border.hsla())
             .text_color(if inline { theme.chrome.text.hsla() } else { dim })
             .font_family(family.clone())
-            .text_size(px(crate::effect::ui(12.0)))
+            .text_size(px(style.ui(12.0)))
             .cursor_pointer()
             .child("inline diff")
             // A press on the chip is not a click in the text below: stopping it keeps the caret
@@ -1190,7 +1191,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .border_color(pill_border(&theme))
             .text_color(theme.chrome.text.hsla())
             .font_family(family.clone())
-            .text_size(px(crate::effect::ui(12.0)))
+            .text_size(px(style.ui(12.0)))
             .cursor_pointer()
             .child(pill_label(mode))
             // A press on the pill is not a click in the text below; stopping it also stops the
@@ -1291,12 +1292,13 @@ fn render_browser(root: &mut Root, pane: PaneId, tab: TabId, url: String, cx: &m
             root.focus_pane(pane, cx);
             root.keys_back_to_arkos();
         }))
-        .child(crate::web_element::render(&view, pane, tab, &theme, family, cx))
+        .child(crate::web_element::render(&view, pane, tab, &theme, root.effect_style(), family, cx))
 }
 
 /// The URL prompt, at the top of the focused pane's content while it is open and while it fades
 /// out. It holds the keys while open (`render` focuses it): Enter opens, Escape cancels.
 fn render_url_prompt(root: &mut Root, pane: PaneId, bar_h: f32, cx: &mut Context<Root>) -> Option<Div> {
+    let style = root.effect_style();
     if root.tree.focused != pane {
         return None;
     }
@@ -1340,7 +1342,7 @@ fn render_url_prompt(root: &mut Root, pane: PaneId, bar_h: f32, cx: &mut Context
                     .border_color(c.border.hsla())
                     .font_family(family)
                     .child(field)
-                    .child(div().text_size(px(crate::effect::ui(11.0))).text_color(c.text_dim.hsla()).child(hint)),
+                    .child(div().text_size(px(style.ui(11.0))).text_color(c.text_dim.hsla()).child(hint)),
             ),
     )
 }

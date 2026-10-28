@@ -393,11 +393,19 @@ pub struct ViewerElement {
     find_current: Rgb,
     marks: MarkColors,
     raw: RawColors,
+    /// The alpha of the paper under the text: 1, or an effect's `paper_alpha`.
+    paper_alpha: f32,
 }
 
 impl ViewerElement {
     pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb, marks: MarkColors, raw: RawColors) -> Self {
-        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw }
+        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw, paper_alpha: 1.0 }
+    }
+
+    /// The paper painted with `alpha`, so an effect's wash shows faintly through it.
+    pub fn paper_alpha(mut self, alpha: f32) -> Self {
+        self.paper_alpha = alpha;
+        self
     }
 
     fn run(&self, len: usize, color: Rgb, bold: bool, italic: bool) -> TextRun {
@@ -504,7 +512,9 @@ impl Element for ViewerElement {
 
     fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), prepaint: &mut Prepaint, window: &mut Window, cx: &mut App) {
         let (cell_w, line_h) = (prepaint.cell_w, prepaint.line_h);
-        window.paint_quad(fill(bounds, hsla(self.bg)));
+        let mut paper = hsla(self.bg);
+        paper.a = self.paper_alpha;
+        window.paint_quad(fill(bounds, paper));
         let focused = self.viewer.read(cx).focus.is_focused(window);
         let frame = self.viewer.update(cx, |v, _| {
             let now = Instant::now();

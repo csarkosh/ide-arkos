@@ -90,6 +90,14 @@ features are added:
   element.
 - A new surface that reads the palette or the theme (a window, a panel, a program told about
   the theme) is checked by hand with a theme switch: it must fade with the window, not jump.
+- An effect (`crates/arkos/src/effects`) comes and goes over `THEME_FADE`: its surfaces' alphas
+  fade through `Root::effect_style`, and what can only cut (the text size, the borders, the
+  highlights, the glyph shader) switches at a fade in's end and a fade out's start. An effect's
+  wash is drawn from its own timer at the manifest's rate, sixty while a highlight fades, never
+  under Reduce Motion unless its inputs changed (its clock is frozen there), and never while the
+  window is hidden or covered; gpui redraws nothing for it. A surface that paints a fill under
+  the wash reads its alpha from `Root::effect_style` at paint time, and UI text sizes go
+  through `Root::ui_size`.
 
 ## Releasing
 
@@ -212,6 +220,19 @@ the markdown poster's Cmd+click and the palette's "Open file in pane…" open it
 
 Things only a person at the screen can check, in order of value:
 
+- effects: Peach Light (`effect.name = "theme"`) shows the watercolor wash under the window,
+  the ink line between Explorer and Worktrees, and strokes that fade in and out on the
+  selected and hovered Explorer rows and the hovered tab; the window log says `effect
+  watercolor: … ms per frame`
+- effects: `arkos settings set effect.name none` fades the wash out over 200 ms and the plain
+  theme is back (fills, borders, text size); `effect.name theme` brings it back with a fade
+- effects: Navy with `effect.name = "watercolor"` reads navy (the wash takes the theme's colours)
+- effects: with Reduce Motion on the wash is still and Activity Monitor shows the window idle; a
+  hover still moves its stroke at once
+- effects: a window covered by the palette or a menu draws no wash frames meanwhile; a resized
+  window's wash follows its new size at once, with no stretched or offset blocks
+- effects: a `wash.metal` in the effects folder that fails to compile shows a notice naming the
+  file and its line, and the theme draws plain
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching

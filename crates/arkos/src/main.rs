@@ -19,7 +19,7 @@ mod doctor;
 mod doctor_panel;
 mod drag;
 mod edit;
-// The spike, until the effects module draws the wash; its highlight registry is unused now.
+// The spike, referenced from nowhere now; it leaves the tree with the effects' last task.
 #[allow(dead_code)]
 mod effect;
 mod effects;
@@ -329,8 +329,16 @@ pub struct Root {
     caret_wake: Option<Instant>,
     /// The key monitor (`screen::install_key_monitor`), alive while the window is.
     key_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
-    /// SPIKE: the watercolor wash under the window, while the theme carries one.
-    effect: Option<effect::Watercolor>,
+    /// The effect under the window (effects spec 4.3), on, or on its way in or out.
+    effect: Option<effects::active::ActiveEffect>,
+    /// Whether the effect's timer runs (`ensure_effect_timer`); it ends once `effect` is `None`.
+    effect_timer: bool,
+    /// Whether the window's background is transparent, as `render` last set it: while an effect
+    /// is on, so the wash shows through.
+    transparent: bool,
+    /// Where the sidebar's Worktrees section starts, in window points, as last laid out: the
+    /// divider the wash draws between it and the Explorer.
+    pub effect_divider: Option<f32>,
     /// The highlights laid out this frame (spec 4.6): cleared at the start of each render and
     /// pushed by the Explorer rows' and the tabs' canvases while the effect paints highlights.
     pub effect_marks: Vec<effects::blocks::Mark>,
@@ -628,6 +636,9 @@ impl Root {
             ns_view: None,
             key_monitor: None,
             effect: None,
+            effect_timer: false,
+            transparent: false,
+            effect_divider: None,
             effect_marks: Vec::new(),
             effect_hover: None,
             effect_strokes: effects::strokes::Strokes::default(),
@@ -980,7 +991,7 @@ impl Root {
         let which = *which;
         let live = self.popover.value().is_some();
         let w = f32::from(window.viewport_size().width);
-        let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.ui_family());
+        let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.effect_style(), self.ui_family());
         let c = &self.theme.chrome;
         let (text_c, dim_c) = (c.text.hsla(), c.text_dim.hsla());
         if which != chrome::Popover::Bell {
@@ -1109,6 +1120,7 @@ impl Root {
             || self.find_bars.animating(now)
             || self.sidebar.animating(now)
             || self.theme_fade.is_some()
+            || self.effect.as_ref().is_some_and(|e| e.fade.is_some())
     }
 
     /// Drops what finished fading out, and the per-key fades the frame drawn at `last_frame`
@@ -1213,6 +1225,8 @@ impl Root {
         self.theme = theme;
         aux::push_theme(cx, &self.theme);
         self.reload_all_viewers(cx);
+        // A theme's recommendation may have changed with it (`effect.name = "theme"`).
+        self.resolve_effect(cx);
         let palette = Arc::new(self.theme.palette());
         for t in self.sessions.terminals.values() {
             t.update(cx, |t, cx| {
@@ -1314,6 +1328,8 @@ impl Root {
             aux::push_keybindings(cx, &self.config.keybindings);
         }
         self.switch_theme(cx);
+        // In step with the theme's fade when both change; the intensity is read every frame.
+        self.resolve_effect(cx);
         if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
             self.apply_text_preset(&name, cx);
         }
@@ -3546,57 +3562,150 @@ impl Root {
         }
     }
 
-    /// SPIKE: one frame of the watercolor wash, with the theme's colours as they are now (a
-    /// theme fade reads the blend). A hidden window draws none. True while a highlight is still
-    /// fading, so the next frame comes sooner.
-    pub fn effect_tick(&mut self) -> bool {
-        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
-        if hidden || self.effect.is_none() {
-            return false;
-        }
-        use effect::{Region, INK_BOTTOM, INK_LEFT, INK_RIGHT, INK_TOP};
-        let c = self.content;
-        let bar = chrome::TITLE_BAR_H;
-        let tab = pane_view::TAB_BAR_H;
-        let mut regions = vec![Region { x: 0.0, y: 0.0, w: c.x + c.w, h: bar, tint: 0, strength: 0.46, ink: INK_BOTTOM, seed: 1.0 }];
-        if c.x > 1.0 {
-            regions.push(Region { x: 0.0, y: bar, w: c.x, h: (c.y + c.h - bar).max(0.0), tint: 2, strength: 0.3, ink: INK_RIGHT, seed: 2.0 });
-            // The line between Explorer and Worktrees: an ink stroke with no wash.
-            if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
-                regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP, seed: 3.0 });
-            }
-        }
-        // The Explorer's selected and hovered rows: thin strokes of peach, no outline, each at the
-        // strength its fade has reached.
-        let (strokes, moving) = effect::strokes(Instant::now());
-        for ((x, y, w, h), strength) in strokes {
-            regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength, ink: 0, seed: 4.0 + y * 0.013 });
-        }
-        // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
-        // wash on the tab bar, a faint one on the body, both outlined in ink.
-        for (i, (pane, r)) in self.layout().panes.iter().enumerate() {
-            // Seeded by the pane itself, not its place in this frame's list.
-            let seed = 10.0 + (*pane % 997) as f32 * 2.0;
-            let tint = [0, 1, 3, 2][i % 4];
-            regions.push(Region { x: r.x, y: r.y, w: r.w, h: tab, tint, strength: 0.56, ink: INK_TOP | INK_RIGHT | INK_BOTTOM | INK_LEFT, seed });
-            regions.push(Region { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0), tint, strength: 0.14, ink: INK_RIGHT | INK_BOTTOM | INK_LEFT, seed: seed + 1.0 });
-        }
-        let t = &self.theme;
-        // The pigments are the theme's own accents: burnt orange, ochre, brick and plum, which
-        // thin out over the cream into peach, apricot, dusty rose and mauve.
-        let pigments = [t.chrome.focus_ring, t.semantic.waiting, t.terminal.red, t.terminal.magenta];
-        let (paper, ink) = (t.chrome.window_bg, t.terminal.foreground);
-        if let Some(e) = self.effect.as_mut() {
-            e.draw(paper, ink, pigments, &regions);
-        }
-        moving
+    /// The style the app paints its surfaces with this frame: plain without an effect, the
+    /// manifest's with one, and a blend of the two while it fades.
+    pub fn effect_style(&self) -> effects::active::Style {
+        self.effect.as_ref().map_or(effects::active::Style::plain(), |e| e.style(self.frame_now))
     }
 
-    /// Whether the effect paints the highlights (its manifest's `highlights = "effect"`), so the
-    /// Explorer rows and tabs report marks instead of the app filling them. Never yet: the
-    /// effect is not installed from its manifest.
+    /// Whether the effect paints the highlights (its manifest's `highlights = "effect"`, once it
+    /// has faded in), so the Explorer rows and tabs report marks instead of the app filling them.
     pub fn effect_highlights(&self) -> bool {
-        false
+        self.effect_style().highlights
+    }
+
+    /// A UI text size of `pt` points as the project window draws it under its effect.
+    pub fn ui_size(&self, pt: f32) -> f32 {
+        self.effect_style().ui(pt)
+    }
+
+    /// Puts on the effect the config and the theme name, or takes it off.
+    pub fn resolve_effect(&mut self, cx: &mut Context<Self>) {
+        let name = effects::resolve(&self.config.effect.name, self.target_theme());
+        self.set_effect(name, cx);
+    }
+
+    /// Puts on the effect `name` with a fade in, or with `None` starts the current one's fade
+    /// out, at whose end it is dropped (`step_effect_fade`). Both cut under Reduce Motion or
+    /// before the first frame. An effect that is missing or whose shader does not compile is a
+    /// notice, and the window stays plain.
+    pub fn set_effect(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let cut = motion::reduce_motion() || !self.painted;
+        let Some(name) = name else {
+            if self.effect.as_ref().is_some_and(|e| !e.leaving()) {
+                if cut {
+                    self.effect = None;
+                } else if let Some(e) = self.effect.as_mut() {
+                    e.leave(now);
+                }
+                self.effect_fade_settled(cx);
+                cx.notify();
+            }
+            return;
+        };
+        if let Some(e) = self.effect.as_mut().filter(|e| e.effect.manifest.name == name) {
+            if e.leaving() {
+                e.come_back(now);
+                cx.notify();
+            }
+            return;
+        }
+        // Another effect goes at once; the new one fades in from plain.
+        self.effect = None;
+        let (Some(ns), Some(view)) = (self.ns_window.clone(), self.ns_view.clone()) else { return };
+        let effect = match effects::manifest::load(&name, &effects::effects_dir()) {
+            Ok(e) => e,
+            Err(e) => {
+                self.show_notice(format!("effect {name}: {e}"), cx);
+                return;
+            }
+        };
+        match effects::active::start(effect, &mut WindowInstaller { ns, view }, now, cut) {
+            Ok(active) => {
+                self.effect = Some(active);
+                if cut {
+                    self.effect_fade_settled(cx);
+                }
+                self.effect_tick(now);
+                self.ensure_effect_timer(cx);
+            }
+            Err(notice) => self.show_notice(notice, cx),
+        }
+        cx.notify();
+    }
+
+    /// What can only cut switches here: at the end of a fade in and at the start of a fade
+    /// out (the text size follows `effect_style` by itself). Task 5 sets and clears the
+    /// effect's glyph shader here.
+    fn effect_fade_settled(&mut self, _cx: &mut Context<Self>) {}
+
+    /// Ends an effect's fade that is complete at `now`: at a fade in's end what can only cut
+    /// switches; at a fade out's end the effect is dropped, and `render` makes the window opaque
+    /// again. Called by `render` and by the wash's timer, since gpui draws no frames for a window
+    /// macOS has hidden behind others, and a fade must end all the same.
+    fn step_effect_fade(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let Some(e) = self.effect.as_mut() else { return };
+        match e.step(now) {
+            Some(effects::active::Direction::In) => self.effect_fade_settled(cx),
+            Some(effects::active::Direction::Out) => self.effect = None,
+            None => return,
+        }
+        cx.notify();
+    }
+
+    /// Starts the wash's timer unless it runs: a frame at the manifest's rate (sixty a second
+    /// while a highlight fades) until the effect is gone.
+    fn ensure_effect_timer(&mut self, cx: &mut Context<Self>) {
+        if self.effect_timer {
+            return;
+        }
+        self.effect_timer = true;
+        cx.spawn(async move |root, cx| loop {
+            let wait = root.update(cx, |root, cx| {
+                let now = Instant::now();
+                root.step_effect_fade(now, cx);
+                let moving = root.effect_tick(now);
+                let wait = root.effect.as_ref().map(|e| effects::active::cadence(e.effect.manifest.frame_rate, moving));
+                root.effect_timer = wait.is_some();
+                wait
+            });
+            match wait {
+                Ok(Some(d)) => cx.background_executor().timer(d).await,
+                _ => break,
+            }
+        })
+        .detach();
+    }
+
+    /// One frame of the wash at `now`: the blocks from the current layout, the divider and the
+    /// highlights' strokes, with the theme as it is now (a theme fade reads the blend). Nothing
+    /// is drawn while the window is hidden or covered, nor under Reduce Motion when nothing
+    /// changed. True while a highlight's stroke fades, so the next frame comes sooner (the
+    /// surfaces' own fade is gpui's frames, through `any_motion`).
+    pub fn effect_tick(&mut self, now: Instant) -> bool {
+        if self.effect.is_none() {
+            return false;
+        }
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
+        let (covered, reduce) = (self.covered(), motion::reduce_motion());
+        let layout = self.layout();
+        let (strokes, strokes_moving) = self.effect_strokes.sync(&self.effect_marks, now);
+        let Some(e) = self.effect.as_mut() else { return false };
+        let style = e.style(now);
+        let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &strokes);
+        let blocks = effects::blocks::blocks(&scene, style.ink_borders);
+        let (size, scale) = e.layer.metrics();
+        let inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
+        if e.should_draw(&inputs, hidden, covered, reduce) {
+            e.layer.draw(&inputs);
+            e.last_inputs = Some(inputs);
+            if let Some(ms) = e.layer.gpu_ms().filter(|ms| effects::active::should_log(e.logged, now, *ms)) {
+                eprintln!("arkos: effect {}: {ms:.2} ms per frame at {}x{}", e.effect.manifest.name, size.0.round(), size.1.round());
+                e.logged = Some((now, ms));
+            }
+        }
+        strokes_moving
     }
 
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
@@ -3606,6 +3715,19 @@ impl Root {
         }
     }
 
+}
+
+/// Puts an effect's wash under gpui's view in the project window.
+struct WindowInstaller {
+    ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+    view: objc2::rc::Retained<objc2_app_kit::NSView>,
+}
+
+impl effects::active::Installer for WindowInstaller {
+    type Layer = effects::layer::Layer;
+    fn install(&mut self, effect: &effects::manifest::Effect) -> Result<effects::layer::Layer, String> {
+        effects::layer::Layer::install(&self.ns, &self.view, effects::PREAMBLE, &effect.wash, effect.manifest.scale)
+    }
 }
 
 fn video_plays(tree: &Tree, shown: &[PaneId], tab: TabId, window_hidden: bool) -> bool {
@@ -3633,6 +3755,13 @@ impl Render for Root {
         self.settle(now, last_frame);
         // The theme's blend for this frame, before any element reads `self.theme`.
         self.step_theme_fade(now, cx);
+        self.step_effect_fade(now, cx);
+        // Transparent while an effect is on, so the wash under gpui's view shows through the
+        // surfaces; at the fade's start they are still opaque, and at its end they are again.
+        if self.effect.is_some() != self.transparent {
+            self.transparent = self.effect.is_some();
+            window.set_background_appearance(if self.transparent { gpui::WindowBackgroundAppearance::Transparent } else { gpui::WindowBackgroundAppearance::Opaque });
+        }
         self.sync_notices(SystemTime::now());
         self.note_window_placement(window, cx);
         // A rename whose tab closed or moved has no editor to hold the keys; it ends, else the
@@ -3743,11 +3872,13 @@ impl Render for Root {
                 }
             })) as chrome::IconHover
         };
+        let style = self.effect_style();
         let title_bar = chrome::title_bar(
             &self.project,
             right,
             window.is_fullscreen(),
             &theme,
+            style,
             self.fonts.ui.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
@@ -3757,7 +3888,7 @@ impl Render for Root {
             .relative()
             .size_full()
             .key_context("Root")
-            .bg(if effect::active() { theme.chrome.window_bg.alpha(0.0) } else { theme.chrome.window_bg.hsla() })
+            .bg(theme.chrome.window_bg.alpha(style.ground_alpha))
             .flex()
             .flex_col()
             .on_drag_move(cx.listener(|root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -3862,7 +3993,7 @@ impl Render for Root {
                 }),
             )
             .child(title_bar)
-            .children(banners.into_iter().map(|(text, opacity)| banner_bar(text, opacity, family.clone(), &theme)))
+            .children(banners.into_iter().map(|(text, opacity)| banner_bar(text, opacity, family.clone(), &theme, style)))
             .child(
                 div()
                     .flex_1()
@@ -3961,7 +4092,7 @@ fn invite_days(installed: SystemTime, now: SystemTime, source: bool) -> Option<(
     (days.1 > days.0 && !source).then_some(days)
 }
 
-fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme) -> Div {
+fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &theme::Theme, style: effects::active::Style) -> Div {
     div()
         .opacity(opacity)
         .w_full()
@@ -3973,7 +4104,7 @@ fn banner_bar(text: String, opacity: f32, family: gpui::SharedString, theme: &th
         .bg(theme.chrome.banner.hsla())
         .text_color(theme.chrome.text.hsla())
         .font_family(family)
-        .text_size(px(crate::effect::ui(13.0)))
+        .text_size(px(style.ui(13.0)))
         .child(text)
 }
 
@@ -4408,22 +4539,10 @@ fn open_project_window(
         let view_queue = save_queue.clone();
         let view_project = project.clone();
         let view_saved = saved.clone();
-        // SPIKE: a theme that carries the wash gets a transparent window, so the Metal layer
-        // under gpui's view shows through the surfaces painted with some alpha.
-        let wash = effect::wanted(&theme.name);
-        // SPIKE: the vendored gpui draws glyphs as ink when this is set at window creation.
-        if wash && std::env::var("ARKOS_INK").as_deref() != Ok("0") {
-            // SAFETY: set on the main thread before the window (and its renderer) exists; no
-            // other thread reads the environment meanwhile.
-            unsafe { std::env::set_var("GPUI_INK_GLYPHS", "1") };
-        }
-        // SPIKE: the wash's theme has its text deepened towards ink.
-        let theme = if wash { effect::inked(theme) } else { theme };
         let (view_config, view_theme) = (config, theme);
         let window = cx
             .open_window(
                 WindowOptions {
-                    window_background: if wash { gpui::WindowBackgroundAppearance::Transparent } else { gpui::WindowBackgroundAppearance::Opaque },
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     display_id,
                     // The window draws its own bar in the title bar's space (chrome.rs); the
@@ -4458,27 +4577,10 @@ fn open_project_window(
                         root.ns_view = screen::ns_view_of(window);
                         if let (Some(ns), Some(view)) = (&root.ns_window, &root.ns_view) {
                             root.key_monitor = screen::install_key_monitor(ns.clone(), view.clone());
-                            // SPIKE: the wash under the window, drawn thirty times a second from
-                            // its own timer; gpui draws nothing for it.
-                            if effect::wanted(&root.theme.name) {
-                                root.effect = effect::Watercolor::install(ns, view);
-                                if root.effect.is_some() {
-                                    // Sixty a second while a highlight fades, so a 90 ms fade
-                                    // is five or six frames rather than three.
-                                    cx.spawn(async move |root, cx| {
-                                        let mut fast = false;
-                                        loop {
-                                            cx.background_executor().timer(Duration::from_millis(if fast { 16 } else { 33 })).await;
-                                            match root.update(cx, |root, _| root.effect_tick()) {
-                                                Ok(moving) => fast = moving,
-                                                Err(_) => break,
-                                            }
-                                        }
-                                    })
-                                    .detach();
-                                }
-                            }
                         }
+                        // The effect the config and the theme name, under gpui's view; the first
+                        // frame draws it at once, as it does the theme.
+                        root.resolve_effect(cx);
                         // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
                         // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,
                         // since macOS stops drawing a window another one covers entirely, and

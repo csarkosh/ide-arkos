@@ -135,6 +135,7 @@ fn reveal(fade: &mut Transient<()>, open: bool, now: Instant) -> f32 {
 /// The column: the Explorer and Worktrees sections, each under a header that opens and closes
 /// it, and the resize handle. `None` while collapsed, once its slide out has finished.
 pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> Option<Div> {
+    let style = root.effect_style();
     let now = root.frame_now;
     let sliding = root.sidebar.sliding(now);
     if root.sidebar.collapsed && !sliding {
@@ -156,7 +157,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
             .items_center()
             .gap(px(4.0))
             .text_color(c.text_dim.hsla())
-            .text_size(px(crate::effect::ui(11.0)))
+            .text_size(px(style.ui(11.0)))
             .cursor_pointer()
             .child(div().flex_none().w(px(12.0)).child(if open { "\u{25be}" } else { "\u{25b8}" }))
             .child(div().flex_1().child(title.to_uppercase()))
@@ -199,7 +200,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .id("worktree-create")
         .flex_none()
         .px(px(4.0))
-        .text_size(px(crate::effect::ui(13.0)))
+        .text_size(px(style.ui(13.0)))
         .cursor_pointer()
         .hover(|s| s.text_color(c.text.hsla()))
         .child("+")
@@ -222,13 +223,19 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .flex()
         .flex_col()
         .border_t_1()
-        // SPIKE: the effect's ink line is the divider; the section says where it starts.
-        .border_color(if crate::effect::active() { c.border.alpha(0.0) } else { c.border.hsla() })
-        .child(
-            gpui::canvas(|bounds, _window, _cx| crate::effect::note_divider(f32::from(bounds.origin.y)), |_, _, _, _| {})
-                .w_full()
-                .h(px(0.0)),
-        )
+        // An effect that inks the borders draws the divider; the section says where it starts.
+        .border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() })
+        .child({
+            let w_divider = cx.weak_entity();
+            gpui::canvas(
+                move |bounds, _window, cx| {
+                    let _ = w_divider.update(cx, |root, _| root.effect_divider = Some(f32::from(bounds.origin.y)));
+                },
+                |_, _, _, _| {},
+            )
+            .w_full()
+            .h(px(0.0))
+        })
         .key_context("Worktrees")
         .track_focus(&root.wt_focus)
         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.wt_key(&ev.keystroke, cx)))
@@ -257,12 +264,12 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .flex_none()
         .flex()
         .flex_col()
-        .bg(if crate::effect::active() { c.sidebar.alpha(crate::effect::CHROME_ALPHA) } else { c.sidebar.hsla() })
+        .bg(c.sidebar.alpha(style.chrome_alpha))
         .border_r_1()
-        // SPIKE: the effect's ink line is the sidebar's edge.
-        .border_color(if crate::effect::active() { c.border.alpha(0.0) } else { c.border.hsla() })
+        // An effect that inks the borders draws the sidebar's edge.
+        .border_color(if style.ink_borders { c.border.alpha(0.0) } else { c.border.hsla() })
         .font_family(family)
-        .text_size(px(crate::effect::ui(13.0)))
+        .text_size(px(style.ui(13.0)))
         .text_color(c.text.hsla())
         .child(explorer)
         .child(worktrees)
@@ -459,6 +466,7 @@ pub(crate) fn escape_closes(key: &str, any_open: bool) -> bool {
 /// The right-click menu, drawn over everything at the click. A mouse-down anywhere else closes
 /// it (the root's listener); its own rows stop the event so their click lands.
 pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
+    let style = root.effect_style();
     let (menu, opacity) = root.context_menu.current(root.frame_now)?;
     // Drawn while it fades out too, but only the open menu occludes and takes clicks.
     let live = root.context_menu.value().is_some();
@@ -476,7 +484,7 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         .border_1()
         .border_color(c.border.hsla())
         .font_family(root.ui_family())
-        .text_size(px(crate::effect::ui(12.0)))
+        .text_size(px(style.ui(12.0)))
         .text_color(c.text.hsla())
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
@@ -807,6 +815,7 @@ pub fn create_failure_target(prompt_open_and_creating: bool) -> CreateFailure {
 /// `section` is the Worktrees rows' own opacity as the section opens; the prompt's fade
 /// multiplies it.
 fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<Root>) -> Option<Div> {
+    let style = root.effect_style();
     let (p, opacity) = root.wt_prompt.current(root.frame_now)?;
     // Drawn while it fades out too; only the open prompt holds focus and takes clicks.
     let live = root.wt_prompt.value().is_some();
@@ -816,7 +825,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<
         if active {
             line_edit::render(edit, placeholder, theme, family.clone(), 12.0)
         } else {
-            div().text_size(px(crate::effect::ui(12.0))).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
+            div().text_size(px(style.ui(12.0))).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
         }
     };
     let row = |l: Div, f: Div| div().h(px(ROW_H)).px(px(10.0)).flex().items_center().gap(px(6.0)).child(l).child(div().min_w_0().flex_1().overflow_hidden().child(f));
@@ -828,7 +837,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<
             .relative()
             .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
             .opacity(opacity * section)
-            .text_size(px(crate::effect::ui(12.0)))
+            .text_size(px(style.ui(12.0)))
             .bg(theme.chrome.tab_inactive.hsla())
             // Keys reach `wt_key` through the section's listener; a click here takes them back.
             .when(live, |d| {
@@ -853,6 +862,7 @@ fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<
 /// expanded and loaded, its changed files easing in. Requests the next frame only while
 /// something moves and Reduce Motion is off.
 fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx: &mut Context<Root>) -> Stateful<Div> {
+    let style = root.effect_style();
     let rows = root.worktrees.rows();
     root.worktrees.selected = clamp_selection(root.worktrees.selected, rows.len());
     let selected = root.worktrees.selected;
@@ -928,7 +938,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                     .child(div().flex_none().max_w(px(width * 0.5)).truncate().child(name))
                     .child(div().min_w_0().flex_1().truncate().text_color(dim).child(branch))
                     .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
-                    .children(count.map(|(text, color)| div().flex_none().text_size(px(crate::effect::ui(11.0))).text_color(color).child(text)))
+                    .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
                     .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                         root.worktrees.selected = Some(i);
                         root.worktrees.toggle(&p_click);
@@ -980,6 +990,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
 
 /// The worktree row's right-click menu, drawn like the file tree's.
 pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
+    let style = root.effect_style();
     let ((path, at), opacity) = root.wt_menu.current(root.frame_now).map(|(m, o)| (m.clone(), o))?;
     let items = root.worktrees.find(&path).map(|wt| worktree_menu_items(wt, root.worktrees.dirty_count(&path))).unwrap_or_default();
     if items.is_empty() {
@@ -1005,7 +1016,7 @@ pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<D
         .border_1()
         .border_color(c.border.hsla())
         .font_family(root.ui_family())
-        .text_size(px(crate::effect::ui(12.0)))
+        .text_size(px(style.ui(12.0)))
         .text_color(c.text.hsla())
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
     for (i, (label, action)) in items.into_iter().enumerate() {

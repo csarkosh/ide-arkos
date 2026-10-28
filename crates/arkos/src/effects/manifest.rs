@@ -110,6 +110,8 @@ pub struct Effect {
 pub enum Source {
     BuiltIn,
     Folder(PathBuf),
+    // Made only by `list`, which the Settings list and `arkos effect list` read (a later task).
+    #[cfg_attr(not(test), allow(dead_code))]
     Invalid(String),
 }
 
@@ -149,6 +151,8 @@ pub fn load(name: &str, dir: &Path) -> Result<Effect, String> {
 
 /// Every effect by name: the built-ins first, then the folder's others sorted. A folder that
 /// shadows a built-in is listed once, in the built-in's place, as a folder.
+// Read by the Settings list and `arkos effect list` (a later task).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn list(dir: &Path) -> Vec<(String, Source)> {
     let from_folder = |name: &str| -> Option<Source> {
         let folder = dir.join(name);

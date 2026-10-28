@@ -24,11 +24,13 @@ pub struct TerminalElement {
     font_size: f32,
     line_height: f32,
     family: SharedString,
+    /// The alpha of the terminal's paper: 1 without an effect, the effect's `paper_alpha` under one.
+    paper_alpha: f32,
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString) -> Self {
-        Self { terminal, font_size, line_height, family }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32) -> Self {
+        Self { terminal, font_size, line_height, family, paper_alpha }
     }
 }
 
@@ -171,11 +173,9 @@ impl Element for TerminalElement {
             (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
+        // Under an effect the wash shows faintly through the paper.
         let mut paper = hsla(bg);
-        if crate::effect::active() {
-            // SPIKE: the wash shows faintly through the terminal.
-            paper.a = crate::effect::SURFACE_ALPHA;
-        }
+        paper.a = self.paper_alpha;
         window.paint_quad(fill(bounds, paper));
         // Every link in the visible rows, a URL wrapped across rows among them: underlined below,
         // and the one under the pointer opened by Cmd+click in the pane's mouse handler, which
