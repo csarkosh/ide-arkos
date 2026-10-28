@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(m.chrome_alpha, 0.0);
         assert_eq!(m.active_tab_alpha, 0.5);
         assert_eq!(m.text_contrast, 0.0);
-        assert!(m.glyph_motion, "the holo text moves");
+        assert!(!m.glyph_motion, "the holo text is still: moving text hurt Cyrus's eyes");
         assert!(b.wash.contains("fragment float4 arkos_wash("));
         let e = load("space", Path::new("/nonexistent/effects")).unwrap();
         assert_eq!(e.source, Source::BuiltIn);

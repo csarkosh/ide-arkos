@@ -1,22 +1,19 @@
-// Glyphs as a holo display: tinted toward cyan, scanlined, haloed, with a faint ripple of light
-// running along the lines. This is appended to gpui's own shader source (its sprite declarations
+// Glyphs as a holo display: tinted toward cyan, scanlined and haloed, and still. This is appended to gpui's own shader source (its sprite declarations
 // come first), and stands in for its monochrome sprite stages.
 //
-// It is the mock-up's fragment shader (holo-motion-dim.html, motion 5, "Shimmer") ported line
-// for line, at Cyrus's tuned values, which are fixed. Everything is measured in points: gpui
+// It is the mock-up's fragment shader (holo-motion-dim.html) ported line for line, at Cyrus's
+// tuned values, which are fixed. The mock-up's shimmer is left out: Cyrus found moving text hard
+// on the eyes (2026-10-28), so the text never moves and is drawn only when it changes. Everything is measured in points: gpui
 // hands a glyph shader device pixels, and ARKOS_SCALE (the window's pixels per point, declared
 // by the window ahead of this source) turns one into the other. The quad is widened by REACH so
 // the five point halo is not clipped at the glyph's box, and every sample stays inside the
 // glyph's own tile so the halo never picks up a neighbouring glyph in the atlas.
-//
-// The clock is the window's effect clock, at buffer 5; Reduce Motion freezes it.
 
 constant float BRIGHTNESS = 0.80;
 constant float TINT = 0.25;
 constant float KEEP = 0.15;
 constant float SCANLINES = 0.08;
 constant float GLOW = 0.90;
-constant float SHIMMER = 1.00;
 // How far past the glyph's box the halo reaches, in points: its outer ring and a margin.
 constant float REACH = 5.5;
 
@@ -101,13 +98,11 @@ float holo_ring(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float
 fragment float4 arkos_glyph_fragment(
     HoloFragmentInput input [[stage_in]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
-    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],
-    constant float *time [[buffer(5)]]) {
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
   if (any(input.clip_distance < float4(0.0))) {
     return float4(0.0);
   }
   constexpr sampler smp(mag_filter::linear, min_filter::linear);
-  float t = *time;
   // The pixel's place in points.
   float2 q = input.position.xy / ARKOS_SCALE;
   float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
@@ -145,8 +140,6 @@ fragment float4 arkos_glyph_fragment(
 
   float light = (dark ? 1.0 : BRIGHTNESS) * line;
   float halo = dark ? 0.0 : GLOW;
-  // The shimmer: a faint ripple of light running along the lines.
-  light *= 1.0 + 0.09 * SHIMMER * sin(q.x * 0.07 - t * 2.2 + q.y * 0.015); // 2.2 is in step with GLYPH_CLOCK_WRAP (effects/active.rs)
 
   // The mock-up adds the halo to the ground and lays the letter over it:
   //   c = mix(base + gcol * g * halo * 0.55, col * light, a).

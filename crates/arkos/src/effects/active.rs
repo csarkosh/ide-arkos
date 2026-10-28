@@ -179,9 +179,9 @@ pub enum WindowKind {
     Chooser,
 }
 
-/// Where the glyph clock wraps: a whole number (1260) of the space shimmer's periods, about
-/// 3598.4 s, so the ripple does not jump at the wrap. The space glyph shader's rate of 2.2
-/// radians per second (`glyphs.metal`) must stay in step with this.
+/// Where the glyph clock wraps, about an hour (1260 periods of a 2.2 radians a second ripple, so
+/// a glyph shader moving at that rate does not jump at the wrap). No built-in glyph shader reads
+/// the clock; it is there for an effect whose `glyph_motion` is true.
 pub const GLYPH_CLOCK_WRAP: f64 = 1260.0 * std::f64::consts::TAU / 2.2;
 
 /// Where a window's glyph stages are set: gpui's window, or a test's stand-in.

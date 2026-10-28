@@ -282,21 +282,18 @@ Things only a person at the screen can check, in order of value:
   and header line are thin glowing lines in the focus ring's blue; the hovered and selected rows
   and the hovered tab glow softly; the bars and the sidebar read clearly over the sky
 - effects, space: the project window's text is the holo display (a cyan tint, faint scanlines,
-  a soft halo not clipped at the letters' boxes) and a faint ripple of light runs along it; the
-  ripple moving confirms the glyph clock reaches the GPU; adjacent letters' strokes look as crisp
-  as under plain Navy (a later glyph's halo is drawn over its neighbour's strokes)
+  a soft halo not clipped at the letters' boxes) and does not move; adjacent letters' strokes
+  look as crisp as under plain Navy (a later glyph's halo is drawn over its neighbour's strokes)
 - effects, space: with Reduce Motion on the sky is a still picture with the aurora in it and no
   shooting star, the text is still, and Activity Monitor shows the window idle
-- effects, space: a window wholly covered by another app's window, or minimised, stops the text's
-  redraws (the process idle in Activity Monitor), and the ripple moves again once the window is
-  seen and drawn again; uncovering the window resumes the shimmer within half a second without
-  any input (no click or keypress needed)
+- effects, space: a window wholly covered by another app's window, or minimised, draws no wash
+  frames (the process idle in Activity Monitor), and the sky moves again within half a second of
+  the window being seen, without any input
 - effects, space: a light theme (Peach Light) with `effect.name = "space"` keeps its text dark
   and readable (a deep teal lean, no glow, not dimmed)
 - effects, space: in a release build with Navy and space on, the window idle in front, Activity
-  Monitor's CPU for the process stays under 10% (write the figure here; over 10%, the text's
-  rate is halved); `arkos effect bench` times only the wash, so the text pass's cost shows only
-  in this CPU figure
+  Monitor's CPU for the process (write the figure here); the text is still, so it is redrawn
+  only when it changes, and only the wash runs on its timer
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching

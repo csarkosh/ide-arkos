@@ -145,12 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn the_holo_text_is_measured_in_points_reads_the_clock_and_keeps_dark_text_readable() {
+    fn the_holo_text_is_measured_in_points_is_still_and_keeps_dark_text_readable() {
         let glyphs = space().glyphs.expect("space draws its own glyphs");
         assert!(glyphs.contains("arkos_glyph_vertex(") && glyphs.contains("arkos_glyph_fragment("));
-        // Points through the window's scale, the clock at buffer 5.
+        // Points through the window's scale, and no clock: the text never moves.
         assert!(glyphs.contains("ARKOS_SCALE"));
-        assert!(glyphs.contains("constant float *time [[buffer(5)]]"));
+        assert!(!glyphs.contains("[[buffer(5)]]"), "the holo text reads no clock");
         // Cyrus's values, verbatim.
         for line in [
             "constant float BRIGHTNESS = 0.80;",
@@ -158,7 +158,6 @@ mod tests {
             "constant float KEEP = 0.15;",
             "constant float SCANLINES = 0.08;",
             "constant float GLOW = 0.90;",
-            "constant float SHIMMER = 1.00;",
             "constant float REACH = 5.5;",
         ] {
             assert!(glyphs.contains(line), "glyphs.metal lacks {line}");

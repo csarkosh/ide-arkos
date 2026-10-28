@@ -153,3 +153,10 @@ Cyrus's behalf, open to his correction: the event timings, the 80% paper, the 20
    playing video already redraws the window every frame. Measured afterwards as above.
 6. The event schedule is offset so a frozen clock (Reduce Motion, which stops at the effect's
    start) shows the aurora at its hold and no shooting star mid-flight.
+
+## Amendment (2026-10-28, Cyrus, after the dev build)
+
+The text's movement is removed: Cyrus found the shimmer hard on the eyes. The holo text keeps
+the other tuned values (brightness 0.80, tint 0.25, keep 0.15, scanlines 0.08, glow 0.90) and is
+still. `space` no longer sets `glyph_motion`, so nothing redraws the text on a timer. The clock
+hook (`v0.2.2-arkos.2`), `glyph_motion` and the timer stay for effects that want them.
