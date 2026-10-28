@@ -29,6 +29,26 @@ thread_local! {
     static DIVIDER: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
 }
 
+thread_local! {
+    /// Highlights laid out this frame (the Explorer's selected row), in window points.
+    static MARKS: std::cell::RefCell<Vec<(f32, f32, f32, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Called at the start of the window's render: the frame's highlights are reported afresh.
+pub fn begin_frame() {
+    MARKS.with(|m| m.borrow_mut().clear());
+}
+
+/// Called by a highlighted element's layout with its bounds.
+pub fn mark(x: f32, y: f32, w: f32, h: f32) {
+    MARKS.with(|m| m.borrow_mut().push((x, y, w, h)));
+}
+
+/// The highlights laid out in the last frame.
+pub fn marks() -> Vec<(f32, f32, f32, f32)> {
+    MARKS.with(|m| m.borrow().clone())
+}
+
 /// Called by the Worktrees section's layout with its top edge.
 pub fn note_divider(y: f32) {
     DIVIDER.with(|d| d.set(Some(y)));

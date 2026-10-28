@@ -671,6 +671,7 @@ struct MonochromeInkVertexOutput {
   float4 color [[flat]];
   float4 clip_distance;
   float4 tile_rect [[flat]];
+  float glyph_h [[flat]];
 };
 
 struct MonochromeInkFragmentInput {
@@ -679,6 +680,7 @@ struct MonochromeInkFragmentInput {
   float4 color [[flat]];
   float4 clip_distance;
   float4 tile_rect [[flat]];
+  float glyph_h [[flat]];
 };
 
 vertex MonochromeInkVertexOutput monochrome_sprite_vertex_ink(
@@ -715,7 +717,8 @@ vertex MonochromeInkVertexOutput monochrome_sprite_vertex_ink(
       tile_position,
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
-      tile_rect};
+      tile_rect,
+      float(sprite.bounds.size.height)};
 }
 
 float arkos_hash(float2 p) {
@@ -750,8 +753,14 @@ fragment float4 monochrome_sprite_fragment_ink(
   float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
   float4 rect = input.tile_rect;
 
-  // The hand: the stroke drifts by up to a pixel along slow, smooth noise.
-  float2 wob = (float2(arkos_noise(px * 0.07), arkos_noise(px * 0.07 + 17.0)) - 0.5) * 1.8;
+  // Small text (the UI's labels, a tab's title) would see the slow variations below span a whole
+  // word and look plain. `small` grows from 1 for a glyph as tall as code text to 2.2 for the
+  // smallest labels: the variations come that much finer and the bleed that much stronger,
+  // so a label reads as painted as a page does. A period or a comma is clamped, not blown up.
+  float small = clamp(22.0 / max(input.glyph_h, 1.0), 1.0, 2.2);
+
+  // The hand: the stroke drifts by up to a pixel along smooth noise.
+  float2 wob = (float2(arkos_noise(px * 0.07 * small), arkos_noise(px * 0.07 * small + 17.0)) - 0.5) * 1.8;
   float2 uv = input.tile_position + wob * texel;
 
   float core = ink_at(atlas_texture, smp, uv, rect);
@@ -767,13 +776,15 @@ fragment float4 monochrome_sprite_fragment_ink(
   near *= 0.125;
   far *= 0.125;
 
-  // Pigment pools at the inside of a stroke's edge, as wet ink dries darker at its rim.
-  float pool = saturate((core - near) * 2.2) * core;
-  // The bleed: ink feathers out into the paper, unevenly.
-  float feather = arkos_noise(px * 0.18 + 5.0);
-  float halo = max(near, far * 0.8) * (0.25 + 0.3 * feather) * (1.0 - core);
-  // The brush pen loads and runs dry: density varies across a word.
-  float density = 0.68 + 0.32 * arkos_noise(px * 0.035 + 9.0);
+  // Pigment pools at the inside of a stroke's edge, as wet ink dries darker at its rim. A thin
+  // stroke is nearly all edge, so it pools a little less or it would only go darker.
+  float pool = saturate((core - near) * 2.2) * core * mix(1.0, 0.7, (small - 1.0) / 1.2);
+  // The bleed: ink feathers out into the paper, unevenly, more around a small glyph.
+  float feather = arkos_noise(px * 0.18 * small + 5.0);
+  float halo = max(near, far * 0.8) * (0.25 + 0.3 * feather) * (1.0 - core) * mix(1.0, 1.6, (small - 1.0) / 1.2);
+  // The brush pen loads and runs dry: density varies across a word, or across a letter of a
+  // label, and swings further on small text.
+  float density = mix(0.68, 0.55, (small - 1.0) / 1.2) + mix(0.32, 0.45, (small - 1.0) / 1.2) * arkos_noise(px * 0.035 * small * small + 9.0);
   // The paper's tooth.
   float tooth = 0.86 + 0.14 * arkos_hash(floor(px * 0.7));
 

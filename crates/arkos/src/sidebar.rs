@@ -379,8 +379,17 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .when(is_selected, |d| d.bg(selected_bg))
-                    .hover(|s| s.bg(hover_bg))
+                    // SPIKE: under the wash the selected row is a stroke of pigment (it reports
+                    // where it is) and a hovered row a translucent patch of paper.
+                    .when(is_selected && !crate::effect::active(), |d| d.bg(selected_bg))
+                    .when(is_selected && crate::effect::active(), |d| {
+                        d.relative().child(
+                            gpui::canvas(|b, _window, _cx| crate::effect::mark(f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)), |_, _, _, _| {})
+                                .absolute()
+                                .size_full(),
+                        )
+                    })
+                    .hover(move |s| s.bg(if crate::effect::active() { let mut h = hover_bg; h.a = 0.35; h } else { hover_bg }))
                     .text_color(row_color(row.status, row.ignored, &theme).hsla())
                     .cursor_pointer()
                     .on_click(move |ev: &ClickEvent, _window, cx| {

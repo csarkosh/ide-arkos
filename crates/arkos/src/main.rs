@@ -3551,6 +3551,10 @@ impl Root {
             if let Some(y) = effect::divider().filter(|y| *y > bar && *y < c.y + c.h) {
                 regions.push(Region { x: 0.0, y, w: c.x, h: 0.0, tint: 2, strength: 0.0, ink: INK_TOP });
             }
+            // The Explorer's selected row: a stroke of peach across it, no outline.
+            for (x, y, w, h) in effect::marks() {
+                regions.push(Region { x: x + 3.0, y: y + 2.0, w: (w - 6.0).max(0.0), h: (h - 4.0).max(0.0), tint: 0, strength: 0.55, ink: 0 });
+            }
         }
         // Each pane its own pigment, as each card in a sketch gets its own colour: a strong
         // wash on the tab bar, a faint one on the body, both outlined in ink.
@@ -3593,6 +3597,8 @@ fn pane_after(tree: &Tree, pane: PaneId) -> Option<PaneId> {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
+        // SPIKE: highlights report themselves again as this frame lays out.
+        effect::begin_frame();
         self.window_active = window.is_window_active();
         self.note_focus();
         let now = Instant::now();
