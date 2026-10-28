@@ -250,7 +250,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .flex_none()
         .flex()
         .flex_col()
-        .bg(c.sidebar.hsla())
+        .bg(if crate::effect::active() { c.sidebar.alpha(crate::effect::CHROME_ALPHA) } else { c.sidebar.hsla() })
         .border_r_1()
         .border_color(c.border.hsla())
         .font_family(family)

@@ -21,6 +21,10 @@ serde_json.workspace = true
 # The agent guide skill's version stamp (guide.rs).
 sha2.workspace = true
 objc2 = "0.6"
+# SPIKE (effect.rs): the Metal layer under the window, through gpui's own metal crate and its
+# geometry types.
+metal = "0.29"
+core-graphics-types = "0.1"
 # Already in the tree through gpui: the AppKit view behind the window, for docking (spec 8).
 raw-window-handle = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime", "NSDictionary", "NSValue", "NSURL", "NSURLRequest", "NSGeometry", "NSError"] }

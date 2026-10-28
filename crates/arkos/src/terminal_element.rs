@@ -171,7 +171,12 @@ impl Element for TerminalElement {
             (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
-        window.paint_quad(fill(bounds, hsla(bg)));
+        let mut paper = hsla(bg);
+        if crate::effect::active() {
+            // SPIKE: the wash shows faintly through the terminal.
+            paper.a = crate::effect::SURFACE_ALPHA;
+        }
+        window.paint_quad(fill(bounds, paper));
         // Every link in the visible rows, a URL wrapped across rows among them: underlined below,
         // and the one under the pointer opened by Cmd+click in the pane's mouse handler, which
         // reads it back from the terminal.

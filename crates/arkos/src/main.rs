@@ -19,6 +19,7 @@ mod doctor;
 mod doctor_panel;
 mod drag;
 mod edit;
+mod effect;
 mod empty_pane;
 mod explorer;
 mod explorer_watch;
@@ -325,6 +326,8 @@ pub struct Root {
     caret_wake: Option<Instant>,
     /// The key monitor (`screen::install_key_monitor`), alive while the window is.
     key_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    /// SPIKE: the watercolor wash under the window, while the theme carries one.
+    effect: Option<effect::Watercolor>,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
@@ -614,6 +617,7 @@ impl Root {
             web_titles: HashMap::new(),
             ns_view: None,
             key_monitor: None,
+            effect: None,
             caret_wake: None,
             system_is_dark,
             installed,
@@ -3529,6 +3533,16 @@ impl Root {
         }
     }
 
+    /// SPIKE: one frame of the watercolor wash, with the theme's colours as they are now (a
+    /// theme fade reads the blend). A hidden window draws none.
+    pub fn effect_tick(&mut self) {
+        let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_hidden(ns));
+        if let Some(e) = self.effect.as_mut().filter(|_| !hidden) {
+            let t = &self.theme;
+            e.draw(t.chrome.window_bg, [t.chrome.tab_bar, t.terminal.selection, t.semantic.find_current, t.chrome.banner]);
+        }
+    }
+
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
     pub fn keys_back_to_arkos(&self) {
         if let (Some(ns), Some(view)) = (&self.ns_window, &self.ns_view) {
@@ -3685,7 +3699,7 @@ impl Render for Root {
             .relative()
             .size_full()
             .key_context("Root")
-            .bg(theme.chrome.window_bg.hsla())
+            .bg(if effect::active() { theme.chrome.window_bg.alpha(0.0) } else { theme.chrome.window_bg.hsla() })
             .flex()
             .flex_col()
             .on_drag_move(cx.listener(|root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -4336,10 +4350,14 @@ fn open_project_window(
         let view_queue = save_queue.clone();
         let view_project = project.clone();
         let view_saved = saved.clone();
+        // SPIKE: a theme that carries the wash gets a transparent window, so the Metal layer
+        // under gpui's view shows through the surfaces painted with some alpha.
+        let wash = effect::wanted(&theme.name);
         let (view_config, view_theme) = (config, theme);
         let window = cx
             .open_window(
                 WindowOptions {
+                    window_background: if wash { gpui::WindowBackgroundAppearance::Transparent } else { gpui::WindowBackgroundAppearance::Opaque },
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     display_id,
                     // The window draws its own bar in the title bar's space (chrome.rs); the
@@ -4374,6 +4392,20 @@ fn open_project_window(
                         root.ns_view = screen::ns_view_of(window);
                         if let (Some(ns), Some(view)) = (&root.ns_window, &root.ns_view) {
                             root.key_monitor = screen::install_key_monitor(ns.clone(), view.clone());
+                            // SPIKE: the wash under the window, drawn thirty times a second from
+                            // its own timer; gpui draws nothing for it.
+                            if effect::wanted(&root.theme.name) {
+                                root.effect = effect::Watercolor::install(ns, view);
+                                if root.effect.is_some() {
+                                    cx.spawn(async move |root, cx| loop {
+                                        cx.background_executor().timer(Duration::from_millis(33)).await;
+                                        if root.update(cx, |root, _| root.effect_tick()).is_err() {
+                                            break;
+                                        }
+                                    })
+                                    .detach();
+                                }
+                            }
                         }
                         // ARKOS_WINDOW_LEVEL=floating keeps the window above the others without
                         // taking the keyboard: the screenshot shoot (scripts/shoot.sh) sets it,

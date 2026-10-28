@@ -523,7 +523,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .relative()
         .flex()
         .flex_col()
-        .bg(theme.chrome.window_bg.hsla())
+        .bg(if crate::effect::active() { theme.chrome.window_bg.alpha(crate::effect::SURFACE_ALPHA) } else { theme.chrome.window_bg.hsla() })
         .border_1()
         .border_color(theme.chrome.border.hsla())
         .on_mouse_down(
@@ -589,7 +589,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .flex()
         .flex_row()
         .items_center()
-        .bg(c.tab_bar.hsla())
+        .bg(if crate::effect::active() { c.tab_bar.alpha(crate::effect::CHROME_ALPHA) } else { c.tab_bar.hsla() })
         .text_color(fg.hsla())
         .font_family(root.ui_family())
         .text_size(px(12.0))
