@@ -46,15 +46,20 @@ struct Stroke {
 }
 
 impl Stroke {
-    /// The strength now: rising eases out over ENTER, falling eases in over EXIT (the app's
-    /// motion rules; instant under Reduce Motion).
+    /// The strength now: rising over HIGHLIGHT_ENTER on Material 3's standard decelerate
+    /// curve, falling over HIGHLIGHT_EXIT on its standard accelerate (instant under Reduce Motion).
     fn value(&self, now: Instant) -> f32 {
         if self.to >= self.from {
-            self.from + (self.to - self.from) * crate::motion::enter_progress(self.since, now, crate::motion::ENTER)
+            self.from + (self.to - self.from) * crate::motion::highlight_in(self.since, now)
         } else {
-            self.to + (self.from - self.to) * crate::motion::exit_progress(self.since, now, crate::motion::EXIT)
+            self.to + (self.from - self.to) * crate::motion::highlight_out(self.since, now)
         }
     }
+}
+
+/// A tab's key among the highlights, apart from the Explorer rows' path hashes.
+pub fn tab_key(tab: u64) -> u64 {
+    tab ^ 0xa5a5_0000_0000_0000
 }
 
 thread_local! {

@@ -696,11 +696,25 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                     cx.notify();
                 }
             }))
+            // SPIKE: under the wash a hovered tab is a stroke of pigment, faded in and out by
+            // the effect like an Explorer row.
+            .when_some(tab_id_for_width.filter(|_| crate::effect::active()), |el, id| {
+                let w_hover = cx.weak_entity();
+                el.on_hover(move |hovered: &bool, _window, cx| {
+                    crate::effect::set_hover(crate::effect::tab_key(id), *hovered);
+                    let _ = w_hover.update(cx, |_root, cx| cx.notify());
+                })
+            })
             // The tab's painted width, for the gap a reorder opens where it would land.
             .child(canvas(
                 {
                     let weak = cx.weak_entity();
                     move |bounds, _window, cx| {
+                        // SPIKE: the hovered tab reports where its stroke goes.
+                        if let Some(id) = tab_id_for_width.filter(|id| crate::effect::active() && crate::effect::hovered() == Some(crate::effect::tab_key(*id))) {
+                            let rect = (f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height));
+                            crate::effect::mark(crate::effect::tab_key(id), rect, crate::effect::HOVERED);
+                        }
                         // Not while collapsed: the width on record is the tab's own.
                         if let Some(id) = tab_id_for_width.filter(|_| slot_width.is_none()) {
                             let _ = weak.update(cx, |root, _| {

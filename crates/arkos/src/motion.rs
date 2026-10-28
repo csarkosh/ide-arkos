@@ -40,6 +40,54 @@ pub const SIDEBAR_SLIDE: Duration = Duration::from_millis(150);
 /// How long a theme switch takes to cross-fade the window from the old colours to the new.
 pub const THEME_FADE: Duration = Duration::from_millis(200);
 
+/// How long a highlight (a row or a tab under the pointer, a selection) takes to appear: Material
+/// 3's medium1, its standard duration for something entering, eased with `STANDARD_DECELERATE`.
+pub const HIGHLIGHT_ENTER: Duration = Duration::from_millis(250);
+/// How long it takes to go: Material 3's short4, its standard duration for something leaving,
+/// eased with `STANDARD_ACCELERATE`. Shorter than the entrance, as leaving asks less attention.
+pub const HIGHLIGHT_EXIT: Duration = Duration::from_millis(200);
+
+/// Material 3's standard decelerate curve (fast, then settling), for things entering.
+pub const STANDARD_DECELERATE: (f32, f32, f32, f32) = (0.0, 0.0, 0.0, 1.0);
+/// Material 3's standard accelerate curve (slow, then gone), for things leaving.
+pub const STANDARD_ACCELERATE: (f32, f32, f32, f32) = (0.3, 0.0, 1.0, 1.0);
+
+/// A CSS-style cubic Bézier easing `(x1, y1, x2, y2)` at time `t` (0 to 1): the curve's y where
+/// its x is `t`, found by bisection (x always rises on an easing curve).
+pub fn cubic_bezier((x1, y1, x2, y2): (f32, f32, f32, f32), t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    let at = |a: f32, b: f32, s: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..30 {
+        let mid = (lo + hi) * 0.5;
+        if at(x1, x2, mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(y1, y2, (lo + hi) * 0.5)
+}
+
+/// A highlight appearing: 0 to 1 over `HIGHLIGHT_ENTER` from `since`. 1 at once under Reduce
+/// Motion.
+pub fn highlight_in(since: Instant, now: Instant) -> f32 {
+    if reduce_motion() {
+        return 1.0;
+    }
+    let t = fraction(since, now, HIGHLIGHT_ENTER);
+    if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { cubic_bezier(STANDARD_DECELERATE, t) }
+}
+
+/// A highlight going: 1 to 0 over `HIGHLIGHT_EXIT` from `since`. 0 at once under Reduce Motion.
+pub fn highlight_out(since: Instant, now: Instant) -> f32 {
+    if reduce_motion() {
+        return 0.0;
+    }
+    let t = fraction(since, now, HIGHLIGHT_EXIT);
+    if t >= 1.0 { 0.0 } else if t <= 0.0 { 1.0 } else { 1.0 - cubic_bezier(STANDARD_ACCELERATE, t) }
+}
+
 /// How far `now` is through `dur` from `since`, 0 to 1.
 fn fraction(since: Instant, now: Instant, dur: Duration) -> f32 {
     if dur.is_zero() {
@@ -487,5 +535,47 @@ mod tests {
         let back = Slide::new(s.at(mid), 300.0, mid);
         assert!(close(back.at(mid), 75.0));
         assert_eq!(back.at(mid + SIDEBAR_SLIDE), 300.0);
+    }
+
+    #[test]
+    fn the_material_curves_run_from_rest_to_rest() {
+        for (x1, y1, x2, y2) in [STANDARD_DECELERATE, STANDARD_ACCELERATE] {
+            assert!(cubic_bezier((x1, y1, x2, y2), 0.0).abs() < 1e-4);
+            assert!((cubic_bezier((x1, y1, x2, y2), 1.0) - 1.0).abs() < 1e-4);
+            let mut last = 0.0;
+            for i in 1..=20 {
+                let v = cubic_bezier((x1, y1, x2, y2), i as f32 / 20.0);
+                assert!(v >= last - 1e-4, "the curve never goes back");
+                last = v;
+            }
+        }
+    }
+
+    #[test]
+    fn decelerating_arrives_early_and_accelerating_leaves_late() {
+        // Halfway through its time, something entering is most of the way there; something
+        // leaving has barely started to go.
+        assert!(cubic_bezier(STANDARD_DECELERATE, 0.5) > 0.8);
+        assert!(cubic_bezier(STANDARD_ACCELERATE, 0.5) < 0.4, "0.37 halfway on Material's curve");
+    }
+
+    #[test]
+    fn a_highlight_enters_over_250_ms_and_leaves_over_200() {
+        let _g = test_lock(false);
+        let t0 = Instant::now();
+        assert_eq!(highlight_in(t0, t0), 0.0);
+        assert!(highlight_in(t0, t0 + MS(125)) > 0.8);
+        assert_eq!(highlight_in(t0, t0 + MS(250)), 1.0);
+        assert_eq!(highlight_out(t0, t0), 1.0);
+        assert!(highlight_out(t0, t0 + MS(100)) > 0.6, "63% still there at 100 ms");
+        assert_eq!(highlight_out(t0, t0 + MS(200)), 0.0);
+    }
+
+    #[test]
+    fn reduce_motion_makes_a_highlight_instant() {
+        let _g = test_lock(true);
+        let t0 = Instant::now();
+        assert_eq!(highlight_in(t0, t0), 1.0);
+        assert_eq!(highlight_out(t0, t0), 0.0);
     }
 }
