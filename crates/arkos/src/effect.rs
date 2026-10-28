@@ -64,7 +64,7 @@ pub fn active() -> bool {
 }
 
 /// How much larger the project window's UI text is under the wash, in points: room for the ink.
-const UI_BUMP: f32 = 1.0;
+const UI_BUMP: f32 = 2.0;
 
 /// A UI text size as the wash wants it.
 pub fn ui(size: f32) -> f32 {
