@@ -133,11 +133,14 @@ the only new state.
 - **Shifts.** A shift is found by comparing two grids as rows of text. The shift `k` (not zero,
   in either direction, at most the grid's height minus one) that lines up the most non-blank
   rows (`old[i] == new[i + k]`) is the program's scroll, when it lines up at least four rows and
-  at least two more than the runner-up; otherwise there is no shift. A shift names its
-  **block**, the contiguous range of new rows from the first matched row to the last (blank
-  rows inside it are content, such as a paragraph gap, and move with it), and its **band**, the
-  `|k|` rows next to the block on the side the text came in from (above it for `k > 0`, below
-  for `k < 0`), clipped to the grid. Committing a shift does three things, in order:
+  at least two more than the runner-up; otherwise there is no shift. A shift also has to move
+  at least half of the grid's rows (its block and band together); a smaller one is a pane
+  scrolling inside a program that splits the screen, and the record treats it as a repaint in
+  place (added 2026-10-27 after review). A shift names its **block**, the contiguous range of
+  new rows from the first matched row to the last (blank rows inside it are content, such as a
+  paragraph gap, and move with it), and its **band**, the `|k|` rows next to the block on the
+  side the text came in from (above it for `k > 0`, below for `k < 0`), clipped to the grid.
+  Committing a shift does three things, in order:
   1. `offset += k`, so every existing line keeps naming the row it was recorded from.
   2. Every line in the block is rewritten from the grid and confirmed (a row that was under the
      "Jump to bottom" overlay comes out clean once it moves). Each band row is written as a new

@@ -123,6 +123,11 @@ struct Pending {
 /// it. Output arrives in batches and a frame may span several, so the record compares each
 /// batch with its baseline (the grid at its last commit) and holds the shift found as pending
 /// until a different reading shows that a new frame has begun; only then is it committed.
+///
+/// A shift counts only when the rows it moved, its block and its band together, are at least
+/// half of the grid. A program that splits the screen into panes (lazygit, k9s, any ratatui app
+/// that captures the mouse) scrolls one pane at a time, and a smaller shift is such a pane: the
+/// record treats it as a repaint in place, so a selection in another pane keeps its lines.
 #[derive(Debug, Clone)]
 pub struct Ledger {
     offset: i32,
@@ -262,7 +267,7 @@ impl Ledger {
 
     /// Follows one batch of output, `new` being the grid's rows after it was applied.
     pub fn output(&mut self, new: &[String]) -> Outcome {
-        let found = find_shift(&self.baseline, new);
+        let found = self.qualifying_shift(&self.baseline, new);
         match (self.pending.take(), found) {
             (None, Some(shift)) => self.pending = Some(Pending { shift, grid: new.to_vec() }),
             (None, None) => return self.close_check(new),
@@ -272,13 +277,20 @@ impl Ledger {
             (Some(p), _) => {
                 self.commit(&p.shift, &p.grid);
                 self.baseline = p.grid;
-                match find_shift(&self.baseline, new) {
+                match self.qualifying_shift(&self.baseline, new) {
                     Some(shift) => self.pending = Some(Pending { shift, grid: new.to_vec() }),
                     None => return self.close_check(new),
                 }
             }
         }
         Outcome::Open
+    }
+
+    /// The shift from `old` to `new` (`find_shift`), unless its block and band together cover
+    /// fewer than half of the grid's rows: that is one pane scrolling in a program that splits
+    /// the screen, which the record reads as a repaint in place.
+    fn qualifying_shift(&self, old: &[String], new: &[String]) -> Option<Shift> {
+        find_shift(old, new).filter(|shift| moved(shift).len() * 2 >= self.rows)
     }
 
     /// The committed offset with the pending shift applied.
@@ -541,6 +553,28 @@ mod tests {
         // The prompt box's rows are lines 13 and 14 now and were never recorded: absent. (The
         // snapshot's own prompt box lines, 10 and 11, are read through the band above.)
         assert_eq!(lines(&l, 13, 14), vec![None, None]);
+    }
+
+    #[test]
+    fn a_scroll_in_one_pane_of_a_split_program_leaves_the_record_as_it_was() {
+        // Twelve rows: a seven-row pane over a five-row one. A wheel over the small pane scrolls
+        // it by one; four rows line up, but they and the row that came in are under half the grid.
+        let before = grid(&["a1","a2","a3","a4","a5","a6","a7","b1","b2","b3","b4","b5"]);
+        let mut l = Ledger::open(before, 1, 0);
+        let after = grid(&["a1","a2","a3","a4","a5","a6","a7","b2","b3","b4","b5","b6"]);
+        assert_eq!(l.output(&after), Outcome::Open);
+        assert_eq!(l.offset(), 0);
+        assert_eq!(l.line_text(1), Some("a2"));
+        assert_eq!(l.line_text(11), Some("b5"), "the record keeps what it saw");
+        assert_eq!(l.moved_rows(), 0..12);
+        // The other way round: the scrolling pane is the big one, eight rows of twelve, and the
+        // shift counts.
+        let before = grid(&["a1","a2","a3","a4","b1","b2","b3","b4","b5","b6","b7","b8"]);
+        let mut l = Ledger::open(before, 1, 0);
+        let after = grid(&["a1","a2","a3","a4","b2","b3","b4","b5","b6","b7","b8","b9"]);
+        assert_eq!(l.output(&after), Outcome::Open);
+        assert_eq!(l.offset(), -1);
+        assert_eq!(l.moved_rows(), 4..12);
     }
 
     #[test]
