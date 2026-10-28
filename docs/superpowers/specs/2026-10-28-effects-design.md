@@ -1,7 +1,8 @@
 # Effects: shaders under and over the window
 
 Status: draft 2026-10-28, from the watercolor spike on branch `worktree-watercolor-spike`
-(commits 041a5ed to 4ccddba). The spike is throwaway; this is what ships.
+(commits 041a5ed to 4ccddba); builder-checked the same day (rulings 9 to 12). The spike is
+throwaway; this is what ships.
 
 ## 1. Intent
 
@@ -87,6 +88,9 @@ frame_rate = 30               # 1 to 60; the wash's frames per second while anyt
 scale = 0.5                   # 0.1 to 1.0; the wash's pixels per window pixel, each side
 ui_text_bump = 2              # 0 to 4 points added to the project window's UI text
 ink_borders = true            # the app hides its own 1 px borders; the wash draws the edges
+highlights = "effect"         # "effect": the wash paints the selected and hovered rows and the
+                              # hovered tab from the highlight blocks; "app" (the default): the
+                              # app keeps its own fills and reports no highlight blocks
 paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper over the wash
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash
@@ -183,10 +187,14 @@ window's current effect, when the file says `theme`, reads "Theme's choice (wate
 
 `arkos settings set effect.name <theme|none|name>` and `effect.intensity <0..1>` join the keys.
 
-Switching takes effect live: the window installs or removes the layer, swaps the glyph shader
-through the fork's hook, and re-reads the alphas and text bump on the next frame. A theme switch
-with `name = "theme"` does the same when the recommendation changes. The spike's "relaunch to
-turn it off" is gone.
+Switching takes effect live, and as a transition under the Motion rule: the wash's layer
+opacity and the surfaces' alphas cross-fade over `motion::THEME_FADE` (200 ms, in step with a
+theme fade when both change at once), the effect counting in `Root::any_motion` meanwhile; the
+glyph shader and the UI text size, which can only cut, switch at the fade's end, so the layout
+settles once. Under Reduce Motion the whole switch cuts. The window's background turns
+transparent at the fade's start when an effect comes and opaque at its end when one goes, so
+nothing shows through meanwhile. A theme switch with `name = "theme"` does the same when the
+recommendation changes. The spike's "relaunch to turn it off" is gone.
 
 ### 4.4 How the wash is drawn
 
@@ -219,22 +227,27 @@ public (the sources are Apache-2.0 and the release workflow clones it without cr
 My call, flagged: a new repository rather than a fork of `zed-industries/zed`, because the
 monorepo is a gigabyte that every clone and every CI run would pay for.
 
-The first patch is one hook, no feature:
+The first patch is one hook, no feature, on the window, so the project window takes it and
+the About, Settings, Keybindings and chooser windows keep gpui's own glyphs:
 
 ```rust
-/// Replaces the monochrome sprite (glyph) stages with the named functions from `source`, which
-/// is appended to gpui's own shader source before the Metal library is built. `None` restores
-/// gpui's own. Takes effect on every renderer at its next frame; a window open at the time
-/// rebuilds its pipeline then.
-pub fn set_glyph_shader(shader: Option<GlyphShader>);
+/// Replaces this window's monochrome sprite (glyph) stages with the named functions from
+/// `source`, which is appended to gpui's own shader source before the window's Metal library
+/// is built. `None` restores gpui's own. The window rebuilds that one pipeline at its next
+/// frame. `Err` carries the Metal compiler's message when the source does not compile, and
+/// gpui's own stages stay in place.
+impl Window {
+    pub fn set_glyph_shader(&mut self, shader: Option<GlyphShader>) -> Result<(), String>;
+}
 pub struct GlyphShader { pub source: String, pub vertex: String, pub fragment: String }
 ```
 
-The renderer keeps a generation counter; the draw path compares it and rebuilds the one
-pipeline state when it moved, under the same `nice` and budget rules as anything else (a
-rebuild compiles the library once: tens of milliseconds, once per switch). A shader that fails
-to compile leaves gpui's own in place and the error reaches the app through
-`gpui::glyph_shader_error()`, which the app turns into a notice.
+A rebuild compiles the library once: tens of milliseconds, once per switch. The app turns an
+`Err` into a notice and draws the theme plain.
+
+The plan builds and tests the hook against an in-tree copy of gpui first (`[patch.crates-io]
+gpui = { path = "vendor/gpui" }`, as the spike does), and moves to the git dependency as its
+last task, once the repository exists; the release workflow switches over then.
 
 The ink glyph shader itself (the spike's `monochrome_sprite_fragment_ink`, with the widened
 quad and the size-aware variation) moves into `crates/arkos/effects/watercolor/glyphs.metal`.
@@ -251,7 +264,11 @@ stroke is at its target at once, and the wash draws once for the change.
 
 Strengths are the shader's business: a highlight block carries `kind`, `value` (its fade) and
 whether it is selected, hovered or both through `ordinal` (0 hovered, 1 selected, 2 both), and
-the watercolor shader picks 0.2, 0.3 and 0.36 as the spike did.
+the watercolor shader picks 0.2, 0.3 and 0.36 as the spike did. Only an effect whose manifest
+says `highlights = "effect"` gets highlight blocks and takes the app's own fills away; with
+`"app"` the app paints its selected row, hovered row and hovered tab as it does without an
+effect (gpui's hover style, instant), and the registry stays empty. `arkos effect check` says
+which the manifest chose, so an author who forgot to paint highlights sees why nothing shows.
 
 ### 4.7 `arkos effect`, for agents and people
 
@@ -336,3 +353,12 @@ off-screen (a layer that never presents, a texture target); the tarball-free for
 7. No automatic disabling of a slow effect; the cost is reported and the choice is the user's
    (my call; revisit if a user ships a 25% shader).
 8. Highlights fade over Material 3's standard timing (Cyrus): 250 ms in, 200 ms out.
+9. (builder check) The glyph hook is per window, so the aux windows and the chooser keep
+   gpui's own glyphs; the fork's API is `Window::set_glyph_shader` (my call).
+10. (builder check) The hook is built against the in-tree copy first and the move to
+    `csarkosh/gpui` is the plan's last task; Cyrus creates the repository, or says to (my call
+    on the order; the repository is his).
+11. (builder check) A manifest chooses `highlights = "effect"` or `"app"`, default `"app"`, so a
+    user's effect that paints no highlights loses nothing; watercolor says `"effect"` (my call).
+12. (builder check) An effect coming or going cross-fades over `THEME_FADE` with the glyphs and
+    the text size switching at the end; Reduce Motion cuts (my call, from the Motion rule).
