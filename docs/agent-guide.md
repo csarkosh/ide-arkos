@@ -474,8 +474,9 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
 surface, and optionally the text itself. Two are built in: Peach Light recommends `watercolor`
 (still ink glyphs) and Navy recommends `space` (a night sky with glowing edges and holo text that
-reads the clock, `glyph_motion = true`); the user may pick any effect for any theme, or none, in Settings or through `arkos effect use`. An
-effect reads the theme's colours on every frame, so write it to suit any theme rather than one.
+reads the clock, `glyph_motion = true`); the user may pick any effect for any theme, or none, in
+Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
+write it to suit any theme rather than one.
 
 What an effect can touch:
 

@@ -87,7 +87,8 @@ float holo_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
 }
 
 // The mean coverage on a ring of eight samples r points out (the mock-up's ring(p, r)). Its
-// colour is the glyph's own, one colour a glyph, so only the coverage is carried.
+// colour is the glyph's own, one colour a glyph, so only the coverage is carried. The offsets
+// assume a tile's texels match its bounds' device pixels (an unscaled glyph), as watercolor's do.
 float holo_ring(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 texel, float r) {
   float acc = 0.0;
   for (int k = 0; k < 8; k++) {
@@ -116,17 +117,22 @@ fragment float4 arkos_glyph_fragment(
   float core = holo_tx(atlas_texture, smp, uv, rect);
   float a = core;
   float3 col = input.color.rgb;
-  float g = holo_ring(atlas_texture, smp, uv, rect, texel, 1.5) * 0.5
-          + holo_ring(atlas_texture, smp, uv, rect, texel, 3.0) * 0.3
-          + holo_ring(atlas_texture, smp, uv, rect, texel, 5.0) * 0.2;
-  float3 hcol = col;
-  float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
 
   // The holo assumes light text on a dark ground. Dark text leans toward deep teal instead of
   // cyan, keeps its full brightness and draws no glow, so it stays readable on a light theme.
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
   bool dark = luminance < 0.5;
   float3 hue = dark ? HOLO_TEAL : HOLO_CYAN;
+
+  // The halo's three rings, skipped for dark text, which draws none.
+  float g = 0.0;
+  if (!dark) {
+    g = holo_ring(atlas_texture, smp, uv, rect, texel, 1.5) * 0.5
+      + holo_ring(atlas_texture, smp, uv, rect, texel, 3.0) * 0.3
+      + holo_ring(atlas_texture, smp, uv, rect, texel, 5.0) * 0.2;
+  }
+  float3 hcol = col;
+  float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
 
   // The tint: coloured output keeps as much of its own hue as KEEP says.
   float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
