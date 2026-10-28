@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships five themes built in (`navy`, `navy-light`, `timo-purple`, `peach-light`, `lavender-light`); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships four themes built in (`navy`, `timo-purple`, `peach-light`, `lavender-light`); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 

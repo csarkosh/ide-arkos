@@ -544,7 +544,7 @@ Arkos answers with the theme's and tells it at the end of every theme switch's f
 theme never shows Claude Code's dark-theme text. Arkos sets Auto itself at start when the theme is unset, `dark` or
 `light`; for any other choice the doctor offers it.
 
-Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`, `navy-light`,
+Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
 `timo-purple`, `peach-light` (warm cream and peach) and `lavender-light` (a VS Code lavender look) are built in. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).

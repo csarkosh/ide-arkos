@@ -93,7 +93,7 @@ values! {
 }
 values! {
     /// What the bell got a notice about.
-    Notice { UpdateReady => "update_ready", Updated => "updated", Daemon => "daemon", ConfigError => "config_error", ThemeError => "theme_error" }
+    Notice { UpdateReady => "update_ready", Updated => "updated", Daemon => "daemon", ConfigError => "config_error", ThemeError => "theme_error", ThemeRetired => "theme_retired" }
 }
 values! {
     /// Something that went wrong where the person would have seen it.
@@ -767,6 +767,7 @@ impl Notice {
             Kind::Daemon => Notice::Daemon,
             Kind::ConfigError => Notice::ConfigError,
             Kind::ThemeError => Notice::ThemeError,
+            Kind::ThemeRetired => Notice::ThemeRetired,
         }
     }
 }
@@ -1486,7 +1487,7 @@ mod tests {
         new.theme.dark = "my-midnight".into();
         assert_eq!(r.config_changed(&old, &new, Usage::Local, at(base, 1)), None, "the usage did not change, nor the sid");
         let mut newer = new.clone();
-        newer.theme.light = "peach-light".into();
+        newer.theme.light = "lavender-light".into();
         r.config_changed(&new, &newer, Usage::Local, at(base, 2));
         let events = events_in(dir.path(), &sid);
         assert_eq!(

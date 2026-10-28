@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn the_updates_line_names_the_version_and_a_missing_choice_is_listed_first() {
         assert_eq!(ready_line("0.2.0 (def5678)"), "0.2.0 (def5678) is ready");
-        let listed = ["navy".to_string(), "navy-light".to_string()];
+        let listed = ["navy".to_string(), "peach-light".to_string()];
         assert_eq!(not_installed("nvy", &listed), Some("nvy (not installed)".to_string()));
         assert_eq!(not_installed("navy", &listed), None);
     }

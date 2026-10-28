@@ -436,7 +436,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 
 ## 6. The theme workflow
 
-1. `arkos theme template > draft.toml` (or `arkos theme template navy-light` for a light start).
+1. `arkos theme template > draft.toml` (or `arkos theme template peach-light` for a light start).
 2. Set `name` to a new bare name and edit the colours.
 3. `arkos theme validate draft.toml`, then `arkos theme contrast draft.toml`; fix every LOW pair
    and run it again until it exits 0.
@@ -445,7 +445,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 5. `arkos theme use draft.toml` (add `--dark` or `--light` to choose the slot).
 6. `arkos theme current` to confirm what every window shows.
 
-To revert, `arkos theme use navy` (or `arkos theme use navy-light --light`). The user can also
+To revert, `arkos theme use navy` (or `arkos theme use peach-light --light`). The user can also
 pick any theme by hand in the Settings window.
 
 ## 7. A worked example: Timo Purple

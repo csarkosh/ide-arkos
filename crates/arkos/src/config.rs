@@ -162,7 +162,7 @@ pub struct ThemeConfig {
 
 impl Default for ThemeConfig {
     fn default() -> Self {
-        Self { dark: "navy".into(), light: "navy-light".into() }
+        Self { dark: "navy".into(), light: "peach-light".into() }
     }
 }
 
@@ -431,6 +431,48 @@ pub fn set_values(path: &Path, edits: &[(&[&str], toml_edit::Value)]) -> Result<
     })
 }
 
+/// The notice shown once when a config naming the removed Navy Light is moved to Peach Light.
+pub const NAVY_LIGHT_NOTICE: &str = "Navy Light was removed; your light theme is now Peach Light.";
+
+/// Navy Light is no longer built in. When `text` names it as `theme.light` or `theme.dark` and the
+/// user has no `navy-light.toml` of their own in `themes_dir` (such a file keeps working as any
+/// user theme), returns the text with that value set to `peach-light`, every comment kept. `None`
+/// when there is nothing to change or the text is not TOML.
+pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
+    if themes_dir.join("navy-light.toml").exists() {
+        return None;
+    }
+    let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+    let theme = doc.get("theme")?.as_table_like()?;
+    let named = |key: &str| theme.get(key).and_then(|v| v.as_str()) == Some("navy-light");
+    let mut edits: Vec<(&[&str], toml_edit::Value)> = Vec::new();
+    if named("dark") {
+        edits.push((&["theme", "dark"], toml_edit::Value::from("peach-light")));
+    }
+    if named("light") {
+        edits.push((&["theme", "light"], toml_edit::Value::from("peach-light")));
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    apply_edits(text, &edits).ok()
+}
+
+/// Moves the config file at `path` off Navy Light (see `retire_navy_light`), writing it back in
+/// place through a symlink if it is one. True when the file was rewritten.
+pub fn retire_navy_light_file(path: &Path, themes_dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let Some(new) = retire_navy_light(&text, themes_dir) else { return false };
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    match std::fs::write(&target, new) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("arkos: cannot rewrite {}: {e}", path.display());
+            false
+        }
+    }
+}
+
 /// Applies `edits` to a config file's `text` in memory and returns the new text. Comments, order,
 /// formatting and a line's trailing comment are kept: the old value's decor is copied onto the
 /// new one. A key goes at the end of its table, a missing table at the end of the file. The walk
@@ -638,10 +680,10 @@ watchdog_secs = 30
 replay_bytes = 16777216
 
 [theme]
-# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "navy-light", "timo-purple", "peach-light" and "lavender-light" are built in;
+# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-light" and "lavender-light" are built in;
 # "Extract built-in themes" in the command palette writes them there to copy from.
 dark = "navy"
-light = "navy-light"
+light = "peach-light"
 
 [effect]
 # A shader drawn under the window's text. "theme" draws the one the theme was designed with (only
@@ -786,7 +828,7 @@ pub(crate) mod tests {
         assert_eq!(cfg.daemon.watchdog_secs, 30);
         assert_eq!(cfg.daemon.replay_bytes, 16 * 1024 * 1024);
         assert_eq!(cfg.theme.dark, "navy");
-        assert_eq!(cfg.theme.light, "navy-light");
+        assert_eq!(cfg.theme.light, "peach-light");
         assert_eq!(cfg.appearance.mode, AppearanceMode::System);
     }
 
@@ -1140,5 +1182,43 @@ pub(crate) mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches('#').count(), DEFAULT_CONFIG.matches('#').count(), "every comment survives");
         assert!(toml::from_str::<Config>(&text).is_ok());
+    }
+
+    #[test]
+    fn a_config_naming_navy_light_is_moved_to_peach_light_keeping_its_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "# mine\n[theme]\ndark = \"navy\" # the night\nlight = \"navy-light\" # the day\n";
+        let new = retire_navy_light(text, dir.path()).unwrap();
+        assert_eq!(new, "# mine\n[theme]\ndark = \"navy\" # the night\nlight = \"peach-light\" # the day\n");
+        let both = retire_navy_light("[theme]\ndark = \"navy-light\"\nlight = \"navy-light\"\n", dir.path()).unwrap();
+        assert_eq!(parse(&both).unwrap().theme, ThemeConfig { dark: "peach-light".into(), light: "peach-light".into() });
+        assert_eq!(NAVY_LIGHT_NOTICE, "Navy Light was removed; your light theme is now Peach Light.");
+    }
+
+    #[test]
+    fn the_config_file_is_rewritten_once_and_then_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[theme]\nlight = \"navy-light\" # day\n").unwrap();
+        assert!(retire_navy_light_file(&file, dir.path()));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[theme]\nlight = \"peach-light\" # day\n");
+        assert!(!retire_navy_light_file(&file, dir.path()), "rewritten once, it never shows again");
+        assert!(!retire_navy_light_file(&dir.path().join("none.toml"), dir.path()));
+    }
+
+    #[test]
+    fn a_user_s_own_navy_light_file_keeps_its_config_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("navy-light.toml"), "name = \"navy-light\"\n").unwrap();
+        assert_eq!(retire_navy_light("[theme]\nlight = \"navy-light\"\n", dir.path()), None);
+    }
+
+    #[test]
+    fn a_config_without_navy_light_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(retire_navy_light("[theme]\nlight = \"lavender-light\"\n", dir.path()), None);
+        assert_eq!(retire_navy_light("", dir.path()), None);
+        assert_eq!(retire_navy_light("[theme\nbroken", dir.path()), None);
+        assert_eq!(retire_navy_light(DEFAULT_CONFIG, dir.path()), None);
     }
 }

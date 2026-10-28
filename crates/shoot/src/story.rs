@@ -98,7 +98,7 @@ pub struct ThemePair {
 
 impl Default for ThemePair {
     fn default() -> Self {
-        ThemePair { dark: "navy".into(), light: "navy-light".into() }
+        ThemePair { dark: "navy".into(), light: "peach-light".into() }
     }
 }
 
@@ -536,7 +536,7 @@ theme = "light"
         assert_eq!(s.panes.len(), 5);
         assert_eq!(s.scene.name, "web-developer");
         assert_eq!(s.window.sidebar, Sidebar::Open);
-        assert_eq!((s.window.theme.dark.as_str(), s.window.theme.light.as_str()), ("navy", "navy-light"));
+        assert_eq!((s.window.theme.dark.as_str(), s.window.theme.light.as_str()), ("navy", "peach-light"));
         assert_eq!(s.shots[0].crops[0].name, "tabs");
         assert_eq!(s.shots[1].theme, "light");
         assert_eq!(s.window.preset, "compact");

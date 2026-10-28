@@ -12,6 +12,7 @@ pub enum Kind {
     Daemon,
     ConfigError,
     ThemeError,
+    ThemeRetired,
 }
 
 /// What clicking a notice does.

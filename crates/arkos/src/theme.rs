@@ -160,9 +160,8 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 5] = [
+pub const BUILTIN: [(&str, &str); 4] = [
     ("navy", include_str!("../themes/navy.toml")),
-    ("navy-light", include_str!("../themes/navy-light.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-light", include_str!("../themes/peach-light.toml")),
     ("lavender-light", include_str!("../themes/lavender-light.toml")),
@@ -670,9 +669,17 @@ mod tests {
     }
 
     #[test]
+    fn navy_light_is_no_longer_built_in_and_peach_light_is_the_default_light_theme() {
+        assert!(builtin("navy-light").is_none());
+        assert!(!BUILTIN.iter().any(|(n, _)| *n == "navy-light"));
+        assert_eq!(crate::config::ThemeConfig::default().light, "peach-light");
+        assert!(builtin("peach-light").unwrap().is_light());
+    }
+
+    #[test]
     fn a_theme_may_recommend_an_effect_and_peach_light_recommends_watercolor() {
         assert_eq!(builtin("peach-light").unwrap().recommended_effect(), Some("watercolor"));
-        for other in ["navy", "navy-light", "timo-purple", "lavender-light"] {
+        for other in ["navy", "timo-purple", "lavender-light"] {
             assert_eq!(builtin(other).unwrap().recommended_effect(), None, "{other}");
         }
         let text = BUILTIN[0].1.to_string() + "\n[effect]\nname = \"ink\"\n";
@@ -699,7 +706,6 @@ mod tests {
         }
         assert!(builtin("nvay").is_none());
         assert!(!builtin("navy").unwrap().is_light());
-        assert!(builtin("navy-light").unwrap().is_light());
         assert!(builtin("peach-light").unwrap().is_light());
         assert!(builtin("lavender-light").unwrap().is_light());
     }
@@ -721,7 +727,7 @@ mod tests {
             let (table, key) = key.split_once('.').unwrap();
             schema().iter().find(|t| t.name == table).and_then(|t| t.keys.iter().find(|k| k.key == key)).unwrap_or_else(|| panic!("{table}.{key}"))
         };
-        let pairs = contrast_pairs(&builtin("navy-light").unwrap());
+        let pairs = contrast_pairs(&builtin("lavender-light").unwrap());
         for p in pairs.iter().filter(|p| !p.what.starts_with("ansi ")) {
             let (key, on) = p.what.split_once(" on ").unwrap();
             let k = doc(key);
@@ -782,9 +788,9 @@ mod tests {
         text = text.replace(&format!("window_bg = \"{bg}\""), "window_bg = \"#000000\"");
         std::fs::write(dir.path().join("navy.toml"), &text).unwrap();
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
-        std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"navy-light\"", "name = \"mine\"")).unwrap();
+        std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "mine".to_string(), "navy".to_string(), "navy-light".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
+        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "mine".to_string(), "navy".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -799,7 +805,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 5);
+        assert_eq!(wrote.len(), 4);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -812,7 +818,7 @@ mod tests {
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 5);
+        assert_eq!(BUILTIN.len(), 4);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -825,12 +831,11 @@ mod tests {
         std::fs::write(dir.path().join("navy.toml"), BUILTIN[0].1).unwrap();
         let l = list(dir.path());
         assert_eq!(l[0], ("navy".into(), Source::File), "a file shadows the built-in and is listed once");
-        assert_eq!(l[1], ("navy-light".into(), Source::BuiltIn));
-        assert_eq!(l[2], ("timo-purple".into(), Source::BuiltIn));
-        assert_eq!(l[3], ("peach-light".into(), Source::BuiltIn));
-        assert_eq!(l[4], ("lavender-light".into(), Source::BuiltIn));
-        assert!(matches!(&l[5], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[6], ("mine".into(), Source::File));
+        assert_eq!(l[1], ("timo-purple".into(), Source::BuiltIn));
+        assert_eq!(l[2], ("peach-light".into(), Source::BuiltIn));
+        assert_eq!(l[3], ("lavender-light".into(), Source::BuiltIn));
+        assert!(matches!(&l[4], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[5], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -838,12 +843,11 @@ mod tests {
         assert_eq!(theme_cli_to(&["list".into()], dir.path(), &mut out, &mut err), 0);
         let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
         assert_eq!(lines[0], "navy (file)");
-        assert_eq!(lines[1], "navy-light (built in)");
-        assert_eq!(lines[2], "timo-purple (built in)");
-        assert_eq!(lines[3], "peach-light (built in)");
-        assert_eq!(lines[4], "lavender-light (built in)");
-        assert!(lines[5].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[6], "mine (file)");
+        assert_eq!(lines[1], "timo-purple (built in)");
+        assert_eq!(lines[2], "peach-light (built in)");
+        assert_eq!(lines[3], "lavender-light (built in)");
+        assert!(lines[4].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[5], "mine (file)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -855,8 +859,8 @@ mod tests {
         assert_eq!(theme_cli_to(&["--json".into(), "list".into()], dir.path(), &mut out, &mut err), 0);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v[0], serde_json::json!({ "name": "navy", "source": "file", "path": dir.path().join("navy.toml").display().to_string() }));
-        assert_eq!(v[1], serde_json::json!({ "name": "navy-light", "source": "built-in" }));
-        assert_eq!((v[5]["source"].as_str(), v[5]["error"].is_string()), (Some("invalid"), true));
+        assert_eq!(v[1], serde_json::json!({ "name": "timo-purple", "source": "built-in" }));
+        assert_eq!((v[4]["source"].as_str(), v[4]["error"].is_string()), (Some("invalid"), true));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
@@ -878,7 +882,7 @@ mod tests {
         assert_eq!(import_file(&src, &dir, false), Err("exists".into()));
         assert_eq!(import_file(&src, &dir, true), Ok(("ocean".into(), true)));
         // A theme named like a built-in would shadow it, so that asks too.
-        for builtin in ["navy", "navy-light", "timo-purple"] {
+        for builtin in ["navy", "peach-light", "timo-purple"] {
             std::fs::write(&src, BUILTIN[0].1.replace("name = \"navy\"", &format!("name = \"{builtin}\""))).unwrap();
             assert_eq!(import_file(&src, &dir, false), Err("exists".into()), "{builtin}");
             assert!(!dir.join(format!("{builtin}.toml")).exists(), "nothing written before the answer");
@@ -898,11 +902,11 @@ mod tests {
     #[test]
     fn appearance_mode_picks_the_theme() {
         use crate::config::{AppearanceMode, ThemeConfig};
-        let cfg = ThemeConfig { dark: "navy".into(), light: "navy-light".into() };
+        let cfg = ThemeConfig { dark: "navy".into(), light: "peach-light".into() };
         assert_eq!(pick_name(AppearanceMode::System, true, &cfg), "navy");
-        assert_eq!(pick_name(AppearanceMode::System, false, &cfg), "navy-light");
+        assert_eq!(pick_name(AppearanceMode::System, false, &cfg), "peach-light");
         assert_eq!(pick_name(AppearanceMode::Dark, false, &cfg), "navy");
-        assert_eq!(pick_name(AppearanceMode::Light, true, &cfg), "navy-light");
+        assert_eq!(pick_name(AppearanceMode::Light, true, &cfg), "peach-light");
         use gpui::WindowAppearance::*;
         assert!(is_dark(Dark) && is_dark(VibrantDark));
         assert!(!is_dark(Light) && !is_dark(VibrantLight));
@@ -917,14 +921,14 @@ mod tests {
         assert!(banner.contains("nvay") && banner.contains("keeping navy"), "{banner}");
         let (switch, banner) = keep_or_switch(&navy, Ok(navy.clone()));
         assert_eq!((switch, banner), (None, None), "the same theme is not re-applied");
-        let light = builtin("navy-light").unwrap();
+        let light = builtin("peach-light").unwrap();
         assert_eq!(keep_or_switch(&navy, Ok(light.clone())), (Some(light), None));
     }
 
     #[test]
     fn a_blend_walks_every_colour_from_one_theme_to_the_other() {
         let from = builtin("navy").unwrap();
-        let mut to = builtin("navy-light").unwrap();
+        let mut to = builtin("peach-light").unwrap();
         to.font.ui = Some("Avenir".into());
         let start = blend(&from, &to, 0.0);
         assert_eq!(start.chrome, from.chrome);
@@ -932,7 +936,7 @@ mod tests {
         assert_eq!(start.semantic, from.semantic);
         assert_eq!(start.tree, from.tree);
         assert_eq!(start.viewer, from.viewer);
-        assert_eq!((start.name.as_str(), &start.font), ("navy-light", &to.font), "the name and fonts are the target's from the first frame");
+        assert_eq!((start.name.as_str(), &start.font), ("peach-light", &to.font), "the name and fonts are the target's from the first frame");
         let end = blend(&from, &to, 1.0);
         assert_eq!(end, to);
         assert_eq!(blend(&from, &to, -3.0).chrome, from.chrome, "t is clamped below");

@@ -4353,6 +4353,9 @@ fn main() {
     // (Settings opened from the chooser writes it), so a write landing during the load is not
     // missed; at worst it costs one extra reload.
     let fingerprint = config_watch::fingerprint(&config_path);
+    // Navy Light is no longer built in: a config naming it is moved to Peach Light before it is
+    // parsed, and the window says so once (the file never names it again).
+    let theme_retired = config::retire_navy_light_file(&config_path, &paths::themes_dir());
     let (config, config_error) = match config::load(&config_path) {
         Ok(c) => (c, None),
         Err(e) => {
@@ -4394,7 +4397,7 @@ fn main() {
         let (theme, theme_error) = startup_theme(&config, system_is_dark);
         let (look_config, look_theme) = (config.clone(), theme.clone());
         aux::init(cx, aux::LaunchState { config: config.clone(), theme: theme.clone(), config_path: config_path.clone(), installed, fingerprint, client: None });
-        let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark, updated };
+        let start = Startup { config, config_error, config_path, daemon_args: daemon_args.clone(), save_queue, theme, theme_error, system_is_dark, updated, theme_retired };
         let launch = Rc::new(Launch {
             plan,
             cwd,
@@ -4502,7 +4505,7 @@ fn startup_theme(config: &config::Config, system_is_dark: bool) -> (theme::Theme
     match theme::load(&name, &paths::themes_dir()) {
         Ok(t) => (t, None),
         Err(e) => {
-            // A broken user navy-light.toml still gives a light window.
+            // A broken user theme file named like a built-in still gives that built-in.
             let t = theme::builtin(&name).or_else(|| theme::builtin("navy")).expect("navy is built in");
             let banner = format!("theme: {e}; using built-in {}", t.name);
             eprintln!("arkos: {banner}");
@@ -4630,6 +4633,8 @@ struct Startup {
     system_is_dark: bool,
     /// The version this launch updated from, as "Updated to X" for the bell.
     updated: Option<String>,
+    /// The config named the removed Navy Light and was rewritten: the bell says so once.
+    theme_retired: bool,
 }
 
 /// Where the project window opens: where it was, on its display, when that display is attached;
@@ -4661,7 +4666,7 @@ fn open_project_window(
     start: Startup,
     cx: &mut App,
 ) {
-    let Startup { mut config, mut config_error, config_path, daemon_args, save_queue, mut theme, mut theme_error, system_is_dark, updated } = start;
+    let Startup { mut config, mut config_error, config_path, daemon_args, save_queue, mut theme, mut theme_error, system_is_dark, updated, theme_retired } = start;
     let now = config_watch::fingerprint(&config_path);
     // `main()` sets the registry up before any window, so a missing one is a wiring bug.
     let launch = cx.global::<aux::Aux>().launch.as_ref().expect("aux::init runs before any window");
@@ -4789,6 +4794,9 @@ fn open_project_window(
             root.invitation_config_changed();
             root.theme_error = theme_error;
             root.seed_notices(updated);
+            if theme_retired {
+                root.notices.set(notices::Kind::ThemeRetired, config::NAVY_LIGHT_NOTICE, None, SystemTime::now());
+            }
             root.follow_theme_in_claude(cx);
             root.apply_recovery(true, cx);
             root.load_pending_dirs(cx);
@@ -4985,8 +4993,9 @@ mod tests {
         // A theme file edited in place keeps its name: the watcher fires for the write, then
         // again when the editor's rename restores the old text before the first fade frame.
         let navy = Arc::new(theme::builtin("navy").unwrap());
-        let mut edited = theme::builtin("navy-light").unwrap();
+        let mut edited = theme::builtin("lavender-light").unwrap();
         edited.name = "navy".into();
+        edited.font = theme::ThemeFont::default(); // the blend takes the target's fonts, and navy names none
         let light = Arc::new(edited);
         // The screen at the start of that fade: navy's colours under the edited theme's name.
         let shown = Arc::new(theme::blend(&navy, &light, 0.0));
@@ -5144,9 +5153,9 @@ mod tests {
         let good = customize_outcome(&CustomizeAction::PreviewTheme { toml: "...".into() }, Ok(theme::builtin("navy").unwrap()), after.clone());
         assert_eq!(good.unwrap().preview.as_deref(), Some("x"));
         assert!(customize_outcome(&CustomizeAction::ReportState, Err("unused".into()), after).is_ok(), "only a preview can fail");
-        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "navy-light".into() };
+        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-light".into() };
         assert_eq!(theme_file_for(config::AppearanceMode::System, true, &cfg, Path::new("/t")), PathBuf::from("/t/timo-purple.toml"));
-        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/navy-light.toml"));
+        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/lavender-light.toml"));
     }
 
     #[test]

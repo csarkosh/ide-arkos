@@ -334,7 +334,7 @@ mod tests {
         std::fs::create_dir_all(&themes).unwrap();
         std::fs::write(themes.join("broken.toml"), "name = \"broken\"\n").unwrap();
         let cfg = dir.path().join("config.toml");
-        std::fs::write(&cfg, "[theme]\ndark = \"gone\"\nlight = \"navy-light\"\n").unwrap();
+        std::fs::write(&cfg, "[theme]\ndark = \"gone\"\nlight = \"peach-light\"\n").unwrap();
         let lines = themes_section(&themes, &cfg, Path::new("/h/.claude/skills"), &SkillState::Missing);
         let broken = themes.join("broken.toml");
         let line = lines.iter().find(|l| l.starts_with(&format!("{}: ", broken.display()))).unwrap_or_else(|| panic!("{lines:?}"));

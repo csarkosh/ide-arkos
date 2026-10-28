@@ -436,7 +436,8 @@ Things only a person at the screen can check, in order of value:
 - Shift+Cmd+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
-- "Theme: navy-light" in the palette, then a config reload: the config's theme wins
+- "Theme: peach-light" in the palette, then a config reload: the config's theme wins
+- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Light." once, the file now says `peach-light` with its comments intact, and the next launch shows nothing
 - "Extract built-in themes", then editing `~/.config/arkos/themes/navy.toml`'s `window_bg` and
   reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
 - `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
@@ -479,7 +480,7 @@ Things only a person at the screen can check, in order of value:
   `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
   session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
 - the same with the skill installed (`arkos guide --install`) and the hooks removed
-- `arkos theme list` shows `navy`, `navy-light`, `timo-purple`, `peach-light` and `lavender-light` as built in; with Timo Purple
+- `arkos theme list` shows `navy`, `timo-purple`, `peach-light` and `lavender-light` as built in; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window
