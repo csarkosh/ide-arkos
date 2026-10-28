@@ -4,7 +4,10 @@
 // Nothing outside the tests reads these until the wash is drawn from them (a later task).
 #![cfg_attr(not(test), allow(dead_code))]
 
+pub mod blocks;
+pub mod inputs;
 pub mod manifest;
+pub mod strokes;
 
 use std::path::PathBuf;
 

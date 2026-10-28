@@ -19,6 +19,8 @@ mod doctor;
 mod doctor_panel;
 mod drag;
 mod edit;
+// The spike, until the effects module draws the wash; its highlight registry is unused now.
+#[allow(dead_code)]
 mod effect;
 mod effects;
 mod empty_pane;
@@ -329,6 +331,13 @@ pub struct Root {
     key_monitor: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     /// SPIKE: the watercolor wash under the window, while the theme carries one.
     effect: Option<effect::Watercolor>,
+    /// The highlights laid out this frame (spec 4.6): cleared at the start of each render and
+    /// pushed by the Explorer rows' and the tabs' canvases while the effect paints highlights.
+    pub effect_marks: Vec<effects::blocks::Mark>,
+    /// The Explorer row or tab under the pointer, by its mark's key, set by their `on_hover`.
+    pub effect_hover: Option<u64>,
+    /// The highlights' fades, fed `effect_marks` each frame the wash draws.
+    pub effect_strokes: effects::strokes::Strokes,
     /// What macOS reports; `appearance.mode = "system"` follows it.
     pub system_is_dark: bool,
     /// When this install first ran (`startup::installed_since`, read once in `main()`).
@@ -619,6 +628,9 @@ impl Root {
             ns_view: None,
             key_monitor: None,
             effect: None,
+            effect_marks: Vec::new(),
+            effect_hover: None,
+            effect_strokes: effects::strokes::Strokes::default(),
             caret_wake: None,
             system_is_dark,
             installed,
@@ -3580,6 +3592,13 @@ impl Root {
         moving
     }
 
+    /// Whether the effect paints the highlights (its manifest's `highlights = "effect"`), so the
+    /// Explorer rows and tabs report marks instead of the app filling them. Never yet: the
+    /// effect is not installed from its manifest.
+    pub fn effect_highlights(&self) -> bool {
+        false
+    }
+
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
     pub fn keys_back_to_arkos(&self) {
         if let (Some(ns), Some(view)) = (&self.ns_window, &self.ns_view) {
@@ -3604,8 +3623,8 @@ fn pane_after(tree: &Tree, pane: PaneId) -> Option<PaneId> {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let size = window.viewport_size();
-        // SPIKE: highlights report themselves again as this frame lays out.
-        effect::begin_frame();
+        // The highlights report themselves again as this frame lays out.
+        self.effect_marks.clear();
         self.window_active = window.is_window_active();
         self.note_focus();
         let now = Instant::now();

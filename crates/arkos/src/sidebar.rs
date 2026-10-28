@@ -2,6 +2,7 @@
 //! holding two collapsible sections, the Explorer and Worktrees. Its state is saved with the
 //! workspace; the config's `[sidebar]` gives a new folder its defaults.
 
+use crate::effects::blocks::{self, HighlightState, Kind, Mark};
 use crate::explorer;
 use crate::gitstatus::Status;
 use crate::keymap;
@@ -10,7 +11,7 @@ use crate::line_edit::{self, Edit, LineEdit};
 use crate::palette::Rgb;
 use crate::theme::Theme;
 use crate::sidebar;
-use crate::tree::{PaneId, Tab, TabId, Tree, ViewMode};
+use crate::tree::{PaneId, Rect, Tab, TabId, Tree, ViewMode};
 use crate::worktrees::{Worktree, WtRow};
 use crate::Root;
 use gpui::{div, prelude::*, px, uniform_list, App, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, ScrollHandle, Stateful, UniformList, UniformListScrollHandle, Window};
@@ -347,6 +348,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
     let selected = root.explorer.selected.clone();
     let weak = cx.weak_entity();
     let family = root.ui_family();
+    let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     let (selected_bg, hover_bg, dim, dot) = (theme.chrome.tab_active.hsla(), theme.chrome.tab_inactive.hsla(), theme.chrome.text_dim.hsla(), theme.tree.modified.hsla());
     let theme = theme.clone();
     let (drag_bg, drag_fg) = (theme.chrome.banner, theme.chrome.text);
@@ -371,13 +373,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                 let p_menu = path.clone();
                 let is_dir = row.is_dir;
                 let key = hash_of(&path);
-                let is_hovered = crate::effect::hovered() == Some(key);
-                let stroke = match (is_selected, is_hovered) {
-                    (true, true) => Some(crate::effect::SELECTED_HOVERED),
-                    (true, false) => Some(crate::effect::SELECTED),
-                    (false, true) => Some(crate::effect::HOVERED),
-                    (false, false) => None,
-                };
+                let state = HighlightState::of(is_selected, hovered == Some(key)).filter(|_| highlights);
                 div()
                     .id(("row", key))
                     .w_full()
@@ -387,24 +383,26 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    // SPIKE: under the wash a selected or hovered row is a stroke of pigment: it
-                    // reports where it is and how strong it wants the stroke, and the effect
-                    // fades the stroke in and out.
-                    .when(is_selected && !crate::effect::active(), |d| d.bg(selected_bg))
-                    .when(!crate::effect::active(), |d| d.hover(move |s| s.bg(hover_bg)))
-                    .when(crate::effect::active(), |d| {
+                    // Under an effect that paints the highlights, a selected or hovered row
+                    // reports a mark and the effect fades its stroke; otherwise the app fills it.
+                    .when(is_selected && !highlights, |d| d.bg(selected_bg))
+                    .when(!highlights, |d| d.hover(move |s| s.bg(hover_bg)))
+                    .when(highlights, |d| {
                         let w_hover = weak.clone();
-                        d.on_hover(move |hovered: &bool, _window, cx| {
-                            crate::effect::set_hover(key, *hovered);
-                            let _ = w_hover.update(cx, |_root, cx| cx.notify());
+                        d.on_hover(move |over: &bool, _window, cx| {
+                            let _ = w_hover.update(cx, |root, cx| {
+                                root.effect_hover = blocks::hover_after(root.effect_hover, key, *over);
+                                cx.notify();
+                            });
                         })
                     })
-                    .when_some(stroke.filter(|_| crate::effect::active()), |d, want| {
+                    .when_some(state, |d, state| {
+                        let w_mark = weak.clone();
                         d.relative().child(
                             gpui::canvas(
-                                move |b, _window, _cx| {
-                                    let rect = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
-                                    crate::effect::mark(key, rect, want)
+                                move |b, _window, cx| {
+                                    let rect = Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+                                    let _ = w_mark.update(cx, |root, _| root.effect_marks.push(Mark { key, rect, kind: Kind::RowHighlight, state }));
                                 },
                                 |_, _, _, _| {},
                             )

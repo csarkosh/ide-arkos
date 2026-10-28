@@ -3,6 +3,7 @@
 //! state), and the URL prompt over the focused pane.
 
 use crate::drag;
+use crate::effects::blocks;
 use crate::find;
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::link_menu::{press_kind, LinkMenu, PressKind};
@@ -578,6 +579,7 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     let theme = root.theme.clone();
     let c = &theme.chrome;
     let (fg, dim) = (c.text, c.text_dim);
+    let (highlights, hovered) = (root.effect_highlights(), root.effect_hover);
     // One phase for the whole bar, so every working tab breathes together.
     let alpha = root.breath.alpha(root.frame_now, crate::motion::reduce_motion());
     let mut muted = dim.hsla();
@@ -696,13 +698,15 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                     cx.notify();
                 }
             }))
-            // SPIKE: under the wash a hovered tab is a stroke of pigment, faded in and out by
-            // the effect like an Explorer row.
-            .when_some(tab_id_for_width.filter(|_| crate::effect::active()), |el, id| {
+            // Under an effect that paints the highlights, a hovered tab is a stroke the effect
+            // fades in and out like an Explorer row's.
+            .when_some(tab_id_for_width.filter(|_| highlights), |el, id| {
                 let w_hover = cx.weak_entity();
-                el.on_hover(move |hovered: &bool, _window, cx| {
-                    crate::effect::set_hover(crate::effect::tab_key(id), *hovered);
-                    let _ = w_hover.update(cx, |_root, cx| cx.notify());
+                el.on_hover(move |over: &bool, _window, cx| {
+                    let _ = w_hover.update(cx, |root, cx| {
+                        root.effect_hover = blocks::hover_after(root.effect_hover, blocks::tab_key(id), *over);
+                        cx.notify();
+                    });
                 })
             })
             // The tab's painted width, for the gap a reorder opens where it would land.
@@ -710,10 +714,12 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                 {
                     let weak = cx.weak_entity();
                     move |bounds, _window, cx| {
-                        // SPIKE: the hovered tab reports where its stroke goes.
-                        if let Some(id) = tab_id_for_width.filter(|id| crate::effect::active() && crate::effect::hovered() == Some(crate::effect::tab_key(*id))) {
-                            let rect = (f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height));
-                            crate::effect::mark(crate::effect::tab_key(id), rect, crate::effect::HOVERED);
+                        // The hovered tab reports where its stroke goes.
+                        if let Some(key) = tab_id_for_width.map(blocks::tab_key).filter(|key| highlights && hovered == Some(*key)) {
+                            let rect = Rect { x: f32::from(bounds.origin.x), y: f32::from(bounds.origin.y), w: f32::from(bounds.size.width), h: f32::from(bounds.size.height) };
+                            let _ = weak.update(cx, |root, _| {
+                                root.effect_marks.push(blocks::Mark { key, rect, kind: blocks::Kind::TabHighlight, state: blocks::HighlightState::Hovered });
+                            });
                         }
                         // Not while collapsed: the width on record is the tab's own.
                         if let Some(id) = tab_id_for_width.filter(|_| slot_width.is_none()) {
