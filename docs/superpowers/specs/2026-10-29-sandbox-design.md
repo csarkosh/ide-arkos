@@ -94,8 +94,10 @@ sandbox with no prefix (goal 3). `ARKOS_CONFIG_DIR` is read in `crates/telemetry
    <folder>` does).
 2. On the first run (no `config/config.toml` in the sandbox folder), copies the user's real
    config into it: `config.toml`, `themes/` and `effects/` from the real config folder (resolved
-   with the sandbox variables unset), creating empty folders when the user has none. The copy is
-   theirs to change; the real files are never written.
+   with the sandbox variables unset), creating empty folders when the user has none. A link to a
+   file is copied as the file; a link that leads nowhere and a link to a folder are skipped, each
+   with `sandbox: skipped <path>: broken link` or `: linked folder` on stderr. The copy is theirs
+   to change; the real files are never written.
 3. Starts the window: the current executable (`std::env::current_exe()`, so a dev build runs a
    dev sandbox and the installed app an installed one) with the folder as its argument, the four
    variables set and the removals above applied, in its own session (`setsid`, as `launch.rs`
@@ -130,14 +132,18 @@ either way. `--json`: `{ "config", "state", "daemon": bool, "windows": [{ "pid",
 
 Ends the sandbox: every window (found by `panes --all --json` on the sandbox socket, `SIGTERM` to
 each pid), then the daemon (the process whose command line is `arkosd --socket <the sandbox
-socket>`, found with `pgrep -f`; `SIGTERM`, then `SIGKILL` after three seconds), in that order,
-since a window restarts a daemon that goes away under it. Prints `sandbox: stopped {n} windows and
-the daemon` or `sandbox: nothing running`. The folders stay. Exit 0; 1 when a process would not
-end.
+socket>`, found by comparing that plain text against `ps -axww -o pid=,command=`, never a
+pattern; `SIGTERM`, then `SIGKILL` after three seconds), in that order, since a window restarts a
+daemon that goes away under it. Prints `sandbox: stopped {n} windows and the daemon` or `sandbox:
+nothing running`. The folders stay. Exit 0; 1 when a process would not end, or when the process
+list could not be read (`sandbox: could not check for the daemon: <why>`, after the windows are
+ended).
 
 ### `arkos sandbox reset`
 
-Refuses while the sandbox runs (`sandbox: still running; run arkos sandbox stop first`, exit 1).
+Refuses while the sandbox runs (`sandbox: still running; run arkos sandbox stop first`, exit 1),
+and when the process list could not be read (`sandbox: could not check for the daemon; nothing
+removed`, exit 1).
 Otherwise removes `~/Library/Caches/arkos-sandbox` whole and prints `sandbox: reset; the next start
 copies your config again`. Nothing else is asked: the folder is the sandbox's own.
 

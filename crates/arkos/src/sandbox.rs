@@ -86,33 +86,51 @@ pub fn apply(cmd: &mut Command, env: &SandboxEnv) {
     }
 }
 
-/// Copies the folder `from` into `to`, recursively.
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Copies the folder `from` into `to`, recursively. A link to a file is copied as that file's
+/// contents. A link that leads nowhere and a link to a folder are skipped with a line on `err`,
+/// so a stale link never stops the first start and a link to a parent folder never loops.
+fn copy_tree(from: &Path, to: &Path, err: &mut dyn Write) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let target = to.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy_tree(&entry.path(), &target)?;
+        let path = entry?.path();
+        let target = to.join(path.file_name().unwrap_or_default());
+        let kind = std::fs::symlink_metadata(&path)?.file_type();
+        if kind.is_dir() {
+            copy_tree(&path, &target, err)?;
+        } else if kind.is_file() {
+            std::fs::copy(&path, target)?;
+        } else if kind.is_symlink() {
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => {
+                    std::fs::copy(&path, target)?;
+                }
+                Ok(meta) if meta.is_dir() => skipped(err, &path, "linked folder"),
+                Ok(_) => skipped(err, &path, "not a file"),
+                Err(_) => skipped(err, &path, "broken link"),
+            }
         } else {
-            std::fs::copy(entry.path(), target)?;
+            skipped(err, &path, "not a file");
         }
     }
     Ok(())
 }
 
+fn skipped(err: &mut dyn Write, path: &Path, why: &str) {
+    let _ = writeln!(err, "sandbox: skipped {}: {why}", path.display());
+}
+
 /// Makes the sandbox's folders and, when its config folder holds no `config.toml` yet, copies the
 /// user's `config.toml`, `themes/` and `effects/` from `real_config` into it. The real files are
-/// only read. `config.toml` goes last, so a copy cut short is tried again on the next start.
-/// True when there was no `config.toml` to keep.
-pub fn first_start(dirs: &Dirs, real_config: &Path) -> std::io::Result<bool> {
+/// only read. `config.toml` goes last, so a copy cut short is tried again on the next start. Each
+/// link `copy_tree` skips gets a line on `err`. True when there was no `config.toml` to keep.
+pub fn first_start(dirs: &Dirs, real_config: &Path, err: &mut dyn Write) -> std::io::Result<bool> {
     let file = dirs.config.join("config.toml");
     let fresh = !file.exists();
     if fresh {
         for sub in ["themes", "effects"] {
             let from = real_config.join(sub);
             if from.is_dir() {
-                copy_tree(&from, &dirs.config.join(sub))?;
+                copy_tree(&from, &dirs.config.join(sub), err)?;
             }
         }
     }
@@ -135,8 +153,9 @@ pub trait Host {
     /// The sandbox's windows and their projects, from `panes --all --json`; an error when the
     /// daemon does not answer.
     fn windows(&mut self, exe: &Path, env: &SandboxEnv) -> Result<Vec<(u32, PathBuf)>, String>;
-    /// The pids of the daemon whose command line is `arkosd --socket <socket>`.
-    fn daemon_pids(&mut self, socket: &Path) -> Vec<u32>;
+    /// The pids of the daemon whose command line is `arkosd --socket <socket>`; an error when the
+    /// processes could not be listed, which is not the same as none running.
+    fn daemon_pids(&mut self, socket: &Path) -> Result<Vec<u32>, String>;
     /// SIGTERM, up to three seconds, then SIGKILL; true when the process is gone.
     fn terminate(&mut self, pid: u32) -> bool;
     /// This process's environment.
@@ -204,7 +223,7 @@ fn open(args: &[String], dirs: &Dirs, env: &SandboxEnv, ctx: &Ctx, host: &mut dy
         return usage(err);
     }
     let folder = std::fs::canonicalize(&folder).unwrap_or(folder);
-    if let Err(e) = first_start(dirs, ctx.real_config) {
+    if let Err(e) = first_start(dirs, ctx.real_config, err) {
         return fail(err, &format!("could not make {}: {e}", dirs.root.display()));
     }
     let pid = match host.spawn_window(ctx.exe, &folder, env, &dirs.state.join("window.log")) {
@@ -229,7 +248,7 @@ fn socket(dirs: &Dirs) -> PathBuf {
 /// running counts as the daemon running too.
 fn status(dirs: &Dirs, env: &SandboxEnv, ctx: &Ctx, host: &mut dyn Host, json: bool, out: &mut dyn Write) -> i32 {
     let windows = host.windows(ctx.exe, env);
-    let daemon = windows.is_ok() || !host.daemon_pids(&socket(dirs)).is_empty();
+    let daemon = windows.is_ok() || host.daemon_pids(&socket(dirs)).is_ok_and(|pids| !pids.is_empty());
     let windows = windows.unwrap_or_default();
     if json {
         let list: Vec<Json> = windows.iter().map(|(pid, project)| json!({ "pid": pid, "project": project })).collect();
@@ -250,7 +269,8 @@ fn status(dirs: &Dirs, env: &SandboxEnv, ctx: &Ctx, host: &mut dyn Host, json: b
 }
 
 /// `arkos sandbox stop`: the windows first, since a window restarts a daemon that goes away
-/// under it, then the daemon. The folders stay.
+/// under it, then the daemon. The folders stay. When the daemon cannot be looked for, the windows
+/// are still ended and the command fails, since the daemon may still run.
 fn stop(dirs: &Dirs, env: &SandboxEnv, ctx: &Ctx, host: &mut dyn Host, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let windows = host.windows(ctx.exe, env).unwrap_or_default();
     let mut stuck = Vec::new();
@@ -259,16 +279,20 @@ fn stop(dirs: &Dirs, env: &SandboxEnv, ctx: &Ctx, host: &mut dyn Host, out: &mut
             stuck.push(*pid);
         }
     }
-    let daemons = host.daemon_pids(&socket(dirs));
+    let lookup = host.daemon_pids(&socket(dirs));
+    let daemons = lookup.clone().unwrap_or_default();
     for pid in &daemons {
         if !host.terminate(*pid) {
             stuck.push(*pid);
         }
     }
-    if !stuck.is_empty() {
-        for pid in stuck {
-            fail(err, &format!("process {pid} would not end"));
-        }
+    for pid in &stuck {
+        fail(err, &format!("process {pid} would not end"));
+    }
+    if let Err(e) = &lookup {
+        fail(err, &format!("could not check for the daemon: {e}"));
+    }
+    if !stuck.is_empty() || lookup.is_err() {
         return 1;
     }
     let n = windows.len();
@@ -289,10 +313,14 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-/// `arkos sandbox reset`: removes the sandbox's folder whole, unless a window or the daemon runs.
+/// `arkos sandbox reset`: removes the sandbox's folder whole, unless a window or the daemon runs
+/// or the daemon cannot be looked for.
 fn reset(dirs: &Dirs, env: &SandboxEnv, ctx: &Ctx, host: &mut dyn Host, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let windows = host.windows(ctx.exe, env).unwrap_or_default();
-    if !windows.is_empty() || !host.daemon_pids(&socket(dirs)).is_empty() {
+    let Ok(daemons) = host.daemon_pids(&socket(dirs)) else {
+        return fail(err, "could not check for the daemon; nothing removed");
+    };
+    if !windows.is_empty() || !daemons.is_empty() {
         return fail(err, "still running; run arkos sandbox stop first");
     }
     match std::fs::remove_dir_all(&dirs.root) {
@@ -318,6 +346,26 @@ fn parse_windows(stdout: &[u8]) -> Result<Vec<(u32, PathBuf)>, String> {
             .collect()),
         other => Err(other["error"].as_str().unwrap_or("panes --all answered something else").to_string()),
     }
+}
+
+/// The pids in `ps -axww -o pid=,command=` output whose command line runs the daemon on `socket`:
+/// an executable named `arkosd`, then `--socket` and the socket path exactly, then the end of the
+/// line or another argument. Plain text is compared, so no character of the path is special.
+fn daemon_pids_in(ps: &str, socket: &Path) -> Vec<u32> {
+    let needle = format!(" --socket {}", socket.display());
+    ps.lines()
+        .filter_map(|line| {
+            let (pid, command) = line.trim_start().split_once(' ')?;
+            let pid = pid.parse().ok()?;
+            let command = command.trim_start();
+            let runs = command.match_indices(&needle).any(|(at, _)| {
+                let exe = &command[..at];
+                let after = &command[at + needle.len()..];
+                (exe == "arkosd" || exe.ends_with("/arkosd")) && (after.is_empty() || after.starts_with(' '))
+            });
+            runs.then_some(pid)
+        })
+        .collect()
 }
 
 /// The real host: child processes and signals.
@@ -354,12 +402,19 @@ impl Host for Processes {
         parse_windows(&output.stdout)
     }
 
-    fn daemon_pids(&mut self, socket: &Path) -> Vec<u32> {
-        let pattern = format!("arkosd --socket {}", socket.display());
-        let Ok(output) = Command::new("pgrep").arg("-f").arg(pattern).stdin(Stdio::null()).stderr(Stdio::null()).output() else {
-            return Vec::new();
-        };
-        String::from_utf8_lossy(&output.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect()
+    fn daemon_pids(&mut self, socket: &Path) -> Result<Vec<u32>, String> {
+        // Every process and its whole command line, unclipped by `ww`, matched in `daemon_pids_in`
+        // rather than by a pattern, so a home folder of any name is found.
+        let output = Command::new("/bin/ps")
+            .args(["-axww", "-o", "pid=,command="])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|e| format!("ps: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("ps: {}", output.status));
+        }
+        Ok(daemon_pids_in(&String::from_utf8_lossy(&output.stdout), socket))
     }
 
     fn terminate(&mut self, pid: u32) -> bool {
@@ -408,7 +463,7 @@ mod tests {
     /// Records every call and answers from its fields.
     struct FakeHost {
         windows: Result<Vec<(u32, PathBuf)>, String>,
-        daemons: Vec<u32>,
+        daemons: Result<Vec<u32>, String>,
         vars: Vec<(String, String)>,
         run_code: i32,
         /// The pids `terminate` cannot end.
@@ -423,7 +478,7 @@ mod tests {
         fn new() -> Self {
             FakeHost {
                 windows: Err("no window running".into()),
-                daemons: Vec::new(),
+                daemons: Ok(Vec::new()),
                 vars: vec![("ARKOS_SESSION_ID".into(), "7".into()), ("CLAUDECODE".into(), "1".into()), ("HOME".into(), "/h".into())],
                 run_code: 0,
                 stuck: Vec::new(),
@@ -450,7 +505,7 @@ mod tests {
             self.windows.clone()
         }
 
-        fn daemon_pids(&mut self, socket: &Path) -> Vec<u32> {
+        fn daemon_pids(&mut self, socket: &Path) -> Result<Vec<u32>, String> {
             self.sockets.push(socket.to_path_buf());
             self.daemons.clone()
         }
@@ -523,14 +578,14 @@ mod tests {
         std::fs::write(real.join("config.toml"), "[theme]\ndark = \"navy\"\n").unwrap();
         std::fs::write(real.join("themes/mine.toml"), "name = \"mine\"\n").unwrap();
         let d = dirs(t.path(), &Channel::Release);
-        assert!(first_start(&d, &real).unwrap());
+        assert!(first_start(&d, &real, &mut Vec::new()).unwrap());
         assert_eq!(std::fs::read_to_string(d.config.join("config.toml")).unwrap(), "[theme]\ndark = \"navy\"\n");
         assert!(d.config.join("themes/mine.toml").is_file() && d.config.join("effects").is_dir() && d.state.is_dir());
         std::fs::write(d.config.join("config.toml"), "changed").unwrap();
-        assert!(!first_start(&d, &real).unwrap(), "a config already there is kept");
+        assert!(!first_start(&d, &real, &mut Vec::new()).unwrap(), "a config already there is kept");
         assert_eq!(std::fs::read_to_string(d.config.join("config.toml")).unwrap(), "changed");
         let none = dirs(&t.path().join("other"), &Channel::Release);
-        assert!(first_start(&none, &t.path().join("missing")).unwrap());
+        assert!(first_start(&none, &t.path().join("missing"), &mut Vec::new()).unwrap());
         assert!(none.config.join("themes").is_dir() && none.config.join("effects").is_dir() && !none.config.join("config.toml").exists());
     }
 
@@ -604,7 +659,7 @@ mod tests {
         assert_eq!(v, json!({ "config": d.config, "state": d.state, "daemon": false, "windows": [] }));
 
         // A daemon with no window answers no `panes --all`; its process still says it runs.
-        host.daemons = vec![9];
+        host.daemons = Ok(vec![9]);
         let (_, out, _) = call(&["status"], &home, &home, &mut host);
         assert!(out.contains("\ndaemon: running\nwindows: none\n"), "{out}");
         assert_eq!(host.sockets.last(), Some(&d.state.join("arkosd.sock")));
@@ -618,7 +673,7 @@ mod tests {
 
         let mut host = FakeHost::new();
         host.windows = Ok(vec![(41, PathBuf::from("/a")), (42, PathBuf::from("/b"))]);
-        host.daemons = vec![9];
+        host.daemons = Ok(vec![9]);
         assert_eq!(call(&["stop"], &home, &home, &mut host), (0, "sandbox: stopped 2 windows and the daemon\n".to_string(), String::new()));
         assert_eq!(host.terminated, vec![41, 42, 9]);
         assert_eq!(host.sockets, vec![d.state.join("arkosd.sock")]);
@@ -629,7 +684,7 @@ mod tests {
 
         let mut host = FakeHost::new();
         host.windows = Ok(vec![(41, PathBuf::from("/a")), (42, PathBuf::from("/b"))]);
-        host.daemons = vec![9];
+        host.daemons = Ok(vec![9]);
         host.stuck = vec![42];
         assert_eq!(call(&["stop"], &home, &home, &mut host), (1, String::new(), "sandbox: process 42 would not end\n".to_string()));
         assert_eq!(host.terminated, vec![41, 42, 9], "the rest are still ended");
@@ -644,7 +699,7 @@ mod tests {
         std::fs::write(d.config.join("config.toml"), "x").unwrap();
 
         let mut host = FakeHost::new();
-        host.daemons = vec![9];
+        host.daemons = Ok(vec![9]);
         assert_eq!(call(&["reset"], &home, &home, &mut host), (1, String::new(), "sandbox: still running; run arkos sandbox stop first\n".to_string()));
         assert!(d.config.join("config.toml").is_file(), "the folder is kept");
 
@@ -656,6 +711,82 @@ mod tests {
         assert_eq!(call(&["reset"], &home, &home, &mut host), (0, "sandbox: reset; the next start copies your config again\n".to_string(), String::new()));
         assert!(!d.root.exists());
         assert_eq!(call(&["reset"], &home, &home, &mut host).0, 0, "a sandbox never started resets too");
+    }
+
+    #[test]
+    fn the_first_start_copies_a_file_skips_a_broken_link_and_a_linked_folder_and_carries_on() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        let themes = real.join("themes");
+        std::fs::create_dir_all(themes.join("inner")).unwrap();
+        std::fs::create_dir_all(t.path().join("elsewhere")).unwrap();
+        std::fs::write(themes.join("mine.toml"), "name = \"mine\"\n").unwrap();
+        std::fs::write(themes.join("inner/deep.toml"), "deep").unwrap();
+        std::fs::write(t.path().join("target.toml"), "linked").unwrap();
+        std::fs::write(real.join("config.toml"), "x").unwrap();
+        std::os::unix::fs::symlink(t.path().join("gone.toml"), themes.join("broken.toml")).unwrap();
+        std::os::unix::fs::symlink(t.path().join("target.toml"), themes.join("link.toml")).unwrap();
+        std::os::unix::fs::symlink(&real, themes.join("up")).unwrap();
+        std::os::unix::fs::symlink(t.path().join("elsewhere"), themes.join("folder")).unwrap();
+        let d = dirs(t.path(), &Channel::Release);
+        let mut err = Vec::new();
+        assert!(first_start(&d, &real, &mut err).unwrap());
+        let copied = d.config.join("themes");
+        assert_eq!(std::fs::read_to_string(copied.join("mine.toml")).unwrap(), "name = \"mine\"\n");
+        assert_eq!(std::fs::read_to_string(copied.join("inner/deep.toml")).unwrap(), "deep", "a real folder is descended into");
+        let link = copied.join("link.toml");
+        assert!(!link.symlink_metadata().unwrap().file_type().is_symlink(), "a link to a file is copied as the file");
+        assert_eq!(std::fs::read_to_string(link).unwrap(), "linked");
+        for name in ["broken.toml", "up", "folder"] {
+            assert!(copied.join(name).symlink_metadata().is_err(), "{name} is skipped");
+        }
+        assert_eq!(std::fs::read_to_string(d.config.join("config.toml")).unwrap(), "x", "the first start went on to the end");
+        let err = String::from_utf8(err).unwrap();
+        let mut lines: Vec<&str> = err.lines().collect();
+        lines.sort();
+        let skipped = |name: &str, why: &str| format!("sandbox: skipped {}: {why}", themes.join(name).display());
+        assert_eq!(lines, vec![skipped("broken.toml", "broken link"), skipped("folder", "linked folder"), skipped("up", "linked folder")]);
+    }
+
+    #[test]
+    fn a_failed_daemon_lookup_makes_reset_refuse_and_remove_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().to_path_buf();
+        let d = dirs(&home, &Channel::Release);
+        std::fs::create_dir_all(&d.config).unwrap();
+        std::fs::write(d.config.join("config.toml"), "x").unwrap();
+        let mut host = FakeHost::new();
+        host.daemons = Err("ps: not found".into());
+        assert_eq!(call(&["reset"], &home, &home, &mut host), (1, String::new(), "sandbox: could not check for the daemon; nothing removed\n".to_string()));
+        assert!(d.config.join("config.toml").is_file(), "the folder is kept");
+    }
+
+    #[test]
+    fn a_failed_daemon_lookup_in_stop_still_ends_the_windows_and_exits_1() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().to_path_buf();
+        let mut host = FakeHost::new();
+        host.windows = Ok(vec![(41, PathBuf::from("/a"))]);
+        host.daemons = Err("ps: not found".into());
+        assert_eq!(call(&["stop"], &home, &home, &mut host), (1, String::new(), "sandbox: could not check for the daemon: ps: not found\n".to_string()));
+        assert_eq!(host.terminated, vec![41]);
+    }
+
+    #[test]
+    fn the_daemon_is_found_by_its_exact_command_line_whatever_characters_the_home_holds() {
+        let socket = Path::new("/Users/a+b (c)[d]^$|?*\\{e}/Library/Caches/arkos-sandbox/state/arkosd.sock");
+        let s = socket.display();
+        let ps = format!(
+            "  1 /sbin/launchd\n\
+             101 /Applications/Arkos IDE.app/Contents/MacOS/arkosd --socket {s}\n\
+             102 arkosd --socket {s} --resume /tmp/h.json\n\
+             103 /x/arkosd --socket {s}.old\n\
+             104 /x/arkosd --socket /Users/other/arkosd.sock\n\
+             105 vim arkosd --socket\n\
+             no pid here\n"
+        );
+        assert_eq!(daemon_pids_in(&ps, socket), vec![101, 102]);
+        assert!(daemon_pids_in("", socket).is_empty());
     }
 
     #[test]

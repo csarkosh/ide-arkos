@@ -458,7 +458,8 @@ pick any theme by hand in the Settings window.
 `arkos sandbox` starts a second Arkos beside the user's: its own windows, its own daemon and
 sessions, and its own config folder. The first start copies the user's `config.toml`, `themes/`
 and `effects/` into it, so it looks like their Arkos until you change it; from then on the copy is
-the sandbox's own. A sandbox never writes the user's config, their Claude Code colours, hooks or
+the sandbox's own. A link to a file is copied as the file; a broken link or a link to a folder is
+skipped with `sandbox: skipped <path>: ...` on stderr. A sandbox never writes the user's config, their Claude Code colours, hooks or
 skill, a login item or an update, and it sends nothing: telemetry is off. Where an action would
 write Claude Code's files, the login item or an update, the sandbox's Settings, doctor and
 commands say `not in a sandbox` and do nothing. `arkos notify` still runs, so its tabs show their sessions' states. Its title bar shows
@@ -486,10 +487,13 @@ arkos sandbox status | stop | reset
   `{ "config", "state", "daemon": true | false, "windows": [{ "pid", "project" }] }`.
 - `arkos sandbox stop`: ends the sandbox's windows, then its daemon and with it the sandbox's
   sessions: `sandbox: stopped {n} windows and the daemon`, or `sandbox: nothing running`. The
-  folders stay. Exit 1 when a process would not end.
+  folders stay. Exit 1 when a process would not end, or when the daemon could not be looked for
+  (`sandbox: could not check for the daemon: ...`; the windows are still ended).
 - `arkos sandbox reset`: deletes the sandbox's folder, so the next start copies the user's config
   again: `sandbox: reset; the next start copies your config again`. While the sandbox runs it
-  refuses with `sandbox: still running; run arkos sandbox stop first` (exit 1).
+  refuses with `sandbox: still running; run arkos sandbox stop first` (exit 1), and when the
+  daemon could not be looked for with `sandbox: could not check for the daemon; nothing removed`
+  (exit 1).
 
 A shell inside the sandbox window is already aimed at it, so the ordinary commands work there
 with no prefix: it inherits `ARKOS_CONFIG_DIR`, `ARKOS_APP_SUPPORT` and `ARKOS_SANDBOX=1`. Only

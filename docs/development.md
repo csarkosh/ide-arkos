@@ -16,7 +16,8 @@ the Homebrew cask and kept current by the daemon (see [Updating](guide.md#updati
 assembles it.
 
 A dev window beside the Arkos you use is `target/debug/arkos sandbox <folder>` (after `cargo build
--p arkos`): a sandbox of the source build, with its own config, daemon and sessions in
+-p arkos -p arkosd`, since the window starts the `arkosd` beside it and refuses a daemon of another
+build): a sandbox of the source build, with its own config, daemon and sessions in
 `~/Library/Caches/arkos-sandbox-dev`, so it never meets the installed app's sandbox
 (`arkos-sandbox`) or your real config. `target/debug/arkos sandbox theme use <name>` and
 `target/debug/arkos sandbox effect use <name>` change that window alone, a shell inside it is
