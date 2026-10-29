@@ -57,6 +57,7 @@ mod pulse;
 mod recent;
 mod reflow;
 mod remote_image;
+mod sandbox;
 mod screen;
 mod scroll;
 mod settings;
@@ -4381,6 +4382,7 @@ fn main() {
         Some("settings") => std::process::exit(agent_cli::settings_cli(&args[2..])),
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
         Some("telemetry") => std::process::exit(telemetry_cli::telemetry_cli(&args[2..])),
+        Some("sandbox") => std::process::exit(sandbox::sandbox_cli(&args[2..])),
         Some("--help") | Some("-h") | Some("help") => {
             print!("{}", agent_cli::USAGE);
             return;

@@ -22,6 +22,7 @@ usage: arkos guide                  how an agent shows the user a file and chang
        arkos video <command> ...    status, play, pause, seek, step, loop, reload, close, mute
        arkos panes                  this window's panes and tabs, numbered as Cmd+1..9
        arkos [<folder>]             open a window on a folder (default: the current one)
+       arkos sandbox [<folder> | <command> ...]   a second Arkos with its own config, to try a theme or effect in
        arkos theme <command> ...    list, validate, template, contrast, add, use, preview, current
        arkos effect <command> ...   list, contract, template, check, bench, use, current
        arkos settings get|set ...   read the config, or set a key on the allow-list
