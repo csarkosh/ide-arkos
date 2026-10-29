@@ -15,14 +15,7 @@ pub const METEOR_OFFSET: f32 = 6.0;
 /// A salt that gives the shooting stars hashes of their own.
 pub const METEOR_SALT: u32 = 0x9E37_79B9;
 
-/// A hash of `n` in 0 to 1, in integer arithmetic (PCG's output step) so the shader and this
-/// agree to the bit: the top 24 bits, times a power of two, are exact in a float.
-pub fn hash01(n: u32) -> f32 {
-    let mut h = n.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    h = ((h >> ((h >> 28) + 4)) ^ h).wrapping_mul(277_803_737);
-    h ^= h >> 22;
-    (h >> 8) as f32 * (1.0 / 16_777_216.0)
-}
+pub use super::hash::hash01;
 
 /// Whether a shooting star is crossing at `t` seconds of the effect's clock.
 pub fn meteor_visible(t: f32) -> bool {

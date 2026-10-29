@@ -1,0 +1,21 @@
+name = "matrix"
+description = "Digital rain: faint green runes falling under a black ground, glowing edges and glitching text."
+wash = "wash.metal"
+glyphs = "glyphs.metal"       # optional; absent, gpui draws text as always
+frame_rate = 30               # 1 to 60; the wash's frames per second while anything moves
+scale = 0.5                   # 0.1 to 1.0; the wash's pixels per window pixel, each side
+ui_text_bump = 0              # 0 to 4 points added to the project window's UI text
+ink_borders = true            # the app hides its own 1 px borders; the wash draws the edges
+highlights = "effect"         # "effect": the wash paints the selected and hovered rows and the
+                              # hovered tab from the highlight blocks; "app" (the default): the
+                              # app keeps its own fills and reports no highlight blocks
+menus = "glow"                # "ink", "glow" or "app" (the default): how the menus and popovers
+                              # look while the effect is on
+glyph_motion = true           # the glyph shader reads the clock, so the text is redrawn on a timer
+glyph_rate = 10               # 1 to 20; the text's redraws a second while glyph_motion is on
+terminal_decode = true        # the terminal decodes changed cells and brightens fresh ones;
+                              # needs glyph_motion, whose timer it runs on
+paper_alpha = 0.8             # 0.5 to 1.0; a terminal's or document's paper over the wash
+chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
+active_tab_alpha = 0.5        # 0.0 to 1.0; the active tab over the wash
+text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on

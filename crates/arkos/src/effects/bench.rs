@@ -195,6 +195,11 @@ mod tests {
         sum.map(|v| v / n)
     }
 
+    /// The frame's pixels inside the rectangle, row by row.
+    fn pixels(frame: &[Rgb], x0: u32, y0: u32, x1: u32, y1: u32) -> Vec<Rgb> {
+        (y0..y1).flat_map(|y| (x0..x1).map(move |x| frame[(y * W + x) as usize])).collect()
+    }
+
     fn apart(a: [f32; 3], b: [f32; 3]) -> f32 {
         (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0, f32::max)
     }
@@ -271,6 +276,26 @@ mod tests {
         let frame = render_frame(watercolor(), &lonely, (W, H), 0.0, &small_window());
         let (left, right) = (mean(&frame, 4, 34, 116, 50), mean(&frame, 124, 34, 236, 50));
         assert!(apart(left, right) > 0.01, "two panes washed alike: {left:?} vs {right:?}");
+    }
+
+    #[test]
+    fn the_matrix_rain_is_faint_under_the_text_and_within_budget() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let theme = crate::theme::builtin("matrix").unwrap();
+        let frame = render_frame(&matrix.wash, &theme, (W, H), 7.0, &small_window());
+        // Inside a pane body, away from the edges' glow: the rain never brightens the ground past
+        // RAIN_ALPHA of the text green, with a margin for the head, and it does show. The left
+        // pane's body below its highlighted row and that row's soft spill (6 points out).
+        let interior = pixels(&frame, 4, 108, 116, 156);
+        let text = theme.terminal.foreground.g as f32 / 255.0;
+        let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
+        assert!(max <= text * 0.3, "the rain is too bright: green channel {max:.2}");
+        assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
+        let ms = bench(&matrix, &theme, (1200.0, 800.0), 1.0).unwrap();
+        assert_eq!(verdict(ms), "within budget", "{ms} ms");
     }
 
     #[test]

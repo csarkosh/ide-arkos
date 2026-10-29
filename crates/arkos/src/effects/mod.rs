@@ -5,9 +5,13 @@ pub mod active;
 pub mod bench;
 pub mod blocks;
 pub mod cli;
+pub mod hash;
 pub mod inputs;
 pub mod layer;
 pub mod manifest;
+/// The matrix wash's rain mirrored in Rust, for its tests alone for now.
+#[cfg(test)]
+pub mod matrix;
 /// The space wash's event schedule mirrored in Rust, for its tests alone: the app never runs it.
 #[cfg(test)]
 pub mod space;
@@ -44,6 +48,12 @@ pub const BUILTIN: &[BuiltIn] = &[
         manifest: include_str!("../../effects/space/effect.toml"),
         wash: include_str!("../../effects/space/wash.metal"),
         glyphs: Some(include_str!("../../effects/space/glyphs.metal")),
+    },
+    BuiltIn {
+        name: "matrix",
+        manifest: include_str!("../../effects/matrix/effect.toml"),
+        wash: include_str!("../../effects/matrix/wash.metal"),
+        glyphs: Some(include_str!("../../effects/matrix/glyphs.metal")),
     },
 ];
 

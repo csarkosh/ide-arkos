@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nspace (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nspace (built in)\nmatrix (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
@@ -487,9 +487,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in" }));
         assert_eq!(v[1], serde_json::json!({ "name": "space", "source": "built-in" }));
-        assert_eq!((v[2]["name"].as_str(), v[2]["source"].as_str()), (Some("broken"), Some("invalid")));
-        assert!(v[2]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
-        assert_eq!(v[3], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
+        assert_eq!(v[2], serde_json::json!({ "name": "matrix", "source": "built-in" }));
+        assert_eq!((v[3]["name"].as_str(), v[3]["source"].as_str()), (Some("broken"), Some("invalid")));
+        assert!(v[3]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
+        assert_eq!(v[4], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
         assert_eq!(run(&["list", "extra"], &env).0, 2);
     }
 
@@ -596,14 +597,16 @@ mod tests {
         if !metal() {
             return;
         }
-        let space = manifest::load("space", Path::new("/nonexistent/effects")).unwrap();
-        assert_eq!(compile(&space), Ok(()));
-        // A copy made with `template` passes `check` as the built-in does.
         let s = Setup::new();
         let env = env!(s, s.path("none.sock"));
-        assert_eq!(run(&["template", "space", "--as", "stars"], &env).0, 0);
-        let stars = s.effects().join("stars").display().to_string();
-        assert_eq!(run(&["check", &stars], &env), (0, "ok: stars\nhighlights: effect\n".to_string(), String::new()));
+        for (name, copy) in [("space", "stars"), ("matrix", "rain")] {
+            let effect = manifest::load(name, Path::new("/nonexistent/effects")).unwrap();
+            assert_eq!(compile(&effect), Ok(()), "{name}");
+            // A copy made with `template` passes `check` as the built-in does.
+            assert_eq!(run(&["template", name, "--as", copy], &env).0, 0, "{name}");
+            let folder = s.effects().join(copy).display().to_string();
+            assert_eq!(run(&["check", &folder], &env), (0, format!("ok: {copy}\nhighlights: effect\n"), String::new()));
+        }
     }
 
     #[test]

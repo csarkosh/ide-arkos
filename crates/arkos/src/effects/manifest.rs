@@ -408,6 +408,19 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_matrix_parses_with_its_fixed_values() {
+        let b = BUILTIN.iter().find(|b| b.name == "matrix").expect("matrix is built in");
+        let m = parse(b.manifest).unwrap();
+        assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0));
+        assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
+        assert_eq!(m.highlights, Highlights::Effect);
+        assert_eq!(m.menus, MenuLook::Glow);
+        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.8, 0.0, 0.5, 0.0));
+        assert_eq!(m.glyph_rate(), 10);
+        assert_eq!(m.glyphs.as_deref(), Some("glyphs.metal"));
+    }
+
+    #[test]
     fn a_folder_in_the_effects_dir_is_listed_and_shadows_a_built_in() {
         let dir = tempfile::tempdir().unwrap();
         let mine = folder(dir.path(), "watercolor", "name = \"watercolor\"\nwash = \"wash.metal\"\n", &["wash.metal"]);
@@ -419,7 +432,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("matrix".to_string(), Source::BuiltIn)]
         );
     }
 
