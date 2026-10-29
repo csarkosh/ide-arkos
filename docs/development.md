@@ -289,7 +289,9 @@ Things only a person at the screen can check, in order of value:
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is
   no aurora
 - effects, space: the pane edges, the divider, a video's picture and a markdown table's outline
-  and header line are thin glowing lines in the focus ring's blue; the hovered and selected rows
+  and header line are glowing lines in the focus ring's blue with a soft halo a few points wide,
+  and soft bright spots glide slowly along them (about 45 points a second, a few hundred points
+  apart), calm enough not to pull the eye from the text; the hovered and selected rows
   and the hovered tab glow softly; the bars and the sidebar read clearly over the sky
 - effects, space: the project window's text is the holo display (a cyan tint, faint scanlines,
   a soft halo not clipped at the letters' boxes) and does not move; adjacent letters' strokes

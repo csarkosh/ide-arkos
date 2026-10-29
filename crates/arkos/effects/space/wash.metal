@@ -8,6 +8,14 @@
 // picture. The clock's zero falls between two shooting stars. (An aurora was removed on
 // 2026-10-28: Cyrus did not like it.)
 
+// The pane edges' glow and its shimmer: the halo's strength and reach in points, the shimmer's
+// strength, its spots' spacing (radians a point along x + y) and speed (radians a second).
+constant float EDGE_HALO = 0.75;
+constant float EDGE_HALO_REACH = 3.5;
+constant float EDGE_SHIMMER = 0.9;
+constant float EDGE_SHIMMER_SPACING = 0.02;
+constant float EDGE_SHIMMER_SPEED = 0.9;
+
 // The event schedule. It is mirrored in crates/arkos/src/effects/space.rs (meteor_visible),
 // which tests it: a change here is made there too.
 constant float METEOR_CYCLE = 30.0;
@@ -209,10 +217,15 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 ring = u.colors[ARKOS_FOCUS_RING].rgb;
     col = mix(col, bg * 0.8, dim * k);
     col = mix(col, ring, lift * k);
-    // The glow line: a bright core about a point wide, and a soft halo a few points out.
-    float core = 1.0 - smoothstep(0.35, 0.8, dline);
-    float halo = exp(-dline / 2.2) * 0.45;
+    // The glow line: a bright core a little over a point wide, and a soft halo several points
+    // out. The shimmer: soft bright spots gliding slowly along every border (the wave runs along
+    // x + y, so it travels along horizontal and vertical edges alike), brightening the core and
+    // the halo where they pass.
+    float glide = 0.5 + 0.5 * sin((p.x + p.y) * EDGE_SHIMMER_SPACING - t * EDGE_SHIMMER_SPEED);
+    float shimmer = pow(glide, 6.0) * EDGE_SHIMMER;
+    float core = 1.0 - smoothstep(0.5, 1.1, dline);
+    float halo = exp(-dline / EDGE_HALO_REACH) * EDGE_HALO * (1.0 + shimmer);
     col = mix(col, ring, saturate(halo * k));
-    col = mix(col, mix(ring, star_c, 0.35), core * 0.9 * k);
+    col = mix(col, mix(ring, star_c, 0.35 + 0.4 * shimmer), saturate(core * (0.9 + 0.1 * shimmer)) * k);
     return float4(col, 1.0);
 }
