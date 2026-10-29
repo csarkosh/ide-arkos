@@ -158,8 +158,8 @@ copies your config again`. Nothing else is asked: the folder is the sandbox's ow
   and "Agent guide for Claude Code" rows and the palette's install items say the same and do
   nothing. `arkos notify` (the hooks' events) still runs, so the sandbox's tabs show their
   sessions' states.
-- Telemetry: off through `ARKOS_TELEMETRY=off`; `arkos telemetry status` in the sandbox says so
-  with the reason `sandbox`.
+- Telemetry: off through `ARKOS_TELEMETRY=off`; `arkos telemetry status` in the sandbox says
+  `off` with the reason the variable already gives.
 - Recovery: sessions are the sandbox's own and are never recovered by the real instance; the
   sandbox daemon recovers its own on its next start as any daemon does.
 
