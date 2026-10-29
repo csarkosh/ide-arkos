@@ -165,3 +165,9 @@ hook (`v0.2.2-arkos.2`), `glyph_motion` and the timer stay for effects that want
 
 The aurora is removed: Cyrus did not like it. The sky keeps its stars, nebula, planets and
 shooting stars; ruling 6 now only asks that a frozen clock shows no shooting star mid-flight.
+
+## Amendment 3 (2026-10-29, Cyrus)
+
+The text glow is raised from 0.90 to 1.15 ("a little more glow"); the pane edges glow wider
+(halo 0.75, reach 3.5 points) with a bright shimmer gliding along them, and a shooting star
+comes every 8 to 16 seconds.
