@@ -217,7 +217,9 @@ view; the window's background transparent while an effect is on, opaque otherwis
 layer draws from its own timer at `frame_rate` while anything moves, sixty while a highlight
 fades, and not at all when nothing has changed under Reduce Motion, when the window is hidden,
 minimized or occluded (its `occlusionState` without `Visible`: wholly behind other windows or on
-another Space), or when it is covered (`Root::covered`, as the web views use). gpui redraws
+another Space). (Amended 2026-10-29: it also rested while `Root::covered`, a menu, the palette or
+a prompt open over the panes; Cyrus asked that the effects keep playing then, since the user is
+still at work in the window.) gpui redraws
 nothing for the wash. Not drawing means no work either: while the window cannot be seen the
 timer builds nothing and looks again every half second; under Reduce Motion it stops once
 nothing moves, and `Root::render` (which runs on every change the wash reads: the layout, the

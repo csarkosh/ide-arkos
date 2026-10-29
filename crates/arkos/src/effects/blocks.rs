@@ -223,18 +223,42 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
     }
     // The highlights last: past the cap, a transient stroke goes before a pane does.
     for (mark, value) in scene.strokes {
-        let r = mark.rect;
-        out.push(Block {
-            rect: Rect { x: r.x + 3.0, y: r.y + 2.0, w: (r.w - 6.0).max(0.0), h: (r.h - 4.0).max(0.0) },
-            kind: mark.kind,
-            edges: 0,
-            // Seeded by its key, not its place, so a row that scrolls keeps its grain.
-            seed: 4.0 + (mark.key % 997) as f32 * 0.37,
-            value: *value,
-            ordinal: mark.state as u32 as f32,
-        });
+        out.push(stroke_block(mark, *value));
     }
     out
+}
+
+/// A highlight's block: its stroke, inset from its row or tab, at its fade.
+fn stroke_block(mark: &Mark, value: f32) -> Block {
+    let r = mark.rect;
+    Block {
+        rect: Rect { x: r.x + 3.0, y: r.y + 2.0, w: (r.w - 6.0).max(0.0), h: (r.h - 4.0).max(0.0) },
+        kind: mark.kind,
+        edges: 0,
+        // Seeded by its key, not its place, so a row that scrolls keeps its grain.
+        seed: 4.0 + (mark.key % 997) as f32 * 0.37,
+        value,
+        ordinal: mark.state as u32 as f32,
+    }
+}
+
+/// The blocks a menu's backdrop is washed from: the menu itself (no edges, which the menu stage
+/// draws; unfaded, as the backdrop fades with the menu as a whole) and the highlight strokes whose
+/// middle lies inside it, as the wash would paint them.
+pub fn backdrop_blocks(menu: &MenuShape, strokes: &[(Mark, f32)]) -> Vec<Block> {
+    let m = menu.rect;
+    let inside = |r: Rect| {
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h
+    };
+    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0 };
+    std::iter::once(own).chain(strokes.iter().filter(|(mark, _)| inside(mark.rect)).map(|(mark, v)| stroke_block(mark, *v))).collect()
+}
+
+/// A menu row's key among the highlights: the menu's key and the row's place, apart from the
+/// Explorer rows' path hashes and the tabs' keys.
+pub fn menu_row_key(menu: u64, row: usize) -> u64 {
+    0x5c5c_0000_0000_0000 ^ (menu << 16) ^ row as u64
 }
 
 #[cfg(test)]
@@ -247,6 +271,35 @@ mod tests {
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
         Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, shapes: &[], strokes }
+    }
+
+    #[test]
+    fn a_menu_s_backdrop_is_its_own_block_and_the_hover_strokes_inside_it() {
+        let menu = MenuShape { key: 0x11, rect: rect(100.0, 80.0, 200.0, 100.0), opacity: 0.5 };
+        let inside = Mark { key: menu_row_key(0x11, 1), rect: rect(100.0, 104.0, 200.0, 24.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
+        let outside = Mark { key: 7, rect: rect(0.0, 300.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Selected };
+        let out = backdrop_blocks(&menu, &[(inside, 0.6), (outside, 1.0)]);
+        assert_eq!(kinds(&out), vec![Kind::Menu, Kind::RowHighlight], "only the strokes inside the menu");
+        // The menu block draws no edges here (the menu stage draws those) and is not faded: the
+        // backdrop as a whole fades with the menu.
+        assert_eq!((out[0].rect, out[0].edges, out[0].value), (menu.rect, 0, 1.0));
+        // A stroke is inset from its row as in the wash, keeps its fade and its state.
+        assert_eq!(out[1].rect, rect(103.0, 106.0, 194.0, 20.0));
+        assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
+        // The same stroke gives the same block in the wash and in the backdrop.
+        let panes = [];
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, divider_y: None, panes: &panes, shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        assert_eq!(in_wash.last(), out.last());
+    }
+
+    #[test]
+    fn menu_rows_have_keys_of_their_own() {
+        let keys: Vec<u64> = (0..4).flat_map(|row| [menu_row_key(0x11, row), menu_row_key(0x12, row)]).collect();
+        for (i, a) in keys.iter().enumerate() {
+            assert!(!keys[i + 1..].contains(a), "{a:x} repeats");
+            assert_ne!(*a, tab_key(*a), "apart from the tabs' keys");
+        }
+        assert_eq!(menu_row_key(0x11, 2), menu_row_key(0x11, 2));
     }
 
     #[test]

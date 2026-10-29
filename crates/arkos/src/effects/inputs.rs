@@ -8,8 +8,9 @@ use crate::theme::Theme;
 
 /// How many blocks the preamble's `ArkosInputs` holds; more are dropped.
 pub const MAX_BLOCKS: usize = 48;
-/// How many colours the preamble's `ArkosInputs` holds (`ARKOS_COLORS`).
-pub const COLORS: usize = 35;
+/// How many colours the preamble's `ArkosInputs` holds (`ARKOS_COLORS`): the theme's 35, then
+/// its four pigments (`ARKOS_PIGMENT`).
+pub const COLORS: usize = 39;
 
 /// One block as the preamble's `ArkosBlock`: the rectangle, then kind, edges, seed, value and
 /// ordinal as floats. Metal aligns its `float3 pad` to sixteen bytes, so three floats of padding
@@ -45,9 +46,58 @@ fn float4(c: Rgb) -> [f32; 4] {
     [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0]
 }
 
+/// A colour's hue in degrees, or `None` for a grey (too little colour to have one).
+pub fn hue(c: Rgb) -> Option<f32> {
+    let (r, g, b) = (c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let chroma = max - min;
+    if chroma < 0.08 {
+        return None;
+    }
+    let h = if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    };
+    Some(h * 60.0)
+}
+
+/// The theme's four pigments, the colours an effect tints its panes and highlights with: from its
+/// focus colour, its waiting colour, then its red, magenta, blue, cyan, yellow and green, the
+/// first four that sit within 90 degrees of hue of its focus colour (a theme's own family: Peach
+/// Light's burnt orange, ochre, brick and plum; Lavender Light's purples, rose and blue), the
+/// focus colour again for any left over.
+pub fn pigments(theme: &Theme) -> [Rgb; 4] {
+    let (c, t, s) = (&theme.chrome, &theme.terminal, &theme.semantic);
+    let focus = c.focus_ring;
+    let near = |x: Rgb| match (hue(focus), hue(x)) {
+        (Some(f), Some(h)) => {
+            let d = (f - h).abs();
+            d.min(360.0 - d) <= 90.0
+        }
+        (None, _) => true,
+        (Some(_), None) => false,
+    };
+    let mut out = [focus; 4];
+    let mut n = 1;
+    for x in [s.waiting, t.red, t.magenta, t.blue, t.cyan, t.yellow, t.green] {
+        if n == 4 {
+            break;
+        }
+        if near(x) && !out[..n].contains(&x) {
+            out[n] = x;
+            n += 1;
+        }
+    }
+    out
+}
+
 /// The theme's colours by the preamble's indices, opaque.
 pub fn colors(theme: &Theme) -> [[f32; 4]; COLORS] {
     let (c, t, s) = (&theme.chrome, &theme.terminal, &theme.semantic);
+    let p = pigments(theme);
     [
         c.window_bg,
         c.title_bar,
@@ -84,6 +134,10 @@ pub fn colors(theme: &Theme) -> [[f32; 4]; COLORS] {
         t.bright_magenta,
         t.bright_cyan,
         t.bright_white,
+        p[0],
+        p[1],
+        p[2],
+        p[3],
     ]
     .map(float4)
 }
@@ -129,13 +183,44 @@ mod tests {
         assert_eq!(size_of::<ShaderBlock>(), 64);
         assert_eq!(offset_of!(ShaderBlock, ordinal), 32);
         assert_eq!(offset_of!(ShaderBlock, pad), 48);
-        // ArkosInputs: six floats and a float2 (32), float4 colors[35], ArkosBlock blocks[48].
+        // ArkosInputs: six floats and a float2 (32), float4 colors[39], ArkosBlock blocks[48].
+        assert_eq!(COLORS, 39);
         assert_eq!(size_of::<Inputs>(), 32 + 16 * COLORS + 64 * MAX_BLOCKS);
-        assert_eq!(size_of::<Inputs>(), 3664);
+        assert_eq!(size_of::<Inputs>(), 3728);
         assert_eq!(align_of::<Inputs>(), 16);
         assert_eq!(offset_of!(Inputs, block_count), 20);
         assert_eq!(offset_of!(Inputs, colors), 32);
         assert_eq!(offset_of!(Inputs, blocks), 32 + 16 * COLORS);
+    }
+
+    #[test]
+    fn the_four_pigments_follow_the_ansi_colours_and_are_the_theme_s_own() {
+        let peach = crate::theme::builtin("peach-light").unwrap();
+        let c = colors(&peach);
+        let p = pigments(&peach);
+        for k in 0..4 {
+            assert_eq!(c[35 + k], float4(p[k]), "ARKOS_PIGMENT + {k}");
+        }
+        // Peach Light's are its accents as watercolor has always used them: burnt orange, ochre,
+        // brick and plum.
+        assert_eq!(p, [peach.chrome.focus_ring, peach.semantic.waiting, peach.terminal.red, peach.terminal.magenta]);
+        // Lavender Light's sit near its purple: no burnt orange.
+        let lavender = crate::theme::builtin("lavender-light").unwrap();
+        let l = pigments(&lavender);
+        assert_eq!(l[0], lavender.chrome.focus_ring);
+        assert!(!l.contains(&lavender.semantic.waiting), "{l:?}");
+        let focus = hue(lavender.chrome.focus_ring).unwrap();
+        for c in l {
+            let d = (hue(c).unwrap() - focus).abs();
+            assert!(d.min(360.0 - d) <= 90.0, "{c:?} is {d} degrees from the focus colour");
+        }
+        // Every built-in theme gets four.
+        for name in ["navy", "timo-purple"] {
+            let t = crate::theme::builtin(name).unwrap();
+            assert_eq!(pigments(&t)[0], t.chrome.focus_ring, "{name}");
+        }
+        // A grey has no hue and is never a pigment.
+        assert_eq!(hue(Rgb { r: 128, g: 128, b: 128 }), None);
     }
 
     #[test]

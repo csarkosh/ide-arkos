@@ -538,7 +538,9 @@ contrast switch at the end of a fade in and at the start of a fade out.
 
 `arkos effect contract` prints the whole contract for the wash, `arkos.metal`, which is put
 before your wash file when it is compiled. It declares the theme's colours by index
-(`ARKOS_WINDOW_BG` to the sixteen ANSI colours from `ARKOS_ANSI`), the block kinds
+(`ARKOS_WINDOW_BG` to the sixteen ANSI colours from `ARKOS_ANSI`, then the theme's four
+pigments from `ARKOS_PIGMENT`: its focus colour and the accents of its own family, within 90
+degrees of hue of it, to tint panes and highlights with so the wash suits any theme), the block kinds
 (`ARKOS_TITLE_BAR_BLOCK` and the rest), the edge bits (`ARKOS_EDGE_TOP` and the rest),
 `ArkosBlock`, `ArkosInputs` and `ArkosVertex`. Your wash supplies one function:
 
@@ -567,7 +569,12 @@ line of its own around them. Its blocks are only the open menus (`ARKOS_MENU_BLO
 edges, `value` the menu's fade). It returns colour multiplied by its alpha and transparent black
 wherever it draws nothing; it is drawn over the menus' text, so draw only at their edges. The
 built-ins share their edge functions between `arkos_wash` and `arkos_overlay`, so a menu's line
-is the panes' own. `arkos effect check` builds it when the wash defines it.
+is the panes' own. `arkos effect check` builds it when the wash defines it. A wash with a menu
+stage also paints each open menu's backdrop: `arkos_wash` is rendered over the menu's place alone
+(the same window coordinates, so it continues the wash behind the menu), with that menu's block
+(`ARKOS_MENU_BLOCK`, no edges) and the highlight strokes of its rows as its only blocks, and the
+menu shows it behind its text under a paper at `paper_alpha`, as a pane's. Paint a menu block as
+you would a pane's body; its hovered row is a `ARKOS_ROW_HIGHLIGHT_BLOCK` as an Explorer row's.
 
 `arkos effect contract --glyphs` prints gpui's sprite declarations, which your glyph shader is
 compiled after (gpui's whole shader source comes first, so it may use any of them): its glyph

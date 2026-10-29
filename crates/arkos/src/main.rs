@@ -365,6 +365,9 @@ pub struct Root {
     /// The open menus and popovers as they reported themselves this frame, for the effect's
     /// menu stage (`chrome::menu_report`).
     pub effect_menus: Vec<effects::blocks::MenuShape>,
+    /// The highlight strokes with their fades as the wash last drew them, for the menus'
+    /// backdrops.
+    pub effect_strokes_now: Vec<(effects::blocks::Mark, f32)>,
     /// The Explorer row or tab under the pointer, by its mark's key, set by their `on_hover`.
     pub effect_hover: Option<u64>,
     /// The highlights' fades, fed `effect_marks` each frame the wash draws.
@@ -671,6 +674,7 @@ impl Root {
             effect_marks: Vec::new(),
             effect_shapes: Vec::new(),
             effect_menus: Vec::new(),
+            effect_strokes_now: Vec::new(),
             effect_hover: None,
             effect_strokes: effects::strokes::Strokes::default(),
             caret_wake: None,
@@ -3769,6 +3773,9 @@ impl Root {
                 let now = Instant::now();
                 root.step_effect_fade(now, cx);
                 let seen = root.effect_tick(now);
+                if seen.is_some() && !root.effect_menus.is_empty() {
+                    cx.notify();
+                }
                 // The text's own timer stops while the window cannot be seen and only `render`
                 // restarts it; uncovering the window brings no render by itself, so this tick does.
                 if seen.is_some() {
@@ -3792,7 +3799,8 @@ impl Root {
     /// redrawn: see `effects::active::glyph_wait`.
     fn glyph_wait(&self) -> Option<std::time::Duration> {
         let e = self.effect.as_ref()?;
-        let seen = !self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns)) && !self.covered();
+        // As the wash, the text moves on with a menu or a prompt open; only an unseen window rests it.
+        let seen = !self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
         effects::active::glyph_wait(e.effect.manifest.frame_rate, e.effect.manifest.glyph_motion, e.settled(), seen, motion::reduce_motion())
     }
 
@@ -3840,10 +3848,10 @@ impl Root {
     pub fn effect_tick(&mut self, now: Instant) -> Option<bool> {
         self.effect.as_ref()?;
         let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
-        let (covered, reduce) = (self.covered(), motion::reduce_motion());
-        // The wash rests while a menu or prompt covers the panes (`should_draw` below), but an
-        // open menu's edges are still drawn by the menu stage.
-        if !effects::active::ticks(hidden, covered, !self.effect_menus.is_empty()) {
+        let reduce = motion::reduce_motion();
+        // Only a window that cannot be seen rests the wash: with a menu or a prompt open the user
+        // is still at work in it.
+        if hidden {
             return None;
         }
         let layout = self.layout();
@@ -3851,10 +3859,11 @@ impl Root {
         let e = self.effect.as_mut()?;
         let style = e.style(now);
         let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &self.effect_shapes, &strokes);
+        self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
         let inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
-        if e.should_draw(&inputs, hidden, covered, reduce) {
+        if e.should_draw(&inputs, hidden, reduce) {
             e.layer.draw(&inputs);
             e.last_inputs = Some(inputs);
             if let Some(ms) = e.layer.gpu_ms().filter(|ms| effects::active::should_log(e.logged, now, *ms)) {
@@ -3874,7 +3883,27 @@ impl Root {
         } else if e.last_overlay.take().is_some() {
             e.layer.draw_overlay(None);
         }
+        let open: Vec<u64> = self.effect_menus.iter().map(|m| m.key).collect();
+        e.layer.keep_backdrops(&open);
         Some(strokes_moving || menus_fading)
+    }
+
+    /// The backdrop of the open menu `key` at `area`, faded to `opacity`: the effect's wash over
+    /// the menu's place with the highlight strokes inside it, for the menu to show behind its
+    /// text. `None` unless the effect paints the menus.
+    pub fn menu_backdrop(&mut self, key: u64, area: Rect, opacity: f32) -> Option<core_video::pixel_buffer::CVPixelBuffer> {
+        let reduce = motion::reduce_motion();
+        let now = Instant::now();
+        let intensity = self.config.effect.intensity;
+        let e = self.effect.as_mut()?;
+        if !e.style(now).menu_edges {
+            return None;
+        }
+        let menu = effects::blocks::MenuShape { key, rect: area, opacity };
+        let blocks = effects::blocks::backdrop_blocks(&menu, &self.effect_strokes_now);
+        let (size, scale) = e.layer.metrics();
+        let inputs = effects::inputs::build(&self.theme, intensity, size, scale, e.time(now, reduce), &blocks);
+        e.layer.backdrop(key, area, opacity, &inputs)
     }
 
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.

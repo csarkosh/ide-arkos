@@ -67,12 +67,14 @@ pub fn render_link_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> 
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
     let hover = crate::chrome::menu_colors(&root.theme, style.menus).hover;
+    let (effect_rows, hovered) = (style.menu_edges && style.highlights, root.effect_hover);
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x11, opacity, cx));
     }
     for (i, (label, action)) in link_menu_items(&menu.url).into_iter().enumerate() {
         m = m.child(div().id(("link-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
-            row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+            let key = crate::effects::blocks::menu_row_key(0x11, i);
+            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                 run_menu_action(&action, cx);
                 root.link_menu.hide(Instant::now());
                 cx.notify();

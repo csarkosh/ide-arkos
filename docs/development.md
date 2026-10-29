@@ -110,7 +110,8 @@ features are added:
   highlights, the glyph shader) switches at a fade in's end and a fade out's start. An effect's
   wash is drawn from its own timer at the manifest's rate, sixty while a highlight fades, never
   under Reduce Motion unless its inputs changed (its clock is frozen there), and never while the
-  window is hidden, occluded or covered; gpui redraws nothing for it. While the window cannot be
+  window is hidden or occluded (a menu, the palette or a prompt open over the panes does not
+  stop it); gpui redraws nothing for it. While the window cannot be
   seen the timer builds nothing and looks again every half second (`effects::active::REST`);
   under Reduce Motion it stops once nothing moves, and `Root::render` starts it for one tick
   after each frame. A surface that paints a fill under
@@ -253,6 +254,9 @@ Things only a person at the screen can check, in order of value:
   the ink line between Explorer and Worktrees, and strokes that fade in and out on the
   selected and hovered Explorer rows and the hovered tab; the window log says `effect
   watercolor: … ms per frame`
+- effects: Lavender Light (`effect.name = "theme"`) shows watercolor too, every pane washed in
+  its own lilac, rose or blue and none in peach or apricot; Peach Light's panes keep their
+  peach, apricot, mauve and dusty rose
 - effects: `arkos settings set effect.name none` fades the wash out over 200 ms and the plain
   theme is back (fills, borders, text size); `effect.name theme` brings it back with a fade
 - effects: Navy with `effect.name = "watercolor"` reads navy (the wash takes the theme's colours)
@@ -261,8 +265,9 @@ Things only a person at the screen can check, in order of value:
 - effects: a window wholly behind another app's window, or minimized, shows the process idle in
   Activity Monitor (no wash frames, a few wake-ups a second at most), and its wash moves again
   within half a second of coming back into view
-- effects: a window covered by the palette or a menu draws no wash frames meanwhile; a resized
-  window's wash follows its new size at once, with no stretched or offset blocks
+- effects: with a menu, the palette or a prompt open the wash keeps moving (stars twinkle,
+  shooting stars and the edges' bars go on, watercolor's bubbles drift); a resized window's wash
+  follows its new size at once, with no stretched or offset blocks
 - effects: a `wash.metal` in the effects folder that fails to compile shows a notice naming the
   file and its line, and the theme draws plain
 - effects: under Peach Light the project window's text is ink (feathered, uneven, and deeper
@@ -287,11 +292,13 @@ Things only a person at the screen can check, in order of value:
   is untouched; under Navy (space) emoji are on the holo display with the text: their own
   colours tinted toward cyan, scanlined, a little dimmed and haloed, and still
 - effects: under Peach Light (watercolor) the link menu (right-click a URL), the file tree's
-  menu, a worktree's menu, the tab overflow menu and the title bar's popovers are cards of the
-  cream paper, square-cornered, outlined in the same wobbling ink line as the panes (drawn by the
-  wash's menu stage above the panes), the hovered row tinted peach; under Navy (space) they are
-  navy cards outlined in the panes' own glowing line, halo and sweeping bars, the hovered row
-  lit blue; the outline fades in and out with its menu, sits exactly on it through a resize, never
+  menu, a worktree's menu, the tab overflow menu and the title bar's popovers show the wash
+  behind their text as a pane does (paper grain, a light pigment wash, the bubbles continuing
+  from behind the menu, under the cream paper), square-cornered and outlined in the same
+  wobbling ink line as the panes (drawn by the wash's menu stage above the panes), and in the
+  link, file tree and worktree menus the hovered row is a pigment stroke that fades in and out
+  as an Explorer row's; under Navy (space) they show the night sky behind their text, outlined in
+  the panes' own glowing line, halo and sweeping bars, the hovered row glowing blue; the outline fades in and out with its menu, sits exactly on it through a resize, never
   covers its text, and a click on a row lands as before; with no menu open the menu layer draws
   nothing (Activity Monitor: no extra GPU at rest); with `effect.name none` the menus are as
   before

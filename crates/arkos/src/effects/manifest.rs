@@ -304,6 +304,18 @@ mod tests {
     }
 
     #[test]
+    fn watercolor_takes_its_pigments_from_the_theme_s_own_four() {
+        let wash = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
+        assert!(wash.contains("return u.colors[ARKOS_PIGMENT + clamp(i, 0, 3)].rgb;"));
+    }
+
+    #[test]
+    fn watercolor_washes_a_menu_s_backdrop_as_it_does_a_pane() {
+        let wash = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
+        assert!(wash.contains("if (kind == ARKOS_MENU_BLOCK) { return 0.14; }"), "a menu gets a pane body's light wash");
+    }
+
+    #[test]
     fn watercolor_inks_the_menus_edges_with_the_panes_own_line() {
         let wash = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
         let start = wash.find("fragment float4 arkos_overlay(").expect("watercolor inks the menus' edges");

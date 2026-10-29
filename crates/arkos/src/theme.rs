@@ -678,12 +678,11 @@ mod tests {
     }
 
     #[test]
-    fn navy_recommends_space_and_peach_light_watercolor() {
+    fn navy_recommends_space_and_both_light_themes_watercolor() {
         assert_eq!(builtin("navy").unwrap().recommended_effect(), Some("space"));
         assert_eq!(builtin("peach-light").unwrap().recommended_effect(), Some("watercolor"));
-        for other in ["timo-purple", "lavender-light"] {
-            assert_eq!(builtin(other).unwrap().recommended_effect(), None, "{other}");
-        }
+        assert_eq!(builtin("lavender-light").unwrap().recommended_effect(), Some("watercolor"));
+        assert_eq!(builtin("timo-purple").unwrap().recommended_effect(), None);
         // Any theme may recommend one: Timo Purple, which recommends none, given a table.
         let purple = BUILTIN.iter().find(|(n, _)| *n == "timo-purple").unwrap().1;
         let text = purple.to_string() + "\n[effect]\nname = \"ink\"\n";

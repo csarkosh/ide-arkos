@@ -490,9 +490,11 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x12, opacity, cx));
     }
+    let (effect_rows, hovered) = (style.menu_edges && style.highlights, root.effect_hover);
     for (i, (label, action)) in context_menu_items(&menu.path, &root.project).into_iter().enumerate() {
         m = m.child(div().id(("context-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
-            row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+            let key = blocks::menu_row_key(0x12, i);
+            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                 run_menu_action(&action, cx);
                 root.context_menu.hide(Instant::now());
                 cx.notify();
@@ -1021,9 +1023,11 @@ pub fn render_worktree_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<D
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x13, opacity, cx));
     }
+    let (effect_rows, hovered) = (style.menu_edges && style.highlights, root.effect_hover);
     for (i, (label, action)) in items.into_iter().enumerate() {
         m = m.child(div().id(("worktree-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
-            row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
+            let key = blocks::menu_row_key(0x13, i);
+            crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                 root.wt_menu.hide(Instant::now());
                 match action.clone() {
                     WtMenuAction::OpenTerminal(p) => root.open_terminal_in(p, cx),

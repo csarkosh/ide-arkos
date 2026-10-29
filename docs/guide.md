@@ -281,7 +281,7 @@ bar is clear over the wash and the page is outlined; on a light theme a page tha
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Peach Light, `space` for Navy, and none for the other built-in themes.
+for Peach Light and Lavender Light, `space` for Navy, and none for Timo Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, and a hidden,
 covered or occluded window (one wholly behind other windows) draws none.

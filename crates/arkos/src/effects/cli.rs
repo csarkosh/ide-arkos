@@ -183,6 +183,7 @@ fn compile(effect: &Effect) -> Result<(), String> {
     // The menu stage, when the wash asks for one, is built as the window would.
     if active::has_overlay(&effect.wash) {
         layer::pipeline_for(&device, PREAMBLE, &effect.wash, "arkos_overlay").map_err(|e| format!("{}: {}", m.wash, e.replace("program_source:", &format!("{}:", m.wash))))?;
+        layer::backdrop_pipeline(&device, PREAMBLE, &effect.wash).map_err(|e| format!("{}: {}", m.wash, e))?;
     }
     if let (Some(file), Some(source)) = (&m.glyphs, &effect.glyphs) {
         compile_glyphs(&device, source, file)?;

@@ -2316,7 +2316,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/csarkosh/gpui?tag=v0.2.2-arkos.3#26d764bd4455493ee4e19c95515985eabce235c0"
+source = "git+https://github.com/csarkosh/gpui?tag=v0.2.2-arkos.4#5d4b3e9cac73298cb8bea104a54b0f1ac13cbddd"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",

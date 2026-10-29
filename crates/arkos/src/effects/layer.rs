@@ -63,15 +63,113 @@ pub fn pipeline(device: &DeviceRef, preamble: &str, wash: &str) -> Result<Render
 /// The pipeline of the wash's fragment function `fragment`: `arkos_wash`, or its menu stage
 /// `arkos_overlay`.
 pub fn pipeline_for(device: &DeviceRef, preamble: &str, wash: &str, fragment: &str) -> Result<RenderPipelineState, String> {
+    stages(device, preamble, wash, "arkos_vertex", fragment, false)
+}
+
+/// The pipeline a menu's backdrop is rendered with: the wash over the menu's place alone, faded
+/// with the menu. `arkos effect check` builds it as the window does.
+pub fn backdrop_pipeline(device: &DeviceRef, preamble: &str, wash: &str) -> Result<RenderPipelineState, String> {
+    stages(device, preamble, wash, "arkos_vertex_area", "arkos_wash", true)
+}
+
+/// The pipeline of the app's vertex function `vertex` and the wash's `fragment`. With `fade`,
+/// the colour is written as it is and its alpha is the encoder's blend colour's (a menu's
+/// backdrop fading with its menu).
+fn stages(device: &DeviceRef, preamble: &str, wash: &str, vertex: &str, fragment: &str, fade: bool) -> Result<RenderPipelineState, String> {
     let source = format!("{preamble}\n{wash}\n{VERTEX}");
     let library = device.new_library_with_source(&source, &CompileOptions::new()).map_err(|e| point_into_wash(&e, preamble))?;
-    let vs = library.get_function("arkos_vertex", None)?;
+    let vs = library.get_function(vertex, None)?;
     let fs = library.get_function(fragment, None).map_err(|_| format!("the wash has no fragment function named {fragment}"))?;
     let desc = RenderPipelineDescriptor::new();
     desc.set_vertex_function(Some(&vs));
     desc.set_fragment_function(Some(&fs));
-    desc.color_attachments().object_at(0).ok_or("no colour attachment")?.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    let att = desc.color_attachments().object_at(0).ok_or("no colour attachment")?;
+    att.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    if fade {
+        att.set_blending_enabled(true);
+        att.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
+        att.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
+        att.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
+        att.set_destination_rgb_blend_factor(metal::MTLBlendFactor::Zero);
+        att.set_source_alpha_blend_factor(metal::MTLBlendFactor::BlendAlpha);
+        att.set_destination_alpha_blend_factor(metal::MTLBlendFactor::Zero);
+    }
     device.new_render_pipeline_state(&desc)
+}
+
+/// The menus' backdrops: for each open menu, the wash rendered over the menu's place into an
+/// IOSurface-backed BGRA image of its own, which the menu shows behind its text
+/// (`Window::paint_surface`) under a paper as a pane's. Kept per menu and remade only when its
+/// size changes.
+struct Backdrops {
+    pipeline: RenderPipelineState,
+    cache: core_video::metal_texture_cache::CVMetalTextureCache,
+    images: std::collections::HashMap<u64, core_video::pixel_buffer::CVPixelBuffer>,
+}
+
+impl Backdrops {
+    fn new(device: &Device, preamble: &str, wash: &str) -> Result<Backdrops, String> {
+        let pipeline = backdrop_pipeline(device, preamble, wash)?;
+        let cache = core_video::metal_texture_cache::CVMetalTextureCache::new(None, device.clone(), None).map_err(|e| format!("no texture cache ({e})"))?;
+        Ok(Backdrops { pipeline, cache, images: std::collections::HashMap::new() })
+    }
+
+    /// The image kept for `key`, `w` by `h` pixels: the one already there, or a new one.
+    fn image(&mut self, key: u64, w: usize, h: usize) -> Option<core_video::pixel_buffer::CVPixelBuffer> {
+        use core_foundation::base::TCFType;
+        use core_video::pixel_buffer::{kCVPixelFormatType_32BGRA, CVPixelBuffer, CVPixelBufferKeys};
+        if let Some(img) = self.images.get(&key).filter(|i| i.get_width() == w && i.get_height() == h) {
+            return Some(img.clone());
+        }
+        let surface = core_foundation::dictionary::CFDictionary::<core_foundation::string::CFString, core_foundation::base::CFType>::from_CFType_pairs(&[]);
+        let attributes = core_foundation::dictionary::CFDictionary::from_CFType_pairs(&[
+            (core_foundation::string::CFString::from(CVPixelBufferKeys::IOSurfaceProperties), surface.as_CFType()),
+            (core_foundation::string::CFString::from(CVPixelBufferKeys::MetalCompatibility), core_foundation::boolean::CFBoolean::true_value().as_CFType()),
+        ]);
+        let img = CVPixelBuffer::new(kCVPixelFormatType_32BGRA, w, h, Some(&attributes)).ok()?;
+        self.images.insert(key, img.clone());
+        Some(img)
+    }
+
+    /// Renders the wash with `inputs` over `area` (window points, the window `size` points) into
+    /// `key`'s image at `px` pixels a point, faded to `opacity`, and returns the image once the
+    /// GPU has drawn it.
+    fn render(&mut self, queue: &CommandQueue, key: u64, area: crate::tree::Rect, size: (f32, f32), px: f32, opacity: f32, inputs: &Inputs) -> Option<core_video::pixel_buffer::CVPixelBuffer> {
+        use core_foundation::base::TCFType;
+        let (w, h) = (((area.w * px).round() as usize).max(1), ((area.h * px).round() as usize).max(1));
+        let img = self.image(key, w, h)?;
+        let cv_texture = self.cache.create_texture_from_image(img.as_concrete_TypeRef(), None, MTLPixelFormat::BGRA8Unorm, w, h, 0).ok()?;
+        // Borrowed, as gpui borrows a video frame's: `CVMetalTextureGetTexture` follows the get
+        // rule, so the texture lives as long as `cv_texture` and must not be released here.
+        // (`CVMetalTexture::get_texture` wraps it as owned and over-releases it.)
+        // SAFETY: the pointer is the live texture of `cv_texture`, which outlives every use below.
+        let texture = unsafe {
+            let raw = core_video::metal_texture::CVMetalTextureGetTexture(cv_texture.as_concrete_TypeRef());
+            if raw.is_null() {
+                return None;
+            }
+            metal::TextureRef::from_ptr(raw as *mut _)
+        };
+        let pass = RenderPassDescriptor::new();
+        let att = pass.color_attachments().object_at(0)?;
+        att.set_texture(Some(texture));
+        att.set_load_action(MTLLoadAction::Clear);
+        att.set_clear_color(metal::MTLClearColor::new(0.0, 0.0, 0.0, 0.0));
+        att.set_store_action(MTLStoreAction::Store);
+        let share = [area.x / size.0.max(1.0), area.y / size.1.max(1.0), area.w / size.0.max(1.0), area.h / size.1.max(1.0)];
+        let cmd = queue.new_command_buffer();
+        let enc = cmd.new_render_command_encoder(pass);
+        enc.set_render_pipeline_state(&self.pipeline);
+        enc.set_blend_color(0.0, 0.0, 0.0, opacity.clamp(0.0, 1.0));
+        enc.set_vertex_bytes(0, std::mem::size_of_val(&share) as u64, share.as_ptr() as *const std::ffi::c_void);
+        enc.set_fragment_bytes(0, std::mem::size_of::<Inputs>() as u64, inputs as *const Inputs as *const std::ffi::c_void);
+        enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
+        enc.end_encoding();
+        cmd.commit();
+        // gpui samples the image on its own queue later in this frame: it must be drawn by then.
+        cmd.wait_until_completed();
+        Some(img)
+    }
 }
 
 /// The GPU's time in milliseconds for a command buffer that has completed.
@@ -98,6 +196,8 @@ pub struct Layer {
     gpu_ms: Option<f32>,
     /// The menu stage's layer, for a wash that has one.
     overlay: Option<Overlay>,
+    /// The menus' backdrops, for a wash with a menu stage.
+    backdrops: Option<Backdrops>,
 }
 
 /// The menu stage's layer: a see-through `CAMetalLayer` added on top of gpui's own layer, hidden
@@ -163,10 +263,10 @@ impl Layer {
         let content = window.contentView().ok_or("the window has no content view")?;
         let device = Device::system_default().ok_or("no Metal device")?;
         let pipeline = pipeline(&device, preamble, wash)?;
-        let overlay = if crate::effects::active::has_overlay(wash) {
-            Some(Overlay::install(&device, above, pipeline_for(&device, preamble, wash, "arkos_overlay")?)?)
+        let (overlay, backdrops) = if crate::effects::active::has_overlay(wash) {
+            (Some(Overlay::install(&device, above, pipeline_for(&device, preamble, wash, "arkos_overlay")?)?), Some(Backdrops::new(&device, preamble, wash)?))
         } else {
-            None
+            (None, None)
         };
         let layer = MetalLayer::new();
         layer.set_device(&device);
@@ -181,7 +281,7 @@ impl Layer {
             let _: () = msg_send![&*view, setLayer: layer.as_ptr() as *mut AnyObject];
         }
         content.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, Some(above));
-        Ok(Layer { view, layer, queue: device.new_command_queue(), pipeline, scale: scale as f64, drawable: (0.0, 0.0), frames: 0, gpu_ms: None, overlay })
+        Ok(Layer { view, layer, queue: device.new_command_queue(), pipeline, scale: scale as f64, drawable: (0.0, 0.0), frames: 0, gpu_ms: None, overlay, backdrops })
     }
 
     fn backing(&self) -> f64 {
@@ -233,6 +333,22 @@ impl Layer {
             cmd.wait_until_completed();
             let ms = gpu_ms(cmd);
             self.gpu_ms = Some(self.gpu_ms.map_or(ms, |avg| avg * 0.75 + ms * 0.25));
+        }
+    }
+
+    /// The backdrop of the menu `key` at `area` (window points), faded to `opacity`: the wash
+    /// with `inputs` rendered over it at the wash's own pixels a point. `None` for a wash without
+    /// a menu stage, or when the image cannot be made.
+    pub fn backdrop(&mut self, key: u64, area: crate::tree::Rect, opacity: f32, inputs: &Inputs) -> Option<core_video::pixel_buffer::CVPixelBuffer> {
+        let ((w, h), px) = self.metrics();
+        let backdrops = self.backdrops.as_mut()?;
+        backdrops.render(&self.queue, key, area, (w, h), px, opacity, inputs)
+    }
+
+    /// Lets go of the backdrops of menus no longer open.
+    pub fn keep_backdrops(&mut self, open: &[u64]) {
+        if let Some(b) = self.backdrops.as_mut() {
+            b.images.retain(|key, _| open.contains(key));
         }
     }
 
@@ -296,6 +412,30 @@ impl Drop for Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_s_backdrop_renders_frame_after_frame_into_the_same_image() {
+        let Some(device) = Device::system_default() else { return };
+        let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
+        let mut backdrops = Backdrops::new(&device, crate::effects::PREAMBLE, wash).unwrap();
+        let queue = device.new_command_queue();
+        let theme = crate::theme::builtin("peach-light").unwrap();
+        let area = crate::tree::Rect { x: 100.0, y: 80.0, w: 200.0, h: 120.0 };
+        let menu = crate::effects::blocks::MenuShape { key: 0x11, rect: area, opacity: 1.0 };
+        let inputs = crate::effects::inputs::build(&theme, 1.0, (800.0, 600.0), 1.0, 0.0, &crate::effects::blocks::backdrop_blocks(&menu, &[]));
+        // Each frame draws into the menu's own image again; the texture borrowed from it must
+        // still be alive on the second and later frames.
+        let first = backdrops.render(&queue, 0x11, area, (800.0, 600.0), 1.0, 1.0, &inputs).unwrap();
+        for _ in 0..3 {
+            let again = backdrops.render(&queue, 0x11, area, (800.0, 600.0), 1.0, 0.5, &inputs).unwrap();
+            assert_eq!((again.get_width(), again.get_height()), (200, 120));
+        }
+        assert_eq!((first.get_width(), first.get_height()), (200, 120));
+        // A menu that grows gets a new image of its new size.
+        let wider = crate::tree::Rect { w: 260.0, ..area };
+        let grown = backdrops.render(&queue, 0x11, wider, (800.0, 600.0), 1.0, 1.0, &inputs).unwrap();
+        assert_eq!(grown.get_width(), 260);
+    }
 
     #[test]
     fn the_compiler_s_lines_point_into_the_wash_file() {

@@ -84,6 +84,8 @@ mod tests {
     fn effects_live_in_the_config_folder_and_the_preamble_declares_the_inputs() {
         assert_eq!(effects_dir(), paths::config_dir().join("effects"));
         assert!(PREAMBLE.contains("struct ArkosInputs"));
-        assert!(PREAMBLE.contains("constant int ARKOS_COLORS = 35;"));
+        assert!(PREAMBLE.contains("constant int ARKOS_COLORS = 39;"));
+        assert!(PREAMBLE.contains("constant int ARKOS_PIGMENT = 35;"));
+        assert!(PREAMBLE.contains("float4 colors[39];"));
     }
 }

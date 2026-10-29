@@ -12,7 +12,9 @@ constant int ARKOS_TERMINAL_FG = 12;  constant int ARKOS_SELECTION = 13;
 constant int ARKOS_WORKING = 14;      constant int ARKOS_WAITING = 15;
 constant int ARKOS_BELL = 16;         constant int ARKOS_FIND_MATCH = 17;
 constant int ARKOS_FIND_CURRENT = 18; constant int ARKOS_ANSI = 19; // 19..34: the sixteen
-constant int ARKOS_COLORS = 35;
+constant int ARKOS_PIGMENT = 35; // 35..38: the theme's four pigments, the colours to tint
+// panes and highlights with: its focus colour first, then accents of its own family
+constant int ARKOS_COLORS = 39;
 
 // What a block of the UI is.
 constant int ARKOS_TITLE_BAR_BLOCK = 1;  constant int ARKOS_SIDEBAR_BLOCK = 2;
@@ -23,7 +25,10 @@ constant int ARKOS_TABLE_BLOCK = 9;      constant int ARKOS_TABLE_HEADER_BLOCK =
 constant int ARKOS_MENU_BLOCK = 11;
 // A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.
 // A table block is a markdown table, whose fills are clear; its header block is its first row.
-// A menu block is an open menu or popover; only the menu stage (arkos_overlay) is given them.
+// A menu block is an open menu or popover. The menu stage (arkos_overlay) is given them with
+// their edges; and for a wash with a menu stage, arkos_wash is also rendered over each open
+// menu's place alone, as the menu's backdrop, with that menu's block (no edges) and the
+// highlight strokes inside it as its only blocks.
 
 // Which of a block's edges the app no longer draws (ink_borders): a bit each.
 constant uint ARKOS_EDGE_TOP = 1;  constant uint ARKOS_EDGE_RIGHT = 2;
@@ -46,7 +51,7 @@ struct ArkosInputs {
     float scale;          // this drawable's pixels per point
     float block_count;
     float2 pad;
-    float4 colors[35];
+    float4 colors[39];
     ArkosBlock blocks[48];
 };
 

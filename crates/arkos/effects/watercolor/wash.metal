@@ -32,13 +32,11 @@ float3 bright(float3 c) {
     return saturate(mix(float3(l), lifted, 1.55));
 }
 
-// The four pigments are the theme's own accents: burnt orange, ochre, brick and plum, which thin
-// out over the cream into peach, apricot, dusty rose and mauve.
+// The four pigments are the theme's own (ARKOS_PIGMENT): its focus colour and accents of its own
+// family, which thin out over the paper (Peach Light's burnt orange, ochre, brick and plum into
+// peach, apricot, dusty rose and mauve; Lavender Light's purples, rose and blue into lilacs).
 float3 pigment(constant ArkosInputs& u, int i) {
-    if (i == 1) { return u.colors[ARKOS_WAITING].rgb; }
-    if (i == 2) { return u.colors[ARKOS_ANSI + 1].rgb; }
-    if (i == 3) { return u.colors[ARKOS_ANSI + 5].rgb; }
-    return u.colors[ARKOS_FOCUS_RING].rgb;
+    return u.colors[ARKOS_PIGMENT + clamp(i, 0, 3)].rgb;
 }
 
 // Each pane its own pigment, by its place among the panes, as each card in a sketch gets its own
@@ -58,6 +56,8 @@ float strength_of(ArkosBlock b, thread int& tint) {
     if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.3; }
     if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.56; }
     if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.14; }
+    // A menu's backdrop: a pane body's light wash, in the first pigment.
+    if (kind == ARKOS_MENU_BLOCK) { return 0.14; }
     // A table: a light wash over its body and an apricot band over its header, as a ruled
     // sheet in a sketchbook is tinted.
     if (kind == ARKOS_TABLE_BLOCK) { tint = 3; return 0.1; }

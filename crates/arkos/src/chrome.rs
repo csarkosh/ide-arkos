@@ -326,26 +326,88 @@ pub fn menu_line(m: MenuColors, effect_edges: bool) -> (gpui::Hsla, Option<gpui:
     }
 }
 
+/// A menu's own fill: its card's colour, or nothing when the effect paints its backdrop
+/// (`effect_menus`), with paper over it (`menu_paper`) as a pane has.
+pub fn menu_fill(m: MenuColors, effect_menus: bool) -> gpui::Hsla {
+    if effect_menus {
+        gpui::transparent_black()
+    } else {
+        m.bg
+    }
+}
+
+/// The paper laid over an effect's backdrop in a menu: the window's colour at the effect's
+/// `paper_alpha`, as a terminal's or a document's paper lies over the wash.
+pub fn menu_paper(theme: &Theme, paper_alpha: f32) -> gpui::Hsla {
+    theme.chrome.window_bg.alpha(paper_alpha)
+}
+
 /// A menu or popover's card under `style`: its fill, and its line and halo unless the effect
 /// draws its edges.
 pub fn menu_frame<E: Styled + gpui::prelude::FluentBuilder>(d: E, theme: &Theme, style: &Style) -> E {
     let m = menu_colors(theme, style.menus);
     let (border, glow) = menu_line(m, style.menu_edges);
-    d.bg(m.bg).border_1().border_color(border).when_some(glow, |d, glow| {
+    d.bg(menu_fill(m, style.menu_edges)).border_1().border_color(border).when_some(glow, |d, glow| {
         d.shadow(vec![gpui::BoxShadow { color: glow, offset: point(px(0.0), px(0.0)), blur_radius: px(10.0), spread_radius: px(0.0) }])
     })
 }
 
-/// What a menu adds to itself so the effect's menu stage draws its edges: a canvas over it that
-/// reports where it is and how far it has faded, each frame it is drawn, keyed by what draws it.
+/// A live menu row's hover: the app's fill when it paints the menus itself, or, when the effect
+/// paints them (`effect`), the row tells the effect it is under the pointer and reports a stroke
+/// while it is (`hovered`), which the effect fades into the menu's backdrop as it does an
+/// Explorer row's.
+pub fn menu_row_hover(row: gpui::Stateful<Div>, key: u64, hovered: bool, effect: bool, hover: gpui::Hsla, cx: &mut gpui::Context<crate::Root>) -> gpui::Stateful<Div> {
+    use crate::effects::blocks::{hover_after, HighlightState, Kind, Mark};
+    if !effect {
+        return row.hover(move |s| s.bg(hover));
+    }
+    let (w_hover, w_mark) = (cx.weak_entity(), cx.weak_entity());
+    row.on_hover(move |over: &bool, _window, cx| {
+        let _ = w_hover.update(cx, |root, cx| {
+            root.effect_hover = hover_after(root.effect_hover, key, *over);
+            cx.notify();
+        });
+    })
+    .when(hovered, |d| {
+        d.relative().child(
+            canvas(
+                move |b, _, cx| {
+                    let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+                    let _ = w_mark.update(cx, |root, _| root.effect_marks.push(Mark { key, rect, kind: Kind::RowHighlight, state: HighlightState::Hovered }));
+                },
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    })
+}
+
+/// What a menu adds to itself, first among its children, when the effect paints the menus: a
+/// canvas under its rows that reports where the menu is and how far it has faded (for the menu
+/// stage's edges), and paints the effect's backdrop for it with the paper over it.
 pub fn menu_report(key: u64, opacity: f32, cx: &mut gpui::Context<crate::Root>) -> impl IntoElement {
-    let root = cx.weak_entity();
+    let (root, painter) = (cx.weak_entity(), cx.weak_entity());
     canvas(
         move |b, _, cx| {
             let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
             let _ = root.update(cx, |root, _| root.effect_menus.push(crate::effects::blocks::MenuShape { key, rect, opacity }));
+            rect
         },
-        |_, _, _, _| (),
+        move |b, rect, window, cx| {
+            let painted = painter.update(cx, |root, _| {
+                let paper = menu_paper(&root.theme, root.effect_style().paper_alpha);
+                (root.menu_backdrop(key, rect, opacity), paper)
+            });
+            if let Ok((backdrop, paper)) = painted {
+                if let Some(image) = backdrop {
+                    window.paint_surface(b, image);
+                }
+                window.paint_quad(gpui::fill(b, paper.opacity(opacity)));
+            }
+        },
     )
     .absolute()
     .top_0()
@@ -415,6 +477,10 @@ mod tests {
         let (border, halo) = menu_line(glow, true);
         assert_eq!(border.a, 0.0, "the line is the effect's");
         assert_eq!(halo, None, "so is the glow");
+        // The card's own fill gives way to the effect's backdrop, with paper over it as a pane has.
+        assert_eq!(menu_fill(glow, false), glow.bg);
+        assert_eq!(menu_fill(glow, true).a, 0.0);
+        assert_eq!(menu_paper(&navy, 0.8), navy.chrome.window_bg.alpha(0.8));
     }
 
     #[test]

@@ -234,13 +234,6 @@ pub fn glyph_shader_for<L>(kind: WindowKind, effect: Option<&ActiveEffect<L>>, s
     })
 }
 
-/// Whether a tick looks at the effect at all: never while the window is hidden; while one of the
-/// app's own menus or prompts covers the panes the wash rests, but a tick still runs while a menu
-/// is open, so the menu stage draws its edges (`covered`: `Root::covered`).
-pub fn ticks(hidden: bool, covered: bool, menus_open: bool) -> bool {
-    !hidden && (!covered || menus_open)
-}
-
 /// Whether a wash has a menu stage, `arkos_overlay`, which draws the menus' and popovers' edges
 /// in a layer above the panes.
 pub fn has_overlay(wash: &str) -> bool {
@@ -411,10 +404,12 @@ impl<L> ActiveEffect<L> {
         }
     }
 
-    /// Whether a frame with `inputs` is drawn: never while the window is hidden or covered, and
-    /// under Reduce Motion only when the inputs differ from the last frame's.
-    pub fn should_draw(&self, inputs: &Inputs, hidden: bool, covered: bool, reduce: bool) -> bool {
-        !hidden && !covered && !(reduce && self.last_inputs.as_ref() == Some(inputs))
+    /// Whether a frame with `inputs` is drawn: never while the window is hidden (minimised,
+    /// occluded or on another Space), and under Reduce Motion only when the inputs differ from
+    /// the last frame's. A menu, the palette or a prompt open over the panes does not stop it:
+    /// the user is still at work in the window.
+    pub fn should_draw(&self, inputs: &Inputs, hidden: bool, reduce: bool) -> bool {
+        !hidden && !(reduce && self.last_inputs.as_ref() == Some(inputs))
     }
 }
 
@@ -478,16 +473,14 @@ mod tests {
     }
 
     #[test]
-    fn an_open_menu_keeps_the_menu_stage_ticking_while_the_wash_rests_under_it() {
-        assert!(ticks(false, false, false), "a plain frame ticks");
-        assert!(!ticks(true, false, false) && !ticks(true, true, true), "a hidden window never does");
-        assert!(!ticks(false, true, false), "a prompt over the panes rests the wash");
-        assert!(ticks(false, true, true), "an open menu is covered too, and its edges still draw");
-        // The wash itself is not drawn while covered.
+    fn the_wash_keeps_moving_while_a_menu_or_prompt_is_open_and_rests_only_when_the_window_cannot_be_seen() {
+        // A menu, the palette or a prompt over the panes is the user still at work in the window:
+        // only a hidden, minimised or occluded window stops the wash.
         let t0 = Instant::now();
         let e = on(watercolor(), t0);
         let inputs = super::super::inputs::build(&theme::builtin("peach-light").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
-        assert!(!e.should_draw(&inputs, false, true, false));
+        assert!(e.should_draw(&inputs, false, false));
+        assert!(!e.should_draw(&inputs, true, false), "hidden");
     }
 
     #[test]
@@ -606,13 +599,12 @@ mod tests {
         let t0 = Instant::now();
         let mut e = on(watercolor(), t0);
         let same = inputs_at(0.0);
-        assert!(e.should_draw(&same, false, false, true), "the first frame always draws");
+        assert!(e.should_draw(&same, false, true), "the first frame always draws");
         e.last_inputs = Some(same.clone());
-        assert!(!e.should_draw(&same, false, false, true));
-        assert!(e.should_draw(&inputs_at(0.5), false, false, true), "something changed");
-        assert!(e.should_draw(&same, false, false, false), "in motion it draws every tick");
-        assert!(!e.should_draw(&inputs_at(0.5), true, false, false), "hidden");
-        assert!(!e.should_draw(&inputs_at(0.5), false, true, false), "covered");
+        assert!(!e.should_draw(&same, false, true));
+        assert!(e.should_draw(&inputs_at(0.5), false, true), "something changed");
+        assert!(e.should_draw(&same, false, false), "in motion it draws every tick");
+        assert!(!e.should_draw(&inputs_at(0.5), true, false), "hidden");
         // The clock is frozen, so a still window hands the shader the same inputs.
         assert_eq!(e.time(t0 + Duration::from_secs(3), true), 0.0);
         assert_eq!(e.time(t0 + Duration::from_secs(3), false), 3.0);
