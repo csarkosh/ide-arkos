@@ -56,6 +56,12 @@ pub fn keys_return(holder: KeysHolder, cmd: bool, chord: &str) -> bool {
     }
 }
 
+/// The title of the project window, which the Dock and Mission Control show; a sandbox
+/// instance says so, so its windows are told apart from the real IDE's.
+pub fn window_title(sandbox: bool) -> String {
+    if sandbox { "Arkos IDE (sandbox)".into() } else { "Arkos IDE".into() }
+}
+
 #[cfg(target_os = "macos")]
 pub use mac::*;
 
@@ -166,10 +172,6 @@ mod mac {
         view.window()
     }
 
-    /// The project window's title; the process's other windows (the "New Window" chooser, a
-    /// folder picker) have their own.
-    pub const WINDOW_TITLE: &str = "Arkos IDE";
-
     /// The content view's height in points, and whether its y axis points down. (0, false)
     /// without a content view.
     pub fn content_geometry(window: &NSWindow) -> (f64, bool) {
@@ -193,6 +195,12 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_title_says_sandbox_only_in_a_sandbox() {
+        assert_eq!(window_title(false), "Arkos IDE");
+        assert_eq!(window_title(true), "Arkos IDE (sandbox)");
+    }
 
     #[test]
     fn lost_keys_come_back_to_gpui_on_any_key() {

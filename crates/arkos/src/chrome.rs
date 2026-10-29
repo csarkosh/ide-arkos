@@ -237,12 +237,19 @@ pub fn aux_title_bar(title: &str, theme: &Theme) -> Div {
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
 }
 
+/// The words the project window's bar shows around the project's name: the app's, then in a
+/// sandbox instance the word `sandbox`, so the bar tells it from the real IDE.
+pub fn title_words(sandbox: bool) -> Vec<&'static str> {
+    if sandbox { vec!["Arkos IDE", "sandbox"] } else { vec!["Arkos IDE"] }
+}
+
 /// The bar. Dragging it moves the window and a double click zooms it, as the native bar did.
 /// In full screen the traffic lights are gone, so the text starts at the edge.
 /// `bar_font` is the theme's ui font when it names one this Mac has, else the system's; `style`
 /// is the window's effect's.
-pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
+pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
     let c = &theme.chrome;
+    let words = title_words(sandbox);
     drag_to_move(div())
         .h(px(TITLE_BAR_H))
         .w_full()
@@ -256,7 +263,7 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
         .text_color(c.text.hsla())
         .font_family(bar_font)
         .text_size(px(style.ui(13.0)))
-        .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("Arkos IDE"))
+        .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(words[0]))
         .child(
             div()
                 .flex_1()
@@ -267,6 +274,7 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
                 .text_color(c.text_dim.hsla())
                 .child(project.display().to_string()),
         )
+        .children(words.get(1).map(|word| div().flex_none().text_color(c.text_dim.hsla()).child(*word)))
         .child(
             div()
                 .flex_none()
@@ -438,6 +446,12 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_title_bar_adds_the_word_sandbox_only_in_a_sandbox() {
+        assert_eq!(title_words(false), ["Arkos IDE"]);
+        assert_eq!(title_words(true), ["Arkos IDE", "sandbox"]);
+    }
 
     #[test]
     fn the_app_s_menus_look_as_ever_and_an_effect_s_take_its_paper_ink_or_glow() {

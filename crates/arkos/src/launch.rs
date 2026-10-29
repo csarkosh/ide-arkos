@@ -609,7 +609,7 @@ pub fn open_chooser(cx: &mut App, at_launch: bool, focus: bool, config: Config, 
             let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(gpui::TitlebarOptions { title: Some("Open a project".into()), appears_transparent: false, traffic_light_position: None }),
+                titlebar: Some(gpui::TitlebarOptions { title: Some(if ::telemetry::is_sandbox() { crate::screen::window_title(true) } else { "Open a project".into() }.into()), appears_transparent: false, traffic_light_position: None }),
                 focus,
                 ..Default::default()
             };

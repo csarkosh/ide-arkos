@@ -4150,6 +4150,7 @@ impl Render for Root {
         let style = self.effect_style();
         let title_bar = chrome::title_bar(
             &self.project,
+            self.sandbox,
             right,
             window.is_fullscreen(),
             &theme,
@@ -4833,7 +4834,7 @@ fn open_project_window(
                     display_id,
                     // The window draws its own bar in the title bar's space (chrome.rs); the
                     // traffic lights stay where macOS puts them.
-                    titlebar: Some(gpui::TitlebarOptions { title: Some(screen::WINDOW_TITLE.into()), appears_transparent: true, traffic_light_position: None }),
+                    titlebar: Some(gpui::TitlebarOptions { title: Some(screen::window_title(::telemetry::is_sandbox()).into()), appears_transparent: true, traffic_light_position: None }),
                     // One minimum pane with its border, tab bar and the window's bar.
                     window_min_size: Some(size(px(tree::MIN_PANE_W + 8.0), px(tree::MIN_PANE_H + pane_view::TAB_BAR_H + chrome::TITLE_BAR_H))),
                     // A window the daemon relaunched (an update, the watchdog) does not take the
