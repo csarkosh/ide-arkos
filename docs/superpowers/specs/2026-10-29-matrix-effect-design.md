@@ -1,0 +1,305 @@
+# Matrix theme and effect
+
+Status: design agreed with Cyrus in chat, 2026-10-29; awaiting his look at a first build in a
+dev window. Builds on the effects design (`2026-10-28-effects-design.md`), the space effect
+design (`2026-10-28-space-effect-design.md`) and everything shipped through 0.7.13.
+
+## Intent
+
+A theme and an effect that make Arkos feel like hacking into the Matrix. Cyrus's words: "a
+black background with emissive green text running like I'm hacking into the matrix. Maybe some
+faint green text running in the background as soft background noise." The text itself moves: it
+scrambles while new output arrives or Claude is working, and barely at all when things are idle.
+
+This is the second effect to move text. The first, space's shimmer, was removed because Cyrus
+found it hard on the eyes when the text was idle. The balance between alive and readable is to
+be found by eye, in a dev window, by iterating on the constants: every rate and strength in this
+document is a starting point, named in one place, and expected to change.
+
+## Goals
+
+1. A built-in theme `matrix` (`crates/arkos/themes/matrix.toml`): a black ground and bright
+   green text, passing the theme contrast rules, recommending the effect `matrix`.
+2. A built-in effect `matrix` (`crates/arkos/effects/matrix/`: `effect.toml`, `wash.metal`,
+   `glyphs.metal`), listed by `arkos effect list` and Settings beside `watercolor` and `space`.
+3. The text, everywhere in the project window, drawn as emissive green with a soft halo, and an
+   idle glitch: now and then one letter flashes and shows a different shape for a fraction of a
+   second.
+4. The terminal, on top of that: a cell whose character changes shows random characters for a
+   few frames before settling, longer and busier while that tab's Claude session is Working.
+   Freshly settled text starts brighter and cools to the normal green.
+5. The wash: black, with faint columns of rune-like shapes falling at different speeds, dim
+   enough to read as background noise; a thin green line on the pane edges and menus.
+6. The scramble is an effect capability, not a theme feature: a new manifest key asks the
+   terminal for it, as `glyph_motion` asks for the clock. Any effect may use it.
+
+## Non-goals
+
+- No real letter swaps in the UI text (sidebar, tabs, markdown, palette). Those glyphs are
+  drawn by dozens of elements, and the glyph shader cannot fetch another letter from the atlas,
+  so the UI's glitch is the shader's shape trick (below), not a character change.
+- No new gpui fork patch. The hooks that exist (the glyph shader, its clock at buffer 5, the
+  emoji stages) are enough.
+- No scramble on web pages (WebKit draws them), on images, or on the aux windows.
+- No sound; no reaction to the pointer; no change to watercolor or space.
+
+## Anti-goals (a failure even if it works)
+
+- Text that is hard to read at rest. The idle glitch is rare and brief; between glitches every
+  letter is still and whole. If Cyrus finds the idle state tiring, the idle rate goes down or to
+  zero before anything else changes.
+- Scramble that hides what Claude said: a cell always settles on its real character within the
+  decode time, and a cell whose character did not change is never touched by the decode.
+- A window that costs noticeable CPU while idle and visible. The text's timer runs at a low
+  rate (below), and the CPU is measured as the space design measured it.
+- Motion under Reduce Motion: the clock freezes (still rain, no glitches) and the decode settles
+  at once.
+- Any of the floors the guide sets broken: the stroke's core keeps at least 55% of its coverage,
+  the paper stays at or above 0.5, and the wash stays within the 4 ms budget at half scale.
+
+## Constraints
+
+- The rules in `CLAUDE.md` and `docs/development.md` hold, with those of the 2026-10-29 hand-off
+  (`~/Desktop/ide.md`, outside the repo): `nice -n 15`, no `--release`, one cargo at a time,
+  tests before code, headless tests named as sentences, `cargo check --workspace --all-targets`
+  clean, doc comments without em-dashes, motion through `motion.rs`, and every shader in its own
+  `.metal` file loaded with `include_str!`.
+- Dev windows run as a separate instance, never against Cyrus's real config or daemon: `theme
+  use` in a dev window would rewrite his Claude Code colours, and the daemon under the real
+  Application Support holds his sessions. The script, kept in the scratchpad (never the repo):
+
+  ```sh
+  #!/bin/zsh
+  export XDG_CONFIG_HOME=/Users/csarko/Library/Caches/arkos-spike-config
+  export ARKOS_APP_SUPPORT=/Users/csarko/Library/Caches/arkos-spike
+  exec /Users/csarko/Projects/ide-arkos/target/debug/arkos "$@"
+  ```
+
+  `<script> <project folder>` opens a window; `<script> theme use matrix`, `<script> effect use
+  matrix` and `<script> effect use none` drive that instance alone. That config is Lavender
+  Light with watercolor forced on today; `theme use matrix` and `effect use theme` set it up.
+- Shoots run on GitHub runners only.
+- The branch is `matrix`, in the worktree `~/Projects/ide-arkos/.claude/worktrees/matrix`, off
+  `9dc1c76 Release 0.7.13`.
+
+## The theme (`crates/arkos/themes/matrix.toml`)
+
+- `window_bg` and `terminal.background` are black (`#000000`). The bars, the sidebar and the
+  inactive tabs are a very dark green-black (around `#060b07`), so the window still has shape
+  with the effect off. `tab_active` is black.
+- `terminal.foreground`, `chrome.text` and the focus ring are phosphor greens: a bright one for
+  the text (around `#4af626`, which clears the 11:1 terminal rule and 7:1 chrome rule on black
+  by a wide margin), a deeper one for `text_dim` (around `#2e9e3a`, at least 4.5:1), and the
+  bright green as `focus_ring`. The cursor is the text green; the selection a dark green.
+- The ANSI colours keep their meaning (red stays red, yellow yellow) so a program's output still
+  reads, but each leans toward the phosphor family and sits at 4.5:1 or better on black.
+  `semantic.working` is the bright green, `semantic.waiting` an amber, as in Navy's roles.
+- Every colour drawn as text (`chrome.text`, `text_dim`, `terminal.foreground`, the sixteen ANSI
+  colours, the `semantic`, `tree` and `viewer` colours) has an sRGB luminance (`0.2126 r + 0.7152
+  g + 0.0722 b` of the components as the shader sees them) of at least 0.35, so none of it takes
+  the glyph shader's dark-text branch (threshold 0.3, below) and all of it glows. A theme test
+  asserts this for matrix.
+- `[effect] name = "matrix"`.
+- The exact values are the builder's, found with `arkos theme contrast matrix` until every pair
+  passes. The theme test that holds every built-in to the rules covers it.
+- The `BUILTIN` list, Settings, `docs/themes.md`, `docs/guide.md`, `docs/agent-guide.md` and the
+  config template's list of built-ins name it.
+
+## The effect's manifest (`matrix/effect.toml`)
+
+`frame_rate = 30`, `scale = 0.5`, `ui_text_bump = 0`, `ink_borders = true`,
+`highlights = "effect"`, `menus = "glow"`, `glyph_motion = true`, `paper_alpha = 0.8`,
+`chrome_alpha = 0.0`, `active_tab_alpha = 0.5`, `text_contrast = 0.0`, and the two new keys
+below.
+
+### New manifest keys (the contract grows by two keys)
+
+| Key | Range | Default | What it does |
+| --- | --- | --- | --- |
+| `glyph_rate` | 1 to 20 | `frame_rate` capped at 20 | The frames a second the text is redrawn at while `glyph_motion` is on. Matrix sets 10: a glitch that lasts a tenth of a second needs no more, and a whole-window redraw at 20 a second was the space design's CPU worry. |
+| `terminal_decode` | true, false | false | The terminal decodes changed cells (below) and brightens fresh ones while this effect is settled on. Off, the terminal draws as always. Requires `glyph_motion = true`: the decode has no timer of its own, so a manifest with decode on and motion off is invalid, with an error naming both keys. |
+
+`glyph_wait` takes `glyph_rate` in place of the capped `frame_rate`. Both keys are documented
+in the agent guide's manifest table (the only place the keys are listed; `arkos effect contract`
+prints the shader contract, not the manifest). An unknown key still makes an effect invalid, so
+an older Arkos refuses a folder that uses them, which is the existing behaviour for any new key.
+
+## The text (`matrix/glyphs.metal`)
+
+Starts from space's `glyphs.metal` (the quad widened by the halo's reach, samples kept inside
+the glyph's own tile, everything measured in points through `ARKOS_SCALE`, the 55% core floor,
+the emoji stages at the end) with these changes:
+
+- **Colour.** The hue is a phosphor green, `(0.35, 1.0, 0.45)`. The tint is stronger than
+  space's (around 0.45, keep 0.15), so coloured ANSI text still shows its colour but reads as
+  green-cast. No scanlines. Brightness 1.0: the letter is the theme's colour at full light.
+- **Halo.** Space's three rings at a glow around 1.6, in the glyph's own colour mixed toward the
+  green. The halo scales with the glyph's luminance, so a fresh, brightened cell (below) glows
+  more than a settled one with no other signal from the app.
+- **Dark text.** As space, but with the threshold at 0.3 rather than 0.5: a glyph whose colour
+  has luminance under 0.3 (a light theme with matrix chosen) leans toward a deep green `(0.0,
+  0.4, 0.15)`, keeps its brightness and draws no halo. The shader knows only the glyph's colour,
+  so the matrix theme keeps every text colour above 0.35 (theme section) and all of its text,
+  coloured ANSI output included, takes the emissive branch.
+- **The idle glitch.** The shader reads the clock (`constant float *time [[buffer(5)]]`) in the
+  vertex stage. Time is cut into slots of `GLITCH_SLOT` = 0.1 s. For each glyph and slot a hash
+  of the glyph's position (its bounds origin in device pixels, which is stable for a letter that
+  stays put) and the slot number says whether it glitches, with probability `GLITCH_CHANCE`
+  such that a window of about 3,000 visible glyphs shows roughly 3 glitches a second: ten slots
+  a second, so `GLITCH_CHANCE` = 0.0001 per glyph per slot. A glitching glyph:
+  - samples its tile mirrored, horizontally, vertically or both, picked by the same hash, so it
+    shows a shape that is not its letter but has the letter's weight and size (the atlas holds
+    nothing else it could safely show);
+  - is lit at `GLITCH_FLASH` = 1.4 times its light, the halo with it;
+  - lasts one slot. A second slot in a row for the same glyph is not prevented, but at this
+    chance it is rare.
+  - The hash is `hash01` from space's wash (PCG's output step, integer arithmetic), so a Rust
+    mirror agrees to the bit.
+- **Emoji** go on the same display: their own colours tinted toward the green by the same
+  tint, haloed, and glitching by the same rule.
+- **Under Reduce Motion** the clock is frozen and no glyph timer runs, so whichever glyphs the
+  frozen slot picks would glitch forever. The vertex stage therefore reads a second value the
+  app already controls: the clock is frozen at exactly 0.0 under Reduce Motion (`ActiveEffect::
+  time` starts there and never advances), and slot 0 glitches nothing.
+- All the constants (`GLITCH_SLOT`, `GLITCH_CHANCE`, `GLITCH_FLASH`, the hue, tint, keep, glow
+  and reach) sit at the top of the file with one comment each, so tuning is a one-line edit.
+
+## The terminal's decode (app side, `terminal_decode`)
+
+The terminal is the only text the app draws from a grid it owns, so it is the only text whose
+letters can really change. The decode lives in a new module `crates/arkos/src/effects/decode.rs`
+(the pure rules, tested) and is applied in `TerminalElement::paint` as the rows are built.
+
+- **What the terminal remembers.** Per visible cell, the character last painted and the instant
+  it last changed (`Decode` state on `Terminal`, sized to the screen, reset on resize and when
+  the display offset changes, since scrolled history is not fresh output). It is kept only while
+  `terminal_decode` is on; turning the effect off drops it.
+- **What counts as a change.** A cell whose character differs from the one last painted, where
+  the new character is not a space. A cell that became a space just clears. A cell whose
+  character is the same is never touched, whatever happened around it.
+- **Decoding.** For `DECODE_MS` after the change the cell is drawn with a random character
+  instead of its own, a new one each frame, from a fixed string of ASCII letters, digits and
+  symbols (`DECODE_CHARS`), picked by a hash of the cell's position, its change instant and the
+  frame, so the frames differ but a test can predict them. Only ASCII, so the glyph comes from
+  the terminal's own font at the cell's width. A wide character (`CellKind::Wide`) decodes as two
+  ASCII characters over its two cells; a spacer never decodes.
+- **Working and idle.** The element is told whether the tab's session is `ClaudeState::Working`
+  (pane_view has the state; it already derives the tab mark from it). Working:
+  `DECODE_MS_WORKING` = 400 ms. Not working: `DECODE_MS_IDLE` = 120 ms. At `glyph_rate` 10 that
+  is four frames of random characters, or one. The idle decode is what a key press or a prompt's
+  redraw shows: a brief flicker where the text changed.
+- **Fresh text.** For `FRESH_MS` = 1500 ms after a cell settles, its foreground is mixed toward
+  white-green `(0.85, 1.0, 0.85)` by a share that falls from `FRESH_MIX` = 0.6 to 0 over that
+  time. The shader's halo follows the brightness, so new output glows and cools. A cell whose
+  colour is not the terminal's foreground (ANSI-coloured text) brightens the same way.
+- **Frames.** The glyph timer at `glyph_rate` already redraws the window while the effect is
+  settled and seen, so the decode and the cooling need no timer of their own. Between frames
+  nothing is computed.
+- **Reduce Motion.** `DECODE_MS` and `FRESH_MS` are 0: cells settle at once with their own
+  colour.
+- **Scrolling output.** A line that scrolls up moves every character in the viewport, so while
+  Claude streams output whole rows decode together. That is the look Cyrus asked for while
+  Claude works. If it proves too busy in Claude Code's fullscreen renderer (which redraws whole
+  screens), the first lever is `DECODE_MS_WORKING`, the second a cap on the share of cells
+  decoding in one frame; the builder adds the cap only if the dev window shows the need.
+- All the constants (`DECODE_MS_WORKING`, `DECODE_MS_IDLE`, `FRESH_MS`, `FRESH_MIX`,
+  `DECODE_CHARS`) live in `decode.rs` with one comment each.
+
+## The wash (`matrix/wash.metal`)
+
+Everything derives from the theme's colours, so matrix chosen with another theme reads in that
+theme's green (its `ANSI green`, or its focus ring when that is nearer the text).
+
+- **Ground.** `ARKOS_WINDOW_BG`, flat.
+- **Rain.** The window is cut into columns `RAIN_COL` = 14 points wide and rows `RAIN_ROW` = 18
+  points tall. Each column (by a hash of its index) has a speed between `RAIN_SPEED_MIN` = 2 and
+  `RAIN_SPEED_MAX` = 6 rows a second, a trail length between 8 and 24 rows, a phase, and a gap
+  of a few seconds between its streams, so at any moment about a third of the columns carry a
+  stream. A stream is a head cell and a trail that fades to nothing behind it. Each cell in a
+  stream shows a rune: a 5 by 7 bit pattern from a hash of the cell's position and a slow clock
+  (`RUNE_CHANGE` = 0.5 s, so the runes flicker as the film's do), drawn as filled bits with soft
+  edges, in the theme's green. The head is brighter and a touch whiter; the trail is the green
+  at `RAIN_ALPHA` = 0.12 at most, times `u.intensity`, so the rain is noise under the text and
+  never competes with it. There is no font in the wash, so these are drawn shapes, not letters.
+- **Where it shows.** The rain covers the whole window. The panes' paper at 0.8 hides most of
+  it under the text; the bars and the sidebar (`chrome_alpha` 0) show it through their own faint
+  darkening, as space darkens its bars.
+- **Edges (`ink_borders`).** A thin line in the focus ring colour on every edge a block reports:
+  a core about a point wide and a halo about 3 points out, as space's edge glow but without
+  its sweeping bars. Media and tables get the same line. The same functions serve
+  `arkos_overlay`, so the menus' edges are the panes' own.
+- **Highlights (`highlights = "effect"`).** A soft green fill on the selected and hovered rows
+  and the hovered tab, the strengths by state as watercolor's.
+- **Menus (`menus = "glow"`).** The backdrop is the wash over the menu's place, as space's.
+- **Time.** Every stream is a pure function of `u.time`; a frozen clock shows still rain.
+- **Budget.** Within 4 ms at half scale by `arkos effect bench matrix`. The rain is one hash
+  and one bit lookup per pixel; the edges are space's.
+- All the constants sit at the top of the file with one comment each.
+
+## Tests (written first, headless)
+
+- Theme: matrix is a built-in, passes every contrast pair, recommends `matrix`.
+- Manifest: `glyph_rate` and `terminal_decode` parse, default as the table says, and a value out
+  of range names the key and the range; `terminal_decode` without `glyph_motion` is invalid with
+  an error naming both; the built-in manifest sets them as this document says.
+- Theme: every text colour of matrix has luminance 0.35 or more as the shader measures it.
+- `glyph_wait` uses `glyph_rate`: at 10 the wait is 100 ms.
+- Decode rules: a changed cell decodes for the working or idle time and then settles on its own
+  character; an unchanged cell is untouched; a cell that became a space clears at once; a wide
+  character decodes over two cells and a spacer never; the random character for a given cell,
+  instant and frame is the predicted one and is ASCII; the fresh mix falls from `FRESH_MIX` to 0
+  over `FRESH_MS`; Reduce Motion settles at once; a resize or a change of display offset resets
+  the state.
+- Glitch mirror: a Rust mirror of the shader's glitch picker (as `effects/space.rs` mirrors the
+  wash's schedule) shows that slot 0 glitches nothing and that over 3,000 glyphs and 100 slots
+  the rate is within a factor of two of 3 a second.
+- Shaders: the three built-in effects compile through the existing check path, `arkos_overlay`
+  included, and the glyph shader with its clock parameter.
+- GPU: a `bench.rs` render test measures matrix's frame and asserts it under the budget, as the
+  watercolor render tests do.
+
+## How it is seen
+
+1. Built in the worktree. `arkos effect check` prints `ok: matrix`; `arkos effect bench matrix`
+   says `within budget`.
+2. A dev window as a separate instance, with `theme use matrix` and `effect use matrix` in that
+   instance's config, running a real Claude Code session. Cyrus looks at: the idle state for a
+   few minutes (is the glitch tiring?), a prompt being typed, Claude streaming output, Claude
+   Code's fullscreen renderer, the sidebar and a markdown tab, a menu.
+3. Iterate on the constants from what he says. Each round is a one-line edit, `effect use none`,
+   a second's fade, `effect use matrix`.
+4. The window's CPU with matrix on, idle in front, goes in the Status list. No release build is
+   made locally (the Air rule), so the figure comes from the released build after Cyrus's look
+   and the release, as space's did; a debug figure from the dev window is noted beside it in the
+   meantime. Over 10% on the release build, `glyph_rate` is halved in a follow-up and both
+   figures are reported.
+5. A cloud shoot of a scene in matrix for the README and the site, once the look is settled.
+6. The Status list in `docs/development.md` gains the hand checks: the glitch at rest, the decode
+   while Claude works and while idle, fresh text cooling, the rain's brightness, emoji, menus,
+   a 256-colour app in matrix, Claude Code's colours after a restart in matrix.
+
+Nothing merges until Cyrus has looked.
+
+## Left to the builder
+
+The exact theme values within the rules above; the rune bit patterns; the rain's hashing and
+how streams are spaced; the edge line's exact widths; how the terminal's decode state is stored
+and reset; the test names; whether `glyph_rate` is threaded through `ActiveEffect` or read from
+the manifest at the call. Calls made on Cyrus's behalf, open to his correction once he sees the
+build: every constant named above, the mirror trick for the UI glitch, `glyph_rate` as a new key
+rather than a change to the cap, `terminal_decode` as a manifest key rather than a theme or
+app setting, and ASCII only for the decode's random characters.
+
+## Rulings from the builder check (2026-10-29, my calls)
+
+1. The dev-window script is written into this document (Constraints), since the hand-off that
+   held it lives outside the repo.
+2. The glyph shader's dark-text threshold is 0.3, not space's 0.5, and the matrix theme keeps
+   every text colour at luminance 0.35 or more, so coloured ANSI output glows rather than taking
+   the dark branch. Space's own rule is unchanged.
+3. `GLITCH_CHANCE` is 0.0001 per glyph per 0.1 s slot: the document had said 0.001, which is 30
+   glitches a second on 3,000 glyphs, ten times the rate it names.
+4. `terminal_decode` requires `glyph_motion`; a manifest with one and not the other is invalid.
+   The decode never requests frames of its own.
+5. The idle-CPU figure is measured on the released build, after Cyrus's look, as space's was;
+   the halving rule applies then.
