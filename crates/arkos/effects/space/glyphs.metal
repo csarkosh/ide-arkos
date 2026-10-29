@@ -13,7 +13,7 @@ constant float BRIGHTNESS = 0.80;
 constant float TINT = 0.25;
 constant float KEEP = 0.15;
 constant float SCANLINES = 0.08;
-constant float GLOW = 1.15;
+constant float GLOW = 1.40;
 // How far past the glyph's box the halo reaches, in points: its outer ring and a margin.
 constant float REACH = 5.5;
 

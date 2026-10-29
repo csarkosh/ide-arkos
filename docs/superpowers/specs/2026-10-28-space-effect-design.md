@@ -168,6 +168,6 @@ shooting stars; ruling 6 now only asks that a frozen clock shows no shooting sta
 
 ## Amendment 3 (2026-10-29, Cyrus)
 
-The text glow is raised from 0.90 to 1.15 ("a little more glow"); the pane edges glow wider
+The text glow is raised from 0.90 to 1.40 ("a little more glow", then one more nudge); the pane edges glow wider
 (halo 0.75, reach 3.5 points) with a bright shimmer gliding along them, and a shooting star
 comes every 8 to 16 seconds.
