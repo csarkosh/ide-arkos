@@ -21,6 +21,8 @@ pub enum Kind {
     Table = 9,
     /// A markdown table's header row.
     TableHeader = 10,
+    /// An open menu or popover, drawn above the panes by the effect's menu stage.
+    Menu = 11,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -100,6 +102,31 @@ pub struct Shape {
     pub key: u64,
     pub rect: Rect,
     pub kind: Kind,
+}
+
+/// An open menu or popover as it reported itself this frame: what draws it, where, and how far
+/// in it has faded (its edges fade with it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuShape {
+    pub key: u64,
+    pub rect: Rect,
+    pub opacity: f32,
+}
+
+/// The blocks the effect's menu stage draws: each open menu with all four edges, its fade as its
+/// value, and a seed from what draws it so its grain stays put as it moves.
+pub fn menu_blocks(menus: &[MenuShape]) -> Vec<Block> {
+    menus
+        .iter()
+        .map(|m| Block {
+            rect: m.rect,
+            kind: Kind::Menu,
+            edges: EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT,
+            seed: 50.0 + (m.key % 997) as f32 * 0.61,
+            value: m.opacity,
+            ordinal: 0.0,
+        })
+        .collect()
 }
 
 /// How far a video's outline sits outside its picture, in points: about the ink's own weight, so
@@ -220,6 +247,22 @@ mod tests {
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
         Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, shapes: &[], strokes }
+    }
+
+    #[test]
+    fn each_open_menu_is_a_menu_block_with_all_four_edges_and_its_fade() {
+        assert!(menu_blocks(&[]).is_empty());
+        let menus = [MenuShape { key: 9, rect: rect(100.0, 80.0, 200.0, 60.0), opacity: 0.4 }, MenuShape { key: 3, rect: rect(10.0, 10.0, 180.0, 120.0), opacity: 1.0 }];
+        let out = menu_blocks(&menus);
+        assert_eq!(kinds(&out), vec![Kind::Menu, Kind::Menu]);
+        assert_eq!(out[0].rect, menus[0].rect);
+        assert_eq!(out[0].edges, EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM | EDGE_LEFT);
+        assert_eq!((out[0].value, out[1].value), (0.4, 1.0), "a menu's edges fade with it");
+        // A menu keeps its grain as it moves and fades.
+        let moved = menu_blocks(&[MenuShape { key: 9, rect: rect(140.0, 90.0, 200.0, 60.0), opacity: 1.0 }]);
+        assert_eq!(moved[0].seed, out[0].seed);
+        assert_ne!(out[0].seed, out[1].seed);
+        assert_eq!(Kind::Menu as i32, 11, "the preamble's ARKOS_MENU_BLOCK");
     }
 
     fn kinds(blocks: &[Block]) -> Vec<Kind> {

@@ -362,6 +362,9 @@ pub struct Root {
     /// its header): cleared at the start of each render and pushed as they are laid out, so the
     /// wash paints and outlines each.
     pub effect_shapes: Vec<effects::blocks::Shape>,
+    /// The open menus and popovers as they reported themselves this frame, for the effect's
+    /// menu stage (`chrome::menu_report`).
+    pub effect_menus: Vec<effects::blocks::MenuShape>,
     /// The Explorer row or tab under the pointer, by its mark's key, set by their `on_hover`.
     pub effect_hover: Option<u64>,
     /// The highlights' fades, fed `effect_marks` each frame the wash draws.
@@ -667,6 +670,7 @@ impl Root {
             effect_divider: None,
             effect_marks: Vec::new(),
             effect_shapes: Vec::new(),
+            effect_menus: Vec::new(),
             effect_hover: None,
             effect_strokes: effects::strokes::Strokes::default(),
             caret_wake: None,
@@ -1026,6 +1030,7 @@ impl Root {
         let live = self.popover.value().is_some();
         let w = f32::from(window.viewport_size().width);
         let card = chrome::popover_card(which, w, opacity, live, &self.theme, self.effect_style(), self.ui_family());
+        let card = if self.effect_style().menu_edges { card.child(chrome::menu_report(0x15, opacity, cx)) } else { card };
         let c = &self.theme.chrome;
         let (text_c, dim_c) = (c.text.hsla(), c.text_dim.hsla());
         if which != chrome::Popover::Bell {
@@ -3836,7 +3841,9 @@ impl Root {
         self.effect.as_ref()?;
         let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
         let (covered, reduce) = (self.covered(), motion::reduce_motion());
-        if hidden || covered {
+        // The wash rests while a menu or prompt covers the panes (`should_draw` below), but an
+        // open menu's edges are still drawn by the menu stage.
+        if !effects::active::ticks(hidden, covered, !self.effect_menus.is_empty()) {
             return None;
         }
         let layout = self.layout();
@@ -3855,7 +3862,19 @@ impl Root {
                 e.logged = Some((now, ms));
             }
         }
-        Some(strokes_moving)
+        // The menu stage: the open menus' edges above the panes, or its layer hidden.
+        let menus_fading = self.effect_menus.iter().any(|m| m.opacity < 1.0);
+        if style.menu_edges && !self.effect_menus.is_empty() {
+            let blocks = effects::blocks::menu_blocks(&self.effect_menus);
+            let overlay = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
+            if !(reduce && e.last_overlay.as_ref() == Some(&overlay)) {
+                e.layer.draw_overlay(Some(&overlay));
+                e.last_overlay = Some(overlay);
+            }
+        } else if e.last_overlay.take().is_some() {
+            e.layer.draw_overlay(None);
+        }
+        Some(strokes_moving || menus_fading)
     }
 
     /// The keys come back to gpui from a web view: before a field of Arkos's own takes them.
@@ -3898,6 +3917,7 @@ impl Render for Root {
         // The highlights report themselves again as this frame lays out.
         self.effect_marks.clear();
         self.effect_shapes.clear();
+        self.effect_menus.clear();
         self.window_active = window.is_window_active();
         self.note_focus();
         let now = Instant::now();

@@ -49,6 +49,7 @@ pub fn render_link_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> 
     let (menu, opacity) = root.link_menu.current(root.frame_now)?;
     // Drawn while it fades out too, but only the open menu occludes and takes clicks.
     let live = root.link_menu.value().is_some();
+    let style = root.effect_style();
     let c = &root.theme.chrome;
     let mut m = div()
         .absolute()
@@ -59,15 +60,16 @@ pub fn render_link_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> 
         .flex()
         .flex_col()
         .py(px(4.0))
-        .bg(c.banner.hsla())
-        .border_1()
-        .border_color(c.border.hsla())
+        .map(|d| crate::chrome::menu_frame(d, &root.theme, &style))
         .font_family(root.ui_family())
         .text_size(px(root.ui_size(12.0)))
         .text_color(c.text.hsla())
         // Hover, the cursor and the wheel under the menu stop reacting while it is over them.
         .when(live, |m| m.occlude().on_any_mouse_down(|_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
-    let hover = c.tab_active.hsla();
+    let hover = crate::chrome::menu_colors(&root.theme, style.menus).hover;
+    if style.menu_edges {
+        m = m.child(crate::chrome::menu_report(0x11, opacity, cx));
+    }
     for (i, (label, action)) in link_menu_items(&menu.url).into_iter().enumerate() {
         m = m.child(div().id(("link-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
             row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {

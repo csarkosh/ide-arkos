@@ -44,6 +44,8 @@ pub struct WebView {
     title_sent: Option<String>,
     /// The notice a repaint has been scheduled for.
     notice_timer: Option<Instant>,
+    /// Whether the page's own ground is left out, as last told to the view.
+    ground: web::PageGround,
 }
 
 impl WebView {
@@ -62,7 +64,7 @@ impl WebView {
             }
         })
         .detach();
-        WebView { model, web, focus: cx.focus_handle(), address, address_focus: cx.focus_handle(), editing: false, address_x: gpui::px(0.0), address_drag: false, notice: None, title_sent: None, notice_timer: None }
+        WebView { model, web, focus: cx.focus_handle(), address, address_focus: cx.focus_handle(), editing: false, address_x: gpui::px(0.0), address_drag: false, notice: None, title_sent: None, notice_timer: None, ground: web::PageGround::default() }
     }
 
     /// The tab's title (spec 3.1).
@@ -219,6 +221,12 @@ impl WebView {
     /// The colour behind the page, from the final theme (`Root::finish_theme`).
     pub fn set_under_color(&mut self, rgb: (u8, u8, u8)) {
         self.web.set_under_color(rgb);
+    }
+
+    /// Leaves the page's own ground out, or puts it back (`web::clears_page`); the view hears
+    /// only a change.
+    pub fn set_page_clear(&mut self, clear: bool) {
+        self.ground.push(clear, &mut *self.web);
     }
 
     /// The page is drawn by the web view (hidden otherwise, and Arkos draws a screen).

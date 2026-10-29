@@ -3,7 +3,9 @@
 // vertex stage widens each glyph's quad by INK_REACH so the ink can bleed past the stroke, and
 // passes the glyph's own tile so samples never pick up a neighbouring glyph in the atlas.
 // However dry the pen runs, a stroke's core keeps at least 55% of its coverage, so thin text
-// stays legible.
+// stays legible. Emoji get the same hand (arkos_emoji_vertex and arkos_emoji_fragment, at the
+// end): they keep their own colours, drift with the stroke, take the paper's tooth, pool darker
+// at their rim and bleed softly in their own colour; pictures are never drawn by these.
 //
 // gpui hands a glyph shader device pixels. Every distance and size below was drawn on a Retina
 // screen, two pixels a point, so each is measured in those half points: PER_PX turns them into
@@ -143,4 +145,116 @@ fragment float4 arkos_glyph_fragment(
   float bled = saturate(halo / max(alpha, 1e-4));
   rgb = mix(rgb, rgb * float3(1.25, 1.1, 0.95) + 0.08, bled * 0.6);
   return float4(rgb, alpha * input.color.a);
+}
+
+// Emoji, in the same ink. gpui draws emoji as colour sprites; these stand in for its colour
+// sprite stages for emoji only.
+struct EmojiInkVertexOutput {
+  float4 position [[position]];
+  float2 tile_position;
+  float clip_distance [[clip_distance]][4];
+  float4 tile_rect [[flat]];
+  float opacity [[flat]];
+  float glyph_h [[flat]];
+};
+
+struct EmojiInkFragmentInput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 tile_rect [[flat]];
+  float opacity [[flat]];
+  float glyph_h [[flat]];
+};
+
+vertex EmojiInkVertexOutput arkos_emoji_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(SpriteInputIndex_ViewportSize)]],
+    constant Size_DevicePixels *atlas_size
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  PolychromeSprite sprite = sprites[sprite_id];
+  // Widened as a glyph's quad is, so the bleed has room past the emoji's edge.
+  Bounds_ScaledPixels wide = sprite.bounds;
+  wide.origin.x -= INK_REACH;
+  wide.origin.y -= INK_REACH;
+  wide.size.width += 2.0 * INK_REACH;
+  wide.size.height += 2.0 * INK_REACH;
+  float4 device_position = to_device_position(unit_vertex, wide, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, wide, sprite.content_mask.bounds);
+  float2 atlas = float2((float)atlas_size->width, (float)atlas_size->height);
+  float2 tile_origin = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_size = float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 emoji_size = float2(sprite.bounds.size.width, sprite.bounds.size.height);
+  float2 per_px = tile_size / max(emoji_size, float2(1.0));
+  float2 local = unit_vertex * float2(wide.size.width, wide.size.height) - INK_REACH;
+  float2 tile_position = (tile_origin + local * per_px) / atlas;
+  float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
+  return EmojiInkVertexOutput{
+      device_position,
+      tile_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      tile_rect,
+      sprite.opacity,
+      float(sprite.bounds.size.height) / PER_PX};
+}
+
+// The emoji's colour at uv, nothing outside its own tile.
+float4 emoji_at(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
+  if (any(uv < rect.xy) || any(uv > rect.zw)) {
+    return float4(0.0);
+  }
+  return atlas.sample(s, uv);
+}
+
+fragment float4 arkos_emoji_fragment(
+    EmojiInkFragmentInput input [[stage_in]],
+    constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
+  constexpr sampler smp(mag_filter::linear, min_filter::linear);
+  float2 px = input.position.xy / PER_PX;
+  float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float4 rect = input.tile_rect;
+  float small = clamp(22.0 / max(input.glyph_h, 1.0), 1.0, 2.2);
+
+  // The hand: a little less drift than a letter's, so the picture stays clear.
+  float2 wob = (float2(arkos_noise(px * 0.07 * small), arkos_noise(px * 0.07 * small + 17.0)) - 0.5) * 1.4;
+  float2 uv = input.tile_position + wob * PER_PX * texel;
+
+  float4 core = emoji_at(atlas_texture, smp, uv, rect);
+  // The same two rings as a letter's: the near one finds the rim, the far one feeds the bleed,
+  // whose colour is the emoji's own nearby.
+  float near = 0.0;
+  float far = 0.0;
+  float3 bleed_rgb = float3(0.0);
+  for (int k = 0; k < 8; k++) {
+    float ang = float(k) * 0.785398 + 0.3;
+    float2 d = float2(cos(ang), sin(ang));
+    float4 n = emoji_at(atlas_texture, smp, uv + d * 1.2 * PER_PX * texel, rect);
+    float4 f = emoji_at(atlas_texture, smp, uv + d * 2.7 * PER_PX * texel, rect);
+    near += n.a;
+    far += f.a;
+    bleed_rgb += n.rgb * n.a + f.rgb * f.a;
+  }
+  bleed_rgb /= max(near + far, 1e-4);
+  near *= 0.125;
+  far *= 0.125;
+
+  // Pigment pools at the rim; ink feathers out unevenly; the pen's load varies a little (an
+  // emoji keeps at least 80% of itself); the paper's tooth.
+  float pool = saturate((core.a - near) * 2.2) * core.a * 0.8;
+  float feather = arkos_noise(px * 0.18 * small + 5.0);
+  float halo = max(near, far * 0.8) * (0.2 + 0.25 * feather) * (1.0 - core.a);
+  float density = 0.85 + 0.15 * arkos_noise(px * 0.035 * small * small + 9.0);
+  float tooth = 0.9 + 0.1 * arkos_hash(floor(px * 0.7));
+
+  float body = core.a * max(density * tooth, 0.8);
+  float alpha = saturate(body + halo);
+  float3 inked = core.rgb * (1.0 - 0.3 * pool);
+  // The bleed paler and warmer than the colour it came from, as a letter's is.
+  float3 bled = mix(bleed_rgb, bleed_rgb * float3(1.25, 1.1, 0.95) + 0.08, 0.6);
+  float3 rgb = mix(bled, inked, saturate(body / max(alpha, 1e-4)));
+  return float4(rgb, alpha * input.opacity);
 }

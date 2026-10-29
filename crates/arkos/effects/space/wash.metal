@@ -8,13 +8,55 @@
 // picture. The clock's zero falls between two shooting stars. (An aurora was removed on
 // 2026-10-28: Cyrus did not like it.)
 
-// The pane edges' glow and its shimmer: the halo's strength and reach in points, the shimmer's
-// strength, its spots' spacing (radians a point along x + y) and speed (radians a second).
+// The pane edges' glow: the halo's strength and reach in points, and how much a passing bar
+// brightens it; the line's own strength and how far it leans from the ring's blue to the star
+// colour; and how much further a passing bar leans it. The leans are kept small so the line and
+// the bars stay close to the halo's blue.
 constant float EDGE_HALO = 0.75;
-constant float EDGE_HALO_REACH = 3.5;
-constant float EDGE_SHIMMER = 1.6;
-constant float EDGE_SHIMMER_SPACING = 0.03;
-constant float EDGE_SHIMMER_SPEED = 1.8;
+constant float EDGE_HALO_REACH = 2.0;
+constant float EDGE_SHIMMER = 0.5;
+constant float EDGE_CORE = 0.7;
+constant float EDGE_CORE_WHITE = 0.15;
+constant float EDGE_BAR_WHITE = 0.05;
+// Where a bar passes the halo also glows brighter (EDGE_BAR_GLOW more, at full cover) and reaches
+// further (EDGE_BAR_REACH more). Edges are looked for out to EDGE_REACH points, and the halo is
+// faded to nothing over the last 3 points of that, so it never ends in a step.
+constant float EDGE_BAR_GLOW = 1.5;
+constant float EDGE_BAR_REACH = 0.5;
+constant float EDGE_REACH = 12.0;
+
+// The bars that sweep the edges, after Material UI's LinearProgress, variant "query": its long and
+// short indeterminate bars (CSS left and right as fractions of the edge, from and to, each eased by
+// its own cubic-bezier over a 1.26 s sweep, each 1.15 s behind the last), run from the far end, so
+// right to left along a horizontal edge and bottom to top along a vertical one. A bar's ends are
+// tapered inward, so a bar resting just off an edge lights none of it: each end over 40% of the
+// bar's length, between QUERY_SOFT and QUERY_TAPER_MAX points, so the bar blends into the line.
+// While a shimmer plays its bars pulse, 1.4 times a second between half and full brightness, each
+// shimmer at a phase of its own.
+//
+// Unlike Material's, they come as shimmers that vary: one a 3.5 s slot, starting up to 2 s into
+// it (1.5 to 5.5 s apart), each with its own speed (0.8 to 1.5 times Material's), its own number
+// of bars (1 to 3, long and short alternating) and its own pick of edges (each edge a 55% chance).
+// A shimmer can run on into the next slot, so the previous slot's is drawn too; none runs past
+// the slot after that. Mirrored in crates/arkos/src/effects/space.rs (shimmers_at, shimmer_bar,
+// edge_key, edge_shows), which tests it: a change here is made there too.
+constant float QUERY_SWEEP = 1.26;
+constant float QUERY_STEP = 1.15;
+constant float2 QUERY_FROM[2] = {float2(-0.35, 1.0), float2(-2.0, 1.0)};
+constant float2 QUERY_TO[2] = {float2(1.0, -0.9), float2(1.07, -0.08)};
+constant float4 QUERY_EASE[2] = {float4(0.65, 0.815, 0.735, 0.395), float4(0.165, 0.84, 0.44, 1.0)};
+constant float QUERY_SOFT = 3.0;
+constant float QUERY_TAPER = 0.4;
+constant float QUERY_TAPER_MAX = 60.0;
+constant float SHIMMER_PULSE_LOW = 0.5;
+constant float SHIMMER_PULSE_HZ = 1.4;
+constant float SHIMMER_SLOT = 3.5;
+constant float SHIMMER_SLACK = 2.0;
+constant float SHIMMER_OFFSET = 0.1;
+constant float SHIMMER_SPEED_MIN = 0.8;
+constant float SHIMMER_SPEED_MAX = 1.5;
+constant float SHIMMER_EDGE_CHANCE = 0.55;
+constant uint SHIMMER_SALT = 0xC2B2AE35u;
 
 // The event schedule. It is mirrored in crates/arkos/src/effects/space.rs (meteor_visible),
 // which tests it: a change here is made there too.
@@ -80,6 +122,56 @@ float seg_v(float2 p, float x, float y0, float y1) {
     return length(float2(p.x - x, dy));
 }
 
+// One coordinate of a CSS cubic Bezier from (0, 0) to (1, 1), and the easing it makes: x found by
+// sixteen halvings, then y read off. Its ends are exact, so a bar at rest sits exactly off the edge.
+float bezier_coord(float a, float b, float s) {
+    float u = 1.0 - s;
+    return 3.0 * u * u * s * a + 3.0 * u * s * s * b + s * s * s;
+}
+float css_ease(float4 c, float x) {
+    if (x <= 0.0) { return 0.0; }
+    if (x >= 1.0) { return 1.0; }
+    float lo = 0.0, hi = 1.0;
+    for (int i = 0; i < 16; i++) {
+        float mid = 0.5 * (lo + hi);
+        if (bezier_coord(c.x, c.z, mid) < x) { lo = mid; } else { hi = mid; }
+    }
+    return bezier_coord(c.y, c.w, 0.5 * (lo + hi));
+}
+
+// A bar of kind k (0 the long bar, 1 the short) x seconds into its sweep at speed 1: its start and
+// end as fractions along the edge from where the bars come in.
+float2 query_bar(int k, float x) {
+    float e = css_ease(QUERY_EASE[k], saturate(x / QUERY_SWEEP));
+    float2 lr = mix(QUERY_FROM[k], QUERY_TO[k], e);
+    return float2(lr.x, 1.0 - lr.y);
+}
+
+// An edge's key, from the point it starts at and its side's bit, and whether it takes part in
+// the shimmer with hash id.
+uint edge_key(float x, float y, uint side) {
+    uint ux = uint(max(x, 0.0) + 0.5);
+    uint uy = uint(max(y, 0.0) + 0.5);
+    return (ux * 73856093u) ^ (uy * 19349663u) ^ (side * 83492791u);
+}
+bool edge_shows(uint key, uint id) {
+    return hash01(key ^ (id * 0x9E3779B1u)) < SHIMMER_EDGE_CHANCE;
+}
+
+// How much of a bar lies at s points along an edge span points long, its ends softened.
+float bar_cover(float2 bar, float s, float span) {
+    float a = bar.x * span;
+    float b = bar.y * span;
+    float taper = clamp(QUERY_TAPER * (b - a), QUERY_SOFT, QUERY_TAPER_MAX);
+    return smoothstep(a, a + taper, s) * (1.0 - smoothstep(b - taper, b, s));
+}
+
+// How bright shimmer id's bars are since seconds after it began.
+float shimmer_pulse(uint id, float since) {
+    float wave = 0.5 + 0.5 * cos(6.2831853 * (SHIMMER_PULSE_HZ * since + hash01(id + 3u)));
+    return SHIMMER_PULSE_LOW + (1.0 - SHIMMER_PULSE_LOW) * wave;
+}
+
 // The stars' three depth layers: the cell each star lives in (points), the chance a cell has
 // one, its radius and its brightness. The far layer is dense, small and dim.
 constant float STAR_CELL[3] = {19.0, 37.0, 71.0};
@@ -89,6 +181,92 @@ constant float STAR_BRIGHT[3] = {0.35, 0.6, 0.9};
 
 // A highlight's strength at full fade, by its ordinal: hovered, selected, both (watercolor's).
 constant float HIGHLIGHT_STRENGTH[3] = {0.2, 0.3, 0.36};
+
+// The edge nearest a pixel so far: how far it is, its length, how far along it the pixel lies
+// from where the bars come in, its key, and its block's fade.
+struct EdgeHit {
+    float d;
+    float span;
+    float along;
+    uint key;
+    float value;
+};
+
+EdgeHit no_edge() {
+    EdgeHit h;
+    h.d = 1e5;
+    h.span = 1.0;
+    h.along = 0.0;
+    h.key = 0u;
+    h.value = 1.0;
+    return h;
+}
+
+// Takes blk's reported edges into h when one is nearer p; d is p's distance to blk's box.
+void nearest_edge(float2 p, ArkosBlock blk, float d, thread EdgeHit& h) {
+    uint edges = uint(blk.edges);
+    if (edges != 0u && abs(d) < EDGE_REACH) {
+        float4 r = blk.rect;
+        float x0 = r.x, y0 = r.y, x1 = r.x + r.z, y1 = r.y + r.w;
+        float ah = x1 - clamp(p.x, x0, x1);
+        float av = y1 - clamp(p.y, y0, y1);
+        float e;
+        if (edges & ARKOS_EDGE_TOP) { e = seg_h(p, y0, x0, x1); if (e < h.d) { h.d = e; h.span = r.z; h.along = ah; h.key = edge_key(x0, y0, ARKOS_EDGE_TOP); h.value = blk.value; } }
+        if (edges & ARKOS_EDGE_RIGHT) { e = seg_v(p, x1, y0, y1); if (e < h.d) { h.d = e; h.span = r.w; h.along = av; h.key = edge_key(x1, y0, ARKOS_EDGE_RIGHT); h.value = blk.value; } }
+        if (edges & ARKOS_EDGE_BOTTOM) { e = seg_h(p, y1, x0, x1); if (e < h.d) { h.d = e; h.span = r.z; h.along = ah; h.key = edge_key(x0, y1, ARKOS_EDGE_BOTTOM); h.value = blk.value; } }
+        if (edges & ARKOS_EDGE_LEFT) { e = seg_v(p, x0, y0, y1); if (e < h.d) { h.d = e; h.span = r.w; h.along = av; h.key = edge_key(x0, y0, ARKOS_EDGE_LEFT); h.value = blk.value; } }
+    }
+}
+
+// How much of a query bar lies at the nearest edge's point at time t: the previous slot's
+// shimmer (still finishing) and the current one's, each on its own pick of edges.
+float bar_cover_at(float t, EdgeHit h) {
+    float dline = h.d;
+    float along = h.along;
+    float span = h.span;
+    float cover = 0.0;
+    if (dline < EDGE_REACH) {
+        float ts = t + SHIMMER_OFFSET;
+        float now_slot = floor(ts / SHIMMER_SLOT);
+        for (int back = 1; back >= 0; back--) {
+            float sn = now_slot - float(back);
+            if (sn < 0.0) { continue; }
+            uint sid = uint(sn) ^ SHIMMER_SALT;
+            float since = ts - sn * SHIMMER_SLOT - SHIMMER_SLACK * hash01(sid);
+            if (since <= 0.0 || !edge_shows(h.key, sid)) { continue; }
+            float speed = mix(SHIMMER_SPEED_MIN, SHIMMER_SPEED_MAX, hash01(sid + 1u));
+            uint bars = 1u + min(uint(hash01(sid + 2u) * 3.0), 2u);
+            float pulse = shimmer_pulse(sid, since);
+            for (uint j = 0u; j < bars; j++) {
+                float2 bar = query_bar(int(j % 2u), since * speed - float(j) * QUERY_STEP);
+                cover = max(cover, bar_cover(bar, along, span) * pulse);
+            }
+        }
+    }
+    return cover;
+}
+
+// The glow line at the nearest edge: a bright core a little over a point wide and a soft halo a
+// couple of points out, both brightened where a query bar passes (cover), the halo also wider
+// there. The halo is laid in the ring's colour and the core over it in core_col; their strengths
+// are before the user's intensity.
+struct Glow {
+    float halo;
+    float core;
+    float3 core_col;
+};
+
+Glow edge_glow(EdgeHit h, float cover, float3 ring, float3 star_c) {
+    float dline = h.d;
+    float shimmer = cover * EDGE_SHIMMER;
+    Glow g;
+    g.core = saturate((1.0 - smoothstep(0.5, 1.1, dline)) * (EDGE_CORE + 0.25 * shimmer));
+    g.halo = exp(-dline / (EDGE_HALO_REACH * (1.0 + EDGE_BAR_REACH * cover))) * EDGE_HALO * (1.0 + EDGE_BAR_GLOW * cover)
+        * (1.0 - smoothstep(EDGE_REACH - 3.0, EDGE_REACH, dline));
+    float lean = EDGE_CORE_WHITE + EDGE_BAR_WHITE * shimmer;
+    g.core_col = mix(ring, star_c, lean);
+    return g;
+}
 
 fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
     float2 p = in.uv * u.size;
@@ -188,7 +366,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     int nb = min(int(u.block_count), 48);
     float dim = 0.0;
     float lift = 0.0;
-    float dline = 1e5;
+    EdgeHit hit = no_edge();
     for (int i = 0; i < nb; i++) {
         ArkosBlock blk = u.blocks[i];
         float4 r = blk.rect;
@@ -205,27 +383,42 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 lift = max(lift, s * saturate(fill));
             }
         }
-        uint edges = uint(blk.edges);
-        if (edges != 0u && abs(d) < 8.0) {
-            float x0 = r.x, y0 = r.y, x1 = r.x + r.z, y1 = r.y + r.w;
-            if (edges & ARKOS_EDGE_TOP) { dline = min(dline, seg_h(p, y0, x0, x1)); }
-            if (edges & ARKOS_EDGE_RIGHT) { dline = min(dline, seg_v(p, x1, y0, y1)); }
-            if (edges & ARKOS_EDGE_BOTTOM) { dline = min(dline, seg_h(p, y1, x0, x1)); }
-            if (edges & ARKOS_EDGE_LEFT) { dline = min(dline, seg_v(p, x0, y0, y1)); }
-        }
+        nearest_edge(p, blk, d, hit);
     }
     float3 ring = u.colors[ARKOS_FOCUS_RING].rgb;
     col = mix(col, bg * 0.8, dim * k);
     col = mix(col, ring, lift * k);
-    // The glow line: a bright core a little over a point wide, and a soft halo several points
-    // out. The shimmer: soft bright spots gliding slowly along every border (the wave runs along
-    // x + y, so it travels along horizontal and vertical edges alike), brightening the core and
-    // the halo where they pass.
-    float glide = 0.5 + 0.5 * sin((p.x + p.y) * EDGE_SHIMMER_SPACING - t * EDGE_SHIMMER_SPEED);
-    float shimmer = pow(glide, 4.0) * EDGE_SHIMMER;
-    float core = 1.0 - smoothstep(0.5, 1.1, dline);
-    float halo = exp(-dline / EDGE_HALO_REACH) * EDGE_HALO * (1.0 + shimmer);
-    col = mix(col, ring, saturate(halo * k));
-    col = mix(col, mix(ring, star_c, 0.35 + 0.4 * shimmer), saturate(core * (0.85 + 0.25 * shimmer)) * k);
+    // Every reported edge a glow line, with the query bars sweeping it.
+    Glow g = edge_glow(hit, bar_cover_at(t, hit), ring, star_c);
+    col = mix(col, ring, saturate(g.halo * k));
+    col = mix(col, g.core_col, g.core * k);
     return float4(col, 1.0);
+}
+
+// The menu stage: the open menus' edges, drawn above the panes with the panes' own glow and
+// bars, and nothing else. Its blocks are only the menus, each with its fade as its value. It
+// returns colour multiplied by its alpha: the halo laid in the ring's colour and the core over it.
+fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
+    float2 p = in.uv * u.size;
+    float k = saturate(u.intensity);
+    float3 ring = u.colors[ARKOS_FOCUS_RING].rgb;
+    float3 star_c = u.colors[ARKOS_ANSI + 15].rgb;
+    int nb = min(int(u.block_count), 48);
+    EdgeHit hit = no_edge();
+    for (int i = 0; i < nb; i++) {
+        ArkosBlock blk = u.blocks[i];
+        float4 r = blk.rect;
+        float2 hb = r.zw * 0.5;
+        nearest_edge(p, blk, sd_box(p - (r.xy + hb), hb), hit);
+    }
+    if (hit.d >= EDGE_REACH) {
+        return float4(0.0);
+    }
+    Glow g = edge_glow(hit, bar_cover_at(u.time, hit), ring, star_c);
+    // The edges fade with their menu (blk.value, carried in the hit).
+    float fade = k * hit.value;
+    float ah = saturate(g.halo * fade);
+    float ac = g.core * fade;
+    float a = ac + ah * (1.0 - ac);
+    return float4(g.core_col * ac + ring * ah * (1.0 - ac), a);
 }

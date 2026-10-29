@@ -5,6 +5,8 @@
 //! goes to the panes.
 
 use crate::effects::active::Style;
+use crate::effects::manifest::MenuLook;
+use crate::palette::Rgb;
 use crate::theme::Theme;
 use gpui::{canvas, div, point, prelude::*, px, App, ClickEvent, Div, FontWeight, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, SharedString, Window};
 use std::path::Path;
@@ -278,6 +280,79 @@ pub fn title_bar(project: &Path, right: Right, fullscreen: bool, theme: &Theme, 
 
 /// The card a popover's rows go in, styled like the context menu and hung under its icon.
 /// Only a live (open, not fading) card occludes and takes presses.
+/// A menu's colours: its card, its line, its hovered (or current) row, and the halo around it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuColors {
+    pub bg: gpui::Hsla,
+    pub border: gpui::Hsla,
+    pub hover: gpui::Hsla,
+    pub glow: Option<gpui::Hsla>,
+}
+
+/// The colours of a menu or popover in `look` (an effect's `menus`), from `theme`.
+pub fn menu_colors(theme: &Theme, look: MenuLook) -> MenuColors {
+    let c = &theme.chrome;
+    match look {
+        MenuLook::App => MenuColors { bg: c.banner.hsla(), border: c.border.hsla(), hover: c.tab_active.hsla(), glow: None },
+        MenuLook::Ink => MenuColors { bg: c.window_bg.hsla(), border: c.text.alpha(0.55), hover: ink_hover(c.window_bg, c.focus_ring).hsla(), glow: None },
+        MenuLook::Glow => MenuColors {
+            bg: c.window_bg.hsla(),
+            border: c.focus_ring.alpha(0.85),
+            hover: c.focus_ring.alpha(0.22),
+            glow: Some(c.focus_ring.alpha(0.45)),
+        },
+    }
+}
+
+/// The paper under a hovered row as watercolor paints a highlight: `paper` washed with `accent`
+/// thinned as a pigment (lifted 40% of the way to white, then pushed from its own grey, the wash
+/// shader's `bright`), at a hovered row's strength of 0.3.
+pub fn ink_hover(paper: Rgb, accent: Rgb) -> Rgb {
+    let f = |v: u8| v as f32 / 255.0;
+    let lifted = [f(accent.r), f(accent.g), f(accent.b)].map(|v| 1.0 - (1.0 - v) * 0.6);
+    let grey = lifted[0] * 0.299 + lifted[1] * 0.587 + lifted[2] * 0.114;
+    let bright = lifted.map(|v| (grey + (v - grey) * 1.55).clamp(0.0, 1.0));
+    let wash = |p: u8, b: f32| ((f(p) * (1.0 + (b - 1.0) * 0.3)).clamp(0.0, 1.0) * 255.0).round() as u8;
+    Rgb { r: wash(paper.r, bright[0]), g: wash(paper.g, bright[1]), b: wash(paper.b, bright[2]) }
+}
+
+/// A menu's line and halo: its own, or none when the effect draws its edges (`effect_edges`),
+/// keeping the line's width so nothing inside moves.
+pub fn menu_line(m: MenuColors, effect_edges: bool) -> (gpui::Hsla, Option<gpui::Hsla>) {
+    if effect_edges {
+        (gpui::transparent_black(), None)
+    } else {
+        (m.border, m.glow)
+    }
+}
+
+/// A menu or popover's card under `style`: its fill, and its line and halo unless the effect
+/// draws its edges.
+pub fn menu_frame<E: Styled + gpui::prelude::FluentBuilder>(d: E, theme: &Theme, style: &Style) -> E {
+    let m = menu_colors(theme, style.menus);
+    let (border, glow) = menu_line(m, style.menu_edges);
+    d.bg(m.bg).border_1().border_color(border).when_some(glow, |d, glow| {
+        d.shadow(vec![gpui::BoxShadow { color: glow, offset: point(px(0.0), px(0.0)), blur_radius: px(10.0), spread_radius: px(0.0) }])
+    })
+}
+
+/// What a menu adds to itself so the effect's menu stage draws its edges: a canvas over it that
+/// reports where it is and how far it has faded, each frame it is drawn, keyed by what draws it.
+pub fn menu_report(key: u64, opacity: f32, cx: &mut gpui::Context<crate::Root>) -> impl IntoElement {
+    let root = cx.weak_entity();
+    canvas(
+        move |b, _, cx| {
+            let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+            let _ = root.update(cx, |root, _| root.effect_menus.push(crate::effects::blocks::MenuShape { key, rect, opacity }));
+        },
+        |_, _, _, _| (),
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
 pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, theme: &Theme, style: Style, family: SharedString) -> Div {
     let c = &theme.chrome;
     div()
@@ -289,10 +364,9 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
         .flex()
         .flex_col()
         .py(px(4.0))
-        .rounded(px(6.0))
-        .bg(c.banner.hsla())
-        .border_1()
-        .border_color(c.border.hsla())
+        // The effect's edges are straight, so a card it draws has square corners.
+        .when(!style.menu_edges, |d| d.rounded(px(6.0)))
+        .map(|d| menu_frame(d, theme, &style))
         .font_family(family)
         .text_size(px(style.ui(12.0)))
         .text_color(c.text.hsla())
@@ -302,6 +376,46 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_s_menus_look_as_ever_and_an_effect_s_take_its_paper_ink_or_glow() {
+        use crate::effects::manifest::MenuLook;
+        let peach = crate::theme::builtin("peach-light").unwrap();
+        let navy = crate::theme::builtin("navy").unwrap();
+        let app = menu_colors(&peach, MenuLook::App);
+        let c = &peach.chrome;
+        assert_eq!(app, MenuColors { bg: c.banner.hsla(), border: c.border.hsla(), hover: c.tab_active.hsla(), glow: None });
+
+        // Ink: the window's paper, an ink line in the text's colour, the hovered row tinted with
+        // the thinned pigment watercolor paints its highlights with, and the text still reads.
+        let ink = menu_colors(&peach, MenuLook::Ink);
+        assert_eq!(ink.bg, c.window_bg.hsla());
+        assert_eq!(ink.border, c.text.alpha(0.55));
+        assert_eq!(ink.glow, None);
+        let hover = ink_hover(c.window_bg, c.focus_ring);
+        assert_eq!(ink.hover, hover.hsla());
+        assert_ne!(hover, c.window_bg, "the hovered row shows");
+        assert!(crate::palette::contrast(c.text, hover) >= 4.5, "{}", crate::palette::contrast(c.text, hover));
+
+        // Glow: the window's own ground, the focus ring's blue as the line and a soft halo, and
+        // the hovered row lit in the same blue.
+        let glow = menu_colors(&navy, MenuLook::Glow);
+        let n = &navy.chrome;
+        assert_eq!(glow.bg, n.window_bg.hsla());
+        assert_eq!(glow.border, n.focus_ring.alpha(0.85));
+        assert_eq!(glow.glow, Some(n.focus_ring.alpha(0.45)));
+        assert_eq!(glow.hover, n.focus_ring.alpha(0.22));
+    }
+
+    #[test]
+    fn a_menu_leaves_its_line_and_glow_to_an_effect_that_draws_its_edges() {
+        let navy = crate::theme::builtin("navy").unwrap();
+        let glow = menu_colors(&navy, MenuLook::Glow);
+        assert_eq!(menu_line(glow, false), (glow.border, glow.glow));
+        let (border, halo) = menu_line(glow, true);
+        assert_eq!(border.a, 0.0, "the line is the effect's");
+        assert_eq!(halo, None, "so is the glow");
+    }
 
     #[test]
     fn opening_one_popover_closes_the_other() {

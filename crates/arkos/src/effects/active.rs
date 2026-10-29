@@ -9,7 +9,7 @@ use gpui::GlyphShader;
 use super::blocks::{Mark, Scene, Shape};
 use super::inputs::Inputs;
 use super::layer::Layer;
-use super::manifest::{Effect, Highlights, Manifest};
+use super::manifest::{Effect, Highlights, Manifest, MenuLook};
 use crate::motion;
 use crate::palette::Rgb;
 use crate::theme::{self, Theme};
@@ -41,12 +41,17 @@ pub struct Style {
     pub highlights: bool,
     /// Points added to the project window's UI text.
     pub ui_text_bump: f32,
+    /// How the menus and popovers look (`chrome::menu_colors`).
+    pub menus: MenuLook,
+    /// The effect draws the menus' and popovers' edges from above (its wash's `arkos_overlay`),
+    /// so the app draws no line of its own around them.
+    pub menu_edges: bool,
 }
 
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0 }
+        Style { paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -60,7 +65,7 @@ fn lerp(from: f32, to: f32, t: f32) -> f32 {
 }
 
 /// The style `fade` of the way from plain (0) to the manifest's own (1). The alphas move with
-/// the fade; the borders, the highlights and the text size can only cut, so they are the
+/// the fade; the borders, the highlights, the text size and the menus' look can only cut, so they are the
 /// manifest's only once the fade is complete.
 pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
     let f = fade.clamp(0.0, 1.0);
@@ -73,6 +78,9 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         ink_borders: full && manifest.ink_borders,
         highlights: full && manifest.highlights == Highlights::Effect,
         ui_text_bump: if full { manifest.ui_text_bump } else { 0.0 },
+        menus: if full { manifest.menus } else { MenuLook::App },
+        // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
+        menu_edges: false,
     }
 }
 
@@ -217,10 +225,35 @@ pub fn glyph_source(glyphs: &str, scale: f32) -> String {
 /// (glyphs can only cut), and only when the effect has a glyphs file.
 pub fn glyph_shader_for<L>(kind: WindowKind, effect: Option<&ActiveEffect<L>>, scale: f32) -> Option<GlyphShader> {
     let e = effect.filter(|e| kind == WindowKind::Project && e.settled())?;
+    let glyphs = e.effect.glyphs.as_deref()?;
     Some(GlyphShader {
-        source: glyph_source(e.effect.glyphs.as_deref()?, scale),
+        source: glyph_source(glyphs, scale),
         vertex: "arkos_glyph_vertex".into(),
         fragment: "arkos_glyph_fragment".into(),
+        emoji: emoji_stages(glyphs),
+    })
+}
+
+/// Whether a tick looks at the effect at all: never while the window is hidden; while one of the
+/// app's own menus or prompts covers the panes the wash rests, but a tick still runs while a menu
+/// is open, so the menu stage draws its edges (`covered`: `Root::covered`).
+pub fn ticks(hidden: bool, covered: bool, menus_open: bool) -> bool {
+    !hidden && (!covered || menus_open)
+}
+
+/// Whether a wash has a menu stage, `arkos_overlay`, which draws the menus' and popovers' edges
+/// in a layer above the panes.
+pub fn has_overlay(wash: &str) -> bool {
+    wash.contains("arkos_overlay(")
+}
+
+/// The emoji stages a glyphs file asks for: when it defines `arkos_emoji_fragment`, the window's
+/// emoji are drawn with it (pictures never are), placed by its own `arkos_emoji_vertex` if it
+/// has one, else by gpui's. A file without one leaves emoji as gpui draws them.
+pub fn emoji_stages(glyphs: &str) -> Option<gpui::EmojiStages> {
+    glyphs.contains("arkos_emoji_fragment(").then(|| gpui::EmojiStages {
+        vertex: if glyphs.contains("arkos_emoji_vertex(") { "arkos_emoji_vertex" } else { "polychrome_sprite_vertex" }.into(),
+        fragment: "arkos_emoji_fragment".into(),
     })
 }
 
@@ -271,6 +304,8 @@ pub struct ActiveEffect<L = Layer> {
     pub started: Instant,
     /// What the layer last drew, so a still window under Reduce Motion draws nothing more.
     pub last_inputs: Option<Inputs>,
+    /// What the menu stage last drew; `None` while its layer is hidden.
+    pub last_overlay: Option<Inputs>,
     /// A fade under way: since when, and which way.
     pub fade: Option<(Instant, Direction)>,
     /// When the GPU's time per frame was last written to the window log, and what it was.
@@ -281,7 +316,7 @@ pub struct ActiveEffect<L = Layer> {
 /// a window not yet drawn). A shader that does not compile gives the notice to show instead.
 pub fn start<I: Installer>(effect: Effect, installer: &mut I, now: Instant, cut: bool) -> Result<ActiveEffect<I::Layer>, String> {
     match installer.install(&effect) {
-        Ok(layer) => Ok(ActiveEffect { effect, layer, started: now, last_inputs: None, fade: if cut { None } else { Some((now, Direction::In)) }, logged: None }),
+        Ok(layer) => Ok(ActiveEffect { effect, layer, started: now, last_inputs: None, last_overlay: None, fade: if cut { None } else { Some((now, Direction::In)) }, logged: None }),
         Err(message) => Err(compile_notice(&effect.manifest.name, &effect.manifest.wash, &message)),
     }
 }
@@ -327,9 +362,10 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, ..s }
         } else {
-            s
+            // The menus' edges cut over with the rest once the effect is fully on.
+            Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
         }
     }
 
@@ -422,7 +458,7 @@ mod tests {
 
     /// An effect already on, with a stand-in for its layer.
     fn on(effect: Effect, now: Instant) -> ActiveEffect<()> {
-        ActiveEffect { effect, layer: (), started: now, last_inputs: None, fade: None, logged: None }
+        ActiveEffect { effect, layer: (), started: now, last_inputs: None, last_overlay: None, fade: None, logged: None }
     }
 
     fn inputs_at(time: f32) -> inputs::Inputs {
@@ -442,18 +478,57 @@ mod tests {
     }
 
     #[test]
+    fn an_open_menu_keeps_the_menu_stage_ticking_while_the_wash_rests_under_it() {
+        assert!(ticks(false, false, false), "a plain frame ticks");
+        assert!(!ticks(true, false, false) && !ticks(true, true, true), "a hidden window never does");
+        assert!(!ticks(false, true, false), "a prompt over the panes rests the wash");
+        assert!(ticks(false, true, true), "an open menu is covered too, and its edges still draw");
+        // The wash itself is not drawn while covered.
+        let t0 = Instant::now();
+        let e = on(watercolor(), t0);
+        let inputs = super::super::inputs::build(&theme::builtin("peach-light").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
+        assert!(!e.should_draw(&inputs, false, true, false));
+    }
+
+    #[test]
+    fn an_effect_with_a_menu_stage_draws_the_menus_edges_once_it_is_fully_on() {
+        let _lock = test_lock(false);
+        assert!(has_overlay(&watercolor().wash));
+        let space = crate::effects::BUILTIN.iter().find(|b| b.name == "space").unwrap();
+        assert!(has_overlay(space.wash));
+        assert!(!has_overlay("fragment float4 arkos_wash(ArkosVertex in [[stage_in]]) { return 1; }"));
+        let t0 = Instant::now();
+        assert!(on(watercolor(), t0).style(t0).menu_edges);
+        assert!(!Style::plain().menu_edges);
+        assert!(!style_at(&watercolor().manifest, 1.0).menu_edges, "the manifest alone does not know the wash");
+        // Mid-fade, and from the start of a fade out, the app draws its own lines.
+        let mut fading = start(watercolor(), &mut Fine, t0, false).unwrap();
+        assert!(!fading.style(t0 + THEME_FADE / 2).menu_edges);
+        fading.step(t0 + THEME_FADE);
+        assert!(fading.style(t0 + THEME_FADE).menu_edges);
+        fading.leave(t0 + THEME_FADE * 2);
+        assert!(!fading.style(t0 + THEME_FADE * 2).menu_edges);
+        // A wash without a menu stage leaves the menus' lines to the app.
+        let mut plain = watercolor();
+        plain.wash = plain.wash.replace("arkos_overlay(", "arkos_not_overlay(");
+        assert!(!on(plain, t0).style(t0).menu_edges);
+    }
+
+    #[test]
     fn the_style_is_plain_at_zero_and_the_manifest_s_at_one() {
         let m = watercolor().manifest;
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0 }
+            Style { paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
         assert!(half.active_tab_alpha > 0.55 && half.active_tab_alpha < 1.0);
         // What can only cut waits for the fade's end.
         assert!(!half.ink_borders && !half.highlights);
+        assert_eq!(half.menus, MenuLook::App, "a menu's look can only cut, at the fade's end");
+        assert_eq!(Style::plain().menus, MenuLook::App);
         assert_eq!(half.ui_text_bump, 0.0);
         assert_eq!(style_at(&m, 1.0).ui(12.0), 14.0);
         assert_eq!(Style::plain().ui(12.0), 12.0);
@@ -654,6 +729,29 @@ mod tests {
     }
 
     #[test]
+    fn a_glyphs_file_that_defines_an_emoji_fragment_draws_the_emoji_too() {
+        assert_eq!(emoji_stages("fragment float4 arkos_glyph_fragment(In input [[stage_in]]) {}"), None);
+        assert_eq!(
+            emoji_stages("fragment float4 arkos_emoji_fragment(PolychromeSpriteFragmentInput input [[stage_in]]) {}"),
+            Some(gpui::EmojiStages { vertex: "polychrome_sprite_vertex".into(), fragment: "arkos_emoji_fragment".into() }),
+            "without a vertex stage of its own, gpui's places the emoji"
+        );
+        assert_eq!(
+            emoji_stages("vertex Out arkos_emoji_vertex(uint v [[vertex_id]]) {}\nfragment float4 arkos_emoji_fragment(In input [[stage_in]]) {}"),
+            Some(gpui::EmojiStages { vertex: "arkos_emoji_vertex".into(), fragment: "arkos_emoji_fragment".into() })
+        );
+        // Watercolor inks its emoji, and space shows them on its holo display.
+        let t0 = Instant::now();
+        let ink = glyph_shader_for(WindowKind::Project, Some(&on(watercolor(), t0)), 2.0).unwrap();
+        assert_eq!(ink.emoji.map(|e| e.fragment), Some("arkos_emoji_fragment".to_string()));
+        let space = crate::effects::BUILTIN.iter().find(|b| b.name == "space").unwrap();
+        assert_eq!(
+            emoji_stages(space.glyphs.unwrap()),
+            Some(gpui::EmojiStages { vertex: "arkos_emoji_vertex".into(), fragment: "arkos_emoji_fragment".into() })
+        );
+    }
+
+    #[test]
     fn the_glyph_shader_is_applied_at_the_end_of_a_fade_in_and_removed_at_the_start_of_a_fade_out() {
         let _lock = test_lock(false);
         let t0 = Instant::now();
@@ -668,6 +766,7 @@ mod tests {
             source: glyph_source(&watercolor().glyphs.unwrap(), 2.0),
             vertex: "arkos_glyph_vertex".into(),
             fragment: "arkos_glyph_fragment".into(),
+            emoji: Some(gpui::EmojiStages { vertex: "arkos_emoji_vertex".into(), fragment: "arkos_emoji_fragment".into() }),
         };
         assert_eq!(window.calls, vec![Some(ink.clone())]);
         // The fade out's first frame already draws gpui's own.

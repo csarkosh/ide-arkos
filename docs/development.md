@@ -49,12 +49,14 @@ new one) and ends every session, so do it when nothing important is running.
 ### gpui fork
 
 Arkos builds against gpui from its fork, https://github.com/csarkosh/gpui, pinned in the
-workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.2`). The fork is the
-crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with two commits on top, the hooks the effects
+workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.3`). The fork is the
+crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with three commits on top, the hooks the effects
 use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
-`GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`; tag `v0.2.2-arkos.1`) and its clock
+`GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`; tag `v0.2.2-arkos.1`), its clock
 (`Window::set_glyph_shader_time`, one `float` at Metal buffer index 5 in both glyph stages; tag
-`v0.2.2-arkos.2`). An upgrade goes as the fork's `ARKOS.md` says:
+`v0.2.2-arkos.2`) and its emoji stages (`GlyphShader.emoji`, `EmojiStages`,
+`EMOJI_SHADER_PRELUDE`; the colour sprites painted as emoji are marked, and only they are drawn
+by the app's stages, pictures keeping gpui's; tag `v0.2.2-arkos.3`). An upgrade goes as the fork's `ARKOS.md` says:
 commit the next tarball as `v<version>`, rebase the patch commits onto it, tag
 `v<version>-arkos.1`, push, point `[patch.crates-io]` at the new tag and run
 `cargo update -p gpui`.
@@ -279,6 +281,26 @@ Things only a person at the screen can check, in order of value:
   sides or above and below), an ink outline just outside the picture that follows it through a
   resize and a split, and the control strip clear over the wash; with `effect.name none` the bars
   come back in the window's colour
+- effects: under Peach Light an emoji (in a terminal, a markdown tab, a tab's title) is drawn in
+  the same ink as the text around it: its own colours, a slight wobble, the paper's grain, a
+  darker rim and a soft bleed in its colour, still clearly the emoji; an image in a markdown tab
+  is untouched; under Navy (space) emoji are on the holo display with the text: their own
+  colours tinted toward cyan, scanlined, a little dimmed and haloed, and still
+- effects: under Peach Light (watercolor) the link menu (right-click a URL), the file tree's
+  menu, a worktree's menu, the tab overflow menu and the title bar's popovers are cards of the
+  cream paper, square-cornered, outlined in the same wobbling ink line as the panes (drawn by the
+  wash's menu stage above the panes), the hovered row tinted peach; under Navy (space) they are
+  navy cards outlined in the panes' own glowing line, halo and sweeping bars, the hovered row
+  lit blue; the outline fades in and out with its menu, sits exactly on it through a resize, never
+  covers its text, and a click on a row lands as before; with no menu open the menu layer draws
+  nothing (Activity Monitor: no extra GPU at rest); with `effect.name none` the menus are as
+  before
+- effects: under Peach Light a web tab's address bar is clear over the wash (no cream band, no
+  grey hairline under it), the page has an ink outline that follows it through a resize and a
+  split, and a page that paints no background of its own (a plain local `.html` file) sits on the
+  cream paper with the wash faintly through it instead of white; a site with its own background
+  looks as it always does; under Navy a page without a background stays white; with
+  `effect.name none` all of it comes back as before
 - effects: under Peach Light a rendered markdown table shows the wash through its cells (an
   apricot band over the header, a light wash over the body, the stripe kept), an ink outline and
   a line under the header from the wash, and inner lines in ink; scrolled half out of the pane,
@@ -289,9 +311,14 @@ Things only a person at the screen can check, in order of value:
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is
   no aurora
 - effects, space: the pane edges, the divider, a video's picture and a markdown table's outline
-  and header line are glowing lines in the focus ring's blue with a soft halo a few points wide,
-  and bright spots glide along them (about 60 points a second, about 200 points apart), lively
-  but not pulling the eye from the text; the hovered and selected rows
+  and header line are soft lines in the focus ring's blue that blend into a halo a couple of
+  points wide, and brighter bars, close to the halo's blue, sweep the lines like Material UI's
+  "query" progress bar (right to left along a horizontal line, bottom to top along a vertical
+  one); each sweep comes 1.5 to 5.5 seconds after the last (now and then two overlap), on a different pick of edges, with one to
+  three bars, at its own speed, the halo glowing brighter and a little wider where a bar
+  passes and fading out with no hard edge; each bar tapers into the line at both ends and
+  pulses gently (about one and a half times a second) as it goes, smooth at 30 fps and not pulling the eye from the
+  text; the hovered and selected rows
   and the hovered tab glow softly; the bars and the sidebar read clearly over the sky
 - effects, space: the project window's text is the holo display (a cyan tint, faint scanlines,
   a soft halo not clipped at the letters' boxes) and does not move; adjacent letters' strokes

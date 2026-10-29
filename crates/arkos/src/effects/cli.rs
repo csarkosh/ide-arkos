@@ -105,7 +105,7 @@ fn contract(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     if !a.words.is_empty() || a.has("--json") {
         return usage(err, EFFECT_USAGE);
     }
-    let _ = if a.has("--glyphs") { write!(out, "{}{} // the window's pixels per point: 2 on a Retina screen, 1 on most others\n{GLYPH_SIGNATURES}", gpui::GLYPH_SHADER_PRELUDE, active::scale_line(2.0)) } else { write!(out, "{PREAMBLE}") };
+    let _ = if a.has("--glyphs") { write!(out, "{}{}{} // the window's pixels per point: 2 on a Retina screen, 1 on most others\n{GLYPH_SIGNATURES}", gpui::GLYPH_SHADER_PRELUDE, gpui::EMOJI_SHADER_PRELUDE, active::scale_line(2.0)) } else { write!(out, "{PREAMBLE}") };
     0
 }
 
@@ -180,6 +180,10 @@ fn compile(effect: &Effect) -> Result<(), String> {
     let device = Device::system_default().ok_or("no Metal device")?;
     let m = &effect.manifest;
     layer::pipeline(&device, PREAMBLE, &effect.wash).map_err(|e| e.replace("program_source:", &format!("{}:", m.wash)))?;
+    // The menu stage, when the wash asks for one, is built as the window would.
+    if active::has_overlay(&effect.wash) {
+        layer::pipeline_for(&device, PREAMBLE, &effect.wash, "arkos_overlay").map_err(|e| format!("{}: {}", m.wash, e.replace("program_source:", &format!("{}:", m.wash))))?;
+    }
     if let (Some(file), Some(source)) = (&m.glyphs, &effect.glyphs) {
         compile_glyphs(&device, source, file)?;
     }
@@ -193,12 +197,20 @@ fn compile_glyphs(device: &DeviceRef, source: &str, file: &str) -> Result<(), St
     let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::scale_line(2.0));
     let library = device.new_library_with_source(&format!("{base}\n{source}"), &CompileOptions::new()).map_err(|e| layer::point_into(&e, &base, "gpui", file))?;
     let function = |name: &str| library.get_function(name, None).map_err(|_| format!("{file}: the glyph shader has no function named {name}"));
-    let (vs, fs) = (function("arkos_glyph_vertex")?, function("arkos_glyph_fragment")?);
-    let desc = RenderPipelineDescriptor::new();
-    desc.set_vertex_function(Some(&vs));
-    desc.set_fragment_function(Some(&fs));
-    desc.color_attachments().object_at(0).ok_or("no colour attachment")?.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-    device.new_render_pipeline_state(&desc).map(|_| ()).map_err(|e| format!("{file}: {e}"))
+    let build = |vertex: &str, fragment: &str| -> Result<(), String> {
+        let (vs, fs) = (function(vertex)?, function(fragment)?);
+        let desc = RenderPipelineDescriptor::new();
+        desc.set_vertex_function(Some(&vs));
+        desc.set_fragment_function(Some(&fs));
+        desc.color_attachments().object_at(0).ok_or("no colour attachment")?.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        device.new_render_pipeline_state(&desc).map(|_| ()).map_err(|e| format!("{file}: {e}"))
+    };
+    build("arkos_glyph_vertex", "arkos_glyph_fragment")?;
+    // The emoji stages, when the file asks for them, are built as the window would.
+    match active::emoji_stages(source) {
+        Some(stages) => build(&stages.vertex, &stages.fragment),
+        None => Ok(()),
+    }
 }
 
 /// The effect `target` names: a folder when it has a `/`, else an effect by name.
@@ -488,13 +500,17 @@ mod tests {
         let (code, out, _) = run(&["contract", "--glyphs"], &env);
         assert_eq!(code, 0);
         assert!(out.starts_with(gpui::GLYPH_SHADER_PRELUDE), "the prelude comes first");
-        let prelude = gpui::GLYPH_SHADER_PRELUDE.lines().count();
-        assert_eq!(out.lines().count(), prelude + 3, "then three lines");
+        assert!(out[gpui::GLYPH_SHADER_PRELUDE.len()..].starts_with(gpui::EMOJI_SHADER_PRELUDE), "then gpui's emoji stages");
+        let prelude = gpui::GLYPH_SHADER_PRELUDE.lines().count() + gpui::EMOJI_SHADER_PRELUDE.lines().count();
+        assert_eq!(out.lines().count(), prelude + 4, "then four lines");
         let scale = out.lines().nth(prelude).unwrap();
         assert!(scale.starts_with("constant float ARKOS_SCALE"), "the window's scale is declared: {scale}");
         let signatures = out.lines().nth(prelude + 1).unwrap();
         assert!(signatures.contains("vertex Out arkos_glyph_vertex(uint unit_vertex_id [[vertex_id]]"), "{signatures}");
         assert!(signatures.contains("fragment float4 arkos_glyph_fragment(In input [[stage_in]]"), "{signatures}");
+        let emoji = out.lines().nth(prelude + 2).unwrap();
+        assert!(emoji.contains("arkos_emoji_vertex(") && emoji.contains("arkos_emoji_fragment("), "{emoji}");
+        assert!(emoji.contains("constant PolychromeSprite *sprites"), "{emoji}");
         let clock = out.lines().last().unwrap();
         assert!(clock.contains("constant float *time [[buffer(5)]]"), "the clock's buffer and its index: {clock}");
         assert!(!out.contains("struct ArkosInputs"), "the wash's contract is not the glyphs'");
@@ -563,11 +579,11 @@ mod tests {
         let env = env!(s, s.path("none.sock"));
         let ink = watercolor().glyphs.unwrap();
         let own = "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {";
-        assert_eq!(ink.matches(own).count(), 1, "watercolor's fragment ends its parameters so");
-        // The clock's index is gpui's own name for it, and the fragment reads it.
+        assert_eq!(ink.matches(own).count(), 2, "watercolor's glyph and emoji fragments end their parameters so");
+        // The clock's index is gpui's own name for it, and both fragments read it.
         let timed = format!(
             "static_assert(SpriteInputIndex_GlyphTime == 5, \"the glyph clock is buffer 5\");\n{}",
-            ink.replacen(own, "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],\n    constant float *time [[buffer(5)]]) {\n  float tick = *time;\n  (void)tick;", 1)
+            ink.replace(own, "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],\n    constant float *time [[buffer(5)]]) {\n  float tick = *time;\n  (void)tick;")
         );
         let manifest = "name = \"ticking\"\nwash = \"wash.metal\"\nglyphs = \"glyphs.metal\"\n";
         let ticking = folder(&s.effects(), "ticking", manifest, &[("wash.metal", watercolor().wash), ("glyphs.metal", &timed)]);
@@ -638,6 +654,27 @@ mod tests {
         let (code, _, err) = run(&["check", &half.display().to_string()], &env);
         assert_eq!(code, 1);
         assert!(err.contains("arkos_glyph_vertex"), "{err}");
+        // Or one that names an emoji fragment it does not define.
+        let ink = watercolor().glyphs.unwrap();
+        let start = ink.find("fragment float4 arkos_emoji_fragment(").expect("watercolor inks its emoji");
+        let named_only = format!("{}// arkos_emoji_fragment( is promised here and never written\n", &ink[..start]);
+        let promised = folder(
+            &effects,
+            "promised",
+            "name = \"promised\"\nwash = \"wash.metal\"\nglyphs = \"glyphs.metal\"\n",
+            &[("wash.metal", watercolor().wash), ("glyphs.metal", &named_only)],
+        );
+        let (code, _, err) = run(&["check", &promised.display().to_string()], &env);
+        assert_eq!(code, 1);
+        assert!(err.contains("arkos_emoji_fragment"), "{err}");
+        // Or a wash that promises a menu stage it does not define.
+        let wash = watercolor().wash;
+        let at = wash.find("fragment float4 arkos_overlay(").expect("watercolor draws the menus' edges");
+        let cut = format!("{}// arkos_overlay( is promised here and never written\n", &wash[..at]);
+        let no_menus = folder(&effects, "nomenus", "name = \"nomenus\"\nwash = \"wash.metal\"\n", &[("wash.metal", &cut)]);
+        let (code, _, err) = run(&["check", &no_menus.display().to_string()], &env);
+        assert_eq!(code, 1);
+        assert!(err.contains("arkos_overlay"), "{err}");
     }
 
     #[test]

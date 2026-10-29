@@ -20,8 +20,10 @@ constant int ARKOS_DIVIDER_BLOCK = 3;    constant int ARKOS_TAB_BAR_BLOCK = 4;
 constant int ARKOS_PANE_BODY_BLOCK = 5;  constant int ARKOS_ROW_HIGHLIGHT_BLOCK = 6;
 constant int ARKOS_TAB_HIGHLIGHT_BLOCK = 7; constant int ARKOS_MEDIA_BLOCK = 8;
 constant int ARKOS_TABLE_BLOCK = 9;      constant int ARKOS_TABLE_HEADER_BLOCK = 10;
+constant int ARKOS_MENU_BLOCK = 11;
 // A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.
 // A table block is a markdown table, whose fills are clear; its header block is its first row.
+// A menu block is an open menu or popover; only the menu stage (arkos_overlay) is given them.
 
 // Which of a block's edges the app no longer draws (ink_borders): a bit each.
 constant uint ARKOS_EDGE_TOP = 1;  constant uint ARKOS_EDGE_RIGHT = 2;
@@ -51,3 +53,10 @@ struct ArkosInputs {
 struct ArkosVertex { float4 pos [[position]]; float2 uv; };
 // The app supplies the vertex stage (a full-screen triangle). The shader supplies:
 //   fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]);
+// and may supply a menu stage, drawn in a see-through layer above the panes while a menu or
+// popover is open, to draw their edges as the wash draws the panes' (the app then draws no line
+// of its own around them):
+//   fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]);
+// Its blocks are only the open menus (ARKOS_MENU_BLOCK, all four edges, value: the menu's fade).
+// It returns colour multiplied by its alpha, and transparent black wherever it draws nothing:
+// it is drawn over the menus' text, so it should draw only at their edges.

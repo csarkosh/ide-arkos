@@ -7,7 +7,9 @@
 // hands a glyph shader device pixels, and ARKOS_SCALE (the window's pixels per point, declared
 // by the window ahead of this source) turns one into the other. The quad is widened by REACH so
 // the five point halo is not clipped at the glyph's box, and every sample stays inside the
-// glyph's own tile so the halo never picks up a neighbouring glyph in the atlas.
+// glyph's own tile so the halo never picks up a neighbouring glyph in the atlas. Emoji go on the
+// same display (arkos_emoji_vertex and arkos_emoji_fragment, at the end), with the same values:
+// their own colours tinted, scanlined, dimmed and haloed, and as still as the text.
 
 constant float BRIGHTNESS = 0.80;
 constant float TINT = 0.25;
@@ -151,4 +153,113 @@ fragment float4 arkos_glyph_fragment(
   alpha = max(alpha, core * 0.55);
   float3 rgb = (col * light * a + gcol * glow_a) / max(alpha, 1e-4);
   return float4(rgb, alpha * input.color.a);
+}
+
+// Emoji on the holo display. gpui draws emoji as colour sprites; these stand in for its colour
+// sprite stages for emoji only. Each pixel starts from the emoji's own colour where a letter
+// starts from its one colour; the rest is the letters' arithmetic.
+struct HoloEmojiVertexOutput {
+  float4 position [[position]];
+  float2 tile_position;
+  float clip_distance [[clip_distance]][4];
+  float4 tile_rect [[flat]];
+  float opacity [[flat]];
+};
+
+struct HoloEmojiFragmentInput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 tile_rect [[flat]];
+  float opacity [[flat]];
+};
+
+vertex HoloEmojiVertexOutput arkos_emoji_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(SpriteInputIndex_ViewportSize)]],
+    constant Size_DevicePixels *atlas_size
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+  float reach = REACH * ARKOS_SCALE;
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  PolychromeSprite sprite = sprites[sprite_id];
+  Bounds_ScaledPixels wide = sprite.bounds;
+  wide.origin.x -= reach;
+  wide.origin.y -= reach;
+  wide.size.width += 2.0 * reach;
+  wide.size.height += 2.0 * reach;
+  float4 device_position = to_device_position(unit_vertex, wide, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, wide, sprite.content_mask.bounds);
+  float2 atlas = float2((float)atlas_size->width, (float)atlas_size->height);
+  float2 tile_origin = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_size = float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 emoji_size = float2(sprite.bounds.size.width, sprite.bounds.size.height);
+  float2 per_px = tile_size / max(emoji_size, float2(1.0));
+  float2 local = unit_vertex * float2(wide.size.width, wide.size.height) - reach;
+  float2 tile_position = (tile_origin + local * per_px) / atlas;
+  float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
+  return HoloEmojiVertexOutput{
+      device_position,
+      tile_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      tile_rect,
+      sprite.opacity};
+}
+
+// The emoji's colour at uv, nothing outside its own tile.
+float4 holo_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
+  if (any(uv < rect.xy) || any(uv > rect.zw)) {
+    return float4(0.0);
+  }
+  return atlas.sample(s, uv);
+}
+
+// The mean colour, weighted by coverage, on a ring of eight samples r points out.
+float3 holo_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 texel, float r) {
+  float3 acc = float3(0.0);
+  float w = 0.0;
+  for (int k = 0; k < 8; k++) {
+    float an = float(k) * 0.785398 + 0.3;
+    float4 c = holo_emoji_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect);
+    acc += c.rgb * c.a;
+    w += c.a;
+  }
+  return acc / max(w, 1e-4);
+}
+
+fragment float4 arkos_emoji_fragment(
+    HoloEmojiFragmentInput input [[stage_in]],
+    constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
+  constexpr sampler smp(mag_filter::linear, min_filter::linear);
+  float2 q = input.position.xy / ARKOS_SCALE;
+  float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float4 rect = input.tile_rect;
+  float2 uv = input.tile_position;
+
+  float4 core = holo_emoji_tx(atlas_texture, smp, uv, rect);
+  float a = core.a;
+  float3 col = core.rgb;
+
+  // The halo's three rings, as a letter's (holo_ring reads coverage, which an emoji has too).
+  float g = holo_ring(atlas_texture, smp, uv, rect, texel, 1.5) * 0.5
+          + holo_ring(atlas_texture, smp, uv, rect, texel, 3.0) * 0.3
+          + holo_ring(atlas_texture, smp, uv, rect, texel, 5.0) * 0.2;
+  // Past the emoji's edge there is no colour of its own: the halo takes the colour nearby.
+  float3 hcol = a > 0.0 ? col : holo_emoji_ring_rgb(atlas_texture, smp, uv, rect, texel, 3.0);
+  float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
+
+  // The tint, the halo's colour, the scanlines and the light, as a letter's.
+  float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
+  col = mix(col, HOLO_CYAN, w);
+  float3 gcol = mix(hcol, HOLO_CYAN, max(w, 0.35));
+  float phase = q.y / 3.0;
+  float line = 1.0 - SCANLINES * 0.5 * (1.0 + cos(6.2832 * phase));
+  float light = BRIGHTNESS * line;
+
+  float glow_a = saturate(g * GLOW * 0.55) * (1.0 - a);
+  float alpha = a + glow_a;
+  float3 rgb = (col * light * a + gcol * glow_a) / max(alpha, 1e-4);
+  return float4(rgb, alpha * input.opacity);
 }

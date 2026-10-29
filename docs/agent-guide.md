@@ -523,6 +523,7 @@ key and the range.
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
 | `ink_borders` | true, false | false | The app hides its own 1 px borders and the wash draws the edges. |
 | `highlights` | `"effect"`, `"app"` | `"app"` | `"effect"`: the wash paints the selected and hovered rows and the hovered tab from the highlight blocks, and the app stops filling them. `"app"`: the app keeps its own fills and the wash gets no highlight blocks. |
+| `menus` | `"ink"`, `"glow"`, `"app"` | `"app"` | How the menus and popovers look, since the wash, painted under the window, cannot reach a menu over the panes. `"ink"`: a card of the window's paper, a line in the text's colour, the hovered row in the thinned focus colour (watercolor's). `"glow"`: a card of the window's ground with a glowing line and the hovered row lit in the focus ring's colour (space's). `"app"`: the app's own. |
 | `glyph_motion` | `true`, `false` | `false` | `true`: the glyph shader moves with time, so the app redraws the text up to 20 times a second while the effect is on and the window is seen (never under Reduce Motion), and the shader reads the seconds at Metal buffer index 5. `false`: the text is drawn only when something changes. |
 | `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's or a document's paper over the wash. It never goes below 0.5, so text keeps its ground. |
 | `chrome_alpha` | 0.0 to 1.0 | 0.0 | The title bar, the tab bars, the inactive tabs and the sidebar over the wash. |
@@ -530,7 +531,7 @@ key and the range.
 | `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
 
 Changing effects fades the wash and the surfaces' alphas in and out over 200 ms (it cuts under
-Reduce Motion); the glyph shader, the text size, the borders, the highlights and the text
+Reduce Motion); the glyph shader, the text size, the borders, the highlights, the menus and the text
 contrast switch at the end of a fade in and at the start of a fade out.
 
 ### The contract
@@ -558,11 +559,26 @@ shade from the theme's colours, so the effect reads right in a dark theme as in 
 Strengths are yours: a highlight block says its kind, fade and state, and the wash decides how
 strongly to paint it.
 
+A wash may also define a menu stage, `fragment float4 arkos_overlay(ArkosVertex in [[stage_in]],
+constant ArkosInputs& u [[buffer(0)]])`. The wash is drawn under the window, so it cannot reach
+a menu or popover open over the panes; the menu stage is drawn in a see-through layer above them
+while one is open, so the menus' edges can be drawn as the panes' are, and the app then draws no
+line of its own around them. Its blocks are only the open menus (`ARKOS_MENU_BLOCK`, all four
+edges, `value` the menu's fade). It returns colour multiplied by its alpha and transparent black
+wherever it draws nothing; it is drawn over the menus' text, so draw only at their edges. The
+built-ins share their edge functions between `arkos_wash` and `arkos_overlay`, so a menu's line
+is the panes' own. `arkos effect check` builds it when the wash defines it.
+
 `arkos effect contract --glyphs` prints gpui's sprite declarations, which your glyph shader is
-compiled after (gpui's whole shader source comes first, so it may use any of them), then one
-line naming the two functions it supplies, `arkos_glyph_vertex` and `arkos_glyph_fragment`, with
-their signatures, and a last line naming the window's glyph clock: either function may declare
-`constant float *time [[buffer(5)]]` and read its seconds in `*time`. Between the declarations
+compiled after (gpui's whole shader source comes first, so it may use any of them): its glyph
+stages, then its colour sprite stages. Then one line naming the two functions it supplies,
+`arkos_glyph_vertex` and `arkos_glyph_fragment`, with their signatures; one naming the emoji
+stages it may add, `arkos_emoji_fragment` and, to place emoji itself, `arkos_emoji_vertex`
+(without that, gpui's `polychrome_sprite_vertex` places them); and a last line naming the
+window's glyph clock: any of these functions may declare `constant float *time [[buffer(5)]]`
+and read its seconds in `*time`. A glyphs file that defines `arkos_emoji_fragment` draws the
+window's emoji with it; pictures are never drawn by it, and a file without one leaves emoji as
+gpui draws them. Between the declarations
 and the signatures it prints `ARKOS_SCALE`, the window's pixels per point (2 on a Retina screen,
 1 on most others), which the window declares ahead of your source and rebuilds when it moves to
 a screen of another scale. gpui hands a glyph shader device pixels, so measure
@@ -570,6 +586,8 @@ your ink in points through it, or a 1x screen sees every bleed and wobble twice 
 built-in's `glyphs.metal` (from `arkos effect template`) is a worked one: it widens each glyph's
 quad so the ink can bleed, measures everything in points, and keeps a stroke's core at least 55%
 of its coverage so thin text stays legible. Keep to that floor in any glyph shader you write.
+Its emoji stages, at the end of the file, give emoji the same hand while keeping their colours
+and at least 80% of their coverage.
 
 ### The steps
 

@@ -257,9 +257,34 @@ pub trait Web {
     fn poll(&mut self) -> Poll;
     /// The colour behind a page that has none, and before the first paint.
     fn set_under_color(&mut self, rgb: (u8, u8, u8));
+    /// Whether the view leaves out its own white ground, so a page that paints none shows what
+    /// Arkos draws under it.
+    fn set_page_clear(&mut self, clear: bool);
     /// The page has the keyboard (the window's first responder is inside the view).
     fn has_keys(&self) -> bool {
         false
+    }
+}
+
+/// Whether a page's own ground is left out: under an effect (its paper is see-through) on a light
+/// theme. A page that paints no ground then sits on the document paper with the wash under it, as
+/// a markdown tab does. A page's default text is black, so a dark theme keeps WebKit's white.
+pub fn clears_page(paper_alpha: f32, theme_light: bool) -> bool {
+    theme_light && paper_alpha < 1.0
+}
+
+/// The page ground last told to the view, so it is told once per change and not every frame.
+#[derive(Default)]
+pub struct PageGround {
+    sent: Option<bool>,
+}
+
+impl PageGround {
+    pub fn push(&mut self, clear: bool, web: &mut dyn Web) {
+        if self.sent != Some(clear) {
+            self.sent = Some(clear);
+            web.set_page_clear(clear);
+        }
     }
 }
 
@@ -279,6 +304,7 @@ impl Web for NoWeb {
         Poll { signals: vec![Signal::Failed("no window to host a page".into())], ..Poll::default() }
     }
     fn set_under_color(&mut self, _rgb: (u8, u8, u8)) {}
+    fn set_page_clear(&mut self, _clear: bool) {}
 }
 
 /// A web view for tests: records its calls as strings and hands back `pending` from `poll`.
@@ -328,6 +354,9 @@ impl Web for FakeWeb {
     }
     fn set_under_color(&mut self, rgb: (u8, u8, u8)) {
         self.calls.push(format!("under {:?}", rgb));
+    }
+    fn set_page_clear(&mut self, clear: bool) {
+        self.calls.push(format!("clear {clear}"));
     }
     fn has_keys(&self) -> bool {
         self.keys
@@ -638,6 +667,28 @@ mod tests {
 
     fn ready(url: &str, title: &str) -> Poll {
         Poll { loading: false, progress: 1.0, url: Some(url.into()), title: Some(title.into()), ..Poll::default() }
+    }
+
+    #[test]
+    fn a_page_s_own_ground_is_cleared_only_under_an_effect_on_a_light_theme() {
+        // Under watercolor's light paper, a page that paints no ground of its own shows the paper
+        // and the wash; a page's default text is black, so on a dark theme it keeps WebKit's white.
+        assert!(clears_page(0.8, true));
+        assert!(!clears_page(0.8, false), "a dark theme keeps the white ground");
+        assert!(!clears_page(1.0, true), "no effect, no change");
+        assert!(!clears_page(1.0, false));
+    }
+
+    #[test]
+    fn the_page_ground_is_told_to_the_view_once_per_change() {
+        let mut w = FakeWeb::default();
+        let mut g = PageGround::default();
+        g.push(false, &mut w);
+        g.push(false, &mut w);
+        g.push(true, &mut w);
+        g.push(true, &mut w);
+        g.push(false, &mut w);
+        assert_eq!(w.calls, ["clear false", "clear true", "clear false"]);
     }
 
     #[test]

@@ -279,6 +279,14 @@ impl Web for Host {
         unsafe { self.view.setUnderPageBackgroundColor(Some(&color)) };
     }
 
+    fn set_page_clear(&mut self, clear: bool) {
+        // `drawsBackground` is not in the public header; WebKit reads it through KVC.
+        let draws = NSNumber::new_bool(!clear);
+        let key = NSString::from_str("drawsBackground");
+        // SAFETY: the view is live and on the main thread, and the key takes a boolean number.
+        let _: () = unsafe { msg_send![&*self.view, setValue: &*draws, forKey: &*key] };
+    }
+
     fn has_keys(&self) -> bool {
         self.window.firstResponder().is_some_and(|r| {
             // A responder inside the view is one of its views (WebKit's own).

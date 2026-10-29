@@ -459,6 +459,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     }
     // Drawn while it fades out too; only the open menu takes clicks.
     let live = root.tab_menu.value() == Some(&pane);
+    let colors = crate::chrome::menu_colors(&theme, style.menus);
     let menu = root.tab_menu.current(now).filter(|(p, _)| **p == pane).map(|(_, opacity)| {
         let mut m = div()
             .id(("menu", pane))
@@ -470,19 +471,20 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             .flex()
             .flex_col()
             .py(px(4.0))
-            .bg(theme.chrome.banner.hsla())
-            .border_1()
-            .border_color(theme.chrome.border.hsla())
+            .map(|d| crate::chrome::menu_frame(d, &theme, &style))
             .font_family(root.ui_family())
             .text_size(px(style.ui(12.0)))
             .when(live, |m| m.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
+        if style.menu_edges {
+            m = m.child(crate::chrome::menu_report(0x14 ^ (pane << 8), opacity, cx));
+        }
         for (idx, label, active) in menu_rows(&p, &labels) {
             m = m.child(
                 div()
                     .id(tab_id("menu-row", pane, idx))
                     .px(px(10.0))
                     .py(px(4.0))
-                    .bg(if active { theme.chrome.tab_active.hsla() } else { theme.chrome.banner.hsla() })
+                    .bg(if active { colors.hover } else { colors.bg })
                     .text_color(if active { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
                     .child(label)
                     .when(live, |row| {

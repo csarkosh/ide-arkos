@@ -104,6 +104,51 @@ float ink_v(float2 p, float x, float y0, float y1, float wob, float over) {
     return length(float2(p.x - x - wob, dy));
 }
 
+// The pen at a point: its wobble, its weight, where it skips (gap) and the paper's speck under it.
+// All drift very slowly, so the edges breathe.
+struct Pen {
+    float wob;
+    float weight;
+    float gap;
+    float speck;
+};
+
+Pen pen_at(float2 p, float t) {
+    Pen pen;
+    pen.speck = vnoise(p * 0.9);
+    pen.wob = (vnoise(p * 0.035 + t * 0.05) - 0.5) * 2.6;
+    pen.weight = 0.55 + 0.55 * vnoise(p * 0.02 + 7.0);
+    pen.gap = smoothstep(0.08, 0.2, vnoise(p * 0.028 + 3.0));
+    return pen;
+}
+
+// How much ink blk's reported edges lay at p: a crisp core with a thin feathered bleed beside
+// it, as ink spreads into damp paper, each line overshooting its corners as a quick pen stroke
+// does (by the block's own seed).
+float ink_for_block(float2 p, ArkosBlock blk, Pen pen) {
+    uint edges = uint(blk.edges);
+    if (edges == 0u) {
+        return 0.0;
+    }
+    float4 r = blk.rect;
+    float seed = blk.seed * 1.7;
+    float x0 = r.x, y0 = r.y, x1 = r.x + r.z, y1 = r.y + r.w;
+    float over = 3.0 + 5.0 * hash1(seed);
+    float dmin = 1e5;
+    if (edges & ARKOS_EDGE_TOP) { dmin = min(dmin, ink_h(p, y0, x0, x1, pen.wob, over)); }
+    if (edges & ARKOS_EDGE_RIGHT) { dmin = min(dmin, ink_v(p, x1, y0, y1, pen.wob, over)); }
+    if (edges & ARKOS_EDGE_BOTTOM) { dmin = min(dmin, ink_h(p, y1, x0, x1, pen.wob, over)); }
+    if (edges & ARKOS_EDGE_LEFT) { dmin = min(dmin, ink_v(p, x0, y0, y1, pen.wob, over)); }
+    float core = 1.0 - smoothstep(pen.weight - 0.3, pen.weight + 0.3, dmin);
+    float halo = (1.0 - smoothstep(pen.weight, pen.weight + 2.2, dmin)) * 0.22;
+    return max(core, halo) * pen.gap;
+}
+
+// Dry-brush: the pen skips a little on the paper's tooth, more on lighter strokes.
+float ink_tooth(Pen pen) {
+    return 0.78 + 0.22 * smoothstep(0.25, 0.75, pen.speck);
+}
+
 fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
     float2 p = in.uv * u.size;
     float t = u.time;
@@ -115,10 +160,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float bleed = fbm(float2(p.x * 0.018, p.y * 0.05) + t * 0.012);
     float fray = vnoise(p * 0.16 + t * 0.03);
     float gran = fbm(p * 0.045 - t * 0.008);
-    float speck = vnoise(p * 0.9);
-    float wob = (vnoise(p * 0.035 + t * 0.05) - 0.5) * 2.6;
-    float weight = 0.55 + 0.55 * vnoise(p * 0.02 + 7.0);
-    float gap = smoothstep(0.08, 0.2, vnoise(p * 0.028 + 3.0));
+    Pen pen = pen_at(p, t);
+    float speck = pen.speck;
 
     // Paper with grain.
     float3 col = u.colors[ARKOS_WINDOW_BG].rgb * mix(1.0, 0.992 + 0.012 * speck + 0.008 * gran, k);
@@ -164,24 +207,27 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 col *= mix(float3(1.0), bright(pigment(u, tint)), clamp(a, 0.0, 0.85));
             }
         }
-        uint edges = uint(blk.edges);
-        if (edges != 0u) {
-            float x0 = r.x, y0 = r.y, x1 = r.x + r.z, y1 = r.y + r.w;
-            float over = 3.0 + 5.0 * hash1(seed);
-            float dmin = 1e5;
-            if (edges & ARKOS_EDGE_TOP) { dmin = min(dmin, ink_h(p, y0, x0, x1, wob, over)); }
-            if (edges & ARKOS_EDGE_RIGHT) { dmin = min(dmin, ink_v(p, x1, y0, y1, wob, over)); }
-            if (edges & ARKOS_EDGE_BOTTOM) { dmin = min(dmin, ink_h(p, y1, x0, x1, wob, over)); }
-            if (edges & ARKOS_EDGE_LEFT) { dmin = min(dmin, ink_v(p, x0, y0, y1, wob, over)); }
-            // A crisp core with a thin feathered bleed beside it, as ink spreads into damp paper.
-            float core = 1.0 - smoothstep(weight - 0.3, weight + 0.3, dmin);
-            float halo = (1.0 - smoothstep(weight, weight + 2.2, dmin)) * 0.22;
-            // Strokes add up where they cross, so the corners pool darker.
-            inked += max(core, halo) * gap;
-        }
+        // Strokes add up where they cross, so the corners pool darker.
+        inked += ink_for_block(p, blk, pen);
     }
-    // Dry-brush: the pen skips a little on the paper's tooth, more on lighter strokes.
-    float tooth = 0.78 + 0.22 * smoothstep(0.25, 0.75, speck);
-    col = mix(col, u.colors[ARKOS_TERMINAL_FG].rgb, clamp(inked * tooth, 0.0, 1.0) * 0.96 * k);
+    col = mix(col, u.colors[ARKOS_TERMINAL_FG].rgb, clamp(inked * ink_tooth(pen), 0.0, 1.0) * 0.96 * k);
     return float4(col, 1.0);
+}
+
+// The menu stage: the open menus' edges in the panes' own ink, drawn above the panes, and
+// nothing else. Its blocks are only the menus, each with its fade as its value. It returns
+// colour multiplied by its alpha.
+fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
+    float2 p = in.uv * u.size;
+    float k = saturate(u.intensity);
+    Pen pen = pen_at(p, u.time);
+    int nb = min(int(u.block_count), 48);
+    float inked = 0.0;
+    for (int i = 0; i < nb; i++) {
+        ArkosBlock blk = u.blocks[i];
+        // The ink fades with its menu.
+        inked += ink_for_block(p, blk, pen) * blk.value;
+    }
+    float a = clamp(inked * ink_tooth(pen), 0.0, 1.0) * 0.96 * k;
+    return float4(u.colors[ARKOS_TERMINAL_FG].rgb * a, a);
 }

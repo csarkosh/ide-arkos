@@ -46,9 +46,10 @@ pub fn progress_width(progress: f64, bar_w: f32) -> f32 {
 pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, style: Style, family: SharedString, cx: &mut Context<Root>) -> Div {
     let now = Instant::now();
     let more = view.update(cx, |v, cx| v.frame_step(now, cx));
+    view.update(cx, |v, _| v.set_page_clear(crate::web::clears_page(style.paper_alpha, theme.is_light())));
     let v = view.read(cx);
     let c = &theme.chrome;
-    let (text, dim, bg, banner, border, accent) = (c.text.hsla(), c.text_dim.hsla(), c.window_bg.hsla(), c.banner.hsla(), c.border.hsla(), c.focus_ring.hsla());
+    let (text, dim, banner, border, accent) = (c.text.hsla(), c.text_dim.hsla(), c.banner.hsla(), c.border.hsla(), c.focus_ring.hsla());
     let eid = view.entity_id();
     let (can_back, can_forward, loading) = (v.model.can_back, v.model.can_forward, v.model.loading());
     let progress = match v.model.state {
@@ -114,7 +115,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         .flex()
         .items_center()
         .rounded(px(5.0))
-        .bg(bg)
+        .bg(c.window_bg.alpha(style.paper_alpha))
         .border_1()
         .border_color(if editing { accent } else { border })
         .overflow_hidden()
@@ -227,9 +228,11 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         .items_center()
         .gap(px(4.0))
         .px(px(4.0))
-        .bg(banner)
+        // The bar is chrome, as the video's strip is: see-through under an effect, its hairline
+        // left to the wash.
+        .bg(c.banner.alpha(style.chrome_alpha))
         .border_b_1()
-        .border_color(border)
+        .border_color(if style.ink_borders { c.border.alpha(0.0) } else { border })
         .font_family(family.clone())
         .text_size(px(style.ui(12.0)))
         .text_color(text)
@@ -277,12 +280,29 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         (LoadState::Blank, _) => Some(column(dim, family.clone(), style).child("Type an address, or `arkos open page.html` from a session")),
         (LoadState::Loading { .. } | LoadState::Ready, _) => Some(column(dim, family.clone(), style).child("loading")),
     };
+    // Under an effect that inks the borders, the page reports where it is, and the wash outlines
+    // it as it does a video's picture.
+    let outline = style.ink_borders.then(|| {
+        let root = cx.weak_entity();
+        let key = eid.as_u64();
+        canvas(
+            move |b, _, cx| {
+                let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind: crate::effects::blocks::Kind::Media }));
+            },
+            |_, _, _, _| (),
+        )
+        .absolute()
+        .inset_0()
+    });
     let content = div()
         .flex_1()
         .min_h_0()
         .relative()
-        .bg(bg)
+        // The page's paper, see-through under an effect as a document's is.
+        .bg(c.window_bg.alpha(style.paper_alpha))
         .child(report)
+        .children(outline)
         .children(screen)
         .children(notice.map(|n| {
             div()
@@ -300,7 +320,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         .flex_col()
         .key_context("Browser")
         .track_focus(&focus)
-        .bg(bg)
+        .bg(c.window_bg.alpha(style.ground_alpha))
         .child(pump)
         .child(bar)
         .child(content)

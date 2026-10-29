@@ -271,12 +271,14 @@ Player". Audio still opens in QuickTime Player, and a `.webm` is shown in Finder
 An effect is a shader that paints the project window: a wash under every surface, and
 optionally the text itself. Peach Light comes with `watercolor`: washes that hug each block with
 a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
-and hovered rows and the hovered tab as fading strokes of pigment, glyphs written in ink, and UI
+and hovered rows and the hovered tab as fading strokes of pigment, glyphs and emoji written in ink, and UI
 text two points larger. Navy comes with `space`: a calm night sky of twinkling stars, a faint
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and
-tables outlined in glowing lines with bright light gliding along them, the highlights glowing softly, and the text as a still
-holo display (a cool tint, faint scanlines and a soft glow). Any theme can
+tables outlined in glowing lines with soft bars of light sweeping along them every few seconds, the highlights glowing softly, and the text as a still
+holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Under an effect a web tab's address
+bar is clear over the wash and the page is outlined; on a light theme a page that sets no
+background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
 for Peach Light, `space` for Navy, and none for the other built-in themes.

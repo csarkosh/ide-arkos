@@ -9,6 +9,8 @@ ink_borders = true            # the app hides its own 1 px borders; the wash dra
 highlights = "effect"         # "effect": the wash paints the selected and hovered rows and the
                               # hovered tab from the highlight blocks; "app" (the default): the
                               # app keeps its own fills and reports no highlight blocks
+menus = "ink"                 # "ink", "glow" or "app" (the default): how the menus and popovers
+                              # look while the effect is on
 paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper over the wash
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash

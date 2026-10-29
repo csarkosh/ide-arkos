@@ -25,6 +25,8 @@ pub struct Manifest {
     /// The app hides its own 1 px borders and the wash draws the edges.
     pub ink_borders: bool,
     pub highlights: Highlights,
+    /// How the app draws its menus and popovers while the effect is on.
+    pub menus: MenuLook,
     /// A terminal's or document's paper over the wash.
     pub paper_alpha: f32,
     /// The bars and the sidebar over the wash.
@@ -51,6 +53,7 @@ impl Default for Manifest {
             ui_text_bump: 0.0,
             ink_borders: false,
             highlights: Highlights::App,
+            menus: MenuLook::App,
             paper_alpha: 0.5,
             chrome_alpha: 0.0,
             active_tab_alpha: 0.55,
@@ -66,6 +69,20 @@ impl Default for Manifest {
 #[serde(rename_all = "lowercase")]
 pub enum Highlights {
     Effect,
+    #[default]
+    App,
+}
+
+/// How the app draws its menus and popovers under an effect. The wash is painted under the
+/// window, so it cannot reach a menu over the panes; the app draws the menu to match instead:
+/// `ink` a card of the window's paper with an ink line and the hovered row in thinned pigment
+/// (watercolor's), `glow` a card of the window's ground with a glowing line in the focus ring's
+/// colour and the hovered row lit (space's), `app` the app's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MenuLook {
+    Ink,
+    Glow,
     #[default]
     App,
 }
@@ -287,6 +304,26 @@ mod tests {
     }
 
     #[test]
+    fn watercolor_inks_the_menus_edges_with_the_panes_own_line() {
+        let wash = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
+        let start = wash.find("fragment float4 arkos_overlay(").expect("watercolor inks the menus' edges");
+        assert!(wash[start..].contains("ink_for_block("), "the menu stage draws the panes' ink line");
+        assert!(wash[..start].matches("ink_for_block(").count() >= 2, "ink_for_block is shared with the wash");
+    }
+
+    #[test]
+    fn an_effect_chooses_how_its_menus_look_and_the_app_s_own_is_the_default() {
+        let base = "name = \"x\"\nwash = \"wash.metal\"\n";
+        assert_eq!(parse(base).unwrap().menus, MenuLook::App);
+        assert_eq!(parse(&format!("{base}menus = \"ink\"\n")).unwrap().menus, MenuLook::Ink);
+        assert_eq!(parse(&format!("{base}menus = \"glow\"\n")).unwrap().menus, MenuLook::Glow);
+        assert_eq!(parse(&format!("{base}menus = \"app\"\n")).unwrap().menus, MenuLook::App);
+        assert!(parse(&format!("{base}menus = \"sparkly\"\n")).is_err());
+        let watercolor = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap();
+        assert_eq!(parse(watercolor.manifest).unwrap().menus, MenuLook::Ink, "watercolor's menus are inked paper");
+    }
+
+    #[test]
     fn the_built_in_space_parses_with_its_fixed_values() {
         let b = BUILTIN.iter().find(|b| b.name == "space").expect("space is built in");
         let m = parse(b.manifest).unwrap();
@@ -299,6 +336,7 @@ mod tests {
         assert_eq!(m.ui_text_bump, 0.0);
         assert!(m.ink_borders);
         assert_eq!(m.highlights, Highlights::Effect);
+        assert_eq!(m.menus, MenuLook::Glow, "space's menus glow");
         assert_eq!(m.paper_alpha, 0.8);
         assert_eq!(m.chrome_alpha, 0.0);
         assert_eq!(m.active_tab_alpha, 0.5);
