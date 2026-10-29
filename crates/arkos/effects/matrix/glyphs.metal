@@ -1,52 +1,113 @@
-// Glyphs as a holo display: tinted toward cyan, scanlined and haloed, and still. This is appended to gpui's own shader source (its sprite declarations
-// come first), and stands in for its monochrome sprite stages.
+// Glyphs as a matrix display: emissive phosphor green, haloed, still, and now and then one letter
+// glitches. This is appended to gpui's own shader source (its sprite declarations come first),
+// and stands in for its monochrome sprite stages.
 //
-// It is the mock-up's fragment shader (holo-motion-dim.html) ported line for line, at Cyrus's
-// tuned values, which are fixed. The mock-up's shimmer is left out: Cyrus found moving text hard
-// on the eyes (2026-10-28), so the text never moves and is drawn only when it changes. Everything is measured in points: gpui
-// hands a glyph shader device pixels, and ARKOS_SCALE (the window's pixels per point, declared
-// by the window ahead of this source) turns one into the other. The quad is widened by REACH so
-// the five point halo is not clipped at the glyph's box, and every sample stays inside the
-// glyph's own tile so the halo never picks up a neighbouring glyph in the atlas. Emoji go on the
-// same display (arkos_emoji_vertex and arkos_emoji_fragment, at the end), with the same values:
-// their own colours tinted, scanlined, dimmed and haloed, and as still as the text.
+// It starts from space's holo text (space/glyphs.metal) without its scanlines. Everything is
+// measured in points: gpui hands a glyph shader device pixels, and ARKOS_SCALE (the window's
+// pixels per point, declared by the window ahead of this source) turns one into the other. The
+// quad is widened by REACH so the five point halo is not clipped at the glyph's box, and every
+// sample stays inside the glyph's own tile so the halo never picks up a neighbouring glyph in the
+// atlas.
+//
+// The idle glitch: the vertex stages read the clock (seconds since the effect started, exactly
+// 0.0 under Reduce Motion) and cut it into slots of GLITCH_SLOT. For each glyph and slot a hash
+// of the glyph's place (its bounds' origin in device pixels, stable while a letter stays put) and
+// the slot says whether it glitches. A glitching glyph samples its tile mirrored, horizontally,
+// vertically or both, and is lit GLITCH_FLASH times brighter, halo and all, for that one slot.
+// Slot 0 glitches nothing, so a frozen clock shows still text. The arithmetic is mirrored in Rust
+// (crates/arkos/src/effects/matrix.rs, glitch_key and glitches) and a change to one is made to
+// both. Between glitches every letter is still and whole; nothing else here moves.
+//
+// Emoji go on the same display (arkos_emoji_vertex and arkos_emoji_fragment, at the end): their
+// own colours tinted toward the green, haloed, and glitching by the same rule.
 
-constant float BRIGHTNESS = 0.80;
-constant float TINT = 0.25;
+// The letter's light: the theme's colour at full brightness.
+constant float BRIGHTNESS = 1.0;
+// How far the colour leans toward the green.
+constant float TINT = 0.45;
+// How much of the lean saturated (coloured ANSI) text is spared, so it keeps its own hue.
 constant float KEEP = 0.15;
-constant float SCANLINES = 0.08;
-constant float GLOW = 1.40;
+// The halo's strength.
+constant float GLOW = 1.6;
 // How far past the glyph's box the halo reaches, in points: its outer ring and a margin.
 constant float REACH = 5.5;
+// The length of a glitch, and of the slots the clock is cut into, in seconds.
+constant float GLITCH_SLOT = 0.1;
+// The chance a glyph glitches in a slot: about 3 a second across 3,000 glyphs.
+constant float GLITCH_CHANCE = 0.0001;
+// How much brighter a glitching glyph and its halo are lit.
+constant float GLITCH_FLASH = 1.4;
+// The phosphor green the text and its halo lean toward.
+constant float3 MATRIX_GREEN = float3(0.35, 1.0, 0.45);
+// Dark text (a light theme with matrix chosen) leans toward a deep green instead.
+constant float3 MATRIX_DEEP = float3(0.0, 0.4, 0.15);
 
-constant float3 HOLO_CYAN = float3(0.55, 0.95, 1.0);
-// Dark text (a light theme with space chosen) leans toward a deep teal instead.
-constant float3 HOLO_TEAL = float3(0.0, 0.35, 0.45);
+// A hash of n in 0 to 1, in integer arithmetic (PCG's output step) so the Rust mirror agrees to
+// the bit: the top 24 bits, times a power of two, are exact in a float. The wash's own copy.
+float hash01(uint n) {
+    uint h = n * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h ^= h >> 22u;
+    return float(h >> 8u) * (1.0 / 16777216.0);
+}
 
-struct HoloVertexOutput {
+// The glyph's place for the hash: its bounds' origin in whole device pixels, never below zero.
+uint2 glitch_origin(Bounds_ScaledPixels bounds) {
+  return uint2(uint(max(bounds.origin.x, 0.0)), uint(max(bounds.origin.y, 0.0)));
+}
+
+// The hash input for a glyph at origin (device pixels) in slot, as the mirror's glitch_key.
+uint glitch_key(uint2 origin, uint slot) {
+  return (origin.x * 73856093u) ^ (origin.y * 19349663u) ^ (slot * 83492791u);
+}
+
+// How a glyph at origin draws in slot, as the mirror's glitches: its flash in x and its mirror,
+// 1 or -1 an axis, in y and z. Mode 1 mirrors horizontally, 2 vertically, 3 both.
+float3 glitch(uint2 origin, uint slot) {
+  uint key = glitch_key(origin, slot);
+  if (slot == 0u || hash01(key) >= GLITCH_CHANCE) {
+    return float3(1.0);
+  }
+  uint mode = 1u + uint(hash01(key ^ 0x9E3779B9u) * 3.0);
+  return float3(GLITCH_FLASH, (mode & 1u) != 0u ? -1.0 : 1.0, (mode & 2u) != 0u ? -1.0 : 1.0);
+}
+
+// A sample's place in the atlas, reflected inside the glyph's own tile on each mirrored axis,
+// so a glitching glyph and its halo rings read the tile mirrored and no sample leaves it.
+float2 glitch_uv(float2 uv, float4 rect, float2 mirror) {
+  return float2(mirror.x < 0.0 ? rect.x + rect.z - uv.x : uv.x,
+                mirror.y < 0.0 ? rect.y + rect.w - uv.y : uv.y);
+}
+
+struct MatrixVertexOutput {
   float4 position [[position]];
   float2 tile_position;
   float4 color [[flat]];
   float4 clip_distance;
   float4 tile_rect [[flat]];
+  float flash [[flat]];
+  float2 mirror [[flat]];
 };
 
-struct HoloFragmentInput {
+struct MatrixFragmentInput {
   float4 position [[position]];
   float2 tile_position;
   float4 color [[flat]];
   float4 clip_distance;
   float4 tile_rect [[flat]];
+  float flash [[flat]];
+  float2 mirror [[flat]];
 };
 
-vertex HoloVertexOutput arkos_glyph_vertex(
+vertex MatrixVertexOutput arkos_glyph_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
     constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     constant Size_DevicePixels *viewport_size
     [[buffer(SpriteInputIndex_ViewportSize)]],
     constant Size_DevicePixels *atlas_size
-    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]],
+    constant float *time [[buffer(5)]]) {
   float reach = REACH * ARKOS_SCALE;
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   MonochromeSprite sprite = sprites[sprite_id];
@@ -69,64 +130,69 @@ vertex HoloVertexOutput arkos_glyph_vertex(
   float2 tile_position = (tile_origin + local * per_px) / atlas;
   float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
   float4 color = hsla_to_rgba(sprite.color);
-  return HoloVertexOutput{
+  uint slot = uint(floor(*time / GLITCH_SLOT));
+  float3 g = glitch(glitch_origin(sprite.bounds), slot);
+  return MatrixVertexOutput{
       device_position,
       tile_position,
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
-      tile_rect};
+      tile_rect,
+      g.x,
+      g.yz};
 }
 
-// The glyph's coverage at uv, nothing outside its own tile (the mock-up's tx(p).a).
-float holo_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
+// The glyph's coverage at uv, read mirrored as the glitch says and nothing outside its own tile.
+float matrix_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror) {
+  uv = glitch_uv(uv, rect, mirror);
   if (any(uv < rect.xy) || any(uv > rect.zw)) {
     return 0.0;
   }
   return atlas.sample(s, uv).a;
 }
 
-// The mean coverage on a ring of eight samples r points out (the mock-up's ring(p, r)). Its
-// colour is the glyph's own, one colour a glyph, so only the coverage is carried. The offsets
-// assume a tile's texels match its bounds' device pixels (an unscaled glyph), as watercolor's do.
-float holo_ring(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 texel, float r) {
+// The mean coverage on a ring of eight samples r points out. Its colour is the glyph's own, one
+// colour a glyph, so only the coverage is carried. The offsets assume a tile's texels match its
+// bounds' device pixels (an unscaled glyph), as watercolor's do.
+float matrix_ring(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror, float2 texel, float r) {
   float acc = 0.0;
   for (int k = 0; k < 8; k++) {
     float an = float(k) * 0.785398 + 0.3;
-    acc += holo_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect);
+    acc += matrix_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect, mirror);
   }
   return acc / 8.0;
 }
 
 fragment float4 arkos_glyph_fragment(
-    HoloFragmentInput input [[stage_in]],
+    MatrixFragmentInput input [[stage_in]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
   if (any(input.clip_distance < float4(0.0))) {
     return float4(0.0);
   }
   constexpr sampler smp(mag_filter::linear, min_filter::linear);
-  // The pixel's place in points.
-  float2 q = input.position.xy / ARKOS_SCALE;
   float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
   float4 rect = input.tile_rect;
   float2 uv = input.tile_position;
+  float2 mirror = input.mirror;
 
-  float core = holo_tx(atlas_texture, smp, uv, rect);
+  float core = matrix_tx(atlas_texture, smp, uv, rect, mirror);
   float a = core;
   float3 col = input.color.rgb;
 
-  // The holo assumes light text on a dark ground. Dark text leans toward deep teal instead of
-  // cyan, keeps its full brightness and draws no glow, so it stays readable on a light theme.
+  // The display assumes light text on a dark ground. Dark text leans toward the deep green,
+  // keeps its full brightness and draws no halo and no flash, so it stays readable on a light
+  // theme. The matrix theme keeps its text above this, so all of it glows.
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
-  bool dark = luminance < 0.5;
-  float3 hue = dark ? HOLO_TEAL : HOLO_CYAN;
+  bool dark = luminance < 0.3;
+  float3 hue = dark ? MATRIX_DEEP : MATRIX_GREEN;
 
   // The halo's three rings, skipped for dark text, which draws none.
   float g = 0.0;
   if (!dark) {
-    g = holo_ring(atlas_texture, smp, uv, rect, texel, 1.5) * 0.5
-      + holo_ring(atlas_texture, smp, uv, rect, texel, 3.0) * 0.3
-      + holo_ring(atlas_texture, smp, uv, rect, texel, 5.0) * 0.2;
+    g = matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 1.5) * 0.5
+      + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 3.0) * 0.3
+      + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 5.0) * 0.2;
   }
   float3 hcol = col;
   float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
@@ -134,19 +200,13 @@ fragment float4 arkos_glyph_fragment(
   // The tint: coloured output keeps as much of its own hue as KEEP says.
   float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
   col = mix(col, hue, w);
-  float3 gcol = mix(hcol, HOLO_CYAN, max(w, 0.35));
+  float3 gcol = mix(hcol, MATRIX_GREEN, max(w, 0.35));
 
-  // Scanlines every three points, smooth.
-  float phase = q.y / 3.0;
-  float line = 1.0 - SCANLINES * 0.5 * (1.0 + cos(6.2832 * phase));
+  float light = dark ? 1.0 : BRIGHTNESS * input.flash;
+  float halo = dark ? 0.0 : GLOW * input.flash;
 
-  float light = (dark ? 1.0 : BRIGHTNESS) * line;
-  float halo = dark ? 0.0 : GLOW;
-
-  // The mock-up adds the halo to the ground and lays the letter over it:
-  //   c = mix(base + gcol * g * halo * 0.55, col * light, a).
-  // Here the ground is the window under the text, so the halo is a layer of its own colour and
-  // the letter goes over it; brightness scales the letter's colour, never its coverage.
+  // The halo is a layer of its own colour over the window under the text, and the letter goes
+  // over it; brightness scales the letter's colour, never its coverage.
   float glow_a = saturate(g * halo * 0.55) * (1.0 - a);
   float alpha = a + glow_a;
   // However the light falls, the stroke's core keeps at least 55% of its coverage.
@@ -155,32 +215,37 @@ fragment float4 arkos_glyph_fragment(
   return float4(rgb, alpha * input.color.a);
 }
 
-// Emoji on the holo display. gpui draws emoji as colour sprites; these stand in for its colour
+// Emoji on the matrix display. gpui draws emoji as colour sprites; these stand in for its colour
 // sprite stages for emoji only. Each pixel starts from the emoji's own colour where a letter
-// starts from its one colour; the rest is the letters' arithmetic.
-struct HoloEmojiVertexOutput {
+// starts from its one colour; the rest is the letters' arithmetic, the glitch included.
+struct MatrixEmojiVertexOutput {
   float4 position [[position]];
   float2 tile_position;
   float clip_distance [[clip_distance]][4];
   float4 tile_rect [[flat]];
   float opacity [[flat]];
+  float flash [[flat]];
+  float2 mirror [[flat]];
 };
 
-struct HoloEmojiFragmentInput {
+struct MatrixEmojiFragmentInput {
   float4 position [[position]];
   float2 tile_position;
   float4 tile_rect [[flat]];
   float opacity [[flat]];
+  float flash [[flat]];
+  float2 mirror [[flat]];
 };
 
-vertex HoloEmojiVertexOutput arkos_emoji_vertex(
+vertex MatrixEmojiVertexOutput arkos_emoji_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
     constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
     constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     constant Size_DevicePixels *viewport_size
     [[buffer(SpriteInputIndex_ViewportSize)]],
     constant Size_DevicePixels *atlas_size
-    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]],
+    constant float *time [[buffer(5)]]) {
   float reach = REACH * ARKOS_SCALE;
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   PolychromeSprite sprite = sprites[sprite_id];
@@ -199,16 +264,22 @@ vertex HoloEmojiVertexOutput arkos_emoji_vertex(
   float2 local = unit_vertex * float2(wide.size.width, wide.size.height) - reach;
   float2 tile_position = (tile_origin + local * per_px) / atlas;
   float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
-  return HoloEmojiVertexOutput{
+  // The same glitch as a letter's, keyed on the emoji's own place.
+  uint slot = uint(floor(*time / GLITCH_SLOT));
+  float3 g = glitch(glitch_origin(sprite.bounds), slot);
+  return MatrixEmojiVertexOutput{
       device_position,
       tile_position,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
       tile_rect,
-      sprite.opacity};
+      sprite.opacity,
+      g.x,
+      g.yz};
 }
 
-// The emoji's colour at uv, nothing outside its own tile.
-float4 holo_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
+// The emoji's colour at uv, read mirrored as the glitch says and nothing outside its own tile.
+float4 matrix_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror) {
+  uv = glitch_uv(uv, rect, mirror);
   if (any(uv < rect.xy) || any(uv > rect.zw)) {
     return float4(0.0);
   }
@@ -216,12 +287,12 @@ float4 holo_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect) 
 }
 
 // The mean colour, weighted by coverage, on a ring of eight samples r points out.
-float3 holo_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 texel, float r) {
+float3 matrix_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror, float2 texel, float r) {
   float3 acc = float3(0.0);
   float w = 0.0;
   for (int k = 0; k < 8; k++) {
     float an = float(k) * 0.785398 + 0.3;
-    float4 c = holo_emoji_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect);
+    float4 c = matrix_emoji_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect, mirror);
     acc += c.rgb * c.a;
     w += c.a;
   }
@@ -229,36 +300,34 @@ float3 holo_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float4 
 }
 
 fragment float4 arkos_emoji_fragment(
-    HoloEmojiFragmentInput input [[stage_in]],
+    MatrixEmojiFragmentInput input [[stage_in]],
     constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
   constexpr sampler smp(mag_filter::linear, min_filter::linear);
-  float2 q = input.position.xy / ARKOS_SCALE;
   float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
   float4 rect = input.tile_rect;
   float2 uv = input.tile_position;
+  float2 mirror = input.mirror;
 
-  float4 core = holo_emoji_tx(atlas_texture, smp, uv, rect);
+  float4 core = matrix_emoji_tx(atlas_texture, smp, uv, rect, mirror);
   float a = core.a;
   float3 col = core.rgb;
 
-  // The halo's three rings, as a letter's (holo_ring reads coverage, which an emoji has too).
-  float g = holo_ring(atlas_texture, smp, uv, rect, texel, 1.5) * 0.5
-          + holo_ring(atlas_texture, smp, uv, rect, texel, 3.0) * 0.3
-          + holo_ring(atlas_texture, smp, uv, rect, texel, 5.0) * 0.2;
+  // The halo's three rings, as a letter's (matrix_ring reads coverage, which an emoji has too).
+  float g = matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 1.5) * 0.5
+          + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 3.0) * 0.3
+          + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 5.0) * 0.2;
   // Past the emoji's edge there is no colour of its own: the halo takes the colour nearby.
-  float3 hcol = a > 0.0 ? col : holo_emoji_ring_rgb(atlas_texture, smp, uv, rect, texel, 3.0);
+  float3 hcol = a > 0.0 ? col : matrix_emoji_ring_rgb(atlas_texture, smp, uv, rect, mirror, texel, 3.0);
   float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
 
-  // The tint, the halo's colour, the scanlines and the light, as a letter's.
+  // The tint, the halo's colour and the light, as a letter's.
   float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
-  col = mix(col, HOLO_CYAN, w);
-  float3 gcol = mix(hcol, HOLO_CYAN, max(w, 0.35));
-  float phase = q.y / 3.0;
-  float line = 1.0 - SCANLINES * 0.5 * (1.0 + cos(6.2832 * phase));
-  float light = BRIGHTNESS * line;
+  col = mix(col, MATRIX_GREEN, w);
+  float3 gcol = mix(hcol, MATRIX_GREEN, max(w, 0.35));
+  float light = BRIGHTNESS * input.flash;
 
-  float glow_a = saturate(g * GLOW * 0.55) * (1.0 - a);
+  float glow_a = saturate(g * GLOW * input.flash * 0.55) * (1.0 - a);
   float alpha = a + glow_a;
   float3 rgb = (col * light * a + gcol * glow_a) / max(alpha, 1e-4);
   return float4(rgb, alpha * input.opacity);

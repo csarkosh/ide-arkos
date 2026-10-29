@@ -48,6 +48,30 @@ pub fn on_screen(column: u32, t: f32, height: f32) -> bool {
     head - last_row < trail
 }
 
+/// The length of a glitch, and of the slots the glyph shader cuts its clock into, in seconds.
+pub const GLITCH_SLOT: f32 = 0.1;
+/// The chance a glyph glitches in a slot: about 3 a second across 3,000 glyphs.
+pub const GLITCH_CHANCE: f32 = 0.0001;
+/// How much brighter a glitching glyph and its halo are lit.
+pub const GLITCH_FLASH: f32 = 1.4;
+
+/// The hash input the glyph shader builds for a glyph whose bounds start at `origin_px` (device
+/// pixels) in slot `slot` of its clock.
+pub fn glitch_key(origin_px: (u32, u32), slot: u32) -> u32 {
+    origin_px.0.wrapping_mul(73_856_093) ^ origin_px.1.wrapping_mul(19_349_663) ^ slot.wrapping_mul(83_492_791)
+}
+
+/// Whether the glyph at `origin_px` glitches in slot `slot`, and if so how it is mirrored: 1
+/// horizontally, 2 vertically, 3 both. Slot 0, where the clock stands under Reduce Motion,
+/// glitches nothing.
+pub fn glitches(origin_px: (u32, u32), slot: u32) -> Option<u8> {
+    let key = glitch_key(origin_px, slot);
+    if slot == 0 || hash01(key) >= GLITCH_CHANCE {
+        return None;
+    }
+    Some(1 + (hash01(key ^ 0x9E37_79B9) * 3.0) as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +155,64 @@ mod tests {
             assert!(wash[..start].matches(f).count() >= 2, "{f} is not shared with the wash");
         }
         assert!(overlay.contains("ARKOS_MENU_BLOCK") || overlay.contains("blk.value"), "the edges fade with the menu");
+    }
+
+    #[test]
+    fn slot_zero_glitches_nothing_so_a_frozen_clock_shows_still_text() {
+        for x in (0..3000u32).step_by(7) {
+            assert_eq!(glitches((x * 11, x * 17), 0), None);
+        }
+    }
+
+    #[test]
+    fn about_three_glyphs_in_three_thousand_glitch_each_second() {
+        // 3,000 glyph positions over 100 slots (10 seconds): expect about 30, within a factor of two.
+        let mut n = 0;
+        for slot in 1..=100u32 {
+            for g in 0..3000u32 {
+                if glitches(((g % 120) * 14, (g / 120) * 18), slot).is_some() {
+                    n += 1;
+                }
+            }
+        }
+        assert!((15..=60).contains(&n), "{n} glitches in ten seconds");
+    }
+
+    #[test]
+    fn a_glitch_picks_one_of_three_mirrors_and_the_same_one_every_time() {
+        let found: Vec<u8> = (1..=2000u32).flat_map(|s| (0..200u32).filter_map(move |g| glitches((g * 14, 36), s))).collect();
+        assert!(found.iter().all(|m| (1..=3).contains(m)));
+        assert!([1u8, 2, 3].iter().all(|m| found.contains(m)), "{found:?}");
+        assert_eq!(glitches((14, 36), 5), glitches((14, 36), 5));
+    }
+
+    #[test]
+    fn the_glyph_shader_carries_the_glitch_s_constants_reads_the_clock_and_keeps_the_floors() {
+        let g = matrix().glyphs.unwrap();
+        for line in [
+            "constant float GLITCH_SLOT = 0.1;",
+            "constant float GLITCH_CHANCE = 0.0001;",
+            "constant float GLITCH_FLASH = 1.4;",
+            "constant float TINT = 0.45;",
+            "constant float KEEP = 0.15;",
+            "constant float GLOW = 1.6;",
+            "constant float BRIGHTNESS = 1.0;",
+            "float3(0.35, 1.0, 0.45)",
+            "float3(0.0, 0.4, 0.15)",
+            "bool dark = luminance < 0.3;",
+            "core * 0.55",
+            "ARKOS_SCALE",
+            "[[buffer(5)]]",
+            "effects/matrix.rs",
+        ] {
+            assert!(g.contains(line), "glyphs.metal lacks {line}");
+        }
+        // The mirror's values are the shader's.
+        for (name, value) in [("GLITCH_SLOT", GLITCH_SLOT), ("GLITCH_CHANCE", GLITCH_CHANCE), ("GLITCH_FLASH", GLITCH_FLASH)] {
+            assert!(g.contains(&format!("constant float {name} = {value:?};")), "the mirror's {name} is {value:?}");
+        }
+        assert!(!g.contains("SCANLINES"), "no scanlines on the matrix display");
+        let emoji = &g[g.find("arkos_emoji_vertex(").expect("matrix draws its emoji")..];
+        assert!(emoji.contains("arkos_emoji_fragment(") && emoji.contains("GLITCH_") && emoji.contains("[[buffer(5)]]"));
     }
 }
