@@ -514,9 +514,10 @@ waits to be sent.
 
 ## Config
 
-`~/.config/arkos/config.toml` (or `$XDG_CONFIG_HOME/arkos/config.toml`) is written with commented
-defaults on first run and opened in your text editor from Settings' Keyboard section ("Open
-config"), the Keybindings window's footer, or the palette's "Open config". It is watched: a saved
+`~/.config/arkos/config.toml` (`$ARKOS_CONFIG_DIR/config.toml` when that is set, as in a sandbox,
+else `$XDG_CONFIG_HOME/arkos/config.toml` when that is) is written with commented defaults on
+first run and opened in your text editor from Settings' Keyboard section ("Open config"), the
+Keybindings window's footer, or the palette's "Open config". It is watched: a saved
 edit applies within a second. A bad edit shows a banner with the line number and keeps the last
 good settings.
 Sections: `font` (family, the default text preset, and the presets), `terminal`
@@ -646,6 +647,20 @@ edit to the theme's file, a macOS light or dark switch), the window fades from t
 the new over 200 ms; with Reduce Motion on, it switches at once. Text presets are `compact` (14 px, 1.3), `comfortable` (16 px, 1.5) and `relaxed`
 (18 px, 1.6); add your own under `[font.presets.<name>]`. Each folder remembers its preset.
 
+To try a theme or an effect without touching your own setup, `arkos sandbox <folder>` opens a
+second Arkos on the folder (the current one when you name none): a window of its own, titled
+"Arkos IDE (sandbox)" with `sandbox` dim after the project's name, with its own daemon, sessions
+and config. Its first start copies your `config.toml`, `themes/` and `effects/` into
+`~/Library/Caches/arkos-sandbox` (`arkos-sandbox-dev` for a build from source), so it looks like
+your Arkos until you change it. `arkos sandbox theme use <name>` or `arkos sandbox effect use
+<name>` changes the sandbox window alone: any `arkos` command put after `arkos sandbox` is aimed at
+the sandbox, and in a shell inside the sandbox window the plain commands already are. A sandbox never
+writes your config, your Claude Code colours, hooks or skill, a login item or an update, and it
+sends nothing; Settings and the doctor say `not in a sandbox` where they would. `arkos sandbox
+status` lists its folders and windows, `arkos sandbox stop` closes its windows and its daemon,
+and `arkos sandbox reset` deletes it so the next start copies your config again. A coding agent
+in an Arkos shell uses it the same way when you ask to see a change before it lands.
+
 ### Agents
 
 A coding agent running in an Arkos terminal can show you a video or a document in a pane beside
@@ -688,6 +703,7 @@ contrast pair, a window that reported an error or none that answered, an old dae
 | `arkos video <command> [<file>]` | `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `unmute` on a video tab | 0, 1, 2, 3 |
 | `arkos panes` | the window's panes in Cmd+1 order with their tabs; `--all` for every window | 0, 1, 3 |
 | `arkos guide` | prints the agent guide; `--path` writes it to a file and prints the path; `--install` installs it as a Claude Code skill | 0, 1 |
+| `arkos sandbox [<folder>]` | a second Arkos with its own config, to try a theme or effect in; `arkos sandbox <command> ...` aims any command at it; `status`, `stop`, `reset` | 0, 1, 2 |
 
 Every command that talks to windows prints one line per window, `window {pid} ({project}): ...`,
 and `window {pid}: no answer` for one that stays silent for two seconds. `use` and `settings set`

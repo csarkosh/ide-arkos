@@ -66,7 +66,13 @@ document is a starting point, named in one place, and expected to change.
   `.metal` file loaded with `include_str!`.
 - Dev windows run as a separate instance, never against Cyrus's real config or daemon: `theme
   use` in a dev window would rewrite his Claude Code colours, and the daemon under the real
-  Application Support holds his sessions. The script, kept in the scratchpad (never the repo):
+  Application Support holds his sessions. The way is `arkos sandbox`: `target/debug/arkos sandbox
+  <project folder>` opens the dev build's own sandbox (`~/Library/Caches/arkos-sandbox-dev`, its
+  config copied once from his, no Claude Code colours, hooks or skill written), and
+  `target/debug/arkos sandbox theme use matrix`, `target/debug/arkos sandbox effect use matrix`
+  and `target/debug/arkos sandbox effect use none` drive that instance alone;
+  `target/debug/arkos sandbox stop` ends it. For a build older than the command, the fallback is
+  this script, kept in the scratchpad (never the repo):
 
   ```sh
   #!/bin/zsh
@@ -76,7 +82,7 @@ document is a starting point, named in one place, and expected to change.
   ```
 
   `<script> <project folder>` opens a window; `<script> theme use matrix`, `<script> effect use
-  matrix` and `<script> effect use none` drive that instance alone. That config is Lavender
+  matrix` and `<script> effect use none` drive that instance alone. The script's config is Lavender
   Light with watercolor forced on today; `theme use matrix` and `effect use theme` set it up.
 - Shoots run on GitHub runners only.
 - The branch is `matrix`, in the worktree `~/Projects/ide-arkos/.claude/worktrees/matrix`, off
@@ -262,8 +268,8 @@ theme's green (its `ANSI green`, or its focus ring when that is nearer the text)
 
 1. Built in the worktree. `arkos effect check` prints `ok: matrix`; `arkos effect bench matrix`
    says `within budget`.
-2. A dev window as a separate instance, with `theme use matrix` and `effect use matrix` in that
-   instance's config, running a real Claude Code session. Cyrus looks at: the idle state for a
+2. A dev window as a separate instance (`target/debug/arkos sandbox <project folder>`), with
+   `theme use matrix` and `effect use matrix` in that instance's config, running a real Claude Code session. Cyrus looks at: the idle state for a
    few minutes (is the glitch tiring?), a prompt being typed, Claude streaming output, Claude
    Code's fullscreen renderer, the sidebar and a markdown tab, a menu.
 3. Iterate on the constants from what he says. Each round is a one-line edit, `effect use none`,

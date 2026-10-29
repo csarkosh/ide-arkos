@@ -288,10 +288,31 @@ mod tests {
             let form = line.trim_start_matches("usage:").trim();
             assert!(TEXT.contains(form), "the guide gives the form {form}");
         }
-        for s in ["## 8. Effects", "within budget", "too heavy", "highlights: effect", "text_contrast", "paper_alpha", "arkos effect contract --glyphs"] {
+        for s in ["## 9. Effects", "within budget", "too heavy", "highlights: effect", "text_contrast", "paper_alpha", "arkos effect contract --glyphs"] {
             assert!(TEXT.contains(s), "the guide names {s}");
         }
         assert!(SKILL_DESCRIPTION.contains("effects"), "{SKILL_DESCRIPTION}");
+    }
+
+    #[test]
+    fn the_guide_teaches_the_sandbox_its_commands_and_its_config_variable() {
+        for s in [
+            "## 7. Trying a theme or effect without touching the user's setup",
+            "arkos sandbox status",
+            "arkos sandbox stop",
+            "arkos sandbox reset",
+            "`ARKOS_CONFIG_DIR`",
+            "arkos sandbox theme use draft.toml",
+            "arkos sandbox effect use <name>",
+        ] {
+            assert!(TEXT.contains(s), "the guide names {s}");
+        }
+        // Every form `arkos sandbox` prints as its usage is in the guide as printed.
+        for line in crate::sandbox::SANDBOX_USAGE.lines().filter(|l| l.contains("arkos ")) {
+            let form = line.trim_start_matches("usage:").trim();
+            assert!(TEXT.contains(form), "the guide gives the form {form}");
+        }
+        assert!(crate::agent_cli::USAGE.contains("arkos sandbox"), "arkos --help names it");
     }
 
     #[test]

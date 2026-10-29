@@ -11,7 +11,7 @@ Arkos is a macOS IDE of terminal panes, a file tree, a markdown editor and a vid
 this guide you may show the user a video, a document or a web page in a pane of their window and
 control a video there (play, pause, seek, step, loop, reload, mute, close), and you may change its theme (the
 colours and the optional fonts), write and choose its effect (the shaders that paint the window,
-section 8) and change the settings on a short allow-list. Nothing else is supported:
+section 9) and change the settings on a short allow-list. Nothing else is supported:
 you may not run commands in its terminals or reach a session, and nothing here writes the files
 you show. Do not edit the app bundle. Do not look for the built-in theme files: they are compiled in
 and do not exist on disk. Keep the user's comments in `config.toml`; the commands below do that
@@ -32,6 +32,10 @@ for you, so never write the file by hand when a command exists.
   and prints the path.
 - Your window: `ARKOS_SESSION_ID` also tells `arkos open`, `arkos video` and `arkos panes` which
   window is yours, the one that shows your session, so you never pass a window yourself.
+- A sandbox (section 7): `~/Library/Caches/arkos-sandbox/` for the installed app and
+  `~/Library/Caches/arkos-sandbox-dev/` for a build from source, each with `config/` and `state/`
+  inside. A sandbox's processes carry `ARKOS_CONFIG_DIR` and `ARKOS_APP_SUPPORT` pointing at those
+  two, so the config, the themes, the effects, the socket and the logs above are all there.
 
 Every theme and settings command that reads or writes files works with no window open and no
 daemon running, so you can prepare a theme before Arkos is even started. `arkos open`,
@@ -441,14 +445,72 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 3. `arkos theme validate draft.toml`, then `arkos theme contrast draft.toml`; fix every LOW pair
    and run it again until it exits 0.
 4. `arkos theme preview draft.toml`, so the user sees it; then `arkos theme preview --end` if they
-   do not want it.
+   do not want it. To show it in a window of its own while theirs stays as it is, use the
+   sandbox instead: `arkos sandbox theme use draft.toml` (section 7).
 5. `arkos theme use draft.toml` (add `--dark` or `--light` to choose the slot).
 6. `arkos theme current` to confirm what every window shows.
 
 To revert, `arkos theme use navy` (or `arkos theme use peach-light --light`). The user can also
 pick any theme by hand in the Settings window.
 
-## 7. A worked example: Timo Purple
+## 7. Trying a theme or effect without touching the user's setup
+
+`arkos sandbox` starts a second Arkos beside the user's: its own windows, its own daemon and
+sessions, and its own config folder. The first start copies the user's `config.toml`, `themes/`
+and `effects/` into it, so it looks like their Arkos until you change it; from then on the copy is
+the sandbox's own. A sandbox never writes the user's config, their Claude Code colours, hooks or
+skill, a login item or an update, and it sends nothing: telemetry is off. Where an action would
+write Claude Code's files, the login item or an update, the sandbox's Settings, doctor and
+commands say `not in a sandbox` and do nothing. `arkos notify` still runs, so its tabs show their sessions' states. Its title bar shows
+`sandbox` after the project's name, and its window is titled "Arkos IDE (sandbox)".
+
+The forms, as `arkos sandbox` prints them on a usage error:
+
+```
+arkos sandbox [<folder>]
+arkos sandbox <command> ...   any arkos command, aimed at the sandbox
+arkos sandbox status | stop | reset
+```
+
+- `arkos sandbox [<folder>] [--json]`: opens a sandbox window on the folder (default your working
+  folder; one that does not exist exits 2) and prints
+  `sandbox: opened {folder} (config {dir}, state {dir})`. Run again, it opens another window of
+  the same sandbox. JSON `{ "folder", "config", "state", "pid" }`.
+- `arkos sandbox <command> ...`: runs `open`, `video`, `panes`, `theme`, `effect`, `settings`,
+  `config`, `guide`, `doctor`, `telemetry`, `hooks` or `notify` aimed at the sandbox, with that
+  command's own output and exit code. `arkos sandbox theme use draft.toml` writes the sandbox's
+  `config.toml`, never the user's.
+- `arkos sandbox status [--json]`: the `config:` and `state:` folders, `daemon: running` or
+  `daemon: not running`, each window as `window {pid} ({project})` or `windows: none`, then
+  `sends nothing; Claude Code colours untouched`. Exit 0. JSON
+  `{ "config", "state", "daemon": true | false, "windows": [{ "pid", "project" }] }`.
+- `arkos sandbox stop`: ends the sandbox's windows, then its daemon and with it the sandbox's
+  sessions: `sandbox: stopped {n} windows and the daemon`, or `sandbox: nothing running`. The
+  folders stay. Exit 1 when a process would not end.
+- `arkos sandbox reset`: deletes the sandbox's folder, so the next start copies the user's config
+  again: `sandbox: reset; the next start copies your config again`. While the sandbox runs it
+  refuses with `sandbox: still running; run arkos sandbox stop first` (exit 1).
+
+A shell inside the sandbox window is already aimed at it, so the ordinary commands work there
+with no prefix: it inherits `ARKOS_CONFIG_DIR`, `ARKOS_APP_SUPPORT` and `ARKOS_SANDBOX=1`. Only
+Arkos reads `ARKOS_CONFIG_DIR`, so every other program in that shell keeps its own config.
+
+Use the sandbox whenever the user wants to see a change before it lands in their own window, and
+whenever you are making a theme or an effect and want to look at it while the user keeps working
+in theirs:
+
+1. `arkos sandbox <folder>`, on the project the user wants to see it on; tell them a second
+   window opened.
+2. Run the theme workflow (section 6) or the effect steps (section 9) with `arkos sandbox` before
+   each command. An effect then lives in the sandbox's effects folder:
+   `arkos sandbox effect template --as <name>` makes it there and prints its path.
+3. To keep it, once the user says so: `arkos theme use draft.toml` for a theme; for an effect,
+   copy its folder from `effects/` in the config folder `arkos sandbox status` names into the
+   user's effects folder (section 2), then `arkos effect use <name>`.
+4. When the user is done looking, `arkos sandbox stop`. `arkos sandbox reset` after it makes the
+   next start copy the user's config afresh, for when theirs has changed since.
+
+## 8. A worked example: Timo Purple
 
 The brief was an accent, `#00ffff`, and a background, `#330076`. The built-in `timo-purple` is
 the result (`arkos theme template timo-purple` prints it). The choices, and why each passes:
@@ -469,7 +531,7 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
   enough for the foreground to keep 5.7:1, 7.7:1 and 4.6:1 on them; the accent was too light to
   carry white text, so it is not used as a background.
 
-## 8. Effects
+## 9. Effects
 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
 surface, and optionally the text itself. Two are built in: Peach Light recommends `watercolor`
@@ -506,9 +568,9 @@ terminal's cells one by one), the About, Settings and Keybindings windows and th
 
 ### The folder
 
-An effect is a folder in `~/.config/arkos/effects/` (`$XDG_CONFIG_HOME/arkos/effects/` when that
-is set), named for the effect: `effect.toml`, the wash shader and an optional glyph shader beside
-it. A folder named like a built-in replaces it. Every key but `name` and `wash` has the default
+An effect is a folder in `~/.config/arkos/effects/` (`effects/` in the config folder of section 2
+when a variable moves it), named for the effect: `effect.toml`, the wash shader and an optional
+glyph shader beside it. A folder named like a built-in replaces it. Every key but `name` and `wash` has the default
 shown; a value out of range or an unknown key makes the effect invalid, and the error names the
 key and the range.
 
@@ -611,7 +673,8 @@ and at least 80% of their coverage.
    and line. Read its `highlights:` line: with `app` the wash gets no highlight blocks.
 4. `arkos effect bench <name>` until it says `within budget`.
 5. `arkos effect use <name>`, then `arkos effect current` to see what each window draws and what
-   it costs.
+   it costs. To look at it in a window of its own first, run these steps in the sandbox
+   (section 7), ending with `arkos sandbox effect use <name>`.
 
 A window loads an effect when it puts it on. To see an edit to the effect it already shows, run
 `arkos effect use none`, wait a second for the fade, then `arkos effect use <name>` again. To
@@ -690,7 +753,7 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
   [{ "pid", "project", "effect": name | null, "gpu_ms": ms | null, "size": [w, h] | null } |
   { "pid", "project", "error" }], "missing": [pids], "too_old": [pids] }`.
 
-## 9. What Arkos sends
+## 10. What Arkos sends
 
 When the user asks what Arkos sends, whether it collects data, or how to turn that off, answer
 from the disclosure page and not from memory. It is `docs/telemetry.md` in the Arkos source
@@ -704,7 +767,7 @@ Never change the setting on your own: not with `arkos telemetry`, not with
 table. Whether Arkos records or sends anything is the user's choice. Tell them the command and
 let them run it, or run it only when they have asked you to in so many words.
 
-## 10. Rules
+## 11. Rules
 
 For files in panes:
 

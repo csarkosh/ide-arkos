@@ -15,6 +15,14 @@ This runs a build from source. The released app is `/Applications/Arkos IDE.app`
 the Homebrew cask and kept current by the daemon (see [Updating](guide.md#updating)); `packaging/bundle.sh` is what
 assembles it.
 
+A dev window beside the Arkos you use is `target/debug/arkos sandbox <folder>` (after `cargo build
+-p arkos`): a sandbox of the source build, with its own config, daemon and sessions in
+`~/Library/Caches/arkos-sandbox-dev`, so it never meets the installed app's sandbox
+(`arkos-sandbox`) or your real config. `target/debug/arkos sandbox theme use <name>` and
+`target/debug/arkos sandbox effect use <name>` change that window alone, a shell inside it is
+already aimed at it, and `target/debug/arkos sandbox stop` ends it. The user's side is in
+[Config](guide.md#config).
+
 Opening from the Dock (or Finder, or Spotlight) asks which folder to open: a small chooser lists
 the five most recent folders, newest first, with "Show all" for the rest and "Open another
 folder…" for the native picker. Up, Down and Enter choose; Escape quits. The chooser opens at
@@ -246,6 +254,8 @@ seconds and holding the position, and a relaunch brings it back paused on its fr
 the markdown poster's Cmd+click and the palette's "Open file in pane…" open it, and agents get
 `arkos open`, `arkos video` and `arkos panes` over a targeted channel to their own window
 (protocol 8), found through the SessionStart hook's line, the skill and `arkos guide`.
+`arkos sandbox` opens a second Arkos with its own config, daemon and sessions, to try a theme or
+an effect in without touching the real setup.
 
 Things only a person at the screen can check, in order of value:
 
@@ -352,6 +362,18 @@ Things only a person at the screen can check, in order of value:
 - effects, space: in a release build with Navy and space on, the window idle in front, Activity
   Monitor's CPU for the process (write the figure here); the text is still, so it is redrawn
   only when it changes, and only the wash runs on its timer
+- sandbox: `arkos sandbox ~/Projects/x` opens a second window titled "Arkos IDE (sandbox)" with
+  `sandbox` in its title bar; the first window is unchanged; `arkos sandbox status` lists it
+- sandbox: `arkos sandbox theme use timo-purple` changes only the sandbox window;
+  `~/.config/arkos/config.toml` and `~/.claude/themes/arkos.json` are byte for byte as before
+- sandbox: inside a sandbox shell, `arkos theme current` names the sandbox's theme and `echo
+  $XDG_CONFIG_HOME` is as it was outside; `gh auth status` still works there
+- sandbox: `arkos sandbox stop` closes the sandbox window and its daemon and leaves the real
+  instance running; `arkos sandbox reset` then `arkos sandbox <folder>` opens on a fresh copy of
+  the config
+- sandbox: in the sandbox's Settings, Start at login and the update switch read `not in a
+  sandbox`; the doctor's hook and guide rows too; `~/.claude/settings.json` is byte for byte as
+  before
 - video pane: a video opens from the sidebar and plays with sound; Space, the arrows, comma and
   period do what the Keyboard table says
 - video pane: dragging the tab to another pane keeps it playing after the drop, and switching
