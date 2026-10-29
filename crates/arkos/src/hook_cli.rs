@@ -138,7 +138,8 @@ pub fn send_one_with(socket: &Path, request: Request, timeout: Duration) -> std:
 /// start inside Arkos, and only that, calls `start` for the skills folder (the starting Claude
 /// Code's own, `None` when the environment names none) and the context lines; it installs or
 /// refreshes the agent guide skill there and prints the lines to `out`; nothing else goes to `out`.
-pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, start: &dyn Fn() -> (Option<PathBuf>, String)) -> i32 {
+/// In a `sandbox` the lines are printed and no skill is written: the folder is the user's own.
+pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin: &mut dyn Read, out: &mut dyn Write, start: &dyn Fn() -> (Option<PathBuf>, String), sandbox: bool) -> i32 {
     let notify = match parse_notify(args) {
         Ok(n) => n,
         Err(usage) => {
@@ -154,6 +155,7 @@ pub fn run_with(args: &[String], socket: &Path, session_env: Option<&str>, stdin
         // The skill reaches this Claude Code at its next start; the lines cover this one.
         let (skills, lines) = start();
         match skills {
+            _ if sandbox => eprintln!("arkos notify: the agent guide skill was not installed: {}", crate::sandbox::REFUSAL),
             Some(dir) => {
                 if let Err(e) = crate::guide::ensure_skill(&dir) {
                     eprintln!("arkos notify: the agent guide skill was not installed: {e}");
@@ -356,8 +358,13 @@ pub fn hooks_installed_at(path: &Path, exe: &Path) -> Result<bool, String> {
 }
 
 /// Merges the hook entries into Claude Code's settings file, writing `<file>.bak` first when
-/// the file exists. A file that does not parse is left untouched, with the error returned.
-pub fn install_hooks_at(path: &Path, exe: &Path) -> Result<(PathBuf, usize, usize), String> {
+/// the file exists. A file that does not parse is left untouched, with the error returned. A
+/// sandbox writes nothing and says `not in a sandbox`: its hooks would aim the user's Claude Code
+/// at the sandbox's binary.
+pub fn install_hooks_at(path: &Path, exe: &Path, sandbox: bool) -> Result<(PathBuf, usize, usize), String> {
+    if sandbox {
+        return Err(crate::sandbox::REFUSAL.to_string());
+    }
     let mut counts = (0, 0);
     edit_settings(path, |existing| {
         let (merged, added, replaced) = merge_hooks(existing, &hooks_json(exe));
@@ -368,7 +375,7 @@ pub fn install_hooks_at(path: &Path, exe: &Path) -> Result<(PathBuf, usize, usiz
 }
 
 pub fn install_hooks(exe: &Path) -> Result<(PathBuf, usize, usize), String> {
-    install_hooks_at(&claude_settings_path(), exe)
+    install_hooks_at(&claude_settings_path(), exe, ::telemetry::is_sandbox())
 }
 
 fn this_exe() -> PathBuf {
@@ -388,6 +395,7 @@ pub fn run(args: &[String]) -> i32 {
                 let on_path = std::env::var("PATH").is_ok_and(|p| resolves_on_path(&p, "arkos"));
                 (crate::guide::find_skills_dir(), context_lines(on_path, &this_exe()))
             },
+            ::telemetry::is_sandbox(),
         ),
         Some("hooks") => match args.get(1).map(String::as_str) {
             Some("print") => {
@@ -491,7 +499,7 @@ mod tests {
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
         let unresolved = || -> (Option<PathBuf>, String) { panic!("a state notify resolves no skills folder") };
-        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &unresolved);
+        let code = run_with(&args("notify --state waiting"), &socket, Some("7"), &mut std::io::empty(), &mut out, &unresolved, false);
         assert_eq!(code, 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Waiting });
         assert!(out.is_empty(), "a state hook prints nothing");
@@ -505,7 +513,7 @@ mod tests {
         let skills = dir.path().join("skills");
         let start = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#;
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false), 0);
         let agent = AgentRecord { kind: "claude".into(), id: "abc".into(), resume: vec!["claude".into(), "--resume".into(), "abc".into()] };
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { session: SessionId(7), agent });
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
@@ -516,7 +524,7 @@ mod tests {
         let again = tempfile::tempdir().unwrap();
         let (socket, _rx) = fake_daemon(again.path());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
         assert_eq!(std::fs::metadata(&skill).unwrap().modified().unwrap(), mtime);
         // A skill someone else wrote under that name stays as it was, and the hook still succeeds.
@@ -524,7 +532,7 @@ mod tests {
         let third = tempfile::tempdir().unwrap();
         let (socket, _rx) = fake_daemon(third.path());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), false), 0);
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES);
         assert_eq!(std::fs::read_to_string(&skill).unwrap(), "---\nname: theirs\n---\nhi\n");
     }
@@ -536,12 +544,12 @@ mod tests {
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"other"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills), false), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         let dir = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(dir.path());
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionEnd","reason":"clear"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --event session-end"), &socket, Some("7"), &mut stdin, &mut out, &start_in(&skills), false), 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::ClearAgent { session: SessionId(7), id: "abc".into() });
         assert!(out.is_empty(), "a session end prints nothing");
         assert!(!skills.exists());
@@ -554,13 +562,13 @@ mod tests {
         // The environment as the hook would see it with neither CLAUDE_CONFIG_DIR nor HOME set.
         let homeless = || (crate::guide::skills_dir_from(None, None), CONTEXT_LINES.to_string());
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --state working"), &socket, Some("7"), &mut std::io::empty(), &mut out, &homeless), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("7"), &mut std::io::empty(), &mut out, &homeless, false), 0);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetState { session: SessionId(7), state: ClaudeState::Working });
         assert!(out.is_empty());
         let again = tempfile::tempdir().unwrap();
         let (socket, rx) = fake_daemon(again.path());
         let start = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#;
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &homeless), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &homeless, false), 0);
         assert!(matches!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { .. }), "the agent is still recorded");
         assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES, "and the lines still print");
     }
@@ -610,10 +618,10 @@ mod tests {
         let (socket, rx) = fake_daemon(dir.path());
         let skills = dir.path().join("skills");
         let mut out = Vec::new();
-        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &start_in(&skills)), 0);
-        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, None, &mut std::io::empty(), &mut out, &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --state working"), &socket, Some("not a number"), &mut std::io::empty(), &mut out, &start_in(&skills), false), 0);
         let mut stdin = r#"{"session_id":"abc","hook_event_name":"SessionStart"}"#.as_bytes();
-        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, None, &mut stdin, &mut out, &start_in(&skills), false), 0);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
         assert!(out.is_empty(), "outside Arkos a session start prints nothing");
         assert!(!skills.exists(), "and installs nothing");
@@ -624,8 +632,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let skills = dir.path().join("skills");
         let started = std::time::Instant::now();
-        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills)), 0);
-        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills)), 0);
+        assert_eq!(run_with(&args("notify --state working"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills), false), 0);
+        assert_eq!(run_with(&args("notify --state nonsense"), &dir.path().join("missing.sock"), Some("7"), &mut std::io::empty(), &mut Vec::new(), &start_in(&skills), false), 0);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
@@ -676,7 +684,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"model":"opus"}"#).unwrap();
-        let (p, added, replaced) = install_hooks_at(&path, Path::new("/x/arkos")).unwrap();
+        let (p, added, replaced) = install_hooks_at(&path, Path::new("/x/arkos"), false).unwrap();
         assert_eq!((p, added, replaced), (path.clone(), 6, 0));
         assert_eq!(std::fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(), r#"{"model":"opus"}"#);
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -684,9 +692,9 @@ mod tests {
         assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["command"], "/x/arkos notify --state waiting");
         // A missing file is created; a broken one is left alone.
         let fresh = dir.path().join("sub").join("settings.json");
-        assert_eq!(install_hooks_at(&fresh, Path::new("/x/arkos")).unwrap().1, 6);
+        assert_eq!(install_hooks_at(&fresh, Path::new("/x/arkos"), false).unwrap().1, 6);
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(install_hooks_at(&path, Path::new("/x/arkos")).unwrap_err().contains("cannot parse"));
+        assert!(install_hooks_at(&path, Path::new("/x/arkos"), false).unwrap_err().contains("cannot parse"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
     }
 
@@ -767,13 +775,39 @@ mod tests {
         let path = dir.path().join("settings.json");
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
         assert_eq!(hooks_installed_at(&path, exe), Ok(false), "no file");
-        install_hooks_at(&path, Path::new("/old/place/arkos")).unwrap();
+        install_hooks_at(&path, Path::new("/old/place/arkos"), false).unwrap();
         assert_eq!(hooks_installed_at(&path, exe), Ok(false), "hooks from another binary are what an install would replace");
-        install_hooks_at(&path, exe).unwrap();
+        install_hooks_at(&path, exe, false).unwrap();
         assert_eq!(hooks_installed_at(&path, exe), Ok(true));
         let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         v["hooks"].as_object_mut().unwrap().remove("Stop");
         std::fs::write(&path, v.to_string()).unwrap();
         assert_eq!(hooks_installed_at(&path, exe), Ok(false), "one event's group removed by hand");
+    }
+
+    #[test]
+    fn a_session_start_in_a_sandbox_prints_the_lines_and_writes_no_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, rx) = fake_daemon(dir.path());
+        let skills = dir.path().join("skills");
+        let start = r#"{"session_id":"abc","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}"#;
+        let mut out = Vec::new();
+        assert_eq!(run_with(&args("notify --event session-start"), &socket, Some("7"), &mut start.as_bytes(), &mut out, &start_in(&skills), true), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), CONTEXT_LINES, "the agent still learns where it is");
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Request::SetAgent { .. }), "the event still reaches the daemon");
+        assert!(!skills.exists(), "the user's skills folder is never written from a sandbox");
+    }
+
+    #[test]
+    fn hooks_install_in_a_sandbox_refuses_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"model":"opus"}"#).unwrap();
+        assert_eq!(install_hooks_at(&path, Path::new("/x/arkos"), true), Err("not in a sandbox".to_string()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"model":"opus"}"#);
+        assert!(!dir.path().join("settings.json.bak").exists(), "no backup either");
+        let fresh = dir.path().join("sub").join("settings.json");
+        assert!(install_hooks_at(&fresh, Path::new("/x/arkos"), true).is_err());
+        assert!(!dir.path().join("sub").exists(), "no folder is made");
     }
 }

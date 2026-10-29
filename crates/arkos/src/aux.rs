@@ -143,7 +143,7 @@ fn settings_state(cx: &App) -> Option<(Shown, Theme)> {
     }
     let launch = cx.try_global::<Aux>()?.launch.as_ref()?;
     let (config, error) = config::reload_decision(&launch.config, config::load(&launch.config_path));
-    Some((Shown { config, error, write_error: None, update_ready: None, active_preset: None }, launch.theme.clone()))
+    Some((Shown { config, error, write_error: None, update_ready: None, active_preset: None, sandbox: ::telemetry::is_sandbox() }, launch.theme.clone()))
 }
 
 /// The Keybindings menu item, Cmd+/ and Settings' "Keybindings": brings the Keybindings window
@@ -325,7 +325,7 @@ fn apply_settings_edits(edits: &[(&[&str], toml_edit::Value)], cx: &mut App) {
             launch.config = config.clone();
         }
     }
-    let shown = Shown { config, error, write_error: None, update_ready: None, active_preset: None };
+    let shown = Shown { config, error, write_error: None, update_ready: None, active_preset: None, sandbox: ::telemetry::is_sandbox() };
     let shown = match written {
         Ok(()) => shown,
         Err(e) => {

@@ -51,8 +51,10 @@ pub struct Probe<'a> {
     pub claude_present: bool,
 }
 
-/// The six checks, in the order the popover lists them.
-pub fn probe_all(p: &Probe) -> Vec<Check> {
+/// The checks, in the order the popover lists them. In a sandbox the rows whose action writes the
+/// user's own setup (their Claude Code colours, the login item, the hooks and the skill) are pinned
+/// as `not in a sandbox` with no button; the scroll row is probed as anywhere.
+pub fn probe_all(p: &Probe, sandbox: bool) -> Vec<Check> {
     let (scroll_state, scroll_button) = match hook_cli::wheel_scroll_acceleration_at(p.settings) {
         Ok(Some(false)) => (State::Good(if p.scroll_applied { "on; restart claude for it to take effect" } else { "on" }.into()), None),
         Ok(_) => (State::Fix("off: fast scrolls jump in Claude Code".into()), Some("Apply")),
@@ -82,13 +84,20 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
         (SkillState::Outdated(old), true) => (State::Fix(format!("older than this build ({old})")), Some("Update")),
         (SkillState::Foreign, true) => (State::Broken(format!("a different skill sits at {}", p.skills.join(crate::guide::SKILL_NAME).join("SKILL.md").display())), None),
     };
-    vec![
+    let mut checks = vec![
         Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: scroll_state, button: scroll_button },
         Check { id: CheckId::ClaudeTheme, title: "Claude Code: follows the Arkos theme", state: theme_state, button: theme_button },
         Check { id: CheckId::StartAtLogin, title: "Start at login", state: login_state, button: login_button },
         Check { id: CheckId::TitleHook, title: "Claude Code title hook", state: hook_state, button: hook_button },
         Check { id: CheckId::AgentGuide, title: "Agent guide for Claude Code", state: guide_state, button: guide_button },
-    ]
+    ];
+    if sandbox {
+        for c in checks.iter_mut().filter(|c| c.id != CheckId::WheelScroll) {
+            c.state = State::Pinned(crate::sandbox::REFUSAL.into());
+            c.button = None;
+        }
+    }
+    checks
 }
 
 /// The count behind the dot and the palette detail: the rows the doctor can fix.
@@ -120,7 +129,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
-        let checks = probe_all(&probe(&settings, exe));
+        let checks = probe_all(&probe(&settings, exe), false);
         assert_eq!(checks.iter().map(|c| c.id).collect::<Vec<_>>(), vec![CheckId::WheelScroll, CheckId::ClaudeTheme, CheckId::StartAtLogin, CheckId::TitleHook, CheckId::AgentGuide]);
         assert_eq!(checks[0], Check { id: CheckId::WheelScroll, title: "Claude Code: smooth wheel scrolling", state: State::Fix("off: fast scrolls jump in Claude Code".into()), button: Some("Apply") });
         assert_eq!(checks[2].state, State::Fix("off: sessions do not come back after a restart".into()));
@@ -137,13 +146,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
-        crate::hook_cli::install_hooks_at(&settings, exe).unwrap();
+        crate::hook_cli::install_hooks_at(&settings, exe, false).unwrap();
         crate::hook_cli::set_wheel_scroll_acceleration_at(&settings, false).unwrap();
         crate::hook_cli::set_claude_theme_at(&settings, crate::claude_theme::SELECTED).unwrap();
         let mut p = probe(&settings, exe);
         p.login_item_installed = true;
         p.scroll_applied = true;
-        let checks = probe_all(&p);
+        let checks = probe_all(&p, false);
         assert_eq!(checks[0].state, State::Good("on; restart claude for it to take effect".into()));
         assert_eq!(checks[0].button, None);
         assert_eq!((checks[2].state.clone(), checks[2].button), (State::Good("on".into()), Some("Remove")));
@@ -151,14 +160,14 @@ mod tests {
         assert_eq!(checks[3].state, State::Good("installed".into()));
         assert_eq!(needs_fix(&checks), 0);
         p.scroll_applied = false;
-        assert_eq!(probe_all(&p)[0].state, State::Good("on".into()));
+        assert_eq!(probe_all(&p, false)[0].state, State::Good("on".into()));
     }
 
     #[test]
     fn the_theme_row_offers_the_arkos_colours_for_any_other_claude_theme() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
-        let row = |s: &Path| probe_all(&probe(s, Path::new("/x/arkos"))).into_iter().find(|c| c.id == CheckId::ClaudeTheme).unwrap();
+        let row = |s: &Path| probe_all(&probe(s, Path::new("/x/arkos")), false).into_iter().find(|c| c.id == CheckId::ClaudeTheme).unwrap();
         for (theme, shown) in [("auto", "set to auto"), ("dark-daltonized", "set to dark-daltonized"), ("custom:mine", "set to custom:mine")] {
             crate::hook_cli::set_claude_theme_at(&settings, theme).unwrap();
             assert_eq!(row(&settings).state, State::Fix(format!("{shown}: Claude Code keeps its own colours, unreadable on some Arkos themes")));
@@ -173,7 +182,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         crate::hook_cli::set_wheel_scroll_acceleration_at(&settings, true).unwrap();
-        let checks = probe_all(&probe(&settings, Path::new("/x/arkos")));
+        let checks = probe_all(&probe(&settings, Path::new("/x/arkos")), false);
         assert_eq!(checks[0].state, State::Fix("off: fast scrolls jump in Claude Code".into()));
         assert_eq!(checks[0].button, Some("Apply"));
     }
@@ -185,11 +194,11 @@ mod tests {
         let exe = Path::new("/x/arkos");
         let mut p = probe(&settings, exe);
         p.start_at_login = StartAtLogin::Off;
-        let checks = probe_all(&p);
+        let checks = probe_all(&p, false);
         assert_eq!(checks[2], Check { id: CheckId::StartAtLogin, title: "Start at login", state: State::Pinned("off, set in config.toml ([recovery] start_at_login)".into()), button: None });
         p.start_at_login = StartAtLogin::On;
-        assert_eq!(probe_all(&p)[2].state, State::Pinned("on, set in config.toml ([recovery] start_at_login)".into()));
-        assert_eq!(needs_fix(&probe_all(&p)), 3, "pinned rows never count; scroll, theme and hook do");
+        assert_eq!(probe_all(&p, false)[2].state, State::Pinned("on, set in config.toml ([recovery] start_at_login)".into()));
+        assert_eq!(needs_fix(&probe_all(&p, false)), 3, "pinned rows never count; scroll, theme and hook do");
     }
 
     #[test]
@@ -197,7 +206,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         std::fs::write(&settings, "{ not json").unwrap();
-        let checks = probe_all(&probe(&settings, Path::new("/x/arkos")));
+        let checks = probe_all(&probe(&settings, Path::new("/x/arkos")), false);
         assert!(matches!(&checks[0].state, State::Broken(t) if t.starts_with(&format!("cannot parse {}", settings.display()))), "{:?}", checks[0].state);
         assert_eq!(checks[0].button, None);
         assert!(matches!(&checks[3].state, State::Broken(t) if t.starts_with("cannot parse")), "{:?}", checks[3].state);
@@ -212,15 +221,15 @@ mod tests {
         let settings = dir.path().join("settings.json");
         let exe = Path::new("/x/arkos");
         let mut p = probe(&settings, exe);
-        let guide = |p: &Probe| probe_all(p).into_iter().find(|c| c.id == CheckId::AgentGuide).unwrap();
+        let guide = |p: &Probe| probe_all(p, false).into_iter().find(|c| c.id == CheckId::AgentGuide).unwrap();
         assert_eq!(guide(&p).title, "Agent guide for Claude Code");
         assert_eq!(guide(&p).state, State::Good("installed in /h/.claude/skills; other Claude config folders get it when a session starts inside Arkos".into()));
         assert_eq!(guide(&p).button, None);
-        let base = needs_fix(&probe_all(&p));
+        let base = needs_fix(&probe_all(&p, false));
         p.skill = SkillState::Missing;
         assert_eq!(guide(&p).state, State::Fix("not installed in /h/.claude/skills: agents cannot find the toolkit".into()));
         assert_eq!(guide(&p).button, Some("Install"));
-        assert_eq!(needs_fix(&probe_all(&p)), base + 1);
+        assert_eq!(needs_fix(&probe_all(&p, false)), base + 1);
         p.skill = SkillState::Outdated("x".into());
         assert_eq!(guide(&p).state, State::Fix("older than this build (x)".into()));
         assert_eq!(guide(&p).button, Some("Update"));
@@ -231,6 +240,23 @@ mod tests {
         p.claude_present = false;
         assert_eq!(guide(&p).state, State::Pinned("no Claude Code config found".into()));
         assert_eq!(guide(&p).button, None);
-        assert_eq!(needs_fix(&probe_all(&p)), base, "no Claude Code, nothing to fix");
+        assert_eq!(needs_fix(&probe_all(&p, false)), base, "no Claude Code, nothing to fix");
+    }
+
+    #[test]
+    fn a_sandbox_pins_the_rows_that_write_the_users_setup_and_leaves_scrolling_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let p = probe(&settings, Path::new("/x/arkos"));
+        let (outside, inside) = (probe_all(&p, false), probe_all(&p, true));
+        assert_eq!(inside.iter().map(|c| c.id).collect::<Vec<_>>(), outside.iter().map(|c| c.id).collect::<Vec<_>>());
+        for c in &inside {
+            if c.id == CheckId::WheelScroll {
+                assert_eq!(c, &outside[0], "the scroll row is as it was");
+            } else {
+                assert_eq!((&c.state, c.button), (&State::Pinned("not in a sandbox".into()), None), "{:?}", c.id);
+            }
+        }
+        assert_eq!(needs_fix(&inside), 1, "only the scroll row is left to fix");
     }
 }

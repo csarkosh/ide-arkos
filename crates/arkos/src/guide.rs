@@ -150,8 +150,9 @@ pub fn skills_dir() -> PathBuf {
 
 /// `arkos guide [--path | --install]` with its folders and streams explicit, for tests. Exit 0
 /// on success, 1 when a write fails, a stranger's skill is in the way or `--install` has no skills
-/// folder (`None`), 2 for a usage error. `--install` leaves a current skill as it is.
-pub fn guide_cli_to(args: &[String], skills_dir: Option<&Path>, app_support: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+/// folder (`None`), 2 for a usage error. `--install` leaves a current skill as it is, and in a
+/// `sandbox` writes nothing and exits 1 with `not in a sandbox`.
+pub fn guide_cli_to(args: &[String], skills_dir: Option<&Path>, app_support: &Path, sandbox: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => {
             let _ = out.write_all(TEXT.as_bytes());
@@ -167,7 +168,7 @@ pub fn guide_cli_to(args: &[String], skills_dir: Option<&Path>, app_support: &Pa
                 1
             }
         },
-        ["--install"] => match install_line(skills_dir) {
+        ["--install"] => match install_line(skills_dir, sandbox) {
             Ok(line) => {
                 let _ = writeln!(out, "{line}");
                 let _ = writeln!(out, "For agents that read AGENTS.md or CLAUDE.md, add this line there:");
@@ -187,8 +188,11 @@ pub fn guide_cli_to(args: &[String], skills_dir: Option<&Path>, app_support: &Pa
 }
 
 /// `--install`'s first line: `already current: {path}` with nothing written, else the install's
-/// `installed` or `updated the skill at {path}; ...`.
-fn install_line(skills_dir: Option<&Path>) -> Result<String, String> {
+/// `installed` or `updated the skill at {path}; ...`. A sandbox refuses: the folder is the user's.
+fn install_line(skills_dir: Option<&Path>, sandbox: bool) -> Result<String, String> {
+    if sandbox {
+        return Err(crate::sandbox::REFUSAL.to_string());
+    }
     let dir = skills_dir.ok_or("cannot find the Claude config folder: neither CLAUDE_CONFIG_DIR nor HOME is set")?;
     if skill_state(dir) == SkillState::Current {
         return Ok(format!("already current: {}", skill_path(dir).display()));
@@ -200,7 +204,7 @@ fn install_line(skills_dir: Option<&Path>) -> Result<String, String> {
 
 /// `arkos guide ...` against this environment's folders and the process streams.
 pub fn guide_cli(args: &[String]) -> i32 {
-    guide_cli_to(args, find_skills_dir().as_deref(), &crate::paths::app_support(), &mut std::io::stdout(), &mut std::io::stderr())
+    guide_cli_to(args, find_skills_dir().as_deref(), &crate::paths::app_support(), ::telemetry::is_sandbox(), &mut std::io::stdout(), &mut std::io::stderr())
 }
 
 #[cfg(test)]
@@ -228,19 +232,19 @@ mod tests {
         let e = install_skill(dir.path()).unwrap_err();
         assert!(e.contains("SKILL.md"), "{e}");
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        assert_eq!(guide_cli_to(&[], Some(dir.path()), dir.path(), &mut out, &mut err), 0);
+        assert_eq!(guide_cli_to(&[], Some(dir.path()), dir.path(), false, &mut out, &mut err), 0);
         assert_eq!(String::from_utf8(out).unwrap(), TEXT);
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        assert_eq!(guide_cli_to(&["--path".into()], Some(dir.path()), dir.path(), &mut out, &mut err), 0);
+        assert_eq!(guide_cli_to(&["--path".into()], Some(dir.path()), dir.path(), false, &mut out, &mut err), 0);
         let p = PathBuf::from(String::from_utf8(out).unwrap().trim());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), TEXT);
         let mtime = std::fs::metadata(&p).unwrap().modified().unwrap();
-        assert_eq!(guide_cli_to(&["--path".into()], Some(dir.path()), dir.path(), &mut Vec::new(), &mut Vec::new()), 0);
+        assert_eq!(guide_cli_to(&["--path".into()], Some(dir.path()), dir.path(), false, &mut Vec::new(), &mut Vec::new()), 0);
         assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), mtime, "an unchanged copy is not rewritten");
         std::fs::write(&p, "an older guide").unwrap();
-        assert_eq!(guide_cli_to(&["--path".into()], Some(dir.path()), dir.path(), &mut Vec::new(), &mut Vec::new()), 0);
+        assert_eq!(guide_cli_to(&["--path".into()], Some(dir.path()), dir.path(), false, &mut Vec::new(), &mut Vec::new()), 0);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), TEXT, "a copy that differs is rewritten");
-        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), &mut Vec::new(), &mut Vec::new()), 1, "the stranger stays");
+        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), false, &mut Vec::new(), &mut Vec::new()), 1, "the stranger stays");
         assert_eq!(skills_dir_from(Some(OsStr::new("/h/.claude2")), Some(OsStr::new("/h"))), Some(PathBuf::from("/h/.claude2/skills")));
         assert_eq!(skills_dir_from(None, Some(OsStr::new("/h"))), Some(PathBuf::from("/h/.claude/skills")));
         assert_eq!(skills_dir_from(Some(OsStr::new("/c")), None), Some(PathBuf::from("/c/skills")), "a config folder needs no HOME");
@@ -308,27 +312,27 @@ mod tests {
     fn install_prints_the_path_and_the_line_for_agents_md() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::new();
-        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), &mut out, &mut Vec::new()), 0);
+        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), false, &mut out, &mut Vec::new()), 0);
         let path = dir.path().join("arkos-ide").join("SKILL.md");
         let want = format!("installed the skill at {}; Claude Code loads it at its next start\nFor agents that read AGENTS.md or CLAUDE.md, add this line there:\n{AGENTS_MD_LINE}\n", path.display());
         assert_eq!(String::from_utf8(out).unwrap(), want);
         let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
         let mut out = Vec::new();
-        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), &mut out, &mut Vec::new()), 0);
+        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), false, &mut out, &mut Vec::new()), 0);
         let want = format!("already current: {}\nFor agents that read AGENTS.md or CLAUDE.md, add this line there:\n{AGENTS_MD_LINE}\n", path.display());
         assert_eq!(String::from_utf8(out).unwrap(), want);
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime, "a current skill is not rewritten");
         std::fs::write(&path, skill_text().replace(&stamp(), "0000000000000000")).unwrap();
         let mut out = Vec::new();
-        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), &mut out, &mut Vec::new()), 0);
+        assert_eq!(guide_cli_to(&["--install".into()], Some(dir.path()), dir.path(), false, &mut out, &mut Vec::new()), 0);
         assert!(String::from_utf8(out).unwrap().starts_with("updated the skill at "), "only an outdated skill is updated");
         assert_eq!(skill_state(dir.path()), SkillState::Current);
         let mut err = Vec::new();
-        assert_eq!(guide_cli_to(&["--install".into()], None, dir.path(), &mut Vec::new(), &mut err), 1);
+        assert_eq!(guide_cli_to(&["--install".into()], None, dir.path(), false, &mut Vec::new(), &mut err), 1);
         assert_eq!(String::from_utf8(err).unwrap(), "arkos guide: cannot find the Claude config folder: neither CLAUDE_CONFIG_DIR nor HOME is set\n");
-        assert_eq!(guide_cli_to(&[], None, dir.path(), &mut Vec::new(), &mut Vec::new()), 0, "printing the guide needs no skills folder");
+        assert_eq!(guide_cli_to(&[], None, dir.path(), false, &mut Vec::new(), &mut Vec::new()), 0, "printing the guide needs no skills folder");
         let mut err = Vec::new();
-        assert_eq!(guide_cli_to(&["--bogus".into()], Some(dir.path()), dir.path(), &mut Vec::new(), &mut err), 2);
+        assert_eq!(guide_cli_to(&["--bogus".into()], Some(dir.path()), dir.path(), false, &mut Vec::new(), &mut err), 2);
         assert_eq!(String::from_utf8(err).unwrap(), USAGE);
         assert!(skills_dir_from(Some(OsStr::new("")), Some(OsStr::new("/h"))).unwrap().ends_with(".claude/skills"), "an empty variable is unset");
         assert!(std::fs::read_dir(dir.path().join("arkos-ide")).unwrap().all(|e| e.unwrap().file_name() == "SKILL.md"), "no temporary file left");
@@ -362,5 +366,19 @@ mod tests {
         h.update(without_stamp.as_bytes());
         let whole: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
         assert_eq!(stamp(), whole, "everything in SKILL.md but the stamp line");
+    }
+
+    #[test]
+    fn install_in_a_sandbox_refuses_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(guide_cli_to(&["--install".into()], Some(&skills), dir.path(), true, &mut out, &mut err), 1);
+        assert_eq!(String::from_utf8(err).unwrap(), "arkos guide: not in a sandbox\n");
+        assert!(out.is_empty());
+        assert!(!skills.exists(), "the user's skills folder is never written from a sandbox");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(guide_cli_to(&[], Some(&skills), dir.path(), true, &mut out, &mut err), 0, "reading the guide is fine in a sandbox");
+        assert_eq!(String::from_utf8(out).unwrap(), TEXT);
     }
 }

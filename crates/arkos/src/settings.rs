@@ -90,8 +90,8 @@ impl Section {
 
 /// What the window shows: the config in force, the config file's problem (which makes every
 /// control read-only), why the last write was refused (the controls stay live), the version an
-/// update would install, and the text preset the project window uses (`None` before there is
-/// one).
+/// update would install, the text preset the project window uses (`None` before there is
+/// one), and whether this Arkos is a sandbox.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shown {
     pub config: Config,
@@ -99,6 +99,7 @@ pub struct Shown {
     pub write_error: Option<String>,
     pub update_ready: Option<String>,
     pub active_preset: Option<String>,
+    pub sandbox: bool,
 }
 
 impl Shown {
@@ -111,6 +112,12 @@ impl Shown {
     /// read-only, since fixing the file is then the way forward.
     pub fn editable(&self) -> bool {
         self.error.is_none()
+    }
+
+    /// Whether Start at login, auto-update and "Update now" take clicks: as `editable`, but never in
+    /// a sandbox, which writes no login item and never updates.
+    pub fn machine_switches_live(&self) -> bool {
+        self.editable() && !self.sandbox
     }
 }
 
@@ -802,7 +809,8 @@ impl SettingsWindow {
         row.into_any_element()
     }
 
-    fn startup(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn startup(&self, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let enabled = self.shown.machine_switches_live();
         let value = self.shown.config.recovery.start_at_login;
         // While the config says "ask", the switch reads off and either press writes a value.
         let on = match value {
@@ -812,15 +820,21 @@ impl SettingsWindow {
         };
         let mut out = vec![heading("Start at login", c).into_any_element()];
         out.push(self.switch("login", on, enabled, c, cx, |on| edit(&["recovery", "start_at_login"], if on { "on" } else { "off" })));
-        if value == StartAtLogin::Ask {
+        if self.shown.sandbox {
+            out.push(div().text_color(c.dim).text_size(px(12.0)).child(crate::sandbox::REFUSAL).into_any_element());
+        } else if value == StartAtLogin::Ask {
             out.push(div().text_color(c.dim).text_size(px(12.0)).child("set by config to ask").into_any_element());
         }
         out
     }
 
-    fn updates(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn updates(&self, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let enabled = self.shown.machine_switches_live();
         let mut out = vec![heading("Automatic updates", c).into_any_element()];
         out.push(self.switch("auto-update", Some(self.shown.config.update.auto), enabled, c, cx, |on| edit(&["update", "auto"], on)));
+        if self.shown.sandbox {
+            out.push(div().text_color(c.dim).text_size(px(12.0)).child(crate::sandbox::REFUSAL).into_any_element());
+        }
         if let Some(version) = &self.shown.update_ready {
             let mut now = pill("update-now", "Update now", false, enabled, c);
             if enabled {
@@ -937,8 +951,8 @@ impl Render for SettingsWindow {
         let controls = match self.section {
             Section::Appearance => self.appearance(enabled, c, cx),
             Section::Text => self.text(enabled, c, cx),
-            Section::Startup => self.startup(enabled, c, cx),
-            Section::Updates => self.updates(enabled, c, cx),
+            Section::Startup => self.startup(c, cx),
+            Section::Updates => self.updates(c, cx),
             Section::Privacy => self.privacy(enabled, c, cx),
             Section::Keyboard => self.keyboard(c),
         };
@@ -1107,12 +1121,22 @@ mod tests {
     #[test]
     fn a_refused_write_leaves_the_controls_live_and_only_a_load_error_makes_them_read_only() {
         let config: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
-        let shown = Shown { config, error: None, write_error: None, update_ready: None, active_preset: None };
+        let shown = Shown { config, error: None, write_error: None, update_ready: None, active_preset: None, sandbox: false };
         assert!(shown.editable());
         let refused = shown.clone().with_write_error("cannot write config.toml: read-only".into());
         assert_eq!(refused.write_error.as_deref(), Some("cannot write config.toml: read-only"));
         assert!(refused.editable(), "a refused write keeps every control live");
         assert!(!Shown { error: Some("line 3: bad".into()), ..shown }.editable(), "a load error makes them read-only");
+    }
+
+    #[test]
+    fn a_sandbox_leaves_the_login_and_update_switches_dead_and_every_other_control_live() {
+        let config: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let shown = Shown { config, error: None, write_error: None, update_ready: Some("0.2.0".into()), active_preset: None, sandbox: true };
+        assert!(shown.editable(), "themes, text and effects are the sandbox's to change");
+        assert!(!shown.machine_switches_live(), "start at login, auto-update and Update now do nothing in a sandbox");
+        assert!(Shown { sandbox: false, ..shown.clone() }.machine_switches_live());
+        assert!(!Shown { sandbox: false, error: Some("line 3: bad".into()), ..shown }.machine_switches_live(), "a load error still makes them read-only");
     }
 
     #[test]
@@ -1233,7 +1257,7 @@ mod tests {
     #[test]
     fn the_privacy_rows_are_read_once_until_something_changes() {
         let dir = tempfile::tempdir().unwrap();
-        let shown = Shown { config: Config::default(), error: None, write_error: None, update_ready: None, active_preset: None };
+        let shown = Shown { config: Config::default(), error: None, write_error: None, update_ready: None, active_preset: None, sandbox: false };
         let mut cache = PrivacyCache::default();
         assert_eq!(cache.get(dir.path(), &shown).lines, Vec::new());
         assert_eq!(cache.get(dir.path(), &shown).last, None);

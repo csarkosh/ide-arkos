@@ -16,6 +16,10 @@ pub const COMMANDS: &[&str] = &["open", "video", "panes", "theme", "effect", "se
 
 pub const SANDBOX_USAGE: &str = "usage: arkos sandbox [<folder>]\n       arkos sandbox <command> ...   any arkos command, aimed at the sandbox\n       arkos sandbox status | stop | reset\nsee: arkos guide\n";
 
+/// What a sandbox (`ARKOS_SANDBOX` set) says where an action would write the user's own setup:
+/// their Claude Code colours, hooks or skill, the login item, or an update. The action does nothing.
+pub const REFUSAL: &str = "not in a sandbox";
+
 /// The line that ends `status`: what a sandbox never does.
 const PROMISE: &str = "sends nothing; Claude Code colours untouched";
 

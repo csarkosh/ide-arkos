@@ -240,6 +240,9 @@ pub struct Root {
     pub doctor_busy: Option<doctor_panel::CheckId>,
     /// True once the doctor turned the scroll-acceleration key off during this run.
     pub scroll_applied: bool,
+    /// This Arkos is a sandbox (`ARKOS_SANDBOX`, read once at startup): it never writes the
+    /// user's Claude Code colours, hooks or skill, never writes the login item, never updates.
+    pub sandbox: bool,
     /// When the bell was last opened before the opening now; notices newer than this are unread.
     pub bell_read_before: Option<SystemTime>,
     /// The title bar popover that is open (or fading out).
@@ -498,15 +501,16 @@ const CHECK_RESULT_AFTER: Duration = Duration::from_secs(3);
 const ANOTHER_APPLY: &str = "waiting for a window";
 
 /// What arkosd starts with when this window (or the login item) starts it; a running daemon
-/// keeps its own settings.
-fn daemon_args(config: &config::Config) -> Vec<String> {
+/// keeps its own settings. A sandbox's daemon never checks for updates (`--check-every-secs 0`).
+fn daemon_args(config: &config::Config, sandbox: bool) -> Vec<String> {
+    let check_every_secs = if sandbox { 0 } else { config.update.check_every_secs };
     vec![
         "--watchdog-secs".to_string(),
         config.daemon.watchdog_secs.to_string(),
         "--replay-bytes".to_string(),
         config.daemon.replay_bytes.to_string(),
         "--check-every-secs".to_string(),
-        config.update.check_every_secs.to_string(),
+        check_every_secs.to_string(),
     ]
 }
 
@@ -623,6 +627,7 @@ impl Root {
             doctor_states: Vec::new(),
             doctor_busy: None,
             scroll_applied: false,
+            sandbox: ::telemetry::is_sandbox(),
             popover: Transient::Hidden,
             bell_read_before: None,
             icon_hover: chrome::Popover::Closed,
@@ -821,8 +826,11 @@ impl Root {
     /// At startup: Claude Code's Arkos theme file is brought up to date, and a stock or `auto`
     /// Claude Code theme becomes `custom:arkos`, whose colours are the terminal palette's, so
     /// Claude Code takes each Arkos theme, lines already drawn included; any other choice is
-    /// left for the doctor's row to offer (`claude_theme::follow_at`).
+    /// left for the doctor's row to offer (`claude_theme::follow_at`). A sandbox writes neither.
     fn follow_theme_in_claude(&mut self, cx: &mut Context<Self>) {
+        if self.sandbox {
+            return;
+        }
         let settings = hook_cli::claude_settings_path();
         let themes = claude_theme::themes_dir();
         let root = cx.entity();
@@ -895,7 +903,7 @@ impl Root {
             claude_present: skills.parent().is_some_and(|d| d.is_dir()),
             skills: &skills,
         };
-        self.doctor_states = doctor_panel::probe_all(&p);
+        self.doctor_states = doctor_panel::probe_all(&p, self.sandbox);
     }
 
     /// Runs what a doctor row's button offers. The file actions re-probe when they finish.
@@ -925,6 +933,7 @@ impl Root {
                 })
                 .detach();
             }
+            CheckId::ClaudeTheme if self.refused_in_sandbox(id) => {}
             CheckId::ClaudeTheme => {
                 let path = hook_cli::claude_settings_path();
                 let themes = claude_theme::themes_dir();
@@ -964,8 +973,20 @@ impl Root {
         }
     }
 
+    /// Whether a sandbox refuses the action behind `id`'s doctor row (it would write the user's own
+    /// setup); `id`'s row is no longer busy when it is. The row and the palette say why.
+    fn refused_in_sandbox(&mut self, id: doctor_panel::CheckId) -> bool {
+        if self.sandbox && self.doctor_busy == Some(id) {
+            self.doctor_busy = None;
+        }
+        self.sandbox
+    }
+
     /// Installs the Claude Code hooks off the UI thread and says what happened.
     fn install_hooks(&mut self, cx: &mut Context<Self>) {
+        if self.refused_in_sandbox(doctor_panel::CheckId::TitleHook) {
+            return;
+        }
         let exe = update::launch_path().unwrap_or_else(|| PathBuf::from("arkos"));
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
@@ -990,6 +1011,9 @@ impl Root {
     /// Installs the agent guide skill into this environment's Claude config off the UI thread and
     /// says what happened.
     fn install_agent_guide(&mut self, cx: &mut Context<Self>) {
+        if self.refused_in_sandbox(doctor_panel::CheckId::AgentGuide) {
+            return;
+        }
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
             let result = cx.background_executor().spawn(async move { guide::install_skill(&guide::skills_dir()) }).await;
@@ -1374,6 +1398,7 @@ impl Root {
             write_error: None,
             update_ready,
             active_preset: Some(self.text_preset.clone()),
+            sandbox: self.sandbox,
         }
     }
 
@@ -1995,7 +2020,7 @@ impl Root {
         }
         self.close_popovers(Instant::now());
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix());
+        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix(), self.sandbox);
         self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
         cx.notify();
     }
@@ -2619,6 +2644,7 @@ impl Root {
                 telemetry::theme_named(&name);
                 self.switch_theme_to(theme::load(&name, &paths::themes_dir()), cx)
             }
+            UpdateNow | CheckForUpdates | RetryUpdate if self.sandbox => {}
             UpdateNow => self.update_now(cx),
             CheckForUpdates => {
                 self.sessions.check_for_updates();
@@ -2805,13 +2831,20 @@ impl Root {
 
     /// The plist for this install: the sibling daemon, the config's daemon arguments, the log.
     fn agent_plist(&self) -> String {
-        launch_agent::plist(&paths::daemon_exe(), &daemon_args(&self.config), &client::daemon_log(&paths::socket_path()))
+        launch_agent::plist(&paths::daemon_exe(), &daemon_args(&self.config, self.sandbox), &client::daemon_log(&paths::socket_path()))
     }
 
     /// Installs or removes the login item off the UI thread and says what happened. Only the
     /// app in `/Applications` (or `~/Applications`) writes it: a copy run from anywhere else
-    /// leaves the file as it is, and says so when the user asked (`asked`).
+    /// leaves the file as it is, and says so when the user asked (`asked`). A sandbox never writes
+    /// it and marks the doctor's row `not in a sandbox` when asked.
     fn set_start_at_login(&mut self, on: bool, asked: bool, cx: &mut Context<Self>) {
+        if self.refused_in_sandbox(doctor_panel::CheckId::StartAtLogin) {
+            if asked {
+                self.mark_doctor_broken(doctor_panel::CheckId::StartAtLogin, sandbox::REFUSAL.into());
+            }
+            return;
+        }
         if on && !launch_agent::may_install_here() {
             if self.doctor_busy == Some(doctor_panel::CheckId::StartAtLogin) {
                 self.doctor_busy = None;
@@ -2858,9 +2891,10 @@ impl Root {
     }
 
     /// The palette's "Start at login": flips the login item while the config says "ask"; when
-    /// the config pins it, opens the config instead.
+    /// the config pins it, opens the config instead. A sandbox does neither.
     pub fn toggle_start_at_login(&mut self, cx: &mut Context<Self>) {
         match self.config.recovery.start_at_login {
+            _ if self.sandbox => self.set_start_at_login(false, true, cx),
             config::StartAtLogin::Ask => {
                 let on = !launch_agent::installed(&launch_agent::agent_path());
                 self.set_start_at_login(on, true, cx);
@@ -2876,9 +2910,9 @@ impl Root {
     /// launch how to turn it on.
     pub fn apply_recovery(&mut self, at_launch: bool, cx: &mut Context<Self>) {
         let installed = launch_agent::installed(&launch_agent::agent_path());
-        match launch_agent::desired(self.config.recovery.start_at_login, installed) {
+        match launch_agent::desired(self.config.recovery.start_at_login, installed, self.sandbox) {
             Some(on) => self.set_start_at_login(on, false, cx),
-            None if at_launch && !installed => {
+            None if at_launch && !installed && !self.sandbox => {
                 self.show_notice("sessions can come back after a restart: run \"Start at login\" from the command palette (Cmd+Shift+P)".into(), cx)
             }
             None => {}
@@ -2887,6 +2921,9 @@ impl Root {
 
     /// The bell's "Update now" (or its update-ready row): apply the staged release, else update from disk.
     pub fn update_clicked(&mut self, cx: &mut Context<Self>) {
+        if self.sandbox {
+            return;
+        }
         if self.staged.is_some() {
             self.apply_staged(cx);
         } else {
@@ -2896,6 +2933,9 @@ impl Root {
 
     /// The palette's "Update now": the daemon first when its binary changed, then this window.
     pub fn update_now(&mut self, cx: &mut Context<Self>) {
+        if self.sandbox {
+            return;
+        }
         if self.updating.is_some() {
             self.show_notice("an update is already running".into(), cx);
             return;
@@ -2974,9 +3014,10 @@ impl Root {
 
     /// Checks every second whether the window may act on an update (`idle::may_apply`): applies
     /// a staged release, or relaunches when another window applied one (`idle::idle_action`),
-    /// once. Stops when there is nothing to do or `[update] auto` is off; one at a time.
+    /// once. Stops when there is nothing to do or `[update] auto` is off (as it is in a sandbox);
+    /// one at a time.
     pub fn start_idle_timer(&mut self, cx: &mut Context<Self>) {
-        if self.auto_apply_timer {
+        if self.auto_apply_timer || self.sandbox {
             return;
         }
         self.auto_apply_timer = true;
@@ -4435,7 +4476,7 @@ fn main() {
         }
     };
     // Used only when this window starts the daemon; a running one keeps its own settings.
-    let daemon_args = daemon_args(&config);
+    let daemon_args = daemon_args(&config, ::telemetry::is_sandbox());
     let cwd = std::env::current_dir().expect("cwd");
     let relaunched = !should_activate(std::env::var("ARKOS_RELAUNCH").ok().as_deref());
     let plan = launch::startup_plan(&cwd, relaunched);
@@ -4955,7 +4996,10 @@ fn open_project_window(
         explorer_watch::start(root.clone(), cx);
         // The same client the root was built with; reconnects replace it from here on.
         connection::start(root.clone(), paths::socket_path(), paths::daemon_exe(), daemon_args.clone(), (client.clone(), events, backlog), cx);
-        update::start(root.clone(), cx);
+        // A sandbox never updates, so it never looks for a newer install either.
+        if !root.read(cx).sandbox {
+            update::start(root.clone(), cx);
+        }
         pulse::start(root.downgrade(), cx);
 
         // The focus totals reach the journal once a minute, and at quit (`flush_for_quit`).
@@ -4998,7 +5042,7 @@ fn open_project_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{after_window_closed, closed_entry, daemon_label, menus, pane_after, pick_grid, quit_forced, reopened_video, says_goodbye, video_plays, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
+    use super::{after_window_closed, closed_entry, daemon_args, daemon_label, menus, pane_after, pick_grid, quit_forced, reopened_video, says_goodbye, video_plays, AfterClose, shell_name, should_activate, Quit, CONNECTING, ERROR_PREFIX, FORCE_QUIT_WITHIN};
     use crate::keymap;
     use gpui::{Action, MenuItem};
 
@@ -5280,5 +5324,16 @@ mod tests {
         let below = t.split(doc, Side::Bottom, term(2)).unwrap();
         assert_eq!(pane_after(&t, doc), Some(below), "the next pane in reading order");
         assert_eq!(pane_after(&t, below), None, "the last pane: split");
+    }
+
+    #[test]
+    fn a_sandbox_daemon_never_polls_for_updates() {
+        let mut cfg = crate::config::Config::default();
+        cfg.update.check_every_secs = 60;
+        let poll = |args: &[String]| args.windows(2).find(|w| w[0] == "--check-every-secs").map(|w| w[1].clone());
+        assert_eq!(poll(&daemon_args(&cfg, false)), Some("60".into()), "the config's value");
+        assert_eq!(poll(&daemon_args(&cfg, true)), Some("0".into()), "no daily check in a sandbox");
+        assert_eq!(daemon_args(&cfg, true).iter().filter(|a| *a == "--check-every-secs").count(), 1, "said once");
+        assert_eq!(daemon_args(&cfg, true)[..4], daemon_args(&cfg, false)[..4], "the other arguments are the config's");
     }
 }

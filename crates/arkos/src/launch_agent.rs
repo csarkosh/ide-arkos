@@ -73,7 +73,11 @@ pub fn installed(path: &Path) -> bool {
 /// What to do so the file matches the config: `Some(true)` install (or rewrite), `Some(false)`
 /// remove, `None` leave it. "ask" never adds or removes it (the palette does, with the user's
 /// say-so) but keeps an installed one current: the binary or the `[daemon]` values may have moved.
-pub fn desired(mode: StartAtLogin, installed: bool) -> Option<bool> {
+/// A sandbox never touches the file, whatever the config says.
+pub fn desired(mode: StartAtLogin, installed: bool, sandbox: bool) -> Option<bool> {
+    if sandbox {
+        return None;
+    }
     match (mode, installed) {
         (StartAtLogin::On, _) | (StartAtLogin::Ask, true) => Some(true),
         (StartAtLogin::Off, true) => Some(false),
@@ -153,12 +157,21 @@ mod tests {
 
     #[test]
     fn the_config_keeps_on_and_off_in_force_and_ask_leaves_the_file_alone() {
-        assert_eq!(desired(StartAtLogin::On, false), Some(true));
-        assert_eq!(desired(StartAtLogin::On, true), Some(true), "rewritten when the arguments changed; a same file is a no-op");
-        assert_eq!(desired(StartAtLogin::Off, true), Some(false));
-        assert_eq!(desired(StartAtLogin::Off, false), None);
-        assert_eq!(desired(StartAtLogin::Ask, false), None);
-        assert_eq!(desired(StartAtLogin::Ask, true), Some(true), "an installed item follows the binary and the daemon settings");
+        assert_eq!(desired(StartAtLogin::On, false, false), Some(true));
+        assert_eq!(desired(StartAtLogin::On, true, false), Some(true), "rewritten when the arguments changed; a same file is a no-op");
+        assert_eq!(desired(StartAtLogin::Off, true, false), Some(false));
+        assert_eq!(desired(StartAtLogin::Off, false, false), None);
+        assert_eq!(desired(StartAtLogin::Ask, false, false), None);
+        assert_eq!(desired(StartAtLogin::Ask, true, false), Some(true), "an installed item follows the binary and the daemon settings");
+    }
+
+    #[test]
+    fn a_sandbox_never_writes_or_removes_the_login_item() {
+        for mode in [StartAtLogin::On, StartAtLogin::Off, StartAtLogin::Ask] {
+            for installed in [false, true] {
+                assert_eq!(desired(mode, installed, true), None, "{mode:?}, installed {installed}");
+            }
+        }
     }
 
     /// A fake `launchctl`: records every call and answers `print` with `loaded`, the rest with 0.
