@@ -1,0 +1,75 @@
+# The schema of every key is in docs/themes.md.
+# Matrix: black with phosphor green text, designed with the matrix effect. The window and the
+# terminal are pure black; the bars, the sidebar and the inactive tabs are a very dark green
+# black, so the window keeps its shape with the effect off. The ANSI colours keep their meaning
+# while leaning toward the phosphor family. Every colour drawn as text has an sRGB luminance of
+# at least 0.35, so the matrix glyph shader lights all of it with a halo (it treats anything
+# under 0.3 as dark text), and every colour clears the contrast rules of docs/themes.md.
+name = "matrix"
+
+[effect]
+name = "matrix"
+
+[chrome]
+window_bg = "#000000"
+title_bar = "#060b07"
+status_bar = "#060b07"
+sidebar = "#060b07"
+tab_bar = "#060b07"
+tab_active = "#000000"
+tab_inactive = "#060b07"
+border = "#133a1a"
+split_handle = "#133a1a"
+split_handle_hover = "#2a6a34"
+focus_ring = "#4af626"
+text = "#4af626"
+text_dim = "#2e9e3a"
+banner = "#0c160e"
+
+[terminal]
+background = "#000000"
+foreground = "#4af626"
+cursor = "#4af626"
+selection = "#12401c"
+black = "#0a140c"
+red = "#ff6b4a"
+green = "#3fd94f"
+yellow = "#d8f04a"
+blue = "#50b0f0"
+magenta = "#d88ae0"
+cyan = "#3fe8c0"
+white = "#b8e8bc"
+bright_black = "#5a9a62"
+bright_red = "#ff8f6e"
+bright_green = "#7dff6a"
+bright_yellow = "#ecff7a"
+bright_blue = "#8cc8ff"
+bright_magenta = "#eaa8f2"
+bright_cyan = "#7affd8"
+bright_white = "#e0ffe0"
+
+[semantic]
+working = "#4af626"
+waiting = "#ffb84a"
+bell = "#d8f04a"
+error_banner = "#2a0e0a"
+find_match = "#0e3016"
+find_current = "#4a3a00"
+
+[tree]
+added = "#3fd94f"
+modified = "#d8f04a"
+deleted = "#ff6b4a"
+untracked = "#7affd8"
+ignored = "#5a9a62"
+
+[viewer]
+keyword = "#3fe8c0"
+string = "#b8f060"
+comment = "#5a9a62"
+number = "#d8f04a"
+function = "#7dff6a"
+type_name = "#5ad8a0"
+constant = "#ff9a6e"
+operator = "#b8e8bc"
+punctuation = "#8ac890"

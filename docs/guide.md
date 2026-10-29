@@ -637,7 +637,7 @@ theme sets every key Claude Code documents, on the `dark-ansi` base:
 | `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
-`timo-purple`, `peach-light` (warm cream and peach) and `lavender-light` (a VS Code lavender look) are built in. [themes.md](themes.md) documents every key;
+`timo-purple`, `peach-light` (warm cream and peach), `lavender-light` (a VS Code lavender look) and `matrix` (black and phosphor green, recommends the `matrix` effect) are built in. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen

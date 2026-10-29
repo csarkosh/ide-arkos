@@ -582,7 +582,7 @@ Things only a person at the screen can check, in order of value:
   `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
   session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
 - the same with the skill installed (`arkos guide --install`) and the hooks removed
-- `arkos theme list` shows `navy`, `timo-purple`, `peach-light` and `lavender-light` as built in; with Timo Purple
+- `arkos theme list` shows `navy`, `timo-purple`, `peach-light`, `lavender-light` and `matrix` as built in; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window

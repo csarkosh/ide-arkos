@@ -1,7 +1,7 @@
 //! Themes (spec 7): one flat set of named colours per TOML file. Two are built in and embedded;
 //! user files in `~/.config/arkos/themes/` override or add to them. `Root` holds the active
 //! `Theme`; views read it, and each terminal resolves cells against `Theme::palette` at paint.
-use crate::palette::{luminance, Palette, Rgb};
+use crate::palette::{Palette, Rgb};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -160,12 +160,22 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 4] = [
+pub const BUILTIN: [(&str, &str); 5] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-light", include_str!("../themes/peach-light.toml")),
     ("lavender-light", include_str!("../themes/lavender-light.toml")),
+    ("matrix", include_str!("../themes/matrix.toml")),
 ];
+
+/// The luminance a glyph shader sees: the sRGB dot product `0.2126 r + 0.7152 g + 0.0722 b` of
+/// the components over 255, with no linearising. It is not the WCAG luminance the contrast
+/// check uses. The matrix shader draws a glyph under 0.3 as dark text, without a halo.
+#[cfg_attr(not(test), allow(dead_code))] // The matrix theme test holds every text colour to it.
+pub fn luminance(c: Rgb) -> f32 {
+    let ch = |v: u8| f32::from(v) / 255.0;
+    0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
+}
 
 pub fn parse(text: &str) -> Result<Theme, String> {
     toml::from_str(text).map_err(|e| e.message().lines().next().unwrap_or("invalid theme").to_string())
@@ -587,7 +597,7 @@ impl Theme {
 
     /// A light theme has a bright window background; black is then a text colour.
     pub fn is_light(&self) -> bool {
-        luminance(self.chrome.window_bg) > 0.5
+        crate::palette::luminance(self.chrome.window_bg) > 0.5
     }
 }
 
@@ -711,6 +721,32 @@ mod tests {
         assert!(!builtin("navy").unwrap().is_light());
         assert!(builtin("peach-light").unwrap().is_light());
         assert!(builtin("lavender-light").unwrap().is_light());
+        assert!(!builtin("matrix").unwrap().is_light());
+    }
+
+    #[test]
+    fn matrix_is_built_in_black_with_green_text_and_recommends_its_effect() {
+        let m = builtin("matrix").expect("matrix is built in");
+        assert!(!m.is_light());
+        assert_eq!(m.chrome.window_bg, Rgb { r: 0, g: 0, b: 0 });
+        assert_eq!(m.terminal.background, Rgb { r: 0, g: 0, b: 0 });
+        assert_eq!(m.recommended_effect(), Some("matrix"));
+        assert_eq!(BUILTIN.len(), 5);
+    }
+
+    #[test]
+    fn every_text_colour_of_matrix_is_bright_enough_for_the_glyph_shader_s_emissive_branch() {
+        let m = builtin("matrix").unwrap();
+        let (c, t, s, tr, v) = (&m.chrome, &m.terminal, &m.semantic, &m.tree, &m.viewer);
+        let text = [c.text, c.text_dim, c.focus_ring, t.foreground, t.cursor,
+            t.red, t.green, t.yellow, t.blue, t.magenta, t.cyan, t.white,
+            t.bright_black, t.bright_red, t.bright_green, t.bright_yellow, t.bright_blue, t.bright_magenta, t.bright_cyan, t.bright_white,
+            s.working, s.waiting, s.bell, tr.added, tr.modified, tr.deleted, tr.untracked, tr.ignored,
+            v.keyword, v.string, v.comment, v.number, v.function, v.type_name, v.constant, v.operator, v.punctuation];
+        for x in text {
+            assert!(luminance(x) >= 0.35, "{} is {:.2}, under the shader's 0.35", x.hex(), luminance(x));
+        }
+        assert!((luminance(Rgb { r: 255, g: 255, b: 255 }) - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -793,7 +829,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "mine".to_string(), "navy".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
+        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -808,7 +844,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 4);
+        assert_eq!(wrote.len(), 5);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -821,7 +857,7 @@ mod tests {
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 4);
+        assert_eq!(BUILTIN.len(), 5);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -837,8 +873,9 @@ mod tests {
         assert_eq!(l[1], ("timo-purple".into(), Source::BuiltIn));
         assert_eq!(l[2], ("peach-light".into(), Source::BuiltIn));
         assert_eq!(l[3], ("lavender-light".into(), Source::BuiltIn));
-        assert!(matches!(&l[4], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[5], ("mine".into(), Source::File));
+        assert_eq!(l[4], ("matrix".into(), Source::BuiltIn));
+        assert!(matches!(&l[5], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[6], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
@@ -849,8 +886,9 @@ mod tests {
         assert_eq!(lines[1], "timo-purple (built in)");
         assert_eq!(lines[2], "peach-light (built in)");
         assert_eq!(lines[3], "lavender-light (built in)");
-        assert!(lines[4].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[5], "mine (file)");
+        assert_eq!(lines[4], "matrix (built in)");
+        assert!(lines[5].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[6], "mine (file)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -863,7 +901,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v[0], serde_json::json!({ "name": "navy", "source": "file", "path": dir.path().join("navy.toml").display().to_string() }));
         assert_eq!(v[1], serde_json::json!({ "name": "timo-purple", "source": "built-in" }));
-        assert_eq!((v[4]["source"].as_str(), v[4]["error"].is_string()), (Some("invalid"), true));
+        assert_eq!((v[5]["source"].as_str(), v[5]["error"].is_string()), (Some("invalid"), true));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
