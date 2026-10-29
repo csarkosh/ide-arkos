@@ -8,7 +8,7 @@ cask "arkos-ide" do
   homepage "https://github.com/csarkosh/ide-arkos"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
   auto_updates true
 
   app "Arkos IDE.app"
