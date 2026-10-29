@@ -204,7 +204,7 @@ mod tests {
             ("agent_launch", &[("agent", &["claude", "other"]), ("how", &["new", "resume"])]),
             ("agent_state", &[("agent", &["claude", "other"]), ("state", &["waiting"])]),
             ("update", &[("step", &["staged", "applied", "failed", "rolled_back"])]),
-            ("notice", &[("kind", &["update_ready", "updated", "daemon", "config_error", "theme_error", "theme_retired"])]),
+            ("notice", &[("kind", &["update_ready", "updated", "daemon", "config_error", "theme_error", "theme_retired", "claude_colours"])]),
             (
                 "error",
                 &[("kind", &["daemon_unreachable", "daemon_restarted", "session_lost", "mermaid_failed", "save_failed", "video_unplayable"])],

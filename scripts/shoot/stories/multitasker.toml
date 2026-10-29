@@ -21,8 +21,6 @@ width = 1320
 height = 860
 preset = "compact"
 sidebar = "collapsed"
-# Claude Code draws itself in the terminal's sixteen colours, which the theme sets.
-claude_theme = "dark-ansi"
 
 [[pane]]
 name = "lantern"

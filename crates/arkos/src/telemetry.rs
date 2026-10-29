@@ -93,7 +93,7 @@ values! {
 }
 values! {
     /// What the bell got a notice about.
-    Notice { UpdateReady => "update_ready", Updated => "updated", Daemon => "daemon", ConfigError => "config_error", ThemeError => "theme_error", ThemeRetired => "theme_retired" }
+    Notice { UpdateReady => "update_ready", Updated => "updated", Daemon => "daemon", ConfigError => "config_error", ThemeError => "theme_error", ThemeRetired => "theme_retired", ClaudeColours => "claude_colours" }
 }
 values! {
     /// Something that went wrong where the person would have seen it.
@@ -768,6 +768,7 @@ impl Notice {
             Kind::ConfigError => Notice::ConfigError,
             Kind::ThemeError => Notice::ThemeError,
             Kind::ThemeRetired => Notice::ThemeRetired,
+            Kind::ClaudeColours => Notice::ClaudeColours,
         }
     }
 }

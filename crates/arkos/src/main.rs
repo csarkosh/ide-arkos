@@ -6,6 +6,7 @@ mod av_player;
 mod cache;
 mod chooser_sessions;
 mod chrome;
+mod claude_theme;
 mod client;
 mod closed_stack;
 mod command_palette;
@@ -808,27 +809,27 @@ impl Root {
         self.probe_doctor();
     }
 
-    /// At startup: a stock Claude Code theme (unset, dark or light) becomes Auto, so Claude Code
-    /// asks Arkos for its colours instead of keeping one kind of background; any other choice is
-    /// left for the doctor's row to offer. Claude Code reloads its settings, so running sessions
-    /// pick it up.
+    /// At startup: Claude Code's Arkos theme file is brought up to date, and a stock or `auto`
+    /// Claude Code theme becomes `custom:arkos`, whose colours are the terminal palette's, so
+    /// Claude Code takes each Arkos theme, lines already drawn included; any other choice is
+    /// left for the doctor's row to offer (`claude_theme::follow_at`).
     fn follow_theme_in_claude(&mut self, cx: &mut Context<Self>) {
-        let path = hook_cli::claude_settings_path();
+        let settings = hook_cli::claude_settings_path();
+        let themes = claude_theme::themes_dir();
         let root = cx.entity();
         cx.spawn(async move |_, cx| {
-            let changed = cx
-                .background_executor()
-                .spawn(async move {
-                    let theme = hook_cli::claude_theme_at(&path).ok()?;
-                    if !path.exists() || !hook_cli::claude_theme_is_stock(theme.as_deref()) {
-                        return None;
-                    }
-                    hook_cli::set_claude_theme_auto_at(&path).ok().map(|()| theme)
-                })
-                .await;
-            if let Some(was) = changed {
-                eprintln!("arkos: Claude Code's theme was {}; set to auto so it follows the Arkos theme", was.as_deref().unwrap_or("unset"));
+            let done = cx.background_executor().spawn(async move { claude_theme::follow_at(&settings, &themes) }).await;
+            let was = match done {
+                Ok(d) => d.switched_from,
+                Err(e) => {
+                    eprintln!("arkos: Claude Code's Arkos theme: {e}");
+                    None
+                }
+            };
+            if let Some(was) = was {
+                eprintln!("arkos: Claude Code's theme was {}; set to {}", was.as_deref().unwrap_or("unset"), claude_theme::SELECTED);
                 let _ = root.update(cx, |root, cx| {
+                    root.notices.set(notices::Kind::ClaudeColours, claude_theme::SWITCH_NOTICE, None, SystemTime::now());
                     root.probe_doctor();
                     cx.notify();
                 });
@@ -917,13 +918,20 @@ impl Root {
             }
             CheckId::ClaudeTheme => {
                 let path = hook_cli::claude_settings_path();
+                let themes = claude_theme::themes_dir();
                 let root = cx.entity();
                 cx.spawn(async move |_, cx| {
-                    let r = cx.background_executor().spawn(async move { hook_cli::set_claude_theme_auto_at(&path) }).await;
+                    let r = cx
+                        .background_executor()
+                        .spawn(async move { claude_theme::ensure_theme_file(&themes).and_then(|_| hook_cli::set_claude_theme_at(&path, claude_theme::SELECTED)) })
+                        .await;
                     let _ = root.update(cx, |root, cx| {
                         root.doctor_busy = None;
                         match r {
-                            Ok(()) => root.probe_doctor(),
+                            Ok(()) => {
+                                root.notices.set(notices::Kind::ClaudeColours, claude_theme::SWITCH_NOTICE, None, SystemTime::now());
+                                root.probe_doctor();
+                            }
                             Err(e) => root.mark_doctor_broken(CheckId::ClaudeTheme, e),
                         }
                         cx.notify();

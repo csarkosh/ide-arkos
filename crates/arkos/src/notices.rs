@@ -13,6 +13,8 @@ pub enum Kind {
     ConfigError,
     ThemeError,
     ThemeRetired,
+    /// Arkos switched Claude Code to its Arkos theme; running sessions need a restart.
+    ClaudeColours,
 }
 
 /// What clicking a notice does.

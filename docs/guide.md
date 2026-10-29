@@ -543,11 +543,94 @@ the interval it started with. `auto` and `idle_after_secs` apply at once.
 
 Claude Code tips: fast trackpad scrolling in a fullscreen `claude` jumps unless
 `wheelScrollAccelerationEnabled` is `false` in `~/.claude/settings.json`; the doctor (the
-wrench at the right of the title bar) sets it for you. Claude Code's colours follow the Arkos
-theme when its theme is Auto (`"theme": "auto"`): it asks the terminal for its background, and
-Arkos answers with the theme's and tells it at the end of every theme switch's fade, so a light
-theme never shows Claude Code's dark-theme text. Arkos sets Auto itself at start when the theme is unset, `dark` or
-`light`; for any other choice the doctor offers it.
+wrench at the right of the title bar) sets it for you.
+
+Claude Code takes the Arkos colours through a Claude Code theme Arkos writes,
+`~/.claude/themes/arkos.json` ("Arkos" in `/theme`, `"theme": "custom:arkos"` in the settings).
+Every colour in it names a slot of the terminal's palette rather than a fixed colour, so Claude
+Code draws with the current Arkos theme's colours, and a theme switch recolours the lines already
+on screen as well as the new ones. Text takes the ANSI colours 1 to 15, which every Arkos theme
+keeps readable on its background; bands and fills (your message, diff lines, the selection) take
+the 256-colour cube and grey ramp, which Arkos derives from the theme as faint tints of its
+background. At start, Arkos rewrites the file when it differs from this build's (so an update can
+change it) and selects it when Claude Code's theme is unset, `dark`, `light` or `auto` (what Arkos
+set before); any other choice (a colourblind-friendly or ANSI theme, a custom theme of your own)
+stays, and the doctor's "Claude Code: follows the Arkos theme" row offers the switch. Claude Code
+watches `~/.claude/themes` only if the folder existed when a session started, so after the first
+switch the bell asks you to restart running sessions. Arkos never touches the other files there.
+
+To change a colour by hand, fork the theme under another name rather than editing `arkos.json`,
+which Arkos rewrites (so do not edit Arkos itself with Ctrl+E in `/theme` either): copy the file
+to `~/.claude/themes/<name>.json`, change its `name`, select `custom:<name>` in `/theme`, and
+edit the copy there or in your editor. Keep text keys on
+`ansi:` names and bands on `ansi256(n)` indices, and the fork follows Arkos's themes too. The
+theme sets every key Claude Code documents, on the `dark-ansi` base:
+
+| Key | Kind | Colour | Paints |
+| --- | --- | --- | --- |
+| `claude` | text | `ansi:redBright` | brand accent: spinner, assistant label |
+| `text` | text | `ansi:whiteBright` | default text |
+| `inverseText` | text on a fill | `ansi256(16)` | text on a coloured badge |
+| `inactive` | text | `ansi:blackBright` | hints, timestamps, disabled items |
+| `subtle` | text | `ansi:blackBright` | faint borders, secondary text |
+| `suggestion` | text | `ansi:blueBright` | autocomplete, picker selection |
+| `permission` | text | `ansi:blueBright` | dialog borders |
+| `remember` | text | `ansi:blueBright` | memory and CLAUDE.md marks |
+| `success` | text | `ansi:greenBright` | success, passing checks |
+| `error` | text | `ansi:redBright` | errors, failures |
+| `warning` | text | `ansi:yellowBright` | warnings, auto mode |
+| `merged` | text | `ansi:magentaBright` | merged pull request |
+| `promptBorder` | text | `ansi:blackBright` | input box border |
+| `planMode` | text | `ansi:cyan` | plan mode accent |
+| `autoAccept` | text | `ansi:magentaBright` | accept-edits accent |
+| `bashBorder` | text | `ansi:magenta` | input border for `!` commands |
+| `ide` | text | `ansi:blue` | IDE connection mark |
+| `fastMode` | text | `ansi:yellow` | fast mode mark |
+| `effortUltra` | text | `ansi:magentaBright` | the `ultracode` tag |
+| `diffAdded` | background | `ansi256(22)` | added lines |
+| `diffRemoved` | background | `ansi256(52)` | removed lines |
+| `diffAddedDimmed` | background | `ansi256(22)` | added lines of a rejected edit |
+| `diffRemovedDimmed` | background | `ansi256(52)` | removed lines of a rejected edit |
+| `diffAddedWord` | background | `ansi256(28)` | changed words in an added line |
+| `diffRemovedWord` | background | `ansi256(88)` | changed words in a removed line |
+| `userMessageBackground` | background | `ansi256(234)` | your messages |
+| `userMessageBackgroundHover` | background | `ansi256(235)` | a hovered or expanded message (fullscreen) |
+| `bashMessageBackgroundColor` | background | `ansi256(234)` | `!` command entries |
+| `memoryBackgroundColor` | background | `ansi256(234)` | `#` memory entries |
+| `selectionBg` | background | `ansi256(17)` | mouse selection (fullscreen) |
+| `composerSidebarBackground` | background | `ansi256(233)` | the side panel (fullscreen) |
+| `rate_limit_fill` | text | `ansi:blueBright` | usage meter, filled |
+| `rate_limit_empty` | text | `ansi:blackBright` | usage meter, empty |
+| `briefLabelYou` | text | `ansi:blueBright` | the `You` label |
+| `briefLabelClaude` | text | `ansi:redBright` | the `Claude` label |
+| `claudeShimmer` | text | `ansi:red` | the spinner's shimmer for `claude` |
+| `warningShimmer` | text | `ansi:yellow` | the spinner's shimmer for `warning` |
+| `permissionShimmer` | text | `ansi:blue` | the spinner's shimmer for `permission` |
+| `promptBorderShimmer` | text | `ansi:white` | the spinner's shimmer for `promptBorder` |
+| `inactiveShimmer` | text | `ansi:white` | the spinner's shimmer for `inactive` |
+| `fastModeShimmer` | text | `ansi:yellowBright` | the spinner's shimmer for `fastMode` |
+| `red_FOR_SUBAGENTS_ONLY` | text | `ansi:red` | subagents named red |
+| `blue_FOR_SUBAGENTS_ONLY` | text | `ansi:blue` | subagents named blue |
+| `green_FOR_SUBAGENTS_ONLY` | text | `ansi:green` | subagents named green |
+| `yellow_FOR_SUBAGENTS_ONLY` | text | `ansi:yellow` | subagents named yellow |
+| `purple_FOR_SUBAGENTS_ONLY` | text | `ansi:magenta` | subagents named purple |
+| `orange_FOR_SUBAGENTS_ONLY` | text | `ansi:redBright` | subagents named orange |
+| `pink_FOR_SUBAGENTS_ONLY` | text | `ansi:magentaBright` | subagents named pink |
+| `cyan_FOR_SUBAGENTS_ONLY` | text | `ansi:cyan` | subagents named cyan |
+| `rainbow_red` | text | `ansi:red` | the `ultrathink` rainbow |
+| `rainbow_red_shimmer` | text | `ansi:redBright` | the `ultrathink` rainbow, shimmer |
+| `rainbow_orange` | text | `ansi:redBright` | the `ultrathink` rainbow |
+| `rainbow_orange_shimmer` | text | `ansi:yellowBright` | the `ultrathink` rainbow, shimmer |
+| `rainbow_yellow` | text | `ansi:yellow` | the `ultrathink` rainbow |
+| `rainbow_yellow_shimmer` | text | `ansi:yellowBright` | the `ultrathink` rainbow, shimmer |
+| `rainbow_green` | text | `ansi:green` | the `ultrathink` rainbow |
+| `rainbow_green_shimmer` | text | `ansi:greenBright` | the `ultrathink` rainbow, shimmer |
+| `rainbow_blue` | text | `ansi:blue` | the `ultrathink` rainbow |
+| `rainbow_blue_shimmer` | text | `ansi:blueBright` | the `ultrathink` rainbow, shimmer |
+| `rainbow_indigo` | text | `ansi:magenta` | the `ultrathink` rainbow |
+| `rainbow_indigo_shimmer` | text | `ansi:magentaBright` | the `ultrathink` rainbow, shimmer |
+| `rainbow_violet` | text | `ansi:magentaBright` | the `ultrathink` rainbow |
+| `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
 `timo-purple`, `peach-light` (warm cream and peach) and `lavender-light` (a VS Code lavender look) are built in. [themes.md](themes.md) documents every key;

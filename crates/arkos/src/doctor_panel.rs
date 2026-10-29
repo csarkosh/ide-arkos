@@ -59,7 +59,7 @@ pub fn probe_all(p: &Probe) -> Vec<Check> {
         Err(e) => (State::Broken(e), None),
     };
     let (theme_state, theme_button) = match hook_cli::claude_theme_at(p.settings) {
-        Ok(Some(t)) if t == "auto" => (State::Good("on: Claude Code matches each Arkos theme".into()), None),
+        Ok(Some(t)) if t == crate::claude_theme::SELECTED => (State::Good("on: Claude Code takes the Arkos colours".into()), None),
         Ok(t) => (State::Fix(format!("{}: Claude Code keeps its own colours, unreadable on some Arkos themes", t.as_deref().map_or("not set".to_string(), |t| format!("set to {t}")))), Some("Apply")),
         Err(e) => (State::Broken(e), None),
     };
@@ -139,7 +139,7 @@ mod tests {
         let exe = Path::new("/Applications/Arkos IDE.app/Contents/MacOS/arkos");
         crate::hook_cli::install_hooks_at(&settings, exe).unwrap();
         crate::hook_cli::set_wheel_scroll_acceleration_at(&settings, false).unwrap();
-        crate::hook_cli::set_claude_theme_auto_at(&settings).unwrap();
+        crate::hook_cli::set_claude_theme_at(&settings, crate::claude_theme::SELECTED).unwrap();
         let mut p = probe(&settings, exe);
         p.login_item_installed = true;
         p.scroll_applied = true;
@@ -147,11 +147,25 @@ mod tests {
         assert_eq!(checks[0].state, State::Good("on; restart claude for it to take effect".into()));
         assert_eq!(checks[0].button, None);
         assert_eq!((checks[2].state.clone(), checks[2].button), (State::Good("on".into()), Some("Remove")));
-        assert_eq!(checks[1].state, State::Good("on: Claude Code matches each Arkos theme".into()));
+        assert_eq!(checks[1].state, State::Good("on: Claude Code takes the Arkos colours".into()));
         assert_eq!(checks[3].state, State::Good("installed".into()));
         assert_eq!(needs_fix(&checks), 0);
         p.scroll_applied = false;
         assert_eq!(probe_all(&p)[0].state, State::Good("on".into()));
+    }
+
+    #[test]
+    fn the_theme_row_offers_the_arkos_colours_for_any_other_claude_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let row = |s: &Path| probe_all(&probe(s, Path::new("/x/arkos"))).into_iter().find(|c| c.id == CheckId::ClaudeTheme).unwrap();
+        for (theme, shown) in [("auto", "set to auto"), ("dark-daltonized", "set to dark-daltonized"), ("custom:mine", "set to custom:mine")] {
+            crate::hook_cli::set_claude_theme_at(&settings, theme).unwrap();
+            assert_eq!(row(&settings).state, State::Fix(format!("{shown}: Claude Code keeps its own colours, unreadable on some Arkos themes")));
+            assert_eq!(row(&settings).button, Some("Apply"));
+        }
+        crate::hook_cli::set_claude_theme_at(&settings, "custom:arkos").unwrap();
+        assert_eq!((row(&settings).state, row(&settings).button), (State::Good("on: Claude Code takes the Arkos colours".into()), None));
     }
 
     #[test]

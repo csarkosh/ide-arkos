@@ -201,7 +201,9 @@ and runs as an app of its own ("Arkos Shoot", signed with the Developer ID from 
 is the shoot's copy of Arkos), so macOS attributes its captures to it whatever shell starts it:
 grant it Screen Recording once. Each scene spends a few minutes of your Claude Code account. Progress captures and the
 panes' states land in `docs/images/progress/<scene>/` every 20 s while it runs, and a scene whose
-Claude Code panes never start is ended after a minute.
+Claude Code panes never start is ended after a minute. The demo's Claude Code draws in
+`custom:arkos`, the theme the shoot's Arkos writes to `~/.claude/themes/arkos.json` at startup,
+so the pictures show the colours Arkos ships.
 
 The pictures are shot in the cloud: the `shoot` workflow runs `scripts/shoot.sh` on a GitHub
 macOS runner, Claude Code signed in with the `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude
@@ -237,6 +239,14 @@ the markdown poster's Cmd+click and the palette's "Open file in pane…" open it
 Things only a person at the screen can check, in order of value:
 
 - colours: vim or htop with a 256-colour scheme (`:set t_Co=256`, or htop's colour themes) shows the theme's colours (the cube blends the background, foreground and ANSI hues; the greys run from background to foreground), not the fixed xterm ones, in Navy and in Peach Light.
+- colours: Claude Code (theme `custom:arkos`) in Navy, then Peach Light, then back: the lines
+  drawn before each switch take the current theme along with the new ones, diffs show faint green
+  and red bands in both, and the user message band is a faint tint of the background.
+- colours: a first start of this Arkos on a Claude Code theme of `dark`, `light`, `auto` or unset
+  switches it to `custom:arkos`, writes `~/.claude/themes/arkos.json`, and the bell says "Claude
+  Code now takes the Arkos colours; restart running sessions to see them"; a `dark-daltonized`
+  or other custom theme stays, and the doctor's "Claude Code: follows the Arkos theme" row
+  offers Apply.
 - effects: Peach Light (`effect.name = "theme"`) shows the watercolor wash under the window,
   the ink line between Explorer and Worktrees, and strokes that fade in and out on the
   selected and hovered Explorer rows and the hovered tab; the window log says `effect

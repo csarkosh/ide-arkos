@@ -48,7 +48,9 @@ bright_yellow = "#8a6200"
 bright_blue = "#2b66c4"
 bright_magenta = "#a3419a"
 bright_cyan = "#0f7076"
-bright_white = "#6a4a3a"
+# The terminal foreground: Claude Code's Arkos theme draws its text in bright white over faint
+# tinted bands (the selection, diff words), which need the darkest ink to keep 4.5:1.
+bright_white = "#4a3028"
 
 [semantic]
 working = "#c2410c"
