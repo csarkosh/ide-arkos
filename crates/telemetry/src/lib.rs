@@ -12,7 +12,7 @@ mod paths;
 
 pub use config::{crashes_name, parse_crashes, parse_table, parse_usage, usage_name, Error, TelemetryConfig};
 pub use kinds::Kind;
-pub use paths::{app_support, app_support_from, config_dir, config_dir_from, config_file};
+pub use paths::{app_support, app_support_from, config_dir, config_dir_from, config_file, is_sandbox, is_sandbox_from};
 pub use visits_app;
 
 use std::path::{Path, PathBuf};

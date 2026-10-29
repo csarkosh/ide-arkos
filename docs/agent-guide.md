@@ -19,7 +19,7 @@ for you, so never write the file by hand when a command exists.
 
 ## 2. Where things are
 
-- The config: `~/.config/arkos/config.toml` (`$XDG_CONFIG_HOME/arkos/config.toml` when that is set).
+- The config: `~/.config/arkos/config.toml` (`$ARKOS_CONFIG_DIR` when that is set, else `$XDG_CONFIG_HOME/arkos`, else `~/.config/arkos`).
 - Theme files: `~/.config/arkos/themes/<name>.toml`. A file shadows a built-in of the same name.
 - Effects: `~/.config/arkos/effects/<name>/`, a folder each. A folder shadows a built-in of the
   same name.

@@ -7,16 +7,33 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME is set"))
 }
 
-/// `$XDG_CONFIG_HOME/arkos` when that is set and non-empty, else `~/.config/arkos` (spec 7).
-pub fn config_dir_from(xdg: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
-    match xdg {
-        Some(x) if !x.is_empty() => PathBuf::from(x).join("arkos"),
+/// The config folder. `$ARKOS_CONFIG_DIR`, when set and non-empty, is the folder itself (nothing
+/// is appended). It is Arkos's own variable, so a sandbox can move its config without moving any
+/// other program's. Otherwise `$XDG_CONFIG_HOME/arkos` when that is set and non-empty, else
+/// `~/.config/arkos` (spec 7).
+pub fn config_dir_from(arkos: Option<&std::ffi::OsStr>, xdg: Option<&std::ffi::OsStr>, home: &Path) -> PathBuf {
+    match (arkos, xdg) {
+        (Some(a), _) if !a.is_empty() => PathBuf::from(a),
+        (_, Some(x)) if !x.is_empty() => PathBuf::from(x).join("arkos"),
         _ => home.join(".config").join("arkos"),
     }
 }
 
 pub fn config_dir() -> PathBuf {
-    config_dir_from(std::env::var_os("XDG_CONFIG_HOME").as_deref(), &home())
+    config_dir_from(
+        std::env::var_os("ARKOS_CONFIG_DIR").as_deref(),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        &home(),
+    )
+}
+
+/// True when this process is an `arkos sandbox` instance: `$ARKOS_SANDBOX` is set and non-empty.
+pub fn is_sandbox() -> bool {
+    is_sandbox_from(std::env::var_os("ARKOS_SANDBOX").as_deref())
+}
+
+pub fn is_sandbox_from(v: Option<&std::ffi::OsStr>) -> bool {
+    v.is_some_and(|v| !v.is_empty())
 }
 
 pub fn config_file() -> PathBuf {
@@ -54,9 +71,24 @@ mod tests {
     #[test]
     fn config_dir_honours_xdg_config_home() {
         let home = Path::new("/Users/me");
-        assert_eq!(config_dir_from(None, home), PathBuf::from("/Users/me/.config/arkos"));
-        assert_eq!(config_dir_from(Some(OsStr::new("")), home), PathBuf::from("/Users/me/.config/arkos"));
-        assert_eq!(config_dir_from(Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/arkos"));
+        assert_eq!(config_dir_from(None, None, home), PathBuf::from("/Users/me/.config/arkos"));
+        assert_eq!(config_dir_from(None, Some(OsStr::new("")), home), PathBuf::from("/Users/me/.config/arkos"));
+        assert_eq!(config_dir_from(None, Some(OsStr::new("/tmp/xdg")), home), PathBuf::from("/tmp/xdg/arkos"));
         assert!(config_file().ends_with("arkos/config.toml"));
+    }
+
+    #[test]
+    fn arkos_config_dir_wins_over_xdg_which_wins_over_the_home_default_and_empty_means_unset() {
+        let home = Path::new("/Users/me");
+        assert_eq!(config_dir_from(Some(OsStr::new("/s/config")), Some(OsStr::new("/x")), home), PathBuf::from("/s/config"));
+        assert_eq!(config_dir_from(None, Some(OsStr::new("/x")), home), PathBuf::from("/x/arkos"));
+        assert_eq!(config_dir_from(Some(OsStr::new("")), None, home), PathBuf::from("/Users/me/.config/arkos"));
+    }
+
+    #[test]
+    fn a_sandbox_is_marked_by_a_non_empty_arkos_sandbox() {
+        assert!(is_sandbox_from(Some(OsStr::new("1"))));
+        assert!(!is_sandbox_from(Some(OsStr::new(""))));
+        assert!(!is_sandbox_from(None));
     }
 }
