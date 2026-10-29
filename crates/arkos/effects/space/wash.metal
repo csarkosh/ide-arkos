@@ -12,9 +12,9 @@
 // strength, its spots' spacing (radians a point along x + y) and speed (radians a second).
 constant float EDGE_HALO = 0.75;
 constant float EDGE_HALO_REACH = 3.5;
-constant float EDGE_SHIMMER = 0.9;
-constant float EDGE_SHIMMER_SPACING = 0.02;
-constant float EDGE_SHIMMER_SPEED = 0.9;
+constant float EDGE_SHIMMER = 1.6;
+constant float EDGE_SHIMMER_SPACING = 0.03;
+constant float EDGE_SHIMMER_SPEED = 1.8;
 
 // The event schedule. It is mirrored in crates/arkos/src/effects/space.rs (meteor_visible),
 // which tests it: a change here is made there too.
@@ -222,10 +222,10 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     // x + y, so it travels along horizontal and vertical edges alike), brightening the core and
     // the halo where they pass.
     float glide = 0.5 + 0.5 * sin((p.x + p.y) * EDGE_SHIMMER_SPACING - t * EDGE_SHIMMER_SPEED);
-    float shimmer = pow(glide, 6.0) * EDGE_SHIMMER;
+    float shimmer = pow(glide, 4.0) * EDGE_SHIMMER;
     float core = 1.0 - smoothstep(0.5, 1.1, dline);
     float halo = exp(-dline / EDGE_HALO_REACH) * EDGE_HALO * (1.0 + shimmer);
     col = mix(col, ring, saturate(halo * k));
-    col = mix(col, mix(ring, star_c, 0.35 + 0.4 * shimmer), saturate(core * (0.9 + 0.1 * shimmer)) * k);
+    col = mix(col, mix(ring, star_c, 0.35 + 0.4 * shimmer), saturate(core * (0.85 + 0.25 * shimmer)) * k);
     return float4(col, 1.0);
 }

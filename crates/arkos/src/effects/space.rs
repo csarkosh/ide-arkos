@@ -78,22 +78,21 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_edges_glow_wider_and_a_slow_shimmer_glides_along_them() {
+    fn the_pane_edges_glow_wider_and_a_bright_shimmer_glides_along_them() {
         let wash = space().wash;
         for line in [
             "constant float EDGE_HALO = 0.75;",
             "constant float EDGE_HALO_REACH = 3.5;",
-            "constant float EDGE_SHIMMER = 0.9;",
-            "constant float EDGE_SHIMMER_SPACING = 0.02;",
-            "constant float EDGE_SHIMMER_SPEED = 0.9;",
+            "constant float EDGE_SHIMMER = 1.6;",
+            "constant float EDGE_SHIMMER_SPACING = 0.03;",
+            "constant float EDGE_SHIMMER_SPEED = 1.8;",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
-        // Slow on purpose: the spots glide at speed / spacing = 45 points a second, about 314
-        // points apart.
-        let (spacing, speed) = (0.02_f32, 0.9_f32);
-        assert!((speed / spacing - 45.0).abs() < 0.01);
-        assert!((std::f32::consts::TAU / spacing - 314.16).abs() < 0.1);
+        // The spots glide at speed / spacing = 60 points a second, about 209 points apart.
+        let (spacing, speed) = (0.03_f32, 1.8_f32);
+        assert!((speed / spacing - 60.0).abs() < 0.01);
+        assert!((std::f32::consts::TAU / spacing - 209.44).abs() < 0.1);
     }
 
     #[test]

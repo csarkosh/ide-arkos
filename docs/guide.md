@@ -275,7 +275,7 @@ and hovered rows and the hovered tab as fading strokes of pigment, glyphs writte
 text two points larger. Navy comes with `space`: a calm night sky of twinkling stars, a faint
 nebula, a planet drifting across over several minutes, and a shooting star every half minute or
 so; pane edges, videos and
-tables outlined in glowing lines with soft light gliding slowly along them, the highlights glowing softly, and the text as a still
+tables outlined in glowing lines with bright light gliding along them, the highlights glowing softly, and the text as a still
 holo display (a cool tint, faint scanlines and a soft glow). Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
