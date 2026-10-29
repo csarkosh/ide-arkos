@@ -26,6 +26,11 @@ Built for Apple silicon, macOS 14 or later.
 brew install --cask csarkosh/tap/arkos-ide
 ```
 
+Homebrew 6 and later install from a tap like this one only once you trust it, and the full name
+above trusts the cask. If you ran `brew tap csarkosh/tap` first, or use a command with the short
+name, and Homebrew answers `Refusing to load cask csarkosh/tap/arkos-ide from untrusted tap
+csarkosh/tap`, run `brew trust --cask csarkosh/tap/arkos-ide` and try again.
+
 Releases are signed with a Developer ID and notarized, so the download opens as any app does,
 and from then on the app updates itself (see [Updating](docs/guide.md#updating)). Run "Install Claude Code hooks" from
 the command palette once, and the tabs follow what each session is doing.

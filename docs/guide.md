@@ -748,6 +748,11 @@ The IDE is installed as `/Applications/Arkos IDE.app` through the Homebrew cask 
 brew install --cask csarkosh/tap/arkos-ide
 ```
 
+Homebrew 6 and later install from a tap only once you trust it; the full name above trusts the
+cask. If Homebrew answers `Refusing to load cask csarkosh/tap/arkos-ide from untrusted tap`
+(after a bare `brew tap csarkosh/tap`, or for a command with the short name), run
+`brew trust --cask csarkosh/tap/arkos-ide` and try again.
+
 Releases from 0.3.2 on are signed with a Developer ID and notarized, so the download opens as any
 app does. The cask says `auto_updates`, so
 `brew upgrade` leaves the app alone and the IDE updates itself.
