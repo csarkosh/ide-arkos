@@ -98,3 +98,7 @@ diffs show green and red bands in both; the user message band is a faint tint; v
 4. If `~/.claude/themes` did not exist, Claude Code watches it only after a restart; the guide
    says so, and Arkos's notice for the first switch says "restart running Claude Code sessions to
    take the Arkos colours".
+5. Dim text on bands: main text (`ansi:whiteBright`) keeps 4.5:1 on every band, and dim text
+   (`ansi:blackBright`: inactive, subtle, promptBorder, rate_limit_empty) keeps 3:1 on the bands
+   where it is drawn (22, 52, 234, 235, 17), as secondary text under WCAG. The changed-word
+   highlights 28 and 88 carry code text, not dim labels, and are not held to it.

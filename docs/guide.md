@@ -552,7 +552,8 @@ Code draws with the current Arkos theme's colours, and a theme switch recolours 
 on screen as well as the new ones. Text takes the ANSI colours 1 to 15, which every Arkos theme
 keeps readable on its background; bands and fills (your message, diff lines, the selection) take
 the 256-colour cube and grey ramp, which Arkos derives from the theme as faint tints of its
-background. At start, Arkos rewrites the file when it differs from this build's (so an update can
+background; main text keeps 4.5:1 against every band, and dim text (inactive and subtle labels,
+borders) keeps 3:1 on the bands it is drawn on. At start, Arkos rewrites the file when it differs from this build's (so an update can
 change it) and selects it when Claude Code's theme is unset, `dark`, `light` or `auto` (what Arkos
 set before); any other choice (a colourblind-friendly or ANSI theme, a custom theme of your own)
 stays, and the doctor's "Claude Code: follows the Arkos theme" row offers the switch. Claude Code

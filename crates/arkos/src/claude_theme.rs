@@ -154,7 +154,7 @@ pub fn ensure_theme_file(dir: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let tmp = dir.join(format!("{SLUG}.json.tmp"));
+    let tmp = dir.join(format!("{SLUG}.json.{}.tmp", std::process::id()));
     std::fs::write(&tmp, text).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(true)
@@ -226,6 +226,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Main text must reach 4.5:1 on every band. Dim text is secondary, so it is held to the 3:1
+    /// WCAG allows for secondary and large text, on the bands where Claude Code draws it; the
+    /// changed-word highlights (28, 88) carry code text, not dim labels.
+    #[test]
+    fn main_text_keeps_4_5_to_1_on_every_band_and_dim_text_3_to_1_on_the_bands_it_is_drawn_on() {
+        let mut low = Vec::new();
+        for (name, t) in builtins() {
+            let p = t.palette();
+            let ratio = |slot: &str, band: u8| contrast(p.indexed(palette_index(slot).unwrap()), p.indexed(band));
+            for band in [22u8, 52, 234, 235, 28, 88, 17] {
+                let r = ratio("ansi:whiteBright", band);
+                if r < 4.5 {
+                    low.push(format!("{name}: main text on {band} is {r:.2}:1"));
+                }
+            }
+            for band in [22u8, 52, 234, 235, 17] {
+                let r = ratio("ansi:blackBright", band);
+                if r < 3.0 {
+                    low.push(format!("{name}: dim text on {band} is {r:.2}:1"));
+                }
+            }
+        }
+        assert!(low.is_empty(), "{low:#?}");
+    }
+
+    #[test]
+    fn the_temporary_theme_file_is_named_for_the_process() {
+        let dir = std::env::temp_dir().join(format!("arkos-tmpname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ensure_theme_file(&dir), Ok(true));
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["arkos.json".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

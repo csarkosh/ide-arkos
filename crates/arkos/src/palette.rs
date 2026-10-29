@@ -142,6 +142,9 @@ impl PartialEq for Derived {
 
 impl Eq for Derived {}
 
+/// A terminal palette. The 256-colour cube and grey ramp are derived from `bg`, `fg` and `ansi`
+/// the first time `indexed` needs them and cached. Those three must not be changed after that
+/// first call; build a new palette instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
     pub bg: Rgb,
@@ -220,8 +223,8 @@ impl Palette {
             }
             out[i] = from_oklab(lab);
         }
-        for k in 0..24usize {
-            out[216 + k] = oklab_mix(self.bg, self.fg, (k + 1) as f32 / 25.0);
+        for step in 0..24usize {
+            out[216 + step] = oklab_mix(self.bg, self.fg, (step + 1) as f32 / 25.0);
         }
         out
     }
@@ -328,6 +331,11 @@ mod tests {
                 prev = l;
             }
             assert!((l_of(p.fg) - prev) * dir > 0.0);
+            let d: Vec<f32> = (232..255u8).map(|i| oklab_dist(p.indexed(i), p.indexed(i + 1))).collect();
+            let mean = d.iter().sum::<f32>() / d.len() as f32;
+            for (n, x) in d.iter().enumerate() {
+                assert!((x - mean).abs() < 0.004, "step {} is {x:.4} against a mean of {mean:.4}", 232 + n);
+            }
         }
     }
 
