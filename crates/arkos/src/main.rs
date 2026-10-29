@@ -241,7 +241,8 @@ pub struct Root {
     /// True once the doctor turned the scroll-acceleration key off during this run.
     pub scroll_applied: bool,
     /// This Arkos is a sandbox (`ARKOS_SANDBOX`, read once at startup): it never writes the
-    /// user's Claude Code colours, hooks or skill, never writes the login item, never updates.
+    /// user's Claude Code settings, colours, hooks or skill, never writes the login item, never
+    /// updates.
     pub sandbox: bool,
     /// When the bell was last opened before the opening now; notices newer than this are unread.
     pub bell_read_before: Option<SystemTime>,
@@ -914,6 +915,7 @@ impl Root {
         }
         self.doctor_busy = Some(id);
         match id {
+            CheckId::WheelScroll | CheckId::ClaudeTheme if self.refused_in_sandbox(id) => {}
             CheckId::WheelScroll => {
                 let path = hook_cli::claude_settings_path();
                 let root = cx.entity();
@@ -933,7 +935,6 @@ impl Root {
                 })
                 .detach();
             }
-            CheckId::ClaudeTheme if self.refused_in_sandbox(id) => {}
             CheckId::ClaudeTheme => {
                 let path = hook_cli::claude_settings_path();
                 let themes = claude_theme::themes_dir();
@@ -2891,10 +2892,14 @@ impl Root {
     }
 
     /// The palette's "Start at login": flips the login item while the config says "ask"; when
-    /// the config pins it, opens the config instead. A sandbox does neither.
+    /// the config pins it, opens the config instead. A sandbox does neither and marks the doctor's
+    /// row `not in a sandbox`.
     pub fn toggle_start_at_login(&mut self, cx: &mut Context<Self>) {
+        if self.refused_in_sandbox(doctor_panel::CheckId::StartAtLogin) {
+            self.mark_doctor_broken(doctor_panel::CheckId::StartAtLogin, sandbox::REFUSAL.into());
+            return;
+        }
         match self.config.recovery.start_at_login {
-            _ if self.sandbox => self.set_start_at_login(false, true, cx),
             config::StartAtLogin::Ask => {
                 let on = !launch_agent::installed(&launch_agent::agent_path());
                 self.set_start_at_login(on, true, cx);

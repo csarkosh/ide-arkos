@@ -51,9 +51,9 @@ pub struct Probe<'a> {
     pub claude_present: bool,
 }
 
-/// The checks, in the order the popover lists them. In a sandbox the rows whose action writes the
-/// user's own setup (their Claude Code colours, the login item, the hooks and the skill) are pinned
-/// as `not in a sandbox` with no button; the scroll row is probed as anywhere.
+/// The checks, in the order the popover lists them. In a sandbox every row is pinned as
+/// `not in a sandbox` with no button: each one's action writes the user's own setup (their Claude
+/// Code settings and colours, the login item, the hooks or the skill).
 pub fn probe_all(p: &Probe, sandbox: bool) -> Vec<Check> {
     let (scroll_state, scroll_button) = match hook_cli::wheel_scroll_acceleration_at(p.settings) {
         Ok(Some(false)) => (State::Good(if p.scroll_applied { "on; restart claude for it to take effect" } else { "on" }.into()), None),
@@ -92,7 +92,7 @@ pub fn probe_all(p: &Probe, sandbox: bool) -> Vec<Check> {
         Check { id: CheckId::AgentGuide, title: "Agent guide for Claude Code", state: guide_state, button: guide_button },
     ];
     if sandbox {
-        for c in checks.iter_mut().filter(|c| c.id != CheckId::WheelScroll) {
+        for c in checks.iter_mut() {
             c.state = State::Pinned(crate::sandbox::REFUSAL.into());
             c.button = None;
         }
@@ -244,19 +244,16 @@ mod tests {
     }
 
     #[test]
-    fn a_sandbox_pins_the_rows_that_write_the_users_setup_and_leaves_scrolling_alone() {
+    fn a_sandbox_pins_every_row_since_each_writes_the_users_setup() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         let p = probe(&settings, Path::new("/x/arkos"));
         let (outside, inside) = (probe_all(&p, false), probe_all(&p, true));
         assert_eq!(inside.iter().map(|c| c.id).collect::<Vec<_>>(), outside.iter().map(|c| c.id).collect::<Vec<_>>());
         for c in &inside {
-            if c.id == CheckId::WheelScroll {
-                assert_eq!(c, &outside[0], "the scroll row is as it was");
-            } else {
-                assert_eq!((&c.state, c.button), (&State::Pinned("not in a sandbox".into()), None), "{:?}", c.id);
-            }
+            assert_eq!((&c.state, c.button), (&State::Pinned("not in a sandbox".into()), None), "{:?}", c.id);
         }
-        assert_eq!(needs_fix(&inside), 1, "only the scroll row is left to fix");
+        assert_eq!(inside[0].title, "Claude Code: smooth wheel scrolling", "the scroll row too: it writes ~/.claude/settings.json");
+        assert_eq!(needs_fix(&inside), 0, "nothing to fix in a sandbox");
     }
 }
