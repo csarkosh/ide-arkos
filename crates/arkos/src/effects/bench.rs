@@ -285,14 +285,18 @@ mod tests {
         }
         let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
-        let frame = render_frame(&matrix.wash, &theme, (W, H), 7.0, &small_window());
-        // Inside a pane body, away from the edges' glow: the rain never brightens the ground past
-        // RAIN_ALPHA of the text green, with a margin for the head, and it does show. The left
-        // pane's body below its highlighted row and that row's soft spill (6 points out).
-        let interior = pixels(&frame, 4, 108, 116, 156);
+        // Inside a pane body, away from the edges' glow: the rain never lays more than RAIN_ALPHA
+        // of the text green over the black ground (with 5% for the head, which leans toward white,
+        // and the bytes' rounding), and it does show. The left pane's body below its highlighted
+        // row and that row's soft spill (6 points out), over a few moments, since about a third of
+        // the columns carry a stream at a time.
+        let interior: Vec<Rgb> = [7.0, 23.0, 61.0]
+            .iter()
+            .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 108, 116, 156))
+            .collect();
         let text = theme.terminal.foreground.g as f32 / 255.0;
         let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
-        assert!(max <= text * 0.3, "the rain is too bright: green channel {max:.2}");
+        assert!(max <= text * crate::effects::matrix::RAIN_ALPHA * 1.05, "the rain is too bright: green channel {max:.3}");
         assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
         let ms = bench(&matrix, &theme, (1200.0, 800.0), 1.0).unwrap();
         assert_eq!(verdict(ms), "within budget", "{ms} ms");

@@ -20,8 +20,13 @@ constant float RAIN_SPEED_MAX = 6.0;
 constant float RAIN_TRAIL_MIN = 8.0;
 // The longest trail a column's streams leave, in rows.
 constant float RAIN_TRAIL_MAX = 24.0;
-// Seconds between a column's streams: one leaves the window's foot, and the next starts this long after.
-constant float RAIN_GAP = 3.0;
+// Seconds a column waits between its streams, beyond their fall: long enough that about a third
+// of the columns carry a stream on screen at any moment in a window 800 points tall.
+constant float RAIN_GAP = 30.0;
+// The rows a stream falls through in its cycle before its trail, whatever the window's height,
+// so a resize never moves a column's phase; a window taller than this sees the streams fall on
+// into the wait.
+constant float RAIN_ROWS_PERIOD = 60.0;
 // Seconds a rune shows before its cell picks another.
 constant float RUNE_CHANGE = 0.5;
 // The most the rain adds of its green to the ground, before the user's intensity.
@@ -93,19 +98,20 @@ float rune(float2 cell, float2 local, float t) {
     return 1.0 - smoothstep(0.5 - RUNE_SOFT, 0.5, max(q.x, q.y));
 }
 
-// The rain at p (points) at time t in a window H points tall, in the theme's green: its colour
-// and its strength, 0 to 1, before RAIN_ALPHA and the user's intensity. Each column has its own
-// speed, trail and phase from hash01 of its index. A stream's head falls a row at a time from
-// above the window to past its foot with its trail behind it, then the column waits RAIN_GAP
-// seconds; the trail fades linearly to nothing behind the head, and the head leans toward white.
-float4 rain(float2 p, float t, float H, float3 green) {
+// The rain at p (points) at time t, in the theme's green: its colour and its strength, 0 to 1,
+// before RAIN_ALPHA and the user's intensity. Each column has its own speed, trail and phase from
+// hash01 of its index. A stream's head falls a row at a time from the window's top with its trail
+// behind it, through RAIN_ROWS_PERIOD rows and its trail's length, then on through the column's
+// wait of RAIN_GAP seconds; the trail fades linearly to nothing behind the head, and the head
+// leans toward white. The window's height plays no part, so a resize leaves every stream where
+// it was.
+float4 rain(float2 p, float t, float3 green) {
     float2 cell = floor(p / float2(RAIN_COL, RAIN_ROW));
     uint col = uint(max(cell.x, 0.0)) * 4u;
     float speed = mix(RAIN_SPEED_MIN, RAIN_SPEED_MAX, hash01(col));
     float trail = mix(RAIN_TRAIL_MIN, RAIN_TRAIL_MAX, hash01(col + 1u));
-    float rows = ceil(H / RAIN_ROW);
-    // A stream's cycle in rows: across the window, its trail out after it, and the wait.
-    float period = rows + trail + RAIN_GAP * speed;
+    // A stream's cycle in rows: its fall, its trail out after it, and the wait.
+    float period = RAIN_ROWS_PERIOD + trail + RAIN_GAP * speed;
     float head = floor(fract(t * speed / period + hash01(col + 2u)) * period);
     float behind = head - cell.y;
     if (behind < 0.0 || behind >= trail) {
@@ -172,7 +178,6 @@ float3 theme_green(constant ArkosInputs& u) {
 
 fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
     float2 p = in.uv * u.size;
-    float H = max(u.size.y, 1.0);
     float k = saturate(u.intensity);
 
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
@@ -180,9 +185,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 white_c = u.colors[ARKOS_ANSI + 15].rgb;
     float3 green = theme_green(u);
 
-    // The ground, flat, and the rain over it.
-    float4 r = rain(p, u.time, H, green);
-    float3 col = bg + r.rgb * r.a * RAIN_ALPHA * k;
+    // The ground, flat, and the rain laid over it, so it shows on a light ground as on black.
+    float4 r = rain(p, u.time, green);
+    float3 col = mix(bg, r.rgb, r.a * RAIN_ALPHA * k);
 
     // The blocks: the bars darkened a little, the highlights glowing, every reported edge a line.
     int nb = min(int(u.block_count), 48);
