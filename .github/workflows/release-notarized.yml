@@ -4,7 +4,9 @@ name: release-notarized
 # rule): nothing builds on push. Secrets: APPLE_CERT_P12 (base64 of a .p12 holding the
 # "Developer ID Application" identity and Apple's Developer ID G2 intermediate),
 # APPLE_CERT_PASSWORD, APPLE_API_KEY (the App Store Connect API key, .p8, base64),
-# APPLE_API_KEY_ID, APPLE_API_ISSUER, and ARKOS_RELEASE_KEY (the manifest's signing key). The only
+# APPLE_API_KEY_ID, APPLE_API_ISSUER, ARKOS_RELEASE_KEY (the manifest's signing key), and
+# HOMEBREW_TAP_DEPLOY_KEY (the private half of a deploy key that can write to csarkosh/homebrew-tap
+# alone, for the cask). The only
 # release path: the ad-hoc `release` workflow is retired, and a signed copy refuses an update
 # its team did not sign.
 on:
@@ -117,6 +119,12 @@ jobs:
             *) echo "the bundled arkosd is not $VERSION"; exit 1 ;;
           esac
           spctl -a -t exec -vv "dist/Arkos IDE.app" 2>&1 | tee /dev/stderr | grep -q 'source=Notarized Developer ID'
+      - name: Record the release in the cask
+        # The cask's version and the notarized zip's sha256, committed after the tagged release
+        # commit and pushed with it, so homebrew/arkos-ide.rb always names the latest release.
+        run: |
+          sh packaging/cask.sh "$VERSION" "dist/Arkos-IDE-$VERSION-arm64.zip"
+          git commit -qm "Cask: arkos-ide $VERSION" homebrew/arkos-ide.rb
       - name: Push the release commit and tag
         # Both or neither: a tag without its commit on main (or the reverse) is never published.
         run: git push --atomic origin HEAD:main "v$VERSION"
@@ -124,6 +132,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
-          if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
+          # The commits since the last release, without the release commit or the cask's records.
+          PREV=$(git describe --tags --abbrev=0 "v$VERSION~1" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' --invert-grep --grep='^Cask: arkos-ide ' "$PREV..v$VERSION~1"); else NOTES="First release."; fi
           gh release create "v$VERSION" "dist/Arkos-IDE-$VERSION-arm64.zip" "dist/Arkos-IDE-$VERSION-dSYM.zip" dist/manifest.json dist/manifest.json.sig --title "Arkos IDE $VERSION" --notes "$NOTES"
+      - name: Publish the Homebrew cask
+        # After the release, since the cask points at its zip. The deploy key can write to the tap
+        # alone, and GitHub's host keys come from its API rather than a first connection's word.
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set: the release is out, but the cask still names the last one. Add the key (docs/development.md, Releasing) or run 'sh packaging/tap.sh $VERSION' from main."
+            exit 1
+          fi
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$RUNNER_TEMP/tap_key"
+          chmod 600 "$RUNNER_TEMP/tap_key"
+          gh api meta --jq '.ssh_keys[]' | sed 's/^/github.com /' > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+          sh packaging/tap.sh "$VERSION"
+          rm -f "$RUNNER_TEMP/tap_key"

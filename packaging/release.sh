@@ -4,8 +4,9 @@
 # "Developer ID Application: ... (TEAMID)" and the notary profile "arkos-notary" (made once
 # with `xcrun notarytool store-credentials arkos-notary --key <.p8> --key-id <id> --issuer <id>`),
 # and the manifest key in ARKOS_RELEASE_KEY (from your password manager, never a file in the
-# repository). It commits the version bump, tags, pushes both atomically and publishes the
-# GitHub Release, as the workflow does; run it on main with a clean tree.
+# repository). It commits the version bump, tags, records the release in the Homebrew cask,
+# pushes atomically, publishes the GitHub Release and then the cask to csarkosh/homebrew-tap (with
+# this Mac's git access), as the workflow does; run it on main with a clean tree.
 set -eu
 cd "$(dirname "$0")/.."
 VERSION="${1:?usage: packaging/release.sh VERSION}"
@@ -48,8 +49,11 @@ sh packaging/manifest.sh "$VERSION" "$(git rev-parse --short HEAD)" "$ZIP" "$URL
 KEY=$(sed -n 's/^ *"\(.*\)",$/\1/p' crates/protocol/src/release_key.rs | head -1)
 "$TARGET/release/release-tool" verify --public "$KEY" "$DIST/manifest.json" "$DIST/manifest.json.sig"
 spctl -a -t exec -vv "$DIST/Arkos IDE.app" 2>&1 | grep -q 'source=Notarized Developer ID' || { echo "the app is not notarized"; exit 1; }
+sh packaging/cask.sh "$VERSION" "$ZIP"
+git commit -qm "Cask: arkos-ide $VERSION" homebrew/arkos-ide.rb
 git push --atomic origin HEAD:main "v$VERSION"
-PREV=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
-if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' "$PREV..HEAD~1"); else NOTES="First release."; fi
+PREV=$(git describe --tags --abbrev=0 "v$VERSION~1" 2>/dev/null || true)
+if [ -n "$PREV" ]; then NOTES=$(git log --format='- %s' --invert-grep --grep='^Cask: arkos-ide ' "$PREV..v$VERSION~1"); else NOTES="First release."; fi
 gh release create "v$VERSION" "$ZIP" "$DSYM" "$DIST/manifest.json" "$DIST/manifest.json.sig" --title "Arkos IDE $VERSION" --notes "$NOTES"
+sh packaging/tap.sh "$VERSION"
 echo "released $VERSION from $DIST"

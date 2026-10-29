@@ -137,13 +137,21 @@ anyone their permissions. Two ways, the same steps:
   and Apple's Developer ID G2 intermediate), `APPLE_CERT_PASSWORD`, `APPLE_API_KEY` (an App Store
   Connect API key, the `.p8`, base64), `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`, besides
   `ARKOS_RELEASE_KEY` (make a pair with `scripts/release-key`, keep the secret there and in your
-  password manager, and put the public half in `crates/protocol/src/release_key.rs`).
+  password manager, and put the public half in `crates/protocol/src/release_key.rs`), and
+  `HOMEBREW_TAP_DEPLOY_KEY`, the private half of a deploy key with write access to
+  `csarkosh/homebrew-tap` alone, for the cask.
 - **`packaging/release.sh 0.3.1`** on a Mac that holds the identity in its keychain and a
   notary profile `arkos-notary` (`xcrun notarytool store-credentials arkos-notary --key <.p8>
   --key-id <id> --issuer <id>`, once), with `ARKOS_RELEASE_KEY` in the environment.
 
-After a release, bump the Homebrew cask (`csarkosh/homebrew-tap`, `Casks/arkos-ide.rb`: version
-and the zip's sha256) and run csarko.sh's `apps/deploy.sh` so the download button names it.
+Both also keep the Homebrew cask on the latest release. The cask's text is
+`homebrew/arkos-ide.rb`: edit it there, never in the tap. `packaging/cask.sh` sets its version and
+the notarized zip's sha256, committed as `Cask: arkos-ide <version>` beside the release commit (and
+left out of the release notes), and after the GitHub Release `packaging/tap.sh` publishes the file
+to `csarkosh/homebrew-tap` as `Casks/arkos-ide.rb` (`DRY_RUN=1 sh packaging/tap.sh <version>` shows
+what it would change). If that last step fails, the release is out and only the cask lags: run
+`sh packaging/tap.sh <version>` from main. After a release, run csarko.sh's `apps/deploy.sh` so the
+download button names it.
 `release-tool verify --public <key> manifest.json manifest.json.sig` checks a published manifest
 by hand. `packaging/test.sh` runs the same packaging steps locally on a dev build.
 
