@@ -18,10 +18,10 @@ constant float EDGE_SHIMMER_SPEED = 1.8;
 
 // The event schedule. It is mirrored in crates/arkos/src/effects/space.rs (meteor_visible),
 // which tests it: a change here is made there too.
-constant float METEOR_CYCLE = 30.0;
-constant float METEOR_SLACK = 10.0;
+constant float METEOR_CYCLE = 12.0;
+constant float METEOR_SLACK = 4.0;
 constant float METEOR_FLIGHT = 0.8;
-constant float METEOR_OFFSET = 15.0;
+constant float METEOR_OFFSET = 6.0;
 constant uint METEOR_SALT = 0x9E3779B9u;
 
 // The planets: one at a time, crossing over five minutes, then a minute of clear sky. The clock's

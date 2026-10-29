@@ -285,7 +285,7 @@ Things only a person at the screen can check, in order of value:
   its outline stops at the pane's edge; with `effect.name none` the cream fills and grey lines
   come back
 - effects, space: Navy (`effect.name = "theme"`) shows the night sky; over ten minutes a
-  shooting star crosses every 20 to 40 seconds (one at a time, in under a second, no bright
+  shooting star crosses every 8 to 16 seconds (one at a time, in under a second, no bright
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is
   no aurora
 - effects, space: the pane edges, the divider, a video's picture and a markdown table's outline

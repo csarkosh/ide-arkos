@@ -3,14 +3,14 @@
 //! arithmetic here are the shader's own; a change to one is made to both.
 
 /// Seconds from one shooting star's cycle to the next; each starts up to `METEOR_SLACK` into its
-/// cycle, so the gap between two is 20 to 40 seconds.
-pub const METEOR_CYCLE: f32 = 30.0;
-pub const METEOR_SLACK: f32 = 10.0;
+/// cycle, so the gap between two is 8 to 16 seconds.
+pub const METEOR_CYCLE: f32 = 12.0;
+pub const METEOR_SLACK: f32 = 4.0;
 /// How long a shooting star takes to cross.
 pub const METEOR_FLIGHT: f32 = 0.8;
 /// Where the clock's zero falls in the shooting stars' schedule: past the latest a first one
 /// could have finished, so a frozen clock shows none mid-flight.
-pub const METEOR_OFFSET: f32 = 15.0;
+pub const METEOR_OFFSET: f32 = 6.0;
 
 /// A salt that gives the shooting stars hashes of their own.
 pub const METEOR_SALT: u32 = 0x9E37_79B9;
@@ -61,16 +61,16 @@ mod tests {
     }
 
     #[test]
-    fn a_frozen_clock_shows_no_shooting_star_mid_flight_and_they_come_every_20_to_40_seconds() {
+    fn a_frozen_clock_shows_no_shooting_star_mid_flight_and_they_come_every_8_to_16_seconds() {
         assert!(!meteor_visible(0.0));
 
-        // A shooting star every 20 to 40 seconds, each across in under a second.
+        // A shooting star every 8 to 16 seconds, each across in under a second.
         let dt = 0.01;
         let stars = runs(3600.0, dt, meteor_visible);
-        assert!(stars.len() >= 90, "{}", stars.len());
+        assert!(stars.len() >= 225, "{}", stars.len());
         for w in stars.windows(2) {
             let gap = w[1].0 - w[0].0;
-            assert!((20.0 - dt..=40.0 + dt).contains(&gap), "meteor gap {gap}");
+            assert!((8.0 - dt..=16.0 + dt).contains(&gap), "meteor gap {gap}");
         }
         for &(a, b) in &stars {
             assert!(b - a < 1.0, "a crossing of {} s", b - a);
@@ -101,10 +101,10 @@ mod tests {
         assert!(wash.contains("effects/space.rs"), "the shader names its mirror");
         assert!(!wash.to_lowercase().contains("aurora_"), "the aurora is gone");
         for line in [
-            "constant float METEOR_CYCLE = 30.0;",
-            "constant float METEOR_SLACK = 10.0;",
+            "constant float METEOR_CYCLE = 12.0;",
+            "constant float METEOR_SLACK = 4.0;",
             "constant float METEOR_FLIGHT = 0.8;",
-            "constant float METEOR_OFFSET = 15.0;",
+            "constant float METEOR_OFFSET = 6.0;",
             "constant uint METEOR_SALT = 0x9E3779B9u;",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
