@@ -1,6 +1,14 @@
 // The watercolor wash under the Arkos window: paper, bubbles, and a wash with an ink outline for
 // every block of the UI. The preamble (arkos.metal) is prepended before this is compiled, and
 // declares ArkosInputs, ArkosBlock, ArkosVertex and the ARKOS_* indices used here.
+//
+// It works on any theme, a user's own included: every colour comes from the theme's (the paper,
+// the ink, its four pigments), and the theme's mode decides how they meet. On a light theme the
+// pigments are thinned with water and laid over the paper, darkening it as a wash does; on a dark
+// one (u.dark) they are a glaze, the pigment mixed into the dark paper so it shows. A theme with
+// fewer than four pigments of its own gets the rest as variations of them. And however strong a
+// theme's colours, the paper under the UI's text never falls below 3:1 against it (WCAG's floor
+// for large text and controls).
 
 float hash1(float n) { return fract(sin(n) * 43758.5453123); }
 
@@ -32,11 +40,76 @@ float3 bright(float3 c) {
     return saturate(mix(float3(l), lifted, 1.55));
 }
 
+// A colour's hue turned by `deg` degrees about its own grey (in YIQ), its lightness kept.
+float3 turn_hue(float3 c, float deg) {
+    float y = dot(c, float3(0.299, 0.587, 0.114));
+    float i = dot(c, float3(0.596, -0.274, -0.322));
+    float q = dot(c, float3(0.211, -0.523, 0.312));
+    float a = deg * 0.0174533;
+    float i2 = i * cos(a) - q * sin(a);
+    float q2 = i * sin(a) + q * cos(a);
+    return saturate(float3(y + 0.956 * i2 + 0.621 * q2, y - 0.272 * i2 - 0.647 * q2, y - 1.106 * i2 + 1.703 * q2));
+}
+
 // The four pigments are the theme's own (ARKOS_PIGMENT): its focus colour and accents of its own
 // family, which thin out over the paper (Peach Light's burnt orange, ochre, brick and plum into
-// peach, apricot, dusty rose and mauve; Lavender Light's purples, rose and blue into lilacs).
+// peach, apricot, dusty rose and mauve; Lavender Light's purples, rose and blue into lilacs). A
+// theme with fewer of its own (u.pigment_count) gets the rest as its own turned a little either
+// way round the colour wheel, so neighbouring panes still differ.
 float3 pigment(constant ArkosInputs& u, int i) {
-    return u.colors[ARKOS_PIGMENT + clamp(i, 0, 3)].rgb;
+    int n = clamp(int(u.pigment_count), 1, 4);
+    int k = clamp(i, 0, 3);
+    if (k < n) {
+        return u.colors[ARKOS_PIGMENT + k].rgb;
+    }
+    float3 base = u.colors[ARKOS_PIGMENT + k % n].rgb;
+    float step = float(k / n) * 32.0;
+    return turn_hue(base, (k % 2 == 0) ? step : -step);
+}
+
+// A pigment laid over `col` at strength `a`, as the theme's mode has it: thinned and multiplied
+// onto light paper; on dark paper a glaze, the pigment mixed in toward the paper's own depth.
+float3 wash_onto(constant ArkosInputs& u, float3 col, float3 pig, float a) {
+    if (u.dark > 0.5) {
+        float3 paper = u.colors[ARKOS_WINDOW_BG].rgb;
+        float3 glaze = mix(paper, pig, 0.6);
+        return mix(col, glaze, a);
+    }
+    return col * mix(float3(1.0), bright(pig), a);
+}
+
+// An sRGB channel in linear light, and a colour's relative luminance (as WCAG measures it).
+float3 to_linear(float3 c) {
+    return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.03928);
+}
+float3 to_srgb(float3 c) {
+    return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0030402);
+}
+float rel_lum(float3 c) {
+    return dot(to_linear(c), float3(0.2126, 0.7152, 0.0722));
+}
+
+// The least contrast the paper keeps against the UI's text, whatever the theme's colours.
+constant float READABLE = 3.0;
+
+// `col` moved back toward the paper, in linear light, just far enough that the UI's text keeps
+// READABLE against it (or as much as the theme's own paper has, when that is less).
+float3 keep_readable(constant ArkosInputs& u, float3 col) {
+    float3 paper = u.colors[ARKOS_WINDOW_BG].rgb;
+    float lt = rel_lum(u.colors[ARKOS_TEXT].rgb);
+    float lc = rel_lum(col);
+    float lp = rel_lum(paper);
+    float f = 0.0;
+    if (lt < lp) {
+        // Dark text: the paper may not get darker than this.
+        float least = READABLE * (lt + 0.05) - 0.05;
+        if (lc < least) { f = saturate((least - lc) / max(lp - lc, 1e-5)); }
+    } else {
+        // Light text: the paper may not get lighter than this.
+        float most = (lt + 0.05) / READABLE - 0.05;
+        if (lc > most) { f = saturate((lc - most) / max(lc - lp, 1e-5)); }
+    }
+    return to_srgb(mix(to_linear(col), to_linear(paper), f));
 }
 
 // Each pane its own pigment, by its place among the panes, as each card in a sketch gets its own
@@ -163,8 +236,10 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     Pen pen = pen_at(p, t);
     float speck = pen.speck;
 
-    // Paper with grain.
-    float3 col = u.colors[ARKOS_WINDOW_BG].rgb * mix(1.0, 0.992 + 0.012 * speck + 0.008 * gran, k);
+    // Paper with grain: specks of darker fibre on light paper, of lighter on dark.
+    float3 paper = u.colors[ARKOS_WINDOW_BG].rgb;
+    float grain = 0.012 * speck + 0.008 * gran;
+    float3 col = u.dark > 0.5 ? paper + (grain - 0.01) * k : paper * mix(1.0, 0.992 + grain, k);
 
     // Bubbles behind everything.
     float aspect = u.size.x / max(u.size.y, 1.0);
@@ -179,7 +254,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         float body = 1.0 - smoothstep(r * 0.5, r, dist);
         float rim = smoothstep(r * 0.75, r * 0.96, dist) * (1.0 - smoothstep(r * 0.96, r * 1.02, dist));
         float a = (0.32 * body + 0.28 * rim) * (0.65 + 0.5 * gran) * k;
-        col *= mix(float3(1.0), bright(pigment(u, i % 4)), clamp(a, 0.0, 0.9));
+        col = wash_onto(u, col, pigment(u, i % 4), clamp(a, 0.0, 0.9));
     }
 
     // Washes, then ink, for every block.
@@ -204,12 +279,15 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 float pool = smoothstep(-5.0, -0.4, edge) * cover;
                 float blotch = 0.72 + 0.5 * fract(gran + seed * 0.37);
                 float a = strength * (cover * blotch + 0.5 * pool);
-                col *= mix(float3(1.0), bright(pigment(u, tint)), clamp(a, 0.0, 0.85));
+                col = wash_onto(u, col, pigment(u, tint), clamp(a, 0.0, 0.85));
             }
         }
         // Strokes add up where they cross, so the corners pool darker.
         inked += ink_for_block(p, blk, pen);
     }
+    // The text over the paper stays readable whatever the theme's colours did to it; the ink
+    // lines, which carry no text, are drawn over that as they are.
+    col = keep_readable(u, col);
     col = mix(col, u.colors[ARKOS_TERMINAL_FG].rgb, clamp(inked * ink_tooth(pen), 0.0, 1.0) * 0.96 * k);
     return float4(col, 1.0);
 }

@@ -306,7 +306,10 @@ mod tests {
     #[test]
     fn watercolor_takes_its_pigments_from_the_theme_s_own_four() {
         let wash = BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
-        assert!(wash.contains("return u.colors[ARKOS_PIGMENT + clamp(i, 0, 3)].rgb;"));
+        assert!(wash.contains("return u.colors[ARKOS_PIGMENT + k].rgb;"), "the theme's own first");
+        assert!(wash.contains("int n = clamp(int(u.pigment_count), 1, 4);"), "then variations of them");
+        assert!(wash.contains("if (u.dark > 0.5)"), "the theme's mode decides how they are laid");
+        assert!(wash.contains("col = keep_readable(u, col);"), "the text stays readable");
     }
 
     #[test]

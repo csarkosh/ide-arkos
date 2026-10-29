@@ -257,6 +257,11 @@ Things only a person at the screen can check, in order of value:
 - effects: Lavender Light (`effect.name = "theme"`) shows watercolor too, every pane washed in
   its own lilac, rose or blue and none in peach or apricot; Peach Light's panes keep their
   peach, apricot, mauve and dusty rose
+- effects: watercolor on a dark theme (Navy with `effect.name = "watercolor"`) shows its panes
+  washed in the theme's own colours as a glaze on the dark paper, each pane its own, with
+  lighter grain; on a theme of your own (`arkos theme add`) with one strong accent the panes
+  still differ, and with deep accents on light paper the title bar's and the tabs' text stays
+  readable
 - effects: `arkos settings set effect.name none` fades the wash out over 200 ms and the plain
   theme is back (fills, borders, text size); `effect.name theme` brings it back with a fade
 - effects: Navy with `effect.name = "watercolor"` reads navy (the wash takes the theme's colours)

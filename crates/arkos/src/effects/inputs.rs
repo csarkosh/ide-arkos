@@ -37,7 +37,11 @@ pub struct Inputs {
     pub size: [f32; 2],
     pub scale: f32,
     pub block_count: f32,
-    pub pad: [f32; 2],
+    /// 1 when the theme is dark (light text on a dark ground), 0 when it is light.
+    pub dark: f32,
+    /// How many of the four pigments are the theme's own (1 to 4); the rest repeat its focus
+    /// colour, and an effect makes its own variations for them.
+    pub pigment_count: f32,
     pub colors: [[f32; 4]; COLORS],
     pub blocks: [ShaderBlock; MAX_BLOCKS],
 }
@@ -68,8 +72,8 @@ pub fn hue(c: Rgb) -> Option<f32> {
 /// focus colour, its waiting colour, then its red, magenta, blue, cyan, yellow and green, the
 /// first four that sit within 90 degrees of hue of its focus colour (a theme's own family: Peach
 /// Light's burnt orange, ochre, brick and plum; Lavender Light's purples, rose and blue), the
-/// focus colour again for any left over.
-pub fn pigments(theme: &Theme) -> [Rgb; 4] {
+/// focus colour again for any left over. With them, how many are the theme's own (1 to 4).
+pub fn pigments(theme: &Theme) -> ([Rgb; 4], usize) {
     let (c, t, s) = (&theme.chrome, &theme.terminal, &theme.semantic);
     let focus = c.focus_ring;
     let near = |x: Rgb| match (hue(focus), hue(x)) {
@@ -91,13 +95,13 @@ pub fn pigments(theme: &Theme) -> [Rgb; 4] {
             n += 1;
         }
     }
-    out
+    (out, n)
 }
 
 /// The theme's colours by the preamble's indices, opaque.
 pub fn colors(theme: &Theme) -> [[f32; 4]; COLORS] {
     let (c, t, s) = (&theme.chrome, &theme.terminal, &theme.semantic);
-    let p = pigments(theme);
+    let (p, _) = pigments(theme);
     [
         c.window_bg,
         c.title_bar,
@@ -163,7 +167,8 @@ pub fn build(theme: &Theme, intensity: f32, size: (f32, f32), scale: f32, time: 
         size: [size.0, size.1],
         scale,
         block_count: n as f32,
-        pad: [0.0; 2],
+        dark: if theme.is_light() { 0.0 } else { 1.0 },
+        pigment_count: pigments(theme).1 as f32,
         colors: colors(theme),
         blocks: out,
     }
@@ -197,7 +202,8 @@ mod tests {
     fn the_four_pigments_follow_the_ansi_colours_and_are_the_theme_s_own() {
         let peach = crate::theme::builtin("peach-light").unwrap();
         let c = colors(&peach);
-        let p = pigments(&peach);
+        let (p, n) = pigments(&peach);
+        assert_eq!(n, 4, "Peach Light has four of its own");
         for k in 0..4 {
             assert_eq!(c[35 + k], float4(p[k]), "ARKOS_PIGMENT + {k}");
         }
@@ -206,7 +212,7 @@ mod tests {
         assert_eq!(p, [peach.chrome.focus_ring, peach.semantic.waiting, peach.terminal.red, peach.terminal.magenta]);
         // Lavender Light's sit near its purple: no burnt orange.
         let lavender = crate::theme::builtin("lavender-light").unwrap();
-        let l = pigments(&lavender);
+        let (l, _) = pigments(&lavender);
         assert_eq!(l[0], lavender.chrome.focus_ring);
         assert!(!l.contains(&lavender.semantic.waiting), "{l:?}");
         let focus = hue(lavender.chrome.focus_ring).unwrap();
@@ -217,10 +223,34 @@ mod tests {
         // Every built-in theme gets four.
         for name in ["navy", "timo-purple"] {
             let t = crate::theme::builtin(name).unwrap();
-            assert_eq!(pigments(&t)[0], t.chrome.focus_ring, "{name}");
+            assert_eq!(pigments(&t).0[0], t.chrome.focus_ring, "{name}");
         }
+        // A theme whose accents are all far from its focus colour has a family of one, the focus
+        // colour repeated: the shader makes the rest from it.
+        let mut lonely = peach.clone();
+        lonely.semantic.waiting = Rgb { r: 0, g: 140, b: 60 };
+        for c in [&mut lonely.terminal.red, &mut lonely.terminal.magenta, &mut lonely.terminal.yellow] {
+            *c = Rgb { r: 30, g: 90, b: 200 };
+        }
+        lonely.terminal.blue = Rgb { r: 30, g: 90, b: 200 };
+        lonely.terminal.cyan = Rgb { r: 0, g: 150, b: 160 };
+        lonely.terminal.green = Rgb { r: 0, g: 140, b: 60 };
+        assert_eq!(pigments(&lonely), ([lonely.chrome.focus_ring; 4], 1));
         // A grey has no hue and is never a pigment.
         assert_eq!(hue(Rgb { r: 128, g: 128, b: 128 }), None);
+    }
+
+    #[test]
+    fn the_shader_is_told_whether_the_theme_is_dark_and_how_many_pigments_it_has() {
+        let navy = crate::theme::builtin("navy").unwrap();
+        let peach = crate::theme::builtin("peach-light").unwrap();
+        let at = |t: &Theme| build(t, 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
+        assert_eq!((at(&navy).dark, at(&peach).dark), (1.0, 0.0));
+        assert_eq!(at(&peach).pigment_count, 4.0);
+        assert_eq!(at(&navy).pigment_count, pigments(&navy).1 as f32);
+        // In the slot the padding had: the layout is unchanged.
+        assert_eq!(offset_of!(Inputs, dark), 24);
+        assert_eq!(offset_of!(Inputs, pigment_count), 28);
     }
 
     #[test]

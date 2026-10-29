@@ -540,7 +540,12 @@ contrast switch at the end of a fade in and at the start of a fade out.
 before your wash file when it is compiled. It declares the theme's colours by index
 (`ARKOS_WINDOW_BG` to the sixteen ANSI colours from `ARKOS_ANSI`, then the theme's four
 pigments from `ARKOS_PIGMENT`: its focus colour and the accents of its own family, within 90
-degrees of hue of it, to tint panes and highlights with so the wash suits any theme), the block kinds
+degrees of hue of it, to tint panes and highlights with so the wash suits any theme; `ArkosInputs`
+also says whether the theme is dark (`dark`, 1 or 0) and how many of the four pigments are its
+own (`pigment_count`, 1 to 4; the rest repeat its focus colour), so a wash can lay its colours
+as the theme's mode needs and make its own variations: the built-in `watercolor` glazes pigment
+into a dark theme's paper instead of multiplying it, turns the hue of a theme's own pigments for
+the ones it lacks, and keeps the paper under the UI's text at 3:1 or better against it), the block kinds
 (`ARKOS_TITLE_BAR_BLOCK` and the rest), the edge bits (`ARKOS_EDGE_TOP` and the rest),
 `ArkosBlock`, `ArkosInputs` and `ArkosVertex`. Your wash supplies one function:
 

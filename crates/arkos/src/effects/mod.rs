@@ -87,5 +87,6 @@ mod tests {
         assert!(PREAMBLE.contains("constant int ARKOS_COLORS = 39;"));
         assert!(PREAMBLE.contains("constant int ARKOS_PIGMENT = 35;"));
         assert!(PREAMBLE.contains("float4 colors[39];"));
+        assert!(PREAMBLE.contains("float dark;") && PREAMBLE.contains("float pigment_count;"));
     }
 }

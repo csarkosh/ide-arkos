@@ -119,9 +119,159 @@ fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
     blocks::blocks(&scene, effect.manifest.ink_borders)
 }
 
+/// One frame of `wash` over `theme` with `blocks` in a window of `size` points, one pixel a point,
+/// read back as colours: what the wash paints, for the tests to measure.
+#[cfg(test)]
+pub fn render_frame(wash: &str, theme: &Theme, size: (u32, u32), time: f32, blocks: &[Block]) -> Vec<crate::palette::Rgb> {
+    let device = Device::system_default().expect("a Metal device");
+    let pipeline = layer::pipeline(&device, PREAMBLE, wash).unwrap();
+    let desc = TextureDescriptor::new();
+    desc.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    desc.set_width(size.0 as u64);
+    desc.set_height(size.1 as u64);
+    desc.set_usage(MTLTextureUsage::RenderTarget);
+    desc.set_storage_mode(MTLStorageMode::Shared);
+    let target = device.new_texture(&desc);
+    let queue = device.new_command_queue();
+    let inputs = inputs::build(theme, 1.0, (size.0 as f32, size.1 as f32), 1.0, time, blocks);
+    let pass = RenderPassDescriptor::new();
+    let att = pass.color_attachments().object_at(0).unwrap();
+    att.set_texture(Some(&target));
+    att.set_load_action(MTLLoadAction::Clear);
+    att.set_store_action(MTLStoreAction::Store);
+    let cmd = queue.new_command_buffer();
+    let enc = cmd.new_render_command_encoder(pass);
+    enc.set_render_pipeline_state(&pipeline);
+    enc.set_fragment_bytes(0, std::mem::size_of::<inputs::Inputs>() as u64, &inputs as *const inputs::Inputs as *const std::ffi::c_void);
+    enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
+    enc.end_encoding();
+    cmd.commit();
+    cmd.wait_until_completed();
+    let mut bytes = vec![0u8; (size.0 * size.1 * 4) as usize];
+    target.get_bytes(bytes.as_mut_ptr() as *mut std::ffi::c_void, (size.0 * 4) as u64, metal::MTLRegion::new_2d(0, 0, size.0 as u64, size.1 as u64), 0);
+    bytes.chunks(4).map(|p| crate::palette::Rgb { r: p[2], g: p[1], b: p[0] }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::palette::{contrast, Rgb};
+
+    const W: u32 = 240;
+    const H: u32 = 160;
+
+    /// A small window: the title bar, two panes (tab bar and body each) and a selected and
+    /// hovered row in the first, with no edges, so every pixel is wash a text sits on.
+    fn small_window() -> Vec<Block> {
+        let b = |x: f32, y: f32, w: f32, h: f32, kind: Kind, ordinal: f32| Block { rect: Rect { x, y, w, h }, kind, edges: 0, seed: x + y, value: 1.0, ordinal };
+        vec![
+            b(0.0, 0.0, 240.0, 30.0, Kind::TitleBar, 0.0),
+            b(0.0, 30.0, 120.0, 24.0, Kind::TabBar, 0.0),
+            b(0.0, 54.0, 120.0, 106.0, Kind::PaneBody, 0.0),
+            b(120.0, 30.0, 120.0, 24.0, Kind::TabBar, 1.0),
+            b(120.0, 54.0, 120.0, 106.0, Kind::PaneBody, 1.0),
+            b(10.0, 80.0, 100.0, 20.0, Kind::RowHighlight, HighlightState::Both as u32 as f32),
+        ]
+    }
+
+    fn watercolor() -> &'static str {
+        super::super::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash
+    }
+
+    /// The mean colour of the frame's pixels inside the rectangle, as floats 0 to 1.
+    fn mean(frame: &[Rgb], x0: u32, y0: u32, x1: u32, y1: u32) -> [f32; 3] {
+        let mut sum = [0.0f32; 3];
+        let mut n = 0.0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = frame[(y * W + x) as usize];
+                sum[0] += p.r as f32 / 255.0;
+                sum[1] += p.g as f32 / 255.0;
+                sum[2] += p.b as f32 / 255.0;
+                n += 1.0;
+            }
+        }
+        sum.map(|v| v / n)
+    }
+
+    fn apart(a: [f32; 3], b: [f32; 3]) -> f32 {
+        (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0, f32::max)
+    }
+
+    /// Themes a user might load: a dark one with loud accents, and a light one whose focus
+    /// colour is a deep, saturated blue that a careless wash would darken the paper with.
+    fn loaded_themes() -> Vec<Theme> {
+        let mut loud = crate::theme::builtin("navy").unwrap();
+        loud.name = "loud-dark".into();
+        loud.chrome.window_bg = Rgb { r: 16, g: 16, b: 20 };
+        loud.chrome.focus_ring = Rgb { r: 255, g: 40, b: 200 };
+        loud.terminal.magenta = Rgb { r: 255, g: 0, b: 255 };
+        loud.terminal.red = Rgb { r: 255, g: 30, b: 60 };
+        let mut deep = crate::theme::builtin("peach-light").unwrap();
+        deep.name = "deep-light".into();
+        deep.chrome.window_bg = Rgb { r: 250, g: 250, b: 252 };
+        deep.chrome.focus_ring = Rgb { r: 10, g: 20, b: 140 };
+        deep.terminal.blue = Rgb { r: 0, g: 0, b: 120 };
+        deep.terminal.magenta = Rgb { r: 60, g: 0, b: 120 };
+        vec![loud, deep]
+    }
+
+    #[test]
+    fn watercolor_keeps_the_ui_text_readable_over_its_wash_on_any_theme() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        let mut themes: Vec<Theme> = ["peach-light", "lavender-light", "navy", "timo-purple"].iter().map(|n| crate::theme::builtin(n).unwrap()).collect();
+        themes.extend(loaded_themes());
+        for theme in themes {
+            let text = theme.chrome.text;
+            // 3:1, WCAG's floor for large text and controls (Peach Light's approved title bar sits
+            // near 4:1, so a stricter floor would wash its look out); the theme's own contrast
+            // when that is less, since no wash can do better than the bare paper.
+            let floor = contrast(text, theme.chrome.window_bg).min(3.0) - 0.1;
+            for time in [0.0, 37.0] {
+                let frame = render_frame(watercolor(), &theme, (W, H), time, &small_window());
+                let worst = frame.iter().map(|p| contrast(text, *p)).fold(f64::MAX, f64::min);
+                assert!(worst >= floor, "{}: text at {worst:.2}:1 over the wash (floor {floor:.2})", theme.name);
+            }
+        }
+    }
+
+    #[test]
+    fn on_a_dark_theme_the_panes_wash_shows_and_each_pane_has_its_own() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        for theme in [crate::theme::builtin("navy").unwrap(), loaded_themes().remove(0)] {
+            let frame = render_frame(watercolor(), &theme, (W, H), 0.0, &small_window());
+            let bg = theme.chrome.window_bg;
+            let paper = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+            // The two panes' tab bars, away from the bubbles' and the highlight's places.
+            let (left, right) = (mean(&frame, 4, 34, 116, 50), mean(&frame, 124, 34, 236, 50));
+            assert!(apart(left, paper) > 0.03, "{}: the wash does not show on the dark paper: {left:?} vs {paper:?}", theme.name);
+            assert!(apart(left, right) > 0.015, "{}: two panes washed alike: {left:?} vs {right:?}", theme.name);
+        }
+    }
+
+    #[test]
+    fn a_theme_with_a_family_of_one_still_gives_each_pane_its_own_tint() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        let mut lonely = crate::theme::builtin("peach-light").unwrap();
+        lonely.semantic.waiting = Rgb { r: 0, g: 140, b: 60 };
+        lonely.terminal.red = Rgb { r: 30, g: 90, b: 200 };
+        lonely.terminal.magenta = Rgb { r: 30, g: 90, b: 200 };
+        lonely.terminal.yellow = Rgb { r: 30, g: 90, b: 200 };
+        lonely.terminal.blue = Rgb { r: 30, g: 90, b: 200 };
+        lonely.terminal.cyan = Rgb { r: 0, g: 150, b: 160 };
+        lonely.terminal.green = Rgb { r: 0, g: 140, b: 60 };
+        assert_eq!(inputs::pigments(&lonely).1, 1);
+        let frame = render_frame(watercolor(), &lonely, (W, H), 0.0, &small_window());
+        let (left, right) = (mean(&frame, 4, 34, 116, 50), mean(&frame, 124, 34, 236, 50));
+        assert!(apart(left, right) > 0.01, "two panes washed alike: {left:?} vs {right:?}");
+    }
 
     #[test]
     fn the_bench_draws_a_window_as_it_opens_with_a_selected_row_when_the_effect_paints_it() {

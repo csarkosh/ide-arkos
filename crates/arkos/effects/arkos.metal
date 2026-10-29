@@ -50,7 +50,9 @@ struct ArkosInputs {
     float2 size;          // the window's content in points
     float scale;          // this drawable's pixels per point
     float block_count;
-    float2 pad;
+    float dark;           // 1 when the theme is dark (light text on a dark ground), 0 when light
+    float pigment_count;  // how many of the four pigments are the theme's own (1 to 4); the rest
+                          // repeat its focus colour, for an effect to vary as it likes
     float4 colors[39];
     ArkosBlock blocks[48];
 };
