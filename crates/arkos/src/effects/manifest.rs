@@ -39,6 +39,20 @@ pub struct Manifest {
     /// The glyph shader moves with time, so the text is redrawn on a timer while the effect is
     /// on (at most `active::GLYPH_RATE_CAP` frames a second).
     pub glyph_motion: bool,
+    /// The frames a second the text is redrawn at while `glyph_motion` is on. Absent, the
+    /// wash's rate capped at `active::GLYPH_RATE_CAP`.
+    pub glyph_rate: Option<u32>,
+    /// The terminal decodes changed cells and brightens fresh ones while the effect is settled
+    /// on. Needs `glyph_motion`.
+    pub terminal_decode: bool,
+}
+
+impl Manifest {
+    /// The frames a second the text is redrawn at while its shader moves: the `glyph_rate` key,
+    /// else the wash's `frame_rate` capped at `active::GLYPH_RATE_CAP`.
+    pub fn glyph_rate(&self) -> u32 {
+        self.glyph_rate.unwrap_or_else(|| self.frame_rate.min(crate::effects::active::GLYPH_RATE_CAP))
+    }
 }
 
 impl Default for Manifest {
@@ -59,6 +73,8 @@ impl Default for Manifest {
             active_tab_alpha: 0.55,
             text_contrast: 0.0,
             glyph_motion: false,
+            glyph_rate: None,
+            terminal_decode: false,
         }
     }
 }
@@ -119,6 +135,12 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("chrome_alpha", m.chrome_alpha, 0.0, 1.0)?;
     in_range("active_tab_alpha", m.active_tab_alpha, 0.0, 1.0)?;
     in_range("text_contrast", m.text_contrast, 0.0, 1.0)?;
+    if let Some(r) = m.glyph_rate {
+        in_range("glyph_rate", r, 1, 20)?;
+    }
+    if m.terminal_decode && !m.glyph_motion {
+        return Err("terminal_decode = true requires glyph_motion = true".into());
+    }
     Ok(m)
 }
 
@@ -274,6 +296,28 @@ mod tests {
         assert!(e.contains("wash"), "{e}");
         let e = parse(&with("highlights = \"sometimes\"")).unwrap_err();
         assert!(e.contains("sometimes"), "{e}");
+    }
+
+    #[test]
+    fn a_manifest_may_set_the_text_s_own_frame_rate_and_it_defaults_to_the_capped_wash_rate() {
+        assert_eq!(parse(MINIMAL).unwrap().glyph_rate, None);
+        assert_eq!(parse(MINIMAL).unwrap().glyph_rate(), 20, "frame_rate 30 capped at 20");
+        assert_eq!(parse(&with("frame_rate = 12")).unwrap().glyph_rate(), 12);
+        assert_eq!(parse(&with("glyph_rate = 10")).unwrap().glyph_rate(), 10);
+        let e = parse(&with("glyph_rate = 30")).unwrap_err();
+        assert!(e.contains("glyph_rate must be 1 to 20 (was 30)"), "{e}");
+        assert!(parse(&with("glyph_rate = 0")).is_err());
+    }
+
+    #[test]
+    fn a_manifest_may_ask_the_terminal_to_decode_changed_cells_only_with_moving_glyphs() {
+        assert!(!parse(MINIMAL).unwrap().terminal_decode);
+        assert!(parse(&with("glyph_motion = true\nterminal_decode = true")).unwrap().terminal_decode);
+        let e = parse(&with("terminal_decode = true")).unwrap_err();
+        assert_eq!(e, "terminal_decode = true requires glyph_motion = true");
+        for b in BUILTIN.iter().filter(|b| b.name != "matrix") {
+            assert!(!parse(b.manifest).unwrap().terminal_decode, "{} does not decode", b.name);
+        }
     }
 
     #[test]

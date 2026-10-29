@@ -46,12 +46,14 @@ pub struct Style {
     /// The effect draws the menus' and popovers' edges from above (its wash's `arkos_overlay`),
     /// so the app draws no line of its own around them.
     pub menu_edges: bool,
+    /// The terminal decodes changed cells: the effect's `terminal_decode`, once fully on.
+    pub terminal_decode: bool,
 }
 
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false }
+        Style { paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -81,6 +83,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         menus: if full { manifest.menus } else { MenuLook::App },
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
+        terminal_decode: full && manifest.terminal_decode,
     }
 }
 
@@ -116,11 +119,11 @@ pub const GLYPH_RATE_CAP: u32 = 20;
 
 /// What the text's timer waits after a frame, or `None` to stop it. The text is redrawn only
 /// while the effect's glyph shader `motion` is on, the effect is `settled` (not fading in or
-/// out), the window is `seen` and Reduce Motion is off; the wait is one frame at the manifest's
-/// `frame_rate`, at most `GLYPH_RATE_CAP` a second.
-pub fn glyph_wait(frame_rate: u32, motion: bool, settled: bool, seen: bool, reduce: bool) -> Option<Duration> {
+/// out), the window is `seen` and Reduce Motion is off; the wait is one frame at `glyph_rate`
+/// (the manifest's resolved rate), clamped to `1..=GLYPH_RATE_CAP` a second.
+pub fn glyph_wait(glyph_rate: u32, motion: bool, settled: bool, seen: bool, reduce: bool) -> Option<Duration> {
     if motion && settled && seen && !reduce {
-        Some(Duration::from_secs_f64(1.0 / frame_rate.clamp(1, GLYPH_RATE_CAP) as f64))
+        Some(Duration::from_secs_f64(1.0 / glyph_rate.clamp(1, GLYPH_RATE_CAP) as f64))
     } else {
         None
     }
@@ -355,7 +358,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -425,12 +428,23 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn the_terminal_decodes_only_once_the_effect_has_fully_faded_in() {
+        let m = manifest::parse("name = \"m\"\nwash = \"w.metal\"\nglyph_motion = true\nterminal_decode = true\n").unwrap();
+        assert!(!style_at(&m, 0.5).terminal_decode);
+        assert!(style_at(&m, 1.0).terminal_decode);
+        assert!(!Style::plain().terminal_decode);
+        let still = manifest::parse("name = \"m\"\nwash = \"w.metal\"\nglyph_motion = true\n").unwrap();
+        assert!(!style_at(&still, 1.0).terminal_decode);
+    }
+
+    #[test]
     fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
-        assert_eq!(glyph_wait(30, false, true, true, false), None);
-        assert_eq!(glyph_wait(30, true, false, true, false), None);
-        assert_eq!(glyph_wait(30, true, true, false, false), None);
-        assert_eq!(glyph_wait(30, true, true, true, true), None);
-        assert_eq!(glyph_wait(30, true, true, true, false), Some(Duration::from_millis(50)));
+        assert_eq!(glyph_wait(20, false, true, true, false), None);
+        assert_eq!(glyph_wait(20, true, false, true, false), None);
+        assert_eq!(glyph_wait(20, true, true, false, false), None);
+        assert_eq!(glyph_wait(20, true, true, true, true), None);
+        assert_eq!(glyph_wait(20, true, true, true, false), Some(Duration::from_millis(50)));
+        assert_eq!(glyph_wait(10, true, true, true, false), Some(Duration::from_millis(100)));
         assert_eq!(glyph_wait(60, true, true, true, false), Some(Duration::from_millis(50)));
         assert_eq!(glyph_wait(12, true, true, true, false), Some(Duration::from_secs_f64(1.0 / 12.0)));
     }
@@ -513,7 +527,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false }
+            Style { paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

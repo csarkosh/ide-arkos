@@ -3848,7 +3848,7 @@ impl Root {
         let e = self.effect.as_ref()?;
         // As the wash, the text moves on with a menu or a prompt open; only an unseen window rests it.
         let seen = !self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
-        effects::active::glyph_wait(e.effect.manifest.frame_rate, e.effect.manifest.glyph_motion, e.settled(), seen, motion::reduce_motion())
+        effects::active::glyph_wait(e.effect.manifest.glyph_rate(), e.effect.manifest.glyph_motion, e.settled(), seen, motion::reduce_motion())
     }
 
     /// Starts the text's timer unless it runs: while the effect's glyphs move it asks for a
