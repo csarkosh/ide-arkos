@@ -12,12 +12,16 @@
 
 ## Progress (2026-10-30)
 
-Tasks 1 to 8 are done on branch `reveal`, each with its tests and commit; `cargo test -p arkos`
-passes (1138) and `cargo check --workspace --all-targets` shows no warnings. Task 9 (the screen
-pass and the 5 MB frame gate) is open: the session that built this could not capture the screen
-or post input, so every Status row from Task 8 still wants a person at the screen before the merge.
-Two `arkosd` pty tests fail inside that session's process tree (responsible-process checks); the
-branch does not touch `arkosd`.
+Tasks 1 to 9 are done on branch `reveal`, each with its tests and commit; `cargo test -p arkos`
+passes (1139) and `cargo check --workspace --all-targets` shows no warnings. The screen pass ran
+on the local shoot ("Arkos Shoot" with Screen Recording and Accessibility) with throwaway
+storyboards: heading, bold, italic, link, quote, list item, Delete at an item's start, undo,
+typing `**x**`, Up by displayed row, a `<picture>` at rest and active, and a 50-key burst into a
+5 MB document landing in order. It found three things, fixed in the last commit: two carets drawn
+on the offset between two items, Delete merging a top-level item into the one above, and undo
+leaving the caret drawn where typing would not land. Two `arkosd` pty tests fail inside the
+building session's process tree, and `agent_cli`'s window report test is flaky there (one run in
+three); the branch touches neither.
 
 Where the build differs from the steps below, from what the parser actually reports:
 
