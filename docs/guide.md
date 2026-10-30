@@ -103,8 +103,13 @@ block does not. Bullets, task boxes and quote bars never show their markers. Del
 of a nested item moves it out a level; at the start of a top-level item the item leaves the list
 as a paragraph of its own; at the start of a quoted paragraph the paragraph leaves the quote. Type the syntax
 and it takes effect as you close it: `**x**` is bold the moment the second `*` lands. Click a
-link's text to edit it and its revealed address to follow it, or Cmd+click anywhere in it. An
-image keeps its picture and shows its `![alt](path)` under it. Code blocks, tables, HTML and front
+link's text to edit it and its revealed address to follow it, or Cmd+click anywhere in it. A link
+to `#a-heading` scrolls to that heading, and `other.md#a-heading` opens the other file there (the
+anchor is GitHub's: the heading's words lowercased and joined by `-`). A wikilink, `[[name]]` or
+`[[name|shown text]]`, reads as a link and follows to `name` beside the file, `name.md`, or the
+first file of that name anywhere in the project; `![[picture.png]]` shows the picture. A plain
+link to a name that is no file is looked up the same way. An image keeps its picture and shows
+its `![alt](path)` under it. Code blocks, tables, HTML and front
 matter still turn into their source when the caret enters them. Click another block, or press the
 arrows past the end of this one, and the active block moves; Up and Down move by displayed row.
 When the pane loses focus the active block renders again.
@@ -206,6 +211,16 @@ renders as the image too, local or remote. In a `<picture>` the `<img>` shows, a
 it when no `<source>` applies. Its `width` is honoured up to the view's width, and it is centred
 when the wrapper has `align="center"`. Inside an `<a href>` it follows the link, and its `alt`
 shows when the image cannot be drawn.
+
+Paste an image (a screenshot, or Copy Image in a browser) into a markdown file and Arkos writes it
+beside the file as `image.png`, then `image-1.png` and so on, and puts `![image](image.png)` in a
+paragraph of its own: on the blank line the caret is on, or after the caret's paragraph. Drop
+files from Finder on a rendered document and a line shows where they go, before the block under
+the pointer. A file inside the document's folder is linked where it is. An image from elsewhere
+is copied in under the next `image-N` name, and any other file is linked where it is. Undo takes
+the text out and leaves the file. To keep images in a folder, set `image_destination` under
+`[viewer]`, say to `images` or `{name}.assets` (`{name}` is the document's name), or run
+`arkos settings set viewer.image_destination images`.
 
 A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
 opens it: an image in Preview, or the link for a linked image. A video (`.mp4`, `.mov` and the
@@ -606,7 +621,7 @@ Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `effect` (`name`: `theme`, `none` or an effect; `intensity`; `run_unfocused`, true by default, false to pause a window's effects while it is not in focus), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
-whether it starts collapsed), `viewer` (`highlight_limit_bytes`, and `wide_tables`: `wrap` or `scroll`), and `browser` (`url`, the page a new
+whether it starts collapsed), `viewer` (`highlight_limit_bytes`, `wide_tables`: `wrap` or `scroll`, and `image_destination`, the folder for pasted and dropped images), and `browser` (`url`, the page a new
 browser tab opens when its prompt is left empty; `app_mode` is left over from 0.6's Chrome docking
 and is ignored).
 
@@ -804,7 +819,7 @@ the preview's colours with the error shown.
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
 `font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (theme, none, or an installed
 effect's name), `effect.intensity` (0.0 to 1.0), `effect.run_unfocused` (true, false),
-`viewer.wide_tables` (wrap, scroll),
+`viewer.wide_tables` (wrap, scroll), `viewer.image_destination` (a folder, empty for beside the file),
 `update.auto` (true, false), `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
 `telemetry.crashes` (never, ask, always). Any other key exits 2 and lists these. A bad value is
 refused before anything is written. `settings get <key>` reads the file only, so a key left at its

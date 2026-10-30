@@ -89,7 +89,8 @@ pub enum ViewerEvent {
     Saved,
     SaveFailed,
     /// A link to a markdown file was Cmd+clicked: it opens in a viewer tab of its own.
-    OpenPath(PathBuf),
+    /// A markdown file to open, at the heading the anchor names when there is one.
+    OpenPath(PathBuf, Option<String>),
     /// A local video's poster was Cmd+clicked: the file (canonical, checked by
     /// `media::checked_open_path`) opens in a video tab beside the document.
     OpenVideo(PathBuf),
@@ -632,6 +633,10 @@ pub struct Viewer {
     pub lang_at: Option<Point<Pixels>>,
     /// The code block whose Copy was clicked, and when: its button reads "Copied" for a moment.
     pub copied: Option<(usize, Instant)>,
+    /// A heading to scroll to once the document has loaded (a link's `#anchor` into this file).
+    pub pending_anchor: Option<String>,
+    /// The config's `viewer.image_destination`, kept here by `Root` (`md_links::image_dir`).
+    pub image_destination: String,
     /// A table cell is being edited (its markdown shown with the caret), not only selected.
     pub table_edit: bool,
     /// A table's row, column or whole grid picked by its edge, with the table's block.
@@ -802,6 +807,8 @@ impl Viewer {
             lang: None,
             lang_at: None,
             copied: None,
+            pending_anchor: None,
+            image_destination: String::new(),
             table_edit: false,
             table_pick: None,
             caret_placed: false,
@@ -976,6 +983,10 @@ impl Viewer {
         self.refresh_structure();
         if let Some(line) = old_top_line.filter(|_| !self.blocks.is_empty()) {
             self.list_state.scroll_to(ListOffset { item_ix: md_blocks::block_at(&self.blocks, line), offset_in_item: px(0.0) });
+        }
+        // A link's `#anchor` into this file, waiting for the load.
+        if let Some(anchor) = self.pending_anchor.take() {
+            self.go_to_anchor(&anchor, cx);
         }
         // What is shown is what is on disk now.
         self.dirty = false;
@@ -1716,7 +1727,17 @@ impl Viewer {
                 cx.notify();
             }
             KeyAction::Paste => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                let item = cx.read_from_clipboard();
+                // An image on the clipboard (no text with it) goes into a markdown file as a file.
+                let image = item.as_ref().filter(|i| i.text().is_none()).and_then(|i| {
+                    i.entries().iter().find_map(|e| match e {
+                        gpui::ClipboardEntry::Image(image) => Some(image.clone()),
+                        _ => None,
+                    })
+                });
+                if let Some(image) = image.filter(|_| is_markdown(&self.path)) {
+                    self.paste_image(&image, cx);
+                } else if let Some(text) = item.and_then(|item| item.text()) {
                     // An address or a path pasted over a selection on one line makes a link.
                     let selected = self.doc.as_ref().map(|d| d.text_in(self.caret.anchor, self.caret.head)).unwrap_or_default();
                     let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -1974,6 +1995,101 @@ impl Viewer {
     }
 
     /// The outline's click: the block a fold hides is shown, and the view scrolls to it.
+    /// The folder pasted and dropped images go in (`md_links::image_dir`).
+    fn image_dir(&self) -> PathBuf {
+        crate::md_links::image_dir(&self.path, &self.image_destination)
+    }
+
+    /// A clipboard image written to the image folder at the next free `image-N` name, and
+    /// `![image](path)` typed at the caret. A file that cannot be written leaves the document be.
+    fn paste_image(&mut self, image: &gpui::Image, cx: &mut Context<Self>) {
+        use gpui::ImageFormat::*;
+        let ext = match image.format {
+            Png => "png",
+            Jpeg => "jpg",
+            Webp => "webp",
+            Gif => "gif",
+            Svg => "svg",
+            Bmp => "bmp",
+            Tiff => "tiff",
+        };
+        let dir = self.image_dir();
+        let file = crate::md_links::image_name(&dir, ext, |p| p.exists());
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, &image.bytes)) {
+            eprintln!("arkos: cannot write the pasted image to {}: {e}", file.display());
+            return;
+        }
+        let doc_dir = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let text = crate::md_links::file_markdown(&file, &file, &doc_dir);
+        self.insert_paragraphs(vec![text], None, cx);
+    }
+
+    /// Files dropped from Finder before block `to` (the end of the document past the last), each on
+    /// its own paragraph (`md_links::place_dropped`, `md_links::file_markdown`), as one undoable
+    /// edit with the caret after them. An image that cannot be copied is left out.
+    pub fn drop_files(&mut self, files: &[PathBuf], to: usize, cx: &mut Context<Self>) {
+        if !is_markdown(&self.path) || self.read_only.is_some() {
+            return;
+        }
+        let doc_dir = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let dir = self.image_dir();
+        let mut items = Vec::new();
+        for file in files {
+            let (linked, copy) = crate::md_links::place_dropped(file, &doc_dir, &dir, |p| p.exists());
+            if let Some(from) = copy {
+                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&from, &linked)) {
+                    eprintln!("arkos: cannot copy {} to {}: {e}", from.display(), linked.display());
+                    continue;
+                }
+            }
+            items.push(crate::md_links::file_markdown(file, &linked, &doc_dir));
+        }
+        self.insert_paragraphs(items, Some(to), cx);
+    }
+
+    /// Paragraphs of their own (an image draws only as a paragraph of its own), as one undoable edit
+    /// with the caret after the last: before block `to` (past the last block, at the end), or for
+    /// `None` where the caret is (`paragraph_spot`).
+    fn insert_paragraphs(&mut self, items: Vec<String>, to: Option<usize>, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        if items.is_empty() {
+            return;
+        }
+        let to = to.unwrap_or(usize::MAX);
+        let caret = (to == usize::MAX).then_some(self.caret.head.line);
+        let Some((at, text, last_line)) = paragraph_spot(doc.lines(), &self.blocks, to, caret, &items) else { return };
+        self.caret_placed = true;
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(at, at, &text, now);
+                doc.break_coalescing();
+                let line = last_line.min(doc.lines().len().saturating_sub(1));
+                edit::Caret::at(edit::Pos { line, ch: doc.lines()[line].chars().count() })
+            },
+            cx,
+        );
+    }
+
+    /// Scrolls to the heading anchor `anchor` names (`md_links::heading_for`), unfolding it; `false`
+    /// when no heading has it.
+    pub fn go_to_anchor(&mut self, anchor: &str, cx: &mut Context<Self>) -> bool {
+        let texts: Vec<String> = self.heads.iter().map(|h| h.text.clone()).collect();
+        let Some(i) = crate::md_links::heading_for(&texts, anchor) else { return false };
+        let block = self.heads[i].block;
+        self.reveal_block(block, cx);
+        true
+    }
+
+    /// Goes to heading `anchor` now if the document is loaded, else once it is.
+    pub fn anchor_to(&mut self, anchor: String, cx: &mut Context<Self>) {
+        if self.doc.is_some() && !self.heads.is_empty() {
+            self.go_to_anchor(&anchor, cx);
+        } else {
+            self.pending_anchor = Some(anchor);
+        }
+    }
+
     pub fn reveal_block(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.unfold_for(ix, cx);
         self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(0.0) });
@@ -3617,6 +3733,39 @@ fn table_move(ks: &Keystroke, t: &TableCell) -> TableMove {
     }
 }
 
+/// Where paragraphs `items` go and as what text, with the line the last one ends on: before
+/// block `to`, or with `caret` (a line), on that line when it is blank with nothing above it that
+/// it would join (the caret's own new paragraph), else before the block after the caret's. Past
+/// the last block they go at the end, after a blank line.
+fn paragraph_spot(lines: &[String], blocks: &[md_blocks::Block], to: usize, caret: Option<usize>, items: &[String]) -> Option<(edit::Pos, String, usize)> {
+    let body = items.join("\n\n");
+    let extra = 2 * items.len() - 2;
+    let blank = |l: usize| lines.get(l).is_none_or(|t| t.trim().is_empty());
+    let to = match caret {
+        Some(l) if blank(l) && (l == 0 || blank(l - 1)) => {
+            // A free blank line: the paragraphs go on it, a blank line after them when text follows.
+            // The line's own break ends the paragraph; one more leaves a blank line before the text.
+            let after = if lines.get(l + 1).is_some_and(|t| !t.trim().is_empty()) { "\n" } else { "" };
+            return Some((edit::Pos { line: l, ch: 0 }, format!("{body}{after}"), l + extra));
+        }
+        Some(l) => md_blocks::block_at(blocks, l) + 1,
+        None => to,
+    };
+    match blocks.get(to) {
+        Some(b) => Some((edit::Pos { line: b.lines.start, ch: 0 }, format!("{body}\n\n"), b.lines.start + extra)),
+        None => {
+            let last = lines.len().checked_sub(1)?;
+            let end = edit::Pos { line: last, ch: lines[last].chars().count() };
+            let lead = match (blank(last), last > 0 && !blank(last.saturating_sub(1))) {
+                (false, _) => "\n\n",
+                (true, true) => "\n",
+                (true, false) => "",
+            };
+            Some((end, format!("{lead}{body}"), last + lead.matches('\n').count() + extra))
+        }
+    }
+}
+
 /// The cells a Delete clears: the pick's (a row, a column, all), or the caret's cell alone.
 fn picked_cells(pick: Option<Pick>, r: usize, c: usize, rows: usize, cols: usize) -> Vec<(usize, usize)> {
     match pick {
@@ -4116,9 +4265,13 @@ impl Root {
             _ => ViewMode::default(),
         };
         let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
+        let anchor = self.pending_anchors.remove(path);
+        let image_destination = self.config.viewer.image_destination.clone();
         let folded: std::collections::BTreeSet<md_fold::FoldKey> = self.folds.get(path).map(|f| f.iter().map(|f| (f.heading.clone(), f.index)).collect()).unwrap_or_default();
         let v = cx.new(|cx| {
             let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
+            v.pending_anchor = anchor;
+            v.image_destination = image_destination;
             v.mode = mode;
             v.open_details = open_details;
             v.folded = folded;
@@ -4135,9 +4288,20 @@ impl Root {
                         root.load(tab, true, cx);
                     }
                 }
-                ViewerEvent::OpenPath(path) => {
+                ViewerEvent::OpenPath(path, anchor) => {
                     let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Link);
-                    root.open_viewer(path, true, cx)
+                    root.open_viewer(path, true, cx);
+                    // The file's viewer goes to the heading now, or once it has loaded; a viewer
+                    // not made yet takes it when the pane first shows the tab.
+                    if let Some(anchor) = anchor.clone() {
+                        let open = root.viewers.values().find(|o| o.read(cx).path == *path).cloned();
+                        match open {
+                            Some(o) => o.update(cx, |o, cx| o.anchor_to(anchor, cx)),
+                            None => {
+                                root.pending_anchors.insert(path.clone(), anchor);
+                            }
+                        }
+                    }
                 }
                 ViewerEvent::OpenVideo(path) => root.open_poster_video(tab, path, cx),
                 ViewerEvent::OpenPage(path) => root.open_beside_document(tab, path, crate::telemetry::Opened::Link, cx),
@@ -4503,6 +4667,23 @@ mod tests {
         assert_eq!(table_move(&ks("enter"), &cell(3)), TableMove::Select(2, 0));
         assert_eq!(table_move(&ks("alt-left"), &cell(3)), TableMove::Pass, "word moves are the editor's");
         assert_eq!(table_move(&ks("cmd-c"), &cell(3)), TableMove::Pass, "the clipboard works on the text");
+    }
+
+    #[test]
+    fn pasted_and_dropped_files_go_in_as_paragraphs_of_their_own() {
+        let run = |text: &str, to: usize, caret: Option<usize>| {
+            let mut d = edit::Document::from_text(text);
+            let blocks = md_blocks::split(d.lines());
+            let (at, ins, last) = paragraph_spot(d.lines(), &blocks, to, caret, &["![a](a.png)".to_string(), "![b](b.png)".to_string()]).unwrap();
+            d.replace_range(at, at, &ins, Instant::now());
+            (d.lines().join("\n"), d.lines()[last].clone())
+        };
+        let doc = "one\n\ntwo\n";
+        assert_eq!(run(doc, 1, None).0, "one\n\n![a](a.png)\n\n![b](b.png)\n\ntwo\n", "dropped before a block");
+        assert_eq!(run(doc, usize::MAX, Some(0)), ("one\n\n![a](a.png)\n\n![b](b.png)\n\ntwo\n".into(), "![b](b.png)".into()), "pasted mid-text: after the caret's block");
+        assert_eq!(run(doc, usize::MAX, Some(2)).0, "one\n\ntwo\n\n![a](a.png)\n\n![b](b.png)", "after the last block: at the end");
+        assert_eq!(run("one\n\n\ntwo", usize::MAX, Some(2)).0, "one\n\n![a](a.png)\n\n![b](b.png)\n\ntwo", "a free blank line takes them, apart from the text below");
+        assert_eq!(run("one", 9, None).0, "one\n\n![a](a.png)\n\n![b](b.png)");
     }
 
     #[test]

@@ -123,6 +123,7 @@ key = [
     "sidebar.collapsed",
     "viewer.highlight_limit_bytes",
     "viewer.wide_tables",
+    "viewer.image_destination",
     "browser.url",
     "browser.app_mode",
     "daemon.watchdog_secs",

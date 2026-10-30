@@ -9,7 +9,8 @@ use std::ops::Range;
 pub const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_TASKLISTS)
     .union(Options::ENABLE_STRIKETHROUGH)
-    .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
+    .union(Options::ENABLE_WIKILINKS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
@@ -896,6 +897,13 @@ pub fn elements(block_text: &str) -> Vec<Node> {
                     Tag::Strong => NodeKind::Strong,
                     Tag::Emphasis => NodeKind::Emphasis,
                     Tag::Strikethrough => NodeKind::Strike,
+                    Tag::Link { link_type: pulldown_cmark::LinkType::WikiLink { .. }, dest_url, .. } => {
+                        // A wikilink's address is its name, right after the `[[`.
+                        let name = range.start + 2;
+                        let end = block_text[name.min(range.end)..range.end].find(['|', ']']).map_or(range.end, |i| name + i);
+                        labels.push((stack.len(), None));
+                        NodeKind::Link { dest: Some(name.min(end)..end), url: dest_url.to_string() }
+                    }
                     Tag::Link { link_type, dest_url, id, .. } => {
                         let label = match link_type {
                             pulldown_cmark::LinkType::Reference => Some(id.to_string()),
@@ -917,6 +925,11 @@ pub fn elements(block_text: &str) -> Vec<Node> {
                         Some((at, _)) if *at == stack.len() => labels.pop().and_then(|(_, l)| l),
                         _ => None,
                     };
+                    // A wikilink found its address when it opened.
+                    if dest.is_some() {
+                        add(&mut stack, &mut top, n);
+                        continue;
+                    }
                     let after = n.children.last().map_or(n.span.start + 1, |c| c.span.end).min(n.span.end);
                     *dest = link_dest(block_text, n.span.clone(), after, label.as_deref(), n.children.first().map(|c| c.span.clone()));
                 }
@@ -1376,6 +1389,14 @@ mod tests {
         assert!(matches!(&inl[0], Inline::Images(v) if v.len() == 3));
         let inl = inline("![a](a.png) text", &BlockKind::Paragraph);
         assert!(!matches!(&inl[0], Inline::Images(_)), "text beside an image is a paragraph");
+    }
+
+    #[test]
+    fn a_wikilink_renders_its_alias_or_its_name_as_a_link_to_the_name() {
+        let runs = para_runs("see [[Notes|my notes]] and [[Plan#goals]]");
+        let links: Vec<(&str, Option<&str>)> = runs.iter().filter(|r| r.style.link.is_some()).map(|r| (r.text.as_str(), r.style.link.as_deref())).collect();
+        assert_eq!(links, vec![("my notes", Some("Notes")), ("Plan#goals", Some("Plan#goals"))]);
+        assert!(matches!(&inline("![[pic.png]]", &BlockKind::Paragraph)[0], Inline::Image { path, .. } if path == "pic.png"), "an image wikilink is an image");
     }
 
     #[test]

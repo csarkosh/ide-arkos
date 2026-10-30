@@ -596,6 +596,12 @@ Things only a person at the screen can check, in order of value:
   shows it and scrolls there; paging through a long document moves the highlight; resting on a row
   shows its preview; drag a paragraph's handle above a heading: the accent line shows where, and it
   lands there with blank lines around it; one undo puts it back
+- links and images: click a link to `#a-heading` and then its address: the view scrolls to the
+  heading; a link to `other.md#a-heading` opens the other file scrolled there; `[[other|text]]`
+  reads "text" and its revealed name opens `other.md`; paste a screenshot mid-paragraph:
+  `image.png` appears beside the file and the picture shows as the next paragraph; drag an image
+  and a PDF from Finder onto a rendered document: the drop line shows, the image is copied in as
+  `image-N` and drawn, the PDF is a link
 - code blocks: a code block shows its language and Copy over numbered, coloured lines; click a line:
   the box, numbers and colours stay and the fences never show; Up and Down leave it from its first
   and last lines; click the language: the list opens under it, "py" and Enter make it Python;
