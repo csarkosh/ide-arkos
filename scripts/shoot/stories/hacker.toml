@@ -26,7 +26,7 @@ theme = { dark = "matrix", light = "matrix" }
 # answered: findings alone took it under 30 s on the runner.
 [[pane]]
 name = "audit"
-claude = "Audit this service for security bugs. Read every file in src/ yourself, no subagents. Write findings.md with one short section per finding, most severe first: the file and line, how an attacker would use it, and the fix. Then prove each finding except the path traversal (another session is fixing that one): write a test per finding in test/exploits.test.js that carries out the attack against the code as it is and passes while the bug is there, run npm test until they all pass, and name each finding's test in findings.md. Do not change any file in src/."
+claude = "Audit this service for security bugs, working straight through to the end without asking me anything. Read every file in src/ yourself, no subagents. Write findings.md with one short section per finding, most severe first: the file and line, how an attacker would use it, and the fix. Then prove each finding except the path traversal (another session is fixing that one): write a test per finding in test/exploits.test.js that carries out the attack against the code as it is and passes while the bug is there, run npm test until they all pass, and name each finding's test in findings.md. Do not change any file in src/."
 
 [[pane]]
 name = "traversal"
@@ -56,7 +56,7 @@ after_secs = 45
 timeout_secs = 420
 # The decode is 400 ms on changed text, which a still frame never catches: a burst instead,
 # while the audit writes.
-burst = 12
+burst = 20
 
 # The rain's runes are a couple of points across: at the manifest's 0.5 on the runner's one
 # pixel a point they blur away, so the wash draws at 1.0 there, a Retina Mac's density.
