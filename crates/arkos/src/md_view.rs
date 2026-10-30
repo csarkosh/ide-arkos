@@ -16,12 +16,15 @@
 //! which a click opens and closes (remembered per file in the workspace; until then it is open
 //! when its tag says `open`), its content drawn read-only below while it is open. Every other HTML block is its source, dimmed.
 //!
-//! The block holding the caret (and every block a selection touches) is drawn raw instead, by
-//! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width, with the
-//! caret, the selection and the marked text. A click on a rendered block puts the caret at the
-//! source position under it, Up and Down cross from block to block (`navigate`), and the input
-//! handler sits on a canvas over the whole list, so typing reaches the document even when the
-//! caret's block is scrolled out of view.
+//! The block holding the caret (and every block a selection touches) is active. A paragraph,
+//! heading, list or quote stays rendered (`reveal_row`): the inline element under the caret shows
+//! its source, a heading its hashes, and bullets and quote bars never show theirs (`md_reveal`),
+//! with the caret, the selection, the find hits and the marked text drawn in the text; a picture
+//! keeps its picture with its source under it. Any other active block is drawn raw by
+//! `RawBlockElement`: its source lines in the terminal font, wrapped to the view's width. A click
+//! on a rendered block puts the caret at the source position under it, Up and Down cross from
+//! block to block (`navigate`), and the input handler sits on a canvas over the whole list, so
+//! typing reaches the document even when the caret's block is scrolled out of view.
 
 use crate::config::WideTables;
 use crate::edit::{self, Pos};

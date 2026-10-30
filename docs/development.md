@@ -541,9 +541,21 @@ Things only a person at the screen can check, in order of value:
   that order, and no File menu; Cmd+N or "New Window" opens the chooser with
   the recent folders and "Open folder..."; picking one opens it in a new window; `"open recent"
   = "cmd-shift-n"` left in config.toml binds the chooser to that key with no config error
-- open a README in Arkos: it renders; click a paragraph: it turns raw with the caret where you
-  clicked; type, wait a second: `git diff` shows the change and the tab's " •" goes; press Enter in
-  a list: the next bullet appears; tick a task checkbox: the file shows `[x]`
+- open a README in Arkos: it renders; click a paragraph: it stays in the document font with the
+  caret where you clicked; type, wait a second: `git diff` shows the change and the tab's " •" goes;
+  press Enter in a list: the next bullet appears; tick a task checkbox: the file shows `[x]`
+- inline reveal: click a bold word: `**` appears around that word only; press Right past the
+  closing `**`: it hides; click a heading: its `##` shows, click elsewhere: it hides; click a bullet
+  item: the bullet stays and the caret lands at the text; Left from its first letter lands at the end
+  of the item above; Delete there: the bullet goes and one undo brings it back; type `**x**` in a
+  paragraph: `x` is bold as the second `*` lands; type `- ` at a line start: a bullet appears
+- inline reveal: click a link's text: `[text](url)` shows and nothing opens; a plain click on the url
+  opens it once and the caret stays; Cmd+click a link in another paragraph opens it as before
+- inline reveal: a long wrapped paragraph: Up and Down move by displayed row keeping the x, Down from
+  the last row reaches the next block, Cmd+Left and Cmd+Right go to the row's ends; a Japanese input
+  method's candidates sit under the caret; click an image: its `![alt](path)` shows under the
+  picture; with the find bar open the hit's paragraph shows the hit highlighted in the document
+  font; a code block and a table still turn raw; the selection paints across a revealed paragraph
 - the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
   back; the choice survives a relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
