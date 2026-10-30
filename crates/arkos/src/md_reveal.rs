@@ -158,6 +158,7 @@ pub fn item_end(item: &Node) -> usize {
 
 /// The item whose own text holds `offset`: the last item starting at or before it whose own range
 /// reaches it.
+#[cfg(test)]
 pub fn item_at(nodes: &[Node], offset: usize) -> Option<Vec<usize>> {
     item_paths(nodes).into_iter().rev().find(|p| node_at(nodes, p).is_some_and(|n| n.span.start <= offset && offset <= item_end(n)))
 }

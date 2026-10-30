@@ -613,6 +613,9 @@ pub struct Viewer {
     /// Where the rendered view's revealed texts were laid out this frame (a paragraph's, a
     /// heading's, a quote's, each revealed item's), emptied and filled as `raw_blocks` is.
     pub reveal_blocks: Vec<md_view::RevealLayout>,
+    /// The x Up and Down aim for in a revealed text, with the caret position it holds for: a move
+    /// that lands elsewhere makes the next one start from the caret's own x.
+    reveal_goal: Option<(edit::Pos, f32)>,
     /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
@@ -704,6 +707,7 @@ impl Viewer {
             last_bounds: None,
             raw_blocks: Vec::new(),
             reveal_blocks: Vec::new(),
+            reveal_goal: None,
             caret_placed: false,
             pending_append: false,
             compose: None,
@@ -1461,6 +1465,27 @@ impl Viewer {
         if self.rendered() && self.rendered_key(action, cx) {
             return true;
         }
+        if matches!(action, KeyAction::DeleteBack(_) | KeyAction::DeleteFwd(_) | KeyAction::Newline | KeyAction::Tab | KeyAction::ShiftTab | KeyAction::Paste) {
+            self.snap_for_edit();
+        }
+        // Backspace at an item's or a quote paragraph's text start takes its marker away.
+        if self.rendered() && action == KeyAction::DeleteBack(edit::Unit::Grapheme) && self.caret.anchor == self.caret.head {
+            let blocks = self.blocks.clone();
+            let mut unmarked = false;
+            self.edit(
+                |doc, caret, now| match backspace_revealed(doc, &blocks, caret, now) {
+                    Some(c) => {
+                        unmarked = true;
+                        c
+                    }
+                    None => caret,
+                },
+                cx,
+            );
+            if unmarked {
+                return true;
+            }
+        }
         match action {
             KeyAction::Save => self.save_command(cx),
             // Escape undoes one thing at a time: the find bar closes, a selection collapses, and
@@ -1534,10 +1559,34 @@ impl Viewer {
         match action {
             KeyAction::Move(edit::Move::PageDown(_) | edit::Move::PageUp(_), _) | KeyAction::ScrollHome | KeyAction::ScrollEnd => self.scroll_list(action),
             KeyAction::Move(m @ (edit::Move::Up | edit::Move::Down), select) => {
-                let dir = if m == edit::Move::Up { md_view::Dir::Up } else { md_view::Dir::Down };
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.break_coalescing();
+                }
+                if let Some(c) = self.reveal_vertical(m == edit::Move::Up, select) {
+                    self.caret = c;
+                } else {
+                    let dir = if m == edit::Move::Up { md_view::Dir::Up } else { md_view::Dir::Down };
+                    let Some(doc) = self.doc.as_ref() else { return false };
+                    let c = md_view::navigate(doc, &self.blocks, self.caret, dir, select);
+                    // Into a revealed list: not onto its first item's bullet.
+                    let side = if m == edit::Move::Up { md_reveal::Dir::Left } else { md_reveal::Dir::Right };
+                    let head = snap_pos(doc.lines(), &self.blocks, c.head, side);
+                    self.caret = edit::Caret { head, anchor: if select { c.anchor } else { head }, goal_col: c.goal_col };
+                }
+                self.reveal_caret();
+            }
+            KeyAction::Move(m @ (edit::Move::LineStart | edit::Move::LineEnd), select) if self.caret_reveal().is_some() => {
+                let Some(c) = self.reveal_row_edge(m == edit::Move::LineEnd, select) else { return false };
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.break_coalescing();
+                }
+                self.caret = c;
+                self.reveal_caret();
+            }
+            KeyAction::Move(m @ (edit::Move::Left | edit::Move::Right | edit::Move::WordLeft | edit::Move::WordRight | edit::Move::LineStart | edit::Move::LineEnd), select) => {
                 let Some(doc) = self.doc.as_mut() else { return false };
                 doc.break_coalescing();
-                self.caret = md_view::navigate(doc, &self.blocks, self.caret, dir, select);
+                self.caret = move_snapped(doc, &self.blocks, self.caret, m, select);
                 self.reveal_caret();
             }
             _ => return false,
@@ -1792,6 +1841,65 @@ impl Viewer {
         }
     }
 
+    /// The revealed text of the last frame holding the caret's head, with its block, the head's
+    /// display byte and the text's displayed rows.
+    fn caret_reveal(&self) -> Option<(&md_view::RevealLayout, &md_blocks::Block, usize, Vec<Range<usize>>)> {
+        let doc = self.doc.as_ref()?;
+        let ix = self.active_block();
+        let texts: Vec<(&md_view::RevealLayout, &md_blocks::Block)> = self.live_reveals().filter(|(r, _)| r.block == ix).collect();
+        let block = texts.first()?.1;
+        let offset = md_blocks::offset_of_pos(block, doc.lines(), doc.clamp(self.caret.head));
+        let covers: Vec<Range<usize>> = texts.iter().map(|(r, _)| r.covers.clone()).collect();
+        let (r, block) = texts[pick_cover(&covers, offset)?];
+        let at = r.display.display_of(offset);
+        let layout = &r.layout;
+        // An empty text is laid out as a zero-width space, one row.
+        let rows = if r.display.text.is_empty() { vec![0..0] } else { rows_by_y(&r.display.text, |b| layout.position_for_index(b).map_or(0.0, |p| f32::from(p.y))) };
+        Some((r, block, at, rows))
+    }
+
+    /// Up or Down by displayed row inside the revealed text holding the caret, aiming at the x
+    /// the last such move started from; `None` on its first or last row, or with no revealed
+    /// text, for the move between blocks.
+    fn reveal_vertical(&mut self, up: bool, select: bool) -> Option<edit::Caret> {
+        let head = self.caret.head;
+        let (r, block, at, rows) = self.caret_reveal()?;
+        let x_of = |b: usize| r.layout.position_for_index(b).map_or(0.0, |p| f32::from(p.x));
+        let goal = match self.reveal_goal {
+            Some((p, x)) if p == head => x,
+            _ => x_of(at),
+        };
+        let dir = if up { md_reveal::Dir::Up } else { md_reveal::Dir::Down };
+        let to = md_reveal::vertical(&r.display.text, &rows, x_of, at, dir, goal)?;
+        let lines = self.doc.as_ref()?.lines();
+        let p = md_blocks::pos_of_offset(block, lines, r.display.source_of(to));
+        self.reveal_goal = Some((p, goal));
+        Some(edit::Caret { head: p, anchor: if select { self.caret.anchor } else { p }, goal_col: None })
+    }
+
+    /// Cmd+Left or Cmd+Right inside the revealed text holding the caret: the start or end of the
+    /// caret's displayed row.
+    fn reveal_row_edge(&self, end: bool, select: bool) -> Option<edit::Caret> {
+        let (r, block, at, rows) = self.caret_reveal()?;
+        let (a, b) = md_reveal::row_edges(&rows, at);
+        let lines = self.doc.as_ref()?.lines();
+        let p = md_blocks::pos_of_offset(block, lines, r.display.source_of(if end { b } else { a }));
+        Some(edit::Caret { head: p, anchor: if select { self.caret.anchor } else { p }, goal_col: None })
+    }
+
+    /// Before an edit at the caret with nothing selected: the caret moved off a hidden marker
+    /// (`snap_pos`), so what is typed lands after the bullet the caret is drawn after.
+    fn snap_for_edit(&mut self) {
+        if !self.rendered() || self.caret.anchor != self.caret.head || self.marked.is_some() {
+            return;
+        }
+        let Some(doc) = self.doc.as_ref() else { return };
+        let p = snap_pos(doc.lines(), &self.blocks, self.caret.head, md_reveal::Dir::Right);
+        if p != self.caret.head {
+            self.caret = edit::Caret::at(p);
+        }
+    }
+
     /// The revealed texts of the last frame whose block is still where it was, with that block.
     fn live_reveals(&self) -> impl Iterator<Item = (&md_view::RevealLayout, &md_blocks::Block)> {
         self.reveal_blocks.iter().filter_map(|r| self.blocks.get(r.block).filter(|b| b.lines == r.lines).map(|b| (r, b)))
@@ -2021,6 +2129,9 @@ impl EntityInputHandler for Viewer {
             return;
         }
         let range = if self.place_for_input(cx) { None } else { range };
+        if range.is_none() {
+            self.snap_for_edit();
+        }
         let target = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         if let (Some(m), Some(c)) = (self.marked.clone(), self.compose) {
             // The usual commit: the marked text becomes `text`, typed where the composition began.
@@ -2055,6 +2166,9 @@ impl EntityInputHandler for Viewer {
             return;
         }
         let range = if self.place_for_input(cx) { None } else { range };
+        if range.is_none() {
+            self.snap_for_edit();
+        }
         let explicit = range.map(|r| (self.field_pos(r.start), self.field_pos(r.end.max(r.start))));
         let at_range = |(a, b): (edit::Pos, edit::Pos)| edit::Caret { head: b, anchor: a, goal_col: None };
         // Where the marked text goes, in the text before the composition, and whether the marked
@@ -2311,6 +2425,71 @@ pub fn list_rows(blocks: usize) -> usize {
     } else {
         blocks + 1
     }
+}
+
+/// The block holding line `line` with its text and tree, when an active block there is drawn
+/// revealed (`md_reveal::reveals`).
+fn revealed_block<'a>(lines: &[String], blocks: &'a [md_blocks::Block], line: usize) -> Option<(&'a md_blocks::Block, String, md_reveal::BlockTree)> {
+    let block = blocks.get(md_blocks::block_at(blocks, line)).filter(|b| b.lines.contains(&line) && md_reveal::kind_reveals(&b.kind))?;
+    let text = md_view::block_source(lines, block);
+    let tree = md_reveal::BlockTree::new(&text);
+    md_reveal::reveals(&block.kind, &tree).then_some((block, text, tree))
+}
+
+/// `p` moved off a hidden marker of a revealed block (`md_reveal::snap`), onward in `dir`; any
+/// other position as it is.
+pub fn snap_pos(lines: &[String], blocks: &[md_blocks::Block], p: edit::Pos, dir: md_reveal::Dir) -> edit::Pos {
+    let Some((block, text, tree)) = revealed_block(lines, blocks, p.line) else { return p };
+    let at = md_blocks::offset_of_pos(block, lines, p);
+    let to = md_reveal::snap(&text, &tree.markers, at, dir);
+    if to == at {
+        p
+    } else {
+        md_blocks::pos_of_offset(block, lines, to)
+    }
+}
+
+/// A sideways caret move in the rendered view: the plain move, then the head moved off any hidden
+/// marker it landed in, onward (Left and Option+Left go on to the line above, the rest to the
+/// marker's end), so the caret never stands unseen on a bullet.
+pub fn move_snapped(doc: &edit::Document, blocks: &[md_blocks::Block], caret: edit::Caret, m: edit::Move, select: bool) -> edit::Caret {
+    let moved = doc.move_by(caret, m, select);
+    let dir = if matches!(m, edit::Move::Left | edit::Move::WordLeft) { md_reveal::Dir::Left } else { md_reveal::Dir::Right };
+    let head = snap_pos(doc.lines(), blocks, moved.head, dir);
+    edit::Caret { head, anchor: if select { moved.anchor } else { head }, goal_col: moved.goal_col }
+}
+
+/// Backspace with the caret, and nothing selected, at the first visible offset of a list item
+/// or of a paragraph in a quote of a revealed block: the marker goes (`md_reveal::unmark`) as one
+/// edit, and the caret stays at the text's start. `None` anywhere else, for the ordinary delete.
+pub fn backspace_revealed(doc: &mut edit::Document, blocks: &[md_blocks::Block], caret: edit::Caret, now: Instant) -> Option<edit::Caret> {
+    if caret.anchor != caret.head {
+        return None;
+    }
+    let lines = doc.lines();
+    let (block, text, tree) = revealed_block(lines, blocks, caret.head.line)?;
+    let (range, new) = md_reveal::unmark(&text, &tree.nodes, md_blocks::offset_of_pos(block, lines, caret.head))?;
+    let (from, to) = (md_blocks::pos_of_offset(block, lines, range.start), md_blocks::pos_of_offset(block, lines, range.end));
+    doc.break_coalescing();
+    doc.replace_range(from, to, &new, now);
+    doc.break_coalescing();
+    Some(edit::Caret::at(from))
+}
+
+/// The displayed rows of a laid-out text: the runs of its char boundaries drawn at one height
+/// (`y_of`), each as its first and last boundary.
+pub fn rows_by_y(text: &str, y_of: impl Fn(usize) -> f32) -> Vec<Range<usize>> {
+    let mut rows: Vec<Range<usize>> = Vec::new();
+    let mut last_y = f32::NAN;
+    for b in (0..=text.len()).filter(|&b| text.is_char_boundary(b)) {
+        let y = y_of(b);
+        match rows.last_mut() {
+            Some(r) if (y - last_y).abs() < 0.5 => r.end = b,
+            _ => rows.push(b..b),
+        }
+        last_y = y;
+    }
+    rows
 }
 
 /// Of laid-out texts given as `(top, bottom)` in window order, the one a point at `y` maps
@@ -3675,6 +3854,51 @@ mod tests {
         assert_eq!(pick_cover(&covers, 6), Some(1), "an item's start is its own, not the end of the one above");
         assert_eq!(pick_cover(&covers, 3), Some(0));
         assert_eq!(pick_cover(&covers, 12), None);
+    }
+
+    fn md_doc(text: &str) -> (edit::Document, Vec<md_blocks::Block>) {
+        let doc = edit::Document::from_text(text);
+        let blocks = md_blocks::split(doc.lines());
+        (doc, blocks)
+    }
+
+    #[test]
+    fn in_a_revealed_item_moves_step_over_the_bullet_and_typing_lands_after_it() {
+        let (doc, blocks) = md_doc("- one\n- two");
+        let at = |line, ch| edit::Caret::at(Pos { line, ch });
+        assert_eq!(move_snapped(&doc, &blocks, at(1, 2), edit::Move::Left, false).head, Pos { line: 0, ch: 5 });
+        assert_eq!(move_snapped(&doc, &blocks, at(0, 5), edit::Move::Right, false).head, Pos { line: 1, ch: 2 });
+        assert_eq!(move_snapped(&doc, &blocks, at(1, 4), edit::Move::LineStart, false).head, Pos { line: 1, ch: 2 });
+        assert_eq!(snap_pos(doc.lines(), &blocks, Pos { line: 1, ch: 0 }, md_reveal::Dir::Right), Pos { line: 1, ch: 2 }, "typing with the caret in the marker inserts after it");
+        let (doc, blocks) = md_doc("```\n- x\n```");
+        assert_eq!(snap_pos(doc.lines(), &blocks, Pos { line: 1, ch: 0 }, md_reveal::Dir::Right), Pos { line: 1, ch: 0 }, "a code block is not revealed, so nothing is hidden in it");
+        let (doc, blocks) = md_doc("para\n\n- a");
+        let extended = move_snapped(&doc, &blocks, edit::Caret { head: Pos { line: 0, ch: 4 }, anchor: Pos { line: 0, ch: 0 }, goal_col: None }, edit::Move::Right, true);
+        assert_eq!((extended.anchor, extended.head), (Pos { line: 0, ch: 0 }, Pos { line: 1, ch: 0 }), "Shift keeps the anchor");
+    }
+
+    #[test]
+    fn backspace_at_an_item_s_text_start_removes_its_marker_in_one_undoable_step() {
+        let now = Instant::now();
+        let (mut doc, blocks) = md_doc("- [ ] a\n- b");
+        let c = backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 0, ch: 6 }), now).expect("unmarked");
+        assert_eq!((doc.lines()[0].as_str(), c.head), ("a", Pos { line: 0, ch: 0 }));
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.lines()[0], "- [ ] a", "one undo brings it back");
+        let (mut doc, blocks) = md_doc("- ab");
+        assert_eq!(backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 0, ch: 3 }), now), None, "elsewhere it is an ordinary delete");
+        let (mut doc, blocks) = md_doc("> q1\n> q2");
+        let c = backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 0, ch: 2 }), now).expect("left the quote");
+        assert_eq!((doc.lines().to_vec(), c.head), (vec!["q1".to_string(), "q2".to_string()], Pos { line: 0, ch: 0 }));
+        let (mut doc, blocks) = md_doc("## h");
+        assert_eq!(backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 0, ch: 3 }), now), None);
+    }
+
+    #[test]
+    fn displayed_rows_are_the_runs_of_char_boundaries_at_one_height() {
+        let ys = [0.0, 0.0, 0.0, 20.0, 20.0, 40.0];
+        assert_eq!(rows_by_y("abcdef", |b| ys[b.min(5)]), vec![0..2, 3..4, 5..6]);
+        assert_eq!(rows_by_y("", |_| 0.0), vec![0..0]);
     }
 
     #[test]
