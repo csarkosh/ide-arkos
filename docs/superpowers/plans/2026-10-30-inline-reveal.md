@@ -10,6 +10,30 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-30-inline-reveal-design.md`
 
+## Progress (2026-10-30)
+
+Tasks 1 to 8 are done on branch `reveal`, each with its tests and commit; `cargo test -p arkos`
+passes (1138) and `cargo check --workspace --all-targets` shows no warnings. Task 9 (the screen
+pass and the 5 MB frame gate) is open: the session that built this could not capture the screen
+or post input, so every Status row from Task 8 still wants a person at the screen before the merge.
+Two `arkosd` pty tests fail inside that session's process tree (responsible-process checks); the
+branch does not touch `arkosd`.
+
+Where the build differs from the steps below, from what the parser actually reports:
+
+- A code span is a node spanning its backticks with one text child, so its ticks are markers like
+  `**`. A hard break is a leaf (its `\` or two spaces show when the caret is on it). An escape's
+  backslash is a paragraph-level marker, revealed with the plain text around the caret.
+- `NodeKind::Link` carries `dest: Option<Range>` and `url`; a collapsed or shortcut reference has
+  no address to show. `Node` carries the leaf's rendered `text`, so the display needs no runs.
+- `md_blocks::revealable` sends a block to its source when the tree cannot place all its text (a
+  link definition) or it holds more than prose (a code block in an item, a list in a quote).
+- `unmark` returns one replacement: an item's marker, or every `>` of a quoted paragraph, so the
+  paragraph leaves the quote in one undo step instead of becoming a lazy continuation.
+- Displayed rows come from the text layout's glyph positions grouped by height (`rows_by_y`), not
+  from wrap boundaries; `md_reveal::vertical` and `row_edges` work on those rows.
+- Task 7 also reveals an HTML block that is one `<img>` (`BlockTree::picture`).
+
 ## Global Constraints
 
 - Worktree `~/Projects/ide-arkos/.claude/worktrees/reveal`, branch `reveal` off `main`. Copy `.cargo/config.toml` from the main checkout into the worktree first (it is excluded from git; it keeps the shared `target-dir` and three jobs). `nice -n 15 cargo test -p arkos <filter>`, `nice -n 15 cargo check --workspace --all-targets`; never `--release`; one cargo at a time.
