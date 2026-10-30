@@ -1,8 +1,8 @@
 # The hacker: a security engineer on a small file-drop service (the demo's bugs are planted for
-# the audit to find, and it only ever runs as a target here). Claude Code audits the code while a
-# second session fixes the path traversal behind it, a third reads the box's ssh log for a
-# break-in, and a shell shows the end of that log. Shot in the built-in matrix theme with its
-# matrix effect.
+# the audit to find, and it only ever runs as a target here). Claude Code audits and hardens the
+# sign-in and the server while a second session fixes the path traversal behind it, a third reads
+# the box's ssh log for a break-in, and a shell shows the end of that log. Shot in the built-in
+# matrix theme with its effect.
 
 [scene]
 name = "hacker"
@@ -21,13 +21,14 @@ sidebar_width = 240
 expanded = ["src", "logs"]
 theme = { dark = "matrix", light = "matrix" }
 
-# The audit reads every file itself (a session waiting on background agents reports "waiting")
-# and proves its findings with tests, so it is still working once the other two have answered.
-# It starts with the code and is told not to report until the end: asked for findings first,
-# it listed them in chat and ended its turn there, twice, under 40 s in.
+# The audit reads the files itself (a session waiting on background agents reports "waiting")
+# and fixes what it finds with a regression test for each, so it is still writing, and its new
+# lines decoding, once the other two have answered. Asked to prove each bug with a working
+# exploit instead, it ended its turn early: once to list its findings in chat, and once when
+# Claude Code's safety check stopped a command-injection proof and it asked how to go on.
 [[pane]]
 name = "audit"
-claude = "Read every file in src/ yourself (no subagents) and find its security bugs. For each one except the path traversal (another session is fixing that), add a test to test/exploits.test.js that carries out the attack against the code as it is and passes while the bug is there; run npm test until every test passes. Then write findings.md with one short section per bug, most severe first: the file and line, how an attacker would use it, the fix, and the test that proves it. Do not change any file in src/. This is one job: do not report or summarise in chat until findings.md is written, and do not ask me anything."
+claude = "Harden src/auth.js and src/server.js (leave src/files.js alone: another session is fixing it). Read both yourself, no subagents, and write findings.md with one short section per security bug, most severe first: the file and line, the risk, and the fix. Then fix every one, each with a regression test in test/security.test.js showing the bad input is now refused, and run npm test until it passes. Work straight through to the end without stopping to summarise or ask me anything."
 
 [[pane]]
 name = "traversal"
