@@ -953,8 +953,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             t_move.update(cx, |t, cx| t.mouse_moved(ev.position, ev.pressed_button == Some(MouseButton::Left), cx));
             cx.notify();
         }))
-        .on_scroll_wheel(cx.listener(move |root, ev: &ScrollWheelEvent, _window, cx| {
-            root.last_scroll = Some(std::time::Instant::now());
+        .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
                 // Positive wheel y means the content moves down, which is scrolling up into history.
@@ -1222,7 +1221,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .relative()
         .key_context("Viewer")
         .track_focus(&focus)
-        .on_key_down(cx.listener(move |_root, ev: &KeyDownEvent, _window, cx| {
+        .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
             // A document's keys are the editor's; one it does not know goes on to the input
             // method (a space is text), never to the scroll keys below.
@@ -1234,6 +1233,10 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             }
             if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
                 return;
+            }
+            // The keys that ease the view rest the glyph clock as the wheel does.
+            if matches!(ks.key.as_str(), "down" | "up" | "pagedown" | "space" | "pageup") {
+                root.last_scroll = Some(std::time::Instant::now());
             }
             v_keys.update(cx, |v, cx| {
                 let page = v.rows_visible as f32;
@@ -1256,7 +1259,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 }
             });
         }))
-        // The rendered view's list scrolls itself.
+        // The rendered view's list scrolls itself; its wheel only rests the glyph clock here
+        // (the list handles the wheel without stopping it, so both hear it).
+        .when(rendered, |d| d.on_scroll_wheel(cx.listener(|root, _: &ScrollWheelEvent, _, _| root.last_scroll = Some(std::time::Instant::now()))))
         .when(!rendered, |d| {
             d.on_scroll_wheel(cx.listener(move |root, ev: &ScrollWheelEvent, _window, cx| {
                 root.last_scroll = Some(std::time::Instant::now());

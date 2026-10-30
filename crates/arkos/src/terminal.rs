@@ -23,7 +23,7 @@ use gpui::{Context, FocusHandle, Keystroke};
 use protocol::{Event, Request, SessionId};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Collects alacritty events during one `advance` so they can be reported after it. Shared
 /// through `Arc<Mutex>` so the core is `Send` and a replay can be parsed off the main thread;
@@ -868,7 +868,7 @@ pub(crate) fn sanitize_paste(text: &str) -> String {
 /// Whether the user's own input at `last` is recent enough at `now` that a changed cell settles
 /// at once (within `USER_QUIET_MS`); never before the first input.
 pub fn user_quiet_at(last: Option<Instant>, now: Instant) -> bool {
-    last.is_some_and(|at| now.saturating_duration_since(at) < std::time::Duration::from_millis(USER_QUIET_MS))
+    last.is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(USER_QUIET_MS))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -912,6 +912,10 @@ pub struct Terminal {
     /// When the user last typed, pasted, clicked or scrolled here, so the decode leaves the
     /// echo of their own input alone (`user_quiet`); None before the first.
     pub last_user_input: Option<Instant>,
+    /// When the view last moved under the user's hand: the wheel (every mode), a keyboard page
+    /// scroll or a drag past an edge. The window's glyph clock rests meanwhile
+    /// (`effects::active::glyph_clock`); None before the first.
+    pub last_scroll: Option<Instant>,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -946,6 +950,7 @@ impl Terminal {
             clicks: Clicks::default(),
             decode: None,
             last_user_input: None,
+            last_scroll: None,
         }
     }
 
@@ -991,7 +996,9 @@ impl Terminal {
     /// the alternate screen, where the step goes to it as a report or an arrow key; Shift forces
     /// the local scroll, as in xterm, and so does an ended session.
     pub fn wheel(&mut self, lines: f32, precise: bool, shift: bool, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
-        self.last_user_input = Some(Instant::now());
+        let now = Instant::now();
+        self.last_user_input = Some(now);
+        self.last_scroll = Some(now);
         let mode = if shift || !self.alive { MouseMode::Local } else { self.core.mouse_mode() };
         if mode == MouseMode::Local {
             self.wheel_carry.reset();
@@ -1052,6 +1059,7 @@ impl Terminal {
         if step.more {
             // The press scrolled the pane, so it is a drag, and the program hears no click.
             self.clicks.dragged();
+            self.last_scroll = Some(Instant::now());
         }
         if !step.pty_write.is_empty() && self.alive {
             self.last_user_input = Some(Instant::now());
@@ -1184,7 +1192,9 @@ impl Terminal {
 
     /// Positive lines scroll up into history, with the ease a wheel notch deserves.
     pub fn scroll_lines(&mut self, lines: f32, cx: &mut Context<Self>) {
-        self.last_user_input = Some(Instant::now());
+        let now = Instant::now();
+        self.last_user_input = Some(now);
+        self.last_scroll = Some(now);
         self.core.scroll.scroll_by(lines, self.core.history_size() as f32);
         cx.notify();
     }
@@ -1192,7 +1202,9 @@ impl Terminal {
     /// A trackpad's pixel step: the view follows the finger at once, since the trackpad already
     /// delivers its own glide and momentum.
     pub fn scroll_direct(&mut self, lines: f32, cx: &mut Context<Self>) {
-        self.last_user_input = Some(Instant::now());
+        let now = Instant::now();
+        self.last_user_input = Some(now);
+        self.last_scroll = Some(now);
         self.core.scroll.scroll_direct(lines, self.core.history_size() as f32);
         cx.notify();
     }
@@ -1218,7 +1230,6 @@ mod tests {
 
     #[test]
     fn the_user_is_at_work_for_400_ms_after_a_key_and_never_before_the_first() {
-        use std::time::Duration;
         let t0 = Instant::now();
         assert!(user_quiet_at(Some(t0), t0));
         assert!(user_quiet_at(Some(t0), t0 + Duration::from_millis(399)));

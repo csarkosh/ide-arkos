@@ -376,8 +376,6 @@ Things only a person at the screen can check, in order of value:
 - effects: Matrix, a markdown tab and the sidebar: green glow, the idle glitch, no decode
 - effects: Matrix, scrolling (the wheel in Claude Code's fullscreen renderer, and Arkos's own
   scrollback) shows no scramble and no glitches while it moves
-- effects: Matrix, scrolling a rendered markdown tab: single-frame flickers as moving glyphs
-  re-roll their glitch each frame are expected, and they must not be tiring to watch
 - effects: Matrix, emoji on the display: their colours tinted green, haloed, glitching as letters do
 - effects: Matrix with Reduce Motion on: the rain is still, no glitches, changed cells settle at once
 - effects: Matrix, the window's CPU idle in front (debug now; release after the release): write the figure here

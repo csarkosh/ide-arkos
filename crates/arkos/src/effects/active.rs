@@ -144,6 +144,12 @@ pub fn glyph_clock(seconds: f32, last_scroll: Option<Instant>, now: Instant) -> 
     }
 }
 
+/// The newest of the scroll instants given (the window's wheel over a document and each
+/// terminal's own scrolls), or None when none has scrolled.
+pub fn latest_scroll(instants: impl IntoIterator<Item = Option<Instant>>) -> Option<Instant> {
+    instants.into_iter().flatten().max()
+}
+
 /// What a frame's blocks are made from in the project window: the panes' content area, the
 /// window's bars, the sidebar's divider when laid out, the panes, the shapes laid out inside
 /// them and the highlights' strokes.
@@ -484,6 +490,18 @@ mod tests {
         assert_eq!(glyph_clock(12.5, Some(t0), t0 + Duration::from_millis(400)), 12.5);
         assert_eq!(glyph_clock(12.5, Some(t0), t0 + Duration::from_secs(3)), 12.5);
         assert_eq!(glyph_clock(12.5, None, t0), 12.5, "never scrolled: the seconds");
+    }
+
+    #[test]
+    fn the_latest_scroll_is_the_newest_of_the_window_and_its_terminals() {
+        let t0 = Instant::now();
+        let (a, b) = (t0 + Duration::from_millis(10), t0 + Duration::from_millis(30));
+        assert_eq!(latest_scroll([None, None]), None, "nothing scrolled");
+        assert_eq!(latest_scroll([Some(a), None, Some(b)]), Some(b));
+        assert_eq!(latest_scroll([Some(b), Some(a)]), Some(b), "order does not matter");
+        assert_eq!(latest_scroll(std::iter::empty()), None);
+        // A terminal's keyboard page scroll with no wheel anywhere still rests the clock.
+        assert_eq!(glyph_clock(12.5, latest_scroll([None, Some(a)]), a + Duration::from_millis(100)), 0.0);
     }
 
     fn watercolor() -> Effect {

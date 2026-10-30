@@ -201,8 +201,9 @@ letters can really change. The decode lives in a new module `crates/arkos/src/ef
   every mode, local scrollback included), a cell that changes is settled at once: no scramble and
   no brightening, so the echo of typing and the redraw a fullscreen program (Claude Code) makes
   for the wheel look like the rest of the text. A cell already decoding when the window opens
-  keeps decoding. While the user turns the wheel over a terminal or a document, the glyph clock
-  rests at 0.0 for `SCROLL_QUIET_MS` = 400 ms (`effects::active::glyph_clock`), where slot 0
+  keeps decoding. While the user scrolls a terminal or a document (the wheel, a keyboard page
+  scroll or a drag past an edge), the glyph clock rests at 0.0 for `SCROLL_QUIET_MS` = 400 ms
+  (`effects::active::glyph_clock`), where slot 0
   glitches nothing, so moving glyphs do not re-roll their glitch each frame (amended 2026-10-29,
   see the end).
 - **Fresh text.** For `FRESH_MS` = 1500 ms after a cell settles, its foreground is mixed toward
@@ -358,7 +359,9 @@ and when the user scrolls up. Right now, it's too intense and slows the user dow
    mouse report or scroll (`USER_QUIET_MS` in `decode.rs`), a changed cell settles at once with its
    own character and colour; a cell already decoding keeps decoding. The typed text gets only the
    glyph shader's idle glitch, like the rest of the text.
-2. While the user scrolls (the wheel over a terminal, or over a raw markdown or viewer tab), the
-   glyph clock is held at 0.0 for 400 ms (`SCROLL_QUIET_MS` in `active.rs`), so no glyph glitches
-   while the text moves. No shader changed: slot 0 already glitches nothing. A rendered markdown
-   tab's list scrolls itself, out of reach of the wheel listener, and keeps the old behaviour.
+2. While the user scrolls, the glyph clock is held at 0.0 for 400 ms (`SCROLL_QUIET_MS` in
+   `active.rs`), so no glyph glitches while the text moves. A terminal stamps its own
+   `last_scroll` for the wheel (every mode), Shift+PageUp/PageDown and a drag past an edge; the
+   window stamps its own for a document's wheel (raw or rendered) and its scroll keys; the clock
+   rests on the newest of them (`latest_scroll`). No shader changed: slot 0 already glitches
+   nothing.
