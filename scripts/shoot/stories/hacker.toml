@@ -54,3 +54,12 @@ wait = { audit = "working", traversal = "waiting", logs = "waiting" }
 changed = { traversal = 2 }
 after_secs = 45
 timeout_secs = 420
+# The decode is 400 ms on changed text, which a still frame never catches: a burst instead,
+# while the audit writes.
+burst = 12
+
+# The rain's runes are a couple of points across: at the manifest's 0.5 on the runner's one
+# pixel a point they blur away, so the wash draws at 1.0 there, a Retina Mac's density.
+[effect]
+name = "matrix"
+scale = 1.0

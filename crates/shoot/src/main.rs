@@ -222,6 +222,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
     //    no login item and no update checks.
     write_config(&dirs.config_file(), story, &story.shots[0].theme)?;
+    install_effect(repo, &dirs, story)?;
 
     // 4. The shoot's own daemon.
     let log = std::fs::File::create(dirs.state.join("arkosd.log"))?;
@@ -371,7 +372,10 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         // The captures themselves stay with the progress files; `out` gets the framed pictures.
         let picture = format!("{}-{}", story.scene.name, shot.name);
         let raw = progress.dir.join(format!("{picture}.raw.png"));
-        capture_steady(repo, window_id, &raw)?;
+        match shot.burst {
+            Some(n) => capture_burst(repo, window_id, &raw, n, shot)?,
+            None => capture_steady(repo, window_id, &raw)?,
+        }
         frame_image(repo, &raw, &out.join(format!("{picture}.png")), shot, None)?;
         say(&format!("{}: {}", shot.name, out.join(format!("{picture}.png")).display()));
     }
@@ -548,6 +552,58 @@ fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
     }
     say("no still frame in eight tries; keeping the last");
     let _ = std::fs::rename(&other, out);
+    Ok(())
+}
+
+/// A shot's burst (`burst` in the storyboard): `n` captures a quarter second apart, each kept
+/// beside `out` as `<name>.burst-NN.raw.png` and framed as `<name>.burst-NN.png`, and `out` made
+/// the one that differs most from the capture before it, the frame most likely caught mid-motion.
+fn capture_burst(repo: &Path, id: u32, out: &Path, n: usize, shot: &Shot) -> Result<()> {
+    let stem = out.file_name().and_then(|s| s.to_str()).and_then(|s| s.strip_suffix(".raw.png")).context("a raw capture's name")?;
+    let dir = out.parent().context("a raw capture's folder")?;
+    let mut frames = Vec::with_capacity(n);
+    for i in 0..n {
+        let path = dir.join(format!("{stem}.burst-{i:02}.raw.png"));
+        capture_window(id, &path)?;
+        frames.push(path);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let mut best = (0, -1.0_f64);
+    for i in 1..n {
+        let diff = Command::new("python3").arg("-I").arg(repo.join("scripts/shoot/diff.py")).arg(&frames[i - 1]).arg(&frames[i]).output().context("diff.py")?;
+        let fraction: f64 = String::from_utf8_lossy(&diff.stdout).trim().parse().unwrap_or(0.0);
+        say(&format!("burst {i:02}: {:.2}% changed from the one before", fraction * 100.0));
+        if fraction > best.1 {
+            best = (i, fraction);
+        }
+    }
+    for (i, frame) in frames.iter().enumerate() {
+        frame_image(repo, frame, &dir.join(format!("{stem}.burst-{i:02}.png")), shot, None)?;
+    }
+    say(&format!("burst: kept {:02}", best.0));
+    std::fs::copy(&frames[best.0], out).with_context(|| format!("copy {}", frames[best.0].display()))?;
+    Ok(())
+}
+
+/// The storyboard's `[effect]`: the built-in effect's folder copied into the shoot's own config,
+/// where it shadows the built-in, with the storyboard's wash scale in its manifest.
+fn install_effect(repo: &Path, dirs: &Dirs, story: &Story) -> Result<()> {
+    let effects = dirs.config_home.join("arkos/effects");
+    let _ = std::fs::remove_dir_all(&effects);
+    let Some(effect) = &story.effect else { return Ok(()) };
+    let from = repo.join("crates/arkos/effects").join(&effect.name);
+    let to = effects.join(&effect.name);
+    std::fs::create_dir_all(&to)?;
+    for entry in std::fs::read_dir(&from).with_context(|| format!("read {}", from.display()))? {
+        let path = entry?.path();
+        let name = path.file_name().context("a file name")?;
+        if name == "effect.toml" {
+            std::fs::write(to.join(name), story::scaled_manifest(&std::fs::read_to_string(&path)?, effect.scale)?)?;
+        } else {
+            std::fs::copy(&path, to.join(name))?;
+        }
+    }
+    say(&format!("effect {} at wash scale {:.1}", effect.name, effect.scale));
     Ok(())
 }
 

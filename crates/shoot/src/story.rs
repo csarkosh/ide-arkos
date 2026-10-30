@@ -16,6 +16,42 @@ pub struct Story {
     pub layout: Node,
     #[serde(rename = "shot")]
     pub shots: Vec<Shot>,
+    #[serde(default)]
+    pub effect: Option<EffectSpec>,
+}
+
+/// `[effect]`: the theme's built-in effect drawn at another wash scale for the picture. A
+/// runner's display draws one pixel a point, half of a Retina Mac's two, so a wash at its
+/// manifest's 0.5 has half the pixels a point it has on a Retina screen and its fine detail
+/// (the matrix rain's runes) blurs away; 1.0 there draws as a Retina Mac draws 0.5. The shoot
+/// copies `crates/arkos/effects/<name>` into its own config with this scale, which shadows the
+/// built-in.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectSpec {
+    pub name: String,
+    pub scale: f32,
+}
+
+/// An effect manifest with its `scale = ...` line set to `scale`, the rest of the line (its
+/// comment) and every other line as they were.
+pub fn scaled_manifest(manifest: &str, scale: f32) -> Result<String> {
+    let mut found = false;
+    let mut out = String::with_capacity(manifest.len());
+    for line in manifest.split_inclusive('\n') {
+        match line.strip_prefix("scale = ") {
+            Some(rest) if !found => {
+                found = true;
+                let tail = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).map_or("", |i| &rest[i..]);
+                out.push_str(&format!("scale = {scale:.1}{tail}"));
+            }
+            _ => out.push_str(line),
+        }
+    }
+    if !found {
+        bail!("the effect manifest has no scale line");
+    }
+    Ok(out)
 }
 
 /// The scene: its name is the pictures' (`<name>-dark.png`), its caption the words under it
@@ -191,6 +227,12 @@ pub struct Shot {
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
     pub keys: Vec<String>,
+    /// Take this many captures a quarter second apart, without waiting for a still frame, and
+    /// keep the one that changed most from the one before: an effect's motion (the matrix
+    /// decode, 400 ms on changed text) is what a still frame never shows. Every capture is
+    /// framed into the progress folder, so a person can choose another.
+    #[serde(default)]
+    pub burst: Option<usize>,
 }
 
 /// One key of a shot's `keys`: a virtual key code or a character, its modifiers, repeated
@@ -260,9 +302,17 @@ impl Story {
 
     fn check(&self) -> Result<()> {
         let mut seen = std::collections::BTreeSet::new();
+        if let Some(e) = &self.effect {
+            if !(0.1..=1.0).contains(&e.scale) {
+                bail!("effect scale must be 0.1 to 1.0 (was {})", e.scale);
+            }
+        }
         for shot in &self.shots {
             for k in &shot.keys {
                 Key::parse(k).with_context(|| format!("shot {:?}", shot.name))?;
+            }
+            if shot.burst.is_some_and(|n| !(2..=20).contains(&n)) {
+                bail!("shot {:?}: burst must be 2 to 20 captures", shot.name);
             }
             if let Some([x, y]) = shot.click {
                 if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
@@ -543,6 +593,9 @@ theme = "light"
             for folder in &story.window.expanded {
                 assert!(fixture.join(folder).is_dir(), "{}: the fixture has no folder {folder}", path.display());
             }
+            if let Some(effect) = &story.effect {
+                assert!(root.join("crates/arkos/effects").join(&effect.name).join("effect.toml").is_file(), "{}: no built-in effect {}", path.display(), effect.name);
+            }
             for pane in &story.panes {
                 if let Some(view) = &pane.view {
                     assert!(fixture.join(view).is_file(), "{}: the fixture has no file {view}", path.display());
@@ -552,6 +605,37 @@ theme = "light"
         }
         names.sort();
         assert_eq!(names, ["blogger", "hacker", "multitasker", "probe", "web-developer"]);
+    }
+
+    #[test]
+    fn a_story_s_effect_scale_replaces_the_manifest_s_and_keeps_its_comment() {
+        let manifest = "name = \"matrix\"\nscale = 0.5                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n";
+        let out = scaled_manifest(manifest, 1.0).unwrap();
+        assert_eq!(out, "name = \"matrix\"\nscale = 1.0                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n");
+        assert!(scaled_manifest("name = \"x\"\n", 1.0).unwrap_err().to_string().contains("no scale line"));
+    }
+
+    #[test]
+    fn the_built_in_matrix_manifest_takes_a_story_s_scale() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest = std::fs::read_to_string(root.join("crates/arkos/effects/matrix/effect.toml")).unwrap();
+        let out = scaled_manifest(&manifest, 1.0).unwrap();
+        assert_eq!(out.lines().filter(|l| l.starts_with("scale = 1.0")).count(), 1);
+        assert_eq!(out.lines().count(), manifest.lines().count());
+    }
+
+    #[test]
+    fn a_story_s_effect_and_a_burst_shot_parse_and_bad_ones_are_refused() {
+        let text = format!("{STORY}\n[effect]\nname = \"matrix\"\nscale = 1.0\n").replace("wait = { work = \"working\", tests = \"waiting\" }", "wait = { work = \"working\", tests = \"waiting\" }\nburst = 8");
+        let s = Story::parse(&text).unwrap();
+        let e = s.effect.as_ref().unwrap();
+        assert_eq!((e.name.as_str(), e.scale), ("matrix", 1.0));
+        assert_eq!(s.shots[0].burst, Some(8));
+        assert_eq!(s.shots[1].burst, None);
+        let err = Story::parse(&text.replace("scale = 1.0", "scale = 1.5")).unwrap_err().to_string();
+        assert!(err.contains("effect scale must be 0.1 to 1.0"), "{err}");
+        let err = Story::parse(&text.replace("burst = 8", "burst = 1")).unwrap_err().to_string();
+        assert!(err.contains("burst must be 2 to 20"), "{err}");
     }
 
     #[test]
