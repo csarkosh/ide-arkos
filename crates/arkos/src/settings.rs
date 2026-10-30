@@ -3,7 +3,7 @@
 //! project window's `reload_config`, or in the launch chooser the write alone). It shows what it
 //! was last handed (`set_shown`), so an edit made in an editor shows here too.
 use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
-use crate::config::{self, AppearanceMode, Config, EffectChoice, FontConfig, StartAtLogin, WideTables};
+use crate::config::{self, AppearanceMode, Config, EffectChoice, FontConfig, PageWidth, StartAtLogin, WideTables};
 use crate::theme::{self, Theme};
 use crate::{aux, effects, keymap, paths, telemetry_cli};
 use ::telemetry::visits_app::{Crashes, Mode, Usage};
@@ -415,6 +415,14 @@ fn wide_tables_edit(mode: WideTables) -> Edit {
     edit(&["viewer", "wide_tables"], match mode {
         WideTables::Wrap => "wrap",
         WideTables::Scroll => "scroll",
+    })
+}
+
+/// The edit for the "Page width" row: `viewer.page_width` as the config spells it.
+fn page_width_edit(width: PageWidth) -> Edit {
+    edit(&["viewer", "page_width"], match width {
+        PageWidth::Full => "full",
+        PageWidth::Letter => "letter",
     })
 }
 
@@ -847,6 +855,17 @@ impl SettingsWindow {
             modes = modes.child(p);
         }
         out.push(modes.into_any_element());
+        out.push(heading("Page width", c).into_any_element());
+        let mut widths = div().flex().gap(px(6.0));
+        for (ix, (label, width)) in [("Full", PageWidth::Full), ("Letter", PageWidth::Letter)].into_iter().enumerate() {
+            let current = self.shown.config.viewer.page_width == width;
+            let mut p = pill(("page-width", ix), label, current, enabled, c);
+            if enabled && !current {
+                p = p.on_click(cx.listener(move |w, _, _, cx| w.change(vec![page_width_edit(width)], cx)));
+            }
+            widths = widths.child(p);
+        }
+        out.push(widths.into_any_element());
         out
     }
 
@@ -1068,6 +1087,13 @@ mod tests {
         assert_eq!(rows(Dark, "navy"), vec![(0, "navy".to_string()), (2, "matrix".to_string()), (3, "broken (invalid)".to_string())]);
         assert_eq!(rows(Light, "peach-light"), vec![(1, "peach-light".to_string()), (3, "broken (invalid)".to_string())]);
         assert_eq!(rows(Light, "navy"), vec![(0, "navy (a dark theme)".to_string()), (1, "peach-light".to_string()), (3, "broken (invalid)".to_string())]);
+    }
+
+    #[test]
+    fn page_width_edit_writes_the_viewer_key() {
+        let (keys, value) = page_width_edit(PageWidth::Letter);
+        assert_eq!(keys, vec!["viewer".to_string(), "page_width".to_string()]);
+        assert_eq!((value.as_str(), page_width_edit(PageWidth::Full).1.as_str()), (Some("letter"), Some("full")));
     }
 
     #[test]

@@ -112,11 +112,12 @@ pub struct ViewerConfig {
     pub highlight_limit_bytes: usize,
     pub wide_tables: WideTables,
     pub image_destination: String,
+    pub page_width: PageWidth,
 }
 
 impl Default for ViewerConfig {
     fn default() -> Self {
-        Self { highlight_limit_bytes: 5 * 1024 * 1024, wide_tables: WideTables::default(), image_destination: String::new() }
+        Self { highlight_limit_bytes: 5 * 1024 * 1024, wide_tables: WideTables::default(), image_destination: String::new(), page_width: PageWidth::default() }
     }
 }
 
@@ -128,6 +129,16 @@ pub enum WideTables {
     #[default]
     Wrap,
     Scroll,
+}
+
+/// How wide the rendered markdown text runs: the pane's width (`full`), or a column at most a
+/// letter page wide, centred (`letter`, `md_view::LETTER`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageWidth {
+    #[default]
+    Full,
+    Letter,
 }
 
 /// What "New browser tab" opens when its prompt is left empty.
@@ -664,6 +675,7 @@ option_as_meta = true
 # "italic" = "cmd-i"
 # "fold all" = "cmd-k cmd-0"
 # "unfold all" = "cmd-k cmd-j"
+# "toggle presentation mode" = "alt-cmd-p"
 # "open folder" = "cmd-o"
 # "new window" = "cmd-n"
 # "new browser tab" = "cmd-shift-b"
@@ -704,6 +716,9 @@ highlight_limit_bytes = 5242880
 # Where an image pasted or dropped into a markdown file is written, relative to the file's folder;
 # {name} is the file's name without its extension. Empty is the file's own folder.
 # image_destination = "images"
+# The rendered text's width: "full" runs it across the pane; "letter" keeps it to a centred
+# column a letter page wide (816 px).
+# page_width = "full"
 
 [browser]
 # A browser tab shows a web page inside the pane. "New browser tab" (Cmd+Shift+B) asks for a
@@ -946,7 +961,7 @@ pub(crate) mod tests {
             ReopenClosedTab, CloseAllInPane, MoveTabWithin(1), NewTerminal, ClearToStart, FontDelta(1.0), About, OpenSettings, Keybindings,
             Documentation, OpenConfig, TextPreset(String::new()), ReloadConfig, ExtractThemes, CommandPalette, SetTheme(String::new()), Find,
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, OpenFolder,
+            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, TogglePresentation, OpenFolder,
             NewWindow, NewBrowserTab, OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
             VideoStart, VideoLoop, VideoMute, VideoReload, PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
         ];
@@ -958,7 +973,7 @@ pub(crate) mod tests {
                 | CloseAllInPane | MoveTabWithin(_) | NewTerminal | ClearToStart | FontDelta(_) | About | OpenSettings | Keybindings
                 | Documentation | OpenConfig | TextPreset(_) | ReloadConfig | ExtractThemes | CommandPalette | SetTheme(_) | Find | CopyAsShown
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
-                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile | Bold | Italic | FoldAll | UnfoldAll
+                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile | Bold | Italic | FoldAll | UnfoldAll | TogglePresentation
                 | OpenFolder | NewWindow | NewBrowserTab | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
                 | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload | PageBack | PageForward | ReloadPage
                 | FocusAddress | OpenInBrowser | ZoomReset => {}
@@ -1177,6 +1192,13 @@ pub(crate) mod tests {
         let zero: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 0\n").unwrap();
         assert!(zero.validate().unwrap_err().contains("viewer.highlight_limit_bytes"));
         assert!(toml::from_str::<Config>(DEFAULT_CONFIG).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn the_page_is_full_width_by_default_and_reads_letter() {
+        assert_eq!(Config::default().viewer.page_width, PageWidth::Full);
+        let c: Config = toml::from_str("[viewer]\npage_width = \"letter\"\n").unwrap();
+        assert_eq!(c.viewer.page_width, PageWidth::Letter);
     }
 
     #[test]

@@ -10,7 +10,8 @@ pub const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_TASKLISTS)
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
-    .union(Options::ENABLE_WIKILINKS);
+    .union(Options::ENABLE_WIKILINKS)
+    .union(Options::ENABLE_FOOTNOTES);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
@@ -477,6 +478,8 @@ pub struct Style {
     pub strike: bool,
     pub html: bool,
     pub link: Option<String>,
+    /// A footnote reference's key (`[^key]`): the run's text is the key, drawn as its number.
+    pub note: Option<String>,
 }
 
 /// A piece of rendered text. `source` is the byte range of the run's own text in the block's
@@ -495,6 +498,11 @@ pub enum Inline {
     Item { depth: u8, marker: String, task: Option<bool>, runs: Vec<Run> },
     Code { info: String, text: String },
     Quote(Vec<Run>),
+    /// A quote that is a GitHub alert (`alert`): its kind, the title written after the tag, and
+    /// its runs without the tag line.
+    Alert { kind: AlertKind, title: Option<String>, runs: Vec<Run> },
+    /// A footnote's definition (`[^key]: text`): its key and its text.
+    Note { key: String, runs: Vec<Run> },
     Rule,
     Table(String),
     Html(String),
@@ -536,8 +544,130 @@ pub fn inline(block_text: &str, kind: &BlockKind) -> Vec<Inline> {
         BlockKind::Details => details_inline(block_text),
         BlockKind::CodeBlock { info } => vec![Inline::Code { info: info.clone(), text: plain_text(block_text) }],
         BlockKind::Metadata => vec![Inline::Metadata(plain_text(block_text))],
-        BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote => walk(block_text),
+        BlockKind::Quote => {
+            let mut out = walk(block_text);
+            if let (Some(a), Some(Inline::Quote(runs))) = (alert(block_text), out.first_mut()) {
+                let runs = std::mem::take(runs).into_iter().filter(|r| r.source.start >= a.body).skip_while(|r| r.text.trim().is_empty()).collect();
+                out[0] = Inline::Alert { kind: a.kind, title: a.title, runs };
+            }
+            out
+        }
+        BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List => walk(block_text),
     }
+}
+
+/// A document's footnotes: each defined key's number (by its first reference, 1 up), its text,
+/// the block of its definition and the block of its first reference.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Notes {
+    pub number: std::collections::HashMap<String, usize>,
+    pub text: std::collections::HashMap<String, String>,
+    pub def_block: std::collections::HashMap<String, usize>,
+    pub ref_block: std::collections::HashMap<String, usize>,
+}
+
+/// The footnotes of a document split into `blocks`: a key is numbered by where it is first
+/// referred to, among the keys that have a definition; a key with no definition gets no number.
+/// A document with no `[^` anywhere is not parsed for them.
+pub fn footnotes(lines: &[String], blocks: &[Block]) -> Notes {
+    let mut notes = Notes::default();
+    if !lines.iter().any(|l| l.contains("[^")) {
+        return notes;
+    }
+    let mut order: Vec<(String, usize)> = Vec::new();
+    for (ix, b) in blocks.iter().enumerate() {
+        if !matches!(b.kind, BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote) {
+            continue;
+        }
+        let text = lines[b.lines.clone()].join("\n");
+        if !text.contains("[^") {
+            continue;
+        }
+        for inl in inline(&text, &b.kind) {
+            let runs = match &inl {
+                Inline::Para(r) | Inline::Heading(_, r) | Inline::Quote(r) | Inline::Alert { runs: r, .. } | Inline::Item { runs: r, .. } => r,
+                Inline::Note { key, runs } => {
+                    notes.text.entry(key.clone()).or_insert_with(|| runs.iter().map(|r| r.text.as_str()).collect::<String>().trim().to_string());
+                    notes.def_block.entry(key.clone()).or_insert(ix);
+                    runs
+                }
+                _ => continue,
+            };
+            for key in runs.iter().filter_map(|r| r.style.note.clone()) {
+                if !order.iter().any(|(k, _)| *k == key) {
+                    order.push((key, ix));
+                }
+            }
+        }
+    }
+    for (key, ix) in order.into_iter().filter(|(k, _)| notes.text.contains_key(k)) {
+        let n = notes.number.len() + 1;
+        notes.number.insert(key.clone(), n);
+        notes.ref_block.insert(key, ix);
+    }
+    notes
+}
+
+/// A GitHub alert's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    /// The kind's name as its header shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            AlertKind::Note => "Note",
+            AlertKind::Tip => "Tip",
+            AlertKind::Important => "Important",
+            AlertKind::Warning => "Warning",
+            AlertKind::Caution => "Caution",
+        }
+    }
+}
+
+/// A quote block's alert: its kind, the title after the tag, and the byte where the text after the
+/// tag line starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    pub kind: AlertKind,
+    pub title: Option<String>,
+    pub body: usize,
+}
+
+/// The alert a quote block is when its first line is `> [!KIND]` (any case, `NOTE`, `TIP`,
+/// `IMPORTANT`, `WARNING` or `CAUTION`), with what follows the tag on that line as its title.
+pub fn alert(block_text: &str) -> Option<Alert> {
+    let first = block_text.lines().next()?;
+    let rest = first.trim_start().strip_prefix('>')?.trim_start().strip_prefix("[!")?;
+    let (tag, after) = rest.split_once(']')?;
+    let kind = match tag.to_ascii_uppercase().as_str() {
+        "NOTE" => AlertKind::Note,
+        "TIP" => AlertKind::Tip,
+        "IMPORTANT" => AlertKind::Important,
+        "WARNING" => AlertKind::Warning,
+        "CAUTION" => AlertKind::Caution,
+        _ => return None,
+    };
+    let title = Some(after.trim().to_string()).filter(|t| !t.is_empty());
+    Some(Alert { kind, title, body: (first.len() + 1).min(block_text.len()) })
+}
+
+/// A front matter block's `title`, and its `date` (or else `created`), as written with any quotes
+/// around them taken off.
+pub fn front_matter(text: &str) -> (Option<String>, Option<String>) {
+    let field = |names: &[&str]| {
+        text.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            names.contains(&k.trim()).then(|| v.trim().trim_matches(['"', '\'']).to_string()).filter(|v| !v.is_empty())
+        })
+    };
+    (field(&["title"]), field(&["date"]).or_else(|| field(&["created"])))
 }
 
 /// A `<details>` block's one inline: its summary and its content split into blocks, each with its
@@ -571,7 +701,7 @@ fn details_inline(block_text: &str) -> Vec<Inline> {
 
 /// Moves the source ranges of an inline's runs `by` bytes on.
 fn shift_sources(inline: &mut Inline, by: usize) {
-    let (Inline::Para(runs) | Inline::Heading(_, runs) | Inline::Quote(runs) | Inline::Item { runs, .. }) = inline else { return };
+    let (Inline::Para(runs) | Inline::Heading(_, runs) | Inline::Quote(runs) | Inline::Alert { runs, .. } | Inline::Note { runs, .. } | Inline::Item { runs, .. }) = inline else { return };
     for run in runs {
         run.source = run.source.start + by..run.source.end + by;
     }
@@ -615,6 +745,8 @@ struct Walker {
     /// The images of the paragraph being walked, outside any container, each with the index of
     /// the run holding its alt text.
     para_images: Vec<(ImageRef, usize)>,
+    /// The footnote definition being walked, by its key.
+    note: Option<String>,
 }
 
 impl Walker {
@@ -634,8 +766,41 @@ impl Walker {
     }
 }
 
+/// The keys of the footnote references a block's text names (`[^key]`, no space or `]` in it).
+fn note_keys(src: &str) -> Vec<&str> {
+    let mut keys = Vec::new();
+    let mut rest = src;
+    while let Some(at) = rest.find("[^") {
+        rest = &rest[at + 2..];
+        if let Some(end) = rest.find(']') {
+            let key = &rest[..end];
+            if !key.is_empty() && !key.contains(char::is_whitespace) && !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
+/// The block's inlines. A block is parsed alone, and the parser takes `[^key]` for a reference only
+/// when the note is in the same text, so a stand-in note for every key goes after the block's text
+/// (moving none of its offsets) and the stand-ins' own inlines are dropped.
 fn walk(src: &str) -> Vec<Inline> {
-    let mut w = Walker { out: Vec::new(), runs: Vec::new(), style: Style::default(), saved: Vec::new(), lists: 0, containers: 0, items: Vec::new(), image: None, para_images: Vec::new() };
+    let keys = note_keys(src);
+    if keys.is_empty() {
+        return walk_text(src);
+    }
+    let mut text = src.to_string();
+    for key in keys {
+        text.push_str(&format!("\n\n[^{key}]: ."));
+    }
+    let mut out = walk_text(&text);
+    out.retain(|i| !matches!(i, Inline::Note { runs, .. } if runs.first().is_some_and(|r| r.source.start >= src.len())));
+    out
+}
+
+fn walk_text(src: &str) -> Vec<Inline> {
+    let mut w = Walker { out: Vec::new(), runs: Vec::new(), style: Style::default(), saved: Vec::new(), lists: 0, containers: 0, items: Vec::new(), image: None, para_images: Vec::new(), note: None };
     let mut heading = 1u8;
     for (event, range) in Parser::new_ext(src, OPTIONS).into_offset_iter() {
         match event {
@@ -648,6 +813,10 @@ fn walk(src: &str) -> Vec<Inline> {
                 }
                 Tag::Heading { level, .. } => heading = level as u8,
                 Tag::BlockQuote(_) => w.containers += 1,
+                Tag::FootnoteDefinition(key) => {
+                    w.containers += 1;
+                    w.note = Some(key.to_string());
+                }
                 Tag::List(_) => {
                     w.containers += 1;
                     w.lists += 1;
@@ -697,6 +866,13 @@ fn walk(src: &str) -> Vec<Inline> {
                         w.out.push(Inline::Heading(heading, runs));
                     }
                 }
+                TagEnd::FootnoteDefinition => {
+                    w.containers -= 1;
+                    if w.containers == 0 {
+                        let runs = std::mem::take(&mut w.runs);
+                        w.out.push(Inline::Note { key: w.note.take().unwrap_or_default(), runs });
+                    }
+                }
                 TagEnd::BlockQuote(_) => {
                     w.containers -= 1;
                     if w.containers == 0 {
@@ -743,6 +919,11 @@ fn walk(src: &str) -> Vec<Inline> {
                         w.sink().push(Run { text: t.to_string(), style, source });
                     }
                 }
+            }
+            Event::FootnoteReference(key) => {
+                let mut style = w.style.clone();
+                style.note = Some(key.to_string());
+                w.sink().push(Run { text: key.to_string(), style, source: range });
             }
             Event::SoftBreak => w.push(" ".into(), range),
             Event::HardBreak => w.push("\n".into(), range),
@@ -1389,6 +1570,52 @@ mod tests {
         assert!(matches!(&inl[0], Inline::Images(v) if v.len() == 3));
         let inl = inline("![a](a.png) text", &BlockKind::Paragraph);
         assert!(!matches!(&inl[0], Inline::Images(_)), "text beside an image is a paragraph");
+    }
+
+    #[test]
+    fn a_quote_starting_with_an_alert_tag_is_an_alert_without_its_tag_line() {
+        let a = inline("> [!warning] Mind the gap\n> Step **back**.", &BlockKind::Quote);
+        let Inline::Alert { kind, title, runs } = &a[0] else { panic!("{a:?}") };
+        assert_eq!((*kind, title.as_deref()), (AlertKind::Warning, Some("Mind the gap")));
+        assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<String>(), "Step back.");
+        assert!(matches!(&inline("> [!NOTE]", &BlockKind::Quote)[0], Inline::Alert { kind: AlertKind::Note, title: None, runs } if runs.is_empty()));
+        assert!(matches!(&inline("> [!NOPE]\n> x", &BlockKind::Quote)[0], Inline::Quote(_)), "an unknown tag is a quote");
+        assert!(matches!(&inline("> plain", &BlockKind::Quote)[0], Inline::Quote(_)));
+        assert_eq!(alert("> [!TIP]\n> x").map(|a| a.body), Some(9));
+    }
+
+    #[test]
+    fn footnote_references_carry_their_key_and_a_definition_is_a_note() {
+        let alone: Vec<Option<String>> = para_runs("A claim[^src] here.").iter().map(|r| r.style.note.clone()).collect();
+        assert!(alone.contains(&Some("src".to_string())), "a reference in a block of its own, the note elsewhere: {alone:?}");
+        let runs = para_runs("A claim[^src] here.\n\n[^src]: The source.");
+        let note: Vec<(&str, Option<&str>)> = runs.iter().map(|r| (r.text.as_str(), r.style.note.as_deref())).collect();
+        assert_eq!(note, vec![("A claim", None), ("src", Some("src")), (" here.", None)]);
+        let lines: Vec<String> = "A claim[^src] here.\n\n[^src]: The source.\n  More.".lines().map(String::from).collect();
+        let blocks = split(&lines);
+        let def = blocks.last().unwrap();
+        let text = lines[def.lines.clone()].join("\n");
+        let Inline::Note { key, runs } = &inline(&text, &def.kind)[0] else { panic!() };
+        assert_eq!((key.as_str(), runs.iter().map(|r| r.text.as_str()).collect::<String>().as_str()), ("src", "The source. More."));
+    }
+
+    #[test]
+    fn footnotes_are_numbered_by_first_reference_among_those_defined() {
+        let lines: Vec<String> = "B[^b] then A[^a] and B[^b] and X[^x].\n\n- item[^a]\n\n[^a]: Alpha *note*.\n\n[^b]: Beta.".lines().map(String::from).collect();
+        let blocks = split(&lines);
+        let n = footnotes(&lines, &blocks);
+        assert_eq!((n.number.get("b"), n.number.get("a"), n.number.get("x")), (Some(&1), Some(&2), None), "x has no definition");
+        assert_eq!(n.text.get("a").map(String::as_str), Some("Alpha note."));
+        assert_eq!(n.ref_block.get("a"), Some(&0));
+        assert_eq!(n.def_block.get("b"), Some(&(blocks.len() - 1)));
+        assert_eq!(footnotes(&["plain".to_string()], &split(&["plain".to_string()])), Notes::default());
+    }
+
+    #[test]
+    fn front_matter_gives_its_title_and_its_date_or_created() {
+        assert_eq!(front_matter("title: \"Plan\"\ndate: 2026-10-30\ntags: [a]\n"), (Some("Plan".into()), Some("2026-10-30".into())));
+        assert_eq!(front_matter("created: '2026-01-02'\n"), (None, Some("2026-01-02".into())));
+        assert_eq!(front_matter("title:\n"), (None, None), "an empty value is none");
     }
 
     #[test]

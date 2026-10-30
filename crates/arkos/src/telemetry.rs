@@ -643,6 +643,7 @@ pub fn command_name(command: &Command) -> &'static str {
         Italic => "italic",
         FoldAll => "fold_all",
         UnfoldAll => "unfold_all",
+        TogglePresentation => "toggle_presentation",
         OpenFolder => "open_folder",
         NewWindow => "new_window",
         NewBrowserTab => "new_browser_tab",

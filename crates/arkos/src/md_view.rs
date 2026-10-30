@@ -26,7 +26,7 @@
 //! block to block (`navigate`), and the input handler sits on a canvas over the whole list, so
 //! typing reaches the document even when the caret's block is scrolled out of view.
 
-use crate::config::WideTables;
+use crate::config::{PageWidth, WideTables};
 use crate::edit::{self, Pos};
 use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
@@ -44,6 +44,7 @@ use gpui::{
     Entity, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathBuilder, Pixels, Point, ScrollHandle, SharedString, Stateful, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, WeakEntity, Window,
 };
+use gpui::{svg, AnyView};
 use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
@@ -74,6 +75,16 @@ const SIDE: f32 = 20.0;
 /// The space on the left of the text in the rendered view: the drag handle, then a heading's
 /// chevron (structure spec, section 4).
 const GUTTER: f32 = 40.0;
+/// The widest the rendered text runs with `page_width = "letter"`: a letter page at 96 dpi.
+pub const LETTER: f32 = 816.0;
+
+/// For a list `width` wide: the space added on each side and the width left for the text. Full
+/// width adds none; letter centres a column at most `LETTER` wide.
+pub fn columns(width: f32, letter: bool) -> (f32, f32) {
+    let text = width - GUTTER - SIDE;
+    let inset = if letter { ((text - LETTER) / 2.0).max(0.0) } else { 0.0 };
+    (inset, text - 2.0 * inset)
+}
 /// The line a dragged block would land on, a transparent top border on every row until a drag
 /// is over it.
 const DROP_LINE: f32 = 3.0;
@@ -153,6 +164,10 @@ enum Piece {
     /// A code block whose info string is `mermaid`: a diagram.
     Diagram(DiagramPiece),
     Quote(Rc<[Run]>),
+    /// A GitHub alert: its kind, the title after its tag, its text without the tag line.
+    Alert(md_blocks::AlertKind, Option<SharedString>, Rc<[Run]>),
+    /// A footnote's definition: its key and its text.
+    Note(SharedString, Rc<[Run]>),
     Rule,
     Table(TablePiece),
     Html(SharedString),
@@ -313,6 +328,8 @@ impl From<Inline> for Piece {
             Inline::Code { text, info } if mermaid::is_diagram_info(&info) => Piece::Diagram(DiagramPiece { drawn: code_lines(&text).join("\n").into(), text: text.into(), key: None, runs: None }),
             Inline::Code { info, text } => Piece::Code { info, drawn: code_lines(&text).join("\n").into(), text: text.into() },
             Inline::Quote(runs) => Piece::Quote(runs.into()),
+            Inline::Alert { kind, title, runs } => Piece::Alert(kind, title.map(Into::into), runs.into()),
+            Inline::Note { key, runs } => Piece::Note(key.into(), runs.into()),
             Inline::Rule => Piece::Rule,
             Inline::Table(t) => Piece::Table(TablePiece::new(t)),
             Inline::Html(t) => Piece::Html(t.into()),
@@ -728,6 +745,14 @@ pub struct BlockCtx {
     pub on_accent: Hsla,
     /// The colour of a diagram's error line (the tree's deleted colour).
     pub deleted: Hsla,
+    /// The alerts' colours, by `AlertKind` in its order: note, tip, important, warning, caution.
+    pub alerts: [Hsla; 5],
+    /// The document's footnotes (`Viewer::notes`).
+    pub notes: Rc<md_blocks::Notes>,
+    /// Presentation mode (`Viewer::presenting`): a plain click follows a link.
+    pub presenting: bool,
+    /// The space added on each side to keep the text a letter page wide (`columns`).
+    pub inset: f32,
     /// The colours diagrams are drawn in, from the chrome.
     pub mermaid: MermaidTheme,
     /// The raw blocks' colours: the raw view's markdown colours, the selection (the find match
@@ -825,6 +850,7 @@ pub fn render(
     highlighter: Option<Arc<Highlighter>>,
     highlight_limit: usize,
     wide_tables: WideTables,
+    page_width: PageWidth,
     style: crate::effects::active::Style,
     root: WeakEntity<crate::Root>,
     cx: &mut App,
@@ -837,7 +863,8 @@ pub fn render(
     let v = viewer.read(cx);
     let state = v.list_state.clone();
     // Read here, not in the row closure: the list holds its state while it lays the rows out.
-    let view_w = f32::from(v.list_state.viewport_bounds().size.width) - GUTTER - SIDE;
+    let letter = page_width == PageWidth::Letter;
+    let (inset, view_w) = columns(f32::from(v.list_state.viewport_bounds().size.width), letter);
     let drew_grid = Rc::new(Cell::new(false));
     let colors = md_colors(theme);
     let ctx = Rc::new(BlockCtx {
@@ -858,6 +885,10 @@ pub fn render(
         border: theme.chrome.border.hsla(),
         on_accent: colors.on_accent,
         deleted: colors.deleted,
+        alerts: [colors.link, calm(theme.tree.added.hsla()), calm(theme.terminal.magenta.hsla()), calm(theme.terminal.yellow.hsla()), calm(theme.tree.deleted.hsla())],
+        notes: v.notes.clone(),
+        inset,
+        presenting: v.presenting,
         mermaid: MermaidTheme::from_chrome(&theme.chrome),
         raw: colors.raw,
         selection: theme.semantic.find_match,
@@ -867,7 +898,7 @@ pub fn render(
         ink: style.ink_borders,
         shapes: (style.ground_alpha < 1.0).then_some(root),
     });
-    let input = input_canvas(viewer.clone(), view_w, drew_grid);
+    let input = input_canvas(viewer.clone(), view_w, letter, drew_grid);
     div()
         .id(("md-view", viewer.entity_id()))
         .relative()
@@ -931,11 +962,11 @@ pub fn render(
 /// presses, so the rows below it get them. Its bounds are the list's: when a table grid was drawn
 /// for a width (`view_w`, the last frame's) the list no longer has, as on the first frame or in a
 /// resize, it asks for another frame, so the columns follow the view.
-fn input_canvas(viewer: Entity<Viewer>, view_w: f32, drew_grid: Rc<Cell<bool>>) -> impl IntoElement {
+fn input_canvas(viewer: Entity<Viewer>, view_w: f32, letter: bool, drew_grid: Rc<Cell<bool>>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, (), window, cx| {
-            if drew_grid.get() && (f32::from(bounds.size.width) - GUTTER - SIDE - view_w).abs() > 0.5 {
+            if drew_grid.get() && (columns(f32::from(bounds.size.width), letter).1 - view_w).abs() > 0.5 {
                 window.request_animation_frame();
             }
             let focus = viewer.read(cx).focus.clone();
@@ -967,7 +998,7 @@ fn tail_element(ctx: &BlockCtx, caret: bool) -> AnyElement {
         .w_full()
         .h(px(line_h * 2.0))
         .cursor_text()
-        .when(caret, |d| d.child(div().absolute().top_0().left(px(GUTTER)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
+        .when(caret, |d| d.child(div().absolute().top_0().left(px(GUTTER + ctx.inset)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
         .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, cx| viewer.update(cx, |v, cx| v.append_paragraph(cx)))
         .map(|d| drop_target(d, usize::MAX, ctx))
         .into_any_element()
@@ -1000,7 +1031,7 @@ fn raw_row(ix: usize, ctx: &BlockCtx, highlighter: Option<&Arc<Highlighter>>, wi
                 .flex()
                 .flex_col()
                 .child(block_element(ix, &block.kind, r, v, ctx, None))
-                .child(div().relative().h(px(line_h)).child(div().absolute().top_0().left(px(GUTTER)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
+                .child(div().relative().h(px(line_h)).child(div().absolute().top_0().left(px(GUTTER + ctx.inset)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
                 .into_any_element();
         }
     }
@@ -1053,7 +1084,7 @@ fn raw_row(ix: usize, ctx: &BlockCtx, highlighter: Option<&Arc<Highlighter>>, wi
             .into_any_element(),
         None => el.into_any_element(),
     };
-    let row = div().id(("md-block", ix)).relative().w_full().pl(px(GUTTER)).pr(px(SIDE)).pb(px(BLOCK_GAP - DROP_LINE)).child(body);
+    let row = div().id(("md-block", ix)).relative().w_full().pl(px(GUTTER + ctx.inset)).pr(px(SIDE + ctx.inset)).pb(px(BLOCK_GAP - DROP_LINE)).child(body);
     gutter(row, ix, v, ctx, (0.0, size), &press).into_any_element()
 }
 
@@ -1107,8 +1138,8 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
         .id(("md-block", ix))
         .relative()
         .w_full()
-        .pl(px(GUTTER))
-        .pr(px(SIDE))
+        .pl(px(GUTTER + ctx.inset))
+        .pr(px(SIDE + ctx.inset))
         .pb(px(BLOCK_GAP - DROP_LINE))
         .text_color(ctx.text)
         .font_family(ctx.ui.clone())
@@ -1134,13 +1165,20 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     let mut item = 0;
     for (j, piece) in r.pieces.iter().enumerate() {
         let el = match (reveal, piece) {
-            (Some(rv), Piece::Para(_) | Piece::Heading(..) | Piece::Quote(_)) => {
+            (Some(rv), Piece::Para(_) | Piece::Heading(..) | Piece::Quote(_) | Piece::Alert(..) | Piece::Note(..)) => {
                 let display = Rc::new(Display::new(rv.text, &rv.tree.nodes, &rv.focus.offsets));
-                let (weight, color) = if matches!(piece, Piece::Quote(_)) { (FontWeight::NORMAL, ctx.dim) } else if matches!(piece, Piece::Heading(..)) { (FontWeight::SEMIBOLD, ctx.text) } else { (FontWeight::NORMAL, ctx.text) };
+                let (weight, color) = match piece {
+                    Piece::Quote(_) | Piece::Note(..) => (FontWeight::NORMAL, ctx.dim),
+                    Piece::Heading(..) => (FontWeight::SEMIBOLD, ctx.text),
+                    _ => (FontWeight::NORMAL, ctx.text),
+                };
                 let text = reveal_text(ix, j, display, weight, color, tail_caret.is_none(), rv, ctx, &mut parts);
                 match piece {
                     Piece::Heading(level, _) => div().pt(px(HEADING_GAP)).text_size(px(ctx.font_size * heading_scale(*level))).child(text).into_any_element(),
                     Piece::Quote(_) => div().border_l(px(QUOTE_BAR)).border_color(ctx.border).pl(px(10.0)).child(text).into_any_element(),
+                    // An alert keeps its header while its source shows; a note its size.
+                    Piece::Alert(kind, title, _) => alert_shell(*kind, title.as_ref(), Some(text), ctx),
+                    Piece::Note(..) => div().text_size(px(ctx.font_size * NOTE_SCALE)).child(text).into_any_element(),
                     _ => text,
                 }
             }
@@ -1277,7 +1315,7 @@ fn gutter(row: Stateful<Div>, ix: usize, v: &Viewer, ctx: &BlockCtx, first: (f32
     let handle = div()
         .id(("md-handle", ix))
         .absolute()
-        .left(px(4.0))
+        .left(px(4.0 + ctx.inset))
         .top(px(top))
         .h(px(line_h))
         .w(px(16.0))
@@ -1297,7 +1335,7 @@ fn gutter(row: Stateful<Div>, ix: usize, v: &Viewer, ctx: &BlockCtx, first: (f32
         div()
             .id(("md-fold", ix))
             .absolute()
-            .left(px(GUTTER - 18.0))
+            .left(px(GUTTER + ctx.inset - 18.0))
             .top(px(top))
             .h(px(line_h))
             .w(px(14.0))
@@ -1313,7 +1351,8 @@ fn gutter(row: Stateful<Div>, ix: usize, v: &Viewer, ctx: &BlockCtx, first: (f32
             .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.toggle_fold(ix, cx)))
             .child(if folded { "\u{25b8}" } else { "\u{25be}" })
     });
-    drop_target(row.group("md-row"), ix, ctx).child(handle).children(chevron)
+    // Presenting, nothing moves: no handle (the chevron still folds).
+    drop_target(row.group("md-row"), ix, ctx).when(!v.presenting, |r| r.child(handle)).children(chevron)
 }
 
 /// One piece of block `ix`'s row: `j` is its place among the row's pieces (the id of its text,
@@ -1336,7 +1375,15 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
             .pl(px(10.0))
             .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, parts))
             .into_any_element(),
-        Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, !inner, ctx, parts),
+        Piece::Alert(kind, title, runs) => {
+            let body = (!runs.is_empty()).then(|| text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts));
+            alert_shell(*kind, title.as_ref(), body, ctx)
+        }
+        Piece::Note(key, runs) => {
+            let text = text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, parts);
+            note_shell(key, text, ctx, parts)
+        }
+        Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, !inner && !v.presenting, ctx, parts),
         Piece::Code { text, info, .. } if !inner => {
             let fenced = v.doc.as_ref().zip(v.blocks.get(ix)).is_some_and(|(d, b)| crate::md_code::fence(d.lines(), b).is_some());
             numbered_code(ix, info, fenced, text, code_runs, None, v, ctx, parts)
@@ -1351,11 +1398,11 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
         }
         Piece::Diagram(d) => diagram_element(ix, d, v, ctx, parts),
         Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
-        Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, v, ctx, (!inner).then_some(&parts.task_press)),
+        Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, v, ctx, (!inner && !v.presenting).then_some(&parts.task_press)),
         Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
         // An HTML block is its source, dimmed (spec 5.2).
         Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
-        Piece::Metadata(t) => mono_box(t, ctx.dim, None, ctx),
+        Piece::Metadata(t) => front_matter_element(t, v.presenting, ctx),
         Piece::Image(image) => image_element(image, v, ctx, &parts.task_press),
         Piece::Media(m) => media_element(m, v, ctx, &parts.task_press),
         // Badges sit side by side, wrapping onto more lines when the view is narrow.
@@ -1491,7 +1538,7 @@ fn styled_runs(runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx) ->
         let mut f = font(if s.code || s.html { ctx.mono.clone() } else { ctx.ui.clone() });
         f.weight = if s.bold { FontWeight::BOLD } else { weight };
         f.style = if s.italic { FontStyle::Italic } else { FontStyle::Normal };
-        let fg = if s.link.is_some() {
+        let fg = if s.link.is_some() || s.note.is_some() {
             ctx.link
         } else if s.html {
             ctx.dim
@@ -1508,17 +1555,144 @@ fn styled_runs(runs: &[Run], weight: FontWeight, color: Hsla, ctx: &BlockCtx) ->
         });
         if let Some(url) = &s.link {
             links.push((start..text.len(), url.clone()));
+        } else if let Some(key) = &s.note {
+            links.push((start..text.len(), format!("#^{key}")));
         }
     }
     (text, out, links)
 }
 
+/// A footnote definition's size against the text's.
+const NOTE_SCALE: f32 = 0.88;
+
+/// An alert: the bar and a header (the kind's icon and its title, or its name) in the kind's
+/// colour, over its text when it has any.
+fn alert_shell(kind: md_blocks::AlertKind, title: Option<&SharedString>, body: Option<AnyElement>, ctx: &BlockCtx) -> AnyElement {
+    let color = ctx.alerts[kind as usize];
+    let label: SharedString = title.cloned().unwrap_or_else(|| kind.label().into());
+    div()
+        .border_l(px(QUOTE_BAR))
+        .border_color(color)
+        .pl(px(10.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .text_color(color)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(svg().path(crate::icons::alert(kind)).flex_none().size(px((ctx.font_size * 0.95).round())).text_color(color))
+                .child(label),
+        )
+        .children(body)
+        .into_any_element()
+}
+
+/// A front matter block: its `title` as a title and its date dim below it, when it has them, then
+/// a faint `front matter` label (left out in presentation mode). A click shows its source.
+fn front_matter_element(text: &SharedString, presenting: bool, ctx: &BlockCtx) -> AnyElement {
+    let (title, date) = md_blocks::front_matter(text);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .when_some(title, |d, t| d.child(div().text_size(px(ctx.font_size * heading_scale(1))).font_weight(FontWeight::SEMIBOLD).text_color(ctx.text).child(t)))
+        .when_some(date, |d, t| d.child(div().text_size(px(ctx.font_size * NOTE_SCALE)).text_color(ctx.dim).child(t)))
+        .when(!presenting, |d| d.child(div().text_size(px(ctx.font_size * 0.75)).text_color(ctx.dim.opacity(0.7)).child("front matter")))
+        .into_any_element()
+}
+
+/// A footnote's definition: its number (or its key when nothing refers to it), its text, smaller
+/// and dim, and a `↩` back to its first reference.
+fn note_shell(key: &SharedString, text: AnyElement, ctx: &BlockCtx, parts: &Parts) -> AnyElement {
+    let number = ctx.notes.number.get(key.as_ref()).map_or_else(|| key.to_string(), |n| n.to_string());
+    let back = ctx.notes.ref_block.contains_key(key.as_ref()).then(|| {
+        let (viewer, press, key) = (ctx.viewer.clone(), parts.task_press.clone(), key.to_string());
+        div()
+            .id(SharedString::from(format!("md-note-back-{key}")))
+            .flex_none()
+            .text_color(ctx.link)
+            .cursor_pointer()
+            .child("\u{21a9}")
+            .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
+            .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.go_to_reference(&key, cx)))
+    });
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(6.0))
+        .text_size(px(ctx.font_size * NOTE_SCALE))
+        .child(div().flex_none().text_color(ctx.dim).child(format!("{number}.")))
+        .child(div().min_w_0().child(text))
+        .children(back)
+        .into_any_element()
+}
+
+/// A footnote reference's number as raised digits.
+fn superscript(n: usize) -> String {
+    n.to_string().chars().map(|c| ['\u{2070}', '\u{b9}', '\u{b2}', '\u{b3}', '\u{2074}', '\u{2075}', '\u{2076}', '\u{2077}', '\u{2078}', '\u{2079}'][c.to_digit(10).unwrap_or(0) as usize]).collect()
+}
+
+/// The runs as drawn: a footnote reference with a note becomes its raised number, one without
+/// reads as written, `[^key]`. The same runs when there are no references.
+fn numbered_runs(runs: &Rc<[Run]>, notes: &md_blocks::Notes) -> Rc<[Run]> {
+    if !runs.iter().any(|r| r.style.note.is_some()) {
+        return runs.clone();
+    }
+    runs.iter()
+        .map(|r| match r.style.note.as_ref() {
+            Some(key) => match notes.number.get(key) {
+                Some(n) => Run { text: superscript(*n), ..r.clone() },
+                None => {
+                    let mut style = r.style.clone();
+                    style.note = None;
+                    Run { text: format!("[^{key}]"), style, source: r.source.clone() }
+                }
+            },
+            None => r.clone(),
+        })
+        .collect()
+}
+
 /// A run list as text: a `StyledText`, wrapped to open its links on Cmd+click when it has any. Its
 /// layout goes into `parts`, so a press on the row maps through it.
 fn text_element(j: usize, runs: &Rc<[Run]>, weight: FontWeight, color: Hsla, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
-    let (element, layout) = runs_text(j, runs, weight, color, ctx);
-    parts.texts.push((layout, Part::Runs(runs.clone())));
+    let runs = numbered_runs(runs, &ctx.notes);
+    let (element, layout) = runs_text(j, &runs, weight, color, ctx);
+    parts.texts.push((layout, Part::Runs(runs)));
     element
+}
+
+/// A footnote's text in a tooltip, shown while a reference is hovered.
+struct NoteTip {
+    text: SharedString,
+    fg: Hsla,
+    bg: Hsla,
+    border: Hsla,
+    family: SharedString,
+    size: f32,
+}
+
+impl gpui::Render for NoteTip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(360.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .bg(self.bg)
+            .border_1()
+            .border_color(self.border)
+            .text_color(self.fg)
+            .font_family(self.family.clone())
+            .text_size(px(self.size))
+            .child(self.text.clone())
+    }
 }
 
 /// A run list as a `StyledText` (an `InteractiveText` with id `("md-text", j)` opening its links
@@ -1530,13 +1704,23 @@ fn runs_text(j: usize, runs: &[Run], weight: FontWeight, color: Hsla, ctx: &Bloc
     if links.is_empty() {
         return (styled.into_any_element(), layout);
     }
+    // A footnote reference shows its note while hovered.
+    let tips: Vec<(std::ops::Range<usize>, SharedString)> = links.iter().filter_map(|(r, t)| ctx.notes.text.get(t.strip_prefix("#^")?).map(|note| (r.clone(), SharedString::from(note.clone())))).collect();
     let (ranges, targets): (Vec<_>, Vec<_>) = links.into_iter().unzip();
-    let (base_dir, viewer) = (ctx.base_dir.clone(), ctx.viewer.clone());
+    let (base_dir, viewer, presenting) = (ctx.base_dir.clone(), ctx.viewer.clone(), ctx.presenting);
+    let (fg, bg, border, family, size) = (ctx.text, ctx.code_bg, ctx.border, ctx.ui.clone(), ctx.font_size * NOTE_SCALE);
     let element = InteractiveText::new(("md-text", j), styled)
+        .when(!tips.is_empty(), |t| {
+            t.tooltip(move |i, _window, cx| {
+                let (_, text) = tips.iter().find(|(r, _)| r.start <= i && i < r.end)?;
+                let tip = NoteTip { text: text.clone(), fg, bg, border, family: family.clone(), size };
+                Some(AnyView::from(cx.new(|_| tip)))
+            })
+        })
         .on_click(ranges, move |i, window, cx| {
             // A plain click is for the text (the row put the caret there); Cmd+click follows the
-            // link.
-            if window.modifiers().platform {
+            // link, and so does a plain click in presentation mode.
+            if window.modifiers().platform || presenting {
                 if let Some(target) = targets.get(i) {
                     follow_link(link_action(target, &base_dir), &viewer, cx);
                 }
@@ -1913,6 +2097,8 @@ fn number_w(count: usize, ctx: &BlockCtx) -> f32 {
 /// right, and a click anywhere else on it selecting the whole block. `fenced` says the pill can set
 /// a language; a press on any of it is the header's, not the row's.
 fn code_header(ix: usize, info: &str, fenced: bool, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    // Presenting, the language is a label: nothing edits.
+    let fenced = fenced && !v.presenting;
     let dim = ctx.dim;
     let name = crate::md_code::language_name(info);
     let copied = v.copied.is_some_and(|(b, at)| b == ix && at.elapsed() < Duration::from_millis(1500));
@@ -2946,6 +3132,16 @@ mod tests {
         assert_eq!(row_fill(1, header, paper, tint, 0.0).a, 0.0);
         assert_eq!(row_fill(2, header, paper, tint, 0.0), tint, "the stripe stays");
         assert_eq!(row_fill(0, header, paper, tint, 0.5).a, 0.5, "halfway through a fade");
+    }
+
+    #[test]
+    fn a_letter_page_centres_a_column_at_most_816_wide_and_full_adds_nothing() {
+        let side = GUTTER + SIDE;
+        assert_eq!(columns(1400.0, false), (0.0, 1400.0 - side));
+        let (inset, text) = columns(1400.0, true);
+        assert_eq!(text, LETTER);
+        assert_eq!(inset, (1400.0 - side - LETTER) / 2.0);
+        assert_eq!(columns(600.0, true), (0.0, 600.0 - side), "a narrow pane is narrower than a page already");
     }
 
     #[test]

@@ -36,6 +36,7 @@ mod keymap;
 mod launch;
 mod launch_link;
 mod link_menu;
+mod icons;
 mod md_links;
 mod md_menu;
 mod lang_menu;
@@ -2794,6 +2795,11 @@ impl Root {
                     v.update(cx, |v, cx| v.save_command(cx));
                 }
             }
+            TogglePresentation => {
+                if let Some(t) = self.active_viewer_tab() {
+                    self.toggle_presentation_for(t, cx);
+                }
+            }
             FoldAll | UnfoldAll => {
                 if let Some(v) = self.active_viewer() {
                     let all = matches!(cmd, FoldAll);
@@ -4611,7 +4617,7 @@ fn main() {
     debug_assert!(plan.connects_first());
     let save_queue = SharedSaveQueue::default();
 
-    Application::new().run(move |cx: &mut App| {
+    Application::new().with_assets(icons::Assets).run(move |cx: &mut App| {
         // gpui installs no menu and no quit binding of its own; the Quit action is handled below,
         // and by the project window once it exists.
         cx.bind_keys(keymap::bindings_for(&config.keybindings));

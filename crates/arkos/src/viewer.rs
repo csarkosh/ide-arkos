@@ -635,6 +635,10 @@ pub struct Viewer {
     pub copied: Option<(usize, Instant)>,
     /// A heading to scroll to once the document has loaded (a link's `#anchor` into this file).
     pub pending_anchor: Option<String>,
+    /// The document's footnotes (`md_blocks::footnotes`), made again with the headings.
+    pub notes: Rc<md_blocks::Notes>,
+    /// Presentation mode: read-only, no caret and no reveal, a single click follows a link.
+    pub presenting: bool,
     /// The config's `viewer.image_destination`, kept here by `Root` (`md_links::image_dir`).
     pub image_destination: String,
     /// A table cell is being edited (its markdown shown with the caret), not only selected.
@@ -808,6 +812,8 @@ impl Viewer {
             lang_at: None,
             copied: None,
             pending_anchor: None,
+            notes: Rc::new(md_blocks::Notes::default()),
+            presenting: false,
             image_destination: String::new(),
             table_edit: false,
             table_pick: None,
@@ -1013,6 +1019,9 @@ impl Viewer {
     /// Nothing happens without a document. An input method composition in progress is finished
     /// first, keeping its text, so the edit never lands between its marked step and its commit.
     pub fn edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         self.finish_composition(cx);
         self.take_pending_append(cx);
         self.edit_raw(f, cx);
@@ -1035,6 +1044,10 @@ impl Viewer {
 
     /// Runs the edit and takes in its result, without scrolling.
     fn run_edit(&mut self, f: impl FnOnce(&mut edit::Document, edit::Caret, Instant) -> edit::Caret, cx: &mut Context<Self>) {
+        // Presentation mode reads (`set_presenting`): whatever asked, nothing changes.
+        if self.presenting {
+            return;
+        }
         let Some(doc) = self.doc.as_mut() else { return };
         let old_lines = doc.shared_lines();
         self.caret = f(doc, self.caret, Instant::now());
@@ -1121,6 +1134,8 @@ impl Viewer {
             return;
         }
         self.mode = mode;
+        // Only the rendered view presents.
+        self.presenting = false;
         // The paragraph a click on the rendered view's tail promised belongs to that view: the
         // raw view's first keystroke must not add blank lines before it.
         self.pending_append = false;
@@ -1463,6 +1478,10 @@ impl Viewer {
         if self.doc.is_none() {
             return false;
         }
+        // Presenting, the keys scroll and nothing else (a caret is never placed).
+        if self.presenting {
+            return self.key_before_placement_reading(ks, cx);
+        }
         if self.slash.is_some() && self.slash_key(ks, cx) {
             return true;
         }
@@ -1519,6 +1538,27 @@ impl Viewer {
                 self.place_at_first_visible();
                 self.key_inner(ks, cx);
             }
+        }
+        true
+    }
+
+    /// A key in presentation mode: Space and the scroll keys scroll, Escape closes the find bar,
+    /// and every other key the keymap left to the document is taken and does nothing.
+    fn key_before_placement_reading(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let m = &ks.modifiers;
+        if ks.key == "space" && !(m.platform || m.control || m.alt) {
+            self.list_state.scroll_by(self.list_state.viewport_bounds().size.height);
+            cx.notify();
+            return true;
+        }
+        let Some(action) = key_action(ks) else { return false };
+        match action {
+            KeyAction::Escape if self.find.is_some() => self.close_find(cx),
+            action if pre_placement_action(action) == PrePlacement::Scroll => {
+                self.scroll_list(action);
+                cx.notify();
+            }
+            _ => {}
         }
         true
     }
@@ -1929,6 +1969,11 @@ impl Viewer {
             return;
         };
         self.heads = md_fold::headings(&self.blocks, doc.lines());
+        let notes = md_blocks::footnotes(doc.lines(), &self.blocks);
+        // Rows draw the numbers from these every frame, so nothing cached goes stale.
+        if *self.notes != notes {
+            self.notes = Rc::new(notes);
+        }
         self.hidden = md_fold::hidden(&self.heads, &self.folded, self.blocks.len());
     }
 
@@ -2003,6 +2048,9 @@ impl Viewer {
     /// A clipboard image written to the image folder at the next free `image-N` name, and
     /// `![image](path)` typed at the caret. A file that cannot be written leaves the document be.
     fn paste_image(&mut self, image: &gpui::Image, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         use gpui::ImageFormat::*;
         let ext = match image.format {
             Png => "png",
@@ -2028,7 +2076,7 @@ impl Viewer {
     /// its own paragraph (`md_links::place_dropped`, `md_links::file_markdown`), as one undoable
     /// edit with the caret after them. An image that cannot be copied is left out.
     pub fn drop_files(&mut self, files: &[PathBuf], to: usize, cx: &mut Context<Self>) {
-        if !is_markdown(&self.path) || self.read_only.is_some() {
+        if !is_markdown(&self.path) || self.read_only.is_some() || self.presenting {
             return;
         }
         let doc_dir = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -2074,11 +2122,40 @@ impl Viewer {
     /// Scrolls to the heading anchor `anchor` names (`md_links::heading_for`), unfolding it; `false`
     /// when no heading has it.
     pub fn go_to_anchor(&mut self, anchor: &str, cx: &mut Context<Self>) -> bool {
+        // `#^key` is a footnote reference: its note.
+        if let Some(key) = anchor.strip_prefix('^') {
+            let Some(&block) = self.notes.def_block.get(key) else { return false };
+            self.reveal_block(block, cx);
+            return true;
+        }
         let texts: Vec<String> = self.heads.iter().map(|h| h.text.clone()).collect();
         let Some(i) = crate::md_links::heading_for(&texts, anchor) else { return false };
         let block = self.heads[i].block;
         self.reveal_block(block, cx);
         true
+    }
+
+    /// Presentation mode on or off (reading spec, section 4): the caret, any selection and every
+    /// open menu go, so nothing shows revealed and nothing edits.
+    pub fn set_presenting(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.presenting = on;
+        self.caret_placed = false;
+        self.selecting = false;
+        if let Some(doc) = self.doc.as_ref() {
+            self.caret = edit::Caret::at(doc.clamp(self.caret.head));
+        }
+        self.slash = None;
+        self.lang = None;
+        self.table_edit = false;
+        self.table_pick = None;
+        cx.notify();
+    }
+
+    /// Scrolls back to footnote `key`'s first reference.
+    pub fn go_to_reference(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(&block) = self.notes.ref_block.get(key) {
+            self.reveal_block(block, cx);
+        }
     }
 
     /// Goes to heading `anchor` now if the document is loaded, else once it is.
@@ -2514,6 +2591,9 @@ impl Viewer {
     /// A click on a code block's header selects the whole block, fences included, so Delete takes it
     /// away.
     pub fn select_block(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return };
         let last = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX);
         self.lang = None;
@@ -2870,6 +2950,9 @@ impl Viewer {
     /// Puts the caret at `p` (Shift keeps the anchor, so the selection extends) for a press in the
     /// text of either view, and starts a drag selection. The typing step ends there.
     pub fn place_caret(&mut self, p: edit::Pos, extend: bool, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         if self.marked.is_some() {
             self.finish_composition(cx);
         }
@@ -2967,6 +3050,9 @@ impl Viewer {
     /// not, since the head is under the mouse and revealing its block could move a tall block
     /// away from it.
     pub fn drag_to(&mut self, p: edit::Pos, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         let Some(doc) = self.doc.as_ref().filter(|_| self.selecting) else { return };
         let p = doc.clamp(p);
         if p != self.caret.head {
@@ -3020,6 +3106,9 @@ impl EntityInputHandler for Viewer {
     }
 
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         if self.field().is_none() {
             return;
         }
@@ -3091,6 +3180,9 @@ impl EntityInputHandler for Viewer {
     }
 
     fn replace_and_mark_text_in_range(&mut self, range: Option<Range<usize>>, new_text: &str, new_selected_range: Option<Range<usize>>, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.presenting {
+            return;
+        }
         if self.field().is_none() {
             return;
         }
@@ -4523,6 +4615,23 @@ impl Root {
             v.update(cx, |v, cx| v.set_mode(next, cx));
         }
         self.save(cx);
+        cx.notify();
+    }
+
+    /// Presentation mode on or off in a markdown tab: from Raw it shows Rendered too, since only
+    /// the rendered view presents.
+    pub fn toggle_presentation_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let Some((pane, idx)) = self.tree.locate(tab) else { return };
+        let Some(Tab::Viewer { path, mode }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
+        if !is_markdown(&path) {
+            return;
+        }
+        if mode == ViewMode::Raw {
+            self.toggle_markdown_view_for(tab, cx);
+        }
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| v.set_presenting(!v.presenting || mode == ViewMode::Raw, cx));
+        }
         cx.notify();
     }
 
