@@ -147,13 +147,23 @@ pub fn follow_x(scroll_x: f32, caret_x: f32, width: f32) -> f32 {
     }
 }
 
-/// The colours of raw markdown: plain text, markers and quote bars, code, links.
+/// The colours of raw markdown: plain text, markers and quote bars, code, links, all drawn at
+/// `alpha` (1 in the raw editor, `effects::active::CALM_ALPHA` in the rendered view's raw blocks,
+/// which are reading text).
 #[derive(Debug, Clone, Copy)]
 pub struct RawColors {
     pub text: Rgb,
     pub dim: Rgb,
     pub code: Rgb,
     pub link: Rgb,
+    pub alpha: f32,
+}
+
+impl RawColors {
+    /// The raw editor's colours, drawn fully opaque.
+    pub fn opaque(text: Rgb, dim: Rgb, code: Rgb, link: Rgb) -> RawColors {
+        RawColors { text, dim, code, link, alpha: 1.0 }
+    }
 }
 
 /// Where a document viewer's text was laid out at the last prepaint: what the input handler and
@@ -169,8 +179,8 @@ pub struct RawLayout {
     pub colors: RawColors,
 }
 
-/// One run of text in the terminal family.
-fn text_run(family: &SharedString, len: usize, color: Rgb, bold: bool, italic: bool) -> TextRun {
+/// One run of text in the terminal family, its colour at `alpha`.
+fn text_run(family: &SharedString, len: usize, color: Rgb, alpha: f32, bold: bool, italic: bool) -> TextRun {
     let mut f = font(family.clone());
     if bold {
         f.weight = FontWeight::BOLD;
@@ -178,7 +188,9 @@ fn text_run(family: &SharedString, len: usize, color: Rgb, bold: bool, italic: b
     if italic {
         f.style = gpui::FontStyle::Italic;
     }
-    TextRun { len, font: f, color: hsla(color), background_color: None, underline: None, strikethrough: None }
+    let mut color = hsla(color);
+    color.a = alpha;
+    TextRun { len, font: f, color, background_color: None, underline: None, strikethrough: None }
 }
 
 /// The runs of a raw markdown line with its tabs expanded, up to `limit` expanded bytes: the
@@ -211,7 +223,7 @@ pub fn raw_runs(line: &str, family: &SharedString, colors: &RawColors, limit: us
                 Some(M::Link) => (colors.link, false, false),
                 None => (colors.text, false, false),
             };
-            text_run(family, len, color, bold, italic)
+            text_run(family, len, color, colors.alpha, bold, italic)
         })
         .collect()
 }
@@ -409,7 +421,7 @@ impl ViewerElement {
     }
 
     fn run(&self, len: usize, color: Rgb, bold: bool, italic: bool) -> TextRun {
-        text_run(&self.family, len, color, bold, italic)
+        text_run(&self.family, len, color, 1.0, bold, italic)
     }
 }
 

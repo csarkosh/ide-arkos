@@ -15,7 +15,9 @@ glyph_motion = true           # the glyph shader reads the clock, so the text is
 glyph_rate = 10               # 1 to 20; the text's redraws a second while glyph_motion is on
 terminal_decode = true        # the terminal decodes changed cells and brightens fresh ones;
                               # needs glyph_motion, whose timer it runs on
-paper_alpha = 0.8             # 0.5 to 1.0; a terminal's or document's paper over the wash
+paper_alpha = 0.8             # 0.5 to 1.0; a terminal's paper over the wash
+document_paper_alpha = 0.92   # 0.5 to 1.0; a markdown or viewer tab's paper, so the rain barely
+                              # shows behind reading text (absent, paper_alpha)
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.5        # 0.0 to 1.0; the active tab over the wash
 text_contrast = 0.0           # 0.0 to 1.0; how far the text moves towards ink while the effect is on

@@ -368,4 +368,35 @@ mod tests {
         let emoji = &g[g.find("arkos_emoji_vertex(").expect("matrix draws its emoji")..];
         assert!(emoji.contains("arkos_emoji_fragment(") && emoji.contains("GLITCH_") && emoji.contains("[[buffer(5)]]"));
     }
+
+    #[test]
+    fn reading_text_is_a_soft_pale_green_with_no_halo_and_no_glitch() {
+        let g = matrix().glyphs.unwrap();
+        for line in [
+            "constant float3 CALM_GREEN = float3(0.72, 0.86, 0.72);",
+            "constant float CALM_TINT = 0.6;",
+            "constant float CALM_BRIGHTNESS = 0.9;",
+            // The band the window's ARKOS_CALM_ALPHA marks reading text with, fades included.
+            "return abs(alpha - ARKOS_CALM_ALPHA) < 0.002;",
+        ] {
+            assert!(g.contains(line), "glyphs.metal lacks {line}");
+        }
+        assert!(crate::effects::active::glyph_source(g, 2.0).contains("constant float ARKOS_CALM_ALPHA = 0.995;"));
+        // The vertex stage gives calm text no glitch: no mirror and no flash.
+        let vertex = &g[g.find("vertex MatrixVertexOutput arkos_glyph_vertex(").unwrap()..g.find("float matrix_tx(").unwrap()];
+        assert!(vertex.contains("float3 g = calm_text(color.a) ? float3(1.0) : glitch(glitch_origin(sprite.bounds), slot);"), "{vertex}");
+        // The fragment draws calm light text before any halo ring is read, with the glyph's own
+        // coverage times its alpha, and with no flash.
+        let fragment = &g[g.find("fragment float4 arkos_glyph_fragment(").unwrap()..g.find("struct MatrixEmojiVertexOutput").unwrap()];
+        assert!(fragment.contains("bool calm = calm_text(input.color.a);"), "{fragment}");
+        let branch = fragment.find("if (calm && !dark) {").expect("the calm branch");
+        assert!(branch < fragment.find("matrix_ring(").unwrap(), "the calm branch returns before the halo");
+        let calm = &fragment[branch..branch + fragment[branch..].find('}').unwrap()];
+        assert!(calm.contains("mix(col, CALM_GREEN, CALM_TINT) * CALM_BRIGHTNESS"), "{calm}");
+        assert!(calm.contains("return float4(soft, core * input.color.a);"), "{calm}");
+        assert!(!calm.contains("flash") && !calm.contains("GLOW"), "no flash and no halo: {calm}");
+        // Emoji carry no mark and keep their glitch.
+        let emoji = &g[g.find("arkos_emoji_vertex(").unwrap()..];
+        assert!(!emoji.contains("calm_text("));
+    }
 }

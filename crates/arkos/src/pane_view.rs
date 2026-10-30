@@ -1084,7 +1084,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let body = match kind {
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, style, cx.weak_entity(), cx);
-            div().size_full().bg(theme.chrome.window_bg.alpha(style.paper_alpha)).child(element)
+            div().size_full().bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
         }
         Kind::Text { plain } => {
             let element = ViewerElement::new(
@@ -1096,9 +1096,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 theme.semantic.find_match,
                 theme.semantic.find_current,
                 MarkColors { added: theme.tree.added, modified: theme.tree.modified, deleted: theme.tree.deleted },
-                RawColors { text: theme.chrome.text, dim: theme.chrome.text_dim, code: theme.tree.modified, link: theme.chrome.focus_ring },
+                RawColors::opaque(theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring),
             )
-            .paper_alpha(style.paper_alpha);
+            .paper_alpha(style.document_paper_alpha);
             div()
                 .size_full()
                 .flex()

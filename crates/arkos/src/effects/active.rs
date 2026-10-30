@@ -19,6 +19,10 @@ use crate::tree::{PaneId, Rect};
 /// while the text moves under the wheel, in milliseconds.
 pub const SCROLL_QUIET_MS: u64 = 400;
 
+/// Text drawn with this alpha is reading text (the rendered markdown's), which a glyph shader may
+/// draw calmly; the 1/200 of transparency is invisible.
+pub const CALM_ALPHA: f32 = 0.995;
+
 /// Whether an effect is coming or going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -30,8 +34,11 @@ pub enum Direction {
 /// draws its borders and highlights, and how much larger its UI text is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
-    /// A terminal's or a document's paper.
+    /// A terminal's paper (and a web page's).
     pub paper_alpha: f32,
+    /// The paper of a document, rendered markdown or the viewer: the manifest's
+    /// `document_paper_alpha`, else its `paper_alpha`.
+    pub document_paper_alpha: f32,
     /// The title bar, the tab bars, the inactive tabs and the sidebar.
     pub chrome_alpha: f32,
     /// The active tab, a lighter patch on its bar.
@@ -57,7 +64,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -78,6 +85,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
     let full = f >= 1.0;
     Style {
         paper_alpha: lerp(1.0, manifest.paper_alpha.max(0.5), f),
+        document_paper_alpha: lerp(1.0, manifest.document_paper_alpha().max(0.5), f),
         chrome_alpha: lerp(1.0, manifest.chrome_alpha, f),
         active_tab_alpha: lerp(1.0, manifest.active_tab_alpha, f),
         ground_alpha: 1.0 - f,
@@ -239,9 +247,22 @@ pub fn scale_line(scale: f32) -> String {
     format!("constant float ARKOS_SCALE = {scale:.2};")
 }
 
-/// An effect's glyph shader as a window of `scale` compiles it: the scale's line, then its own.
+/// The line that tells a glyph shader the alpha reading text carries, `ARKOS_CALM_ALPHA`
+/// (`CALM_ALPHA`): a glyph whose colour alpha is within 0.002 of it, after any fade, is reading
+/// text and may be drawn calmly.
+pub fn calm_line() -> String {
+    format!("constant float ARKOS_CALM_ALPHA = {CALM_ALPHA};")
+}
+
+/// What a window of `scale` declares ahead of every glyph shader: the scale's line and the calm
+/// alpha's.
+pub fn glyph_header(scale: f32) -> String {
+    format!("{}\n{}", scale_line(scale), calm_line())
+}
+
+/// An effect's glyph shader as a window of `scale` compiles it: the window's lines, then its own.
 pub fn glyph_source(glyphs: &str, scale: f32) -> String {
-    format!("{}\n{glyphs}", scale_line(scale))
+    format!("{}\n{glyphs}", glyph_header(scale))
 }
 
 /// The glyph shader a window of `kind` at `scale` draws with under `effect`: the effect's own,
@@ -518,13 +539,16 @@ mod tests {
     }
 
     #[test]
-    fn the_glyph_shader_is_told_the_window_s_scale_ahead_of_its_own_source() {
+    fn the_glyph_shader_is_told_the_window_s_scale_and_the_calm_alpha_ahead_of_its_own_source() {
         let e = on(watercolor(), Instant::now());
         let glyphs = watercolor().glyphs.unwrap();
         let retina = glyph_shader_for(WindowKind::Project, Some(&e), 2.0).unwrap();
-        assert_eq!(retina.source, format!("constant float ARKOS_SCALE = 2.00;\n{glyphs}"));
+        assert_eq!(retina.source, format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{glyphs}"));
+        assert_eq!(glyph_source(&glyphs, 2.0), retina.source);
+        assert_eq!(glyph_header(2.0), "constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;");
+        assert_eq!(calm_line(), format!("constant float ARKOS_CALM_ALPHA = {CALM_ALPHA};"));
         let plain_screen = glyph_shader_for(WindowKind::Project, Some(&e), 1.0).unwrap();
-        assert!(plain_screen.source.starts_with("constant float ARKOS_SCALE = 1.00;\n"));
+        assert!(plain_screen.source.starts_with("constant float ARKOS_SCALE = 1.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n"));
         // The built-in measures its ink in points, so a 1x screen sees the look a 2x one does.
         assert!(glyphs.contains("ARKOS_SCALE"), "the built-in ink ignores the scale");
     }
@@ -570,7 +594,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
@@ -582,6 +606,28 @@ mod tests {
         assert_eq!(half.ui_text_bump, 0.0);
         assert_eq!(style_at(&m, 1.0).ui(12.0), 14.0);
         assert_eq!(Style::plain().ui(12.0), 12.0);
+    }
+
+    #[test]
+    fn a_document_s_paper_is_the_manifest_s_at_full_fade_opaque_without_an_effect_and_never_under_half() {
+        let mut m = watercolor().manifest;
+        m.paper_alpha = 0.65;
+        m.document_paper_alpha = Some(0.92);
+        assert_eq!(style_at(&m, 1.0).document_paper_alpha, 0.92);
+        assert_eq!(style_at(&m, 1.0).paper_alpha, 0.65, "the terminal keeps its own paper");
+        assert_eq!(style_at(&m, 0.0).document_paper_alpha, 1.0);
+        assert_eq!(Style::plain().document_paper_alpha, 1.0, "no effect, an opaque paper");
+        let half = style_at(&m, 0.5).document_paper_alpha;
+        assert!((half - 0.96).abs() < 1e-6, "{half}");
+        // Absent, a document's paper is the terminal's.
+        m.document_paper_alpha = None;
+        assert_eq!(style_at(&m, 1.0).document_paper_alpha, 0.65);
+        // A manifest built by hand past the range still leaves the text its ground.
+        m.document_paper_alpha = Some(0.1);
+        assert_eq!(style_at(&m, 1.0).document_paper_alpha, 0.5);
+        let matrix = manifest::load("matrix", Path::new("/nonexistent/effects")).unwrap().manifest;
+        assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.92);
+        assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.8);
     }
 
     #[test]

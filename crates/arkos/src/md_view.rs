@@ -538,7 +538,7 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     }
     let shown = !matches!(d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key)), Some(Diagram::Ready { .. }));
     if shown && !d.runs.as_ref().is_some_and(|c| c.mono == ctx.mono && c.text == ctx.text) {
-        d.runs = Some(CodeRuns { coloured: false, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(&d.text), None, ctx)) });
+        d.runs = Some(CodeRuns { coloured: false, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(&d.text), None, &ctx.mono, ctx.text)) });
     }
     let (Some((_, key)), text) = (d.key.as_ref(), &d.text) else { return };
     let state = v.diagrams.get(key);
@@ -657,7 +657,7 @@ fn fill_cache(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>,
     let coloured = r.code_spans.is_some();
     if !r.code_runs.as_ref().is_some_and(|c| c.coloured == coloured && c.mono == ctx.mono && c.text == ctx.text) {
         let spans = r.code_spans.as_ref().map(|(_, s)| s.as_slice());
-        r.code_runs = Some(CodeRuns { coloured, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(text), spans, ctx)) });
+        r.code_runs = Some(CodeRuns { coloured, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(text), spans, &ctx.mono, ctx.text)) });
     }
 }
 
@@ -738,6 +738,37 @@ fn shape_reporter(root: WeakEntity<crate::Root>, key: u64, kind: crate::effects:
     .inset_0()
 }
 
+/// Text drawn in `c` as reading text: its alpha times `effects::active::CALM_ALPHA`, which marks
+/// it for a glyph shader that draws reading text calmly (invisible otherwise).
+pub fn calm(c: Hsla) -> Hsla {
+    Hsla { a: c.a * crate::effects::active::CALM_ALPHA, ..c }
+}
+
+/// The colours the rendered view draws its text in, each marked as reading text (`calm`): the
+/// body, the dimmed text (quotes, bullets, HTML, labels), links, a task box's tick, a diagram's
+/// error line, and the raw blocks' markdown colours.
+#[derive(Debug, Clone, Copy)]
+pub struct MdColors {
+    pub text: Hsla,
+    pub dim: Hsla,
+    pub link: Hsla,
+    pub on_accent: Hsla,
+    pub deleted: Hsla,
+    pub raw: RawColors,
+}
+
+/// The rendered view's text colours under `theme` (`MdColors`).
+pub fn md_colors(theme: &Theme) -> MdColors {
+    MdColors {
+        text: calm(theme.chrome.text.hsla()),
+        dim: calm(theme.chrome.text_dim.hsla()),
+        link: calm(theme.chrome.focus_ring.hsla()),
+        on_accent: calm(theme.chrome.window_bg.hsla()),
+        deleted: calm(theme.tree.deleted.hsla()),
+        raw: RawColors { alpha: crate::effects::active::CALM_ALPHA, ..RawColors::opaque(theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring) },
+    }
+}
+
 /// The rendered view of a document: a `list` with one row per block, each built from the block's
 /// cached rendering (filled on demand) or drawn raw when the caret or the selection is in it, and
 /// a tail row below the last block. The list scrolls itself and keeps its place in
@@ -765,6 +796,7 @@ pub fn render(
     // Read here, not in the row closure: the list holds its state while it lays the rows out.
     let view_w = f32::from(v.list_state.viewport_bounds().size.width) - 2.0 * SIDE;
     let drew_grid = Rc::new(Cell::new(false));
+    let colors = md_colors(theme);
     let ctx = Rc::new(BlockCtx {
         viewer: viewer.clone(),
         ui: ui_family,
@@ -776,15 +808,15 @@ pub fn render(
         wide_tables,
         view_w,
         drew_grid: drew_grid.clone(),
-        text: theme.chrome.text.hsla(),
-        dim: theme.chrome.text_dim.hsla(),
-        link: theme.chrome.focus_ring.hsla(),
+        text: colors.text,
+        dim: colors.dim,
+        link: colors.link,
         code_bg: theme.chrome.tab_inactive.hsla(),
         border: theme.chrome.border.hsla(),
-        on_accent: theme.chrome.window_bg.hsla(),
-        deleted: theme.tree.deleted.hsla(),
+        on_accent: colors.on_accent,
+        deleted: colors.deleted,
         mermaid: MermaidTheme::from_chrome(&theme.chrome),
-        raw: RawColors { text: theme.chrome.text, dim: theme.chrome.text_dim, code: theme.tree.modified, link: theme.chrome.focus_ring },
+        raw: colors.raw,
         selection: theme.semantic.find_match,
         find_current: theme.semantic.find_current,
         caret: theme.chrome.text,
@@ -1373,7 +1405,7 @@ fn toggle_item(v: &mut Viewer, ix: usize, offset: usize, cx: &mut Context<Viewer
 /// highlighter's spans when they are there. `text` is the block's code as parsed, `drawn` as
 /// shown, `runs` its cached runs (`fill` makes them; made here only when missing).
 fn code_element(text: &Rc<str>, drawn: &SharedString, runs: Option<&Rc<Vec<TextRun>>>, info: Option<(SharedString, Hsla)>, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
-    let runs = runs.map_or_else(|| code_runs(&code_lines(text), None, ctx), |r| r.as_ref().clone());
+    let runs = runs.map_or_else(|| code_runs(&code_lines(text), None, &ctx.mono, ctx.text), |r| r.as_ref().clone());
     let styled = StyledText::new(drawn.clone()).with_runs(runs);
     parts.texts.push((styled.layout().clone(), Part::Code(text.clone())));
     div()
@@ -1407,11 +1439,11 @@ fn diagram_element(d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Par
     code_element(&d.text, &d.drawn, d.runs.as_ref().map(|c| &c.runs), Some((info, colour)), ctx, parts)
 }
 
-/// The runs of a code block's joined lines: a span's colour where the spans run contiguously
-/// from the line's start, the text colour for the rest and for each newline, so the lengths always
-/// sum to the text's.
-fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, ctx: &BlockCtx) -> Vec<TextRun> {
-    let mono = font(ctx.mono.clone());
+/// The runs of a code block's joined lines in the `mono` family: a span's colour (marked as
+/// reading text, as `text` is) where the spans run contiguously from the line's start, `text`
+/// for the rest and for each newline, so the lengths always sum to the text's.
+fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, mono: &SharedString, text: Hsla) -> Vec<TextRun> {
+    let mono = font(mono.clone());
     let run = |len: usize, color: Hsla, bold: bool, italic: bool| {
         let mut f = mono.clone();
         f.weight = if bold { FontWeight::BOLD } else { FontWeight::NORMAL };
@@ -1425,14 +1457,14 @@ fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, ctx: &BlockCtx) -> V
             if s.start != at || s.end > line.len() || s.end <= s.start {
                 break;
             }
-            out.push(run(s.end - s.start, s.color.hsla(), s.bold, s.italic));
+            out.push(run(s.end - s.start, calm(s.color.hsla()), s.bold, s.italic));
             at = s.end;
         }
         if at < line.len() {
-            out.push(run(line.len() - at, ctx.text, false, false));
+            out.push(run(line.len() - at, text, false, false));
         }
         if i + 1 < lines.len() {
-            out.push(run(1, ctx.text, false, false));
+            out.push(run(1, text, false, false));
         }
     }
     out
@@ -2406,5 +2438,34 @@ mod tests {
         let (lines, block, code) = code_block("```\n\tx\n```");
         assert_eq!(code_pos(&block, &lines, &code, 4), Pos { line: 1, ch: 1 }, "a tab is drawn four columns wide: after it is the x");
         assert_eq!(code_pos(&block, &lines, &code, 1), Pos { line: 1, ch: 0 }, "in the tab's left half: before it");
+    }
+
+    #[test]
+    fn every_colour_the_rendered_view_draws_text_in_carries_the_calm_alpha() {
+        use crate::effects::active::CALM_ALPHA;
+        for name in ["matrix", "navy", "peach-light"] {
+            let theme = crate::theme::builtin(name).unwrap();
+            let c = md_colors(&theme);
+            for (what, colour) in [("text", c.text), ("dim", c.dim), ("link", c.link), ("on_accent", c.on_accent), ("deleted", c.deleted)] {
+                assert_eq!(colour.a, CALM_ALPHA, "{name}'s {what}");
+            }
+            assert_eq!((c.text.h, c.text.s, c.text.l), { let t = theme.chrome.text.hsla(); (t.h, t.s, t.l) }, "only the alpha moves");
+            assert_eq!(c.raw.alpha, CALM_ALPHA, "{name}'s raw block colours");
+            assert_eq!((c.raw.text, c.raw.dim, c.raw.code, c.raw.link), (theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring));
+            // A raw block's runs, the caret's block shown as its source, are reading text too.
+            let runs = element::raw_runs("# A *b* `c` [d](e)", &"Menlo".into(), &c.raw, 100);
+            assert!(runs.len() > 1 && runs.iter().all(|r| r.color.a == CALM_ALPHA), "{runs:?}");
+            // A highlighted code block's runs: the spans' colours and the text's.
+            let spans = vec![vec![Span { start: 0, end: 3, color: theme.tree.added, bold: false, italic: false }]];
+            let runs = code_runs(&["let x".to_string(), "y".to_string()], Some(&spans), &"Menlo".into(), c.text);
+            assert!(runs.len() >= 3 && runs.iter().all(|r| r.color.a == CALM_ALPHA), "{runs:?}");
+        }
+        // A colour already partly clear stays as clear, times the mark.
+        assert_eq!(calm(gpui::hsla(0.3, 0.5, 0.5, 0.6)).a, 0.6 * CALM_ALPHA);
+        // The raw markdown editor's colours are not reading text's.
+        let theme = crate::theme::builtin("matrix").unwrap();
+        let editor = RawColors::opaque(theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring);
+        assert_eq!(editor.alpha, 1.0);
+        assert!(element::raw_runs("# A", &"Menlo".into(), &editor, 100).iter().all(|r| r.color.a == 1.0));
     }
 }

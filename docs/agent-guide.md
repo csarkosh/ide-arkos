@@ -595,7 +595,8 @@ key and the range.
 | `glyph_motion` | `true`, `false` | `false` | `true`: the glyph shader moves with time, so the app redraws the text at `glyph_rate` frames a second while the effect is on and the window is seen (never under Reduce Motion), and the shader reads the seconds at Metal buffer index 5. `false`: the text is drawn only when something changes. |
 | `glyph_rate` | 1 to 20 | `frame_rate`, capped at 20 | The frames a second the text is redrawn at while `glyph_motion` is on. A glitch that lasts a tenth of a second needs ten. |
 | `terminal_decode` | `true`, `false` | `false` | The terminal shows random characters in a cell whose character changed for a few frames before settling, and brightens fresh text. Needs `glyph_motion = true`; without it the manifest is invalid. |
-| `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's or a document's paper over the wash. It never goes below 0.5, so text keeps its ground. |
+| `paper_alpha` | 0.5 to 1.0 | 0.5 | A terminal's paper over the wash, and a document's unless `document_paper_alpha` is set. It never goes below 0.5, so text keeps its ground. |
+| `document_paper_alpha` | 0.5 to 1.0 | `paper_alpha` | The paper of a markdown tab (rendered or raw) and a file viewer tab over the wash, which are for reading: a higher value lets less of the wash through behind the text. The terminal keeps `paper_alpha`. Matrix sets 0.92. |
 | `chrome_alpha` | 0.0 to 1.0 | 0.0 | The title bar, the tab bars, the inactive tabs and the sidebar over the wash. |
 | `active_tab_alpha` | 0.0 to 1.0 | 0.55 | The active tab over the wash. |
 | `text_contrast` | 0.0 to 1.0 | 0.0 | How far the text moves towards ink (black on a light theme, white on a dark one): `chrome.text` that far, `chrome.text_dim` three quarters and `terminal.foreground` nine tenths of the way. |
@@ -666,7 +667,13 @@ gpui draws them. Between the declarations
 and the signatures it prints `ARKOS_SCALE`, the window's pixels per point (2 on a Retina screen,
 1 on most others), which the window declares ahead of your source and rebuilds when it moves to
 a screen of another scale. gpui hands a glyph shader device pixels, so measure
-your ink in points through it, or a 1x screen sees every bleed and wobble twice as wide. The
+your ink in points through it, or a 1x screen sees every bleed and wobble twice as wide. After
+it comes `ARKOS_CALM_ALPHA` (0.995), also declared by the window ahead of your source: a glyph
+whose colour alpha is within 0.002 of `ARKOS_CALM_ALPHA` (after any fade) is reading text, the
+rendered markdown's; a shader may draw it calmly (the built-in matrix draws it a soft pale green
+with no halo and no glitch, testing `abs(input.color.a - ARKOS_CALM_ALPHA) < 0.002` in its
+fragment and the same band on the sprite's colour in its vertex stage). Draw its output alpha from `input.color.a` as for any glyph; without an effect the
+mark is 0.5% transparency, which nobody can see. The
 built-in's `glyphs.metal` (from `arkos effect template`) is a worked one: it widens each glyph's
 quad so the ink can bleed, measures everything in points, and keeps a stroke's core at least 55%
 of its coverage so thin text stays legible. Keep to that floor in any glyph shader you write.

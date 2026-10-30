@@ -378,7 +378,8 @@ Things only a person at the screen can check, in order of value:
   faster, brighter edges; at 30 fps idle streams move about 4 to 10 pt a frame and busy ones 9
   to 21 pt, so look for choppiness on a busy pane; a pane flipping between working and idle
   jumps its stream and brightness (no fade yet)
-- effects: Matrix, a markdown tab and the sidebar: green glow, the idle glitch, no decode
+- effects: Matrix, the sidebar and a raw markdown or file viewer tab: green glow, the idle glitch, no decode
+- effects: matrix, a rendered markdown tab: soft pale green text with no halo and no glitches, the rain barely showing behind it
 - effects: Matrix, scrolling (the wheel in Claude Code's fullscreen renderer, and Arkos's own
   scrollback) shows no scramble and no glitches while it moves
 - effects: Matrix, emoji on the display: their colours tinted green, haloed, glitching as letters do

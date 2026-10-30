@@ -18,6 +18,11 @@
 // (crates/arkos/src/effects/matrix.rs, glitch_key and glitches) and a change to one is made to
 // both. Between glitches every letter is still and whole; nothing else here moves.
 //
+// Reading text, the rendered markdown's, is drawn calmly: the app marks it with the alpha
+// ARKOS_CALM_ALPHA (declared by the window ahead of this source, as ARKOS_SCALE is), and a glyph
+// whose alpha is within 0.002 of it, after any fade, is a soft pale green with no halo and no
+// glitch. On a light theme (dark text) it is the dark text below, without the glitch.
+//
 // Emoji go on the same display (arkos_emoji_vertex and arkos_emoji_fragment, at the end): their
 // own colours tinted toward the green, haloed, and glitching by the same rule.
 
@@ -41,6 +46,18 @@ constant float GLITCH_FLASH = 1.4;
 constant float3 MATRIX_GREEN = float3(0.35, 1.0, 0.45);
 // Dark text (a light theme with matrix chosen) leans toward a deep green instead.
 constant float3 MATRIX_DEEP = float3(0.0, 0.4, 0.15);
+// The soft pale green reading text leans toward.
+constant float3 CALM_GREEN = float3(0.72, 0.86, 0.72);
+// How far reading text leans toward it, so links and headings keep a hint of their own colour.
+constant float CALM_TINT = 0.6;
+// Reading text's light: a little under the display's, easier on the eyes.
+constant float CALM_BRIGHTNESS = 0.9;
+
+// Whether a glyph's colour alpha marks it as reading text: within 0.002 of the window's
+// ARKOS_CALM_ALPHA, so a fade that scales the alpha a little still counts.
+bool calm_text(float alpha) {
+  return abs(alpha - ARKOS_CALM_ALPHA) < 0.002;
+}
 
 // A hash of n in 0 to 1, in integer arithmetic (PCG's output step) so the Rust mirror agrees to
 // the bit: the top 24 bits, times a power of two, are exact in a float. The wash's own copy.
@@ -131,7 +148,8 @@ vertex MatrixVertexOutput arkos_glyph_vertex(
   float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
   float4 color = hsla_to_rgba(sprite.color);
   uint slot = uint(floor(*time / GLITCH_SLOT));
-  float3 g = glitch(glitch_origin(sprite.bounds), slot);
+  // Reading text never glitches: no mirror and no flash.
+  float3 g = calm_text(color.a) ? float3(1.0) : glitch(glitch_origin(sprite.bounds), slot);
   return MatrixVertexOutput{
       device_position,
       tile_position,
@@ -188,6 +206,15 @@ fragment float4 arkos_glyph_fragment(
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
   bool dark = luminance < 0.45;
   float3 hue = dark ? MATRIX_DEEP : MATRIX_GREEN;
+
+  // Reading text on a dark ground: a soft pale green at a little less light, with no halo and
+  // (from the vertex stage) no glitch, its coverage the glyph's own. Dark reading text goes on
+  // as dark text, which has no halo and no flash already.
+  bool calm = calm_text(input.color.a);
+  if (calm && !dark) {
+    float3 soft = mix(col, CALM_GREEN, CALM_TINT) * CALM_BRIGHTNESS;
+    return float4(soft, core * input.color.a);
+  }
 
   // The halo's three rings, skipped for dark text, which draws none.
   float g = 0.0;

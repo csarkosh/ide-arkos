@@ -115,6 +115,7 @@ document is a starting point, named in one place, and expected to change.
 
 `frame_rate = 30`, `scale = 0.5`, `ui_text_bump = 0`, `ink_borders = true`,
 `highlights = "effect"`, `menus = "glow"`, `glyph_motion = true`, `paper_alpha = 0.8`,
+`document_paper_alpha = 0.92` (amended 2026-10-29, see the end),
 `chrome_alpha = 0.0`, `active_tab_alpha = 0.5`, `text_contrast = 0.0`, and the two new keys
 below.
 
@@ -162,6 +163,13 @@ the emoji stages at the end) with these changes:
     chance it is rare.
   - The hash is `hash01` from space's wash (PCG's output step, integer arithmetic), so a Rust
     mirror agrees to the bit.
+- **Reading text is calm** (amended 2026-10-29, see the end). The rendered markdown view marks
+  its text with the alpha `CALM_ALPHA` = 0.995 (`effects::active`), which the window declares
+  to every glyph shader as `ARKOS_CALM_ALPHA`. A glyph whose alpha is within 0.002 of it (after
+  any fade) leans toward a soft pale green `CALM_GREEN` = `(0.72, 0.86, 0.72)` by `CALM_TINT` =
+  0.6, at `CALM_BRIGHTNESS` = 0.9, with no halo and no glitch (the vertex stage gives it no
+  mirror and no flash). Dark reading text (a light theme) is the dark text above, without the
+  glitch. Emoji carry no mark and stay on the display.
 - **Emoji** go on the same display: their own colours tinted toward the green by the same
   tint, haloed, and glitching by the same rule.
 - **Under Reduce Motion** the clock is frozen and no glyph timer runs, so whichever glyphs the
@@ -407,3 +415,28 @@ wash's `hash01`, so streams and tears land in other places.
 10. As in the mock-up, an edge whose line lies within 1.5 pt of the window's border
     (`EDGE_BORDER`) is skipped by the wash: the window's own outline carries no line, rain or
     runes. The menu stage keeps every edge.
+
+## Amendment (2026-10-29, Cyrus: markdown is for reading)
+
+"markdown needs a softer color / effect on the eyes. it's primarily for reading. so make it
+easier for that."
+
+1. Calm text is a general capability. The glyph shader sees only each glyph's colour, so the
+   app marks reading text through its colour's alpha: `CALM_ALPHA` = 0.995 in
+   `effects::active`. The rendered markdown view (`md_view::md_colors`, and the code spans'
+   colours in `code_runs`) multiplies every text colour's alpha by it: the body, the dimmed
+   text, links, headings, code, a task box's tick, a diagram's error line and the raw blocks'
+   markdown colours (`RawColors.alpha`). Nothing else is marked: not the raw markdown editor,
+   the file viewer, the terminal or the UI. Without an effect, or under one that ignores the
+   mark, the text is 0.5% transparent, which nobody can see.
+2. The window declares `constant float ARKOS_CALM_ALPHA = 0.995;` ahead of every glyph shader,
+   beside `ARKOS_SCALE` (`active::glyph_header`), `arkos effect check` compiles with the same
+   lines, and `arkos effect contract --glyphs` prints it. Since fades scale the alpha too, a
+   shader tests a band: calm when `abs(input.color.a - ARKOS_CALM_ALPHA) < 0.002`.
+3. Matrix draws calm light text a soft pale green (the text section's calm rule), with no halo
+   and no glitch; its alpha is the glyph's coverage times `input.color.a`, so the 55% core floor
+   holds. Calm dark text on a light theme is the dark branch without the glitch.
+4. A reading paper: the manifest key `document_paper_alpha` (0.5 to 1.0, default the effect's
+   `paper_alpha`) is the paper of the markdown and file viewer tabs (`Style::
+   document_paper_alpha`); the terminal and web pages keep `paper_alpha`. Matrix sets 0.92, so
+   the rain barely shows behind reading text.

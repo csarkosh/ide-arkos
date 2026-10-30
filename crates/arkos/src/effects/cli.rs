@@ -105,7 +105,18 @@ fn contract(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     if !a.words.is_empty() || a.has("--json") {
         return usage(err, EFFECT_USAGE);
     }
-    let _ = if a.has("--glyphs") { write!(out, "{}{}{} // the window's pixels per point: 2 on a Retina screen, 1 on most others\n{GLYPH_SIGNATURES}", gpui::GLYPH_SHADER_PRELUDE, gpui::EMOJI_SHADER_PRELUDE, active::scale_line(2.0)) } else { write!(out, "{PREAMBLE}") };
+    let _ = if a.has("--glyphs") {
+        write!(
+            out,
+            "{}{}{} // the window's pixels per point: 2 on a Retina screen, 1 on most others\n{} // a glyph whose colour alpha is within 0.002 of this (after any fade) is reading text, the rendered markdown's; a shader may draw it calmly\n{GLYPH_SIGNATURES}",
+            gpui::GLYPH_SHADER_PRELUDE,
+            gpui::EMOJI_SHADER_PRELUDE,
+            active::scale_line(2.0),
+            active::calm_line()
+        )
+    } else {
+        write!(out, "{PREAMBLE}")
+    };
     0
 }
 
@@ -194,8 +205,9 @@ fn compile(effect: &Effect) -> Result<(), String> {
 /// Builds the glyph stages from `source` (the file `file`) appended to gpui's own shader source,
 /// as `Window::set_glyph_shader` does.
 fn compile_glyphs(device: &DeviceRef, source: &str, file: &str) -> Result<(), String> {
-    // A window puts its scale's line first; a Retina one stands in for every window here.
-    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::scale_line(2.0));
+    // A window puts its scale's and the calm alpha's lines first; a Retina one stands in for
+    // every window here.
+    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::glyph_header(2.0));
     let library = device.new_library_with_source(&format!("{base}\n{source}"), &CompileOptions::new()).map_err(|e| layer::point_into(&e, &base, "gpui", file))?;
     let function = |name: &str| library.get_function(name, None).map_err(|_| format!("{file}: the glyph shader has no function named {name}"));
     let build = |vertex: &str, fragment: &str| -> Result<(), String> {
@@ -504,13 +516,16 @@ mod tests {
         assert!(out.starts_with(gpui::GLYPH_SHADER_PRELUDE), "the prelude comes first");
         assert!(out[gpui::GLYPH_SHADER_PRELUDE.len()..].starts_with(gpui::EMOJI_SHADER_PRELUDE), "then gpui's emoji stages");
         let prelude = gpui::GLYPH_SHADER_PRELUDE.lines().count() + gpui::EMOJI_SHADER_PRELUDE.lines().count();
-        assert_eq!(out.lines().count(), prelude + 4, "then four lines");
+        assert_eq!(out.lines().count(), prelude + 5, "then five lines");
         let scale = out.lines().nth(prelude).unwrap();
         assert!(scale.starts_with("constant float ARKOS_SCALE"), "the window's scale is declared: {scale}");
-        let signatures = out.lines().nth(prelude + 1).unwrap();
+        let calm = out.lines().nth(prelude + 1).unwrap();
+        assert!(calm.starts_with("constant float ARKOS_CALM_ALPHA = 0.995;"), "reading text's alpha is declared: {calm}");
+        assert!(calm.contains("reading text"), "{calm}");
+        let signatures = out.lines().nth(prelude + 2).unwrap();
         assert!(signatures.contains("vertex Out arkos_glyph_vertex(uint unit_vertex_id [[vertex_id]]"), "{signatures}");
         assert!(signatures.contains("fragment float4 arkos_glyph_fragment(In input [[stage_in]]"), "{signatures}");
-        let emoji = out.lines().nth(prelude + 2).unwrap();
+        let emoji = out.lines().nth(prelude + 3).unwrap();
         assert!(emoji.contains("arkos_emoji_vertex(") && emoji.contains("arkos_emoji_fragment("), "{emoji}");
         assert!(emoji.contains("constant PolychromeSprite *sprites"), "{emoji}");
         let clock = out.lines().last().unwrap();
@@ -602,6 +617,10 @@ mod tests {
         for (name, copy) in [("space", "stars"), ("matrix", "rain")] {
             let effect = manifest::load(name, Path::new("/nonexistent/effects")).unwrap();
             assert_eq!(compile(&effect), Ok(()), "{name}");
+            // Matrix reads ARKOS_CALM_ALPHA, which the check declares ahead of it as a window does.
+            if name == "matrix" {
+                assert!(effect.glyphs.as_deref().unwrap().contains("ARKOS_CALM_ALPHA"));
+            }
             // A copy made with `template` passes `check` as the built-in does.
             assert_eq!(run(&["template", name, "--as", copy], &env).0, 0, "{name}");
             let folder = s.effects().join(copy).display().to_string();

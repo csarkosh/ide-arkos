@@ -29,6 +29,9 @@ pub struct Manifest {
     pub menus: MenuLook,
     /// A terminal's or document's paper over the wash.
     pub paper_alpha: f32,
+    /// A document's paper over the wash (rendered markdown and the viewer). Absent,
+    /// `paper_alpha`.
+    pub document_paper_alpha: Option<f32>,
     /// The bars and the sidebar over the wash.
     pub chrome_alpha: f32,
     /// The active tab over the wash.
@@ -53,6 +56,11 @@ impl Manifest {
     pub fn glyph_rate(&self) -> u32 {
         self.glyph_rate.unwrap_or_else(|| self.frame_rate.min(crate::effects::active::GLYPH_RATE_CAP))
     }
+
+    /// The paper a document reads on: the `document_paper_alpha` key, else `paper_alpha`.
+    pub fn document_paper_alpha(&self) -> f32 {
+        self.document_paper_alpha.unwrap_or(self.paper_alpha)
+    }
 }
 
 impl Default for Manifest {
@@ -69,6 +77,7 @@ impl Default for Manifest {
             highlights: Highlights::App,
             menus: MenuLook::App,
             paper_alpha: 0.5,
+            document_paper_alpha: None,
             chrome_alpha: 0.0,
             active_tab_alpha: 0.55,
             text_contrast: 0.0,
@@ -132,6 +141,9 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("scale", m.scale, 0.1, 1.0)?;
     in_range("ui_text_bump", m.ui_text_bump, 0.0, 4.0)?;
     in_range("paper_alpha", m.paper_alpha, 0.5, 1.0)?;
+    if let Some(a) = m.document_paper_alpha {
+        in_range("document_paper_alpha", a, 0.5, 1.0)?;
+    }
     in_range("chrome_alpha", m.chrome_alpha, 0.0, 1.0)?;
     in_range("active_tab_alpha", m.active_tab_alpha, 0.0, 1.0)?;
     in_range("text_contrast", m.text_contrast, 0.0, 1.0)?;
@@ -287,6 +299,25 @@ mod tests {
     }
 
     #[test]
+    fn a_document_s_paper_defaults_to_the_terminal_s_and_is_refused_out_of_range_with_its_key() {
+        let m = parse(MINIMAL).unwrap();
+        assert_eq!(m.document_paper_alpha, None);
+        assert_eq!(m.document_paper_alpha(), 0.5, "absent, the paper_alpha default");
+        assert_eq!(parse(&with("paper_alpha = 0.7")).unwrap().document_paper_alpha(), 0.7, "absent, the effect's own paper_alpha");
+        let m = parse(&with("paper_alpha = 0.7\ndocument_paper_alpha = 0.9")).unwrap();
+        assert_eq!((m.paper_alpha, m.document_paper_alpha, m.document_paper_alpha()), (0.7, Some(0.9), 0.9));
+        assert!(parse(&with("document_paper_alpha = 0.5")).is_ok());
+        assert!(parse(&with("document_paper_alpha = 1.0")).is_ok());
+        let e = parse(&with("document_paper_alpha = 0.4")).unwrap_err();
+        assert!(e.contains("document_paper_alpha must be 0.5 to 1.0 (was 0.4)"), "{e}");
+        let e = parse(&with("document_paper_alpha = 1.1")).unwrap_err();
+        assert!(e.contains("document_paper_alpha must be 0.5 to 1.0 (was 1.1)"), "{e}");
+        for b in BUILTIN.iter().filter(|b| b.name != "matrix") {
+            assert_eq!(parse(b.manifest).unwrap().document_paper_alpha, None, "{} reads on its terminal's paper", b.name);
+        }
+    }
+
+    #[test]
     fn an_unknown_key_and_a_missing_name_are_refused() {
         let e = parse(&with("sparkle = true")).unwrap_err();
         assert!(e.contains("sparkle"), "{e}");
@@ -416,6 +447,8 @@ mod tests {
         assert_eq!(m.highlights, Highlights::Effect);
         assert_eq!(m.menus, MenuLook::Glow);
         assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.8, 0.0, 0.5, 0.0));
+        assert_eq!(m.document_paper_alpha, Some(0.92), "a document reads on a nearly opaque paper");
+        assert_eq!(m.document_paper_alpha(), 0.92);
         assert_eq!(m.glyph_rate(), 10);
         assert_eq!(m.glyphs.as_deref(), Some("glyphs.metal"));
     }
