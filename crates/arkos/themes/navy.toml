@@ -3,9 +3,7 @@
 # a dim one; every colour at least 4.5:1 against its background. The chrome and the terminal
 # background are sampled from docs/reference/ and lifted 12 per channel to the #11161f floor.
 name = "navy"
-
-[effect]
-name = "space"
+# No [effect]: Navy is the default and draws plain; `space` is one Settings click away.
 
 [chrome]
 window_bg = "#0e1723"

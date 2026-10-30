@@ -272,7 +272,7 @@ An effect is a shader that paints the project window: a wash under every surface
 optionally the text itself. Peach Light comes with `watercolor`: washes that hug each block with
 a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
 and hovered rows and the hovered tab as fading strokes of pigment, glyphs and emoji written in ink, and UI
-text two points larger. Navy comes with `space`: a calm night sky of twinkling stars, a faint
+text two points larger. `space` (chosen in Settings; Navy, the default theme, draws plain) is a calm night sky of twinkling stars, a faint
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and
 tables outlined in glowing lines with soft bars of light sweeping along them every few seconds, the highlights glowing softly, and the text as a still
@@ -286,7 +286,7 @@ bar is clear over the wash and the page is outlined; on a light theme a page tha
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Peach Light and Lavender Light, `space` for Navy, `matrix` for Matrix, and none for Timo
+for Peach Light and Lavender Light, `matrix` for Matrix, and none for Navy (the default) and Timo
 Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter

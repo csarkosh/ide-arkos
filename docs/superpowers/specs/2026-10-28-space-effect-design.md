@@ -171,3 +171,9 @@ shooting stars; ruling 6 now only asks that a frozen clock shows no shooting sta
 The text glow is raised from 0.90 to 1.40 ("a little more glow", then one more nudge); the pane edges glow wider
 (halo 0.75, reach 3.5 points) with a bright shimmer gliding along them, and a shooting star
 comes every 8 to 16 seconds.
+
+## Amendment (2026-10-30, Cyrus)
+
+Navy, the default theme, recommends no effect: `navy.toml` has no `[effect]` table, so a new
+window in Navy with `effect.name = "theme"` draws plain. `space` stays built in and is chosen in
+Settings or with `arkos effect use space`.

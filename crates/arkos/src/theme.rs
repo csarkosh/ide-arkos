@@ -688,8 +688,8 @@ mod tests {
     }
 
     #[test]
-    fn navy_recommends_space_and_both_light_themes_watercolor() {
-        assert_eq!(builtin("navy").unwrap().recommended_effect(), Some("space"));
+    fn navy_the_default_recommends_no_effect_and_both_light_themes_watercolor() {
+        assert_eq!(builtin("navy").unwrap().recommended_effect(), None);
         assert_eq!(builtin("peach-light").unwrap().recommended_effect(), Some("watercolor"));
         assert_eq!(builtin("lavender-light").unwrap().recommended_effect(), Some("watercolor"));
         assert_eq!(builtin("timo-purple").unwrap().recommended_effect(), None);

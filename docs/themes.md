@@ -109,7 +109,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-light` sets `watercolor` and `navy` sets `space`. |
+| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-light` and `lavender-light` set `watercolor` and `matrix` sets `matrix`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 

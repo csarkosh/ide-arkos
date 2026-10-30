@@ -341,7 +341,8 @@ Things only a person at the screen can check, in order of value:
   a line under the header from the wash, and inner lines in ink; scrolled half out of the pane,
   its outline stops at the pane's edge; with `effect.name none` the cream fills and grey lines
   come back
-- effects, space: Navy (`effect.name = "theme"`) shows the night sky; over ten minutes a
+- effects: Navy (`effect.name = "theme"`, the default) draws plain, with no effect
+- effects, space: Navy with `effect.name = "space"` shows the night sky; over ten minutes a
   shooting star crosses every 8 to 16 seconds (one at a time, in under a second, no bright
   flash), a planet drifts across over several minutes, the stars twinkle slowly, and there is
   no aurora
