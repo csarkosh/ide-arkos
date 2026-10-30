@@ -420,7 +420,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `effect.name` (theme, none, or an installed effect's name), `effect.intensity` (0.0 to 1.0),
   `effect.run_unfocused` (true, false: false pauses a window's effects while it is not in
-  focus), `viewer.wide_tables` (wrap, scroll), `viewer.image_destination` (the folder pasted
+  focus), `viewer.wide_tables` (wrap, scroll), `viewer.page_width` (full, letter), `viewer.image_destination` (the folder pasted
   and dropped images go in, relative to the document's; empty is beside it), `update.auto` (true, false),
   `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
   `telemetry.crashes` (never, ask, always). Another key exits 2

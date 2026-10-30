@@ -363,7 +363,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
-        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || !shot.keys.is_empty() {
+        if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || shot.hover.is_some() || !shot.keys.is_empty() {
             activate(window_pid);
             pause(Duration::from_millis(400))?;
             send_input(shot, frame)?;
@@ -506,6 +506,14 @@ fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
+    }
+    if let Some([fx, fy]) = shot.hover {
+        // Two moves, the last onto the point: a tooltip waits for the pointer to settle.
+        let at = |dx: f64| CGPoint::new(frame.0 + fx * frame.2 + dx, frame.1 + fy * frame.3);
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at(-6.0), CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(80));
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at(0.0), CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(900));
     }
     if !allowed {
         say(&format!("{}: the click and keys need the Accessibility permission for Arkos Shoot (System Settings > Privacy & Security > Accessibility); they were not delivered", shot.name));
@@ -816,12 +824,13 @@ fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
          [theme]\ndark = \"{dark}\"\nlight = \"{light}\"\n\n\
          [appearance]\nmode = \"{theme}\"\n\n\
          [recovery]\nstart_at_login = \"off\"\n\n\
-         [update]\nauto = false\ncheck_every_secs = 0\n",
+         [update]\nauto = false\ncheck_every_secs = 0\n{viewer}",
         preset = story.window.preset,
         sidebar = story.window.sidebar_width,
         collapsed = story.window.sidebar == story::Sidebar::Collapsed,
         dark = story.window.theme.dark,
         light = story.window.theme.light,
+        viewer = story.window.page_width.as_ref().map(|w| format!("\n[viewer]\npage_width = \"{w}\"\n")).unwrap_or_default(),
     );
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }

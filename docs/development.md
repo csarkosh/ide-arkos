@@ -596,6 +596,12 @@ Things only a person at the screen can check, in order of value:
   shows it and scrolls there; paging through a long document moves the highlight; resting on a row
   shows its preview; drag a paragraph's handle above a heading: the accent line shows where, and it
   lands there with blank lines around it; one undo puts it back
+- reading: the five alerts show their icons and colours, `> [!TIP] Shortcut` reads "Shortcut";
+  footnote references are raised numbers by first reference, hovering one shows its note, the
+  notes are numbered with a `↩` back; front matter shows its title, date and a faint label;
+  "present" (or Alt+Cmd+P) turns presentation on: no handle, no label, a click and typing change
+  nothing, a click on a footnote scrolls to it and `↩` back; "edit" ends it; with
+  `page_width = "letter"` a wide pane centres an 816 px column; Cmd+= enlarges the text in it
 - links and images: click a link to `#a-heading` and then its address: the view scrolls to the
   heading; a link to `other.md#a-heading` opens the other file scrolled there; `[[other|text]]`
   reads "text" and its revealed name opens `other.md`; paste a screenshot mid-paragraph:
