@@ -42,7 +42,7 @@ use crate::viewer_element::{self as element, RawColors, RawLayout};
 use gpui::{
     canvas, div, font, img, list, point, prelude::*, px, relative, size, AnyElement, App, AvailableSpace, Bounds, Context, CursorStyle, DispatchPhase, Div, Element, ElementId, ElementInputHandler,
     Entity, FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, Pixels, Point, ScrollHandle, SharedString, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, WeakEntity, Window,
+    PathBuilder, Pixels, Point, ScrollHandle, SharedString, Stateful, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, WeakEntity, Window,
 };
 use std::cell::Cell;
 use std::ops::Range;
@@ -69,8 +69,14 @@ const RULE_GAP: f32 = 8.0;
 const CODE_PAD: f32 = 8.0;
 const QUOTE_BAR: f32 = 3.0;
 const CHECKBOX: f32 = 12.0;
-/// The space on either side of the text.
+/// The space on the right of the text.
 const SIDE: f32 = 20.0;
+/// The space on the left of the text in the rendered view: the drag handle, then a heading's
+/// chevron (structure spec, section 4).
+const GUTTER: f32 = 40.0;
+/// The line a dragged block would land on, a transparent top border on every row until a drag
+/// is over it.
+const DROP_LINE: f32 = 3.0;
 /// The width of one character in the item marker column, as a multiple of the paragraph size:
 /// an approximation of the UI font's average advance.
 const CH_EM: f32 = 0.6;
@@ -803,7 +809,7 @@ pub fn render(
     let v = viewer.read(cx);
     let state = v.list_state.clone();
     // Read here, not in the row closure: the list holds its state while it lays the rows out.
-    let view_w = f32::from(v.list_state.viewport_bounds().size.width) - 2.0 * SIDE;
+    let view_w = f32::from(v.list_state.viewport_bounds().size.width) - GUTTER - SIDE;
     let drew_grid = Rc::new(Cell::new(false));
     let colors = md_colors(theme);
     let ctx = Rc::new(BlockCtx {
@@ -842,13 +848,17 @@ pub fn render(
             list(state, move |ix, window, cx| {
                 // The caret's block is raw only while the viewer has the focus: gpui redraws the
                 // window when the focus moves, so a blur turns it back to rendered.
-                let (count, raw, tail_caret) = {
+                let (count, raw, tail_caret, hidden) = {
                     let v = ctx.viewer.read(cx);
                     let focused = v.focus.is_focused(window);
-                    (v.blocks.len(), v.renders_raw(ix, focused), focused && v.pending_append)
+                    (v.blocks.len(), v.renders_raw(ix, focused), focused && v.pending_append, v.is_hidden(ix))
                 };
                 if ix >= count {
                     return tail_element(&ctx, tail_caret);
+                }
+                // A block a folded heading hides takes no room.
+                if hidden {
+                    return div().id(("md-hidden", ix)).h(px(0.0)).into_any_element();
                 }
                 if raw {
                     // A paragraph, heading, list or quote stays rendered and reveals the element
@@ -892,7 +902,7 @@ fn input_canvas(viewer: Entity<Viewer>, view_w: f32, drew_grid: Rc<Cell<bool>>) 
     canvas(
         |_, _, _| {},
         move |bounds, (), window, cx| {
-            if drew_grid.get() && (f32::from(bounds.size.width) - 2.0 * SIDE - view_w).abs() > 0.5 {
+            if drew_grid.get() && (f32::from(bounds.size.width) - GUTTER - SIDE - view_w).abs() > 0.5 {
                 window.request_animation_frame();
             }
             let focus = viewer.read(cx).focus.clone();
@@ -924,8 +934,9 @@ fn tail_element(ctx: &BlockCtx, caret: bool) -> AnyElement {
         .w_full()
         .h(px(line_h * 2.0))
         .cursor_text()
-        .when(caret, |d| d.child(div().absolute().top_0().left(px(SIDE)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
+        .when(caret, |d| d.child(div().absolute().top_0().left(px(GUTTER)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
         .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, cx| viewer.update(cx, |v, cx| v.append_paragraph(cx)))
+        .map(|d| drop_target(d, usize::MAX, ctx))
         .into_any_element()
 }
 
@@ -956,7 +967,10 @@ fn raw_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyE
         find_current: ctx.find_current,
         caret_color: ctx.caret,
     };
-    div().id(("md-block", ix)).w_full().px(px(SIDE)).pb(px(BLOCK_GAP)).child(el).into_any_element()
+    let press = Rc::new(Cell::new(false));
+    let size = ctx.font_size * ctx.mono_line_height;
+    let row = div().id(("md-block", ix)).relative().w_full().pl(px(GUTTER)).pr(px(SIDE)).pb(px(BLOCK_GAP - DROP_LINE)).child(el);
+    gutter(row, ix, v, ctx, (0.0, size), &press).into_any_element()
 }
 
 /// What a revealed block draws from: its text, its tree, where the user is in it, and whether the
@@ -1004,9 +1018,11 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     let size = ctx.font_size * scale(kind);
     let row = div()
         .id(("md-block", ix))
+        .relative()
         .w_full()
-        .px(px(SIDE))
-        .pb(px(BLOCK_GAP))
+        .pl(px(GUTTER))
+        .pr(px(SIDE))
+        .pb(px(BLOCK_GAP - DROP_LINE))
         .text_color(ctx.text)
         .font_family(ctx.ui.clone())
         .text_size(px(size))
@@ -1066,10 +1082,23 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
         let empty = Rc::new(Display::verbatim(rv.text, c..c));
         children.push(reveal_text(ix, r.pieces.len() + 1, empty, FontWeight::NORMAL, ctx.text, true, rv, ctx, &mut parts));
     }
+    // A folded heading ends with a dim ellipsis.
+    let folded = matches!(kind, BlockKind::Heading(_)) && v.heads.iter().any(|h| h.block == ix && v.folded.contains(&h.key()));
+    let children: Vec<AnyElement> = if folded {
+        vec![div().flex().flex_row().items_end().gap(px(8.0)).children(children).child(div().text_color(ctx.dim).pb(px(4.0)).child("\u{2026}")).into_any_element()]
+    } else {
+        children
+    };
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
     // A grid's cells place the caret themselves and give the row no text to map a drag through.
     let grid = r.pieces.iter().any(|p| matches!(p, Piece::Table(TablePiece::Grid(..))));
+    // Where the first line sits, for the handle and the chevron: a heading below its gap at its own size.
+    let first = match kind {
+        BlockKind::Heading(level) => (HEADING_GAP, ctx.font_size * heading_scale(*level) * PARA_LINE),
+        _ => (0.0, size * PARA_LINE),
+    };
+    let press_gutter = task_press.clone();
     let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
     let (v_right, texts_right) = (ctx.viewer.clone(), texts.clone());
     row.children(children)
@@ -1110,7 +1139,81 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
                 }
             });
         })
+        .map(|row| gutter(row, ix, v, ctx, first, &press_gutter))
         .into_any_element()
+}
+
+/// A row as a drop target for a dragged block: its top border turns into the accent line while a
+/// block from this document is over it, and a drop moves that block to just before it (`to`, or
+/// the end of the document for the tail row).
+fn drop_target(row: Stateful<Div>, to: usize, ctx: &BlockCtx) -> Stateful<Div> {
+    let (viewer, accent) = (ctx.viewer.clone(), ctx.link);
+    let id = viewer.entity_id();
+    row.border_t(px(DROP_LINE))
+        .border_color(gpui::transparent_black())
+        .drag_over::<crate::drag::BlockDrag>(move |style, d, _window, _cx| if d.viewer == id { style.border_color(accent) } else { style })
+        .on_drop(move |d: &crate::drag::BlockDrag, _window, cx| {
+            if d.viewer == id {
+                viewer.update(cx, |v, cx| {
+                    let to = if to == usize::MAX { v.blocks.len() } else { to };
+                    v.move_block(d.from, to, cx);
+                });
+            }
+        })
+}
+
+/// A row's gutter: the drop line, the drag handle shown while the row is hovered, and for a
+/// heading the chevron that folds it, always shown while folded. `first` is where the row's first
+/// line sits (its top and height), to centre them on it; a press on either is theirs (`press`),
+/// not the row's.
+fn gutter(row: Stateful<Div>, ix: usize, v: &Viewer, ctx: &BlockCtx, first: (f32, f32), press: &Rc<Cell<bool>>) -> Stateful<Div> {
+    let (top, line_h) = first;
+    let dim = ctx.dim;
+    let head = v.heads.iter().find(|h| h.block == ix);
+    let folded = head.is_some_and(|h| v.folded.contains(&h.key()));
+    let label: String = v.blocks.get(ix).and_then(|b| v.doc.as_ref().and_then(|d| d.lines().get(b.lines.start).cloned())).unwrap_or_default().chars().take(40).collect();
+    let drag = crate::drag::BlockDrag { viewer: ctx.viewer.entity_id(), from: ix, label: label.trim().to_string().into(), position: Point::default(), bg: ctx.selection, fg: ctx.caret, family: ctx.ui.clone() };
+    let press_handle = press.clone();
+    let handle = div()
+        .id(("md-handle", ix))
+        .absolute()
+        .left(px(4.0))
+        .top(px(top))
+        .h(px(line_h))
+        .w(px(16.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(14.0))
+        .text_color(dim)
+        .cursor_grab()
+        .opacity(0.0)
+        .group_hover("md-row", |s| s.opacity(1.0))
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| press_handle.set(true))
+        .on_drag(drag, |d: &crate::drag::BlockDrag, position, _window, cx| cx.new(|_| d.clone().at(position)))
+        .child("\u{283f}");
+    let chevron = head.map(|_| {
+        let (viewer, press_chevron) = (ctx.viewer.clone(), press.clone());
+        div()
+            .id(("md-fold", ix))
+            .absolute()
+            .left(px(GUTTER - 18.0))
+            .top(px(top))
+            .h(px(line_h))
+            .w(px(14.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.0))
+            .text_color(dim)
+            .cursor_pointer()
+            .opacity(if folded { 1.0 } else { 0.0 })
+            .group_hover("md-row", |s| s.opacity(1.0))
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| press_chevron.set(true))
+            .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.toggle_fold(ix, cx)))
+            .child(if folded { "\u{25b8}" } else { "\u{25be}" })
+    });
+    drop_target(row.group("md-row"), ix, ctx).child(handle).children(chevron)
 }
 
 /// One piece of block `ix`'s row: `j` is its place among the row's pieces (the id of its text,
@@ -2226,7 +2329,8 @@ impl Element for RawBlockElement {
         let block = BlockLayout { raw: self.raw_layout(text), lines: self.shown.clone(), row_tops };
         self.viewer.update(cx, |v, _| v.raw_blocks.push(block.clone()));
         // The row's padding takes the mouse too: a press beside the text is on its nearest column.
-        let hit = Bounds { origin: point(bounds.origin.x - px(SIDE), bounds.origin.y), size: size(bounds.size.width + px(SIDE * 2.0), bounds.size.height + px(BLOCK_GAP)) };
+        // The gutter's handle keeps its own presses: the hit area starts after it.
+        let hit = Bounds { origin: point(bounds.origin.x - px(GUTTER - 20.0), bounds.origin.y), size: size(bounds.size.width + px(GUTTER - 20.0 + SIDE), bounds.size.height + px(BLOCK_GAP)) };
         let hitbox = window.insert_hitbox(hit, HitboxBehavior::Normal);
         let run = TextRun { len: 1, font: font(self.family.clone()), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
         let cell_w = f32::from(window.text_system().layout_line("W", px(self.font_size), &[run], None).width);

@@ -48,6 +48,34 @@ impl Render for TabDrag {
     }
 }
 
+/// A markdown block dragged by its handle (structure spec, section 3): which document and which
+/// block, and a chip of its first words that follows the pointer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockDrag {
+    pub viewer: gpui::EntityId,
+    pub from: usize,
+    pub label: SharedString,
+    pub position: Point<Pixels>,
+    pub bg: Rgb,
+    pub fg: Rgb,
+    pub family: SharedString,
+}
+
+impl BlockDrag {
+    pub fn at(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for BlockDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().pl(self.position.x + px(8.0)).pt(self.position.y + px(8.0)).child(
+            div().px(px(10.0)).py(px(4.0)).bg(self.bg.hsla()).text_color(self.fg.hsla()).font_family(self.family.clone()).text_size(px(12.0)).opacity(0.9).child(self.label.clone()),
+        )
+    }
+}
+
 /// A file dragged out of the tree: dropped on a terminal, its path is pasted (spec 6).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileDrag {

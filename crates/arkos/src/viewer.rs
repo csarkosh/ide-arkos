@@ -1920,6 +1920,13 @@ impl Viewer {
         }
     }
 
+    /// The outline's click: the block a fold hides is shown, and the view scrolls to it.
+    pub fn reveal_block(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.unfold_for(ix, cx);
+        self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(0.0) });
+        cx.notify();
+    }
+
     /// Moves block `from` to before block `to` (`md_fold::move_block`), as one undoable edit, the
     /// caret at the moved block's start.
     pub fn move_block(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {

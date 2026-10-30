@@ -227,6 +227,10 @@ pub struct Shot {
     /// opens a context menu for the picture.
     #[serde(default)]
     pub right_click: Option<[f64; 2]>,
+    /// A drag from the first point to the second, fractions of the window, after the clicks and
+    /// before the keys: the left button held over a dozen moves.
+    #[serde(default)]
+    pub drag: Option<[[f64; 2]; 2]>,
     /// Keys sent to the window after the wait and before the capture, in order: `down`,
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
