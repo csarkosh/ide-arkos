@@ -1869,13 +1869,20 @@ fn code_header(ix: usize, info: &str, fenced: bool, v: &Viewer, ctx: &BlockCtx, 
         .when(open, |d| d.bg(ctx.border))
         .child(if fenced { format!("{name} \u{25be}") } else { name })
         .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| p_pill.set(true))
-        .when(fenced, |d| d.on_click(move |_ev, _window, cx| v_pill.update(cx, |v, cx| v.open_lang_picker(ix, cx))))
+        // The header behind it would select the block on the same click.
+        .on_click(move |_ev, _window, cx| {
+            cx.stop_propagation();
+            if fenced {
+                v_pill.update(cx, |v, cx| v.open_lang_picker(ix, cx));
+            }
+        })
         // Where the list hangs while it is open.
         .child(
             canvas(
-                move |bounds, _window, cx| {
-                    if open {
-                        v_at.update(cx, |v, _| v.lang_at = Some(point(bounds.left(), bounds.bottom())));
+                move |bounds, window, cx| {
+                    // The list is built before this layout in a frame: a new place draws it again.
+                    if open && v_at.update(cx, |v, _| v.lang_at.replace(point(bounds.left(), bounds.bottom())) != Some(point(bounds.left(), bounds.bottom()))) {
+                        window.refresh();
                     }
                 },
                 |_, _, _, _| {},
@@ -1889,7 +1896,10 @@ fn code_header(ix: usize, info: &str, fenced: bool, v: &Viewer, ctx: &BlockCtx, 
         .cursor_pointer()
         .child(if copied { "\u{2713} Copied" } else { "Copy" })
         .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| p_copy.set(true))
-        .on_click(move |_ev, _window, cx| v_copy.update(cx, |v, cx| v.copy_code(ix, cx)));
+        .on_click(move |_ev, _window, cx| {
+            cx.stop_propagation();
+            v_copy.update(cx, |v, cx| v.copy_code(ix, cx));
+        });
     div()
         .id(("md-code-header", ix))
         .flex()

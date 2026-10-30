@@ -610,6 +610,8 @@ pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
     ("The slash menu (at a line's start or after a space)", "/"),
     ("Fold or unfold a heading", "Click its chevron"),
     ("Move a block", "Drag its handle"),
+    ("A code block's language", "Click its name"),
+    ("Select a whole code block", "Click its header"),
     ("Outdent an item, or take it out of its list (at the text start)", "Delete"),
     ("Scroll to the top or end", "Home, End"),
 ];

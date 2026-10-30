@@ -2522,9 +2522,12 @@ impl Viewer {
             self.finish_composition(cx);
         }
         self.lang = None;
+        let rendered = self.rendered();
         let Some(doc) = self.doc.as_mut() else { return };
         doc.break_coalescing();
         let p = doc.clamp(p);
+        // A press that maps onto a hidden fence line (a click on a diagram) lands in the code.
+        let p = if rendered { snap_pos(doc.lines(), &self.blocks, p, md_reveal::Dir::Here) } else { p };
         let anchor = if extend { doc.clamp(self.caret.anchor) } else { p };
         self.caret = edit::Caret { head: p, anchor, goal_col: None };
         self.selecting = true;
@@ -3118,6 +3121,11 @@ pub fn rendered_break(doc: &mut edit::Document, blocks: &[md_blocks::Block], car
     let line_end = edit::Pos { line: at.line, ch: len };
     let last_text = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX).line;
     let down = |doc: &edit::Document, by: usize, ch: usize| edit::Caret::at(doc.clamp(edit::Pos { line: at.line + by, ch }));
+    // On a blank line after the block's text, either key adds a line.
+    if at.line > last_text && line.trim().is_empty() {
+        doc.insert(edit::Caret::at(at), "\n", now);
+        return Some(down(doc, 1, 0));
+    }
     match (&block.kind, shift) {
         (K::Paragraph | K::Heading(_), false) | (K::Heading(_), true) => {
             doc.insert(edit::Caret::at(at), "\n\n", now);
@@ -4712,6 +4720,7 @@ mod tests {
         assert_eq!(broken("```\ncode\n```\n\nafter", Pos { line: 1, ch: 2 }, true), (lines_of(&["```", "code", "```", "", "", "", "after"]), Pos { line: 4, ch: 0 }), "from the last code line, out of the block");
         assert_eq!(broken("```\na\nb\n```", Pos { line: 1, ch: 1 }, true).1, Pos { line: usize::MAX, ch: 0 }, "elsewhere in code, a plain break");
         assert_eq!(broken("# Title", Pos { line: 0, ch: 7 }, true).0, lines_of(&["# Title", "", ""]), "a heading has no hard break: a new paragraph");
+        assert_eq!(broken("end\n", Pos { line: 1, ch: 0 }, true), (lines_of(&["end", "", ""]), Pos { line: 2, ch: 0 }), "on the blank line after the text, a line, not a lone backslash");
     }
 
     #[test]
