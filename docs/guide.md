@@ -236,7 +236,9 @@ beside the file as `image.png`, then `image-1.png` and so on, and puts `![image]
 paragraph of its own: on the blank line the caret is on, or after the caret's paragraph. Drop
 files from Finder on a rendered document and a line shows where they go, before the block under
 the pointer. A file inside the document's folder is linked where it is. An image from elsewhere
-is copied in under the next `image-N` name, and any other file is linked where it is. Undo takes
+is copied in under the next `image-N` name, and any other file is linked where it is. Images,
+videos and audio go in as `![name](path)`, so a video shows its poster and audio its player;
+anything else goes in as a link. Undo takes
 the text out and leaves the file. To keep images in a folder, set `image_destination` under
 `[viewer]`, say to `images` or `{name}.assets` (`{name}` is the document's name), or run
 `arkos settings set viewer.image_destination images`.
