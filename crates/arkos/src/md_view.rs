@@ -27,6 +27,7 @@ use crate::config::WideTables;
 use crate::edit::{self, Pos};
 use crate::highlight::Highlighter;
 use crate::md_blocks::{self, Block, BlockKind, Inline, Run};
+use crate::md_reveal::{self, Display};
 use crate::md_table::{self, Align};
 use crate::media::{self, Media, Poster};
 use crate::mermaid::{self, Diagram, MermaidTheme};
@@ -125,6 +126,8 @@ pub fn resolve_image(base_dir: &Path, path: &str) -> Option<PathBuf> {
 /// again) and the text runs drawn from them.
 pub struct Rendered {
     pieces: Vec<Piece>,
+    /// The block's element tree, made the first time the block is revealed (`Viewer::block_tree`).
+    pub tree: Option<Rc<md_reveal::BlockTree>>,
     pub code_spans: Option<(Arc<Highlighter>, Vec<Vec<Span>>)>,
     code_runs: Option<CodeRuns>,
 }
@@ -643,7 +646,7 @@ fn fill_cache(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>,
         for inline in md_blocks::inline(&text, &block.kind) {
             push_pieces(inline, &mut pieces);
         }
-        Rendered { pieces, code_spans: None, code_runs: None }
+        Rendered { pieces, tree: None, code_spans: None, code_runs: None }
     });
     let Some(Piece::Code { info, text, .. }) = r.pieces.first() else { return };
     if let Some(h) = highlighter {
@@ -790,7 +793,10 @@ pub fn render(
     cx: &mut App,
 ) -> AnyElement {
     // The raw blocks of this frame record their layouts as they are laid out.
-    viewer.update(cx, |v, _| v.raw_blocks.clear());
+    viewer.update(cx, |v, _| {
+        v.raw_blocks.clear();
+        v.reveal_blocks.clear();
+    });
     let v = viewer.read(cx);
     let state = v.list_state.clone();
     // Read here, not in the row closure: the list holds its state while it lays the rows out.
@@ -842,7 +848,18 @@ pub fn render(
                     return tail_element(&ctx, tail_caret);
                 }
                 if raw {
-                    return raw_row(ix, &ctx, window, cx);
+                    // A paragraph, heading, list or quote stays rendered and reveals the element
+                    // under the caret; any other block, or one the reveal cannot draw, is its
+                    // source. Only those four kinds fill their cache here, so a diagram being typed
+                    // in renders nothing.
+                    let reveal = ctx.viewer.update(cx, |v, cx| {
+                        let kind_ok = v.blocks.get(ix).is_some_and(|b| md_reveal::kind_reveals(&b.kind));
+                        if kind_ok {
+                            fill(v, ix, highlighter.as_ref(), &ctx, cx);
+                        }
+                        kind_ok && v.reveals(ix)
+                    });
+                    return if reveal { reveal_row(ix, &ctx, window, cx) } else { raw_row(ix, &ctx, window, cx) };
                 }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
@@ -852,7 +869,7 @@ pub fn render(
                 });
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
-                    (Some(block), Some(r)) => block_element(ix, &block.kind, r, v, &ctx),
+                    (Some(block), Some(r)) => block_element(ix, &block.kind, r, v, &ctx, None),
                     _ => div().into_any_element(),
                 }
             })
@@ -939,6 +956,28 @@ fn raw_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyE
     div().id(("md-block", ix)).w_full().px(px(SIDE)).pb(px(BLOCK_GAP)).child(el).into_any_element()
 }
 
+/// What a revealed block draws from: its text, its tree, where the user is in it, and whether the
+/// viewer has the focus (the caret is drawn only then).
+pub struct Reveal<'a> {
+    text: &'a str,
+    tree: &'a md_reveal::BlockTree,
+    focus: &'a md_reveal::Focus,
+    focused: bool,
+}
+
+/// An active paragraph, heading, list or quote: the rendered row, with the element under the
+/// caret showing its source (`md_reveal`), the caret, the selection and the find hits drawn in the
+/// text. Its cache is filled before this is called.
+fn reveal_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyElement {
+    let Some(tree) = ctx.viewer.update(cx, |v, _| v.block_tree(ix)) else { return div().into_any_element() };
+    let v = ctx.viewer.read(cx);
+    let (Some(doc), Some(block), Some(r)) = (v.doc.as_ref(), v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) else { return div().into_any_element() };
+    let text = block_source(doc.lines(), block);
+    let focus = v.focus_for(ix);
+    let reveal = Reveal { text: &text, tree: &tree, focus: &focus, focused: v.focus.is_focused(window) };
+    block_element(ix, &block.kind, r, v, ctx, Some(&reveal))
+}
+
 /// What a press on a rendered block maps through: each text element's layout with the source it
 /// shows, and whether a task box took the press (so the caret stays put and the box's click
 /// lands).
@@ -947,16 +986,17 @@ struct Parts {
     task_press: Rc<Cell<bool>>,
 }
 
-/// The source behind one text element: inline runs, or a code block's text.
+/// The source behind one text element: inline runs, a code block's text, or a revealed text.
 enum Part {
     Runs(Rc<[Run]>),
     Code(Rc<str>),
+    Reveal(Rc<Display>),
 }
 
 /// One block's row: its inlines in the block's type, 6 px of space below, with the frame's state
 /// from `v` (the web images' fetches). A press puts the caret at the source position under it
 /// (Shift extends the selection); a drag that reaches the row moves the selection's head there.
-pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx: &BlockCtx) -> AnyElement {
+pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx: &BlockCtx, reveal: Option<&Reveal>) -> AnyElement {
     let size = ctx.font_size * scale(kind);
     let row = div()
         .id(("md-block", ix))
@@ -973,8 +1013,35 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
         children.push(div().h(px(BLANK_H)).into_any_element());
     }
     let code_runs = r.code_runs.as_ref().map(|c| &c.runs);
+    // A revealed list's item pieces and the tree's items are in the same order.
+    let items = reveal.map(|rv| md_reveal::item_paths(&rv.tree.nodes)).unwrap_or_default();
+    let mut item = 0;
     for (j, piece) in r.pieces.iter().enumerate() {
-        children.push(piece_element(ix, j, piece, size, code_runs, false, v, ctx, &mut parts));
+        let el = match (reveal, piece) {
+            (Some(rv), Piece::Para(_) | Piece::Heading(..) | Piece::Quote(_)) => {
+                let display = Rc::new(Display::new(rv.text, &rv.tree.nodes, &rv.focus.offsets));
+                let (weight, color) = if matches!(piece, Piece::Quote(_)) { (FontWeight::NORMAL, ctx.dim) } else if matches!(piece, Piece::Heading(..)) { (FontWeight::SEMIBOLD, ctx.text) } else { (FontWeight::NORMAL, ctx.text) };
+                let text = reveal_text(ix, j, display, weight, color, rv, ctx, &mut parts);
+                match piece {
+                    Piece::Heading(level, _) => div().pt(px(HEADING_GAP)).text_size(px(ctx.font_size * heading_scale(*level))).child(text).into_any_element(),
+                    Piece::Quote(_) => div().border_l(px(QUOTE_BAR)).border_color(ctx.border).pl(px(10.0)).child(text).into_any_element(),
+                    _ => text,
+                }
+            }
+            (Some(rv), Piece::Item { depth, marker, task, runs }) => {
+                let path = items.get(item);
+                item += 1;
+                match path.and_then(|p| item_display(rv, p)) {
+                    Some(display) => {
+                        let text = reveal_text(ix, j, Rc::new(display), FontWeight::NORMAL, ctx.text, rv, ctx, &mut parts);
+                        item_shell(ix, j, *depth, marker, *task, runs.first().map(|r| r.source.start), size, true, ctx, &parts, text)
+                    }
+                    None => piece_element(ix, j, piece, size, code_runs, false, v, ctx, &mut parts),
+                }
+            }
+            _ => piece_element(ix, j, piece, size, code_runs, false, v, ctx, &mut parts),
+        };
+        children.push(el);
     }
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
@@ -1119,6 +1186,7 @@ fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixel
     Some(match part {
         Part::Runs(runs) => md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte)),
         Part::Code(text) => code_pos(block, lines, text, byte),
+        Part::Reveal(display) => md_blocks::pos_of_offset(block, lines, display.source_of(byte)),
     })
 }
 
@@ -1337,6 +1405,15 @@ fn follow_link(action: LinkAction, viewer: &Entity<Viewer>, cx: &mut App) {
 /// depth, a task's box (a click flips it when `toggle`), and the item's text.
 #[allow(clippy::too_many_arguments)]
 fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, runs: &Rc<[Run]>, size: f32, toggle: bool, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let text = text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts);
+    item_shell(ix, j, depth, marker, task, runs.first().map(|r| r.source.start), size, toggle, ctx, parts, text)
+}
+
+/// A list item's row around its text element `text`: the bullet or number in the marker column,
+/// indented by `depth`, and the task box, which toggles the item whose text starts at `offset` in
+/// the block's text when `toggle` says it may.
+#[allow(clippy::too_many_arguments)]
+fn item_shell(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>, offset: Option<usize>, size: f32, toggle: bool, ctx: &BlockCtx, parts: &Parts, text: AnyElement) -> AnyElement {
     let ch = size * CH_EM;
     let bullet = match marker {
         "-" | "*" | "+" | "" => "\u{2022}".to_string(),
@@ -1345,7 +1422,6 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
     let line_h = size * PARA_LINE;
     // The item's line is found when the box is clicked, from where its text starts in the block:
     // the block may have moved since this frame.
-    let offset = runs.first().map(|r| r.source.start);
     let check = task.map(|done| {
         let viewer = ctx.viewer.clone();
         let press = parts.task_press.clone();
@@ -1380,8 +1456,136 @@ fn item_element(ix: usize, j: usize, depth: u8, marker: &str, task: Option<bool>
         .pl(px(f32::from(depth) * 2.0 * ch))
         .child(div().flex_none().min_w(px(2.0 * ch)).pr(px(ch * 0.5)).text_color(ctx.dim).child(bullet))
         .children(check)
-        .child(div().flex_1().min_w_0().child(text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts)))
+        .child(div().flex_1().min_w_0().child(text))
         .into_any_element()
+}
+
+/// The display of a revealed list's item at `path` when the user is in it (a focus offset in its
+/// own text, the selection or a find hit reaching it); `None` draws the item as it renders.
+fn item_display(rv: &Reveal, path: &[usize]) -> Option<Display> {
+    let item = md_reveal::node_at(&rv.tree.nodes, path)?;
+    let own = item.span.start..md_reveal::item_end(item);
+    let meets = |r: &Range<usize>| r.start <= own.end && own.start <= r.end;
+    let touched = rv.focus.offsets.iter().any(|&o| own.start <= o && o <= own.end) || rv.focus.selection.as_ref().is_some_and(meets) || rv.focus.hits.iter().any(|(h, _)| meets(h));
+    touched.then(|| Display::for_item(rv.text, &rv.tree.nodes, path, &rv.focus.offsets)).flatten()
+}
+
+/// A source range clipped to what `display` shows, as a display range; `None` when nothing of it
+/// is shown.
+fn clip(display: &Display, r: &Range<usize>) -> Option<Range<usize>> {
+    let (a, b) = (r.start.max(display.covers.start), r.end.min(display.covers.end));
+    let d = display.range(&(a..b.max(a)));
+    (a < b && d.start < d.end).then_some(d)
+}
+
+/// A revealed text as one string with a `TextRun` per stretch of one style, as `styled_runs` makes
+/// for rendered runs: the UI font (the terminal's for code and HTML), bold, italic, the link colour
+/// and underline, the code background; then the selection and the find hits as backgrounds and the
+/// marked text as an underline. A revealed marker takes the style of the text it belongs to. Also
+/// the links' display ranges with their targets.
+fn display_runs(display: &Display, weight: FontWeight, color: Hsla, focus: &md_reveal::Focus, ctx: &BlockCtx) -> (Vec<TextRun>, Vec<(Range<usize>, String)>) {
+    let text = &display.text;
+    let selection = focus.selection.as_ref().and_then(|s| clip(display, s));
+    let hits: Vec<(Range<usize>, bool)> = focus.hits.iter().filter_map(|(h, cur)| clip(display, h).map(|d| (d, *cur))).collect();
+    let marked = focus.marked.as_ref().and_then(|m| clip(display, m));
+    let mut cuts: Vec<usize> = vec![0, text.len()];
+    cuts.extend(display.display.iter().flat_map(|r| [r.start, r.end]));
+    cuts.extend(selection.iter().chain(hits.iter().map(|(h, _)| h)).chain(marked.iter()).flat_map(|r| [r.start, r.end]));
+    cuts.retain(|&c| c <= text.len() && text.is_char_boundary(c));
+    cuts.sort_unstable();
+    cuts.dedup();
+    let within = |r: &Option<Range<usize>>, a: usize| r.as_ref().is_some_and(|r| r.start <= a && a < r.end);
+    let mut runs = Vec::with_capacity(cuts.len());
+    let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if a >= b {
+            continue;
+        }
+        let i = display.display.partition_point(|r| r.end <= a).min(display.segments.len().saturating_sub(1));
+        let st = display.segments.get(i).map(|s| s.style.clone()).unwrap_or_default();
+        let mut f = font(if st.code || st.html { ctx.mono.clone() } else { ctx.ui.clone() });
+        f.weight = if st.bold { FontWeight::BOLD } else { weight };
+        f.style = if st.italic { FontStyle::Italic } else { FontStyle::Normal };
+        let fg = if st.link.is_some() {
+            ctx.link
+        } else if st.html {
+            ctx.dim
+        } else {
+            color
+        };
+        let hit = hits.iter().find(|(h, _)| h.start <= a && a < h.end).map(|(_, cur)| *cur);
+        let background = match hit {
+            Some(true) => Some(ctx.find_current.hsla()),
+            Some(false) => Some(ctx.selection.hsla()),
+            None if within(&selection, a) => Some(ctx.selection.hsla()),
+            None => st.code.then_some(ctx.code_bg),
+        };
+        let underline = if within(&marked, a) {
+            Some(UnderlineStyle { thickness: px(1.0), color: Some(ctx.caret.hsla()), wavy: false })
+        } else {
+            st.link.as_ref().map(|_| UnderlineStyle { thickness: px(1.0), color: Some(ctx.link), wavy: false })
+        };
+        runs.push(TextRun { len: b - a, font: f, color: fg, background_color: background, underline, strikethrough: st.strike.then_some(StrikethroughStyle { thickness: px(1.0), color: Some(fg) }) });
+        if let Some(url) = st.link {
+            match links.last_mut() {
+                Some((r, u)) if r.end == a && *u == url => r.end = b,
+                _ => links.push((a..b, url)),
+            }
+        }
+    }
+    (runs, links)
+}
+
+/// A revealed text: the display's text and runs as a `StyledText` (opening its links on
+/// Cmd+click), its layout in `parts` for a press to map through, and over it a canvas that
+/// records the layout on the viewer (`Viewer::reveal_blocks`) and paints the caret where the
+/// caret's offset is shown, while the viewer has the focus. An empty text is drawn as a zero-width
+/// space, so the caret has a line to stand on.
+#[allow(clippy::too_many_arguments)]
+fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, color: Hsla, rv: &Reveal, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let (runs, links) = display_runs(&display, weight, color, rv.focus, ctx);
+    let (shown, runs) = if display.text.is_empty() {
+        let f = font(ctx.ui.clone());
+        ("\u{200b}".to_string(), vec![TextRun { len: 3, font: f, color, background_color: None, underline: None, strikethrough: None }])
+    } else {
+        (display.text.clone(), runs)
+    };
+    let styled = StyledText::new(shown).with_runs(runs);
+    let layout = styled.layout().clone();
+    parts.texts.push((layout.clone(), Part::Reveal(display.clone())));
+    let text = if links.is_empty() {
+        styled.into_any_element()
+    } else {
+        let (ranges, targets): (Vec<_>, Vec<_>) = links.into_iter().unzip();
+        let (base_dir, viewer) = (ctx.base_dir.clone(), ctx.viewer.clone());
+        InteractiveText::new(("md-text", j), styled)
+            .on_click(ranges, move |i, window, cx| {
+                if window.modifiers().platform {
+                    if let Some(target) = targets.get(i) {
+                        follow_link(link_action(target, &base_dir), &viewer, cx);
+                    }
+                }
+            })
+            .into_any_element()
+    };
+    let caret = rv.focus.caret.filter(|&c| rv.focused && display.covers.start <= c && c <= display.covers.end).map(|c| display.display_of(c));
+    let (viewer, caret_color) = (ctx.viewer.clone(), ctx.caret);
+    let covers = display.covers.clone();
+    let overlay = canvas(
+        move |_bounds, _window, cx| {
+            viewer.update(cx, |v, _| v.reveal_blocks.push(RevealLayout { block: ix, covers, layout: layout.clone(), display }));
+            layout
+        },
+        move |_bounds, layout, window, _cx| {
+            if let Some(p) = caret.and_then(|c| layout.position_for_index(c)) {
+                element::paint_caret(window, p.x, p.y, layout.line_height(), caret_color);
+            }
+        },
+    )
+    .absolute()
+    .inset_0();
+    div().relative().child(text).child(overlay).into_any_element()
 }
 
 /// Flips the task box of the item in block `ix` whose text starts at `offset` in the block's text:
@@ -1811,6 +2015,16 @@ fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
         .max_w_full()
         .child(img(poster).max_w_full().with_fallback(fallback))
         .child(play.absolute().inset_0())
+}
+
+/// Where a revealed text was laid out this frame: its block, the part of the block's text it
+/// shows, its text layout and its display (the map between the two).
+#[derive(Clone)]
+pub struct RevealLayout {
+    pub block: usize,
+    pub covers: Range<usize>,
+    pub layout: TextLayout,
+    pub display: Rc<Display>,
 }
 
 /// Where a raw block was laid out in a frame, kept in `Viewer.raw_blocks` for the input handler

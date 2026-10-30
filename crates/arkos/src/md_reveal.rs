@@ -6,7 +6,7 @@
 //! offsets (bytes of the block's text) and display bytes both ways, and the caret helpers that keep
 //! the caret off hidden markers.
 
-use crate::md_blocks::{self, MarkerClass, Node, NodeKind, Style};
+use crate::md_blocks::{self, BlockKind, Marker, MarkerClass, Node, NodeKind, Style};
 use std::ops::Range;
 
 /// Where the user is in a block, in bytes of its text: the caret, the selection's ends, a find
@@ -14,11 +14,47 @@ use std::ops::Range;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Focus {
     pub offsets: Vec<usize>,
+    /// The caret itself, when it is in the block.
+    pub caret: Option<usize>,
     pub selection: Option<Range<usize>>,
     /// The find hits in the block, `true` for the current one.
     pub hits: Vec<(Range<usize>, bool)>,
     /// The input method's uncommitted text.
     pub marked: Option<Range<usize>>,
+}
+
+/// A block's element tree with its markers, made once per block text and kept with the block's
+/// cached rendering: whether the reveal can draw it (`md_blocks::revealable`) and whether it is a
+/// paragraph of images only, which keeps its picture form until it has a reveal of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockTree {
+    pub nodes: Vec<Node>,
+    pub markers: Vec<Marker>,
+    pub revealable: bool,
+    pub image_only: bool,
+}
+
+impl BlockTree {
+    pub fn new(text: &str) -> BlockTree {
+        let nodes = md_blocks::elements(text);
+        let markers = md_blocks::markers(text, &nodes);
+        let revealable = md_blocks::revealable(text, &nodes);
+        let image = |n: &Node| n.kind == NodeKind::Image || (matches!(n.kind, NodeKind::Link { .. }) && n.children.len() == 1 && n.children[0].kind == NodeKind::Image);
+        let blank = |n: &Node| n.kind == NodeKind::SoftBreak || (n.kind == NodeKind::Text && n.text.trim().is_empty());
+        let image_only = matches!(&nodes[..], [p] if p.kind == NodeKind::Paragraph && p.children.iter().any(image) && p.children.iter().all(|c| image(c) || blank(c)));
+        BlockTree { nodes, markers, revealable, image_only }
+    }
+}
+
+/// Whether a block of `kind` can be revealed at all: paragraphs, headings, lists and quotes.
+pub fn kind_reveals(kind: &BlockKind) -> bool {
+    matches!(kind, BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote)
+}
+
+/// Whether the active block of `kind` with this tree is drawn revealed; otherwise it is drawn as
+/// its source, as every active block was before.
+pub fn reveals(kind: &BlockKind, tree: &BlockTree) -> bool {
+    kind_reveals(kind) && tree.revealable && !tree.image_only
 }
 
 /// What a segment of the source shows as.
@@ -588,6 +624,21 @@ mod tests {
         assert_eq!(vertical(&text, &rows, x_of, 3, Dir::Up, 24.0), None);
         assert_eq!(vertical(&text, &rows, x_of, 22, Dir::Down, 8.0), None);
         assert_eq!(row_edges(&rows, 14), (11, 20));
+    }
+
+    #[test]
+    fn an_active_paragraph_heading_list_or_quote_reveals_and_the_rest_stays_source() {
+        use crate::md_blocks::BlockKind as K;
+        assert!(reveals(&K::Paragraph, &BlockTree::new("a **b**\n\n")));
+        assert!(reveals(&K::Heading(2), &BlockTree::new("## h")));
+        assert!(reveals(&K::List, &BlockTree::new("- a\n  - b")));
+        assert!(reveals(&K::Quote, &BlockTree::new("> q")));
+        assert!(!reveals(&K::CodeBlock { info: String::new() }, &BlockTree::new("```\nx\n```")));
+        assert!(!reveals(&K::Table, &BlockTree::new("| a |\n|---|\n| 1 |")));
+        assert!(!reveals(&K::Paragraph, &BlockTree::new("[t][r]\n\n[r]: https://x")), "a definition the tree cannot place");
+        assert!(!reveals(&K::Paragraph, &BlockTree::new("![a](a.png)")), "an image paragraph waits for its own form");
+        assert!(!reveals(&K::Paragraph, &BlockTree::new("[![a](a.svg)](https://a) ![b](b.png)")), "a badge row too");
+        assert!(reveals(&K::Paragraph, &BlockTree::new("![a](a.png) beside text")));
     }
 
     #[test]

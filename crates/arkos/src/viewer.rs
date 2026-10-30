@@ -15,6 +15,7 @@ use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
+use crate::md_reveal;
 use crate::md_table;
 use crate::md_view;
 use crate::media;
@@ -37,6 +38,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -608,6 +610,9 @@ pub struct Viewer {
     /// handler and the mouse map between positions and pixels with them. Emptied when the view is
     /// built, filled as the raw blocks are laid out.
     pub raw_blocks: Vec<md_view::BlockLayout>,
+    /// Where the rendered view's revealed texts were laid out this frame (a paragraph's, a
+    /// heading's, a quote's, each revealed item's), emptied and filled as `raw_blocks` is.
+    pub reveal_blocks: Vec<md_view::RevealLayout>,
     /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
@@ -698,6 +703,7 @@ impl Viewer {
             scroll_x: 0.0,
             last_bounds: None,
             raw_blocks: Vec::new(),
+            reveal_blocks: Vec::new(),
             caret_placed: false,
             pending_append: false,
             compose: None,
@@ -1596,6 +1602,36 @@ impl Viewer {
         (self.caret_placed && !self.pending_append && focused && selected.contains(&ix)) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
     }
 
+    /// Block `ix`'s element tree: the cached one when its rendering is cached (made there the
+    /// first time), else made now.
+    pub fn block_tree(&mut self, ix: usize) -> Option<Rc<md_reveal::BlockTree>> {
+        let (doc, block) = (self.doc.as_ref()?, self.blocks.get(ix)?);
+        let make = || Rc::new(md_reveal::BlockTree::new(&md_view::block_source(doc.lines(), block)));
+        match self.block_cache.get_mut(ix) {
+            Some(Some(r)) => Some(r.tree.get_or_insert_with(make).clone()),
+            _ => Some(make()),
+        }
+    }
+
+    /// Whether the active block `ix` is drawn revealed (`md_reveal::reveals`) rather than as its
+    /// source. Only a paragraph, heading, list or quote has its tree looked at.
+    pub fn reveals(&mut self, ix: usize) -> bool {
+        let Some(kind) = self.blocks.get(ix).map(|b| b.kind.clone()) else { return false };
+        md_reveal::kind_reveals(&kind) && self.block_tree(ix).is_some_and(|t| md_reveal::reveals(&kind, &t))
+    }
+
+    /// Where the user is in block `ix` (`focus_of`): the caret once it is placed, the find bar's
+    /// hits, the input method's marked text.
+    pub fn focus_for(&self, ix: usize) -> md_reveal::Focus {
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return md_reveal::Focus::default() };
+        let (hits, current) = match &self.find {
+            Some(f) => (f.hits.as_slice(), f.hits.get(f.current).copied()),
+            None => (&[][..], None),
+        };
+        let caret = if self.caret_placed && !self.pending_append { self.caret } else { edit::Caret::at(edit::Pos { line: usize::MAX, ch: 0 }) };
+        focus_of(doc.lines(), block, caret, hits, current, self.marked.as_ref())
+    }
+
     /// The lines a raw block shows: from its first line to its last line with text, or further
     /// down to the caret, the selection's ends or the marked text when they are on the blank lines
     /// after it.
@@ -2235,6 +2271,40 @@ pub fn list_rows(blocks: usize) -> usize {
     } else {
         blocks + 1
     }
+}
+
+/// Where the user is in `block`, in bytes of its text (`md_blocks::offset_of_pos`): the caret's
+/// head and anchor when they are in it (the head is also `caret`), the selection clipped to it,
+/// the find hits in it with the current one marked and its two ends among the offsets (so the
+/// block reveals what the hit is in), and the marked text.
+pub fn focus_of(lines: &[String], block: &md_blocks::Block, caret: edit::Caret, hits: &[Hit], current: Option<Hit>, marked: Option<&Range<edit::Pos>>) -> md_reveal::Focus {
+    let inside = |p: edit::Pos| block.lines.contains(&p.line);
+    let at = |p: edit::Pos| md_blocks::offset_of_pos(block, lines, p);
+    let len = md_view::block_source(lines, block).len();
+    let line_at = |line: usize| at(edit::Pos { line, ch: 0 });
+    let mut focus = md_reveal::Focus::default();
+    for p in [caret.head, caret.anchor] {
+        if inside(p) && !focus.offsets.contains(&at(p)) {
+            focus.offsets.push(at(p));
+        }
+    }
+    focus.caret = inside(caret.head).then(|| at(caret.head));
+    let (lo, hi) = if caret.anchor <= caret.head { (caret.anchor, caret.head) } else { (caret.head, caret.anchor) };
+    if lo != hi && lo.line < block.lines.end && hi.line >= block.lines.start {
+        let from = if lo.line < block.lines.start { 0 } else { at(lo) };
+        let to = if hi.line >= block.lines.end { len } else { at(hi) };
+        focus.selection = (from < to).then_some(from..to);
+    }
+    for h in hits.iter().filter(|h| block.lines.contains(&h.line)) {
+        let base = line_at(h.line);
+        let is_current = current == Some(*h);
+        focus.hits.push((base + h.start..base + h.end, is_current));
+        if is_current {
+            focus.offsets.extend([base + h.start, base + h.end]);
+        }
+    }
+    focus.marked = marked.filter(|m| inside(m.start) && inside(m.end)).map(|m| at(m.start)..at(m.end));
+    focus
 }
 
 /// The rendered view's rows for a freshly loaded document: every row new, the tail after the
@@ -3524,6 +3594,22 @@ mod tests {
         blocks = md_blocks::split(edit::Document::from_text("one").lines());
         reset_rows(&blocks, &mut cache, &list);
         check(&blocks, &cache, "reload");
+    }
+
+    #[test]
+    fn a_block_s_focus_is_in_its_own_bytes_and_the_selection_is_clipped_to_it() {
+        let lines: Vec<String> = "a **b**\n\nc d\n".split('\n').map(String::from).collect();
+        let blocks = md_blocks::split(&lines);
+        let caret = edit::Caret { head: Pos { line: 2, ch: 1 }, anchor: Pos { line: 0, ch: 3 }, goal_col: None };
+        let first = focus_of(&lines, &blocks[0], caret, &[], None, None);
+        assert_eq!((first.offsets.clone(), first.caret, first.selection.clone()), (vec![3], None, Some(3..8)), "the anchor is here; the selection runs to the block's end");
+        let second = focus_of(&lines, &blocks[1], caret, &[], None, None);
+        assert_eq!((second.offsets.clone(), second.caret, second.selection.clone()), (vec![1], Some(1), Some(0..1)));
+        let hit = Hit { line: 2, start: 2, end: 3 };
+        let found = focus_of(&lines, &blocks[1], edit::Caret::at(Pos { line: 0, ch: 0 }), &[hit], Some(hit), None);
+        assert_eq!((found.offsets.clone(), found.hits.clone(), found.caret), (vec![2, 3], vec![(2..3, true)], None), "the current hit's ends reveal");
+        let marked = Pos { line: 2, ch: 0 }..Pos { line: 2, ch: 1 };
+        assert_eq!(focus_of(&lines, &blocks[1], edit::Caret::at(Pos { line: 2, ch: 1 }), &[], None, Some(&marked)).marked, Some(0..1));
     }
 
     #[test]
