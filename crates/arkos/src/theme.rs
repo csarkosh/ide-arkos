@@ -1,4 +1,4 @@
-//! Themes (spec 7): one flat set of named colours per TOML file. Five are built in and embedded;
+//! Themes (spec 7): one flat set of named colours per TOML file. Six are built in and embedded;
 //! user files in `~/.config/arkos/themes/` override or add to them. `Root` holds the active
 //! `Theme`; views read it, and each terminal resolves cells against `Theme::palette` at paint.
 use crate::palette::{Palette, Rgb};
@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct Theme {
     pub name: String,
+    /// Whether this is a dark or a light theme, which decides the `[theme]` slot Settings lists
+    /// it under. Every built-in says; a file from before 0.7.20 may not, and is then classed by
+    /// its window background (`kind`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<Appearance>,
     pub chrome: Chrome,
     pub terminal: TerminalColors,
     pub semantic: Semantic,
@@ -20,6 +25,23 @@ pub struct Theme {
     /// Optional: the effect the theme was designed with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<ThemeEffect>,
+}
+
+/// A theme's `appearance`: a dark theme (a dark window, light text) or a light one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Dark,
+    Light,
+}
+
+impl Appearance {
+    pub fn word(self) -> &'static str {
+        match self {
+            Appearance::Dark => "dark",
+            Appearance::Light => "light",
+        }
+    }
 }
 
 /// The `[effect]` table of a theme file: the one effect the look was designed with. The user's
@@ -160,25 +182,49 @@ pub struct ViewerColors {
 }
 
 /// The embedded themes: (name, file text). Extracted verbatim by `extract`.
-pub const BUILTIN: [(&str, &str); 5] = [
+pub const BUILTIN: [(&str, &str); 6] = [
     ("navy", include_str!("../themes/navy.toml")),
     ("timo-purple", include_str!("../themes/timo-purple.toml")),
     ("peach-light", include_str!("../themes/peach-light.toml")),
     ("lavender-light", include_str!("../themes/lavender-light.toml")),
     ("matrix", include_str!("../themes/matrix.toml")),
+    ("navy-runic", include_str!("../themes/navy-runic.toml")),
 ];
 
 /// The luminance a glyph shader sees: the sRGB dot product `0.2126 r + 0.7152 g + 0.0722 b` of
 /// the components over 255, with no linearising. It is not the WCAG luminance the contrast
-/// check uses. The matrix shader draws a glyph under 0.45 as dark text, without a halo, and the
+/// check uses. The runic shader draws a glyph under 0.45 as dark text, without a halo, and the
 /// terminal's decode (`effects::decode::DARK_TEXT`) freshens such text toward a deep green.
 pub fn luminance(c: Rgb) -> f32 {
     let ch = |v: u8| f32::from(v) / 255.0;
     0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
 }
 
+/// A theme from its file's text. A declared `appearance` must agree with the window background,
+/// since the contrast rules and Settings' lists go by it.
 pub fn parse(text: &str) -> Result<Theme, String> {
-    toml::from_str(text).map_err(|e| e.message().lines().next().unwrap_or("invalid theme").to_string())
+    let theme: Theme = toml::from_str(text).map_err(|e| e.message().lines().next().unwrap_or("invalid theme").to_string())?;
+    if let Some(declared) = theme.appearance {
+        let by_background = background_kind(theme.chrome.window_bg);
+        if declared != by_background {
+            return Err(format!(
+                "appearance = \"{}\" but window_bg {} is {}; make one of them match the other",
+                declared.word(),
+                theme.chrome.window_bg.hex(),
+                by_background.word()
+            ));
+        }
+    }
+    Ok(theme)
+}
+
+/// What a window background makes a theme: light when its luminance is over a half.
+fn background_kind(window_bg: Rgb) -> Appearance {
+    if crate::palette::luminance(window_bg) > 0.5 {
+        Appearance::Light
+    } else {
+        Appearance::Dark
+    }
 }
 
 pub fn builtin(name: &str) -> Option<Theme> {
@@ -278,6 +324,20 @@ pub fn list(dir: &Path) -> Vec<(String, Source)> {
     out
 }
 
+/// `list` with each theme's appearance: dark or light, or none for a file that does not load.
+pub fn kinds(dir: &Path) -> Vec<(String, Source, Option<Appearance>)> {
+    list(dir)
+        .into_iter()
+        .map(|(name, source)| {
+            let kind = match source {
+                Source::Invalid(_) => None,
+                _ => load(&name, dir).ok().map(|t| t.kind()),
+            };
+            (name, source, kind)
+        })
+        .collect()
+}
+
 /// Copies the theme file `src` into `dir` under the name the theme itself declares. Only `.toml`
 /// files are taken. Ok is the name and whether a file of that name was already there; without
 /// `replace` an existing file is left alone and the error is "exists", as it is for a built-in's
@@ -313,13 +373,14 @@ pub fn theme_cli_to(args: &[String], dir: &Path, out: &mut dyn std::io::Write, e
     let rest: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--json").collect();
     match rest.as_slice() {
         ["list"] if json => {
-            let rows: Vec<serde_json::Value> = list(dir)
+            let rows: Vec<serde_json::Value> = kinds(dir)
                 .into_iter()
-                .map(|(name, source)| {
+                .map(|(name, source, kind)| {
                     let path = dir.join(format!("{name}.toml")).display().to_string();
+                    let kind = kind.map(Appearance::word);
                     match source {
-                        Source::BuiltIn => serde_json::json!({ "name": name, "source": "built-in" }),
-                        Source::File => serde_json::json!({ "name": name, "source": "file", "path": path }),
+                        Source::BuiltIn => serde_json::json!({ "name": name, "source": "built-in", "appearance": kind }),
+                        Source::File => serde_json::json!({ "name": name, "source": "file", "appearance": kind, "path": path }),
                         Source::Invalid(e) => serde_json::json!({ "name": name, "source": "invalid", "error": e, "path": path }),
                     }
                 })
@@ -328,10 +389,11 @@ pub fn theme_cli_to(args: &[String], dir: &Path, out: &mut dyn std::io::Write, e
             0
         }
         ["list"] => {
-            for (name, source) in list(dir) {
+            for (name, source, kind) in kinds(dir) {
+                let kind = kind.map_or("", Appearance::word);
                 let _ = match source {
-                    Source::BuiltIn => writeln!(out, "{name} (built in)"),
-                    Source::File => writeln!(out, "{name} (file)"),
+                    Source::BuiltIn => writeln!(out, "{name} (built in, {kind})"),
+                    Source::File => writeln!(out, "{name} (file, {kind})"),
                     Source::Invalid(e) => writeln!(out, "{name} (file, invalid: {e})"),
                 };
             }
@@ -472,7 +534,7 @@ const fn ink(key: &'static str, meaning: &'static str, contrast_with: &'static s
 const ANSI_BG: &str = "terminal.background";
 
 const SCHEMA: &[TableDoc] = &[
-    TableDoc { name: "", keys: &[surface("name", "The theme's own name, a bare file stem; stored as <name>.toml and named in [theme] dark or light")] },
+    TableDoc { name: "", keys: &[surface("name", "The theme's own name, a bare file stem; stored as <name>.toml and named in [theme] dark or light"), surface("appearance", "dark or light: which [theme] slot Settings lists it under; it must agree with chrome.window_bg (optional, else read from it)")] },
     TableDoc {
         name: "chrome",
         keys: &[
@@ -597,7 +659,12 @@ impl Theme {
 
     /// A light theme has a bright window background; black is then a text colour.
     pub fn is_light(&self) -> bool {
-        crate::palette::luminance(self.chrome.window_bg) > 0.5
+        self.kind() == Appearance::Light
+    }
+
+    /// Dark or light: the theme's own `appearance`, or without one, its window background's.
+    pub fn kind(&self) -> Appearance {
+        self.appearance.unwrap_or_else(|| background_kind(self.chrome.window_bg))
     }
 }
 
@@ -635,6 +702,7 @@ pub fn blend(from: &Theme, to: &Theme, t: f32) -> Theme {
             keyword, string, comment, number, function, type_name, constant, operator, punctuation),
         font: to.font.clone(),
         effect: to.effect.clone(),
+        appearance: to.appearance,
     }
 }
 
@@ -725,13 +793,63 @@ mod tests {
     }
 
     #[test]
-    fn matrix_is_built_in_black_with_green_text_and_recommends_its_effect() {
+    fn matrix_is_built_in_black_with_green_text_and_recommends_the_runic_effect() {
         let m = builtin("matrix").expect("matrix is built in");
         assert!(!m.is_light());
         assert_eq!(m.chrome.window_bg, Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(m.terminal.background, Rgb { r: 0, g: 0, b: 0 });
-        assert_eq!(m.recommended_effect(), Some("matrix"));
-        assert_eq!(BUILTIN.len(), 5);
+        assert_eq!(m.recommended_effect(), Some("runic"));
+        assert_eq!(BUILTIN.len(), 6);
+    }
+
+    #[test]
+    fn navy_runic_is_navy_s_colours_and_fonts_with_the_runic_effect() {
+        let (navy, runic) = (builtin("navy").unwrap(), builtin("navy-runic").expect("navy-runic is built in"));
+        assert_eq!(runic.name, "navy-runic");
+        assert_eq!((&runic.chrome, &runic.terminal, &runic.semantic, &runic.tree, &runic.viewer), (&navy.chrome, &navy.terminal, &navy.semantic, &navy.tree, &navy.viewer));
+        assert_eq!((&runic.font, runic.appearance), (&navy.font, navy.appearance));
+        assert_eq!(runic.recommended_effect(), Some("runic"));
+        assert_eq!(navy.recommended_effect(), None, "navy, the default, still draws plain");
+    }
+
+    #[test]
+    fn every_built_in_declares_whether_it_is_dark_or_light_and_its_background_agrees() {
+        for (name, text) in BUILTIN {
+            let t = parse(text).unwrap();
+            let declared = t.appearance.unwrap_or_else(|| panic!("{name} declares no appearance"));
+            assert_eq!(declared == Appearance::Light, crate::palette::luminance(t.chrome.window_bg) > 0.5, "{name}");
+            assert_eq!(t.kind(), declared, "{name}");
+        }
+        let dark: Vec<&str> = BUILTIN.iter().filter(|(n, _)| builtin(n).unwrap().kind() == Appearance::Dark).map(|(n, _)| *n).collect();
+        assert_eq!(dark, ["navy", "timo-purple", "matrix", "navy-runic"]);
+    }
+
+    #[test]
+    fn a_theme_declaring_the_wrong_appearance_is_refused_and_one_declaring_none_is_classed_by_its_background() {
+        let navy = BUILTIN[0].1;
+        assert!(navy.contains("appearance = \"dark\"\n"));
+        let e = parse(&navy.replace("appearance = \"dark\"", "appearance = \"light\"")).unwrap_err();
+        assert_eq!(e, "appearance = \"light\" but window_bg #0e1723 is dark; make one of them match the other");
+        assert!(parse(&navy.replace("appearance = \"dark\"", "appearance = \"dim\"")).is_err());
+        let none = parse(&navy.replace("appearance = \"dark\"\n", "")).unwrap();
+        assert_eq!(none.appearance, None);
+        assert_eq!(none.kind(), Appearance::Dark);
+        let peach = parse(&BUILTIN[2].1.replace("appearance = \"light\"\n", "")).unwrap();
+        assert_eq!(peach.kind(), Appearance::Light);
+    }
+
+    #[test]
+    fn the_kinds_list_carries_each_theme_s_appearance_and_none_for_a_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mine.toml"), BUILTIN[2].1.replace("name = \"peach-light\"", "name = \"mine\"")).unwrap();
+        std::fs::write(dir.path().join("broken.toml"), "name = \"broken\"\n").unwrap();
+        let k = kinds(dir.path());
+        let find = |n: &str| k.iter().find(|(name, _, _)| name == n).map(|(_, _, a)| *a).unwrap();
+        assert_eq!(find("navy"), Some(Appearance::Dark));
+        assert_eq!(find("lavender-light"), Some(Appearance::Light));
+        assert_eq!(find("mine"), Some(Appearance::Light));
+        assert_eq!(find("broken"), None);
+        assert_eq!(k.len(), list(dir.path()).len());
     }
 
     #[test]
@@ -829,7 +947,7 @@ mod tests {
         assert_eq!(load("navy", dir.path()).unwrap().chrome.window_bg, rgb(0x000000));
         std::fs::write(dir.path().join("mine.toml"), BUILTIN[1].1.replace("name = \"timo-purple\"", "name = \"mine\"")).unwrap();
         assert_eq!(load("mine", dir.path()).unwrap().name, "mine");
-        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
+        assert_eq!(names(dir.path()), vec!["lavender-light".to_string(), "matrix".to_string(), "mine".to_string(), "navy".to_string(), "navy-runic".to_string(), "peach-light".to_string(), "timo-purple".to_string()]);
         let e = load("nope", dir.path()).unwrap_err();
         assert!(e.contains("nope") && e.contains(&dir.path().display().to_string()), "{e}");
         assert!(load("../navy", dir.path()).is_err());
@@ -844,7 +962,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("themes");
         let wrote = extract(&sub).unwrap();
-        assert_eq!(wrote.len(), 5);
+        assert_eq!(wrote.len(), 6);
         assert_eq!(std::fs::read_to_string(sub.join("navy.toml")).unwrap(), BUILTIN[0].1);
         std::fs::write(sub.join("navy.toml"), "edited").unwrap();
         assert!(extract(&sub).unwrap().is_empty(), "nothing to write the second time");
@@ -857,7 +975,7 @@ mod tests {
         // every built-in through `contrast_pairs`.
         let t = builtin("timo-purple").expect("ships");
         assert_eq!(t.name, "timo-purple");
-        assert_eq!(BUILTIN.len(), 5);
+        assert_eq!(BUILTIN.len(), 6);
         assert_eq!(t.chrome.focus_ring, t.terminal.cyan, "the accent is the cyan");
         assert_eq!(t.terminal.cursor, t.terminal.cyan);
     }
@@ -874,21 +992,23 @@ mod tests {
         assert_eq!(l[2], ("peach-light".into(), Source::BuiltIn));
         assert_eq!(l[3], ("lavender-light".into(), Source::BuiltIn));
         assert_eq!(l[4], ("matrix".into(), Source::BuiltIn));
-        assert!(matches!(&l[5], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
-        assert_eq!(l[6], ("mine".into(), Source::File));
+        assert_eq!(l[5], ("navy-runic".into(), Source::BuiltIn));
+        assert!(matches!(&l[6], (n, Source::Invalid(e)) if n == "broken" && !e.is_empty()));
+        assert_eq!(l[7], ("mine".into(), Source::File));
         assert_eq!(validate_file(&dir.path().join("mine.toml")), Ok("mine".into()));
         assert!(validate_file(&dir.path().join("broken.toml")).is_err());
         assert!(validate_file(&dir.path().join("none.toml")).is_err());
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["list".into()], dir.path(), &mut out, &mut err), 0);
         let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
-        assert_eq!(lines[0], "navy (file)");
-        assert_eq!(lines[1], "timo-purple (built in)");
-        assert_eq!(lines[2], "peach-light (built in)");
-        assert_eq!(lines[3], "lavender-light (built in)");
-        assert_eq!(lines[4], "matrix (built in)");
-        assert!(lines[5].starts_with("broken (file, invalid: "));
-        assert_eq!(lines[6], "mine (file)");
+        assert_eq!(lines[0], "navy (file, dark)");
+        assert_eq!(lines[1], "timo-purple (built in, dark)");
+        assert_eq!(lines[2], "peach-light (built in, light)");
+        assert_eq!(lines[3], "lavender-light (built in, light)");
+        assert_eq!(lines[4], "matrix (built in, dark)");
+        assert_eq!(lines[5], "navy-runic (built in, dark)");
+        assert!(lines[6].starts_with("broken (file, invalid: "));
+        assert_eq!(lines[7], "mine (file, dark)");
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("mine.toml").display().to_string()], dir.path(), &mut out, &mut err), 0);
         assert_eq!(std::str::from_utf8(&out).unwrap(), "ok: mine\n");
@@ -899,9 +1019,10 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["--json".into(), "list".into()], dir.path(), &mut out, &mut err), 0);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v[0], serde_json::json!({ "name": "navy", "source": "file", "path": dir.path().join("navy.toml").display().to_string() }));
-        assert_eq!(v[1], serde_json::json!({ "name": "timo-purple", "source": "built-in" }));
-        assert_eq!((v[5]["source"].as_str(), v[5]["error"].is_string()), (Some("invalid"), true));
+        assert_eq!(v[0], serde_json::json!({ "name": "navy", "source": "file", "appearance": "dark", "path": dir.path().join("navy.toml").display().to_string() }));
+        assert_eq!(v[1], serde_json::json!({ "name": "timo-purple", "source": "built-in", "appearance": "dark" }));
+        assert_eq!(v[2]["appearance"], "light");
+        assert_eq!((v[6]["source"].as_str(), v[6]["error"].is_string(), v[6].get("appearance")), (Some("invalid"), true, None));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(theme_cli_to(&["validate".into(), dir.path().join("broken.toml").display().to_string(), "--json".into()], dir.path(), &mut out, &mut err), 1);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

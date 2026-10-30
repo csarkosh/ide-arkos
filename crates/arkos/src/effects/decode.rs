@@ -24,7 +24,7 @@ pub const DECODE_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+=<>/\
 pub const FRESH_WHITE: Rgb = Rgb { r: 217, g: 255, b: 217 };
 /// The colour fresh dark text (a light theme's) deepens toward, so it stays dark on its paper.
 pub const FRESH_DEEP: Rgb = Rgb { r: 0, g: 90, b: 30 };
-/// The luminance (`crate::theme::luminance`) under which the matrix glyph shader draws text as
+/// The luminance (`crate::theme::luminance`) under which the runic glyph shader draws text as
 /// dark, its `bool dark = luminance < 0.45;`, and fresh text deepens rather than whitens.
 pub const DARK_TEXT: f32 = 0.45;
 /// The step of the frame index that picks the random character, in milliseconds.
@@ -45,7 +45,7 @@ pub struct Timing {
 }
 
 impl Timing {
-    /// This timing with its fresh colours turned toward a theme's focus ring, as the matrix
+    /// This timing with its fresh colours turned toward a theme's focus ring, as the runic
     /// glyph shader turns its greens (`effects::accent`).
     pub fn toward(self, accent: Rgb) -> Timing {
         let turn = |c| crate::effects::accent::toward_accent(c, accent);

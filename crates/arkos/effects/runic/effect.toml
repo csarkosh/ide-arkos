@@ -1,4 +1,4 @@
-name = "matrix"
+name = "runic"
 description = "Digital rain: faint green runes falling under a black ground, glowing edges and glitching text."
 wash = "wash.metal"
 glyphs = "glyphs.metal"       # optional; absent, gpui draws text as always

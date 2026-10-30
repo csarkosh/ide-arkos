@@ -1,11 +1,11 @@
-// The matrix wash under the Arkos window: digital rain made from the theme's colours, faint green
+// The runic wash under the Arkos window: digital rain made from the theme's colours, faint green
 // runes falling in columns over a flat ground; and for the UI's blocks, a live line on every edge
 // the app no longer draws, a soft green fill on the highlights and a faint darkening under the
 // bars. The preamble (arkos.metal) is prepended before this is compiled, and declares
 // ArkosInputs, ArkosBlock, ArkosVertex and the ARKOS_* indices used here.
 //
 // Every stream is a pure function of the clock, so Reduce Motion (which freezes it) shows still
-// rain. The rain's constants are mirrored in crates/arkos/src/effects/matrix.rs, which tests
+// rain. The rain's constants are mirrored in crates/arkos/src/effects/runic.rs, which tests
 // them: a change here is made there too.
 //
 // The edges are Cyrus's tuned settings (2026-10-29), ported from the WebGL mock-up in

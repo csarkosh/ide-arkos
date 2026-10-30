@@ -198,6 +198,23 @@ fn not_installed(current: &str, listed: &[String]) -> Option<String> {
     (!listed.iter().any(|n| n == current)).then(|| format!("{current} (not installed)"))
 }
 
+/// The rows of the dark or the light theme list, as (index into `themes`, label): the themes of
+/// that kind, every theme file that does not load (marked, so it is seen whichever list is
+/// read), and the current pick when it is of the other kind, marked as such so it never
+/// vanishes from its own list.
+pub fn slot_rows(themes: &[(String, theme::Source, Option<theme::Appearance>)], slot: theme::Appearance, current: &str) -> Vec<(usize, String)> {
+    themes
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, (name, source, kind))| match (source, kind) {
+            (theme::Source::Invalid(_), _) | (_, None) => Some((ix, format!("{name} (invalid)"))),
+            (_, Some(k)) if *k == slot => Some((ix, name.clone())),
+            (_, Some(k)) if name == current => Some((ix, format!("{name} (a {} theme)", k.word()))),
+            _ => None,
+        })
+        .collect()
+}
+
 /// One row of the Effect list: its label, the `effect.name` a click writes (`None`: not
 /// clickable), and whether it is the configured choice.
 #[derive(Debug, Clone, PartialEq)]
@@ -279,7 +296,7 @@ fn fixed_pitch(text: &gpui::TextSystem, all: &[String]) -> Vec<String> {
 pub struct SettingsWindow {
     shown: Shown,
     section: Section,
-    themes: Vec<(String, theme::Source)>,
+    themes: Vec<(String, theme::Source, Option<theme::Appearance>)>,
     /// The effects folder and the built-ins, as `effects::manifest::list` reads them.
     effects: Vec<(String, effects::manifest::Source)>,
     fonts: Vec<String>,
@@ -361,7 +378,7 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
             SettingsWindow {
                 shown,
                 section: Section::Appearance,
-                themes: theme::list(&paths::themes_dir()),
+                themes: theme::kinds(&paths::themes_dir()),
                 effects: effects::manifest::list(&effects::effects_dir()),
                 fonts,
                 import_error: None,
@@ -506,7 +523,7 @@ impl SettingsWindow {
     pub fn set_shown(&mut self, shown: Shown, cx: &mut Context<Self>) {
         self.shown = shown;
         self.privacy.forget();
-        self.themes = theme::list(&paths::themes_dir());
+        self.themes = theme::kinds(&paths::themes_dir());
         self.effects = effects::manifest::list(&effects::effects_dir());
         cx.notify();
     }
@@ -555,7 +572,7 @@ impl SettingsWindow {
         self.import_error = None;
         match theme::import_file(&src, &paths::themes_dir(), replace) {
             Ok((name, _)) => {
-                self.themes = theme::list(&paths::themes_dir());
+                self.themes = theme::kinds(&paths::themes_dir());
                 let key = theme_key_for(self.shown.config.appearance.mode, system_is_dark);
                 self.change(vec![edit(&["theme", key], name.as_str())], cx);
             }
@@ -664,20 +681,24 @@ impl SettingsWindow {
             modes = modes.child(p);
         }
         out.push(modes.into_any_element());
-        for (key, title, list_id, current) in [("dark", "Dark theme", "theme-dark", &cfg.theme.dark), ("light", "Light theme", "theme-light", &cfg.theme.light)] {
+        for (key, slot, title, list_id, current) in [
+            ("dark", theme::Appearance::Dark, "Dark theme", "theme-dark", &cfg.theme.dark),
+            ("light", theme::Appearance::Light, "Light theme", "theme-light", &cfg.theme.light),
+        ] {
             out.push(heading(title, c).into_any_element());
             let mut list = div().flex().flex_col();
-            let names: Vec<String> = self.themes.iter().map(|(n, _)| n.clone()).collect();
+            let names: Vec<String> = self.themes.iter().map(|(n, _, _)| n.clone()).collect();
             if let Some(missing) = not_installed(current, &names) {
                 list = list.child(list_row((list_id, usize::MAX), missing, true, enabled, c));
             }
-            for (ix, (name, source)) in self.themes.iter().enumerate() {
+            for (ix, label) in slot_rows(&self.themes, slot, current) {
                 let id = (list_id, ix);
-                let row = match source {
-                    theme::Source::Invalid(_) => list_row(id, format!("{name} (invalid)"), false, false, c),
+                let (name, source, kind) = &self.themes[ix];
+                let row = match (source, kind) {
+                    (theme::Source::Invalid(_), _) | (_, None) => list_row(id, label, false, false, c),
                     _ => {
                         let is_current = name == current;
-                        let mut row = list_row(id, name.clone(), is_current, enabled, c);
+                        let mut row = list_row(id, label, is_current, enabled, c);
                         if enabled && !is_current {
                             let name = name.clone();
                             row = row.on_click(cx.listener(move |w, _, _, cx| w.change(vec![edit(&["theme", key], name.as_str())], cx)));
@@ -1033,6 +1054,21 @@ impl Render for SettingsWindow {
 mod tests {
     use super::*;
     use crate::config::{AppearanceMode, Config, DEFAULT_CONFIG};
+
+    #[test]
+    fn a_theme_list_holds_its_own_kind_the_broken_files_and_a_current_pick_of_the_other_kind_marked() {
+        use theme::{Appearance::*, Source};
+        let themes = vec![
+            ("navy".to_string(), Source::BuiltIn, Some(Dark)),
+            ("peach-light".to_string(), Source::BuiltIn, Some(Light)),
+            ("matrix".to_string(), Source::BuiltIn, Some(Dark)),
+            ("broken".to_string(), Source::Invalid("bad".into()), None),
+        ];
+        let rows = |slot, current| slot_rows(&themes, slot, current);
+        assert_eq!(rows(Dark, "navy"), vec![(0, "navy".to_string()), (2, "matrix".to_string()), (3, "broken (invalid)".to_string())]);
+        assert_eq!(rows(Light, "peach-light"), vec![(1, "peach-light".to_string()), (3, "broken (invalid)".to_string())]);
+        assert_eq!(rows(Light, "navy"), vec![(0, "navy (a dark theme)".to_string()), (1, "peach-light".to_string()), (3, "broken (invalid)".to_string())]);
+    }
 
     #[test]
     fn wide_tables_edit_writes_the_viewer_key() {

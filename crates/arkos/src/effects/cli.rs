@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nspace (built in)\nmatrix (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nspace (built in)\nrunic (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
@@ -500,7 +500,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in" }));
         assert_eq!(v[1], serde_json::json!({ "name": "space", "source": "built-in" }));
-        assert_eq!(v[2], serde_json::json!({ "name": "matrix", "source": "built-in" }));
+        assert_eq!(v[2], serde_json::json!({ "name": "runic", "source": "built-in" }));
         assert_eq!((v[3]["name"].as_str(), v[3]["source"].as_str()), (Some("broken"), Some("invalid")));
         assert!(v[3]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
         assert_eq!(v[4], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
@@ -618,11 +618,11 @@ mod tests {
         }
         let s = Setup::new();
         let env = env!(s, s.path("none.sock"));
-        for (name, copy) in [("space", "stars"), ("matrix", "rain")] {
+        for (name, copy) in [("space", "stars"), ("runic", "rain")] {
             let effect = manifest::load(name, Path::new("/nonexistent/effects")).unwrap();
             assert_eq!(compile(&effect), Ok(()), "{name}");
-            // Matrix reads ARKOS_CALM_ALPHA, which the check declares ahead of it as a window does.
-            if name == "matrix" {
+            // Runic reads ARKOS_CALM_ALPHA, which the check declares ahead of it as a window does.
+            if name == "runic" {
                 assert!(effect.glyphs.as_deref().unwrap().contains("ARKOS_CALM_ALPHA"));
             }
             // A copy made with `template` passes `check` as the built-in does.

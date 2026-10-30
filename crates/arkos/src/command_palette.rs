@@ -27,7 +27,7 @@ pub struct Item {
 /// `show_ignored` is whether the file tree lists ignored entries. In a `sandbox` the items that
 /// would write the login item, the user's Claude Code hooks or skill, or update say
 /// `not in a sandbox` (and Root runs nothing for them).
-pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, update_error: bool, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path, show_ignored: bool, unread: usize, to_fix: usize, sandbox: bool) -> Vec<Item> {
+pub fn items(cfg: &Config, themes: &[(String, Option<crate::theme::Appearance>)], current_preset: &str, current_theme: &str, themes_dir: &Path, update_ready: Option<&str>, update_error: bool, start_at_login: StartAtLogin, login_item_installed: bool, claude_settings: &Path, show_ignored: bool, unread: usize, to_fix: usize, sandbox: bool) -> Vec<Item> {
     let mut out = Vec::new();
     for a in ACTIONS {
         if a.name == "command palette" || a.name == "quit" {
@@ -71,8 +71,12 @@ pub fn items(cfg: &Config, themes: &[String], current_preset: &str, current_them
         }
         out.push(Item { label: format!("Text preset: {name}"), detail, command: Command::TextPreset(name.clone()) });
     }
-    for name in themes {
-        let detail = if name == current_theme { "current".to_string() } else { "until the config reloads; set [theme] in config.toml to keep".to_string() };
+    for (name, kind) in themes {
+        let when = if name == current_theme { "current" } else { "until the config reloads; set [theme] in config.toml to keep" };
+        let detail = match kind {
+            Some(k) => format!("{} theme, {when}", k.word()),
+            None => when.to_string(),
+        };
         out.push(Item { label: format!("Theme: {name}"), detail, command: Command::SetTheme(name.clone()) });
     }
     out.push(Item { label: "Reload config".into(), detail: String::new(), command: Command::ReloadConfig });
@@ -242,7 +246,7 @@ mod tests {
         let cfg = Config::default();
         let dir = std::path::Path::new("/u/.config/arkos/themes");
         let settings = Path::new("/Users/me/.claude/settings.json");
-        let items = items(&cfg, &["navy".into(), "peach-light".into()], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let items = items(&cfg, &[("navy".into(), Some(crate::theme::Appearance::Dark)), ("peach-light".into(), Some(crate::theme::Appearance::Light))], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
         // The palette and quit are not offered, nor "Retry update" with no update error.
         let n_actions = crate::keymap::ACTIONS.len() - 3;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
@@ -265,9 +269,9 @@ mod tests {
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor");
         let theme = items.iter().find(|i| i.label == "Theme: peach-light").unwrap();
-        assert_eq!(theme.detail, "until the config reloads; set [theme] in config.toml to keep");
+        assert_eq!(theme.detail, "light theme, until the config reloads; set [theme] in config.toml to keep");
         assert_eq!(theme.command, Command::SetTheme("peach-light".into()));
-        assert_eq!(items.iter().find(|i| i.label == "Theme: navy").unwrap().detail, "current");
+        assert_eq!(items.iter().find(|i| i.label == "Theme: navy").unwrap().detail, "dark theme, current");
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();
         assert_eq!(extract.detail, "to /u/.config/arkos/themes");

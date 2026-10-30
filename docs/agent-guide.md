@@ -372,8 +372,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 `window {pid} ({project}): {text}`, `window {pid}: no answer` or
 `window {pid}: too old for this command`.
 
-- `arkos theme list [--json]`: every theme with its source. JSON
-  `[{ "name", "source": "built-in" | "file" | "invalid", "error"?, "path"? }]`.
+- `arkos theme list [--json]`: every theme with its source and whether it is dark or light, as `navy (built in, dark)`. JSON
+  `[{ "name", "source": "built-in" | "file" | "invalid", "appearance"?: "dark" | "light", "error"?, "path"? }]`; an invalid file has no appearance. A theme file may set `appearance = "dark"` or `"light"` next to its `name`; it must agree with `chrome.window_bg`, and Settings lists the theme under that slot.
 - `arkos theme validate <file> [--json]`: `ok: {name}`, or the error and exit 1. JSON
   `{ "ok": true, "name" }` or `{ "ok": false, "error" }`.
 - `arkos theme template [<built-in>] [--json]`: a built-in's TOML (default `navy`); an unknown
@@ -541,8 +541,9 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
 surface, and optionally the text itself. Three are built in: Peach Light recommends `watercolor`
 (still ink glyphs), `space` is recommended by no theme (a night sky with glowing edges and still holo
-text; Navy, the default, draws plain), and Matrix recommends `matrix` (black with faint rune rain, emissive green text that
-glitches now and then, and a terminal that decodes its changed cells); the user may pick any
+text; Navy, the default, draws plain), and Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
+accent that glitches now and then, and a terminal that decodes its changed cells; it was called
+`matrix` before 0.7.20, and that name still draws it); the user may pick any
 effect for any theme, or none, in
 Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
 write it to suit any theme rather than one.
@@ -635,7 +636,7 @@ rectangle in window points from the top left with its kind, the edges the app no
 `seed` fixed for the block's life, a `value` (a highlight's fade from 0 to 1, else 1), an
 `ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both) and a `busy` flag
 (1 on a pane's tab bar and body while the pane's active tab is a terminal whose Claude session
-is working, else 0; matrix runs a busy pane's edges hotter). `in.uv` runs
+is working, else 0; runic runs a busy pane's edges hotter). `in.uv` runs
 from (0, 0) at the top left to (1, 1) at the bottom right. What the wash returns is the window's
 opaque ground; the app's surfaces are drawn over it with the manifest's alphas. Derive every
 shade from the theme's colours, so the effect reads right in a dark theme as in a light one.
@@ -673,12 +674,12 @@ a screen of another scale. gpui hands a glyph shader device pixels, so measure
 your ink in points through it, or a 1x screen sees every bleed and wobble twice as wide. After
 it comes `ARKOS_CALM_ALPHA` (0.995), also declared by the window ahead of your source: a glyph
 whose colour alpha is within 0.002 of `ARKOS_CALM_ALPHA` (after any fade) is reading text, the
-rendered markdown's; a shader may draw it calmly (the built-in matrix draws it a soft pale green
+rendered markdown's; a shader may draw it calmly (the built-in runic draws it a soft pale green
 with no halo and no glitch, testing `abs(input.color.a - ARKOS_CALM_ALPHA) < 0.002` in its
 fragment and the same band on the sprite's colour in its vertex stage). Draw its output alpha from `input.color.a` as for any glyph; without an effect the
 mark is 0.5% transparency, which nobody can see. Then comes `ARKOS_ACCENT`, a `float3`: the
 theme's primary colour, its `focus_ring`, which the window declares ahead of your source and
-rebuilds when the theme changes. A shader may lean its own colours toward it: the built-in matrix
+rebuilds when the theme changes. A shader may lean its own colours toward it: the built-in runic
 turns its greens round the colour wheel to the accent's hue, so they are green under the matrix
 theme and blue under navy (a wash reads the same colour at `u.colors[ARKOS_FOCUS_RING]`). The
 built-in's `glyphs.metal` (from `arkos effect template`) is a worked one: it widens each glyph's

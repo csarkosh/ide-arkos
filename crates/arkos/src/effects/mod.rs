@@ -11,9 +11,9 @@ pub mod hash;
 pub mod inputs;
 pub mod layer;
 pub mod manifest;
-/// The matrix wash's rain mirrored in Rust, for its tests alone for now.
+/// The runic wash's rain mirrored in Rust, for its tests alone for now.
 #[cfg(test)]
-pub mod matrix;
+pub mod runic;
 /// The space wash's event schedule mirrored in Rust, for its tests alone: the app never runs it.
 #[cfg(test)]
 pub mod space;
@@ -52,10 +52,10 @@ pub const BUILTIN: &[BuiltIn] = &[
         glyphs: Some(include_str!("../../effects/space/glyphs.metal")),
     },
     BuiltIn {
-        name: "matrix",
-        manifest: include_str!("../../effects/matrix/effect.toml"),
-        wash: include_str!("../../effects/matrix/wash.metal"),
-        glyphs: Some(include_str!("../../effects/matrix/glyphs.metal")),
+        name: "runic",
+        manifest: include_str!("../../effects/runic/effect.toml"),
+        wash: include_str!("../../effects/runic/wash.metal"),
+        glyphs: Some(include_str!("../../effects/runic/glyphs.metal")),
     },
 ];
 
@@ -64,10 +64,19 @@ pub const BUILTIN: &[BuiltIn] = &[
 /// does when it installs it.
 pub fn resolve(choice: &EffectChoice, theme: &Theme) -> Option<String> {
     match choice {
-        EffectChoice::Theme => theme.recommended_effect().map(str::to_string),
+        EffectChoice::Theme => theme.recommended_effect().map(|n| current_name(n).to_string()),
         EffectChoice::None => None,
-        EffectChoice::Named(n) => Some(n.clone()),
+        EffectChoice::Named(n) => Some(current_name(n).to_string()),
     }
+}
+
+/// Built-in effects that were renamed: (the old name, the name now). A config or a theme file
+/// written before the rename still names the old one.
+const RENAMED: &[(&str, &str)] = &[("matrix", "runic")];
+
+/// The effect's name now: a built-in's old name gives its new one, any other name itself.
+pub fn current_name(name: &str) -> &str {
+    RENAMED.iter().find(|(old, _)| *old == name).map_or(name, |(_, new)| new)
 }
 
 /// Where a user's effects live, one folder each.
@@ -90,6 +99,21 @@ mod tests {
         assert_eq!(resolve(&EffectChoice::Theme, &purple), None);
         assert_eq!(resolve(&EffectChoice::None, &peach), None);
         assert_eq!(resolve(&EffectChoice::Named("ink".into()), &navy), Some("ink".to_string()));
+    }
+
+    #[test]
+    fn the_rune_rain_is_named_runic_and_its_old_name_matrix_still_draws_it() {
+        assert!(BUILTIN.iter().any(|b| b.name == "runic"));
+        assert!(!BUILTIN.iter().any(|b| b.name == "matrix"));
+        let navy = crate::theme::builtin("navy").unwrap();
+        assert_eq!(resolve(&EffectChoice::Named("matrix".into()), &navy), Some("runic".to_string()));
+        assert_eq!(resolve(&EffectChoice::Named("space".into()), &navy), Some("space".to_string()));
+        // A theme file from before the rename recommends "matrix".
+        let old = crate::theme::parse(&crate::theme::BUILTIN[4].1.replace("name = \"runic\"", "name = \"matrix\"")).unwrap();
+        assert_eq!(old.recommended_effect(), Some("matrix"));
+        assert_eq!(resolve(&EffectChoice::Theme, &old), Some("runic".to_string()));
+        assert_eq!(current_name("matrix"), "runic");
+        assert_eq!(current_name("watercolor"), "watercolor");
     }
 
     #[test]

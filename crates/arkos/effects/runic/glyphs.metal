@@ -1,4 +1,4 @@
-// Glyphs as a matrix display: emissive phosphor green, haloed, still, and now and then one letter
+// Glyphs as a runic display: emissive phosphor green, haloed, still, and now and then one letter
 // glitches. This is appended to gpui's own shader source (its sprite declarations come first),
 // and stands in for its monochrome sprite stages.
 //
@@ -15,7 +15,7 @@
 // the slot says whether it glitches. A glitching glyph samples its tile mirrored, horizontally,
 // vertically or both, and is lit GLITCH_FLASH times brighter, halo and all, for that one slot.
 // Slot 0 glitches nothing, so a frozen clock shows still text. The arithmetic is mirrored in Rust
-// (crates/arkos/src/effects/matrix.rs, glitch_key and glitches) and a change to one is made to
+// (crates/arkos/src/effects/runic.rs, glitch_key and glitches) and a change to one is made to
 // both. Between glitches every letter is still and whole; nothing else here moves.
 //
 // Reading text, the rendered markdown's, is drawn calmly: the app marks it with the alpha
@@ -44,9 +44,9 @@ constant float GLITCH_CHANCE = 0.0001;
 constant float GLITCH_FLASH = 1.4;
 // The phosphor green the text and its halo lean toward: soft rather than full phosphor, as the
 // matrix theme's text is, so long reading is easy on the eyes.
-constant float3 MATRIX_GREEN = float3(0.44, 0.8, 0.49);
-// Dark text (a light theme with matrix chosen) leans toward a deep green instead.
-constant float3 MATRIX_DEEP = float3(0.0, 0.4, 0.15);
+constant float3 RUNE_GREEN = float3(0.44, 0.8, 0.49);
+// Dark text (a light theme with runic chosen) leans toward a deep green instead.
+constant float3 RUNE_DEEP = float3(0.0, 0.4, 0.15);
 // The soft pale green reading text leans toward.
 constant float3 CALM_GREEN = float3(0.72, 0.86, 0.72);
 // How far reading text leans toward it, so links and headings keep a hint of their own colour.
@@ -130,7 +130,7 @@ float2 glitch_uv(float2 uv, float4 rect, float2 mirror) {
                 mirror.y < 0.0 ? rect.y + rect.w - uv.y : uv.y);
 }
 
-struct MatrixVertexOutput {
+struct RunicVertexOutput {
   float4 position [[position]];
   float2 tile_position;
   float4 color [[flat]];
@@ -140,7 +140,7 @@ struct MatrixVertexOutput {
   float2 mirror [[flat]];
 };
 
-struct MatrixFragmentInput {
+struct RunicFragmentInput {
   float4 position [[position]];
   float2 tile_position;
   float4 color [[flat]];
@@ -150,7 +150,7 @@ struct MatrixFragmentInput {
   float2 mirror [[flat]];
 };
 
-vertex MatrixVertexOutput arkos_glyph_vertex(
+vertex RunicVertexOutput arkos_glyph_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
     constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
@@ -184,7 +184,7 @@ vertex MatrixVertexOutput arkos_glyph_vertex(
   uint slot = uint(floor(*time / GLITCH_SLOT));
   // Reading text never glitches: no mirror and no flash.
   float3 g = calm_text(color.a) ? float3(1.0) : glitch(glitch_origin(sprite.bounds), slot);
-  return MatrixVertexOutput{
+  return RunicVertexOutput{
       device_position,
       tile_position,
       color,
@@ -195,7 +195,7 @@ vertex MatrixVertexOutput arkos_glyph_vertex(
 }
 
 // The glyph's coverage at uv, read mirrored as the glitch says and nothing outside its own tile.
-float matrix_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror) {
+float runic_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror) {
   uv = glitch_uv(uv, rect, mirror);
   if (any(uv < rect.xy) || any(uv > rect.zw)) {
     return 0.0;
@@ -206,17 +206,17 @@ float matrix_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float
 // The mean coverage on a ring of eight samples r points out. Its colour is the glyph's own, one
 // colour a glyph, so only the coverage is carried. The offsets assume a tile's texels match its
 // bounds' device pixels (an unscaled glyph), as watercolor's do.
-float matrix_ring(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror, float2 texel, float r) {
+float runic_ring(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror, float2 texel, float r) {
   float acc = 0.0;
   for (int k = 0; k < 8; k++) {
     float an = float(k) * 0.785398 + 0.3;
-    acc += matrix_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect, mirror);
+    acc += runic_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect, mirror);
   }
   return acc / 8.0;
 }
 
 fragment float4 arkos_glyph_fragment(
-    MatrixFragmentInput input [[stage_in]],
+    RunicFragmentInput input [[stage_in]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
   if (any(input.clip_distance < float4(0.0))) {
@@ -228,7 +228,7 @@ fragment float4 arkos_glyph_fragment(
   float2 uv = input.tile_position;
   float2 mirror = input.mirror;
 
-  float core = matrix_tx(atlas_texture, smp, uv, rect, mirror);
+  float core = runic_tx(atlas_texture, smp, uv, rect, mirror);
   float a = core;
   float3 col = input.color.rgb;
 
@@ -239,8 +239,8 @@ fragment float4 arkos_glyph_fragment(
   // crates/arkos/src/effects/decode.rs): a change here is made there too.
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
   bool dark = luminance < 0.45;
-  float3 green = toward_accent(MATRIX_GREEN, ARKOS_ACCENT);
-  float3 hue = dark ? toward_accent(MATRIX_DEEP, ARKOS_ACCENT) : green;
+  float3 green = toward_accent(RUNE_GREEN, ARKOS_ACCENT);
+  float3 hue = dark ? toward_accent(RUNE_DEEP, ARKOS_ACCENT) : green;
 
   // Reading text on a dark ground: a soft pale green at a little less light, with no halo and
   // (from the vertex stage) no glitch, its coverage the glyph's own. Dark reading text goes on
@@ -254,9 +254,9 @@ fragment float4 arkos_glyph_fragment(
   // The halo's three rings, skipped for dark text, which draws none.
   float g = 0.0;
   if (!dark) {
-    g = matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 1.5) * 0.5
-      + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 3.0) * 0.3
-      + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 5.0) * 0.2;
+    g = runic_ring(atlas_texture, smp, uv, rect, mirror, texel, 1.5) * 0.5
+      + runic_ring(atlas_texture, smp, uv, rect, mirror, texel, 3.0) * 0.3
+      + runic_ring(atlas_texture, smp, uv, rect, mirror, texel, 5.0) * 0.2;
   }
   float3 hcol = col;
   float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
@@ -279,10 +279,10 @@ fragment float4 arkos_glyph_fragment(
   return float4(rgb, alpha * input.color.a);
 }
 
-// Emoji on the matrix display. gpui draws emoji as colour sprites; these stand in for its colour
+// Emoji on the runic display. gpui draws emoji as colour sprites; these stand in for its colour
 // sprite stages for emoji only. Each pixel starts from the emoji's own colour where a letter
 // starts from its one colour; the rest is the letters' arithmetic, the glitch included.
-struct MatrixEmojiVertexOutput {
+struct RunicEmojiVertexOutput {
   float4 position [[position]];
   float2 tile_position;
   float clip_distance [[clip_distance]][4];
@@ -292,7 +292,7 @@ struct MatrixEmojiVertexOutput {
   float2 mirror [[flat]];
 };
 
-struct MatrixEmojiFragmentInput {
+struct RunicEmojiFragmentInput {
   float4 position [[position]];
   float2 tile_position;
   float4 tile_rect [[flat]];
@@ -301,7 +301,7 @@ struct MatrixEmojiFragmentInput {
   float2 mirror [[flat]];
 };
 
-vertex MatrixEmojiVertexOutput arkos_emoji_vertex(
+vertex RunicEmojiVertexOutput arkos_emoji_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
     constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
     constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
@@ -331,7 +331,7 @@ vertex MatrixEmojiVertexOutput arkos_emoji_vertex(
   // The same glitch as a letter's, keyed on the emoji's own place.
   uint slot = uint(floor(*time / GLITCH_SLOT));
   float3 g = glitch(glitch_origin(sprite.bounds), slot);
-  return MatrixEmojiVertexOutput{
+  return RunicEmojiVertexOutput{
       device_position,
       tile_position,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
@@ -342,7 +342,7 @@ vertex MatrixEmojiVertexOutput arkos_emoji_vertex(
 }
 
 // The emoji's colour at uv, read mirrored as the glitch says and nothing outside its own tile.
-float4 matrix_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror) {
+float4 runic_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror) {
   uv = glitch_uv(uv, rect, mirror);
   if (any(uv < rect.xy) || any(uv > rect.zw)) {
     return float4(0.0);
@@ -351,12 +351,12 @@ float4 matrix_emoji_tx(texture2d<float> atlas, sampler s, float2 uv, float4 rect
 }
 
 // The mean colour, weighted by coverage, on a ring of eight samples r points out.
-float3 matrix_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror, float2 texel, float r) {
+float3 runic_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float4 rect, float2 mirror, float2 texel, float r) {
   float3 acc = float3(0.0);
   float w = 0.0;
   for (int k = 0; k < 8; k++) {
     float an = float(k) * 0.785398 + 0.3;
-    float4 c = matrix_emoji_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect, mirror);
+    float4 c = runic_emoji_tx(atlas, s, uv + float2(cos(an), sin(an)) * r * ARKOS_SCALE * texel, rect, mirror);
     acc += c.rgb * c.a;
     w += c.a;
   }
@@ -364,7 +364,7 @@ float3 matrix_emoji_ring_rgb(texture2d<float> atlas, sampler s, float2 uv, float
 }
 
 fragment float4 arkos_emoji_fragment(
-    MatrixEmojiFragmentInput input [[stage_in]],
+    RunicEmojiFragmentInput input [[stage_in]],
     constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
   constexpr sampler smp(mag_filter::linear, min_filter::linear);
@@ -373,21 +373,21 @@ fragment float4 arkos_emoji_fragment(
   float2 uv = input.tile_position;
   float2 mirror = input.mirror;
 
-  float4 core = matrix_emoji_tx(atlas_texture, smp, uv, rect, mirror);
+  float4 core = runic_emoji_tx(atlas_texture, smp, uv, rect, mirror);
   float a = core.a;
   float3 col = core.rgb;
 
-  // The halo's three rings, as a letter's (matrix_ring reads coverage, which an emoji has too).
-  float g = matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 1.5) * 0.5
-          + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 3.0) * 0.3
-          + matrix_ring(atlas_texture, smp, uv, rect, mirror, texel, 5.0) * 0.2;
+  // The halo's three rings, as a letter's (runic_ring reads coverage, which an emoji has too).
+  float g = runic_ring(atlas_texture, smp, uv, rect, mirror, texel, 1.5) * 0.5
+          + runic_ring(atlas_texture, smp, uv, rect, mirror, texel, 3.0) * 0.3
+          + runic_ring(atlas_texture, smp, uv, rect, mirror, texel, 5.0) * 0.2;
   // Past the emoji's edge there is no colour of its own: the halo takes the colour nearby.
-  float3 hcol = a > 0.0 ? col : matrix_emoji_ring_rgb(atlas_texture, smp, uv, rect, mirror, texel, 3.0);
+  float3 hcol = a > 0.0 ? col : runic_emoji_ring_rgb(atlas_texture, smp, uv, rect, mirror, texel, 3.0);
   float sat = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
 
   // The tint, the halo's colour and the light, as a letter's.
   float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
-  float3 green = toward_accent(MATRIX_GREEN, ARKOS_ACCENT);
+  float3 green = toward_accent(RUNE_GREEN, ARKOS_ACCENT);
   col = mix(col, green, w);
   float3 gcol = mix(hcol, green, max(w, 0.35));
   float light = BRIGHTNESS * input.flash;

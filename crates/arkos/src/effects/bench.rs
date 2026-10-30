@@ -279,11 +279,11 @@ mod tests {
     }
 
     #[test]
-    fn the_matrix_rain_is_faint_under_the_text() {
+    fn the_runic_rain_is_faint_under_the_text() {
         if Device::system_default().is_none() {
             return;
         }
-        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         // Inside a pane body, away from the edges' glow: the wash lays its rain twice there, at
         // RAIN_ALPHA and again at PANE_RAIN times it, so that it shows through a terminal's paper.
@@ -297,9 +297,9 @@ mod tests {
             .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 108, 116, 156))
             .collect();
         let text = theme.terminal.foreground.g as f32 / 255.0;
-        let head = text + (1.0 - text) * crate::effects::matrix::RAIN_HEAD;
+        let head = text + (1.0 - text) * crate::effects::runic::RAIN_HEAD;
         let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
-        let (rain, pane) = (crate::effects::matrix::RAIN_ALPHA, crate::effects::matrix::PANE_RAIN);
+        let (rain, pane) = (crate::effects::runic::RAIN_ALPHA, crate::effects::runic::PANE_RAIN);
         let laid = 1.0 - (1.0 - rain) * (1.0 - rain * pane);
         assert!(max <= head * laid * 1.02, "the rain is too bright: green channel {max:.3}");
         let seen = max * (1.0 - matrix.manifest.paper_alpha);
@@ -312,7 +312,7 @@ mod tests {
         if Device::system_default().is_none() {
             return;
         }
-        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
         // Two panes apart, each inked on all four sides: their outlines' bands never meet.
@@ -353,11 +353,11 @@ mod tests {
     }
 
     #[test]
-    fn the_matrix_wash_draws_no_edge_on_the_window_s_own_border() {
+    fn the_runic_wash_draws_no_edge_on_the_window_s_own_border() {
         if Device::system_default().is_none() {
             return;
         }
-        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
         // A pane whose right and bottom edges are the window's right and bottom.
@@ -381,15 +381,15 @@ mod tests {
     // meaningful on an idle machine, not inside the parallel suite.
     #[test]
     #[ignore]
-    fn the_matrix_wash_draws_within_budget() {
+    fn the_runic_wash_draws_within_budget() {
         if Device::system_default().is_none() {
             return;
         }
-        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let matrix = super::super::manifest::load("runic", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         let ms = bench(&matrix, &theme, (1200.0, 800.0), 1.0).unwrap();
         // The figure, for the hand check's note (`-- --ignored --nocapture`).
-        eprintln!("matrix wash: {ms:.3} ms per frame at 1200x800, scale {}", matrix.manifest.scale);
+        eprintln!("runic wash: {ms:.3} ms per frame at 1200x800, scale {}", matrix.manifest.scale);
         assert_eq!(verdict(ms), "within budget", "{ms} ms");
     }
 

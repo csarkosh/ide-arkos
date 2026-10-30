@@ -1,6 +1,7 @@
 # Timo Purple: Timo's Codex theme (accent #00ffff, background #330076, contrast 70) carried over
 # to Arkos. The schema is in docs/themes.md.
 name = "timo-purple"
+appearance = "dark"
 [chrome]
 window_bg = "#330076"
 title_bar = "#2a0062"

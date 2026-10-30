@@ -269,7 +269,7 @@ pub fn float3(c: Rgb) -> String {
 }
 
 /// The line that tells a glyph shader the theme's primary colour, its focus ring, as
-/// `ARKOS_ACCENT`, so an effect can lean its own colours toward the theme's (the matrix effect's
+/// `ARKOS_ACCENT`, so an effect can lean its own colours toward the theme's (the runic effect's
 /// greens turn blue under navy).
 pub fn accent_line(accent: Rgb) -> String {
     format!("constant float3 ARKOS_ACCENT = {};", float3(accent))
@@ -718,7 +718,7 @@ mod tests {
         // A manifest built by hand past the range still leaves the text its ground.
         m.document_paper_alpha = Some(0.1);
         assert_eq!(style_at(&m, 1.0).document_paper_alpha, 0.5);
-        let matrix = manifest::load("matrix", Path::new("/nonexistent/effects")).unwrap().manifest;
+        let matrix = manifest::load("runic", Path::new("/nonexistent/effects")).unwrap().manifest;
         assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.92);
         assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.65);
     }

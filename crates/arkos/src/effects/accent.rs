@@ -1,16 +1,16 @@
-//! The matrix effect's colours turned toward the theme's own: its greens were made around the
+//! The runic effect's colours turned toward the theme's own: its greens were made around the
 //! matrix theme's focus ring, `HOME`, and under another theme each is turned round the colour
 //! wheel by the distance from `HOME`'s hue to that theme's focus ring's, keeping its saturation
 //! and its brightness. Under the matrix theme nothing turns; under navy the greens go blue. A
 //! focus ring with too little colour to have a hue (under `MIN_SATURATION`) turns nothing.
 //!
-//! The matrix shaders (`effects/matrix/wash.metal` and `effects/matrix/glyphs.metal`) carry the
+//! The runic shaders (`effects/runic/wash.metal` and `effects/runic/glyphs.metal`) carry the
 //! same arithmetic as `toward_accent`, and the decode turns its fresh colours with it; a change
 //! to one is made to all three.
 
 use crate::palette::Rgb;
 
-/// The colour the matrix effect's greens were made around: the matrix theme's focus ring.
+/// The colour the runic effect's greens were made around: the matrix theme's focus ring.
 pub const HOME: Rgb = Rgb { r: 0x7e, g: 0xd6, b: 0x6b };
 /// The least saturation a focus ring needs for its hue to turn anything.
 pub const MIN_SATURATION: f32 = 0.2;
@@ -104,9 +104,9 @@ mod tests {
     }
 
     #[test]
-    fn both_matrix_shaders_turn_toward_the_accent_with_this_arithmetic() {
-        let m = crate::effects::BUILTIN.iter().find(|b| b.name == "matrix").expect("matrix is built in");
-        let (wash, glyphs) = (m.wash, m.glyphs.expect("matrix has glyphs"));
+    fn both_runic_shaders_turn_toward_the_accent_with_this_arithmetic() {
+        let m = crate::effects::BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
+        let (wash, glyphs) = (m.wash, m.glyphs.expect("runic has glyphs"));
         let home = format!("constant float3 HOME = {};", crate::effects::active::float3(HOME));
         let lines = [
             home.as_str(),
@@ -120,7 +120,7 @@ mod tests {
             assert!(glyphs.contains(line), "glyphs.metal lacks {line}");
         }
         // Every green the glyphs draw is turned, and the wash's green with the theme's ring.
-        for line in ["toward_accent(MATRIX_GREEN, ARKOS_ACCENT)", "toward_accent(MATRIX_DEEP, ARKOS_ACCENT)", "toward_accent(CALM_GREEN, ARKOS_ACCENT)"] {
+        for line in ["toward_accent(RUNE_GREEN, ARKOS_ACCENT)", "toward_accent(RUNE_DEEP, ARKOS_ACCENT)", "toward_accent(CALM_GREEN, ARKOS_ACCENT)"] {
             assert!(glyphs.contains(line), "glyphs.metal lacks {line}");
         }
         assert!(wash.contains("toward_accent(theme_green(u), u.colors[ARKOS_FOCUS_RING].rgb)"));

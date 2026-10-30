@@ -276,9 +276,9 @@ text two points larger. `space` (chosen in Settings; Navy, the default theme, dr
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and
 tables outlined in glowing lines with soft bars of light sweeping along them every few seconds, the highlights glowing softly, and the text as a still
-holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix comes with
-`matrix`: faint columns of runes falling at different speeds behind everything, pane edges in
-thin green lines, and the text as glowing green type; now and then a letter flickers, mirrored
+holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix and Navy Runic come
+with `runic`: faint columns of runes falling at different speeds behind everything, pane edges in
+thin lines of the theme's accent (green under Matrix, blue under Navy Runic), and the text as glowing type; now and then a letter flickers, mirrored
 and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
 random characters for a moment before it settles (longer while Claude is working), and fresh
 text starts brighter and cools over a second and a half. Under an effect a web tab's address
@@ -286,7 +286,7 @@ bar is clear over the wash and the page is outlined; on a light theme a page tha
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Peach Light and Lavender Light, `matrix` for Matrix, and none for Navy (the default) and Timo
+for Peach Light and Lavender Light, `runic` for Matrix and Navy Runic, and none for Navy (the default) and Timo
 Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
@@ -653,7 +653,7 @@ theme sets every key Claude Code documents, on the `dark-ansi` base:
 | `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
-`timo-purple`, `peach-light` (warm cream and peach), `lavender-light` (a VS Code lavender look) and `matrix` (black and phosphor green, recommends the `matrix` effect) are built in. [themes.md](themes.md) documents every key;
+`timo-purple`, `peach-light` (warm cream and peach), `lavender-light` (a VS Code lavender look) `matrix` (black and phosphor green) and `navy-runic` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen
