@@ -11,7 +11,8 @@ pub const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
     .union(Options::ENABLE_WIKILINKS)
-    .union(Options::ENABLE_FOOTNOTES);
+    .union(Options::ENABLE_FOOTNOTES)
+    .union(Options::ENABLE_MATH);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
@@ -503,6 +504,8 @@ pub enum Inline {
     Alert { kind: AlertKind, title: Option<String>, runs: Vec<Run> },
     /// A footnote's definition (`[^key]: text`): its key and its text.
     Note { key: String, runs: Vec<Run> },
+    /// A paragraph that is only display math (`$$ ... $$`): its TeX.
+    Math(String),
     Rule,
     Table(String),
     Html(String),
@@ -747,6 +750,8 @@ struct Walker {
     para_images: Vec<(ImageRef, usize)>,
     /// The footnote definition being walked, by its key.
     note: Option<String>,
+    /// The display math of the paragraph being walked, outside any container, with its run.
+    para_math: Vec<(String, usize)>,
 }
 
 impl Walker {
@@ -764,6 +769,11 @@ impl Walker {
         let style = self.style.clone();
         self.sink().push(Run { text, style, source });
     }
+}
+
+/// Whether a math span's source is display math: it opens with `$$`.
+fn event_kind_display(source: &str) -> bool {
+    source.starts_with("$$")
 }
 
 /// The keys of the footnote references a block's text names (`[^key]`, no space or `]` in it).
@@ -800,13 +810,14 @@ fn walk(src: &str) -> Vec<Inline> {
 }
 
 fn walk_text(src: &str) -> Vec<Inline> {
-    let mut w = Walker { out: Vec::new(), runs: Vec::new(), style: Style::default(), saved: Vec::new(), lists: 0, containers: 0, items: Vec::new(), image: None, para_images: Vec::new(), note: None };
+    let mut w = Walker { out: Vec::new(), runs: Vec::new(), style: Style::default(), saved: Vec::new(), lists: 0, containers: 0, items: Vec::new(), image: None, para_images: Vec::new(), note: None, para_math: Vec::new() };
     let mut heading = 1u8;
     for (event, range) in Parser::new_ext(src, OPTIONS).into_offset_iter() {
         match event {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => {
                     w.para_images.clear();
+                    w.para_math.clear();
                     if !w.sink().is_empty() {
                         w.push("\n".into(), range.start..range.start);
                     }
@@ -850,6 +861,14 @@ fn walk_text(src: &str) -> Vec<Inline> {
                         // Images with only spaces and line breaks between them render as images.
                         let only_images = runs.iter().enumerate().all(|(i, r)| images.iter().any(|(_, at)| *at == i) || (r.text.trim().is_empty() && !r.style.code && !r.style.html));
                         let mut images: Vec<ImageRef> = images.into_iter().map(|(image, _)| image).collect();
+                        // A paragraph that is one `$$ ... $$` and nothing but space is display math.
+                        let math = std::mem::take(&mut w.para_math);
+                        if let [(tex, at)] = math.as_slice() {
+                            if runs.iter().enumerate().all(|(i, r)| i == *at || r.text.trim().is_empty()) {
+                                w.out.push(Inline::Math(tex.clone()));
+                                continue;
+                            }
+                        }
                         w.out.push(match images.len() {
                             1 if only_images => {
                                 let ImageRef { alt, path, link } = images.remove(0);
@@ -919,6 +938,17 @@ fn walk_text(src: &str) -> Vec<Inline> {
                         w.sink().push(Run { text: t.to_string(), style, source });
                     }
                 }
+            }
+            Event::InlineMath(tex) | Event::DisplayMath(tex) => {
+                let display = matches!(event_kind_display(&src[range.clone()]), true);
+                let mut style = w.style.clone();
+                style.italic = true;
+                let text = crate::md_math::inline_text(&tex);
+                if display && w.containers == 0 && w.items.is_empty() {
+                    let at = w.runs.len();
+                    w.para_math.push((tex.to_string(), at));
+                }
+                w.sink().push(Run { text, style, source: range });
             }
             Event::FootnoteReference(key) => {
                 let mut style = w.style.clone();
@@ -1117,6 +1147,15 @@ pub fn elements(block_text: &str) -> Vec<Node> {
                 add(&mut stack, &mut top, n);
             }
             Event::Text(t) => add(&mut stack, &mut top, Node::leaf(NodeKind::Text, range, t.to_string())),
+            Event::InlineMath(t) | Event::DisplayMath(t) => {
+                // Math reads as italic text with its `$` signs as markers.
+                let marks = if block_text[range.clone()].starts_with("$$") { 2 } else { 1 };
+                let start = (range.start + marks).min(range.end);
+                let inner = start..range.end.saturating_sub(marks).max(start);
+                let mut math = Node { kind: NodeKind::Emphasis, span: range, text: String::new(), children: Vec::new() };
+                math.children.push(Node::leaf(NodeKind::Text, inner, crate::md_math::inline_text(&t)));
+                add(&mut stack, &mut top, math);
+            }
             Event::Code(t) => {
                 let raw = &block_text[range.clone()];
                 let ticks = raw.chars().take_while(|&c| c == '`').count();
@@ -1597,6 +1636,16 @@ mod tests {
         let text = lines[def.lines.clone()].join("\n");
         let Inline::Note { key, runs } = &inline(&text, &def.kind)[0] else { panic!() };
         assert_eq!((key.as_str(), runs.iter().map(|r| r.text.as_str()).collect::<String>().as_str()), ("src", "The source. More."));
+    }
+
+    #[test]
+    fn inline_math_reads_as_italic_text_and_a_paragraph_of_display_math_is_math() {
+        let runs = para_runs("Energy $E = mc^2$ here.");
+        let math = runs.iter().find(|r| r.style.italic).unwrap();
+        assert_eq!((math.text.as_str(), math.source.clone()), ("E = mc²", 7..17));
+        assert_eq!(inline("$$\n\\int_0^1 x\\,dx\n$$", &BlockKind::Paragraph), vec![Inline::Math("\n\\int_0^1 x\\,dx\n".into())]);
+        assert!(matches!(&inline("See $$x$$ inline.", &BlockKind::Paragraph)[0], Inline::Para(_)), "display math with text around it is text");
+        assert!(matches!(&inline("Costs $5 and $10.", &BlockKind::Paragraph)[0], Inline::Para(r) if r.iter().all(|r| !r.style.italic)), "dollars are not math");
     }
 
     #[test]

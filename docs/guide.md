@@ -148,7 +148,8 @@ their syntax colours, and with the caret in it the same box, the fences never sh
 first line and Down from the last leave the block; Shift+Enter on the last line too). Click the
 language to pick another from a list you can type to search; Copy puts the code on the clipboard
 and says "Copied". A click on the header elsewhere selects the whole block, so Delete removes it.
-A Mermaid block shows its diagram until you click it, then its code the same way.
+A Mermaid block shows its diagram until you click it, then its code the same way (see
+Diagrams for its Code and Split modes).
 
 The sidebar's Outline section lists the focused markdown document's headings as a tree. A click
 scrolls to a heading (unfolding it if a fold hides it), the heading in view is highlighted as you
@@ -250,12 +251,26 @@ checks the file type first.
 
 ### Diagrams
 
-A code block fenced as `mermaid` renders as a diagram. Arkos draws it with its bundled mermaid
-in headless Google Chrome, which must be in `/Applications` or `~/Applications`. The page is
-local, nothing is fetched, and Chrome runs with a throwaway profile, so your own Chrome is left
-alone. The block shows its source until the diagram is ready (about two seconds) and again if you
-edit it, then the new diagram replaces it. Results are cached. Without Chrome the source shows
-with a message saying so, and so does a diagram over 8192 CSS px on a side or 64 million pixels.
+A code block fenced as `mermaid` renders as a diagram. Arkos draws it with its bundled mermaid in
+a web view of its own that you never see: the page is local, nothing is fetched, and nothing else
+needs to be installed. The block shows its source until the diagram is ready (a fraction of a
+second) and again if you edit it, then the new diagram replaces it. Results are cached. A diagram
+mermaid cannot read shows its source with mermaid's message, and so does one over 8192 CSS px on
+a side or 64 million pixels.
+
+Hover a diagram to see its header and its zoom. The header switches it between Diagram (the
+picture), Code (its numbered source) and Split (the source with the picture under it); Arkos
+remembers the choice for each diagram of each file. In Split the picture follows your typing,
+redrawn when you pause. `−`, `+` and `fit` zoom the picture from 50 to 300 percent within its box,
+and while it is zoomed you drag it to look around.
+
+### Math
+
+`$$ ... $$` on its own is an equation, typeset by the bundled MathJax and centred; click it to
+edit its source under it. `$...$` in a sentence reads as text: Greek letters, operators, arrows,
+roots, fractions and simple powers and indices become the characters they stand for (`$E = mc^2$`
+reads E = mc²), the rest stays as written. A dollar sign followed by a space, as in prices, is
+not math.
 
 ### Collapsible sections
 

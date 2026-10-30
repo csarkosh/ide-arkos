@@ -9,7 +9,8 @@
 //! is its Quick Look poster with a play glyph, and local audio a box with its name and size
 //! (`media`): Cmd+click opens the video in a video tab beside the document and plays the audio
 //! in QuickTime Player. Remote video and audio, and a `webm`, are links. A `mermaid`
-//! code block is its diagram, rendered by headless Chrome into a cache (`mermaid`); until the
+//! code block is its diagram, rendered by the window's hidden web view into a cache (`mermaid`,
+//! `render_view`), shown as its picture, its source or both (`workspace::DiagramMode`); until the
 //! PNG is there, or when it cannot be made, the block is its source with a line saying why. An
 //! HTML block that is one `<img>` tag is an image by the same rules, at its `width` and centred
 //! when its wrapper says so; a `<details>` section is its summary behind a disclosure triangle,
@@ -168,6 +169,8 @@ enum Piece {
     Alert(md_blocks::AlertKind, Option<SharedString>, Rc<[Run]>),
     /// A footnote's definition: its key and its text.
     Note(SharedString, Rc<[Run]>),
+    /// A paragraph of display math.
+    Math(MathPiece),
     Rule,
     Table(TablePiece),
     Html(SharedString),
@@ -273,6 +276,13 @@ struct DiagramPiece {
     runs: Option<CodeRuns>,
 }
 
+/// Display math as a row draws it: its TeX, and its cache key with the colour and size it was
+/// made for (`md_math::cache_key`).
+struct MathPiece {
+    tex: Rc<str>,
+    key: Option<((String, u32), String)>,
+}
+
 /// One video, audio file or media link as a row draws it: its label (as an image's), its path, the
 /// target of the link around it, and what it is drawn as (`None`: a link, for a web address or a
 /// `webm`).
@@ -330,6 +340,7 @@ impl From<Inline> for Piece {
             Inline::Quote(runs) => Piece::Quote(runs.into()),
             Inline::Alert { kind, title, runs } => Piece::Alert(kind, title.map(Into::into), runs.into()),
             Inline::Note { key, runs } => Piece::Note(key.into(), runs.into()),
+            Inline::Math(tex) => Piece::Math(MathPiece { tex: tex.into(), key: None }),
             Inline::Rule => Piece::Rule,
             Inline::Table(t) => Piece::Table(TablePiece::new(t)),
             Inline::Html(t) => Piece::Html(t.into()),
@@ -578,6 +589,7 @@ pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, c
     track_remote(v, ix, cx);
     track_media(v, ix, &ctx.base_dir, cx);
     track_diagram(v, ix, ctx, cx);
+    track_math(v, ix, ctx, cx);
 }
 
 /// Block `ix`'s diagram: its cache key made for the frame's colours (again when they changed),
@@ -593,19 +605,23 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     if !d.key.as_ref().is_some_and(|(made_for, _)| made_for == theme) {
         d.key = Some((theme.clone(), mermaid::cache_key(&d.text, theme, mermaid::SCALE)));
     }
-    let shown = !matches!(d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key)), Some(Diagram::Ready { .. }));
+    // The source shows unless the picture stands alone.
+    let alone = v.diagram_mode(ix) == crate::workspace::DiagramMode::Diagram;
+    let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
+    let Some(Piece::Diagram(d)) = r.pieces.first_mut() else { return };
+    let shown = !alone || !matches!(d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key)), Some(Diagram::Ready { .. }));
     if shown && !d.runs.as_ref().is_some_and(|c| c.mono == ctx.mono && c.text == ctx.text) {
         d.runs = Some(CodeRuns { coloured: false, mono: ctx.mono.clone(), text: ctx.text, runs: Rc::new(code_runs(&code_lines(&d.text), None, &ctx.mono, ctx.text)) });
     }
     let (Some((_, key)), text) = (d.key.as_ref(), &d.text) else { return };
     let state = v.diagrams.get(key);
-    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoChrome)) {
+    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoRenderer)) {
         return;
     }
     if state.is_none() {
         crate::telemetry::md(crate::telemetry::MdFeature::Mermaid);
     }
-    let next = mermaid::advance(state, key, || mermaid::page(text, theme), mermaid::cache_dir, || mermaid::chrome().is_some());
+    let next = mermaid::advance(state, key, || mermaid::page(text, theme), mermaid::cache_dir, crate::render_view::available);
     if matches!(next, Some(Diagram::Error(_))) {
         crate::telemetry::error(crate::telemetry::Failure::MermaidFailed);
     }
@@ -616,6 +632,37 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     if rendering {
         Viewer::start_renders(cx);
     }
+}
+
+/// Block `ix`'s display math, as a diagram is tracked (`track_diagram`): its key made for the
+/// frame's text colour and size, then its state moved along once, sharing the diagrams' queue,
+/// cache and states.
+fn track_math(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Viewer>) {
+    let made_for = (ctx.mermaid.text.clone(), math_size(ctx));
+    let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
+    let Some(Piece::Math(m)) = r.pieces.first_mut() else { return };
+    if !m.key.as_ref().is_some_and(|(f, _)| *f == made_for) {
+        m.key = Some((made_for.clone(), crate::md_math::cache_key(&m.tex, &made_for.0, made_for.1)));
+    }
+    let (Some((_, key)), tex) = (m.key.as_ref(), m.tex.clone()) else { return };
+    let state = v.diagrams.get(key);
+    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoRenderer)) {
+        return;
+    }
+    let (color, size) = made_for;
+    let next = mermaid::advance(state, key, || crate::md_math::page(&tex, &color, size), mermaid::cache_dir, crate::render_view::available);
+    let rendering = next.as_ref().is_none_or(|n| *n == Diagram::Rendering);
+    if let Some(next) = next {
+        v.diagrams.insert(key.clone(), next);
+    }
+    if rendering {
+        Viewer::start_renders(cx);
+    }
+}
+
+/// The size display math is drawn at: the text's, a little larger, as a page sets an equation.
+fn math_size(ctx: &BlockCtx) -> u32 {
+    (ctx.font_size * PARA * 1.1).round() as u32
 }
 
 /// Block `ix`'s local videos and audio, an open section's included: each video's poster moved
@@ -1084,8 +1131,58 @@ fn raw_row(ix: usize, ctx: &BlockCtx, highlighter: Option<&Arc<Highlighter>>, wi
             .into_any_element(),
         None => el.into_any_element(),
     };
+    // A diagram split with its source keeps its picture under the code while it is edited, drawn
+    // again once the typing pauses.
+    let preview = split_preview(ix, &code, ctx, &press, cx);
+    let v = ctx.viewer.read(cx);
+    let body = match preview {
+        Some(p) => div().flex().flex_col().gap(px(8.0)).child(body).child(p).into_any_element(),
+        None => body,
+    };
     let row = div().id(("md-block", ix)).relative().w_full().pl(px(GUTTER + ctx.inset)).pr(px(SIDE + ctx.inset)).pb(px(BLOCK_GAP - DROP_LINE)).child(body);
     gutter(row, ix, v, ctx, (0.0, size), &press).into_any_element()
+}
+
+/// How long the typing in a diagram pauses before its picture is drawn again.
+const SPLIT_PAUSE: Duration = Duration::from_millis(400);
+
+/// The picture under a Split diagram being edited (`code` its lines): its source as it is now
+/// drawn once the typing has paused for `SPLIT_PAUSE` (a frame is asked for until then), else the
+/// last picture this block had.
+fn split_preview(ix: usize, code: &Option<Range<usize>>, ctx: &BlockCtx, press: &Rc<Cell<bool>>, cx: &mut App) -> Option<AnyElement> {
+    let range = code.clone()?;
+    let text = {
+        let v = ctx.viewer.read(cx);
+        let b = v.blocks.get(ix)?;
+        let fence = v.doc.as_ref().and_then(|d| crate::md_code::fence(d.lines(), b))?;
+        if !mermaid::is_diagram_info(&fence.info) || v.diagram_mode(ix) != crate::workspace::DiagramMode::Split {
+            return None;
+        }
+        let lines = v.doc.as_ref()?.lines();
+        let mut t = lines[range].join("\n");
+        t.push('\n');
+        t
+    };
+    let key = mermaid::cache_key(&text, &ctx.mermaid, mermaid::SCALE);
+    let theme = ctx.mermaid.clone();
+    ctx.viewer.update(cx, |v, cx| {
+        let state = v.diagrams.get(&key).cloned();
+        if !matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoRenderer)) && v.edited_at.elapsed() >= SPLIT_PAUSE {
+            let next = mermaid::advance(state.as_ref(), &key, || mermaid::page(&text, &theme), mermaid::cache_dir, crate::render_view::available);
+            if let Some(next) = next {
+                v.diagrams.insert(key.clone(), next);
+            }
+            Viewer::start_renders(cx);
+        } else if v.edited_at.elapsed() < SPLIT_PAUSE {
+            cx.notify();
+        }
+        if let Some(Diagram::Ready { png, w, h }) = v.diagrams.get(&key) {
+            v.split_last.insert(ix, (png.clone(), *w, *h));
+        }
+    });
+    let v = ctx.viewer.read(cx);
+    let (png, w, h) = v.split_last.get(&ix)?.clone();
+    Some(diagram_picture(ix, &png, w, h, v, ctx, press))
 }
 
 /// What a revealed block draws from: its text, its tree, where the user is in it, and whether the
@@ -1379,6 +1476,7 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
             let body = (!runs.is_empty()).then(|| text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts));
             alert_shell(*kind, title.as_ref(), body, ctx)
         }
+        Piece::Math(m) => math_element(m, v, ctx),
         Piece::Note(key, runs) => {
             let text = text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, parts);
             note_shell(key, text, ctx, parts)
@@ -1631,6 +1729,29 @@ fn note_shell(key: &SharedString, text: AnyElement, ctx: &BlockCtx, parts: &Part
         .child(div().min_w_0().child(text))
         .children(back)
         .into_any_element()
+}
+
+/// Display math: its picture centred once drawn; while it is drawn, or when it cannot be, its
+/// TeX as text (`md_math::inline_text`), with the error under it in the error colour.
+fn math_element(m: &MathPiece, v: &Viewer, ctx: &BlockCtx) -> AnyElement {
+    let state = m.key.as_ref().and_then(|(_, key)| v.diagrams.get(key));
+    let row = div().w_full().flex().flex_col().items_center();
+    match state {
+        Some(Diagram::Ready { png, w, .. }) => {
+            let (dim, border) = (ctx.dim, ctx.border);
+            row.child(img(png.clone()).w(px(*w as f32)).max_w_full().with_fallback(move || alt_box("equation".into(), dim, border).into_any_element())).into_any_element()
+        }
+        other => {
+            let error = match other {
+                Some(Diagram::Error(e)) => Some(format!("equation: {e}")),
+                Some(Diagram::NoRenderer) => Some("equation: this window cannot draw equations".into()),
+                _ => None,
+            };
+            row.child(div().italic().text_color(ctx.dim).child(crate::md_math::inline_text(&m.tex)))
+                .children(error.map(|e| div().text_size(px(ctx.font_size * NOTE_SCALE)).text_color(ctx.deleted).child(e)))
+                .into_any_element()
+        }
+    }
 }
 
 /// A footnote reference's number as raised digits.
@@ -2145,6 +2266,28 @@ fn code_header(ix: usize, info: &str, fenced: bool, v: &Viewer, ctx: &BlockCtx, 
             cx.stop_propagation();
             v_copy.update(cx, |v, cx| v.copy_code(ix, cx));
         });
+    // A diagram's modes: Diagram, Code and Split, the current one marked.
+    let modes = mermaid::is_diagram_info(info).then(|| {
+        use crate::workspace::DiagramMode;
+        let current = v.diagram_mode(ix);
+        let text = ctx.text;
+        div().flex().flex_row().gap(px(2.0)).mr(px(10.0)).children([("Diagram", DiagramMode::Diagram), ("Code", DiagramMode::Code), ("Split", DiagramMode::Split)].into_iter().enumerate().map(|(i, (label, mode))| {
+            let (viewer, press) = (ctx.viewer.clone(), press.clone());
+            div()
+                .id(("md-diagram-mode", ix * 3 + i))
+                .px(px(6.0))
+                .rounded(px(3.0))
+                .cursor_pointer()
+                .when(mode == current, |d| d.bg(ctx.border).text_color(text))
+                .hover(move |s| s.text_color(text))
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| press.set(true))
+                .on_click(move |_ev, _window, cx| {
+                    cx.stop_propagation();
+                    viewer.update(cx, |v, cx| v.set_diagram_mode(ix, mode, cx));
+                })
+        }))
+    });
     div()
         .id(("md-code-header", ix))
         .flex()
@@ -2158,7 +2301,77 @@ fn code_header(ix: usize, info: &str, fenced: bool, v: &Viewer, ctx: &BlockCtx, 
         .on_click(move |_ev, _window, cx| v_select.update(cx, |v, cx| v.select_block(ix, cx)))
         .child(pill)
         .child(div().flex_1())
+        .children(modes)
         .child(copy)
+        .into_any_element()
+}
+
+/// A diagram's picture fitted to the view, at its zoom and pan (`md_diagram`): `−`, `+` and `fit`
+/// at its top right while it is hovered, and a drag pans it while it is zoomed. At 100 percent a
+/// press is the row's, which edits the source.
+fn diagram_picture(ix: usize, png: &Path, w: u32, h: u32, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    let fit_w = if ctx.view_w > 0.0 { (w as f32).min(ctx.view_w) } else { w as f32 };
+    let size = (fit_w, h as f32 * fit_w / w.max(1) as f32);
+    let (zoom, pan) = v.diagram_zoom.get(&v.diagram_index(ix)).copied().unwrap_or((1.0, (0.0, 0.0)));
+    let pan = crate::md_diagram::clamp(pan, size, zoom);
+    let zoomed = (zoom - 1.0).abs() > f32::EPSILON;
+    let (dim, border, text) = (ctx.dim, ctx.border, ctx.text);
+    let button = |id: usize, label: &'static str, step: Option<bool>| {
+        let (viewer, press) = (ctx.viewer.clone(), press.clone());
+        div()
+            .id(("md-diagram-zoom", ix * 3 + id))
+            .px(px(7.0))
+            .rounded(px(3.0))
+            .bg(ctx.code_bg)
+            .border_1()
+            .border_color(border)
+            .text_color(dim)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(text))
+            .child(label)
+            .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                cx.stop_propagation();
+                press.set(true);
+            })
+            .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.zoom_diagram(ix, step, size, cx)))
+    };
+    let (v_down, v_move, v_up, p_down) = (ctx.viewer.clone(), ctx.viewer.clone(), ctx.viewer.clone(), press.clone());
+    div()
+        .id(("md-diagram", ix))
+        .group("md-diagram")
+        .relative()
+        .w(px(size.0))
+        .h(px(size.1))
+        .overflow_hidden()
+        .when(zoomed, |d| d.cursor_grab())
+        .child(img(png.to_path_buf()).absolute().left(px(pan.0)).top(px(pan.1)).w(px(size.0 * zoom)).h(px(size.1 * zoom)).with_fallback(move || alt_box("diagram".into(), dim, border).into_any_element()))
+        .child(
+            div()
+                .absolute()
+                .top(px(6.0))
+                .right(px(6.0))
+                .flex()
+                .flex_row()
+                .gap(px(4.0))
+                .text_size(px(ctx.font_size * 0.8))
+                .opacity(0.0)
+                .group_hover("md-diagram", |s| s.opacity(1.0))
+                .child(button(0, "\u{2212}", Some(false)))
+                .child(button(1, "+", Some(true)))
+                .child(button(2, "fit", None)),
+        )
+        .when(zoomed, move |d| {
+            d.on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
+                p_down.set(true);
+                v_down.update(cx, |v, cx| v.pan_diagram(ix, ev.position, true, size, cx));
+            })
+            .on_mouse_move(move |ev: &MouseMoveEvent, _window, cx| {
+                if ev.pressed_button == Some(MouseButton::Left) {
+                    v_move.update(cx, |v, cx| v.pan_diagram(ix, ev.position, false, size, cx));
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |_ev, _window, cx| v_up.update(cx, |v, _| v.diagram_drag = None))
+        })
         .into_any_element()
 }
 
@@ -2208,18 +2421,34 @@ fn numbered_code(ix: usize, info: &str, fenced: bool, text: &Rc<str>, runs: Opti
 /// under an info line: "rendering" while the render waits or runs, the error in the tree's
 /// deleted colour when it failed, and a word on installing Google Chrome when there is none.
 fn diagram_element(ix: usize, d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    use crate::workspace::DiagramMode;
     let state = d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key));
-    let info: SharedString = match state {
-        Some(Diagram::Ready { png, w, .. }) => {
-            let (dim, border) = (ctx.dim, ctx.border);
-            return img(png.clone()).w(px(*w as f32)).max_w_full().with_fallback(move || alt_box("diagram".into(), dim, border).into_any_element()).into_any_element();
-        }
-        Some(Diagram::Error(e)) => format!("diagram: {e}").into(),
-        Some(Diagram::NoChrome) => "diagram: install Google Chrome to render".into(),
-        Some(Diagram::Rendering) | None => "diagram: rendering".into(),
+    let mode = v.diagram_mode(ix);
+    let status: Option<(SharedString, Hsla)> = match state {
+        Some(Diagram::Ready { .. }) => None,
+        Some(Diagram::Error(e)) => Some((format!("diagram: {e}").into(), ctx.deleted)),
+        Some(Diagram::NoRenderer) => Some(("diagram: this window cannot draw diagrams".into(), ctx.dim)),
+        Some(Diagram::Rendering) | None => Some(("diagram: rendering".into(), ctx.dim)),
     };
-    let colour = if matches!(state, Some(Diagram::Error(_))) { ctx.deleted } else { ctx.dim };
-    numbered_code(ix, "mermaid", true, &d.text, d.runs.as_ref().map(|c| &c.runs), Some((info, colour)), v, ctx, parts)
+    let picture = match state {
+        Some(Diagram::Ready { png, w, h }) => Some(diagram_picture(ix, png, *w, *h, v, ctx, &parts.task_press)),
+        _ => None,
+    };
+    let runs = d.runs.as_ref().map(|c| &c.runs);
+    match (mode, picture) {
+        // The picture alone, its header (the modes, Copy) showing while the diagram is hovered.
+        (DiagramMode::Diagram, Some(picture)) => div()
+            .group("md-diagram-block")
+            .flex()
+            .flex_col()
+            .child(div().opacity(0.0).group_hover("md-diagram-block", |s| s.opacity(1.0)).child(code_header(ix, "mermaid", true, v, ctx, &parts.task_press)))
+            .child(picture)
+            .into_any_element(),
+        // A source that does not draw is shown, with why, in any mode.
+        (DiagramMode::Diagram, None) => numbered_code(ix, "mermaid", true, &d.text, runs, status, v, ctx, parts),
+        (DiagramMode::Code, _) => numbered_code(ix, "mermaid", true, &d.text, runs, status.filter(|(_, c)| *c == ctx.deleted), v, ctx, parts),
+        (DiagramMode::Split, picture) => div().flex().flex_col().gap(px(8.0)).child(numbered_code(ix, "mermaid", true, &d.text, runs, status, v, ctx, parts)).children(picture).into_any_element(),
+    }
 }
 
 /// The runs of a code block's joined lines in the `mono` family: a span's colour (marked as

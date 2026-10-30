@@ -471,10 +471,14 @@ Things only a person at the screen can check, in order of value:
 - a remote image shows "loading" and then the image; a plain click places the caret and Cmd+click
   opens it in Preview; a `.mov` shows its poster and Cmd+click opens a video tab beside the document; audio opens
   in QuickTime Player; a local `.webm` is shown in Finder; a badge row wraps in a narrow pane
-- a `mermaid` block renders within two seconds and again after an edit; with Google Chrome
-  missing, the source shows with a message; the docking check: start a slow render (a large
-  diagram) and run `lsappinfo list | grep -B2 -A8 com.google.Chrome` to see how the headless child
-  registers ("Foreground" is a regular app; "UIElement" or "BackgroundOnly" is not)
+- a `mermaid` block renders within a second, with no Chrome running and nothing in the Dock, and
+  again after an edit; a broken one shows mermaid's message over its source; hover it: the header
+  with Diagram, Code and Split, and `−` `+` `fit`; `+` twice and a drag: zoomed and panned in its
+  box; Split, then type in the source: the picture under it follows when the typing pauses; the
+  mode is the same after a relaunch
+- math: `$$\int_0^1 x^2\,dx = \frac{1}{3}$$` is typeset and centred with no stray pixel under it;
+  a click shows its source under it; `$E = mc^2$` reads E = mc² and a click reveals the dollars;
+  `$5 and $10` stays text
 - a `<details>` block opens and closes and is still open after a relaunch; `<details open>` starts
   open until you close it
 - a 5 MB markdown file with a large table stays responsive (the milestone 7 gate)

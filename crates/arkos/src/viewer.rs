@@ -101,6 +101,8 @@ pub enum ViewerEvent {
     DetailsToggled(Vec<DetailsOpen>),
     /// The folded headings changed (`Viewer::folded`), for the workspace and the file's other tabs.
     FoldsChanged(Vec<workspace::Fold>),
+    /// The diagrams shown as code or split changed, for the workspace and the file's other tabs.
+    DiagramModesChanged(Vec<workspace::DiagramView>),
 }
 
 /// What a press on a media block in the rendered view does (`md_view::media_element`).
@@ -639,6 +641,16 @@ pub struct Viewer {
     pub notes: Rc<md_blocks::Notes>,
     /// Presentation mode: read-only, no caret and no reveal, a single click follows a link.
     pub presenting: bool,
+    /// The diagrams shown as code or split, by their index among the document's diagrams.
+    pub diagram_modes: std::collections::BTreeMap<usize, workspace::DiagramMode>,
+    /// Each diagram's zoom and pan, by its index, for this view only (`md_diagram`).
+    pub diagram_zoom: HashMap<usize, (f32, (f32, f32))>,
+    /// A pan under way: the diagram, where the press was and the pan it started from.
+    pub diagram_drag: Option<(usize, Point<Pixels>, (f32, f32))>,
+    /// When the document last changed, so a diagram being typed is drawn once the typing pauses.
+    pub edited_at: Instant,
+    /// The last picture each Split diagram being edited had, by its block (`md_view::split_preview`).
+    pub split_last: HashMap<usize, (PathBuf, u32, u32)>,
     /// The config's `viewer.image_destination`, kept here by `Root` (`md_links::image_dir`).
     pub image_destination: String,
     /// A table cell is being edited (its markdown shown with the caret), not only selected.
@@ -814,6 +826,11 @@ impl Viewer {
             pending_anchor: None,
             notes: Rc::new(md_blocks::Notes::default()),
             presenting: false,
+            diagram_modes: Default::default(),
+            diagram_zoom: HashMap::new(),
+            diagram_drag: None,
+            edited_at: Instant::now(),
+            split_last: HashMap::new(),
             image_destination: String::new(),
             table_edit: false,
             table_pick: None,
@@ -859,16 +876,39 @@ impl Viewer {
         }
     }
 
-    /// Starts the diagram render that has the turn in the process-wide queue (`mermaid::queue`,
-    /// one at a time), on the background executor (Chrome blocks its thread). The render frees
-    /// its turn itself, whether or not this viewer is still open; then this viewer starts the next
-    /// one and draws again, and every view showing the diagram finds it in the cache, or its
-    /// error (`md_view::fill`).
+    /// Starts the diagram or equation render that has the turn in the process-wide queue
+    /// (`mermaid::queue`, one at a time) in the window's hidden web view (`render_view`): its page
+    /// written and loaded, then the render moved along every few frames' worth of time on this
+    /// thread until it has its picture or its error (`mermaid::finish`, which frees the turn,
+    /// whether or not this viewer is still open). Then this viewer starts the next one and draws
+    /// again, and every view showing the picture finds it in the cache, or its error
+    /// (`md_view::fill`).
     pub fn start_renders(cx: &mut Context<Self>) {
         let ready = mermaid::queue().start_ready();
         for job in ready {
+            let dir = mermaid::cache_dir();
+            let started = mermaid::prepare(&dir, &job).and_then(|page| crate::render_view::Render::start(&page, &dir).map_err(|e| (e, Some(page))).map_err(|(e, page)| {
+                if let Some(page) = page {
+                    let _ = std::fs::remove_file(page);
+                }
+                e
+            }));
+            let mut render = match started {
+                Ok(r) => r,
+                Err(e) => {
+                    mermaid::finish(&dir, &job.key, Path::new(""), Err(e));
+                    cx.notify();
+                    continue;
+                }
+            };
             cx.spawn(async move |this, cx| {
-                cx.background_executor().spawn(async move { mermaid::run_job(&mermaid::cache_dir(), &job) }).await;
+                let result = loop {
+                    cx.background_executor().timer(Duration::from_millis(40)).await;
+                    if let Some(result) = render.poll() {
+                        break result;
+                    }
+                };
+                mermaid::finish(&dir, &job.key, render.page(), result);
                 let _ = this.update(cx, |_, cx| {
                     Viewer::start_renders(cx);
                     cx.notify();
@@ -1094,6 +1134,7 @@ impl Viewer {
             return;
         }
         splice_rows(&mut self.blocks, &mut self.block_cache, &self.list_state, &old_lines, &new_lines);
+        self.edited_at = Instant::now();
         self.content = Content::Text { lines: new_lines, spans: Vec::new() };
         self.refresh_structure();
         // The marks point at lines that may have moved; the next save computes them again.
@@ -2148,6 +2189,61 @@ impl Viewer {
         self.lang = None;
         self.table_edit = false;
         self.table_pick = None;
+        cx.notify();
+    }
+
+    /// Block `ix`'s index among the document's diagrams (mermaid code blocks), in document order.
+    pub fn diagram_index(&self, ix: usize) -> usize {
+        self.blocks[..ix.min(self.blocks.len())].iter().filter(|b| matches!(&b.kind, md_blocks::BlockKind::CodeBlock { info } if crate::mermaid::is_diagram_info(info))).count()
+    }
+
+    /// How block `ix`'s diagram shows.
+    pub fn diagram_mode(&self, ix: usize) -> workspace::DiagramMode {
+        self.diagram_modes.get(&self.diagram_index(ix)).copied().unwrap_or_default()
+    }
+
+    /// Shows block `ix`'s diagram as `mode`, saved for the file (`ViewerEvent::DiagramModesChanged`).
+    pub fn set_diagram_mode(&mut self, ix: usize, mode: workspace::DiagramMode, cx: &mut Context<Self>) {
+        let index = self.diagram_index(ix);
+        if mode == workspace::DiagramMode::Diagram {
+            self.diagram_modes.remove(&index);
+        } else {
+            self.diagram_modes.insert(index, mode);
+        }
+        let views = self.diagram_modes.iter().map(|(&index, &mode)| workspace::DiagramView { index, mode }).collect();
+        cx.emit(ViewerEvent::DiagramModesChanged(views));
+        cx.notify();
+    }
+
+    /// Block `ix`'s diagram one zoom step in or out about its centre, or back to fit (`None`), in a
+    /// box `size` big.
+    pub fn zoom_diagram(&mut self, ix: usize, step: Option<bool>, size: (f32, f32), cx: &mut Context<Self>) {
+        let index = self.diagram_index(ix);
+        let (zoom, pan) = self.diagram_zoom.get(&index).copied().unwrap_or((1.0, (0.0, 0.0)));
+        match step {
+            None => {
+                self.diagram_zoom.remove(&index);
+            }
+            Some(in_) => {
+                let to = crate::md_diagram::step(zoom, in_);
+                self.diagram_zoom.insert(index, (to, crate::md_diagram::zoom_about(pan, size, zoom, to)));
+            }
+        }
+        cx.notify();
+    }
+
+    /// A pan of block `ix`'s diagram: the press at `at` starts it, a move with the button down
+    /// follows it, kept in its box `size` big.
+    pub fn pan_diagram(&mut self, ix: usize, at: Point<Pixels>, start: bool, size: (f32, f32), cx: &mut Context<Self>) {
+        let index = self.diagram_index(ix);
+        let (zoom, pan) = self.diagram_zoom.get(&index).copied().unwrap_or((1.0, (0.0, 0.0)));
+        if start {
+            self.diagram_drag = Some((index, at, pan));
+            return;
+        }
+        let Some((i, from, base)) = self.diagram_drag.filter(|(i, _, _)| *i == index) else { return };
+        let moved = (base.0 + f32::from(at.x - from.x), base.1 + f32::from(at.y - from.y));
+        self.diagram_zoom.insert(i, (zoom, crate::md_diagram::clamp(moved, size, zoom)));
         cx.notify();
     }
 
@@ -4358,11 +4454,13 @@ impl Root {
         };
         let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
         let anchor = self.pending_anchors.remove(path);
+        let diagram_modes: std::collections::BTreeMap<usize, workspace::DiagramMode> = self.diagram_modes.get(path).map(|d| d.iter().map(|d| (d.index, d.mode)).collect()).unwrap_or_default();
         let image_destination = self.config.viewer.image_destination.clone();
         let folded: std::collections::BTreeSet<md_fold::FoldKey> = self.folds.get(path).map(|f| f.iter().map(|f| (f.heading.clone(), f.index)).collect()).unwrap_or_default();
         let v = cx.new(|cx| {
             let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
             v.pending_anchor = anchor;
+            v.diagram_modes = diagram_modes;
             v.image_destination = image_destination;
             v.mode = mode;
             v.open_details = open_details;
@@ -4406,6 +4504,21 @@ impl Root {
                         other.update(cx, |o, cx| {
                             if o.path == path {
                                 o.open_details = shown.clone();
+                                cx.notify();
+                            }
+                        });
+                    }
+                    root.save(cx);
+                }
+                // So are the diagrams' modes.
+                ViewerEvent::DiagramModesChanged(views) => {
+                    let path = v.read(cx).path.clone();
+                    workspace::set_diagram_modes(&mut root.diagram_modes, &path, views.clone());
+                    let modes: std::collections::BTreeMap<usize, workspace::DiagramMode> = views.iter().map(|d| (d.index, d.mode)).collect();
+                    for other in root.viewers.values().filter(|o| o.entity_id() != v.entity_id()) {
+                        other.update(cx, |o, cx| {
+                            if o.path == path {
+                                o.diagram_modes = modes.clone();
                                 cx.notify();
                             }
                         });
