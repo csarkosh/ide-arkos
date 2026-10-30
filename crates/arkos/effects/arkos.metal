@@ -41,7 +41,9 @@ struct ArkosBlock {
     float seed;       // stable for the block's life: pick its grain from this, never from its index
     float value;      // a highlight's fade, 0 to 1 (1 for every other kind)
     float ordinal;    // a pane's place (0, 1, ...); a highlight's state (0 hovered, 1 selected, 2 both), else 0
-    float3 pad;
+    float busy;       // 1 for a pane's tab bar and body while the pane's active tab is a terminal
+                      // whose Claude session works, else 0
+    float3 pad;       // aligned to 16 bytes after busy: the block is 64 bytes
 };
 
 struct ArkosInputs {

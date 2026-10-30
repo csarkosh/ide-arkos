@@ -12,9 +12,9 @@ pub const MAX_BLOCKS: usize = 48;
 /// its four pigments (`ARKOS_PIGMENT`).
 pub const COLORS: usize = 39;
 
-/// One block as the preamble's `ArkosBlock`: the rectangle, then kind, edges, seed, value and
-/// ordinal as floats. Metal aligns its `float3 pad` to sixteen bytes, so three floats of padding
-/// follow the ordinal and the `float3` itself takes a sixteen-byte slot: 64 bytes in all.
+/// One block as the preamble's `ArkosBlock`: the rectangle, then kind, edges, seed, value,
+/// ordinal and busy as floats. Metal aligns its `float3 pad` to sixteen bytes, so two floats of
+/// padding follow the busy flag and the `float3` itself takes a sixteen-byte slot: 64 bytes in all.
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ShaderBlock {
@@ -24,7 +24,9 @@ pub struct ShaderBlock {
     pub seed: f32,
     pub value: f32,
     pub ordinal: f32,
-    pub align: [f32; 3],
+    /// 1 for a pane's tab bar and body while its active tab's Claude session works, else 0.
+    pub busy: f32,
+    pub align: [f32; 2],
     pub pad: [f32; 4],
 }
 
@@ -158,6 +160,7 @@ pub fn build(theme: &Theme, intensity: f32, size: (f32, f32), scale: f32, time: 
             seed: b.seed,
             value: b.value,
             ordinal: b.ordinal,
+            busy: b.busy,
             ..ShaderBlock::default()
         };
     }
@@ -183,10 +186,12 @@ mod tests {
 
     #[test]
     fn the_inputs_struct_is_the_size_the_preamble_declares() {
-        // ArkosBlock: float4 rect (16), four floats (16), ordinal (4), then float3 pad aligned
-        // to 16: 64 bytes.
+        // ArkosBlock: float4 rect (16), four floats (16), ordinal and busy (8), then float3 pad
+        // aligned to 16: 64 bytes.
         assert_eq!(size_of::<ShaderBlock>(), 64);
         assert_eq!(offset_of!(ShaderBlock, ordinal), 32);
+        // The busy flag takes the first float of what was padding; the rest keeps its place.
+        assert_eq!(offset_of!(ShaderBlock, busy), 36);
         assert_eq!(offset_of!(ShaderBlock, pad), 48);
         // ArkosInputs: six floats and a float2 (32), float4 colors[39], ArkosBlock blocks[48].
         assert_eq!(COLORS, 39);
@@ -272,13 +277,14 @@ mod tests {
     fn more_than_forty_eight_blocks_are_dropped_not_overrun() {
         let theme = crate::theme::builtin("peach-light").unwrap();
         let many: Vec<Block> = (0..60)
-            .map(|i| Block { rect: Rect { x: i as f32, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::PaneBody, edges: 6, seed: i as f32, value: 1.0, ordinal: 0.0 })
+            .map(|i| Block { rect: Rect { x: i as f32, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::PaneBody, edges: 6, seed: i as f32, value: 1.0, ordinal: 0.0, busy: (i % 2) as f32 })
             .collect();
         let inputs = build(&theme, 0.7, (800.0, 600.0), 1.0, 2.5, &many);
         assert_eq!(inputs.block_count, 48.0);
         assert_eq!(inputs.blocks[47].seed, 47.0);
         assert_eq!(inputs.blocks[0].kind, 5.0);
         assert_eq!(inputs.blocks[0].edges, 6.0);
+        assert_eq!((inputs.blocks[0].busy, inputs.blocks[1].busy), (0.0, 1.0), "build copies the busy flag");
         assert_eq!((inputs.time, inputs.intensity, inputs.size, inputs.scale), (2.5, 0.7, [800.0, 600.0], 1.0));
         let few = build(&theme, 0.7, (800.0, 600.0), 1.0, 2.5, &many[..3]);
         assert_eq!(few.block_count, 3.0);

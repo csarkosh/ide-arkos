@@ -25,7 +25,28 @@ pub const RAIN_ROWS_PERIOD: f32 = 60.0;
 /// Seconds a rune shows before its cell picks another.
 pub const RUNE_CHANGE: f32 = 0.5;
 /// The most the rain lays of its green over the ground, before the user's intensity.
-pub const RAIN_ALPHA: f32 = 0.12;
+pub const RAIN_ALPHA: f32 = 0.15;
+
+/// Signal tears a minute across a window of `D_EDGES` edges.
+pub const D_PER_MINUTE: f32 = 6.0;
+/// How long a tear lasts, in seconds, and the slots the tears' clock is cut into.
+pub const D_DURATION: f32 = 0.12;
+/// The edges the tears are shared among: a window of a pane or two reports about this many.
+pub const D_EDGES: f32 = 12.0;
+
+/// The key of a block's edge, from the block's seed and the edge's side (0 top, 1 right, 2
+/// bottom, 3 left), as the shader's `nearest_edge` makes it: never from the block's place.
+pub fn edge_key(seed: f32, side: u32) -> u32 {
+    seed.to_bits().wrapping_mul(4).wrapping_add(side)
+}
+
+/// Whether the edge `key` tears in slot `slot` of the tears' clock (`D_DURATION` each), as the
+/// shader's `edge_glow` decides it. Slot 0, where the clock stands under Reduce Motion, never does.
+pub fn tears(key: u32, slot: u32) -> bool {
+    let chance = D_PER_MINUTE / 60.0 * D_DURATION / D_EDGES;
+    let tk = key.wrapping_mul(8) ^ slot.wrapping_mul(83_492_791);
+    slot != 0 && hash01(tk) < chance
+}
 
 /// Column `column`'s stream at `t` seconds of the effect's clock: its head's row from the
 /// window's top and its trail's length in rows, as the shader's `rain` works them out. The
@@ -95,7 +116,7 @@ mod tests {
             ("constant float RAIN_GAP = 30.0;", RAIN_GAP),
             ("constant float RAIN_ROWS_PERIOD = 60.0;", RAIN_ROWS_PERIOD),
             ("constant float RUNE_CHANGE = 0.5;", RUNE_CHANGE),
-            ("constant float RAIN_ALPHA = 0.12;", RAIN_ALPHA),
+            ("constant float RAIN_ALPHA = 0.15;", RAIN_ALPHA),
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
             assert!(line.ends_with(&format!(" = {value:?};")), "the mirror's value for {line} is {value:?}");
@@ -118,6 +139,86 @@ mod tests {
         ] {
             assert!(wash.contains(line), "wash.metal's theme_green lacks {line}");
         }
+    }
+
+    #[test]
+    fn the_wash_carries_cyrus_s_tuned_edge_settings_line_for_line() {
+        let wash = matrix().wash;
+        for line in [
+            // The line.
+            "constant float EDGE_INTENSITY = 0.33;",
+            "constant float EDGE_CORE_WIDTH = 0.55;",
+            "constant float EDGE_CORE = 0.46;",
+            "constant float EDGE_HALO_REACH = 5.2;",
+            "constant float EDGE_HALO = 0.5;",
+            // A: rain on the vertical edges.
+            "constant float A_SPEED = 222.0;",
+            "constant float A_TRAIL = 110.0;",
+            "constant float A_GAP = 3.0;",
+            "constant float A_HEAD = 1.7;",
+            "constant float A_RUNE = 7.0;",
+            // B: the horizontal edges are code.
+            "constant float B_RUNE = 6.0;",
+            "constant float B_FLIP = 0.5;",
+            "constant float B_DENSITY = 0.5;",
+            "constant float B_STRENGTH = 0.8;",
+            "constant float B_REPLACE = 0.6;",
+            // D: signal tears.
+            "constant float D_PER_MINUTE = 6.0;",
+            "constant float D_DURATION = 0.12;",
+            "constant float D_LENGTH = 40.0;",
+            "constant float D_OFFSET = 2.0;",
+            "constant float D_FLASH = 1.8;",
+            // E: a busy pane runs hotter.
+            "constant float E_SPEED = 2.0;",
+            "constant float E_BRIGHT = 1.4;",
+            // The background rain.
+            "constant float RAIN_ALPHA = 0.15;",
+        ] {
+            assert!(wash.contains(line), "wash.metal lacks {line}");
+        }
+        // The mirror's tear schedule is the shader's.
+        for (name, value) in [("D_PER_MINUTE", D_PER_MINUTE), ("D_DURATION", D_DURATION), ("D_EDGES", D_EDGES)] {
+            assert!(wash.contains(&format!("constant float {name} = {value:?};")), "the mirror's {name} is {value:?}");
+        }
+        for line in [
+            "float chance = D_PER_MINUTE / 60.0 * D_DURATION / D_EDGES;",
+            "uint tk = (h.key * 8u) ^ (dslot * 83492791u);",
+            "if (dslot != 0u && hash01(tk) < chance) {",
+        ] {
+            assert!(wash.contains(line), "wash.metal's tears lack {line}");
+        }
+        // Packets (the mock-up's C) are not ported.
+        assert!(!wash.contains("constant float C_"), "the packets came along");
+    }
+
+    #[test]
+    fn an_edge_s_key_comes_from_its_block_s_seed_and_side_never_its_index() {
+        let wash = matrix().wash;
+        assert!(wash.contains("uint key = as_type<uint>(blk.seed) * 4u + side;"), "the edge key is not the seed's");
+        let start = wash.find("void nearest_edge(").expect("the wash finds its edges");
+        let end = start + wash[start..].find("\n}\n").unwrap();
+        let signature = &wash[start..start + wash[start..].find(')').unwrap()];
+        assert!(!signature.contains("int "), "nearest_edge is handed an index: {signature}");
+        assert!(!wash[start..end].contains("float(i)"), "nearest_edge keys an edge by its index");
+        // The mirror agrees, and a block keeps its edges' keys wherever it sits.
+        assert_eq!(edge_key(20.0, 1), 20.0f32.to_bits().wrapping_mul(4) + 1);
+        assert_ne!(edge_key(20.0, 1), edge_key(21.0, 1));
+        assert_ne!(edge_key(20.0, 1), edge_key(20.0, 3));
+        // The busy flag rides in the hit, from the block.
+        assert!(wash.contains("blk.busy"), "the edges never read the busy flag");
+    }
+
+    #[test]
+    fn about_six_tears_a_minute_across_a_window_and_none_on_a_frozen_clock() {
+        // Twelve edges (D_EDGES) for ten minutes: about 60, within a factor of two.
+        let keys: Vec<u32> = (0..6).flat_map(|i| [edge_key(10.0 + i as f32 * 2.0, 1), edge_key(11.0 + i as f32 * 2.0, 2)]).collect();
+        assert_eq!(keys.len() as f32, D_EDGES);
+        let slots = (600.0 / D_DURATION) as u32;
+        let n: usize = (1..=slots).map(|slot| keys.iter().filter(|&&k| tears(k, slot)).count()).sum();
+        assert!((30..=120).contains(&n), "{n} tears in ten minutes");
+        // Slot 0, where the clock stands under Reduce Motion, tears nothing.
+        assert!((0..2000u32).all(|k| !tears(k, 0)));
     }
 
     #[test]

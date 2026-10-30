@@ -115,7 +115,7 @@ fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
         let row = Rect { x: 0.0, y: top + 60.0, w: SIDEBAR_W, h: 22.0 };
         strokes.push((Mark { key: 11, rect: row, kind: Kind::RowHighlight, state: HighlightState::Selected }, 1.0));
     }
-    let scene = active::scene(content, Some(top + content.h * 0.6), &panes, &[], &strokes);
+    let scene = active::scene(content, Some(top + content.h * 0.6), &panes, &[], &[], &strokes);
     blocks::blocks(&scene, effect.manifest.ink_borders)
 }
 
@@ -164,7 +164,7 @@ mod tests {
     /// A small window: the title bar, two panes (tab bar and body each) and a selected and
     /// hovered row in the first, with no edges, so every pixel is wash a text sits on.
     fn small_window() -> Vec<Block> {
-        let b = |x: f32, y: f32, w: f32, h: f32, kind: Kind, ordinal: f32| Block { rect: Rect { x, y, w, h }, kind, edges: 0, seed: x + y, value: 1.0, ordinal };
+        let b = |x: f32, y: f32, w: f32, h: f32, kind: Kind, ordinal: f32| Block { rect: Rect { x, y, w, h }, kind, edges: 0, seed: x + y, value: 1.0, ordinal, busy: 0.0 };
         vec![
             b(0.0, 0.0, 240.0, 30.0, Kind::TitleBar, 0.0),
             b(0.0, 30.0, 120.0, 24.0, Kind::TabBar, 0.0),
@@ -300,6 +300,51 @@ mod tests {
         assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
     }
 
+    #[test]
+    fn a_busy_pane_s_edges_burn_brighter_than_an_idle_one_s() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let theme = crate::theme::builtin("matrix").unwrap();
+        let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
+        // Two panes apart, each inked on all four sides: their outlines' bands never meet.
+        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::PaneBody, edges, seed, value: 1.0, ordinal: 0.0, busy };
+        // The light an outline adds, in green summed over the band within 8 points of it: the
+        // frame with the edges less the same frame without, so the rain under them cancels.
+        let band = |with: &[Rgb], without: &[Rgb], x: u32| -> f32 {
+            let (x0, x1, y0, y1) = (x - 8, x + 88 + 8, 8u32, 152u32);
+            let mut sum = 0.0;
+            for y in y0..y1 {
+                for xx in x0..x1 {
+                    let inner = xx >= x + 8 && xx < x + 80 && y >= 24 && y < 136;
+                    if !inner {
+                        let i = (y * W + xx) as usize;
+                        sum += with[i].g as f32 - without[i].g as f32;
+                    }
+                }
+            }
+            sum
+        };
+        // Either pane busy in turn, so neither place nor grain decides it; over a few moments,
+        // since a stream rides each vertical edge only now and then.
+        for busy_left in [true, false] {
+            let (bl, br) = if busy_left { (1.0, 0.0) } else { (0.0, 1.0) };
+            let (mut left, mut right) = (0.0, 0.0);
+            for t in [1.3, 4.7, 9.1, 15.5, 22.2, 31.9, 40.4, 57.0] {
+                let lit = [pane(16.0, 20.0, bl, all), pane(136.0, 22.0, br, all)];
+                let dark = [pane(16.0, 20.0, bl, 0), pane(136.0, 22.0, br, 0)];
+                let with = render_frame(&matrix.wash, &theme, (W, H), t, &lit);
+                let without = render_frame(&matrix.wash, &theme, (W, H), t, &dark);
+                left += band(&with, &without, 16);
+                right += band(&with, &without, 136);
+            }
+            assert!(left > 0.0 && right > 0.0, "the edges draw nothing: {left} {right}");
+            let (busy, idle) = if busy_left { (left, right) } else { (right, left) };
+            assert!(busy > idle * 1.15, "busy {busy:.0} is not brighter than idle {idle:.0} (busy on the left: {busy_left})");
+        }
+    }
+
     // Run by hand (`cargo test -p arkos effects::bench -- --ignored`): the GPU time is only
     // meaningful on an idle machine, not inside the parallel suite.
     #[test]
@@ -311,6 +356,8 @@ mod tests {
         let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
         let ms = bench(&matrix, &theme, (1200.0, 800.0), 1.0).unwrap();
+        // The figure, for the hand check's note (`-- --ignored --nocapture`).
+        eprintln!("matrix wash: {ms:.3} ms per frame at 1200x800, scale {}", matrix.manifest.scale);
         assert_eq!(verdict(ms), "within budget", "{ms} ms");
     }
 

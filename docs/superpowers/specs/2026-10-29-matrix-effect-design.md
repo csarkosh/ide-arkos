@@ -240,15 +240,22 @@ theme's green: the greenest of its `ANSI green`, its terminal text and its focus
   stream shows a rune: a 5 by 7 bit pattern from a hash of the cell's position and a slow clock
   (`RUNE_CHANGE` = 0.5 s, so the runes flicker as the film's do), drawn as filled bits with soft
   edges, in the theme's green. The head is brighter and a touch whiter; the trail is the green
-  at `RAIN_ALPHA` = 0.12 at most, times `u.intensity`, so the rain is noise under the text and
-  never competes with it. There is no font in the wash, so these are drawn shapes, not letters.
+  at `RAIN_ALPHA` = 0.15 at most (0.12 until Cyrus tuned the edges), times `u.intensity`, so
+  the rain is noise under the text and never competes with it. There is no font in the wash, so
+  these are drawn shapes, not letters.
 - **Where it shows.** The rain covers the whole window. The panes' paper at 0.8 hides most of
   it under the text; the bars and the sidebar (`chrome_alpha` 0) show it through their own faint
   darkening, as space darkens its bars.
-- **Edges (`ink_borders`).** A thin line in the focus ring colour on every edge a block reports:
-  a core about a point wide and a halo about 3 points out, as space's edge glow but without
-  its sweeping bars. Media and tables get the same line. The same functions serve
-  `arkos_overlay`, so the menus' edges are the panes' own.
+- **Edges (`ink_borders`).** Every edge a block reports is live, in the theme's green, all of
+  its light scaled by `EDGE_INTENSITY` = 0.33 (and then by `u.intensity`): a core 0.55 points
+  wide and a halo reaching 5.2 points; code falling down the vertical edges, one stream an edge
+  of 7-point runes with a brighter, whiter head; the horizontal edges' line drawn as small
+  upright 6-point runes flipping every 0.5 s, the core mostly replaced; now and then (about 6 a
+  minute across the window) a 40-point stretch of an edge tears 2 points sideways and flashes
+  for 0.12 s; and a pane whose active tab's Claude session works (the block's `busy` flag) has
+  edges that stream twice as fast and burn 1.4 times brighter. The values are Cyrus's (see the
+  amendment of 2026-10-29, "Cyrus tuned the edges"). Media and tables get the same edges. The
+  same functions serve `arkos_overlay`, so the menus' edges are the panes' own (never busy).
 - **Highlights (`highlights = "effect"`).** A soft green fill on the selected and hovered rows
   and the hovered tab, the strengths by state as watercolor's.
 - **Menus (`menus = "glow"`).** The backdrop is the wash over the menu's place, as space's.
@@ -365,3 +372,29 @@ and when the user scrolls up. Right now, it's too intense and slows the user dow
    window stamps its own for a document's wheel (raw or rendered) and its scroll keys; the clock
    rests on the newest of them (`latest_scroll`). No shader changed: slot 0 already glitches
    nothing.
+
+## Amendment (2026-10-29, Cyrus tuned the edges)
+
+Cyrus tuned the pane edges in a WebGL mock-up (`arkos-lab/2026-10-29-matrix-edges/edges.html`
+on the external SSD) and chose these settings "for now". The wash ports the mock-up's fragment
+shader to Metal in points with the same speeds, sizes and rates; the mock-up's `sin` hash is the
+wash's `hash01`, so streams and tears land in other places.
+
+1. The line: the theme's green (the mock-up's `#4af626`), intensity 0.33 (`EDGE_INTENSITY`,
+   apart from the user's `u.intensity`, which still scales everything), core width 0.55 pt,
+   core strength 0.46, halo reach 5.2 pt, halo strength 0.5.
+2. Background rain: `RAIN_ALPHA` 0.15.
+3. A, rain on the edges: on, 222 pt/s, trail 110 pt, gap 3 s, one stream an edge, head
+   brightness 1.7, as runes 7 pt in size, vertical edges only.
+4. B, the line is code: on, horizontal edges, runes 6 pt in size, flipping every 0.5 s, half
+   the bits lit, strength 0.8, replacing 0.6 of the core.
+5. C, data packets: off, and not ported.
+6. D, signal tears: on, 6 a minute (shared among `D_EDGES` = 12 edges, a window of a pane or
+   two), 0.12 s long, a 40 pt stretch shifted 2 pt, flashed 1.8 times. None on a frozen clock.
+7. E, a busy pane runs hotter: on, the streams twice as fast and the edges 1.4 times brighter on
+   a pane whose active tab is a terminal whose Claude session is `Working`. The app marks such a
+   pane's tab bar and body blocks with the preamble's new `busy` flag (`ArkosBlock`'s first
+   float of padding; the block stays 64 bytes). Where two blocks share a line, the busy one's
+   edge wins it (`EDGE_TIE`).
+8. The wash keeps `frame_rate = 30`: a stream moves about 7 pt a frame, near a rune cell, and is
+   judged in the look.

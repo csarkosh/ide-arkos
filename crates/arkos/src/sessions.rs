@@ -7,7 +7,7 @@
 use crate::client::Client;
 use crate::terminal::Terminal;
 use crate::update_check::Answer;
-use crate::tree::{Tab, TabId, Tree};
+use crate::tree::{PaneId, Tab, TabId, Tree};
 use gpui::{App, Entity};
 use protocol::ClaudeState;
 use protocol::{Event, Request, Response, SessionDetail, SessionId, SessionInfo, StagedUpdate};
@@ -364,6 +364,17 @@ impl SessionManager {
     /// project's sessions, and one no tab shows gets no `State` events to end its `Working`.
     pub fn any_working(&self, tree: &Tree) -> bool {
         tree.tabs().into_iter().any(|(_, _, tab)| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Working)))
+    }
+
+    /// The panes whose active tab is a terminal whose Claude session works, in the tree's order:
+    /// the panes an effect shows as busy.
+    pub fn working_panes(&self, tree: &Tree) -> Vec<PaneId> {
+        tree.panes()
+            .into_iter()
+            .filter(|&id| {
+                tree.pane(id).and_then(|p| p.tabs.get(p.active)).is_some_and(|tab| matches!(tab, Tab::Terminal { session, .. } if self.states.get(session) == Some(&ClaudeState::Working)))
+            })
+            .collect()
     }
 
     /// The user is quitting this window: a restart must not reopen it (section 11 step 4).
@@ -767,6 +778,26 @@ mod tests {
         assert!(m.labels.contains_key(&SessionId(2)));
         m.disconnect();
         assert!(m.labels.is_empty(), "a lost connection drops every terminal, and so every label");
+    }
+
+    #[test]
+    fn a_pane_is_busy_while_its_active_tab_is_a_terminal_whose_session_works() {
+        let rec = Recorder::new();
+        let mut m = SessionManager::new(rec, None, PathBuf::from("/p"));
+        let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
+        let left = tree.panes()[0];
+        let right = tree.split(left, crate::tree::Side::Right, Tab::Terminal { session: SessionId(2), cwd: None }).unwrap();
+        tree.add_tab(right, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default() });
+        assert!(m.working_panes(&tree).is_empty());
+        m.note_state(SessionId(1), ClaudeState::Working);
+        m.note_state(SessionId(2), ClaudeState::Working);
+        // The right pane shows its viewer, so only the left pane's session is on show working.
+        tree.activate(right, 1);
+        assert_eq!(m.working_panes(&tree), vec![left]);
+        tree.activate(right, 0);
+        assert_eq!(m.working_panes(&tree), vec![left, right]);
+        m.note_state(SessionId(1), ClaudeState::Waiting);
+        assert_eq!(m.working_panes(&tree), vec![right], "a waiting session is not busy");
     }
 
     #[test]

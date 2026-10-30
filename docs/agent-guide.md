@@ -628,8 +628,10 @@ wash then draws only when something changes); `u.intensity`, the user's slider f
 `u.size`, the window in points; `u.scale`, the drawable's pixels per point; `u.colors`, the
 theme's colours, opaque; and `u.blocks`, the first `u.block_count` of up to 48 blocks, each a
 rectangle in window points from the top left with its kind, the edges the app no longer draws, a
-`seed` fixed for the block's life, a `value` (a highlight's fade from 0 to 1, else 1) and an
-`ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both). `in.uv` runs
+`seed` fixed for the block's life, a `value` (a highlight's fade from 0 to 1, else 1), an
+`ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both) and a `busy` flag
+(1 on a pane's tab bar and body while the pane's active tab is a terminal whose Claude session
+is working, else 0; matrix runs a busy pane's edges hotter). `in.uv` runs
 from (0, 0) at the top left to (1, 1) at the bottom right. What the wash returns is the window's
 opaque ground; the app's surfaces are drawn over it with the manifest's alphas. Derive every
 shade from the theme's colours, so the effect reads right in a dark theme as in a light one.

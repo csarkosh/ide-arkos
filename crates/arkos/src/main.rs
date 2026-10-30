@@ -3908,9 +3908,11 @@ impl Root {
         }
         let layout = self.layout();
         let (strokes, strokes_moving) = self.effect_strokes.sync(&self.effect_marks, now);
+        // The panes whose Claude session works: an effect may show them busy.
+        let busy = self.sessions.working_panes(&self.tree);
         let e = self.effect.as_mut()?;
         let style = e.style(now);
-        let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &self.effect_shapes, &strokes);
+        let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &busy, &self.effect_shapes, &strokes);
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();

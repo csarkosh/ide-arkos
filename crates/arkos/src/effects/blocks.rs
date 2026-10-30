@@ -44,6 +44,9 @@ pub struct Block {
     /// A pane's place among the panes for its tab bar and body, a highlight's state for a
     /// highlight, else 0.
     pub ordinal: f32,
+    /// 1 for a pane's tab bar and body while the pane's active tab is a terminal whose Claude
+    /// session works, else 0.
+    pub busy: f32,
 }
 
 /// Whether a highlight is under the pointer, selected, or both.
@@ -125,6 +128,7 @@ pub fn menu_blocks(menus: &[MenuShape]) -> Vec<Block> {
             seed: 50.0 + (m.key % 997) as f32 * 0.61,
             value: m.opacity,
             ordinal: 0.0,
+            busy: 0.0,
         })
         .collect()
 }
@@ -134,14 +138,17 @@ pub fn menu_blocks(menus: &[MenuShape]) -> Vec<Block> {
 const MEDIA_OUTSET: f32 = 1.5;
 
 /// What the blocks are made from: the content area right of the sidebar and below the title bar,
-/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, the shapes
-/// laid out inside them, and the highlights with their fades.
+/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, the panes
+/// whose Claude session works, the shapes laid out inside them, and the highlights with their fades.
 pub struct Scene<'a> {
     pub content: Rect,
     pub title_bar_h: f32,
     pub tab_bar_h: f32,
     pub divider_y: Option<f32>,
     pub panes: &'a [(PaneId, Rect)],
+    /// The panes whose active tab is a terminal whose Claude session works: their tab bar and
+    /// body blocks are busy.
+    pub busy: &'a [PaneId],
     pub shapes: &'a [Shape],
     pub strokes: &'a [(Mark, f32)],
 }
@@ -160,6 +167,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         seed: 1.0,
         value: 1.0,
         ordinal: 0.0,
+        busy: 0.0,
     }];
     if c.x > 1.0 {
         out.push(Block {
@@ -169,6 +177,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             seed: 2.0,
             value: 1.0,
             ordinal: 0.0,
+            busy: 0.0,
         });
         // The line between Explorer and Worktrees: a block with no height.
         if let Some(y) = scene.divider_y.filter(|y| *y > bar && *y < bottom) {
@@ -179,6 +188,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
                 seed: 3.0,
                 value: 1.0,
                 ordinal: 0.0,
+                busy: 0.0,
             });
         }
     }
@@ -186,6 +196,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
     for (i, (pane, r)) in scene.panes.iter().enumerate() {
         // Seeded by the pane itself, not its place in this frame's list.
         let seed = 10.0 + (*pane % 997) as f32 * 2.0;
+        let busy = if scene.busy.contains(pane) { 1.0 } else { 0.0 };
         out.push(Block {
             rect: Rect { x: r.x, y: r.y, w: r.w, h: tab },
             kind: Kind::TabBar,
@@ -193,6 +204,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             seed,
             value: 1.0,
             ordinal: i as f32,
+            busy,
         });
         out.push(Block {
             rect: Rect { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0) },
@@ -201,6 +213,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             seed: seed + 1.0,
             value: 1.0,
             ordinal: i as f32,
+            busy,
         });
     }
     for shape in scene.shapes {
@@ -219,6 +232,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             seed: 30.0 + (shape.key % 997) as f32 * 0.53 + shape.kind as u32 as f32 * 0.29,
             value: 1.0,
             ordinal: 0.0,
+            busy: 0.0,
         });
     }
     // The highlights last: past the cap, a transient stroke goes before a pane does.
@@ -239,6 +253,7 @@ fn stroke_block(mark: &Mark, value: f32) -> Block {
         seed: 4.0 + (mark.key % 997) as f32 * 0.37,
         value,
         ordinal: mark.state as u32 as f32,
+        busy: 0.0,
     }
 }
 
@@ -251,7 +266,7 @@ pub fn backdrop_blocks(menu: &MenuShape, strokes: &[(Mark, f32)]) -> Vec<Block> 
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h
     };
-    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0 };
+    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0, busy: 0.0 };
     std::iter::once(own).chain(strokes.iter().filter(|(mark, _)| inside(mark.rect)).map(|(mark, v)| stroke_block(mark, *v))).collect()
 }
 
@@ -270,7 +285,27 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, busy: &[], shapes: &[], strokes }
+    }
+
+    #[test]
+    fn a_busy_pane_s_tab_bar_and_body_carry_the_busy_flag_and_nothing_else_does() {
+        let panes = [(5, rect(240.0, 38.0, 480.0, 562.0)), (9, rect(720.0, 38.0, 480.0, 562.0))];
+        let shapes = [Shape { key: 7, rect: rect(260.0, 200.0, 300.0, 100.0), kind: Kind::Table }];
+        let row = Mark { key: 1, rect: rect(0.0, 100.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
+        let strokes = [(row, 1.0)];
+        let busy = [9];
+        let s = Scene { busy: &busy, shapes: &shapes, ..scene(rect(240.0, 38.0, 960.0, 562.0), Some(400.0), &panes, &strokes) };
+        let out = blocks(&s, true);
+        for b in &out {
+            let mine = matches!(b.kind, Kind::TabBar | Kind::PaneBody) && b.rect.x == 720.0;
+            assert_eq!(b.busy, if mine { 1.0 } else { 0.0 }, "{:?} at {:?}", b.kind, b.rect);
+        }
+        assert_eq!(out.iter().filter(|b| b.busy == 1.0).count(), 2, "pane 9's tab bar and body");
+        // With no busy pane, nothing is busy; menus and backdrops never are.
+        assert!(blocks(&scene(rect(240.0, 38.0, 960.0, 562.0), None, &panes, &strokes), true).iter().all(|b| b.busy == 0.0));
+        let menu = MenuShape { key: 3, rect: rect(10.0, 10.0, 100.0, 60.0), opacity: 1.0 };
+        assert!(menu_blocks(&[menu]).iter().chain(&backdrop_blocks(&menu, &strokes)).all(|b| b.busy == 0.0));
     }
 
     #[test]
@@ -288,7 +323,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, divider_y: None, panes: &panes, shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, divider_y: None, panes: &panes, busy: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 

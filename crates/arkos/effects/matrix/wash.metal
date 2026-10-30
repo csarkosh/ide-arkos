@@ -1,5 +1,5 @@
 // The matrix wash under the Arkos window: digital rain made from the theme's colours, faint green
-// runes falling in columns over a flat ground; and for the UI's blocks, a glow line on every edge
+// runes falling in columns over a flat ground; and for the UI's blocks, a live line on every edge
 // the app no longer draws, a soft green fill on the highlights and a faint darkening under the
 // bars. The preamble (arkos.metal) is prepended before this is compiled, and declares
 // ArkosInputs, ArkosBlock, ArkosVertex and the ARKOS_* indices used here.
@@ -7,6 +7,10 @@
 // Every stream is a pure function of the clock, so Reduce Motion (which freezes it) shows still
 // rain. The rain's constants are mirrored in crates/arkos/src/effects/matrix.rs, which tests
 // them: a change here is made there too.
+//
+// The edges are Cyrus's tuned settings (2026-10-29), ported from the WebGL mock-up in
+// arkos-lab/2026-10-29-matrix-edges/edges.html with the same speeds, sizes and rates; its sin
+// hash is this file's hash01, so streams and tears land in other places than in the mock-up.
 
 // The width of a column of rain, in points.
 constant float RAIN_COL = 14.0;
@@ -30,7 +34,7 @@ constant float RAIN_ROWS_PERIOD = 60.0;
 // Seconds a rune shows before its cell picks another.
 constant float RUNE_CHANGE = 0.5;
 // The most the rain adds of its green to the ground, before the user's intensity.
-constant float RAIN_ALPHA = 0.12;
+constant float RAIN_ALPHA = 0.15;
 // The head's extra brightness: how far its rune leans from the green toward white.
 constant float RAIN_HEAD = 0.35;
 // A rune's bit, in points: its 5 by 7 bits make a shape 10 by 14 points, centred in its cell.
@@ -38,16 +42,84 @@ constant float RUNE_BIT = 2.0;
 // How soft a bit's edges are, as a share of the bit: its square fades out over this much.
 constant float RUNE_SOFT = 0.25;
 
-// The pane edges' glow, as space's without its sweeping bars: the halo's strength.
-constant float EDGE_HALO = 0.75;
-// How far the halo reaches, in points: its strength falls by e over this distance.
-constant float EDGE_HALO_REACH = 2.0;
-// The line's core, a little over a point wide: its strength.
-constant float EDGE_CORE = 0.7;
-// How far the core leans from the ring's colour toward the theme's bright white.
-constant float EDGE_CORE_WHITE = 0.15;
-// How far out edges are looked for, in points; the halo fades to nothing over the last 3 of it.
-constant float EDGE_REACH = 12.0;
+// The edges' light as a whole, before the user's intensity: every part below is scaled by it.
+constant float EDGE_INTENSITY = 0.33;
+// The width of the line's core, in points: full strength within half of it each side.
+constant float EDGE_CORE_WIDTH = 0.55;
+// The core's strength.
+constant float EDGE_CORE = 0.46;
+// How far beyond its width the core fades out, in points.
+constant float EDGE_CORE_SOFT = 0.9;
+// How far the core leans from the green toward the theme's bright white.
+constant float EDGE_CORE_WHITE = 0.3;
+// How far the halo reaches, in points: it falls as the square of the distance's share of this.
+constant float EDGE_HALO_REACH = 5.2;
+// The halo's strength at the line.
+constant float EDGE_HALO = 0.5;
+// How far out edges are looked for, in points: the halo's reach and a tear's shift, rounded up.
+constant float EDGE_REACH = 8.0;
+// How much nearer a busy block's edge counts, in points, so a line it shares with an idle block
+// (two panes side by side, a tab bar under the title bar) is the busy one's.
+constant float EDGE_TIE = 1.0;
+// An edge's rune cell along a vertical edge, as a share of the rune's size.
+constant float EDGE_RUNE_TALL = 1.15;
+// An edge's rune across a vertical edge, as a share of its size (across a horizontal one it is
+// the size itself).
+constant float EDGE_RUNE_THIN = 0.6;
+// An edge's rune cell along a horizontal edge, as a share of the rune's size.
+constant float EDGE_RUNE_WIDE = 0.8;
+// The gap at each end of a rune cell along the edge, as a share of the cell.
+constant float EDGE_RUNE_MARGIN = 0.1;
+
+// A: code rains down the vertical edges, one stream an edge, in points a second.
+constant float A_SPEED = 222.0;
+// The slowest an edge's stream falls, as a share of A_SPEED.
+constant float A_SPEED_LOW = 0.6;
+// The fastest an edge's stream falls, as a share of A_SPEED.
+constant float A_SPEED_HIGH = 1.4;
+// The stream's trail, in points: it fades to nothing over this behind the head.
+constant float A_TRAIL = 110.0;
+// Seconds an edge waits between its streams, beyond their fall.
+constant float A_GAP = 3.0;
+// The head cell's brightness, against the trail's 1 at the head.
+constant float A_HEAD = 1.7;
+// How far the head leans from the green toward the theme's bright white.
+constant float A_HEAD_WHITE = 0.45;
+// The size of the stream's runes, in points.
+constant float A_RUNE = 7.0;
+// Seconds a stream's rune shows before its cell picks another.
+constant float A_FLIP = 0.12;
+// The share of a stream's rune bits that are lit.
+constant float A_DENSITY = 0.55;
+
+// B: the horizontal edges' line is code, small upright runes this many points in size.
+constant float B_RUNE = 6.0;
+// Seconds a line's rune shows before its cell picks another.
+constant float B_FLIP = 0.5;
+// The share of a line's rune bits that are lit.
+constant float B_DENSITY = 0.5;
+// A lit bit's strength.
+constant float B_STRENGTH = 0.8;
+// How much of the core the runes replace on a horizontal edge.
+constant float B_REPLACE = 0.6;
+
+// D: signal tears a minute across a window of D_EDGES edges.
+constant float D_PER_MINUTE = 6.0;
+// How long a tear lasts, in seconds, and the slots the tears' clock is cut into.
+constant float D_DURATION = 0.12;
+// The edges the tears are shared among: a window of a pane or two reports about this many.
+constant float D_EDGES = 12.0;
+// The length of the stretch of edge a tear shifts, in points.
+constant float D_LENGTH = 40.0;
+// How far a tear shifts its stretch across the edge, in points, to one side or the other.
+constant float D_OFFSET = 2.0;
+// How much brighter a torn stretch is lit.
+constant float D_FLASH = 1.8;
+
+// E: a busy pane's edges (its Claude session works) stream this many times faster.
+constant float E_SPEED = 2.0;
+// And are lit this many times brighter.
+constant float E_BRIGHT = 1.4;
 
 // A highlight's strength at full fade, by its ordinal: hovered, selected, both (watercolor's).
 constant float HIGHLIGHT_STRENGTH[3] = {0.2, 0.3, 0.36};
@@ -64,16 +136,6 @@ float hash01(uint n) {
 float sd_box(float2 q, float2 hb) {
     float2 d = abs(q) - hb;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-}
-
-// The distance from p to a horizontal segment from x0 to x1 at y, and to a vertical one.
-float seg_h(float2 p, float y, float x0, float x1) {
-    float dx = max(max(x0 - p.x, p.x - x1), 0.0);
-    return length(float2(dx, p.y - y));
-}
-float seg_v(float2 p, float x, float y0, float y1) {
-    float dy = max(max(y0 - p.y, p.y - y1), 0.0);
-    return length(float2(p.x - x, dy));
 }
 
 // How much of a rune's bit lies at local (points from its cell's top left) in the given cell at
@@ -123,17 +185,55 @@ float4 rain(float2 p, float t, float3 green) {
     return float4(c, lit * fade);
 }
 
-// The edge nearest a pixel so far: how far it is, and its block's fade.
+// The edge nearest a pixel so far, and where the pixel sits by it.
 struct EdgeHit {
-    float d;
-    float value;
+    float rank;    // what the edges are compared by: d, less EDGE_TIE for a busy block's edge
+    float d;       // the distance to the edge's segment, its ends included, in points
+    float across;  // the signed distance across the edge's line, positive outside its block
+    float over;    // how far past the segment's nearer end the pixel lies along it (0 beside it)
+    float along;   // the distance along the edge from its start (its top or its left), 0 to len
+    float len;     // the edge's length
+    float value;   // its block's fade
+    float busy;    // its block's busy flag
+    uint key;      // the edge's own key, from its block's seed and its side
+    bool vert;     // whether the edge is vertical (a left or right side)
 };
 
 EdgeHit no_edge() {
     EdgeHit h;
+    h.rank = 1e5;
     h.d = 1e5;
+    h.across = 0.0;
+    h.over = 0.0;
+    h.along = 0.0;
+    h.len = 1.0;
     h.value = 1.0;
+    h.busy = 0.0;
+    h.key = 0u;
+    h.vert = false;
     return h;
+}
+
+// Takes blk's edge on side (0 top, 1 right, 2 bottom, 3 left) into h when it ranks nearer: the
+// pixel lies across from its line and along from its start, and the edge is len long. Its key is
+// the block's seed and the side, so a block keeps its edges' grain wherever it sits in the list.
+void take_edge(thread EdgeHit& h, ArkosBlock blk, uint side, float across, float along, float len) {
+    float over = max(max(-along, along - len), 0.0);
+    float e = length(float2(across, over));
+    float rank = e - blk.busy * EDGE_TIE;
+    if (rank < h.rank) {
+        uint key = as_type<uint>(blk.seed) * 4u + side;
+        h.rank = rank;
+        h.d = e;
+        h.across = across;
+        h.over = over;
+        h.along = clamp(along, 0.0, len);
+        h.len = len;
+        h.value = blk.value;
+        h.busy = blk.busy;
+        h.key = key;
+        h.vert = (side & 1u) == 1u;
+    }
 }
 
 // Takes blk's reported edges into h when one is nearer p; d is p's distance to blk's box.
@@ -142,30 +242,119 @@ void nearest_edge(float2 p, ArkosBlock blk, float d, thread EdgeHit& h) {
     if (edges != 0u && abs(d) < EDGE_REACH) {
         float4 r = blk.rect;
         float x0 = r.x, y0 = r.y, x1 = r.x + r.z, y1 = r.y + r.w;
-        float e;
-        if (edges & ARKOS_EDGE_TOP) { e = seg_h(p, y0, x0, x1); if (e < h.d) { h.d = e; h.value = blk.value; } }
-        if (edges & ARKOS_EDGE_RIGHT) { e = seg_v(p, x1, y0, y1); if (e < h.d) { h.d = e; h.value = blk.value; } }
-        if (edges & ARKOS_EDGE_BOTTOM) { e = seg_h(p, y1, x0, x1); if (e < h.d) { h.d = e; h.value = blk.value; } }
-        if (edges & ARKOS_EDGE_LEFT) { e = seg_v(p, x0, y0, y1); if (e < h.d) { h.d = e; h.value = blk.value; } }
+        if (edges & ARKOS_EDGE_TOP) { take_edge(h, blk, 0u, y0 - p.y, p.x - x0, r.z); }
+        if (edges & ARKOS_EDGE_RIGHT) { take_edge(h, blk, 1u, p.x - x1, p.y - y0, r.w); }
+        if (edges & ARKOS_EDGE_BOTTOM) { take_edge(h, blk, 2u, p.y - y1, p.x - x0, r.z); }
+        if (edges & ARKOS_EDGE_LEFT) { take_edge(h, blk, 3u, x0 - p.x, p.y - y0, r.w); }
     }
 }
 
-// The glow line at the nearest edge: a bright core a little over a point wide and a soft halo a
-// couple of points out. The halo is laid in the ring's colour and the core over it in core_col;
-// their strengths are before the user's intensity.
-struct Glow {
-    float halo;
-    float core;
-    float3 core_col;
+// Where a pixel falls among an edge's rune cells of the given size: its cell along the edge from
+// the edge's start, the cell's length, and the pixel's place in the cell's rune across the line
+// (u) and along it (v), each 0 to 1 inside the rune.
+struct RuneCell {
+    float cell;
+    float cell_len;
+    float u;
+    float v;
+    bool inside;
 };
 
-Glow edge_glow(EdgeHit h, float3 ring, float3 white_c) {
-    float dline = h.d;
-    Glow g;
-    g.core = saturate((1.0 - smoothstep(0.5, 1.1, dline)) * EDGE_CORE);
-    g.halo = exp(-dline / EDGE_HALO_REACH) * EDGE_HALO * (1.0 - smoothstep(EDGE_REACH - 3.0, EDGE_REACH, dline));
-    g.core_col = mix(ring, white_c, EDGE_CORE_WHITE);
-    return g;
+RuneCell rune_cell(float across, float along, bool vert, float size) {
+    RuneCell c;
+    c.cell_len = size * (vert ? EDGE_RUNE_TALL : EDGE_RUNE_WIDE);
+    float width = vert ? size * EDGE_RUNE_THIN : size;
+    c.u = across / width + 0.5;
+    c.cell = floor(along / c.cell_len);
+    c.v = (fract(along / c.cell_len) - EDGE_RUNE_MARGIN) / (1.0 - 2.0 * EDGE_RUNE_MARGIN);
+    c.inside = c.u >= 0.0 && c.u < 1.0 && c.v >= 0.0 && c.v < 1.0;
+    return c;
+}
+
+// Whether the bit under the pixel of the upright rune in cell c is lit, 1 or 0: the rune is 3
+// bits wide and 5 tall, standing up whichever way its edge runs, and each bit is lit by a hash
+// of the edge's base key, the cell, the rune's slot and the bit, for the given share of bits.
+float rune_bit(RuneCell c, bool vert, uint base, uint slot, float density) {
+    float2 b = vert ? floor(float2(c.u * 3.0, c.v * 5.0)) : floor(float2(c.v * 3.0, (1.0 - c.u) * 5.0));
+    uint bit = uint(b.y) * 3u + uint(b.x);
+    uint k = base ^ (uint(c.cell) * 73856093u) ^ (slot * 19349663u) ^ (bit * 83492791u);
+    return hash01(k) < density ? 1.0 : 0.0;
+}
+
+// The light the nearest edge casts at the pixel at time t: its colour (the theme's green, the
+// core and a stream's head leaning toward white_c) and its strength, before the user's intensity.
+// The line is a core and a halo; a tear (D) now and then shifts a stretch of it across and
+// flashes it; a horizontal edge's line is runes that flip (B), its core mostly replaced; a stream
+// of runes falls down a vertical edge (A); and a busy block's edges (E) stream faster and burn
+// brighter. Everything is worked out once, for the nearest edge alone.
+float4 edge_glow(EdgeHit h, float t, float3 green, float3 white_c) {
+    if (h.d >= EDGE_REACH) {
+        return float4(0.0);
+    }
+    float pace = mix(1.0, E_SPEED, h.busy);
+    float bright = mix(1.0, E_BRIGHT, h.busy);
+    uint base = h.key * 8u;
+
+    // D: a stretch of the edge tears sideways and flashes, about D_PER_MINUTE a minute across
+    // the window. Slot 0, where the clock stands under Reduce Motion, never tears.
+    float shift = 0.0;
+    float flash = 1.0;
+    float chance = D_PER_MINUTE / 60.0 * D_DURATION / D_EDGES;
+    uint dslot = uint(floor(t / D_DURATION));
+    uint tk = (h.key * 8u) ^ (dslot * 83492791u);
+    if (dslot != 0u && hash01(tk) < chance) {
+        float centre = hash01(tk + 1u) * h.len;
+        if (abs(h.along - centre) < D_LENGTH * 0.5) {
+            shift = hash01(tk + 2u) > 0.5 ? D_OFFSET : -D_OFFSET;
+            flash = D_FLASH;
+        }
+    }
+    float across = h.across - shift;
+    float dl = length(float2(across, h.over));
+
+    // B: a horizontal edge's line is small runes flipping on their own clock.
+    float b_lit = 0.0;
+    float core_share = 1.0;
+    if (!h.vert) {
+        core_share = 1.0 - B_REPLACE;
+        RuneCell c = rune_cell(across, h.along, false, B_RUNE);
+        if (c.inside && h.over <= 0.0) {
+            float slot = floor(t / B_FLIP + hash01((base + 3u) ^ (uint(c.cell) * 2654435761u)));
+            b_lit = rune_bit(c, false, base + 4u, uint(slot), B_DENSITY) * B_STRENGTH;
+        }
+    }
+
+    // A: one stream of runes falls down a vertical edge from its top, its trail fading behind a
+    // brighter, whiter head, then the edge waits A_GAP seconds for the next.
+    float a_glow = 0.0;
+    float a_head = 0.0;
+    if (h.vert) {
+        float speed = A_SPEED * mix(A_SPEED_LOW, A_SPEED_HIGH, hash01(base + 5u)) * pace;
+        float cycle = h.len + A_TRAIL + A_GAP * speed;
+        float head = fract(t * speed / cycle + hash01(base + 6u)) * cycle;
+        RuneCell c = rune_cell(across, h.along, true, A_RUNE);
+        float behind = (floor(head / c.cell_len) - c.cell) * c.cell_len;
+        if (behind >= 0.0 && behind < A_TRAIL && c.inside && h.over <= 0.0) {
+            float slot = floor(t / A_FLIP + hash01((base + 7u) ^ (uint(c.cell) * 2654435761u)));
+            float lit = rune_bit(c, true, base + 7u, uint(slot), A_DENSITY);
+            a_head = behind < c.cell_len ? 1.0 : 0.0;
+            a_glow = lit * (1.0 - behind / A_TRAIL) * mix(1.0, A_HEAD, a_head);
+        }
+    }
+
+    // The line: a core, mostly replaced by the runes on a horizontal edge, and a halo.
+    float core = (1.0 - smoothstep(EDGE_CORE_WIDTH * 0.5, EDGE_CORE_WIDTH * 0.5 + EDGE_CORE_SOFT, dl)) * EDGE_CORE * core_share;
+    float fall = max(0.0, 1.0 - dl / EDGE_HALO_REACH);
+    float halo = fall * fall * EDGE_HALO;
+
+    float s = halo + b_lit + core + a_glow;
+    if (s <= 0.0) {
+        return float4(0.0);
+    }
+    float3 core_col = mix(green, white_c, EDGE_CORE_WHITE);
+    float3 a_col = mix(green, white_c, A_HEAD_WHITE * a_head);
+    float3 c = (green * (halo + b_lit) + core_col * core + a_col * a_glow) / s;
+    return float4(c, s * EDGE_INTENSITY * bright * flash);
 }
 
 // How green a colour is: its green above the larger of its red and blue.
@@ -188,7 +377,6 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float k = saturate(u.intensity);
 
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
-    float3 ring = u.colors[ARKOS_FOCUS_RING].rgb;
     float3 white_c = u.colors[ARKOS_ANSI + 15].rgb;
     float3 green = theme_green(u);
 
@@ -196,7 +384,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float4 r = rain(p, u.time, green);
     float3 col = mix(bg, r.rgb, r.a * RAIN_ALPHA * k);
 
-    // The blocks: the bars darkened a little, the highlights glowing, every reported edge a line.
+    // The blocks: the bars darkened a little, the highlights glowing, every reported edge live.
     int nb = min(int(u.block_count), 48);
     float dim = 0.0;
     float lift = 0.0;
@@ -221,21 +409,20 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     }
     col = mix(col, bg * 0.8, dim * k);
     col = mix(col, green, lift * k);
-    // Every reported edge a glow line in the ring's colour.
-    Glow g = edge_glow(hit, ring, white_c);
-    col = mix(col, ring, saturate(g.halo * k));
-    col = mix(col, g.core_col, g.core * k);
+    // The nearest reported edge's light, laid over the rest: on black, the mock-up's sum.
+    float4 e = edge_glow(hit, u.time, green, white_c);
+    col = mix(col, e.rgb, saturate(e.a * k));
     return float4(col, 1.0);
 }
 
-// The menu stage: the open menus' edges, drawn above the panes with the panes' own glow, and
-// nothing else. Its blocks are only the menus, each with its fade as its value. It returns colour
-// multiplied by its alpha: the halo laid in the ring's colour and the core over it.
+// The menu stage: the open menus' edges, drawn above the panes with the panes' own edge light,
+// and nothing else. Its blocks are only the menus, each with its fade as its value and never
+// busy. It returns colour multiplied by its alpha.
 fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {
     float2 p = in.uv * u.size;
     float k = saturate(u.intensity);
-    float3 ring = u.colors[ARKOS_FOCUS_RING].rgb;
     float3 white_c = u.colors[ARKOS_ANSI + 15].rgb;
+    float3 green = theme_green(u);
     int nb = min(int(u.block_count), 48);
     EdgeHit hit = no_edge();
     for (int i = 0; i < nb; i++) {
@@ -247,11 +434,8 @@ fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs&
     if (hit.d >= EDGE_REACH) {
         return float4(0.0);
     }
-    Glow g = edge_glow(hit, ring, white_c);
+    float4 e = edge_glow(hit, u.time, green, white_c);
     // The edges fade with their menu (blk.value, carried in the hit).
-    float fade = k * hit.value;
-    float ah = saturate(g.halo * fade);
-    float ac = g.core * fade;
-    float a = ac + ah * (1.0 - ac);
-    return float4(g.core_col * ac + ring * ah * (1.0 - ac), a);
+    float a = saturate(e.a * k * hit.value);
+    return float4(e.rgb * a, a);
 }
