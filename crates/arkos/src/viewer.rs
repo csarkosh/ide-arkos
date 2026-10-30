@@ -15,6 +15,7 @@ use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
+use crate::md_format;
 use crate::md_reveal;
 use crate::md_table;
 use crate::md_view;
@@ -1447,10 +1448,75 @@ impl Viewer {
     }
 
     fn run_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        match key_action(ks) {
+            Some(action) => self.run_action(action, cx),
+            None => false,
+        }
+    }
+
+    /// A menu row's Cut, Copy or Paste, done as its key does (the paste makes a link as Cmd+V's
+    /// does).
+    pub fn act(&mut self, action: KeyAction, cx: &mut Context<Self>) {
+        if self.doc.is_none() {
+            return;
+        }
+        if self.run_action(action, cx) && places_caret(action) {
+            self.caret_placed = true;
+        }
+        self.note_caret_moved(false, cx);
+    }
+
+    /// The menu's Link (`md_format::link`) on one line: the selection or the word under the caret
+    /// becomes a link to the address on the clipboard (`md_format::link_target`), or to nothing yet
+    /// with the caret between the parentheses.
+    pub fn insert_link(&mut self, cx: &mut Context<Self>) {
+        let clip = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+        let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let target = md_format::link_target(&clip, &base, dirs_home().as_deref());
+        let Some(doc) = self.doc.as_ref() else { return };
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (doc.clamp(c.anchor), doc.clamp(c.head)) } else { (doc.clamp(c.head), doc.clamp(c.anchor)) };
+        if lo.line != hi.line {
+            return;
+        }
+        let line = doc.lines()[lo.line].clone();
+        let byte = |ch: usize| line.char_indices().nth(ch).map_or(line.len(), |(b, _)| b);
+        let e = md_format::link(&line, byte(lo.ch)..byte(hi.ch), target.as_deref());
+        let n = lo.line;
+        let ch = |s: &str, b: usize| s[..b.min(s.len())].chars().count();
+        let (from, to) = (edit::Pos { line: n, ch: ch(&line, e.range.start) }, edit::Pos { line: n, ch: ch(&line, e.range.end) });
+        let mut after = line.clone();
+        after.replace_range(e.range.clone(), &e.text);
+        let at = edit::Pos { line: n, ch: ch(&after, e.select.start) };
+        self.caret_placed = true;
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(from, to, &e.text, now);
+                doc.break_coalescing();
+                edit::Caret::at(at)
+            },
+            cx,
+        );
+    }
+
+    /// Whether the selection is empty or does not hold `p`: a right press there moves the caret
+    /// before the menu opens, as a left press would.
+    pub fn press_outside_selection(&self, p: edit::Pos) -> bool {
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
+        lo == hi || p < lo || p > hi
+    }
+
+    /// Whether anything is selected.
+    pub fn has_selection(&self) -> bool {
+        self.caret.anchor != self.caret.head
+    }
+
+    fn run_action(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
         if self.doc.is_none() {
             return false;
         }
-        let Some(action) = key_action(ks) else { return false };
         // A key the input method passed on ends its composition, keeping the text.
         if self.marked.is_some() {
             self.finish_composition(cx);
@@ -1459,7 +1525,7 @@ impl Viewer {
         // the structure), a move or an undo lets it go.
         if self.pending_append {
             match action {
-                KeyAction::DeleteBack(_) | KeyAction::DeleteFwd(_) | KeyAction::Newline | KeyAction::Tab | KeyAction::ShiftTab | KeyAction::Cut | KeyAction::Paste => self.take_pending_append(cx),
+                KeyAction::DeleteBack(_) | KeyAction::DeleteFwd(_) | KeyAction::Newline | KeyAction::BreakLine | KeyAction::Tab | KeyAction::ShiftTab | KeyAction::Cut | KeyAction::Paste => self.take_pending_append(cx),
                 KeyAction::Copy | KeyAction::Save | KeyAction::Escape | KeyAction::ScrollHome | KeyAction::ScrollEnd => {}
                 // The rendered view's page keys only scroll.
                 KeyAction::Move(edit::Move::PageUp(_) | edit::Move::PageDown(_), _) if self.rendered() => {}
@@ -1469,8 +1535,23 @@ impl Viewer {
         if self.rendered() && self.rendered_key(action, cx) {
             return true;
         }
-        if matches!(action, KeyAction::DeleteBack(_) | KeyAction::DeleteFwd(_) | KeyAction::Newline | KeyAction::Tab | KeyAction::ShiftTab | KeyAction::Paste) {
+        if matches!(action, KeyAction::DeleteBack(_) | KeyAction::DeleteFwd(_) | KeyAction::Newline | KeyAction::BreakLine | KeyAction::Tab | KeyAction::ShiftTab | KeyAction::Paste) {
             self.snap_for_edit();
+        }
+        // Enter and Shift+Enter in the rendered view go by the block (`rendered_break`); a block
+        // with no rule of its own gets the editor's (a list's continuation, the fence rule).
+        if self.rendered() && matches!(action, KeyAction::Newline | KeyAction::BreakLine) {
+            let blocks = self.blocks.clone();
+            let shift = action == KeyAction::BreakLine;
+            self.edit(
+                |doc, caret, now| match rendered_break(doc, &blocks, caret, shift, now) {
+                    Some(c) => c,
+                    None if shift => doc.insert(caret, "\n", now),
+                    None => newline(doc, caret, &blocks, now),
+                },
+                cx,
+            );
+            return true;
         }
         // Backspace at an item's or a quote paragraph's text start takes its marker away.
         if self.rendered() && action == KeyAction::DeleteBack(edit::Unit::Grapheme) && self.caret.anchor == self.caret.head {
@@ -1517,7 +1598,10 @@ impl Viewer {
             }
             KeyAction::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    let text = normalize_paste(&text);
+                    // An address or a path pasted over a selection on one line makes a link.
+                    let selected = self.doc.as_ref().map(|d| d.text_in(self.caret.anchor, self.caret.head)).unwrap_or_default();
+                    let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let text = md_format::paste_link(&selected, &text, &base, dirs_home().as_deref()).unwrap_or_else(|| normalize_paste(&text));
                     self.edit(|doc, caret, now| doc.insert(caret, &text, now), cx);
                 }
             }
@@ -1537,7 +1621,7 @@ impl Viewer {
                 let rows = self.rows_visible.max(1);
                 // Enter reads the structure (the fence rule), and in the rendered view so do Tab
                 // and Shift+Tab (a table's cells).
-                let reads_blocks = action == KeyAction::Newline || (self.rendered() && matches!(action, KeyAction::Tab | KeyAction::ShiftTab));
+                let reads_blocks = matches!(action, KeyAction::Newline | KeyAction::BreakLine) || (self.rendered() && matches!(action, KeyAction::Tab | KeyAction::ShiftTab));
                 let blocks = if reads_blocks { self.blocks.clone() } else { Vec::new() };
                 let mut outcome = Outcome::Nothing;
                 self.edit(
@@ -1653,6 +1737,41 @@ impl Viewer {
         let (lo, hi) = (c.head.min(c.anchor), c.head.max(c.anchor));
         let selected = md_blocks::block_at(&self.blocks, lo.line)..=md_blocks::block_at(&self.blocks, hi.line);
         (self.caret_placed && !self.pending_append && focused && selected.contains(&ix)) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
+    }
+
+    /// Cmd+B, Cmd+I and the menu's formats (`md_format::toggle`) on the selection, or at the caret,
+    /// on one line: one undoable edit, after which the selection is the formatted text (or the
+    /// caret keeps its place). A selection over more than one line, or a caret not yet placed in
+    /// the rendered view, does nothing.
+    pub fn format(&mut self, fmt: md_format::Format, cx: &mut Context<Self>) {
+        if self.doc.is_none() || (self.rendered() && !self.caret_placed) {
+            return;
+        }
+        self.finish_composition(cx);
+        let Some(doc) = self.doc.as_ref() else { return };
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (doc.clamp(c.anchor), doc.clamp(c.head)) } else { (doc.clamp(c.head), doc.clamp(c.anchor)) };
+        if lo.line != hi.line {
+            return;
+        }
+        let line = doc.lines()[lo.line].clone();
+        let byte = |ch: usize| line.char_indices().nth(ch).map_or(line.len(), |(b, _)| b);
+        let Some(e) = md_format::toggle(&line, byte(lo.ch)..byte(hi.ch), fmt) else { return };
+        let n = lo.line;
+        let ch = |s: &str, b: usize| s[..b.min(s.len())].chars().count();
+        let (from, to) = (edit::Pos { line: n, ch: ch(&line, e.range.start) }, edit::Pos { line: n, ch: ch(&line, e.range.end) });
+        let mut after = line.clone();
+        after.replace_range(e.range.clone(), &e.text);
+        let (a, b) = (edit::Pos { line: n, ch: ch(&after, e.select.start) }, edit::Pos { line: n, ch: ch(&after, e.select.end) });
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(from, to, &e.text, now);
+                doc.break_coalescing();
+                edit::Caret { head: b, anchor: a, goal_col: None }
+            },
+            cx,
+        );
     }
 
     /// Block `ix`'s element tree: the cached one when its rendering is cached (made there the
@@ -2502,6 +2621,107 @@ pub fn rows_by_y(text: &str, y_of: impl Fn(usize) -> f32) -> Vec<Range<usize>> {
     rows
 }
 
+/// A quote line's prefix: its indent and each `>` with the space after it.
+fn quote_prefix(line: &str) -> &str {
+    let b = line.as_bytes();
+    let (mut i, mut end) = (0, 0);
+    loop {
+        while i < b.len() && b[i] == b' ' {
+            i += 1;
+        }
+        if i >= b.len() || b[i] != b'>' {
+            return &line[..end];
+        }
+        i += 1;
+        if i < b.len() && b[i] == b' ' {
+            i += 1;
+        }
+        end = i;
+    }
+}
+
+/// Enter (`shift` false) or Shift+Enter in the rendered view, by the block holding the caret
+/// (spec `2026-10-30-typing-rules-design.md`, sections 3 and 4): a new paragraph in a paragraph or
+/// a heading, a new quoted paragraph in a quote (an empty quote line ends the quote); a hard break
+/// in a paragraph or an item; out of a quote or, from its last code line, out of a code block.
+/// `None` for the editor's own rules (a list's next item, the fence rule, a plain break).
+pub fn rendered_break(doc: &mut edit::Document, blocks: &[md_blocks::Block], caret: edit::Caret, shift: bool, now: Instant) -> Option<edit::Caret> {
+    use md_blocks::BlockKind as K;
+    if caret.anchor != caret.head {
+        return None;
+    }
+    let at = doc.clamp(caret.head);
+    let block = blocks.get(md_blocks::block_at(blocks, at.line)).filter(|b| b.lines.contains(&at.line))?;
+    let line = doc.lines()[at.line].clone();
+    let len = line.chars().count();
+    let line_end = edit::Pos { line: at.line, ch: len };
+    let last_text = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX).line;
+    let down = |doc: &edit::Document, by: usize, ch: usize| edit::Caret::at(doc.clamp(edit::Pos { line: at.line + by, ch }));
+    match (&block.kind, shift) {
+        (K::Paragraph | K::Heading(_), false) | (K::Heading(_), true) => {
+            doc.insert(edit::Caret::at(at), "\n\n", now);
+            Some(down(doc, 2, 0))
+        }
+        (K::Paragraph, true) => {
+            doc.insert(edit::Caret::at(at), "\\\n", now);
+            Some(down(doc, 1, 0))
+        }
+        (K::List, true) => {
+            // The continuation indent: the content column of the item holding the line.
+            let col = (block.lines.start..=at.line).rev().find_map(|n| md_blocks::list_item_columns(&doc.lines()[n])).map_or(0, |(_, c)| c);
+            doc.insert(edit::Caret::at(at), &format!("\\\n{}", " ".repeat(col)), now);
+            Some(down(doc, 1, col))
+        }
+        (K::Quote, false) => {
+            let prefix = quote_prefix(&line).to_string();
+            if line[prefix.len()..].trim().is_empty() {
+                // The bare `>` line Enter left above goes too, so a blank line ends the quote.
+                let prev = at.line.checked_sub(1).filter(|&p| block.lines.contains(&p)).filter(|&p| {
+                    let l = &doc.lines()[p];
+                    l.contains('>') && l[quote_prefix(l).len()..].trim().is_empty()
+                });
+                let from = edit::Pos { line: prev.unwrap_or(at.line), ch: 0 };
+                doc.replace_range(from, line_end, if prev.is_some() { "\n" } else { "" }, now);
+                return Some(edit::Caret::at(edit::Pos { line: at.line, ch: 0 }));
+            }
+            let bare = prefix.trim_end();
+            let ch = prefix.chars().count();
+            doc.insert(edit::Caret::at(at), &format!("\n{bare}\n{prefix}"), now);
+            Some(down(doc, 2, ch))
+        }
+        (K::Quote, true) if at.line >= last_text => {
+            doc.insert(edit::Caret::at(line_end), "\n\n", now);
+            Some(down(doc, 2, 0))
+        }
+        (K::Quote, true) => {
+            let prefix = quote_prefix(&line).to_string();
+            let rest_empty = at.ch >= len;
+            doc.insert(edit::Caret::at(at), &if rest_empty { "\n\n\n".to_string() } else { format!("\n\n\n\n{prefix}") }, now);
+            Some(down(doc, 2, 0))
+        }
+        (K::CodeBlock { .. }, true) => {
+            let lines = doc.lines();
+            let fenced = |l: &str| {
+                let t = l.trim_start();
+                t.starts_with("```") || t.starts_with("~~~")
+            };
+            let close = last_text;
+            if close <= block.lines.start || !fenced(&lines[block.lines.start]) || !fenced(&lines[close]) || at.line + 1 < close {
+                return None;
+            }
+            let end = edit::Pos { line: close, ch: lines[close].chars().count() };
+            doc.insert(edit::Caret::at(end), "\n\n", now);
+            Some(edit::Caret::at(doc.clamp(edit::Pos { line: close + 2, ch: 0 })))
+        }
+        _ => None,
+    }
+}
+
+/// The user's home folder, for a `~` path pasted as a link.
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+}
+
 /// Of laid-out texts given as `(top, bottom)` in window order, the one a point at `y` maps
 /// through: the first whose bottom is below `y`, else the last.
 pub fn pick_by_y(spans: &[(f32, f32)], y: f32) -> Option<usize> {
@@ -2704,6 +2924,8 @@ pub enum KeyAction {
     DeleteBack(edit::Unit),
     DeleteFwd(edit::Unit),
     Newline,
+    /// Shift+Enter: a hard line break, or out of a quote or a code block.
+    BreakLine,
     Tab,
     ShiftTab,
     Undo,
@@ -2752,7 +2974,7 @@ pub fn key_action(ks: &Keystroke) -> Option<KeyAction> {
         ("delete", false, false) => Some(K::DeleteFwd(U::Grapheme)),
         ("delete", false, true) if !shift => Some(K::DeleteFwd(U::Word)),
         ("delete", true, false) if !shift => Some(K::DeleteFwd(U::LineEnd)),
-        ("enter", false, false) => Some(K::Newline),
+        ("enter", false, false) => Some(if shift { K::BreakLine } else { K::Newline }),
         ("tab", false, false) => Some(if shift { K::ShiftTab } else { K::Tab }),
         ("escape", false, false) if !shift => Some(K::Escape),
         ("z", true, false) => Some(if shift { K::Redo } else { K::Undo }),
@@ -2785,7 +3007,7 @@ pub fn pre_placement_action(action: KeyAction) -> PrePlacement {
     use KeyAction as K;
     match action {
         K::Move(M::PageUp(_) | M::PageDown(_) | M::Up | M::Down, _) | K::ScrollHome | K::ScrollEnd => PrePlacement::Scroll,
-        K::DeleteBack(_) | K::DeleteFwd(_) | K::Newline | K::Tab | K::ShiftTab | K::Undo | K::Redo | K::Cut | K::Paste | K::SelectAll => PrePlacement::Place,
+        K::DeleteBack(_) | K::DeleteFwd(_) | K::Newline | K::BreakLine | K::Tab | K::ShiftTab | K::Undo | K::Redo | K::Cut | K::Paste | K::SelectAll => PrePlacement::Place,
         K::Move(..) | K::Copy | K::Escape | K::Save => PrePlacement::Ignore,
     }
 }
@@ -2887,6 +3109,13 @@ fn newline(doc: &mut edit::Document, caret: edit::Caret, blocks_before: &[md_blo
         let indent = line.chars().take_while(|c| c.is_whitespace()).count();
         if at.ch > indent {
             if let Some((marker, empty)) = md_blocks::list_continuation(&line) {
+                // An empty nested item moves out a level; an empty top-level one ends the list.
+                if empty && indent > 0 {
+                    let mut c = edit::Caret::at(at);
+                    if indent_item(doc, &mut c, false, now) == Some(Outcome::Edited) {
+                        return edit::Caret::at(edit::Pos { line: c.head.line, ch: doc.lines()[c.head.line].chars().count() });
+                    }
+                }
                 if empty {
                     let start = doc.replace_range(edit::Pos { line: at.line, ch: 0 }, edit::Pos { line: at.line, ch: len }, "", now);
                     return edit::Caret::at(start);
@@ -2898,31 +3127,77 @@ fn newline(doc: &mut edit::Document, caret: edit::Caret, blocks_before: &[md_blo
     doc.insert(caret, "\n", now)
 }
 
-/// Tab and Shift+Tab on a list item line: two leading spaces added or taken away, the caret and
-/// the anchor moving with the text. `None` when the caret's line is not a list item.
+/// Tab (`deeper`) or Shift+Tab with the caret anywhere in a list item: the item, with its
+/// continuation lines and the items nested in it, moves to the content column of the nearest item
+/// above it at its level or shallower (one level deeper at most, as markdown nests), or back to
+/// the column of the item it is nested in. One undoable edit. `Some(Nothing)` in an item that
+/// cannot move (the list's first item, an item already one level down, a top-level item on
+/// Shift+Tab), so Tab does not type spaces there; `None` outside a list.
 fn indent_item(doc: &mut edit::Document, caret: &mut edit::Caret, deeper: bool, now: Instant) -> Option<Outcome> {
-    let line_no = doc.clamp(caret.head).line;
-    let line = doc.lines()[line_no].clone();
-    md_blocks::list_continuation(&line)?;
-    let start = edit::Pos { line: line_no, ch: 0 };
-    let shift = |p: &mut edit::Pos, by: isize| {
-        if p.line == line_no {
-            p.ch = (p.ch as isize + by).max(0) as usize;
+    let lines = doc.lines();
+    let width = |l: &str| l.chars().take_while(|c| *c == ' ' || *c == '\t').map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>();
+    let item = |n: usize| md_blocks::list_item_columns(&lines[n]);
+    // The item holding the caret: its own line, or the item line above a continuation line.
+    let here = doc.clamp(caret.head).line;
+    let mut at = here;
+    while item(at).is_none() {
+        let l = &lines[at];
+        if at == 0 || l.trim().is_empty() || width(l) == 0 {
+            return None;
+        }
+        at -= 1;
+    }
+    let (indent, _) = item(at)?;
+    // Its lines: the item line, then every line below indented past its marker.
+    let mut end = at;
+    while end + 1 < lines.len() && !lines[end + 1].trim().is_empty() && width(&lines[end + 1]) > indent {
+        end += 1;
+    }
+    // The items above it, nearest first, skipping their continuation lines.
+    let above = (0..at).rev().take_while(|&n| !lines[n].trim().is_empty()).filter_map(item);
+    let target = if deeper {
+        match above.into_iter().find(|&(i, _)| i <= indent) {
+            Some((_, content)) if content > indent => content,
+            _ => return Some(Outcome::Nothing),
+        }
+    } else if indent == 0 {
+        return Some(Outcome::Nothing);
+    } else {
+        above.into_iter().find(|&(i, _)| i < indent).map_or(0, |(i, _)| i)
+    };
+    let shift = target as isize - indent as isize;
+    // A numbered item takes the number after the sibling it lands beside, or 1 when it starts a
+    // sublist (markdown starts a nested numbered list only at 1).
+    let number = {
+        let sibling = (0..at).rev().take_while(|&n| !lines[n].trim().is_empty()).filter_map(|n| item(n).map(|c| (n, c))).find(|&(_, (i, _))| i <= target);
+        match sibling {
+            Some((n, (i, _))) if i == target => md_blocks::list_number(&lines[n]).map(|v| v + 1),
+            _ if deeper => Some(1),
+            _ => None,
         }
     };
-    if deeper {
-        doc.replace_range(start, start, "  ", now);
-        shift(&mut caret.head, 2);
-        shift(&mut caret.anchor, 2);
-    } else {
-        let spaces = line.chars().take(2).take_while(|&c| c == ' ').count();
-        let n = if spaces == 0 && line.starts_with('\t') { 1 } else { spaces };
-        if n == 0 {
-            return Some(Outcome::Nothing);
+    let mut lines_moved: Vec<String> = lines[at..=end].to_vec();
+    if let Some(renumbered) = number.and_then(|v| md_blocks::renumber(&lines_moved[0], v)) {
+        lines_moved[0] = renumbered;
+    }
+    let moved: Vec<String> = lines_moved
+        .iter()
+        .map(|l| {
+            if shift > 0 {
+                format!("{}{l}", " ".repeat(shift as usize))
+            } else {
+                let lead = l.chars().take_while(|c| *c == ' ').count();
+                l.chars().skip(lead.min((-shift) as usize)).collect()
+            }
+        })
+        .collect();
+    let deltas: Vec<isize> = lines[at..=end].iter().zip(&moved).map(|(a, b)| b.chars().count() as isize - a.chars().count() as isize).collect();
+    let last = lines[end].chars().count();
+    doc.replace_range(edit::Pos { line: at, ch: 0 }, edit::Pos { line: end, ch: last }, &moved.join("\n"), now);
+    for p in [&mut caret.head, &mut caret.anchor] {
+        if (at..=end).contains(&p.line) {
+            p.ch = (p.ch as isize + deltas[p.line - at]).max(0) as usize;
         }
-        doc.replace_range(start, edit::Pos { line: line_no, ch: n }, "", now);
-        shift(&mut caret.head, -(n as isize));
-        shift(&mut caret.anchor, -(n as isize));
     }
     caret.goal_col = None;
     Some(Outcome::Edited)
@@ -2961,6 +3236,10 @@ pub fn apply_action(doc: &mut edit::Document, caret: &mut edit::Caret, blocks_be
         }
         K::Newline => {
             *caret = newline(doc, *caret, blocks_before, now);
+            Outcome::Edited
+        }
+        K::BreakLine => {
+            *caret = doc.insert(*caret, "\n", now);
             Outcome::Edited
         }
         // A table's cells come before a list item's indent.
@@ -3331,7 +3610,7 @@ mod tests {
         // Raw mode gives `apply_action` no blocks (ruling A: the table keys are the rendered
         // view's), so Tab in a table is a plain Tab.
         let now = Instant::now();
-        let text = "| a | b |\n|---|---|\n| 1 | 2 |\n\n- item\n";
+        let text = "| a | b |\n|---|---|\n| 1 | 2 |\n\n- first\n- item\n";
         let mut d = edit::Document::from_text(text);
         let mut c = edit::Caret::at(Pos { line: 0, ch: 2 });
         assert_eq!(apply_action(&mut d, &mut c, &[], KeyAction::Tab, 20, now), Outcome::Edited);
@@ -3340,12 +3619,12 @@ mod tests {
         let mut c = edit::Caret::at(Pos { line: 2, ch: 6 });
         assert_eq!(apply_action(&mut d, &mut c, &[], KeyAction::Tab, 20, now), Outcome::Edited);
         assert_eq!(d.lines()[2], "| 1 |     2 |", "the last cell gets spaces too, and no row is added");
-        assert_eq!(d.lines().len(), 6);
+        assert_eq!(d.lines().len(), 7);
         let mut c = edit::Caret::at(Pos { line: 0, ch: 6 });
         assert_eq!(apply_action(&mut d, &mut c, &[], KeyAction::ShiftTab, 20, now), Outcome::Nothing, "Shift+Tab in a table does nothing");
-        let mut c = edit::Caret::at(Pos { line: 4, ch: 3 });
+        let mut c = edit::Caret::at(Pos { line: 5, ch: 3 });
         apply_action(&mut d, &mut c, &[], KeyAction::Tab, 20, now);
-        assert_eq!(d.lines()[4], "  - item", "a list item still indents");
+        assert_eq!(d.lines()[5], "  - item", "a list item still indents");
     }
 
     #[test]
@@ -3536,6 +3815,7 @@ mod tests {
         assert_eq!(k("cmd-backspace"), Some(KeyAction::DeleteBack(Unit::LineStart)));
         assert_eq!(k("delete"), Some(KeyAction::DeleteFwd(Unit::Grapheme)));
         assert_eq!(k("enter"), Some(KeyAction::Newline));
+        assert_eq!(k("shift-enter"), Some(KeyAction::BreakLine));
         assert_eq!(k("tab"), Some(KeyAction::Tab));
         assert_eq!(k("shift-tab"), Some(KeyAction::ShiftTab));
         assert_eq!(k("cmd-z"), Some(KeyAction::Undo));
@@ -3565,8 +3845,8 @@ mod tests {
         apply_action(&mut d, &mut c, &blocks, KeyAction::ShiftTab, 20, now);
         assert_eq!(d.lines()[1], "- two");
         c.head = Pos { line: 0, ch: 5 }; c.anchor = c.head;
-        apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now);
-        assert_eq!((d.lines()[0].as_str(), c.head.ch), ("  - one", 7), "Tab anywhere in an item indents the item and carries the caret");
+        assert_eq!(apply_action(&mut d, &mut c, &blocks, KeyAction::Tab, 20, now), Outcome::Nothing, "the list's first item has nothing to go under");
+        assert_eq!(d.lines()[0], "- one");
         // A fence: three backticks and Enter open it and close it when nothing below closes it.
         let mut d = edit::Document::from_text("```rust\n\nlater");
         let blocks = md_blocks::split(edit::Document::from_text("\n\nlater").lines()); // the structure before the backticks were typed
@@ -3915,6 +4195,67 @@ mod tests {
         let ys = [0.0, 0.0, 0.0, 20.0, 20.0, 40.0];
         assert_eq!(rows_by_y("abcdef", |b| ys[b.min(5)]), vec![0..2, 3..4, 5..6]);
         assert_eq!(rows_by_y("", |_| 0.0), vec![0..0]);
+    }
+
+    /// The document after `keys` in the rendered view's break rules, from `text` with the caret at
+    /// `at`, and the caret.
+    fn broken(text: &str, at: Pos, shift: bool) -> (Vec<String>, Pos) {
+        let mut doc = edit::Document::from_text(text);
+        let blocks = md_blocks::split(doc.lines());
+        let c = rendered_break(&mut doc, &blocks, edit::Caret::at(at), shift, Instant::now()).unwrap_or_else(|| edit::Caret::at(Pos { line: usize::MAX, ch: 0 }));
+        (doc.lines().to_vec(), c.head)
+    }
+
+    fn lines_of(s: &[&str]) -> Vec<String> {
+        s.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn enter_makes_a_new_paragraph_and_inside_a_quote_a_new_quoted_one() {
+        assert_eq!(broken("one two", Pos { line: 0, ch: 3 }, false), (lines_of(&["one", "", " two"]), Pos { line: 2, ch: 0 }), "the paragraph splits");
+        assert_eq!(broken("# Title", Pos { line: 0, ch: 7 }, false), (lines_of(&["# Title", "", ""]), Pos { line: 2, ch: 0 }), "after a heading, plain text");
+        assert_eq!(broken("> one two", Pos { line: 0, ch: 5 }, false), (lines_of(&["> one", ">", ">  two"]), Pos { line: 2, ch: 2 }), "a new paragraph in the quote");
+        assert_eq!(broken("> > deep", Pos { line: 0, ch: 8 }, false).0, lines_of(&["> > deep", "> >", "> > "]), "as deep as the line");
+        assert_eq!(broken("> one\n> ", Pos { line: 1, ch: 2 }, false), (lines_of(&["> one", ""]), Pos { line: 1, ch: 0 }), "Enter on an empty quote line ends the quote");
+        assert_eq!(broken("> one\n>\n> ", Pos { line: 2, ch: 2 }, false), (lines_of(&["> one", "", ""]), Pos { line: 2, ch: 0 }), "and takes the bare > line above with it");
+        assert_eq!(broken("```\ncode\n```", Pos { line: 1, ch: 4 }, false).1, Pos { line: usize::MAX, ch: 0 }, "a code block keeps the plain break");
+        assert_eq!(broken("- a", Pos { line: 0, ch: 3 }, false).1, Pos { line: usize::MAX, ch: 0 }, "a list keeps its continuation");
+    }
+
+    #[test]
+    fn shift_enter_breaks_the_line_and_leaves_a_quote_or_a_code_block() {
+        assert_eq!(broken("one two", Pos { line: 0, ch: 3 }, true), (lines_of(&["one\\", " two"]), Pos { line: 1, ch: 0 }), "a hard break, backslash style");
+        assert_eq!(broken("- item text", Pos { line: 0, ch: 6 }, true), (lines_of(&["- item\\", "   text"]), Pos { line: 1, ch: 2 }), "the item's continuation indent");
+        assert_eq!(broken("10. item", Pos { line: 0, ch: 8 }, true), (lines_of(&["10. item\\", "    "]), Pos { line: 1, ch: 4 }));
+        assert_eq!(broken("> last", Pos { line: 0, ch: 3 }, true), (lines_of(&["> last", "", ""]), Pos { line: 2, ch: 0 }), "on the quote's last line, a paragraph after it");
+        assert_eq!(broken("> one\n> two", Pos { line: 0, ch: 5 }, true), (lines_of(&["> one", "", "", "", "> two"]), Pos { line: 2, ch: 0 }), "in the middle, the quote splits around a paragraph");
+        assert_eq!(broken("> one two\n> end", Pos { line: 0, ch: 5 }, true).0, lines_of(&["> one", "", "", "", ">  two", "> end"]), "the rest of the line stays quoted");
+        assert_eq!(broken("```\ncode\n```\n\nafter", Pos { line: 1, ch: 2 }, true), (lines_of(&["```", "code", "```", "", "", "", "after"]), Pos { line: 4, ch: 0 }), "from the last code line, out of the block");
+        assert_eq!(broken("```\na\nb\n```", Pos { line: 1, ch: 1 }, true).1, Pos { line: usize::MAX, ch: 0 }, "elsewhere in code, a plain break");
+        assert_eq!(broken("# Title", Pos { line: 0, ch: 7 }, true).0, lines_of(&["# Title", "", ""]), "a heading has no hard break: a new paragraph");
+    }
+
+    #[test]
+    fn tab_nests_an_item_one_level_under_the_one_above_and_shift_tab_brings_it_back() {
+        let now = Instant::now();
+        let run = |text: &str, line: usize, ch: usize, action: KeyAction| {
+            let mut d = edit::Document::from_text(text);
+            let mut c = edit::Caret::at(Pos { line, ch });
+            let out = apply_action(&mut d, &mut c, &[], action, 20, now);
+            (d.lines().to_vec(), c.head, out)
+        };
+        assert_eq!(run("1. one\n2. two", 1, 4, KeyAction::Tab).0, lines_of(&["1. one", "   1. two"]), "under a numbered item, its content column, numbered 1 to start the sublist");
+        assert_eq!(run("1. a\n   1. b\n2. c", 2, 4, KeyAction::Tab).0, lines_of(&["1. a", "   1. b", "   2. c"]), "after a sibling, the next number");
+        assert_eq!(run("1. a\n   1. b", 1, 6, KeyAction::ShiftTab).0, lines_of(&["1. a", "2. b"]), "back out, after the item above");
+        assert_eq!(run("- a\n- b", 1, 3, KeyAction::Tab).0, lines_of(&["- a", "  - b"]), "a bullet keeps its marker");
+        assert_eq!(run("- a\n  - b", 1, 5, KeyAction::Tab).2, Outcome::Nothing, "one level under the item above at most");
+        let (lines, head, _) = run("- a\n- b\n  more\n  - c\n- d", 1, 3, KeyAction::Tab);
+        assert_eq!((lines, head), (lines_of(&["- a", "  - b", "    more", "    - c", "- d"]), Pos { line: 1, ch: 5 }), "its continuation lines and children move with it");
+        assert_eq!(run("- a\n  - b\n    more", 2, 6, KeyAction::ShiftTab).0, lines_of(&["- a", "- b", "  more"]), "Shift+Tab from a continuation line, back to the parent's column");
+        assert_eq!(run("- a\n- b", 1, 3, KeyAction::ShiftTab).2, Outcome::Nothing, "a top-level item stays");
+        let mut d = edit::Document::from_text("- a\n  - ");
+        let c = newline(&mut d, edit::Caret::at(Pos { line: 1, ch: 4 }), &[], now);
+        assert_eq!((d.lines().to_vec(), c.head), (lines_of(&["- a", "- "]), Pos { line: 1, ch: 2 }), "Enter on an empty nested item moves it out a level");
     }
 
     #[test]

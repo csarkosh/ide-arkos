@@ -363,7 +363,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
-        if shot.click.is_some() || !shot.keys.is_empty() {
+        if shot.click.is_some() || shot.right_click.is_some() || !shot.keys.is_empty() {
             activate(window_pid);
             pause(Duration::from_millis(400))?;
             send_input(shot, frame)?;
@@ -437,8 +437,12 @@ fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
     use core_graphics::geometry::CGPoint;
     let allowed = trusted();
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| anyhow::anyhow!("no event source"))?;
+    // A mouse event takes the source's modifier state, which a key sent with Command leaves set,
+    // so a click after Cmd+B would arrive as a Cmd+click: the clicks go with no modifiers.
     let post = |e: Result<CGEvent, ()>| -> Result<()> {
-        e.map_err(|_| anyhow::anyhow!("could not make an event"))?.post(CGEventTapLocation::HID);
+        let e = e.map_err(|_| anyhow::anyhow!("could not make an event"))?;
+        e.set_flags(CGEventFlags::CGEventFlagNull);
+        e.post(CGEventTapLocation::HID);
         Ok(())
     };
     if let Some([fx, fy]) = shot.click {
@@ -448,6 +452,15 @@ fn send_input(shot: &Shot, frame: (f64, f64, f64, f64)) -> Result<()> {
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseDown, at, CGMouseButton::Left))?;
         std::thread::sleep(Duration::from_millis(60));
         post(CGEvent::new_mouse_event(source.clone(), CGEventType::LeftMouseUp, at, CGMouseButton::Left))?;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if let Some([fx, fy]) = shot.right_click {
+        let at = CGPoint::new(frame.0 + fx * frame.2, frame.1 + fy * frame.3);
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, at, CGMouseButton::Right))?;
+        std::thread::sleep(Duration::from_millis(80));
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::RightMouseDown, at, CGMouseButton::Right))?;
+        std::thread::sleep(Duration::from_millis(60));
+        post(CGEvent::new_mouse_event(source.clone(), CGEventType::RightMouseUp, at, CGMouseButton::Right))?;
         std::thread::sleep(Duration::from_millis(300));
     }
     for spec in &shot.keys {

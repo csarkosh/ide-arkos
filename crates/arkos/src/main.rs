@@ -36,12 +36,14 @@ mod keymap;
 mod launch;
 mod launch_link;
 mod link_menu;
+mod md_menu;
 mod links;
 mod launch_agent;
 mod layout;
 mod ledger;
 mod line_edit;
 mod md_blocks;
+mod md_format;
 mod md_reveal;
 mod md_table;
 mod md_view;
@@ -233,6 +235,8 @@ pub struct Root {
     pub context_menu: Transient<sidebar::ContextMenu>,
     /// A terminal link's right-click menu while it is open, and while it fades out.
     pub link_menu: Transient<link_menu::LinkMenu>,
+    /// A markdown document's right-click menu while it is open, and while it fades out.
+    pub md_menu: Transient<md_menu::MdMenu>,
     /// What the bell shows.
     pub notices: notices::Notices,
     /// The doctor's table as last probed.
@@ -634,6 +638,7 @@ impl Root {
             preview_panes: HashMap::new(),
             context_menu: Transient::Hidden,
             link_menu: Transient::Hidden,
+            md_menu: Transient::Hidden,
             notices: Default::default(),
             doctor_states: Vec::new(),
             doctor_busy: None,
@@ -759,6 +764,7 @@ impl Root {
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
         self.link_menu.hide(now);
+        self.md_menu.hide(now);
         self.tab_menu.hide(now);
         let next = self.popover.value().copied().unwrap_or_default().toggled(which);
         if next == chrome::Popover::Closed {
@@ -1188,6 +1194,7 @@ impl Root {
         self.tab_menu.animating(now)
             || self.context_menu.animating(now)
             || self.link_menu.animating(now)
+            || self.md_menu.animating(now)
             || self.popover.animating(now)
             || self.wt_menu.animating(now)
             || self.palette.animating(now)
@@ -1220,6 +1227,7 @@ impl Root {
         self.tab_menu.settle(now);
         self.context_menu.settle(now);
         self.link_menu.settle(now);
+        self.md_menu.settle(now);
         self.popover.settle(now);
         self.wt_menu.settle(now);
         self.palette.settle(now);
@@ -2762,6 +2770,12 @@ impl Root {
                     v.update(cx, |v, cx| v.save_command(cx));
                 }
             }
+            Bold | Italic => {
+                if let Some(v) = self.active_viewer() {
+                    let format = if matches!(cmd, Bold) { md_format::Format::Bold } else { md_format::Format::Italic };
+                    v.update(cx, |v, cx| v.format(format, cx));
+                }
+            }
             OpenFolder => self.pick_folder(cx),
             NewWindow => self.new_window(cx),
             About => aux::open_about(cx),
@@ -3036,7 +3050,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -3663,6 +3677,7 @@ impl Root {
             || self.popover.value().is_some()
             || self.context_menu.value().is_some()
             || self.link_menu.value().is_some()
+            || self.md_menu.value().is_some()
             || self.wt_prompt.value().is_some()
             || self.wt_menu.value().is_some()
             || self.drop_target.is_some()
@@ -4291,7 +4306,7 @@ impl Render for Root {
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.wt_menu.hide(now) | root.link_menu.hide(now) | root.close_popovers(now) {
+                if root.context_menu.hide(now) | root.wt_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))
@@ -4338,6 +4353,7 @@ impl Render for Root {
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))
             .children(link_menu::render_link_menu(self, cx))
+            .children(md_menu::render_md_menu(self, cx))
             .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx));
         // One request per frame while anything eases; an idle window asks for none.

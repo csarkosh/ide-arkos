@@ -1064,6 +1064,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     // A grid's cells place the caret themselves and give the row no text to map a drag through.
     let grid = r.pieces.iter().any(|p| matches!(p, Piece::Table(TablePiece::Grid(..))));
     let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
+    let (v_right, texts_right) = (ctx.viewer.clone(), texts.clone());
     row.children(children)
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
             // A task box's press is for the box, Cmd+click is for a link or an image, and a press
@@ -1075,6 +1076,16 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
             v_down.update(cx, |v, cx| {
                 if let Some(p) = caret_at(v, ix, &texts_down, ev.position) {
                     v.place_caret(p, ev.modifiers.shift, cx);
+                }
+            });
+        })
+        // A right press outside the selection moves the caret there, so the menu's formats act on
+        // the word under it; the pane's own handler then opens the menu.
+        .on_mouse_down(MouseButton::Right, move |ev: &MouseDownEvent, _window, cx| {
+            v_right.update(cx, |v, cx| {
+                if let Some(p) = caret_at(v, ix, &texts_right, ev.position).filter(|p| v.press_outside_selection(*p)) {
+                    v.place_caret(p, false, cx);
+                    v.mouse_up();
                 }
             });
         })

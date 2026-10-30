@@ -1221,11 +1221,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             )
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
-    let (v_keys, v_wheel) = (viewer.clone(), viewer.clone());
+    let (v_keys, v_wheel, v_menu) = (viewer.clone(), viewer.clone(), viewer.downgrade());
     div()
         .size_full()
         .relative()
-        .key_context("Viewer")
+        // A markdown document adds `Markdown`, where Cmd+B and Cmd+I format text.
+        .key_context(if viewer.read(cx).doc.is_some() { "Viewer Markdown" } else { "Viewer" })
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
@@ -1283,6 +1284,26 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             }))
         })
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
+        // A right press (or a Control+click) in a markdown document opens its menu; the block
+        // under it has already moved the caret there when the press was outside the selection.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
+                let Some(v) = v_menu.upgrade().filter(|v| v.read(cx).doc.is_some()) else { return };
+                cx.stop_propagation();
+                root.focus_pane(pane, cx);
+                let now = std::time::Instant::now();
+                root.last_input = now;
+                root.context_menu.hide(now);
+                root.wt_menu.hide(now);
+                root.tab_menu.hide(now);
+                root.link_menu.hide(now);
+                root.close_popovers(now);
+                let selection = v.read(cx).has_selection();
+                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, at: ev.position }, now);
+                cx.notify();
+            }),
+        )
         .child(body)
         .children(chip)
         .children(pill)
