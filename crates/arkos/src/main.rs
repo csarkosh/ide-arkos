@@ -36,6 +36,7 @@ mod keymap;
 mod launch;
 mod launch_link;
 mod link_menu;
+mod md_links;
 mod md_menu;
 mod lang_menu;
 mod outline;
@@ -337,6 +338,8 @@ pub struct Root {
     pub highlighter: Option<Arc<highlight::Highlighter>>,
     /// Each viewer tab's file, loaded when the tab is first shown; dropped with the tab.
     pub viewers: HashMap<TabId, Entity<Viewer>>,
+    /// A link's `#anchor` for a file whose viewer is not made yet (`Viewer::pending_anchor`).
+    pub pending_anchors: HashMap<PathBuf, String>,
     /// Each video tab's player view, made when the tab is first shown; dropped with the tab,
     /// which releases its player at once.
     pub videos: HashMap<TabId, Entity<video_view::VideoView>>,
@@ -692,6 +695,7 @@ impl Root {
             painted: false,
             highlighter: None,
             viewers: HashMap::new(),
+            pending_anchors: HashMap::new(),
             videos: HashMap::new(),
             webs: HashMap::new(),
             web_titles: HashMap::new(),

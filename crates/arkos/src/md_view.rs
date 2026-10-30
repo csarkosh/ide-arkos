@@ -1545,27 +1545,37 @@ pub enum LinkAction {
     OpenUrl(String),
     /// A file or folder (a path or a `file:` URL): Finder shows it.
     Reveal(PathBuf),
-    /// A markdown file: a viewer tab opens it.
-    OpenMarkdown(PathBuf),
+    /// A markdown file: a viewer tab opens it, at the heading the anchor names when there is one.
+    OpenMarkdown(PathBuf, Option<String>),
+    /// A heading of this document, by its anchor (`md_links::anchor`): the view scrolls to it.
+    Anchor(String),
     /// A local HTML page: a web tab opens it beside the document (web pane spec, section 7).
     OpenPage(PathBuf),
-    /// A link to a heading in this file, an empty target, or a scheme arkos does not follow.
+    /// An empty target, or a scheme arkos does not follow.
     Nothing,
 }
 
 /// Classifies a link's target, resolving a path against the file's directory `base_dir`
-/// (percent escapes decoded, a `#fragment` dropped).
+/// (percent escapes decoded, a `#fragment` kept as the heading to go to). A relative path that
+/// names no file is looked up as a wikilink is (`md_links::resolve`), and a bare `#fragment` is a
+/// heading of this document.
 pub fn link_action(target: &str, base_dir: &Path) -> LinkAction {
     let target = target.trim();
     let local = |path: &str| {
-        let path = percent_decode(path.split('#').next().unwrap_or(""));
+        let (path, fragment) = path.split_once('#').map_or((path, None), |(p, f)| (p, Some(f.to_string()).filter(|f| !f.is_empty())));
+        let path = percent_decode(path);
         if path.is_empty() {
-            return LinkAction::Nothing;
+            return fragment.map_or(LinkAction::Nothing, LinkAction::Anchor);
         }
-        let Some(resolved) = resolve_image(base_dir, &path) else { return LinkAction::Nothing };
+        let Some(mut resolved) = resolve_image(base_dir, &path) else { return LinkAction::Nothing };
+        if !resolved.exists() {
+            if let Some(found) = crate::md_links::resolve(base_dir, &path) {
+                resolved = found;
+            }
+        }
         let page = resolved.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
         if viewer::is_markdown(&resolved) {
-            LinkAction::OpenMarkdown(resolved)
+            LinkAction::OpenMarkdown(resolved, fragment)
         } else if page {
             LinkAction::OpenPage(resolved)
         } else {
@@ -1637,7 +1647,10 @@ fn follow_link(action: LinkAction, viewer: &Entity<Viewer>, cx: &mut App) {
                 }
             })
             .detach(),
-        LinkAction::OpenMarkdown(path) => viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenPath(path))),
+        LinkAction::OpenMarkdown(path, anchor) => viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenPath(path, anchor))),
+        LinkAction::Anchor(anchor) => viewer.update(cx, |v, cx| {
+            v.go_to_anchor(&anchor, cx);
+        }),
         LinkAction::OpenPage(path) => viewer.update(cx, |_, cx| cx.emit(ViewerEvent::OpenPage(path))),
         LinkAction::Nothing => {}
     }
@@ -3113,20 +3126,29 @@ mod tests {
         assert_eq!(link_action("https://example.com/a?b#c", base), url("https://example.com/a?b#c"));
         assert_eq!(link_action("HTTP://example.com", base), url("HTTP://example.com"));
         assert_eq!(link_action("mailto:me@example.com", base), url("mailto:me@example.com"));
-        assert_eq!(link_action("other.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/other.md")));
-        assert_eq!(link_action("../Notes.MARKDOWN#part", base), LinkAction::OpenMarkdown(PathBuf::from("/p/Notes.MARKDOWN")), "the fragment goes");
-        assert_eq!(link_action("my%20notes.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/my notes.md")), "escapes decoded");
+        assert_eq!(link_action("other.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/other.md"), None));
+        assert_eq!(link_action("../Notes.MARKDOWN#part", base), LinkAction::OpenMarkdown(PathBuf::from("/p/Notes.MARKDOWN"), Some("part".into())), "the fragment is the heading to go to");
+        assert_eq!(link_action("my%20notes.md", base), LinkAction::OpenMarkdown(PathBuf::from("/p/docs/my notes.md"), None), "escapes decoded");
         assert_eq!(link_action("run.sh", base), LinkAction::Reveal(PathBuf::from("/p/docs/run.sh")), "never run");
         assert_eq!(link_action("out/report.html#charts", base), LinkAction::OpenPage(PathBuf::from("/p/docs/out/report.html")), "a local page opens as a web tab");
         assert_eq!(link_action("file:///tmp/Index.HTM", base), LinkAction::OpenPage(PathBuf::from("/tmp/Index.HTM")));
         assert_eq!(link_action("https://example.com/page.html", base), url("https://example.com/page.html"), "a remote page stays the browser's");
         assert_eq!(link_action("/Applications/Calculator.app", base), LinkAction::Reveal(PathBuf::from("/Applications/Calculator.app")));
         assert_eq!(link_action("file:///tmp/x.command", base), LinkAction::Reveal(PathBuf::from("/tmp/x.command")), "a file URL is a path");
-        assert_eq!(link_action("file://localhost/tmp/a%20b.md", base), LinkAction::OpenMarkdown(PathBuf::from("/tmp/a b.md")));
+        assert_eq!(link_action("file://localhost/tmp/a%20b.md", base), LinkAction::OpenMarkdown(PathBuf::from("/tmp/a b.md"), None));
         assert_eq!(link_action("FILE:/tmp/y", base), LinkAction::Reveal(PathBuf::from("/tmp/y")));
-        for nothing in ["#heading", "", "javascript:alert(1)", "x-apple-helpviewer://a", "vscode://file/a", "file://host/share"] {
+        assert_eq!(link_action("#Set%20up", base), LinkAction::Anchor("Set%20up".into()), "a heading in this document");
+        for nothing in ["#", "", "javascript:alert(1)", "x-apple-helpviewer://a", "vscode://file/a", "file://host/share"] {
             assert_eq!(link_action(nothing, base), LinkAction::Nothing, "{nothing:?}");
         }
+        // A name that is no file beside the document is looked up as a wikilink is.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        std::fs::write(tmp.path().join("a/b/Notes.md"), "").unwrap();
+        let docs = tmp.path().join("a");
+        assert_eq!(link_action("Notes#todo", &docs), LinkAction::OpenMarkdown(tmp.path().join("a/b/Notes.md"), Some("todo".into())));
+        assert_eq!(link_action("missing", &docs), LinkAction::Reveal(docs.join("missing")), "nothing found: as before");
         assert_eq!(percent_decode("a%2"), "a%2", "a cut escape stays");
         assert_eq!(percent_decode("%ff"), "%ff", "not UTF-8: kept as written");
     }

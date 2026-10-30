@@ -650,6 +650,17 @@ mod tests {
     }
 
     #[test]
+    fn a_wikilink_reveals_as_written_and_offers_its_name_as_the_address() {
+        let src = "go [[Notes|my notes]] now";
+        assert_eq!(display(src, &[]).text, "go my notes now");
+        let d = display(src, &[13]);
+        assert_eq!(d.text, src);
+        assert_eq!(d.links, vec![(5..10, "Notes".to_string())]);
+        let bare = "[[Plan]]";
+        assert_eq!(display(bare, &[4]).links, vec![(2..6, "Plan".to_string())]);
+    }
+
+    #[test]
     fn a_revealed_link_offers_its_address_as_a_display_range() {
         let src = "[e](https://x) [f](https://y)";
         let d = display(src, &[1]);

@@ -89,7 +89,8 @@ pub enum ViewerEvent {
     Saved,
     SaveFailed,
     /// A link to a markdown file was Cmd+clicked: it opens in a viewer tab of its own.
-    OpenPath(PathBuf),
+    /// A markdown file to open, at the heading the anchor names when there is one.
+    OpenPath(PathBuf, Option<String>),
     /// A local video's poster was Cmd+clicked: the file (canonical, checked by
     /// `media::checked_open_path`) opens in a video tab beside the document.
     OpenVideo(PathBuf),
@@ -632,6 +633,8 @@ pub struct Viewer {
     pub lang_at: Option<Point<Pixels>>,
     /// The code block whose Copy was clicked, and when: its button reads "Copied" for a moment.
     pub copied: Option<(usize, Instant)>,
+    /// A heading to scroll to once the document has loaded (a link's `#anchor` into this file).
+    pub pending_anchor: Option<String>,
     /// A table cell is being edited (its markdown shown with the caret), not only selected.
     pub table_edit: bool,
     /// A table's row, column or whole grid picked by its edge, with the table's block.
@@ -802,6 +805,7 @@ impl Viewer {
             lang: None,
             lang_at: None,
             copied: None,
+            pending_anchor: None,
             table_edit: false,
             table_pick: None,
             caret_placed: false,
@@ -976,6 +980,10 @@ impl Viewer {
         self.refresh_structure();
         if let Some(line) = old_top_line.filter(|_| !self.blocks.is_empty()) {
             self.list_state.scroll_to(ListOffset { item_ix: md_blocks::block_at(&self.blocks, line), offset_in_item: px(0.0) });
+        }
+        // A link's `#anchor` into this file, waiting for the load.
+        if let Some(anchor) = self.pending_anchor.take() {
+            self.go_to_anchor(&anchor, cx);
         }
         // What is shown is what is on disk now.
         self.dirty = false;
@@ -1974,6 +1982,25 @@ impl Viewer {
     }
 
     /// The outline's click: the block a fold hides is shown, and the view scrolls to it.
+    /// Scrolls to the heading anchor `anchor` names (`md_links::heading_for`), unfolding it; `false`
+    /// when no heading has it.
+    pub fn go_to_anchor(&mut self, anchor: &str, cx: &mut Context<Self>) -> bool {
+        let texts: Vec<String> = self.heads.iter().map(|h| h.text.clone()).collect();
+        let Some(i) = crate::md_links::heading_for(&texts, anchor) else { return false };
+        let block = self.heads[i].block;
+        self.reveal_block(block, cx);
+        true
+    }
+
+    /// Goes to heading `anchor` now if the document is loaded, else once it is.
+    pub fn anchor_to(&mut self, anchor: String, cx: &mut Context<Self>) {
+        if self.doc.is_some() && !self.heads.is_empty() {
+            self.go_to_anchor(&anchor, cx);
+        } else {
+            self.pending_anchor = Some(anchor);
+        }
+    }
+
     pub fn reveal_block(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.unfold_for(ix, cx);
         self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(0.0) });
@@ -4116,9 +4143,11 @@ impl Root {
             _ => ViewMode::default(),
         };
         let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
+        let anchor = self.pending_anchors.remove(path);
         let folded: std::collections::BTreeSet<md_fold::FoldKey> = self.folds.get(path).map(|f| f.iter().map(|f| (f.heading.clone(), f.index)).collect()).unwrap_or_default();
         let v = cx.new(|cx| {
             let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
+            v.pending_anchor = anchor;
             v.mode = mode;
             v.open_details = open_details;
             v.folded = folded;
@@ -4135,9 +4164,20 @@ impl Root {
                         root.load(tab, true, cx);
                     }
                 }
-                ViewerEvent::OpenPath(path) => {
+                ViewerEvent::OpenPath(path, anchor) => {
                     let _via = crate::telemetry::opened_via(crate::telemetry::Opened::Link);
-                    root.open_viewer(path, true, cx)
+                    root.open_viewer(path, true, cx);
+                    // The file's viewer goes to the heading now, or once it has loaded; a viewer
+                    // not made yet takes it when the pane first shows the tab.
+                    if let Some(anchor) = anchor.clone() {
+                        let open = root.viewers.values().find(|o| o.read(cx).path == *path).cloned();
+                        match open {
+                            Some(o) => o.update(cx, |o, cx| o.anchor_to(anchor, cx)),
+                            None => {
+                                root.pending_anchors.insert(path.clone(), anchor);
+                            }
+                        }
+                    }
                 }
                 ViewerEvent::OpenVideo(path) => root.open_poster_video(tab, path, cx),
                 ViewerEvent::OpenPage(path) => root.open_beside_document(tab, path, crate::telemetry::Opened::Link, cx),
