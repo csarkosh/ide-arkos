@@ -1655,7 +1655,9 @@ impl Viewer {
         let Some(block) = self.blocks.get(ix) else { return };
         let line = self.caret.head.line;
         let line_h = self.font_size * self.line_height;
-        let caret_y = self
+        // In a revealed text: the caret's row from its layout, below the row's top.
+        let revealed_y = self.reveal_point_of(self.caret.head).zip(self.list_state.bounds_for_item(ix)).map(|((at, _), item)| f32::from(at.y - item.top()).max(0.0));
+        let caret_y = revealed_y.or_else(|| self
             .raw_blocks
             .iter()
             .find(|b| b.lines.start == block.lines.start && line >= b.lines.start)
@@ -1667,7 +1669,7 @@ impl Viewer {
                     None => b.row_tops.last().copied().unwrap_or(0) + (line - b.lines.end.max(b.lines.start)),
                 };
                 row as f32 * b.raw.line_h
-            })
+            }))
             .unwrap_or(line.saturating_sub(block.lines.start) as f32 * line_h);
         let viewport = self.list_state.viewport_bounds();
         let view_h = f32::from(viewport.size.height);
@@ -1790,13 +1792,45 @@ impl Viewer {
         }
     }
 
+    /// The revealed texts of the last frame whose block is still where it was, with that block.
+    fn live_reveals(&self) -> impl Iterator<Item = (&md_view::RevealLayout, &md_blocks::Block)> {
+        self.reveal_blocks.iter().filter_map(|r| self.blocks.get(r.block).filter(|b| b.lines == r.lines).map(|b| (r, b)))
+    }
+
+    /// The window point where position `p` is drawn in a revealed text of the last frame, with
+    /// that text's line height.
+    fn reveal_point_of(&self, p: edit::Pos) -> Option<(Point<Pixels>, Pixels)> {
+        let doc = self.doc.as_ref()?;
+        let ix = md_blocks::block_at(&self.blocks, p.line);
+        let block = self.blocks.get(ix).filter(|b| b.lines.contains(&p.line))?;
+        let offset = md_blocks::offset_of_pos(block, doc.lines(), doc.clamp(p));
+        let texts: Vec<&md_view::RevealLayout> = self.live_reveals().filter(|(r, _)| r.block == ix).map(|(r, _)| r).collect();
+        let covers: Vec<Range<usize>> = texts.iter().map(|r| r.covers.clone()).collect();
+        let r = texts.get(pick_cover(&covers, offset)?)?;
+        Some((r.layout.position_for_index(r.display.display_of(offset))?, r.layout.line_height()))
+    }
+
     /// The document position under a window point, through the last layout.
     pub fn pos_at_point(&self, at: Point<Pixels>, window: &mut Window) -> Option<edit::Pos> {
         if self.rendered() {
-            // The raw block at that height, else the first one below it, else the last one.
+            // The raw block or revealed text at that height, else the first one below it, else
+            // the last one.
             let doc = self.doc.as_ref()?;
-            let b = self.raw_blocks.iter().find(|b| at.y < b.bottom()).or(self.raw_blocks.last())?;
-            return Some(b.pos_at(doc.lines(), at, window));
+            enum Laid<'a> {
+                Raw(&'a md_view::BlockLayout),
+                Reveal(&'a md_view::RevealLayout, &'a md_blocks::Block),
+            }
+            let mut laid: Vec<(f32, f32, Laid)> = self.raw_blocks.iter().map(|b| (f32::from(b.raw.bounds.origin.y), f32::from(b.bottom()), Laid::Raw(b))).collect();
+            laid.extend(self.live_reveals().map(|(r, b)| {
+                let bounds = r.layout.bounds();
+                (f32::from(bounds.top()), f32::from(bounds.bottom()), Laid::Reveal(r, b))
+            }));
+            laid.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let spans: Vec<(f32, f32)> = laid.iter().map(|(t, b, _)| (*t, *b)).collect();
+            return match &laid.get(pick_by_y(&spans, f32::from(at.y))?)?.2 {
+                Laid::Raw(b) => Some(b.pos_at(doc.lines(), at, window)),
+                Laid::Reveal(r, block) => Some(md_blocks::pos_of_offset(block, doc.lines(), r.display.source_of(md_view::index_near(&r.layout, at)))),
+            };
         }
         let (doc, layout) = (self.doc.as_ref()?, self.last_bounds.as_ref()?);
         let n = self.line_at_y(at.y, layout).min(doc.lines().len() - 1);
@@ -1809,7 +1843,10 @@ impl Viewer {
     /// The window x of a position and the top of its row, through the last layout.
     fn point_of_pos(&self, p: edit::Pos, window: &mut Window) -> Option<Point<Pixels>> {
         if self.rendered() {
-            // Only a raw block on screen knows where its text is.
+            // Only a raw block or a revealed text on screen knows where its text is.
+            if let Some((at, _)) = self.reveal_point_of(p) {
+                return Some(at);
+            }
             let doc = self.doc.as_ref()?;
             return self.raw_blocks.iter().find(|b| b.lines.contains(&p.line))?.point_of(doc.lines(), doc.clamp(p), window);
         }
@@ -2063,7 +2100,10 @@ impl EntityInputHandler for Viewer {
 
     fn bounds_for_range(&mut self, range_utf16: Range<usize>, _element_bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let (a, b) = (self.field_pos(range_utf16.start), self.field_pos(range_utf16.end.max(range_utf16.start)));
-        let line_h = px(if self.rendered() { self.raw_blocks.first()?.raw.line_h } else { self.last_bounds.as_ref()?.line_h });
+        let line_h = match self.reveal_point_of(a) {
+            Some((_, h)) if self.rendered() => h,
+            _ => px(if self.rendered() { self.raw_blocks.first()?.raw.line_h } else { self.last_bounds.as_ref()?.line_h }),
+        };
         let start = self.point_of_pos(a, window)?;
         let width = if b.line == a.line { self.point_of_pos(b, window)?.x - start.x } else { px(0.0) };
         Some(Bounds { origin: start, size: gpui::size(width.max(px(1.0)), line_h) })
@@ -2271,6 +2311,18 @@ pub fn list_rows(blocks: usize) -> usize {
     } else {
         blocks + 1
     }
+}
+
+/// Of laid-out texts given as `(top, bottom)` in window order, the one a point at `y` maps
+/// through: the first whose bottom is below `y`, else the last.
+pub fn pick_by_y(spans: &[(f32, f32)], y: f32) -> Option<usize> {
+    spans.iter().position(|&(_, bottom)| y < bottom).or(spans.len().checked_sub(1))
+}
+
+/// Of the parts of a block's text that revealed texts show (`covers`, in order), the one an
+/// offset is drawn in: the last that starts at or before it and reaches it.
+pub fn pick_cover(covers: &[Range<usize>], offset: usize) -> Option<usize> {
+    covers.iter().rposition(|c| c.start <= offset && offset <= c.end)
 }
 
 /// Where the user is in `block`, in bytes of its text (`md_blocks::offset_of_pos`): the caret's
@@ -3610,6 +3662,19 @@ mod tests {
         assert_eq!((found.offsets.clone(), found.hits.clone(), found.caret), (vec![2, 3], vec![(2..3, true)], None), "the current hit's ends reveal");
         let marked = Pos { line: 2, ch: 0 }..Pos { line: 2, ch: 1 };
         assert_eq!(focus_of(&lines, &blocks[1], edit::Caret::at(Pos { line: 2, ch: 1 }), &[], None, Some(&marked)).marked, Some(0..1));
+    }
+
+    #[test]
+    fn a_point_picks_the_first_laid_out_text_below_it_and_an_offset_the_last_item_starting_at_it() {
+        let spans = [(0.0, 10.0), (10.0, 30.0), (40.0, 50.0)];
+        assert_eq!(pick_by_y(&spans, 5.0), Some(0));
+        assert_eq!(pick_by_y(&spans, 35.0), Some(2), "between two texts: the one below");
+        assert_eq!(pick_by_y(&spans, 99.0), Some(2), "below them all: the last");
+        assert_eq!(pick_by_y(&[], 1.0), None);
+        let covers = [0..6, 6..11];
+        assert_eq!(pick_cover(&covers, 6), Some(1), "an item's start is its own, not the end of the one above");
+        assert_eq!(pick_cover(&covers, 3), Some(0));
+        assert_eq!(pick_cover(&covers, 12), None);
     }
 
     #[test]

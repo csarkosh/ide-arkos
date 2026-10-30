@@ -959,6 +959,7 @@ fn raw_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyE
 /// What a revealed block draws from: its text, its tree, where the user is in it, and whether the
 /// viewer has the focus (the caret is drawn only then).
 pub struct Reveal<'a> {
+    lines: Range<usize>,
     text: &'a str,
     tree: &'a md_reveal::BlockTree,
     focus: &'a md_reveal::Focus,
@@ -974,7 +975,7 @@ fn reveal_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> A
     let (Some(doc), Some(block), Some(r)) = (v.doc.as_ref(), v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) else { return div().into_any_element() };
     let text = block_source(doc.lines(), block);
     let focus = v.focus_for(ix);
-    let reveal = Reveal { text: &text, tree: &tree, focus: &focus, focused: v.focus.is_focused(window) };
+    let reveal = Reveal { lines: block.lines.clone(), text: &text, tree: &tree, focus: &focus, focused: v.focus.is_focused(window) };
     block_element(ix, &block.kind, r, v, ctx, Some(&reveal))
 }
 
@@ -1192,7 +1193,7 @@ fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixel
 
 /// The byte of a text element's string nearest a window point: the point is moved inside the
 /// text's bounds first, so a point in the padding beside it lands on the nearest row's end.
-fn index_near(layout: &TextLayout, at: Point<Pixels>) -> usize {
+pub fn index_near(layout: &TextLayout, at: Point<Pixels>) -> usize {
     let b = layout.bounds();
     let inside = point(at.x.max(b.left()).min((b.right() - px(1.0)).max(b.left())), at.y.max(b.top()).min((b.bottom() - px(1.0)).max(b.top())));
     layout.index_for_position(inside).unwrap_or_else(|e| e)
@@ -1571,10 +1572,10 @@ fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, co
     };
     let caret = rv.focus.caret.filter(|&c| rv.focused && display.covers.start <= c && c <= display.covers.end).map(|c| display.display_of(c));
     let (viewer, caret_color) = (ctx.viewer.clone(), ctx.caret);
-    let covers = display.covers.clone();
+    let (covers, lines) = (display.covers.clone(), rv.lines.clone());
     let overlay = canvas(
         move |_bounds, _window, cx| {
-            viewer.update(cx, |v, _| v.reveal_blocks.push(RevealLayout { block: ix, covers, layout: layout.clone(), display }));
+            viewer.update(cx, |v, _| v.reveal_blocks.push(RevealLayout { block: ix, lines, covers, layout: layout.clone(), display }));
             layout
         },
         move |_bounds, layout, window, _cx| {
@@ -2022,6 +2023,8 @@ fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
 #[derive(Clone)]
 pub struct RevealLayout {
     pub block: usize,
+    /// The block's lines when it was laid out, so a layout of a block an edit moved is not used.
+    pub lines: Range<usize>,
     pub covers: Range<usize>,
     pub layout: TextLayout,
     pub display: Rc<Display>,
