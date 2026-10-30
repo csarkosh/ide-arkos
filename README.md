@@ -71,14 +71,15 @@ panes and the table, and draws the text as if in ink.
   <img alt="An Arkos IDE window in Peach Light with its watercolor effect, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with an apricot wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in peach and rose with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
 </picture>
 
-**The hacker** works on security: Claude Code audits a small file-drop service for bugs while a
-second session fixes the path traversal it is known to have and tests the fix, a third reads the
-server's ssh log for the address that guessed its way in, and a shell shows the end of that log.
-It is shot in Matrix, black with soft phosphor green, whose matrix effect runs rune rain behind
-the panes and lights the text with a green glow.
+**The hacker** works on security: Claude Code audits a small file-drop service and hardens its
+sign-in, each fix with a regression test, while a second session fixes the path traversal it is
+known to have, a third reads the server's ssh log for the address that guessed its way in, and a
+shell shows the end of that log. It is shot in Matrix, black with soft phosphor green, whose
+effect runs rune rain behind the panes, lights the text with a green glow, and scrambles each
+new line for a moment before it settles, as on the audit's status line here.
 
 <picture>
-  <img alt="An Arkos IDE window in the Matrix theme, black with green text and faint rune rain behind the panes: the file tree on the left, Claude Code auditing a service for security bugs with a second tab fixing a path traversal, a session reading an ssh log for a break-in, and a shell showing the end of that log" src="docs/images/hacker-dark.png" width="760">
+  <img alt="An Arkos IDE window in the Matrix theme, black with green text and rune rain falling behind the panes: the file tree on the left, Claude Code hardening a service's sign-in with its newest line still scrambling into place and a second tab fixing a path traversal, a session reading an ssh log for a break-in, and a shell showing the end of that log" src="docs/images/hacker-dark.png" width="760">
 </picture>
 
 ## Privacy
