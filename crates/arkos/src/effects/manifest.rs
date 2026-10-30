@@ -446,7 +446,7 @@ mod tests {
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
         assert_eq!(m.highlights, Highlights::Effect);
         assert_eq!(m.menus, MenuLook::Glow);
-        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.8, 0.0, 0.5, 0.0));
+        assert_eq!((m.paper_alpha, m.chrome_alpha, m.active_tab_alpha, m.text_contrast), (0.65, 0.0, 0.3, 0.0));
         assert_eq!(m.document_paper_alpha, Some(0.92), "a document reads on a nearly opaque paper");
         assert_eq!(m.document_paper_alpha(), 0.92);
         assert_eq!(m.glyph_rate(), 10);

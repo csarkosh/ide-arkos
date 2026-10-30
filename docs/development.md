@@ -371,7 +371,7 @@ Things only a person at the screen can check, in order of value:
 - effects: Matrix, typing at the prompt shows no scramble; the typed text looks like the rest
 - effects: Matrix, Claude Code's fullscreen renderer redrawing: readable; if the whole screen
   decodes too often, note it (DECODE_MS_WORKING is the first lever)
-- effects: Matrix, the rain: faint columns of runes falling at different speeds under the panes,
+- effects: Matrix, the rain: columns of runes falling at different speeds under the panes (about three fifths of the columns at once, and denser on the tab strips),
   through the bars and the sidebar, never competing with the text; a menu's backdrop shows it
 - effects: Matrix edges: code falls down the vertical pane edges, the horizontal edges are runes
   that flip, a stretch of edge tears now and then, and a pane whose Claude session works has

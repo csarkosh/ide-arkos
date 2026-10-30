@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(style_at(&m, 1.0).document_paper_alpha, 0.5);
         let matrix = manifest::load("matrix", Path::new("/nonexistent/effects")).unwrap().manifest;
         assert_eq!(style_at(&matrix, 1.0).document_paper_alpha, 0.92);
-        assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.8);
+        assert_eq!(style_at(&matrix, 1.0).paper_alpha, 0.65);
     }
 
     #[test]

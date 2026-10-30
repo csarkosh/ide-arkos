@@ -16,16 +16,18 @@ pub const RAIN_SPEED_MAX: f32 = 6.0;
 pub const RAIN_TRAIL_MIN: f32 = 8.0;
 /// The longest trail a column's streams leave, in rows.
 pub const RAIN_TRAIL_MAX: f32 = 24.0;
-/// Seconds a column waits between its streams, beyond their fall: about a third of the columns
+/// Seconds a column waits between its streams, beyond their fall: about three fifths of the columns
 /// then carry a stream on screen at any moment in a window 800 points tall.
-pub const RAIN_GAP: f32 = 30.0;
+pub const RAIN_GAP: f32 = 6.0;
 /// The rows a stream falls through in its cycle before its trail, whatever the window's height,
 /// so a resize never moves a column's phase.
 pub const RAIN_ROWS_PERIOD: f32 = 60.0;
 /// Seconds a rune shows before its cell picks another.
 pub const RUNE_CHANGE: f32 = 0.5;
 /// The most the rain lays of its green over the ground, before the user's intensity.
-pub const RAIN_ALPHA: f32 = 0.15;
+pub const RAIN_ALPHA: f32 = 0.22;
+/// How much more rain the tab strips carry, as a share of `RAIN_ALPHA` laid again over them.
+pub const TAB_RAIN: f32 = 0.4;
 
 /// Signal tears a minute across a window of `D_EDGES` edges.
 pub const D_PER_MINUTE: f32 = 6.0;
@@ -113,10 +115,11 @@ mod tests {
             ("constant float RAIN_SPEED_MAX = 6.0;", RAIN_SPEED_MAX),
             ("constant float RAIN_TRAIL_MIN = 8.0;", RAIN_TRAIL_MIN),
             ("constant float RAIN_TRAIL_MAX = 24.0;", RAIN_TRAIL_MAX),
-            ("constant float RAIN_GAP = 30.0;", RAIN_GAP),
+            ("constant float RAIN_GAP = 6.0;", RAIN_GAP),
             ("constant float RAIN_ROWS_PERIOD = 60.0;", RAIN_ROWS_PERIOD),
             ("constant float RUNE_CHANGE = 0.5;", RUNE_CHANGE),
-            ("constant float RAIN_ALPHA = 0.15;", RAIN_ALPHA),
+            ("constant float RAIN_ALPHA = 0.22;", RAIN_ALPHA),
+            ("constant float TAB_RAIN = 0.4;", TAB_RAIN),
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
             assert!(line.ends_with(&format!(" = {value:?};")), "the mirror's value for {line} is {value:?}");
@@ -173,7 +176,11 @@ mod tests {
             "constant float E_SPEED = 2.0;",
             "constant float E_BRIGHT = 1.4;",
             // The background rain.
-            "constant float RAIN_ALPHA = 0.15;",
+            "constant float RAIN_ALPHA = 0.22;",
+            // The tab strips: undarkened, with a second layer of rain.
+            "constant float TAB_RAIN = 0.4;",
+            "col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);",
+            "kind == ARKOS_TAB_BAR_BLOCK ? 0.0 : 0.42",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
@@ -266,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn about_a_third_of_the_columns_carry_a_stream_on_screen_at_any_moment() {
+    fn about_three_fifths_of_the_columns_carry_a_stream_on_screen_at_any_moment() {
         // The phase never depends on the window's height, but how much of each cycle a window
         // shows does: a taller window sees a stream for longer. The share is measured at 800
         // points, the spec's case, and stays in the band from 600 to 1000 points.
@@ -277,9 +284,9 @@ mod tests {
                 on += (0..200).filter(|&c| on_screen(c, t, height)).count();
             }
             let share = on as f32 / (200.0 * 50.0);
-            assert!((0.25..=0.42).contains(&share), "at {height} points {share:.3} of the columns carry a stream");
+            assert!((0.42..=0.80).contains(&share), "at {height} points {share:.3} of the columns carry a stream");
             if height == 800.0 {
-                assert!((share - 1.0 / 3.0).abs() < 0.04, "at 800 points {share:.3}, not about a third");
+                assert!((share - 0.6125).abs() < 0.05, "at 800 points {share:.3}, not about three fifths");
             }
         }
         // A frozen clock still shows rain.

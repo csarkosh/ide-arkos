@@ -24,9 +24,9 @@ constant float RAIN_SPEED_MAX = 6.0;
 constant float RAIN_TRAIL_MIN = 8.0;
 // The longest trail a column's streams leave, in rows.
 constant float RAIN_TRAIL_MAX = 24.0;
-// Seconds a column waits between its streams, beyond their fall: long enough that about a third
+// Seconds a column waits between its streams, beyond their fall: long enough that about three fifths
 // of the columns carry a stream on screen at any moment in a window 800 points tall.
-constant float RAIN_GAP = 30.0;
+constant float RAIN_GAP = 6.0;
 // The rows a stream falls through in its cycle before its trail, whatever the window's height,
 // so a resize never moves a column's phase; a window taller than this sees the streams fall on
 // into the wait.
@@ -34,7 +34,9 @@ constant float RAIN_ROWS_PERIOD = 60.0;
 // Seconds a rune shows before its cell picks another.
 constant float RUNE_CHANGE = 0.5;
 // The most the rain adds of its green to the ground, before the user's intensity.
-constant float RAIN_ALPHA = 0.15;
+constant float RAIN_ALPHA = 0.22;
+// How much more rain the tab strips carry, as a share of RAIN_ALPHA laid again over them.
+constant float TAB_RAIN = 0.4;
 // The head's extra brightness: how far its rune leans from the green toward white.
 constant float RAIN_HEAD = 0.35;
 // A rune's bit, in points: its 5 by 7 bits make a shape 10 by 14 points, centred in its cell.
@@ -401,6 +403,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     int nb = min(int(u.block_count), 48);
     float dim = 0.0;
     float lift = 0.0;
+    // How much of a tab bar covers p, for the extra rain laid on the tab strips.
+    float tab = 0.0;
     EdgeHit hit = no_edge();
     for (int i = 0; i < nb; i++) {
         ArkosBlock blk = u.blocks[i];
@@ -409,8 +413,12 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         float d = sd_box(p - (rect.xy + hb), hb);
         int kind = int(blk.kind);
         if (kind == ARKOS_TITLE_BAR_BLOCK || kind == ARKOS_TAB_BAR_BLOCK || kind == ARKOS_SIDEBAR_BLOCK) {
-            float amount = kind == ARKOS_SIDEBAR_BLOCK ? 0.35 : 0.42;
-            dim = max(dim, (1.0 - smoothstep(-0.5, 0.5, d)) * amount);
+            float inside = 1.0 - smoothstep(-0.5, 0.5, d);
+            float amount = kind == ARKOS_SIDEBAR_BLOCK ? 0.35 : (kind == ARKOS_TAB_BAR_BLOCK ? 0.0 : 0.42);
+            dim = max(dim, inside * amount);
+            if (kind == ARKOS_TAB_BAR_BLOCK) {
+                tab = max(tab, inside);
+            }
         } else if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
             if (d < 6.0) {
                 float s = HIGHLIGHT_STRENGTH[min(max(int(blk.ordinal), 0), 2)] * blk.value;
@@ -421,6 +429,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         nearest_edge(p, blk, d, hit, u.size);
     }
     col = mix(col, bg * 0.8, dim * k);
+    // The tab strips carry the rain more strongly: TAB_RAIN more of it, laid over the first.
+    col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);
     col = mix(col, green, lift * k);
     // The nearest reported edge's light, laid over the rest. On a dark ground it is added, as
     // the mock-up adds it, so a busy head or a tear burns on toward white until each channel

@@ -288,7 +288,7 @@ mod tests {
         // Inside a pane body, away from the edges' glow: the rain never lays more than RAIN_ALPHA
         // of the text green over the black ground (with 5% for the head, which leans toward white,
         // and the bytes' rounding), and it does show. The left pane's body below its highlighted
-        // row and that row's soft spill (6 points out), over a few moments, since about a third of
+        // row and that row's soft spill (6 points out), over a few moments, since about three fifths of
         // the columns carry a stream at a time.
         let interior: Vec<Rgb> = [7.0, 23.0, 61.0]
             .iter()

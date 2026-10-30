@@ -114,9 +114,9 @@ document is a starting point, named in one place, and expected to change.
 ## The effect's manifest (`matrix/effect.toml`)
 
 `frame_rate = 30`, `scale = 0.5`, `ui_text_bump = 0`, `ink_borders = true`,
-`highlights = "effect"`, `menus = "glow"`, `glyph_motion = true`, `paper_alpha = 0.8`,
+`highlights = "effect"`, `menus = "glow"`, `glyph_motion = true`, `paper_alpha = 0.65`,
 `document_paper_alpha = 0.92` (amended 2026-10-29, see the end),
-`chrome_alpha = 0.0`, `active_tab_alpha = 0.5`, `text_contrast = 0.0`, and the two new keys
+`chrome_alpha = 0.0`, `active_tab_alpha = 0.3`, `text_contrast = 0.0`, and the two new keys
 below.
 
 ### New manifest keys (the contract grows by two keys)
@@ -243,17 +243,18 @@ theme's green: the greenest of its `ANSI green`, its terminal text and its focus
 - **Rain.** The window is cut into columns `RAIN_COL` = 14 points wide and rows `RAIN_ROW` = 18
   points tall. Each column (by a hash of its index) has a speed between `RAIN_SPEED_MIN` = 2 and
   `RAIN_SPEED_MAX` = 6 rows a second, a trail length between 8 and 24 rows, a phase, and a gap
-  of a few seconds between its streams, so at any moment about a third of the columns carry a
-  stream. A stream is a head cell and a trail that fades to nothing behind it. Each cell in a
+  of a few seconds between its streams, so at any moment about three fifths of the columns carry a
+  stream (a third until the 2026-10-29 more-rain amendment). A stream is a head cell and a trail that fades to nothing behind it. Each cell in a
   stream shows a rune: a 5 by 7 bit pattern from a hash of the cell's position and a slow clock
   (`RUNE_CHANGE` = 0.5 s, so the runes flicker as the film's do), drawn as filled bits with soft
   edges, in the theme's green. The head is brighter and a touch whiter; the trail is the green
-  at `RAIN_ALPHA` = 0.15 at most (0.12 until Cyrus tuned the edges), times `u.intensity`, so
+  at `RAIN_ALPHA` = 0.22 at most (0.15, and 0.12 before that, until Cyrus tuned the edges), times `u.intensity`, so
   the rain is noise under the text and never competes with it. There is no font in the wash, so
   these are drawn shapes, not letters.
-- **Where it shows.** The rain covers the whole window. The panes' paper at 0.8 hides most of
+- **Where it shows.** The rain covers the whole window. The terminal panes' paper at 0.65 hides most of
   it under the text; the bars and the sidebar (`chrome_alpha` 0) show it through their own faint
-  darkening, as space darkens its bars.
+  darkening, as space darkens its bars; the tab strips are not darkened and carry a second,
+  fainter layer of rain (`TAB_RAIN` = 0.4).
 - **Edges (`ink_borders`).** Every edge a block reports is live, in the theme's green, all of
   its light scaled by `EDGE_INTENSITY` = 0.33 (and then by `u.intensity`): a core 0.55 points
   wide and a halo reaching 5.2 points; code falling down the vertical edges, one stream an edge
@@ -440,3 +441,16 @@ easier for that."
    `paper_alpha`) is the paper of the markdown and file viewer tabs (`Style::
    document_paper_alpha`); the terminal and web pages keep `paper_alpha`. Matrix sets 0.92, so
    the rain barely shows behind reading text.
+
+## Amendment (2026-10-29, Cyrus: more rain)
+
+After seeing the rain live, Cyrus asked for more of it, and then for less of it behind the tab
+headers:
+
+1. The gap between a column's streams: `RAIN_GAP` 30 s to 6 s, so about three fifths of the
+   columns carry a stream on screen at once (0.61 at 800 points; 0.50 at 600, 0.72 at 1000).
+2. The rain: `RAIN_ALPHA` 0.15 to 0.22.
+3. The terminal paper: `paper_alpha` 0.8 to 0.65. `document_paper_alpha` stays 0.92.
+4. The tab strips are no longer darkened (the tab bars' darkening 0.42 to 0), and carry a second
+   layer of rain: `TAB_RAIN` = 0.4 of `RAIN_ALPHA` laid again over them (first tried at 1.0, too strong).
+5. The active tab over the wash: `active_tab_alpha` 0.5 to 0.3 (first tried at 0.2).
