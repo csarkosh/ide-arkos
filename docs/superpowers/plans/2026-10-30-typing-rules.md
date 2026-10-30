@@ -8,6 +8,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-30-typing-rules-design.md`
 
+## Progress (2026-10-30)
+
+Tasks 1 to 7 are done on branch `typing`. The screen pass ran on the local shoot: Cmd+B on a word
+and again, Cmd+I on a selection, the right-click menu and its Bold row, Shift+Enter out of a code
+block, Tab, Tab and Shift+Tab under a numbered item, Shift+Enter in an item and on a quote's last
+line, Enter twice in a quote and on its empty line, Enter and Shift+Enter in a paragraph, Enter
+after a heading. It found two things, fixed: a numbered item nested by Tab rendered as text
+(markdown starts a nested numbered list only at 1, so it is renumbered), and ending a quote left a
+bare `>` line. The shoot gained a right click, and its clicks no longer carry a Command left over
+from a key. Out of scope as the spec says: Cmd+K, Highlight, the selection toolbar, slash commands.
+
 ## Global Constraints
 
 - Worktree `~/Projects/ide-arkos/.claude/worktrees/reveal`, branch `typing` off main at `3225710`. `nice -n 15`, never `--release`, one cargo at a time.
