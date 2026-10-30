@@ -34,6 +34,11 @@ jobs:
           for f in Baskerville Optima "PT Mono"; do
             system_profiler SPFontsDataType 2>/dev/null | grep -q "Full Name: $f" && echo "font: $f" || echo "font missing: $f"
           done
+          # Reduce Motion stills the effects (no rain falling, no decode on changed text), and the
+          # runner's image may have it on; the pictures show the motion a person sees by default.
+          echo "reduceMotion was: $(defaults read com.apple.universalaccess reduceMotion 2>&1)"
+          defaults write com.apple.universalaccess reduceMotion -bool false || echo "could not turn Reduce Motion off"
+          echo "reduceMotion now: $(defaults read com.apple.universalaccess reduceMotion 2>&1)"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable, 2026-10-09
         with:
           toolchain: stable
