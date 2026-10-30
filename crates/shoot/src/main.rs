@@ -373,7 +373,13 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         let picture = format!("{}-{}", story.scene.name, shot.name);
         let raw = progress.dir.join(format!("{picture}.raw.png"));
         match shot.burst {
-            Some(n) => capture_burst(repo, window_id, &raw, n, shot)?,
+            Some(n) => {
+                // In front, so macOS draws it at its full rate: a window behind others is drawn
+                // less often, and the burst caught the same frame over and over.
+                activate(window_pid);
+                pause(Duration::from_millis(600))?;
+                capture_burst(repo, window_id, &raw, n, shot)?
+            }
             None => capture_steady(repo, window_id, &raw)?,
         }
         frame_image(repo, &raw, &out.join(format!("{picture}.png")), shot, None)?;
@@ -555,7 +561,7 @@ fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A shot's burst (`burst` in the storyboard): `n` captures a quarter second apart, each kept
+/// A shot's burst (`burst` in the storyboard): `n` captures a tenth of a second apart (each capture itself takes a little longer), each kept
 /// beside `out` as `<name>.burst-NN.raw.png` and framed as `<name>.burst-NN.png`, and `out` made
 /// the one that differs most from the capture before it, the frame most likely caught mid-motion.
 fn capture_burst(repo: &Path, id: u32, out: &Path, n: usize, shot: &Shot) -> Result<()> {
@@ -566,7 +572,7 @@ fn capture_burst(repo: &Path, id: u32, out: &Path, n: usize, shot: &Shot) -> Res
         let path = dir.join(format!("{stem}.burst-{i:02}.raw.png"));
         capture_window(id, &path)?;
         frames.push(path);
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
     }
     let mut best = (0, -1.0_f64);
     for i in 1..n {

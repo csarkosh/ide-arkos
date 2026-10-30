@@ -227,7 +227,7 @@ pub struct Shot {
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
     pub keys: Vec<String>,
-    /// Take this many captures a quarter second apart, without waiting for a still frame, and
+    /// Take this many captures a tenth of a second apart, without waiting for a still frame, and
     /// keep the one that changed most from the one before: an effect's motion (the matrix
     /// decode, 400 ms on changed text) is what a still frame never shows. Every capture is
     /// framed into the progress folder, so a person can choose another.
@@ -311,8 +311,8 @@ impl Story {
             for k in &shot.keys {
                 Key::parse(k).with_context(|| format!("shot {:?}", shot.name))?;
             }
-            if shot.burst.is_some_and(|n| !(2..=20).contains(&n)) {
-                bail!("shot {:?}: burst must be 2 to 20 captures", shot.name);
+            if shot.burst.is_some_and(|n| !(2..=60).contains(&n)) {
+                bail!("shot {:?}: burst must be 2 to 60 captures", shot.name);
             }
             if let Some([x, y]) = shot.click {
                 if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
@@ -635,7 +635,7 @@ theme = "light"
         let err = Story::parse(&text.replace("scale = 1.0", "scale = 1.5")).unwrap_err().to_string();
         assert!(err.contains("effect scale must be 0.1 to 1.0"), "{err}");
         let err = Story::parse(&text.replace("burst = 8", "burst = 1")).unwrap_err().to_string();
-        assert!(err.contains("burst must be 2 to 20"), "{err}");
+        assert!(err.contains("burst must be 2 to 60"), "{err}");
     }
 
     #[test]

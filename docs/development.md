@@ -236,7 +236,7 @@ A runner's display draws one pixel a point, half a Retina Mac's, so an effect's 
 its manifest's `scale` of the window's pixels) has half the detail it has on your screen. A
 storyboard's `[effect]` (`name`, `scale`) draws the theme's built-in effect at another scale for
 the picture; the hacker's matrix rain takes 1.0, a Retina Mac's density. A shot's `burst = N`
-takes N captures a quarter second apart instead of waiting for a still frame, keeps the one that
+takes N captures a tenth of a second apart, with the window brought to the front, instead of waiting for a still frame, keeps the one that
 changed most from the one before (the frame most likely caught mid-motion, such as the matrix
 decode), and frames every one into `docs/images/progress/<scene>/` so another can be chosen.
 
