@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, OpenFolder, NewWindow,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, TogglePresentation, OpenFolder, NewWindow,
         NewBrowserTab, Quit,
         OpenFileInPane,
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
@@ -115,6 +115,8 @@ pub enum Command {
     FoldAll,
     /// Unfold them all.
     UnfoldAll,
+    /// Presentation mode on or off in the focused markdown document (reading spec, section 4).
+    TogglePresentation,
     /// Pick a folder with the native picker and open it in a new window.
     OpenFolder,
     /// Show the project chooser in its own window (the "New Window" item in the Arkos IDE menu);
@@ -267,6 +269,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "italic", keys: "cmd-i", context: Some("Markdown"), section: Section::Markdown },
     ActionSpec { name: "fold all", keys: "cmd-k cmd-0", context: Some("Markdown"), section: Section::Markdown },
     ActionSpec { name: "unfold all", keys: "cmd-k cmd-j", context: Some("Markdown"), section: Section::Markdown },
+    ActionSpec { name: "toggle presentation mode", keys: "alt-cmd-p", context: Some("Markdown"), section: Section::Markdown },
     row(Section::Window, "open folder", "cmd-o"),
     row(Section::Window, "new window", "cmd-n"),
     row(Section::Browser, "new browser tab", "cmd-shift-b"),
@@ -395,6 +398,7 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "italic" => KeyBinding::new(keys, Italic, context),
         "fold all" => KeyBinding::new(keys, FoldAll, context),
         "unfold all" => KeyBinding::new(keys, UnfoldAll, context),
+        "toggle presentation mode" => KeyBinding::new(keys, TogglePresentation, context),
         "open folder" => KeyBinding::new(keys, OpenFolder, context),
         "new window" => KeyBinding::new(keys, NewWindow, context),
         "new browser tab" => KeyBinding::new(keys, NewBrowserTab, context),
@@ -719,6 +723,7 @@ pub fn command_for(name: &str) -> Option<Command> {
         "italic" => Command::Italic,
         "fold all" => Command::FoldAll,
         "unfold all" => Command::UnfoldAll,
+        "toggle presentation mode" => Command::TogglePresentation,
         "open folder" => Command::OpenFolder,
         "new window" => Command::NewWindow,
         "new browser tab" => Command::NewBrowserTab,
@@ -787,7 +792,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks, InstallAgentGuide => Command::InstallAgentGuide,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
-        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile, Bold => Command::Bold, Italic => Command::Italic, FoldAll => Command::FoldAll, UnfoldAll => Command::UnfoldAll,
+        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile, Bold => Command::Bold, Italic => Command::Italic, FoldAll => Command::FoldAll, UnfoldAll => Command::UnfoldAll, TogglePresentation => Command::TogglePresentation,
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
         NewBrowserTab => Command::NewBrowserTab,
         OpenFileInPane => Command::OpenFileInPane,
@@ -855,6 +860,7 @@ mod tests {
         ("cmd-i", "italic", "Italic"),
         ("cmd-k cmd-0", "fold all", "FoldAll"),
         ("cmd-k cmd-j", "unfold all", "UnfoldAll"),
+        ("alt-cmd-p", "toggle presentation mode", "TogglePresentation"),
         ("cmd-o", "open folder", "OpenFolder"),
         ("cmd-n", "new window", "NewWindow"),
         ("cmd-shift-b", "new browser tab", "NewBrowserTab"),
@@ -906,7 +912,7 @@ mod tests {
         for name in ["toggle markdown view", "save file"] {
             assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Viewer"), "{name} acts on the focused viewer only");
         }
-        for name in ["bold", "italic", "fold all", "unfold all"] {
+        for name in ["bold", "italic", "fold all", "unfold all", "toggle presentation mode"] {
             assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Markdown"), "{name} acts on a markdown document only, so Cmd+B still toggles the sidebar elsewhere");
         }
         let copy = ACTIONS.iter().find(|a| a.name == "copy as shown").map(|a| (a.context, a.section));
@@ -1063,11 +1069,11 @@ mod tests {
         let maint = &g.iter().find(|(s, _)| *s == Section::Maintenance).unwrap().1;
         assert!(maint.iter().any(|r| r.label == "Doctor" && r.keys.is_none()));
         let md = &g.iter().find(|(s, _)| *s == Section::Markdown).unwrap().1;
-        let viewer: Vec<&str> = md[..7].iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file", "Bold", "Italic", "Fold all", "Unfold all"], "the viewer's actions come first");
-        assert_eq!(md.len(), 7 + MARKDOWN_KEYS.len());
-        assert_eq!(md[7], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
-        assert!(md[7..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
+        let viewer: Vec<&str> = md[..8].iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file", "Bold", "Italic", "Fold all", "Unfold all", "Toggle presentation mode"], "the viewer's actions come first");
+        assert_eq!(md.len(), 8 + MARKDOWN_KEYS.len());
+        assert_eq!(md[8], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
+        assert!(md[8..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
         let table: Vec<(&str, &str)> = MARKDOWN_KEYS.iter().copied().filter(|(label, _)| label.ends_with("(in a table)")).collect();
         assert_eq!(
             table,

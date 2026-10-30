@@ -114,6 +114,10 @@ pub struct WindowSpec {
     /// shows one look names it for both.
     #[serde(default)]
     pub theme: ThemePair,
+    /// The rendered markdown's `[viewer] page_width` (`full` or `letter`), when the picture shows
+    /// a letter page.
+    #[serde(default)]
+    pub page_width: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -231,6 +235,10 @@ pub struct Shot {
     /// before the keys: the left button held over a dozen moves.
     #[serde(default)]
     pub drag: Option<[[f64; 2]; 2]>,
+    /// The pointer moved to `[x, y]`, fractions of the window, after the keys, and left there: a
+    /// hover's tooltip or highlight for the picture.
+    #[serde(default)]
+    pub hover: Option<[f64; 2]>,
     /// Keys sent to the window after the wait and before the capture, in order: `down`,
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
@@ -260,6 +268,8 @@ fn letter_code(c: u8) -> Option<u16> {
     match c {
         b'a'..=b'z' => LETTERS.get((c - b'a') as usize).copied(),
         b'0'..=b'9' => DIGITS.get((c - b'0') as usize).copied(),
+        b'=' => Some(24),
+        b'-' => Some(27),
         _ => None,
     }
 }
@@ -288,7 +298,7 @@ impl Key {
             "return" | "enter" => Some(36), "tab" => Some(48), "escape" | "esc" => Some(53), "delete" | "backspace" => Some(51), "f2" => Some(120),
             // A letter with a modifier goes by its own key code: an app reads Cmd+Z from the key,
             // not from the text, so a letter sent as text on key 0 arrives as Cmd+A.
-            letter if !modifiers.is_empty() && letter.len() == 1 && letter.as_bytes()[0].is_ascii_alphanumeric() => letter_code(letter.as_bytes()[0]),
+            letter if !modifiers.is_empty() && letter.len() == 1 && letter_code(letter.as_bytes()[0]).is_some() => letter_code(letter.as_bytes()[0]),
             _ => None,
         };
         let text = if code.is_none() {
@@ -744,6 +754,7 @@ theme = "light"
         assert_eq!(Key::parse("cmd+0").unwrap().code, Some(29), "a digit with a modifier too");
         assert_eq!(Key::parse("**2").unwrap().text.as_deref(), Some("*"), "a star is typed as text");
         assert_eq!(Key::parse("f2").unwrap().code, Some(120), "F2 edits a table cell");
+        assert_eq!((Key::parse("cmd+=").unwrap().code, Key::parse("cmd+-").unwrap().code), (Some(24), Some(27)), "the font size steps go by their keys");
         assert!(Key::parse("meta+x").is_err());
         assert!(Key::parse("rightt").is_err());
         assert!(Key::parse("right*x").is_err());

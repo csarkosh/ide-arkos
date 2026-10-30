@@ -167,6 +167,24 @@ shows its reason in a banner with Retry.
 
 Every other file type stays a read-only viewer.
 
+### Reading
+
+A quote that starts with `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` is
+an alert: its bar and a header with an icon in the kind's colour, the header reading the kind or
+the text after the tag (`> [!TIP] Shortcut`). Footnotes (`text[^key]` and a `[^key]: note` line)
+are numbered 1, 2, 3 by where each is first referred to, whatever the keys. A reference shows as a
+small raised number; hover it to read the note, Cmd+click it to scroll to the note, and the `↩`
+after a note scrolls back. Front matter shows as its `title`, its `date` (or `created`) and a faint
+"front matter" label; click it for its source.
+
+Presentation mode reads a document without editing it: click "present" under the mode pill, or
+press Alt+Cmd+P. There is no caret and nothing reveals, a single click follows a link or a
+footnote, and the drag handles, the table's strips, the code block's language list, the
+right-click menu and the front matter label are gone. "edit" (or Alt+Cmd+P again, or Raw mode)
+ends it. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
+"Page width" in Settings, or run `arkos settings set viewer.page_width letter`. Cmd+= and Cmd+-
+make the focused document's text larger and smaller.
+
 ### Tables
 
 A table renders as a grid: a bold header row, rules between the cells, the column alignment from
@@ -443,6 +461,7 @@ The VS Code map, in a terminal-friendly form.
 | Enter | in a rendered markdown paragraph or heading: a new paragraph; in a quote: a new quoted paragraph; in a list: the next item; on an empty item, end the list or move a nested item out a level |
 | Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
 | Cmd+K Cmd+0, Cmd+K Cmd+J | in a markdown document: fold all headings, unfold them all |
+| Alt+Cmd+P | in a markdown document: presentation mode on or off |
 | / | in a rendered markdown document, at a line's start or after a space: the slash menu (Up, Down, Enter or Tab, Right and Left for a submenu, Escape) |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Space | in a video tab: play or pause |
@@ -621,7 +640,7 @@ Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
 and `light`), `effect` (`name`: `theme`, `none` or an effect; `intensity`; `run_unfocused`, true by default, false to pause a window's effects while it is not in focus), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
-whether it starts collapsed), `viewer` (`highlight_limit_bytes`, `wide_tables`: `wrap` or `scroll`, and `image_destination`, the folder for pasted and dropped images), and `browser` (`url`, the page a new
+whether it starts collapsed), `viewer` (`highlight_limit_bytes`, `wide_tables`: `wrap` or `scroll`, and `image_destination`, the folder for pasted and dropped images, and `page_width`: `full` or `letter`), and `browser` (`url`, the page a new
 browser tab opens when its prompt is left empty; `app_mode` is left over from 0.6's Chrome docking
 and is ignored).
 
@@ -819,7 +838,7 @@ the preview's colours with the error shown.
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
 `font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (theme, none, or an installed
 effect's name), `effect.intensity` (0.0 to 1.0), `effect.run_unfocused` (true, false),
-`viewer.wide_tables` (wrap, scroll), `viewer.image_destination` (a folder, empty for beside the file),
+`viewer.wide_tables` (wrap, scroll), `viewer.image_destination` (a folder, empty for beside the file), `viewer.page_width` (full, letter),
 `update.auto` (true, false), `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
 `telemetry.crashes` (never, ask, always). Any other key exits 2 and lists these. A bad value is
 refused before anything is written. `settings get <key>` reads the file only, so a key left at its

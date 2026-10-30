@@ -70,6 +70,7 @@ pub const SETTABLE: &[&str] = &[
     "effect.run_unfocused",
     "viewer.wide_tables",
     "viewer.image_destination",
+    "viewer.page_width",
     "update.auto",
     "recovery.start_at_login",
     "telemetry.usage",
@@ -810,6 +811,7 @@ pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
         },
         "appearance.mode" => one_of(key, raw, &["system", "dark", "light"]),
         "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
+        "viewer.page_width" => one_of(key, raw, &["full", "letter"]),
         // Empty puts images beside the document.
         "viewer.image_destination" => Ok(raw.trim().into()),
         "recovery.start_at_login" => one_of(key, raw, &["ask", "on", "off"]),
@@ -1037,6 +1039,7 @@ mod tests {
         assert_eq!(typed_value("viewer.wide_tables", "scroll").unwrap().as_str(), Some("scroll"));
         assert!(typed_value("viewer.wide_tables", "sideways").is_err());
         assert_eq!(typed_value("viewer.image_destination", "").unwrap().as_str(), Some(""), "empty is beside the document");
+        assert!(typed_value("viewer.page_width", "letter").is_ok() && typed_value("viewer.page_width", "a4").is_err());
         assert_eq!(typed_value("viewer.image_destination", " images ").unwrap().as_str(), Some("images"));
         assert_eq!(typed_value("update.auto", "true").unwrap().as_bool(), Some(true));
         assert_eq!(typed_value("font.presets.big.size", "18").unwrap().as_float(), Some(18.0));

@@ -1051,6 +1051,15 @@ pub fn pill_label(mode: ViewMode) -> &'static str {
     }
 }
 
+/// The presentation pill's text: what a click turns to.
+pub fn present_label(presenting: bool) -> &'static str {
+    if presenting {
+        "edit"
+    } else {
+        "present"
+    }
+}
+
 /// What a viewer tab shows under its find bar.
 enum Kind {
     Loading,
@@ -1070,6 +1079,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
     let family = root.family();
+    let presenting = viewer.read(cx).presenting;
     let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
@@ -1089,7 +1099,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let kind_is_text = matches!(kind, Kind::Text { .. });
     let body = match kind {
         Kind::Text { .. } if rendered => {
-            let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, style, cx.weak_entity(), cx);
+            let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
             div().size_full().bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
         }
         Kind::Text { plain } => {
@@ -1221,6 +1231,36 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             )
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
+    // Presentation mode's switch, under the mode pill in the rendered view: it names what a click
+    // turns to.
+    let present = (editable && mode == ViewMode::Rendered).then(|| {
+        div()
+            .id(("viewer-present-pill", viewer.entity_id()))
+            .absolute()
+            .top(px(pill_top + 30.0))
+            .right(px(14.0))
+            .w(px(PILL_W))
+            .flex()
+            .justify_center()
+            .py(px(3.0))
+            .rounded(px(10.0))
+            .bg(pill_bg(&theme))
+            .border_1()
+            .border_color(if presenting { theme.chrome.focus_ring.hsla() } else { pill_border(&theme) })
+            .text_color(if presenting { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
+            .font_family(family.clone())
+            .text_size(px(style.ui(11.0)))
+            .cursor_pointer()
+            .child(present_label(presenting))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
+                    root.focus_pane(pane, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_presentation_for(tab, cx)))
+    });
     let (v_keys, v_wheel, v_menu) = (viewer.clone(), viewer.clone(), viewer.downgrade());
     div()
         .size_full()
@@ -1289,7 +1329,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
-                let Some(v) = v_menu.upgrade().filter(|v| v.read(cx).doc.is_some()) else { return };
+                // Presenting, the document has no menu: every row of it edits or needs a caret.
+                let Some(v) = v_menu.upgrade().filter(|v| v.read(cx).doc.is_some() && !v.read(cx).presenting) else { return };
                 cx.stop_propagation();
                 root.focus_pane(pane, cx);
                 let now = std::time::Instant::now();
@@ -1308,6 +1349,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .child(body)
         .children(chip)
         .children(pill)
+        .children(present)
         .children(viewer::find_bar(&viewer, pane, &theme, family, &mut root.find_bars, root.frame_now, cx))
 }
 
@@ -1446,6 +1488,7 @@ mod tests {
     fn the_pill_names_the_other_mode() {
         assert_eq!(pill_label(ViewMode::Rendered), "show raw");
         assert_eq!(pill_label(ViewMode::Raw), "show rendered");
+        assert_eq!((present_label(false), present_label(true)), ("present", "edit"), "the presentation pill names what a click turns to");
     }
 
     #[test]
