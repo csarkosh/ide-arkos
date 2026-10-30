@@ -3,6 +3,7 @@
 # dark brown (the terminal's a shade darker, for its 11:1), prose is set in Baskerville, and the
 # ANSI colours are deepened so each clears 4.5:1 on the cream.
 name = "peach-light"
+appearance = "light"
 
 [effect]
 name = "watercolor"

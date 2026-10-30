@@ -2056,7 +2056,8 @@ impl Root {
         }
         self.close_popovers(Instant::now());
         let themes_dir = paths::themes_dir();
-        let items = command_palette::items(&self.config, &theme::names(&themes_dir), &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix(), self.sandbox);
+        let themes: Vec<(String, Option<theme::Appearance>)> = theme::kinds(&themes_dir).into_iter().map(|(n, _, k)| (n, k)).collect();
+        let items = command_palette::items(&self.config, &themes, &self.text_preset, &self.theme.name, &themes_dir, self.update_ready.as_deref(), self.update_error.is_some(), self.config.recovery.start_at_login, launch_agent::installed(&launch_agent::agent_path()), &hook_cli::claude_settings_path(), self.explorer.show_ignored, self.notices.unread_count(), self.doctor_needs_fix(), self.sandbox);
         self.palette.show(command_palette::Palette::new(items, cx.focus_handle()), Instant::now());
         cx.notify();
     }
@@ -5171,9 +5172,14 @@ mod tests {
         use std::time::Instant;
         // A theme file edited in place keeps its name: the watcher fires for the write, then
         // again when the editor's rename restores the old text before the first fade frame.
-        let navy = Arc::new(theme::builtin("navy").unwrap());
+        // Both files say nothing of their appearance, so each is classed by its background; the
+        // blend takes the target's, as it takes its name.
+        let mut plain = theme::builtin("navy").unwrap();
+        plain.appearance = None;
+        let navy = Arc::new(plain);
         let mut edited = theme::builtin("lavender-light").unwrap();
         edited.name = "navy".into();
+        edited.appearance = None;
         edited.font = theme::ThemeFont::default(); // the blend takes the target's fonts, and navy names none
         edited.effect = navy.effect.clone(); // and its effect: the edited file keeps navy's space
         let light = Arc::new(edited);

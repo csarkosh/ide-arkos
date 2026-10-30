@@ -192,7 +192,7 @@ impl<'de> Deserialize<'de> for EffectChoice {
         match name.as_str() {
             "theme" => Ok(EffectChoice::Theme),
             "none" => Ok(EffectChoice::None),
-            n if crate::theme::is_bare_name(n) => Ok(EffectChoice::Named(name)),
+            n if crate::theme::is_bare_name(n) => Ok(EffectChoice::Named(crate::effects::current_name(n).to_string())),
             _ => Err(serde::de::Error::custom(format!("effect.name must be theme, none or an effect's bare name (was {name:?})"))),
         }
     }
@@ -713,14 +713,14 @@ watchdog_secs = 30
 replay_bytes = 16777216
 
 [theme]
-# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-light", "lavender-light" and "matrix" are built in;
+# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-light", "lavender-light", "matrix" and "navy-runic" are built in;
 # "Extract built-in themes" in the command palette writes them there to copy from.
 dark = "navy"
 light = "peach-light"
 
 [effect]
 # A shader drawn under the window's text. "theme" draws the one the theme was designed with
-# (peach-light's watercolor, navy's space, matrix's matrix), "none" draws nothing, or name an
+# (peach-light's watercolor, matrix's runic), "none" draws nothing, or name an
 # effect: a built-in, or a folder in ~/.config/arkos/effects/. intensity runs from 0.0
 # (invisible) to 1.0 (as designed).
 name = "theme"
@@ -1013,6 +1013,12 @@ pub(crate) mod tests {
         assert_eq!(cfg.effect, EffectConfig { name: EffectChoice::Theme, intensity: 1.0, run_unfocused: true });
         assert_eq!(parse("").unwrap().effect, cfg.effect);
         assert_eq!(parse(DEFAULT_CONFIG).unwrap(), cfg, "the commented defaults say the same");
+    }
+
+    #[test]
+    fn an_effect_name_of_matrix_from_before_the_rename_reads_as_runic() {
+        assert_eq!(parse("[effect]\nname = \"matrix\"\n").unwrap().effect.name, EffectChoice::Named("runic".into()));
+        assert_eq!(parse("[effect]\nname = \"runic\"\n").unwrap().effect.name, EffectChoice::Named("runic".into()));
     }
 
     #[test]

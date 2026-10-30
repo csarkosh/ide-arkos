@@ -312,7 +312,7 @@ mod tests {
         assert!(e.contains("document_paper_alpha must be 0.5 to 1.0 (was 0.4)"), "{e}");
         let e = parse(&with("document_paper_alpha = 1.1")).unwrap_err();
         assert!(e.contains("document_paper_alpha must be 0.5 to 1.0 (was 1.1)"), "{e}");
-        for b in BUILTIN.iter().filter(|b| b.name != "matrix") {
+        for b in BUILTIN.iter().filter(|b| b.name != "runic") {
             assert_eq!(parse(b.manifest).unwrap().document_paper_alpha, None, "{} reads on its terminal's paper", b.name);
         }
     }
@@ -346,7 +346,7 @@ mod tests {
         assert!(parse(&with("glyph_motion = true\nterminal_decode = true")).unwrap().terminal_decode);
         let e = parse(&with("terminal_decode = true")).unwrap_err();
         assert_eq!(e, "terminal_decode = true requires glyph_motion = true");
-        for b in BUILTIN.iter().filter(|b| b.name != "matrix") {
+        for b in BUILTIN.iter().filter(|b| b.name != "runic") {
             assert!(!parse(b.manifest).unwrap().terminal_decode, "{} does not decode", b.name);
         }
     }
@@ -439,8 +439,8 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_matrix_parses_with_its_fixed_values() {
-        let b = BUILTIN.iter().find(|b| b.name == "matrix").expect("matrix is built in");
+    fn the_built_in_runic_parses_with_its_fixed_values() {
+        let b = BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in");
         let m = parse(b.manifest).unwrap();
         assert_eq!((m.frame_rate, m.scale, m.ui_text_bump), (30, 0.5, 0.0));
         assert!(m.ink_borders && m.glyph_motion && m.terminal_decode);
@@ -465,7 +465,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("matrix".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn)]
         );
     }
 

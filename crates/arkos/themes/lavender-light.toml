@@ -3,6 +3,7 @@
 # lavender title and status bar; purple keywords, rose identifiers, blue functions and gold
 # strings, each deepened to clear 4.5:1 on the editor.
 name = "lavender-light"
+appearance = "light"
 
 [effect]
 name = "watercolor"

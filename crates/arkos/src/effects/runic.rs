@@ -1,4 +1,4 @@
-//! The built-in `matrix` effect's rain, mirrored from its wash shader (`effects/matrix/wash.metal`)
+//! The built-in `runic` effect's rain, mirrored from its wash shader (`effects/runic/wash.metal`)
 //! so its values and its streams' schedule can be tested without a GPU. The constants and the
 //! arithmetic here are the shader's own; a change to one is made to both.
 
@@ -105,14 +105,14 @@ mod tests {
     use super::*;
     use crate::effects::BUILTIN;
 
-    fn matrix() -> &'static crate::effects::BuiltIn {
-        BUILTIN.iter().find(|b| b.name == "matrix").expect("matrix is built in")
+    fn runic() -> &'static crate::effects::BuiltIn {
+        BUILTIN.iter().find(|b| b.name == "runic").expect("runic is built in")
     }
 
     #[test]
     fn the_wash_carries_the_rain_s_constants_and_names_this_mirror() {
-        let wash = matrix().wash;
-        assert!(wash.contains("effects/matrix.rs"), "the shader names its mirror");
+        let wash = runic().wash;
+        assert!(wash.contains("effects/runic.rs"), "the shader names its mirror");
         for (line, value) in [
             ("constant float RAIN_COL = 14.0;", RAIN_COL),
             ("constant float RAIN_ROW = 18.0;", RAIN_ROW),
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn the_wash_carries_cyrus_s_tuned_edge_settings_line_for_line() {
-        let wash = matrix().wash;
+        let wash = runic().wash;
         for line in [
             // The line.
             "constant float EDGE_INTENSITY = 0.33;",
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn the_wash_skips_edges_on_the_window_s_border_and_the_menu_stage_keeps_them() {
-        let wash = matrix().wash;
+        let wash = runic().wash;
         assert!(wash.contains("constant float EDGE_BORDER = 1.5;"));
         assert!(wash.contains("nearest_edge(p, blk, d, hit, u.size);"), "the wash does not skip the border's edges");
         let overlay = &wash[wash.find("fragment float4 arkos_overlay(").unwrap()..];
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn an_edge_s_key_comes_from_its_block_s_seed_and_side_never_its_index() {
-        let wash = matrix().wash;
+        let wash = runic().wash;
         assert!(wash.contains("uint key = as_type<uint>(blk.seed) * 4u + side;"), "the edge key is not the seed's");
         let start = wash.find("void nearest_edge(").expect("the wash finds its edges");
         let end = start + wash[start..].find("\n}\n").unwrap();
@@ -259,7 +259,7 @@ mod tests {
     fn both_shaders_hash_with_the_rust_hash01_line_for_line() {
         // Each shader carries its own copy of `hash01` (crates/arkos/src/effects/hash.rs), so a
         // hand-copied drift in either shows here.
-        for (file, src) in [("wash.metal", matrix().wash), ("glyphs.metal", matrix().glyphs.unwrap())] {
+        for (file, src) in [("wash.metal", runic().wash), ("glyphs.metal", runic().glyphs.unwrap())] {
             for line in [
                 "uint h = n * 747796405u + 2891336453u;",
                 "h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;",
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn a_resize_never_moves_a_stream() {
-        let wash = matrix().wash;
+        let wash = runic().wash;
         let start = wash.find("float4 rain(").expect("the wash has its rain");
         let end = start + wash[start..].find("\n}\n").unwrap();
         let rain = &wash[start..end];
@@ -305,8 +305,8 @@ mod tests {
 
     #[test]
     fn the_menus_edges_are_drawn_with_the_panes_own_code() {
-        let wash = matrix().wash;
-        let start = wash.find("fragment float4 arkos_overlay(").expect("matrix draws the menus' edges");
+        let wash = runic().wash;
+        let start = wash.find("fragment float4 arkos_overlay(").expect("runic draws the menus' edges");
         let overlay = &wash[start..];
         // The nearest edge and its glow come from the functions the panes use.
         for f in ["nearest_edge(", "edge_glow("] {
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn the_glyph_shader_carries_the_glitch_s_constants_reads_the_clock_and_keeps_the_floors() {
-        let g = matrix().glyphs.unwrap();
+        let g = runic().glyphs.unwrap();
         for line in [
             "constant float GLITCH_SLOT = 0.1;",
             "constant float GLITCH_CHANCE = 0.0001;",
@@ -362,7 +362,7 @@ mod tests {
             "core * 0.55",
             "ARKOS_SCALE",
             "[[buffer(5)]]",
-            "effects/matrix.rs",
+            "effects/runic.rs",
         ] {
             assert!(g.contains(line), "glyphs.metal lacks {line}");
         }
@@ -381,14 +381,14 @@ mod tests {
         // The fresh text's dark rule is the shader's own.
         let dark = crate::effects::decode::DARK_TEXT;
         assert!(g.contains(&format!("bool dark = luminance < {dark:?};")), "the decode's DARK_TEXT is {dark:?}");
-        assert!(!g.contains("SCANLINES"), "no scanlines on the matrix display");
-        let emoji = &g[g.find("arkos_emoji_vertex(").expect("matrix draws its emoji")..];
+        assert!(!g.contains("SCANLINES"), "no scanlines on the runic display");
+        let emoji = &g[g.find("arkos_emoji_vertex(").expect("runic draws its emoji")..];
         assert!(emoji.contains("arkos_emoji_fragment(") && emoji.contains("GLITCH_") && emoji.contains("[[buffer(5)]]"));
     }
 
     #[test]
     fn reading_text_is_a_soft_pale_green_with_no_halo_and_no_glitch() {
-        let g = matrix().glyphs.unwrap();
+        let g = runic().glyphs.unwrap();
         for line in [
             "constant float3 CALM_GREEN = float3(0.72, 0.86, 0.72);",
             "constant float CALM_TINT = 0.6;",
@@ -400,14 +400,14 @@ mod tests {
         }
         assert!(crate::effects::active::glyph_source(g, 2.0, crate::effects::accent::HOME).contains("constant float ARKOS_CALM_ALPHA = 0.995;"));
         // The vertex stage gives calm text no glitch: no mirror and no flash.
-        let vertex = &g[g.find("vertex MatrixVertexOutput arkos_glyph_vertex(").unwrap()..g.find("float matrix_tx(").unwrap()];
+        let vertex = &g[g.find("vertex RunicVertexOutput arkos_glyph_vertex(").unwrap()..g.find("float runic_tx(").unwrap()];
         assert!(vertex.contains("float3 g = calm_text(color.a) ? float3(1.0) : glitch(glitch_origin(sprite.bounds), slot);"), "{vertex}");
         // The fragment draws calm light text before any halo ring is read, with the glyph's own
         // coverage times its alpha, and with no flash.
-        let fragment = &g[g.find("fragment float4 arkos_glyph_fragment(").unwrap()..g.find("struct MatrixEmojiVertexOutput").unwrap()];
+        let fragment = &g[g.find("fragment float4 arkos_glyph_fragment(").unwrap()..g.find("struct RunicEmojiVertexOutput").unwrap()];
         assert!(fragment.contains("bool calm = calm_text(input.color.a);"), "{fragment}");
         let branch = fragment.find("if (calm && !dark) {").expect("the calm branch");
-        assert!(branch < fragment.find("matrix_ring(").unwrap(), "the calm branch returns before the halo");
+        assert!(branch < fragment.find("runic_ring(").unwrap(), "the calm branch returns before the halo");
         let calm = &fragment[branch..branch + fragment[branch..].find('}').unwrap()];
         assert!(calm.contains("mix(col, toward_accent(CALM_GREEN, ARKOS_ACCENT), CALM_TINT) * CALM_BRIGHTNESS"), "{calm}");
         assert!(calm.contains("return float4(soft, core * input.color.a);"), "{calm}");
