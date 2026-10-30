@@ -7,10 +7,7 @@
 //! The view sits in the window's content view under gpui's own view, which covers it: WebKit
 //! paints only a view it takes to be on screen, so it is neither hidden nor outside the window.
 //! It keeps nothing between loads (a non-persistent data store) and draws no background, so a
-//! picture is transparent where the page is. It takes no drags: a `WKWebView` registers for files
-//! dragged over it, and AppKit gives a drag to a registered view under the pointer before the
-//! window (where gpui registers), so under gpui's view it would swallow every file dropped on the
-//! window. Everything here runs on the main thread; the
+//! picture is transparent where the page is. Everything here runs on the main thread; the
 //! completion handlers only fill cells that the next `poll` reads. Nothing in `cargo test`
 //! constructs a view.
 #![cfg(target_os = "macos")]
@@ -57,7 +54,6 @@ pub fn install(window: &NSWindow, view: &NSView) {
         web
     };
     content.addSubview_positioned_relativeTo(&web, NSWindowOrderingMode::Below, Some(view));
-    refuse_drags(&web);
     VIEW.with(|v| *v.borrow_mut() = Some(web));
 }
 
@@ -87,7 +83,6 @@ impl Render {
         let root = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&dir.to_string_lossy()), true);
         with_view(|web| {
             web.setFrame(screen::ns_rect(Frame { x: 0.0, y: 0.0, w: LAYOUT_W, h: 600.0 }));
-            refuse_drags(web);
             // SAFETY: the view is live and on the main thread; the URLs are value types.
             unsafe {
                 let _ = web.loadFileURL_allowingReadAccessToURL(&url, &root);
@@ -180,12 +175,6 @@ impl Render {
             }
         });
     }
-}
-
-/// Takes the view off AppKit's drag destinations (`install`'s note), so files dropped on the
-/// window reach gpui.
-fn refuse_drags(web: &WKWebView) {
-    web.unregisterDraggedTypes();
 }
 
 /// An image as PNG bytes, through its TIFF form and a bitmap.
