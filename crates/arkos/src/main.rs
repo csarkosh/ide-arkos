@@ -37,6 +37,7 @@ mod launch;
 mod launch_link;
 mod link_menu;
 mod md_menu;
+mod lang_menu;
 mod outline;
 mod slash_menu;
 mod links;
@@ -4374,6 +4375,7 @@ impl Render for Root {
             .children(link_menu::render_link_menu(self, cx))
             .children(md_menu::render_md_menu(self, cx))
             .children(slash_menu::render_slash_menu(self, cx))
+            .children(lang_menu::render_lang_menu(self, cx))
             .children(outline::render_preview(self, cx))
             .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx));

@@ -49,7 +49,7 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
 /// The paragraph size as a multiple of the font size.
@@ -872,7 +872,7 @@ pub fn render(
                         }
                         kind_ok && v.reveals(ix)
                     });
-                    return if reveal { reveal_row(ix, &ctx, window, cx) } else { raw_row(ix, &ctx, window, cx) };
+                    return if reveal { reveal_row(ix, &ctx, window, cx) } else { raw_row(ix, &ctx, highlighter.as_ref(), window, cx) };
                 }
                 // `render_item` gets the App, not the viewer: the cache is filled through the
                 // entity, then read while the row is built.
@@ -942,10 +942,46 @@ fn tail_element(ctx: &BlockCtx, caret: bool) -> AnyElement {
 
 /// A block drawn raw: its source lines (`Viewer::raw_lines`) in a `RawBlockElement`, with the
 /// rendered rows' side padding and space below.
-fn raw_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyElement {
+fn raw_row(ix: usize, ctx: &BlockCtx, highlighter: Option<&Arc<Highlighter>>, window: &mut Window, cx: &mut App) -> AnyElement {
+    // A code block in the rendered view keeps its chrome: its code lines only, numbered and in its
+    // colours (code block spec, section 1); its colours come from its cache.
+    let code = {
+        let v = ctx.viewer.read(cx);
+        match (v.doc.as_ref(), v.blocks.get(ix)) {
+            (Some(doc), Some(b)) if v.rendered() => Some(crate::md_code::code_lines(doc.lines(), b)).filter(|c| !c.is_empty()),
+            _ => None,
+        }
+    };
+    if let Some(range) = &code {
+        let below = {
+            let v = ctx.viewer.read(cx);
+            v.caret.anchor == v.caret.head && v.caret.head.line > range.end
+        };
+        ctx.viewer.update(cx, |v, _| fill_cache(v, ix, highlighter, ctx));
+        // The caret on a blank line after the block: the block as it reads, and a row for the caret.
+        if below {
+            let v = ctx.viewer.read(cx);
+            let (Some(block), Some(r)) = (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) else { return div().into_any_element() };
+            let line_h = ctx.font_size * PARA * PARA_LINE;
+            return div()
+                .flex()
+                .flex_col()
+                .child(block_element(ix, &block.kind, r, v, ctx, None))
+                .child(div().relative().h(px(line_h)).child(div().absolute().top_0().left(px(GUTTER)).w(px(2.0)).h(px(line_h)).bg(ctx.caret.hsla())))
+                .into_any_element();
+        }
+    }
     let v = ctx.viewer.read(cx);
     let Some(doc) = v.doc.as_ref() else { return div().into_any_element() };
-    let shown = v.raw_lines(ix);
+    let (shown, code_look, code_info) = match (&code, v.blocks.get(ix)) {
+        (Some(range), Some(b)) => {
+            let fence = crate::md_code::fence(doc.lines(), b);
+            let spans = fence.as_ref().and(v.block_cache.get(ix).and_then(Option::as_ref)).and_then(|r| r.code_spans.as_ref().map(|(_, s)| s.clone()));
+            let info = fence.as_ref().map(|f| f.info.clone()).unwrap_or_default();
+            (range.clone(), Some(CodeLook { spans, numbers: ctx.dim }), Some((info, fence.is_some())))
+        }
+        _ => (v.raw_lines(ix), None, None),
+    };
     let (hits, current) = match &v.find {
         Some(f) => (f.hits.iter().filter(|h| shown.contains(&h.line)).copied().collect(), f.hits.get(f.current).copied()),
         None => (Vec::new(), None),
@@ -966,10 +1002,25 @@ fn raw_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyE
         selection: ctx.selection,
         find_current: ctx.find_current,
         caret_color: ctx.caret,
+        code: code_look,
     };
     let press = Rc::new(Cell::new(false));
     let size = ctx.font_size * ctx.mono_line_height;
-    let row = div().id(("md-block", ix)).relative().w_full().pl(px(GUTTER)).pr(px(SIDE)).pb(px(BLOCK_GAP - DROP_LINE)).child(el);
+    // A code block keeps its box and header while the caret is in it.
+    let body = match code_info {
+        Some((info, fenced)) => div()
+            .bg(ctx.code_bg)
+            .p(px(CODE_PAD))
+            .rounded(px(4.0))
+            .font_family(ctx.mono.clone())
+            .text_size(px(ctx.font_size))
+            .line_height(relative(ctx.mono_line_height))
+            .child(code_header(ix, &info, fenced, v, ctx, &press))
+            .child(el)
+            .into_any_element(),
+        None => el.into_any_element(),
+    };
+    let row = div().id(("md-block", ix)).relative().w_full().pl(px(GUTTER)).pr(px(SIDE)).pb(px(BLOCK_GAP - DROP_LINE)).child(body);
     gutter(row, ix, v, ctx, (0.0, size), &press).into_any_element()
 }
 
@@ -1009,6 +1060,9 @@ enum Part {
     Runs(Rc<[Run]>),
     Code(Rc<str>),
     Reveal(Rc<Display>),
+    /// One line of a code block's numbered rows: the block's code, and where the line starts in
+    /// the code as drawn.
+    CodeLine(Rc<str>, usize),
 }
 
 /// One block's row: its inlines in the block's type, 6 px of space below, with the frame's state
@@ -1237,6 +1291,10 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
             .child(text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, parts))
             .into_any_element(),
         Piece::Item { depth, marker, task, runs } => item_element(ix, j, *depth, marker, *task, runs, size, !inner, ctx, parts),
+        Piece::Code { text, info, .. } if !inner => {
+            let fenced = v.doc.as_ref().zip(v.blocks.get(ix)).is_some_and(|(d, b)| crate::md_code::fence(d.lines(), b).is_some());
+            numbered_code(ix, info, fenced, text, code_runs, None, v, ctx, parts)
+        }
         Piece::Code { text, drawn, .. } => {
             let texts = parts.texts.len();
             let code = code_element(text, drawn, code_runs, None, ctx, parts);
@@ -1245,7 +1303,7 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
             }
             code
         }
-        Piece::Diagram(d) => diagram_element(d, v, ctx, parts),
+        Piece::Diagram(d) => diagram_element(ix, d, v, ctx, parts),
         Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
         Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, ctx, (!inner).then_some(&parts.task_press)),
         Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
@@ -1324,6 +1382,7 @@ fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixel
     Some(match part {
         Part::Runs(runs) => md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte)),
         Part::Code(text) => code_pos(block, lines, text, byte),
+        Part::CodeLine(text, base) => code_pos(block, lines, text, base + byte),
         Part::Reveal(display) => md_blocks::pos_of_offset(block, lines, display.source_of(byte)),
     })
 }
@@ -1781,11 +1840,119 @@ fn code_element(text: &Rc<str>, drawn: &SharedString, runs: Option<&Rc<Vec<TextR
         .into_any_element()
 }
 
+/// The width of a code block's number column for `count` lines at `font_size`, the same in both
+/// of its forms so its text does not move as the caret enters it.
+fn number_w_at(count: usize, font_size: f32) -> f32 {
+    count.max(1).to_string().len() as f32 * font_size * 0.62 + 12.0
+}
+
+fn number_w(count: usize, ctx: &BlockCtx) -> f32 {
+    number_w_at(count, ctx.font_size)
+}
+
+/// A code block's header (code block spec, section 1): the language pill at the left, Copy at the
+/// right, and a click anywhere else on it selecting the whole block. `fenced` says the pill can set
+/// a language; a press on any of it is the header's, not the row's.
+fn code_header(ix: usize, info: &str, fenced: bool, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<bool>>) -> AnyElement {
+    let dim = ctx.dim;
+    let name = crate::md_code::language_name(info);
+    let copied = v.copied.is_some_and(|(b, at)| b == ix && at.elapsed() < Duration::from_millis(1500));
+    let (v_pill, v_copy, v_select, v_at) = (ctx.viewer.clone(), ctx.viewer.clone(), ctx.viewer.clone(), ctx.viewer.clone());
+    let (p_header, p_pill, p_copy) = (press.clone(), press.clone(), press.clone());
+    let open = v.lang.as_ref().is_some_and(|l| l.block == ix);
+    let pill = div()
+        .id(("md-lang", ix))
+        .relative()
+        .px(px(6.0))
+        .rounded(px(3.0))
+        .when(fenced, |d| d.cursor_pointer().hover(move |s| s.text_color(dim.opacity(1.0))))
+        .when(open, |d| d.bg(ctx.border))
+        .child(if fenced { format!("{name} \u{25be}") } else { name })
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| p_pill.set(true))
+        .when(fenced, |d| d.on_click(move |_ev, _window, cx| v_pill.update(cx, |v, cx| v.open_lang_picker(ix, cx))))
+        // Where the list hangs while it is open.
+        .child(
+            canvas(
+                move |bounds, _window, cx| {
+                    if open {
+                        v_at.update(cx, |v, _| v.lang_at = Some(point(bounds.left(), bounds.bottom())));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        );
+    let copy = div()
+        .id(("md-copy", ix))
+        .px(px(6.0))
+        .cursor_pointer()
+        .child(if copied { "\u{2713} Copied" } else { "Copy" })
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| p_copy.set(true))
+        .on_click(move |_ev, _window, cx| v_copy.update(cx, |v, cx| v.copy_code(ix, cx)));
+    div()
+        .id(("md-code-header", ix))
+        .flex()
+        .flex_row()
+        .items_center()
+        .pb(px(4.0))
+        .text_size(px(ctx.font_size * 0.85))
+        .text_color(dim)
+        .cursor_default()
+        .on_mouse_down(MouseButton::Left, move |_ev, _window, _cx| p_header.set(true))
+        .on_click(move |_ev, _window, cx| v_select.update(cx, |v, cx| v.select_block(ix, cx)))
+        .child(pill)
+        .child(div().flex_1())
+        .child(copy)
+        .into_any_element()
+}
+
+/// A code block drawn with its chrome while the caret is elsewhere: the header, then a row per
+/// code line with its number, each line wrapped on its own and coloured with its slice of the
+/// block's runs; a press on a line maps to the source through the code as drawn (`Part::CodeLine`).
+#[allow(clippy::too_many_arguments)]
+fn numbered_code(ix: usize, info: &str, fenced: bool, text: &Rc<str>, runs: Option<&Rc<Vec<TextRun>>>, extra: Option<(SharedString, Hsla)>, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+    let drawn = code_lines(text);
+    let runs = runs.map_or_else(|| code_runs(&drawn, None, &ctx.mono, ctx.text), |r| r.as_ref().clone());
+    let lens: Vec<usize> = drawn.iter().map(String::len).collect();
+    let pairs: Vec<(usize, TextRun)> = runs.into_iter().map(|r| (r.len, r)).collect();
+    let per_line = crate::md_code::split_by_lines(&pairs, &lens);
+    let num_w = number_w(drawn.len(), ctx);
+    let line_h = ctx.font_size * ctx.mono_line_height;
+    let mut base = 0;
+    let mut rows = Vec::with_capacity(drawn.len());
+    for (i, line) in drawn.iter().enumerate() {
+        let line_runs: Vec<TextRun> = per_line.get(i).map(|v| v.iter().map(|(len, r)| TextRun { len: *len, ..r.clone() }).collect()).unwrap_or_default();
+        let styled = StyledText::new(SharedString::from(line.clone())).with_runs(line_runs);
+        parts.texts.push((styled.layout().clone(), Part::CodeLine(text.clone(), base)));
+        base += line.len() + 1;
+        rows.push(
+            div()
+                .flex()
+                .flex_row()
+                .min_h(px(line_h))
+                .child(div().flex_none().w(px(num_w)).pr(px(12.0)).text_right().text_color(ctx.dim).child((i + 1).to_string()))
+                .child(div().flex_1().min_w_0().child(styled)),
+        );
+    }
+    div()
+        .bg(ctx.code_bg)
+        .p(px(CODE_PAD))
+        .rounded(px(4.0))
+        .font_family(ctx.mono.clone())
+        .text_size(px(ctx.font_size))
+        .line_height(relative(ctx.mono_line_height))
+        .child(code_header(ix, info, fenced, v, ctx, &parts.task_press))
+        .when_some(extra, |d, (line, colour)| d.child(div().text_color(colour).child(line)))
+        .children(rows)
+        .into_any_element()
+}
+
 /// A diagram block: once rendered, its PNG at its size in CSS pixels (the PNG has twice the
 /// pixels) and at most the view's width; else its source in the code block style, uncoloured,
 /// under an info line: "rendering" while the render waits or runs, the error in the tree's
 /// deleted colour when it failed, and a word on installing Google Chrome when there is none.
-fn diagram_element(d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+fn diagram_element(ix: usize, d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let state = d.key.as_ref().and_then(|(_, key)| v.diagrams.get(key));
     let info: SharedString = match state {
         Some(Diagram::Ready { png, w, .. }) => {
@@ -1797,7 +1964,7 @@ fn diagram_element(d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, parts: &mut Par
         Some(Diagram::Rendering) | None => "diagram: rendering".into(),
     };
     let colour = if matches!(state, Some(Diagram::Error(_))) { ctx.deleted } else { ctx.dim };
-    code_element(&d.text, &d.drawn, d.runs.as_ref().map(|c| &c.runs), Some((info, colour)), ctx, parts)
+    numbered_code(ix, "mermaid", true, &d.text, d.runs.as_ref().map(|c| &c.runs), Some((info, colour)), v, ctx, parts)
 }
 
 /// The runs of a code block's joined lines in the `mono` family: a span's colour (marked as
@@ -2271,9 +2438,27 @@ pub struct RawBlockElement {
     selection: Rgb,
     find_current: Rgb,
     caret_color: Rgb,
+    /// A code block's code lines: numbered in a gutter, in its syntax colours (per shown line).
+    code: Option<CodeLook>,
+}
+
+/// How a raw block draws a code block's code (code block spec, section 1): the colours of each
+/// shown line, when the block has them, and the numbers' colour.
+pub struct CodeLook {
+    spans: Option<Vec<Vec<Span>>>,
+    numbers: Hsla,
 }
 
 impl RawBlockElement {
+    /// The number column's width, nothing for a block that is not code.
+    fn number_w(&self) -> f32 {
+        if self.code.is_some() {
+            number_w_at(self.shown.len(), self.font_size)
+        } else {
+            0.0
+        }
+    }
+
     /// The text layout before it has bounds: the font, the size, the colours.
     fn raw_layout(&self, bounds: Bounds<Pixels>) -> RawLayout {
         RawLayout { bounds, text_left: bounds.origin.x, line_h: self.line_h, font_size: self.font_size, family: self.family.clone(), colors: self.colors }
@@ -2303,21 +2488,25 @@ impl Element for RawBlockElement {
     fn request_layout(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, window: &mut Window, _cx: &mut App) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.0).into();
-        let (lines, shown, layout, line_h) = (self.lines.clone(), self.shown.clone(), self.raw_layout(Bounds::default()), self.line_h);
+        let (lines, shown, layout, line_h, num_w) = (self.lines.clone(), self.shown.clone(), self.raw_layout(Bounds::default()), self.line_h, self.number_w());
         let id = window.request_measured_layout(style, move |known, available, window, _cx| {
             let width = known.width.or(match available.width {
                 AvailableSpace::Definite(w) => Some(w),
                 _ => None,
             });
-            let rows: usize = row_counts(window, &lines, shown.clone(), &layout, width.filter(|w| *w > px(0.0))).iter().sum();
+            let text_w = width.map(|w| w - px(num_w));
+            let rows: usize = row_counts(window, &lines, shown.clone(), &layout, text_w.filter(|w| *w > px(0.0))).iter().sum();
             size(width.unwrap_or_default(), px(line_h * rows.max(1) as f32))
         });
         (id, ())
     }
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> RawPrepaint {
-        let layout = self.raw_layout(bounds);
-        let counts = row_counts(window, &self.lines, self.shown.clone(), &layout, Some(bounds.size.width).filter(|w| *w > px(0.0)));
+        // A code block's text starts after its number column.
+        let num_w = px(self.number_w());
+        let bounds_text = Bounds { origin: point(bounds.origin.x + num_w, bounds.origin.y), size: size(bounds.size.width - num_w, bounds.size.height) };
+        let layout = self.raw_layout(bounds_text);
+        let counts = row_counts(window, &self.lines, self.shown.clone(), &layout, Some(bounds_text.size.width).filter(|w| *w > px(0.0)));
         let mut row_tops = Vec::with_capacity(counts.len() + 1);
         let mut at = 0;
         for c in &counts {
@@ -2325,7 +2514,7 @@ impl Element for RawBlockElement {
             at += c;
         }
         row_tops.push(at);
-        let text = Bounds { origin: bounds.origin, size: size(bounds.size.width, px(self.line_h * at.max(1) as f32)) };
+        let text = Bounds { origin: bounds_text.origin, size: size(bounds_text.size.width, px(self.line_h * at.max(1) as f32)) };
         let block = BlockLayout { raw: self.raw_layout(text), lines: self.shown.clone(), row_tops };
         self.viewer.update(cx, |v, _| v.raw_blocks.push(block.clone()));
         // The row's padding takes the mouse too: a press beside the text is on its nearest column.
@@ -2340,7 +2529,8 @@ impl Element for RawBlockElement {
     fn paint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), prepaint: &mut RawPrepaint, window: &mut Window, cx: &mut App) {
         let block = &prepaint.block;
         let lh = px(self.line_h);
-        let x = bounds.origin.x;
+        let x = block.raw.bounds.origin.x;
+        let text_w = block.raw.bounds.size.width;
         let mask = window.content_mask().bounds;
         let c = self.caret;
         let (lo, hi) = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
@@ -2352,7 +2542,17 @@ impl Element for RawBlockElement {
                 continue;
             }
             let Some(line) = self.lines.get(n) else { continue };
-            let (expanded, wrapped) = element::shape_raw_wrapped(window, line, &block.raw, bounds.size.width);
+            let (expanded, wrapped) = match &self.code {
+                Some(c) => element::shape_code_wrapped(window, line, &block.raw, text_w, c.spans.as_ref().and_then(|s| s.get(i)).map(Vec::as_slice)),
+                None => element::shape_raw_wrapped(window, line, &block.raw, text_w),
+            };
+            // A code line's number, right-aligned in its column.
+            if let Some(c) = &self.code {
+                let num: SharedString = (i + 1).to_string().into();
+                let run = TextRun { len: num.len(), font: font(self.family.clone()), color: c.numbers, background_color: None, underline: None, strikethrough: None };
+                let shaped = window.text_system().shape_line(num, px(self.font_size), &[run], None);
+                let _ = shaped.paint(point(x - px(12.0) - shaped.width, y), lh, window, cx);
+            }
             let end_col = expanded.chars().count();
             if lo != hi && lo.line <= n && n <= hi.line {
                 let c0 = if n == lo.line { element::display_col(line, lo.ch) } else { 0 };
@@ -2465,9 +2665,20 @@ pub fn navigate(doc: &edit::Document, blocks: &[Block], caret: edit::Caret, dir:
             }
         }
     }
+    // A code block's caret lines are its code's: its fence lines are not shown.
+    let code = |b: &Block| Some(crate::md_code::code_lines(lines, b)).filter(|c| !c.is_empty());
+    let (top, bottom) = match code(block) {
+        Some(c) => (c.start, c.end - 1),
+        None => (block.lines.start, md_blocks::pos_of_offset(block, lines, usize::MAX).line),
+    };
+    let first_of = |b: &Block| Pos { line: code(b).map_or(b.lines.start, |c| c.start), ch: 0 };
+    let last_of = |b: &Block| match code(b) {
+        Some(c) => Pos { line: c.end - 1, ch: lines[c.end - 1].chars().count() },
+        None => md_blocks::pos_of_offset(b, lines, usize::MAX),
+    };
     let across = match dir {
-        Dir::Down if table_edge || head.line >= md_blocks::pos_of_offset(block, lines, usize::MAX).line => Some(blocks.get(ix + 1).map(|next| Pos { line: next.lines.start, ch: 0 })),
-        Dir::Up if table_edge || head.line <= block.lines.start => Some(ix.checked_sub(1).map(|prev| md_blocks::pos_of_offset(&blocks[prev], lines, usize::MAX))),
+        Dir::Down if table_edge || head.line >= bottom => Some(blocks.get(ix + 1).map(first_of)),
+        Dir::Up if table_edge || head.line <= top => Some(ix.checked_sub(1).map(|prev| last_of(&blocks[prev]))),
         _ => None,
     };
     let anchor = |to: Pos| if select { doc.clamp(caret.anchor) } else { to };

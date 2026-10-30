@@ -111,6 +111,8 @@ pub enum Dir {
     Right,
     Up,
     Down,
+    /// Before an edit: off a hidden marker onward, and off a code block's fence into its code.
+    Here,
 }
 
 fn is_leaf(n: &Node) -> bool {
@@ -536,7 +538,7 @@ pub fn vertical(text: &str, rows: &[Range<usize>], x_of: impl Fn(usize) -> f32, 
     let target = match dir {
         Dir::Up => r.checked_sub(1)?,
         Dir::Down => Some(r + 1).filter(|&t| t < rows.len())?,
-        Dir::Left | Dir::Right => return None,
+        Dir::Left | Dir::Right | Dir::Here => return None,
     };
     let row = &rows[target];
     (row.start..=row.end.min(text.len())).filter(|&b| text.is_char_boundary(b)).min_by(|&a, &b| (x_of(a) - goal_x).abs().total_cmp(&(x_of(b) - goal_x).abs()))
