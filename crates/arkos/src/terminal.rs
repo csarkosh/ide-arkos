@@ -2,6 +2,7 @@
 //! `TerminalCore` has no GPUI dependency so its behaviour is unit tested; `Terminal` wraps it as
 //! a GPUI entity and owns the socket side.
 use crate::client::Client;
+use crate::effects::decode::USER_QUIET_MS;
 use crate::keys::{keystroke_to_bytes, KeyMode};
 use crate::layout::{CellKind, CellStyle};
 use crate::ledger::{self, End, Ledger, Outcome};
@@ -864,6 +865,12 @@ pub(crate) fn sanitize_paste(text: &str) -> String {
     text.chars().filter(|&c| c == '\t' || c == '\n' || c == '\r' || !c.is_control()).collect()
 }
 
+/// Whether the user's own input at `last` is recent enough at `now` that a changed cell settles
+/// at once (within `USER_QUIET_MS`); never before the first input.
+pub fn user_quiet_at(last: Option<Instant>, now: Instant) -> bool {
+    last.is_some_and(|at| now.saturating_duration_since(at) < std::time::Duration::from_millis(USER_QUIET_MS))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: f32,
@@ -902,6 +909,9 @@ pub struct Terminal {
     /// What the decode remembers of the grid while a decoding effect is on, kept across paints
     /// so a change shows against the grid painted before it; None without one.
     pub decode: Option<crate::effects::decode::Decode>,
+    /// When the user last typed, pasted, clicked or scrolled here, so the decode leaves the
+    /// echo of their own input alone (`user_quiet`); None before the first.
+    pub last_user_input: Option<Instant>,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -935,7 +945,13 @@ impl Terminal {
             wheel_carry: WheelCarry::default(),
             clicks: Clicks::default(),
             decode: None,
+            last_user_input: None,
         }
+    }
+
+    /// Whether the user acted here within `USER_QUIET_MS` of `now` (see `user_quiet_at`).
+    pub fn user_quiet(&self, now: Instant) -> bool {
+        user_quiet_at(self.last_user_input, now)
     }
 
     /// The grid cell under a window position and the half of the cell the pointer is on, from
@@ -975,6 +991,7 @@ impl Terminal {
     /// the alternate screen, where the step goes to it as a report or an arrow key; Shift forces
     /// the local scroll, as in xterm, and so does an ended session.
     pub fn wheel(&mut self, lines: f32, precise: bool, shift: bool, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        self.last_user_input = Some(Instant::now());
         let mode = if shift || !self.alive { MouseMode::Local } else { self.core.mouse_mode() };
         if mode == MouseMode::Local {
             self.wheel_carry.reset();
@@ -1037,6 +1054,7 @@ impl Terminal {
             self.clicks.dragged();
         }
         if !step.pty_write.is_empty() && self.alive {
+            self.last_user_input = Some(Instant::now());
             self.client.send(Request::Input { session: self.session, bytes: step.pty_write });
         }
         step.more
@@ -1047,6 +1065,7 @@ impl Terminal {
         let (col, row, _) = self.point_at(position).unwrap_or((0, 0, Side::Left));
         if let Some(bytes) = self.core.released(&mut self.clicks, col, row) {
             if self.alive {
+                self.last_user_input = Some(Instant::now());
                 self.client.send(Request::Input { session: self.session, bytes });
             }
         }
@@ -1138,6 +1157,7 @@ impl Terminal {
             return;
         }
         if let Some(bytes) = keystroke_to_bytes(ks, self.core.key_mode(option_as_meta)) {
+            self.last_user_input = Some(Instant::now());
             self.client.send(Request::Input { session: self.session, bytes });
             // Typing jumps back to the live bottom, as every terminal does.
             self.core.scroll.jump_to(0.0);
@@ -1158,11 +1178,13 @@ impl Terminal {
         } else {
             bytes.extend_from_slice(text.as_bytes());
         }
+        self.last_user_input = Some(Instant::now());
         self.client.send(Request::Input { session: self.session, bytes });
     }
 
     /// Positive lines scroll up into history, with the ease a wheel notch deserves.
     pub fn scroll_lines(&mut self, lines: f32, cx: &mut Context<Self>) {
+        self.last_user_input = Some(Instant::now());
         self.core.scroll.scroll_by(lines, self.core.history_size() as f32);
         cx.notify();
     }
@@ -1170,6 +1192,7 @@ impl Terminal {
     /// A trackpad's pixel step: the view follows the finger at once, since the trackpad already
     /// delivers its own glide and momentum.
     pub fn scroll_direct(&mut self, lines: f32, cx: &mut Context<Self>) {
+        self.last_user_input = Some(Instant::now());
         self.core.scroll.scroll_direct(lines, self.core.history_size() as f32);
         cx.notify();
     }
@@ -1191,6 +1214,17 @@ mod tests {
 
     fn text_of(row: &[(char, CellStyle, CellKind)]) -> String {
         row.iter().map(|(c, _, _)| *c).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn the_user_is_at_work_for_400_ms_after_a_key_and_never_before_the_first() {
+        use std::time::Duration;
+        let t0 = Instant::now();
+        assert!(user_quiet_at(Some(t0), t0));
+        assert!(user_quiet_at(Some(t0), t0 + Duration::from_millis(399)));
+        assert!(!user_quiet_at(Some(t0), t0 + Duration::from_millis(400)));
+        assert!(!user_quiet_at(Some(t0), t0 + Duration::from_secs(5)));
+        assert!(!user_quiet_at(None, t0), "never set: not quiet");
     }
 
     #[test]

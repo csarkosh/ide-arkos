@@ -15,6 +15,10 @@ use crate::palette::Rgb;
 use crate::theme::{self, Theme};
 use crate::tree::{PaneId, Rect};
 
+/// How long after the user's last scroll the glyph clock rests at zero, so no glyph glitches
+/// while the text moves under the wheel, in milliseconds.
+pub const SCROLL_QUIET_MS: u64 = 400;
+
 /// Whether an effect is coming or going.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -126,6 +130,17 @@ pub fn glyph_wait(glyph_rate: u32, motion: bool, settled: bool, seen: bool, redu
         Some(Duration::from_secs_f64(1.0 / glyph_rate.clamp(1, GLYPH_RATE_CAP) as f64))
     } else {
         None
+    }
+}
+
+/// The clock the glyph shader is given: zero within `SCROLL_QUIET_MS` of the user's last scroll,
+/// else `seconds`. A scrolling glyph moves a little each frame and its glitch is keyed to its
+/// place, so a running clock would glitch it far more often than at rest; in slot 0 the shader
+/// glitches nothing.
+pub fn glyph_clock(seconds: f32, last_scroll: Option<Instant>, now: Instant) -> f32 {
+    match last_scroll {
+        Some(at) if now.saturating_duration_since(at) < Duration::from_millis(SCROLL_QUIET_MS) => 0.0,
+        _ => seconds,
     }
 }
 
@@ -459,6 +474,16 @@ mod tests {
         assert!(got >= 0.0 && (got as f64) < GLYPH_CLOCK_WRAP);
         assert!((got as f64 - want).abs() < 0.001, "{got} against {want}");
         assert_eq!(e.glyph_time(start + six_days, true), 0.0);
+    }
+
+    #[test]
+    fn the_glyph_clock_rests_at_zero_while_the_user_scrolls() {
+        let t0 = Instant::now();
+        assert_eq!(glyph_clock(12.5, Some(t0), t0), 0.0);
+        assert_eq!(glyph_clock(12.5, Some(t0), t0 + Duration::from_millis(399)), 0.0);
+        assert_eq!(glyph_clock(12.5, Some(t0), t0 + Duration::from_millis(400)), 12.5);
+        assert_eq!(glyph_clock(12.5, Some(t0), t0 + Duration::from_secs(3)), 12.5);
+        assert_eq!(glyph_clock(12.5, None, t0), 12.5, "never scrolled: the seconds");
     }
 
     fn watercolor() -> Effect {

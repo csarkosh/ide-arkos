@@ -367,14 +367,16 @@ Things only a person at the screen can check, in order of value:
   (mirrored and brighter for a tenth of a second) a few times a second across the window and
   never more; between glitches every letter is still and whole; the text is not tiring to read
 - effects: Matrix, Claude Code streaming output: whole rows scramble through ASCII for under half
-  a second and settle on the real text, which starts brighter and cools over about 1.5 s; typing
-  at the prompt shows a brief flicker on the cell typed and nothing else
+  a second and settle on the real text, which starts brighter and cools over about 1.5 s
+- effects: Matrix, typing at the prompt shows no scramble; the typed text looks like the rest
 - effects: Matrix, Claude Code's fullscreen renderer redrawing: readable; if the whole screen
   decodes too often, note it (DECODE_MS_WORKING is the first lever)
 - effects: Matrix, the rain: faint columns of runes falling at different speeds under the panes,
   through the bars and the sidebar, never competing with the text; a menu's backdrop shows it
 - effects: Matrix, a markdown tab and the sidebar: green glow, the idle glitch, no decode
-- effects: Matrix, scrolling a markdown tab or a terminal: single-frame flickers as moving glyphs
+- effects: Matrix, scrolling (the wheel in Claude Code's fullscreen renderer, and Arkos's own
+  scrollback) shows no scramble and no glitches while it moves
+- effects: Matrix, scrolling a rendered markdown tab: single-frame flickers as moving glyphs
   re-roll their glitch each frame are expected, and they must not be tiring to watch
 - effects: Matrix, emoji on the display: their colours tinted green, haloed, glitching as letters do
 - effects: Matrix with Reduce Motion on: the rain is still, no glitches, changed cells settle at once

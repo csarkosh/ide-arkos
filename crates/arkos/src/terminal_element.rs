@@ -40,11 +40,14 @@ impl TerminalElement {
 /// The visible rows as the decode draws them. With a timing, the decode state (made here when it
 /// is missing) takes in the rows and each cell shows what the decode says; without one, the
 /// state is dropped and None says to draw `rows.visible` as it is, so the rows are copied only
-/// while an effect decodes. The row above the screen (`rows.above`) never decodes.
+/// while an effect decodes. While `quiet` (the user has just typed, pasted or scrolled) a cell
+/// that changes settles at once (`Decode::observe`). The row above the screen (`rows.above`)
+/// never decodes.
 pub fn decoded_rows(
     decode: &mut Option<Decode>,
     rows: &RowsForPaint,
     timing: Option<Timing>,
+    quiet: bool,
     cols: usize,
     now: Instant,
 ) -> Option<Vec<Vec<(char, CellStyle, CellKind)>>> {
@@ -53,7 +56,7 @@ pub fn decoded_rows(
         return None;
     };
     let state = decode.get_or_insert_with(|| Decode::new(cols, rows.visible.len(), rows.display_offset));
-    state.observe(&rows.visible, rows.display_offset, now);
+    state.observe(&rows.visible, rows.display_offset, now, quiet);
     let shown = rows
         .visible
         .iter()
@@ -211,7 +214,10 @@ impl Element for TerminalElement {
             // The decode observes once per paint; under a decoding effect the window's glyph
             // timer supplies the frames that carry a changed cell through its scramble.
             let rows = t.core.rows_for_paint();
-            let visible = decoded_rows(&mut t.decode, &rows, decode, t.core.columns(), now);
+            // The echo of the user's own typing and the redraw of their own scroll settle at
+            // once: the decode is for what the program writes.
+            let quiet = t.user_quiet(now);
+            let visible = decoded_rows(&mut t.decode, &rows, decode, quiet, t.core.columns(), now);
             (rows, visible, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
@@ -360,12 +366,12 @@ mod tests {
         let rows = |s: &str| RowsForPaint { display_offset: 0, above: None, visible: vec![s.chars().map(|c| (c, plain, CellKind::Normal)).collect()], links: vec![] };
         let mut state = None;
         let t = Some(decode::timing(true, false));
-        let first = decoded_rows(&mut state, &rows("   "), t, 3, t0).expect("a decoding effect draws its own rows");
+        let first = decoded_rows(&mut state, &rows("   "), t, false, 3, t0).expect("a decoding effect draws its own rows");
         assert!(state.is_some());
         assert_eq!(first[0][0].0, ' ');
-        let second = decoded_rows(&mut state, &rows("ok "), t, 3, t0 + Duration::from_millis(20)).unwrap();
+        let second = decoded_rows(&mut state, &rows("ok "), t, false, 3, t0 + Duration::from_millis(20)).unwrap();
         assert_ne!(second[0][0].0, 'o', "a changed cell scrambles");
-        assert!(decoded_rows(&mut state, &rows("ok "), None, 3, t0 + Duration::from_millis(30)).is_none(), "no effect: the rows are drawn as they are");
+        assert!(decoded_rows(&mut state, &rows("ok "), None, false, 3, t0 + Duration::from_millis(30)).is_none(), "no effect: the rows are drawn as they are");
         assert!(state.is_none(), "no effect: the state is dropped");
 
         // A wide character keeps its kind, and its spacer stays a spacer, while it decodes; the
@@ -377,14 +383,32 @@ mod tests {
             visible: vec![vec![(c, plain, CellKind::Wide), (' ', plain, CellKind::Spacer)]],
             links: vec![],
         };
-        decoded_rows(&mut state, &wide(' '), t, 2, t0);
+        decoded_rows(&mut state, &wide(' '), t, false, 2, t0);
         let fresh = wide('漢');
-        let shown = decoded_rows(&mut state, &fresh, t, 2, t0 + Duration::from_millis(20)).unwrap();
+        let shown = decoded_rows(&mut state, &fresh, t, false, 2, t0 + Duration::from_millis(20)).unwrap();
         assert_ne!(shown[0][0].0, '漢', "the wide character scrambles");
         assert_eq!((shown[0][0].2, shown[0][1].2), (CellKind::Wide, CellKind::Spacer));
         assert_eq!(shown[0][1].0, ' ');
         assert_eq!(shown.len(), 1, "only the visible rows are decoded");
         assert_eq!(fresh.above.as_ref(), Some(&above), "the row above is left alone");
+    }
+
+    #[test]
+    fn a_cell_changed_while_the_user_is_at_work_is_drawn_as_its_own() {
+        use super::decoded_rows;
+        use crate::effects::decode;
+        use crate::layout::{CellKind, CellStyle};
+        use crate::palette::Rgb;
+        use crate::terminal::RowsForPaint;
+        let t0 = Instant::now();
+        let plain = CellStyle { fg: Rgb { r: 74, g: 246, b: 38 }, bg: Rgb { r: 0, g: 0, b: 0 }, bold: false, italic: false, dim: false, underline: false, inverse: false };
+        let rows = |s: &str| RowsForPaint { display_offset: 0, above: None, visible: vec![s.chars().map(|c| (c, plain, CellKind::Normal)).collect()], links: vec![] };
+        let mut state = None;
+        let t = Some(decode::timing(true, false));
+        decoded_rows(&mut state, &rows("   "), t, false, 3, t0);
+        let shown = decoded_rows(&mut state, &rows("ok "), t, true, 3, t0 + Duration::from_millis(20)).unwrap();
+        assert_eq!(shown[0][0], ('o', plain, CellKind::Normal), "the typed o is its own, with its own colour");
+        assert_eq!(shown[0][1], ('k', plain, CellKind::Normal));
     }
 
     #[test]

@@ -471,6 +471,9 @@ pub struct Root {
     /// When this frame is drawn: every transition in one render reads the same instant, and
     /// `any_motion` asks for the next frame with it.
     pub frame_now: Instant,
+    /// When the user last turned the wheel over a terminal or a document: the glyph clock rests
+    /// meanwhile (`effects::active::glyph_clock`). None before the first.
+    pub last_scroll: Option<Instant>,
     /// What the focus clock was last told the window shows (`note_focus`).
     pub focus_surface: Option<telemetry::Surface>,
     /// The user is closing the window: the Quit action, or the red button
@@ -723,6 +726,7 @@ impl Root {
             window_active: true,
             breath: pulse::Breath::default(),
             frame_now: Instant::now(),
+            last_scroll: None,
             user_closing: false,
             said_goodbye: false,
             said_quit: false,
@@ -4014,9 +4018,10 @@ impl Render for Root {
             }
         }
         // The seconds a moving glyph shader reads, wrapped in f64 (see
-        // `GLYPH_CLOCK_WRAP`) so f32 keeps its sub-frame precision in a long session.
+        // `GLYPH_CLOCK_WRAP`) so f32 keeps its sub-frame precision in a long session, and held
+        // at zero while the user scrolls (`glyph_clock`).
         let glyph_seconds = match &self.effect {
-            Some(e) => e.glyph_time(now, motion::reduce_motion()),
+            Some(e) => effects::active::glyph_clock(e.glyph_time(now, motion::reduce_motion()), self.last_scroll, now),
             None => 0.0,
         };
         effects::active::GlyphSink::set_glyph_time(window, glyph_seconds);

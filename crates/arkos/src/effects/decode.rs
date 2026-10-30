@@ -27,6 +27,9 @@ pub const FRESH_DEEP: Rgb = Rgb { r: 0, g: 90, b: 30 };
 pub const DARK_TEXT: f32 = 0.45;
 /// The step of the frame index that picks the random character, in milliseconds.
 pub const TICK_MS: u64 = 50;
+/// How long after the user's own key press, paste or scroll a changed cell settles at once,
+/// with no scramble and no brightening, in milliseconds.
+pub const USER_QUIET_MS: u64 = 400;
 
 /// How long a cell scrambles and how long it stays brightened after it changes.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -78,9 +81,12 @@ impl Decode {
 
     /// Takes in the grid as it is now. A new size or display offset resets to this grid with no
     /// cell changed, as does the very first grid; otherwise each cell whose character differs is
-    /// marked changed at `now`, or cleared when it became a space. The first row sets the width:
-    /// a shorter row reads as spaces past its end, and a longer one's extra cells are left out.
-    pub fn observe(&mut self, rows: &[Vec<(char, CellStyle, CellKind)>], display_offset: usize, now: Instant) {
+    /// marked changed at `now`, or cleared when it became a space. While `quiet` (the user has
+    /// just typed, pasted or scrolled; see `USER_QUIET_MS`) a changed cell is settled at once
+    /// instead, so it is drawn as its own; a cell already decoding keeps decoding. The first row
+    /// sets the width: a shorter row reads as spaces past its end, and a longer one's extra cells
+    /// are left out.
+    pub fn observe(&mut self, rows: &[Vec<(char, CellStyle, CellKind)>], display_offset: usize, now: Instant, quiet: bool) {
         let cols = rows.first().map_or(0, |r| r.len());
         let reset = !self.seeded || rows.len() != self.rows || cols != self.cols || display_offset != self.display_offset;
         if reset {
@@ -102,7 +108,7 @@ impl Decode {
                 };
                 if seen.ch != cell.0 {
                     seen.ch = cell.0;
-                    seen.changed = if cell.0 == ' ' { None } else { Some(nanos) };
+                    seen.changed = if quiet || cell.0 == ' ' { None } else { Some(nanos) };
                 }
             }
         }
@@ -190,8 +196,8 @@ mod tests {
     fn a_changed_cell_shows_random_characters_then_settles_on_its_own() {
         let t0 = Instant::now();
         let mut d = Decode::new(3, 1, 0);
-        d.observe(&grid(&["   "]), 0, t0);
-        d.observe(&grid(&["ok "]), 0, t0);
+        d.observe(&grid(&["   "]), 0, t0, false);
+        d.observe(&grid(&["ok "]), 0, t0, false);
         let t = timing(true, false);
         let (c, _) = d.shown(0, 0, cell('o'), t0 + Duration::from_millis(100), t);
         assert_ne!(c, 'o'); assert!(c.is_ascii() && DECODE_CHARS.contains(c));
@@ -203,11 +209,40 @@ mod tests {
     }
 
     #[test]
+    fn a_change_the_user_made_settles_at_once_with_no_scramble_or_glow() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(3, 1, 0);
+        d.observe(&grid(&["   "]), 0, t0, false);
+        d.observe(&grid(&["ok "]), 0, t0 + Duration::from_millis(10), true);
+        let t = timing(true, false);
+        for at in [10, 20, 60, 200] {
+            let now = t0 + Duration::from_millis(at);
+            assert_eq!(d.shown(0, 0, cell('o'), now, t), ('o', plain()), "at {at} ms the o is its own");
+            assert_eq!(d.shown(1, 0, cell('k'), now, t), ('k', plain()), "at {at} ms the k is its own");
+        }
+    }
+
+    #[test]
+    fn a_cell_already_decoding_keeps_decoding_through_a_quiet_window() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(3, 1, 0);
+        d.observe(&grid(&["   "]), 0, t0, false);
+        d.observe(&grid(&["ok "]), 0, t0, false);
+        // The user presses a key that changes nothing on screen yet.
+        d.observe(&grid(&["ok "]), 0, t0 + Duration::from_millis(20), true);
+        let t = timing(true, false);
+        let (c, style) = d.shown(0, 0, cell('o'), t0 + Duration::from_millis(50), t);
+        assert_ne!(c, 'o', "still scrambling");
+        assert!(DECODE_CHARS.contains(c));
+        assert_ne!(style, plain(), "still fresh");
+    }
+
+    #[test]
     fn the_first_grid_over_existing_text_is_a_baseline_and_decodes_nothing() {
         let t0 = Instant::now();
         let mut d = Decode::new(3, 2, 0);
         let text = grid(&["abc", "def"]);
-        d.observe(&text, 0, t0);
+        d.observe(&text, 0, t0, false);
         let t = timing(true, false);
         for (row, line) in text.iter().enumerate() {
             for (col, &c) in line.iter().enumerate() {
@@ -220,22 +255,22 @@ mod tests {
     fn a_ragged_grid_never_panics_and_a_short_row_reads_as_spaces() {
         let t0 = Instant::now();
         let mut d = Decode::new(3, 2, 0);
-        d.observe(&grid(&["abc", "d"]), 0, t0);
-        d.observe(&grid(&["abc", "dxyzw"]), 0, t0);
+        d.observe(&grid(&["abc", "d"]), 0, t0, false);
+        d.observe(&grid(&["abc", "dxyzw"]), 0, t0, false);
         let t = timing(true, false);
         let (c, _) = d.shown(1, 1, cell('x'), t0 + Duration::from_millis(10), t);
         assert_ne!(c, 'x', "past the short row's end was a space, so the x is a change");
         assert_eq!(d.shown(4, 1, cell('w'), t0 + Duration::from_millis(10), t).0, 'w', "past the width: its own");
-        d.observe(&grid(&["abc"]), 0, t0);
-        d.observe(&grid(&["abc", ""]), 0, t0);
+        d.observe(&grid(&["abc"]), 0, t0, false);
+        d.observe(&grid(&["abc", ""]), 0, t0, false);
     }
 
     #[test]
     fn an_unchanged_cell_is_never_touched_and_a_cleared_one_clears_at_once() {
         let t0 = Instant::now();
         let mut d = Decode::new(2, 1, 0);
-        d.observe(&grid(&["ab"]), 0, t0);
-        d.observe(&grid(&["a "]), 0, t0 + Duration::from_millis(10));
+        d.observe(&grid(&["ab"]), 0, t0, false);
+        d.observe(&grid(&["a "]), 0, t0 + Duration::from_millis(10), false);
         let t = timing(true, false);
         assert_eq!(d.shown(0, 0, cell('a'), t0 + Duration::from_millis(20), t).0, 'a');
         assert_eq!(d.shown(0, 0, cell('a'), t0 + Duration::from_millis(20), t).1, plain(), "not fresh: its colour is its own");
@@ -246,9 +281,9 @@ mod tests {
     fn a_wide_character_decodes_as_one_ascii_glyph_in_its_cell_and_its_spacer_never() {
         let t0 = Instant::now();
         let mut d = Decode::new(2, 1, 0);
-        d.observe(&grid(&["  "]), 0, t0);
+        d.observe(&grid(&["  "]), 0, t0, false);
         let wide = vec![vec![('漢', plain(), CellKind::Wide), (' ', plain(), CellKind::Spacer)]];
-        d.observe(&wide, 0, t0);
+        d.observe(&wide, 0, t0, false);
         let t = timing(false, false);
         let (c, _) = d.shown(0, 0, wide[0][0], t0 + Duration::from_millis(50), t);
         assert!(c.is_ascii() && c != '漢');
@@ -264,8 +299,8 @@ mod tests {
         assert_eq!(fresh_mix(Duration::ZERO, Duration::ZERO), 0.0, "Reduce Motion: never brightened");
         let t0 = Instant::now();
         let mut d = Decode::new(1, 1, 0);
-        d.observe(&grid(&[" "]), 0, t0);
-        d.observe(&grid(&["x"]), 0, t0);
+        d.observe(&grid(&[" "]), 0, t0, false);
+        d.observe(&grid(&["x"]), 0, t0, false);
         let t = timing(false, false);
         let own = plain();
         let (_, s) = d.shown(0, 0, ('x', own, CellKind::Normal), t0 + Duration::from_millis(121), t);
@@ -279,8 +314,8 @@ mod tests {
     fn fresh_at_121_ms(style: CellStyle) -> (CellStyle, f32) {
         let t0 = Instant::now();
         let mut d = Decode::new(1, 1, 0);
-        d.observe(&grid(&[" "]), 0, t0);
-        d.observe(&grid(&["x"]), 0, t0);
+        d.observe(&grid(&[" "]), 0, t0, false);
+        d.observe(&grid(&["x"]), 0, t0, false);
         let t = timing(false, false);
         let (_, s) = d.shown(0, 0, ('x', style, CellKind::Normal), t0 + Duration::from_millis(121), t);
         (s, fresh_mix(Duration::from_millis(121), t.fresh))
@@ -322,13 +357,13 @@ mod tests {
     fn a_resize_or_a_scroll_into_history_resets_the_state_without_marking_cells_changed() {
         let t0 = Instant::now();
         let mut d = Decode::new(2, 1, 0);
-        d.observe(&grid(&["ab"]), 0, t0);
-        d.observe(&grid(&["abc"]), 0, t0);               // wider: a fresh grid
+        d.observe(&grid(&["ab"]), 0, t0, false);
+        d.observe(&grid(&["abc"]), 0, t0, false);               // wider: a fresh grid
         let t = timing(true, false);
         assert_eq!(d.shown(2, 0, cell('c'), t0 + Duration::from_millis(10), t).0, 'c');
-        d.observe(&grid(&["xyz"]), 3, t0);               // scrolled into history: never fresh
+        d.observe(&grid(&["xyz"]), 3, t0, false);               // scrolled into history: never fresh
         assert_eq!(d.shown(0, 0, cell('x'), t0 + Duration::from_millis(10), t).0, 'x');
-        d.observe(&grid(&["abc"]), 0, t0);               // back to the live screen: no flash
+        d.observe(&grid(&["abc"]), 0, t0, false);               // back to the live screen: no flash
         assert_eq!(d.shown(0, 0, cell('a'), t0 + Duration::from_millis(10), t).0, 'a');
         // Out-of-range cells (a grid shrunk between observe and shown) are drawn as their own.
         assert_eq!(d.shown(9, 9, cell('q'), t0, t).0, 'q');

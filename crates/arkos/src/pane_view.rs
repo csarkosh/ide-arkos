@@ -953,7 +953,8 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             t_move.update(cx, |t, cx| t.mouse_moved(ev.position, ev.pressed_button == Some(MouseButton::Left), cx));
             cx.notify();
         }))
-        .on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
+        .on_scroll_wheel(cx.listener(move |root, ev: &ScrollWheelEvent, _window, cx| {
+            root.last_scroll = Some(std::time::Instant::now());
             t_wheel.update(cx, |t, cx| {
                 let cell_h = t.cell.map(|c| c.height).unwrap_or(24.0);
                 // Positive wheel y means the content moves down, which is scrolling up into history.
@@ -1257,7 +1258,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         }))
         // The rendered view's list scrolls itself.
         .when(!rendered, |d| {
-            d.on_scroll_wheel(cx.listener(move |_root, ev: &ScrollWheelEvent, _window, cx| {
+            d.on_scroll_wheel(cx.listener(move |root, ev: &ScrollWheelEvent, _window, cx| {
+                root.last_scroll = Some(std::time::Instant::now());
                 v_wheel.update(cx, |v, cx| {
                     let line_h = v.font_size * v.line_height;
                     // The wheel's y is positive when the content should move down: scroll up.

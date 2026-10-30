@@ -194,8 +194,17 @@ letters can really change. The decode lives in a new module `crates/arkos/src/ef
 - **Working and idle.** The element is told whether the tab's session is `ClaudeState::Working`
   (pane_view has the state; it already derives the tab mark from it). Working:
   `DECODE_MS_WORKING` = 400 ms. Not working: `DECODE_MS_IDLE` = 120 ms. At `glyph_rate` 10 that
-  is four frames of random characters, or one. The idle decode is what a key press or a prompt's
-  redraw shows: a brief flicker where the text changed.
+  is four frames of random characters, or one. The idle decode is what a prompt's redraw shows:
+  a brief flicker where the text changed.
+- **The user's own input and scrolling settle at once.** For `USER_QUIET_MS` = 400 ms after the
+  user's own key press, paste, mouse report or scroll in a terminal (`Terminal::last_user_input`,
+  every mode, local scrollback included), a cell that changes is settled at once: no scramble and
+  no brightening, so the echo of typing and the redraw a fullscreen program (Claude Code) makes
+  for the wheel look like the rest of the text. A cell already decoding when the window opens
+  keeps decoding. While the user turns the wheel over a terminal or a document, the glyph clock
+  rests at 0.0 for `SCROLL_QUIET_MS` = 400 ms (`effects::active::glyph_clock`), where slot 0
+  glitches nothing, so moving glyphs do not re-roll their glitch each frame (amended 2026-10-29,
+  see the end).
 - **Fresh text.** For `FRESH_MS` = 1500 ms after a cell settles, its foreground is mixed toward
   white-green `(0.85, 1.0, 0.85)` by a share that falls from `FRESH_MIX` = 0.6 to 0 over that
   time; a foreground the shader draws as dark text deepens toward `FRESH_DEEP` instead, and an
@@ -339,3 +348,17 @@ the character; the spacer never decodes. The decode section above says so.
    green, the terminal's text and the focus ring, the ANSI green on a tie. Navy's and Timo
    Purple's rain now read in their ANSI greens, Peach Light's in its own green rather than brown;
    matrix keeps its text green, as before.
+
+## Amendment (2026-10-29, Cyrus after the first look)
+
+"In the terminal, use the subtle matrix effect on the text for the characters that the user types
+and when the user scrolls up. Right now, it's too intense and slows the user down."
+
+1. The decode is for what the program writes. For 400 ms after the user's own key press, paste,
+   mouse report or scroll (`USER_QUIET_MS` in `decode.rs`), a changed cell settles at once with its
+   own character and colour; a cell already decoding keeps decoding. The typed text gets only the
+   glyph shader's idle glitch, like the rest of the text.
+2. While the user scrolls (the wheel over a terminal, or over a raw markdown or viewer tab), the
+   glyph clock is held at 0.0 for 400 ms (`SCROLL_QUIET_MS` in `active.rs`), so no glyph glitches
+   while the text moves. No shader changed: slot 0 already glitches nothing. A rendered markdown
+   tab's list scrolls itself, out of reach of the wheel listener, and keeps the old behaviour.
