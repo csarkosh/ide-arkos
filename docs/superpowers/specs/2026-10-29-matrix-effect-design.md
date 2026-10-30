@@ -187,8 +187,9 @@ letters can really change. The decode lives in a new module `crates/arkos/src/ef
   instead of its own, a new one each frame, from a fixed string of ASCII letters, digits and
   symbols (`DECODE_CHARS`), picked by a hash of the cell's position, its change instant and the
   frame, so the frames differ but a test can predict them. Only ASCII, so the glyph comes from
-  the terminal's own font at the cell's width. A wide character (`CellKind::Wide`) decodes as two
-  ASCII characters over its two cells; a spacer never decodes.
+  the terminal's own font at the cell's width. A wide character (`CellKind::Wide`) decodes as one
+  ASCII character drawn in its two-column cell (the kind is kept); a spacer never decodes
+  (amended 2026-10-29, see the end).
 - **Working and idle.** The element is told whether the tab's session is `ClaudeState::Working`
   (pane_view has the state; it already derives the tab mark from it). Working:
   `DECODE_MS_WORKING` = 400 ms. Not working: `DECODE_MS_IDLE` = 120 ms. At `glyph_rate` 10 that
@@ -309,3 +310,10 @@ app setting, and ASCII only for the decode's random characters.
    The decode never requests frames of its own.
 5. The idle-CPU figure is measured on the released build, after Cyrus's look, as space's was;
    the halving rule applies then.
+
+## Amendment (2026-10-29, builder check / review)
+
+A wide character decodes as one ASCII character drawn in its two-column cell, not as two
+characters over its two cells. The terminal paints a wide cell as one run two columns wide, so
+the decode keeps the cell's kind (`CellKind::Wide`, then its `CellKind::Spacer`) and changes only
+the character; the spacer never decodes. The decode section above says so.

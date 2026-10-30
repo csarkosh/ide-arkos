@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn the_matrix_rain_is_faint_under_the_text_and_within_budget() {
+    fn the_matrix_rain_is_faint_under_the_text() {
         if Device::system_default().is_none() {
             return;
         }
@@ -298,6 +298,18 @@ mod tests {
         let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
         assert!(max <= text * crate::effects::matrix::RAIN_ALPHA * 1.05, "the rain is too bright: green channel {max:.3}");
         assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
+    }
+
+    // Run by hand (`cargo test -p arkos effects::bench -- --ignored`): the GPU time is only
+    // meaningful on an idle machine, not inside the parallel suite.
+    #[test]
+    #[ignore]
+    fn the_matrix_wash_draws_within_budget() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let theme = crate::theme::builtin("matrix").unwrap();
         let ms = bench(&matrix, &theme, (1200.0, 800.0), 1.0).unwrap();
         assert_eq!(verdict(ms), "within budget", "{ms} ms");
     }

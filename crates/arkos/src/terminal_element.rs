@@ -37,23 +37,25 @@ impl TerminalElement {
     }
 }
 
-/// The visible rows as they are drawn. With a timing, the decode state (made here when it is
-/// missing) takes in the rows and each cell shows what the decode says; without one, the state
-/// is dropped and the rows are drawn as they are.
+/// The visible rows as the decode draws them. With a timing, the decode state (made here when it
+/// is missing) takes in the rows and each cell shows what the decode says; without one, the
+/// state is dropped and None says to draw `rows.visible` as it is, so the rows are copied only
+/// while an effect decodes. The row above the screen (`rows.above`) never decodes.
 pub fn decoded_rows(
     decode: &mut Option<Decode>,
     rows: &RowsForPaint,
     timing: Option<Timing>,
     cols: usize,
     now: Instant,
-) -> Vec<Vec<(char, CellStyle, CellKind)>> {
+) -> Option<Vec<Vec<(char, CellStyle, CellKind)>>> {
     let Some(timing) = timing else {
         *decode = None;
-        return rows.visible.clone();
+        return None;
     };
     let state = decode.get_or_insert_with(|| Decode::new(cols, rows.visible.len(), rows.display_offset));
     state.observe(&rows.visible, rows.display_offset, now);
-    rows.visible
+    let shown = rows
+        .visible
         .iter()
         .enumerate()
         .map(|(row, line)| {
@@ -65,7 +67,8 @@ pub fn decoded_rows(
                 })
                 .collect()
         })
-        .collect()
+        .collect();
+    Some(shown)
 }
 
 fn hsla(c: Rgb) -> Hsla {
@@ -251,7 +254,7 @@ impl Element for TerminalElement {
                 let y = origin.y + px((frac - 1.0) * cell.height);
                 paint_row(above, y, window, cx);
             }
-            for (i, row) in visible.iter().enumerate() {
+            for (i, row) in visible.as_ref().unwrap_or(&rows.visible).iter().enumerate() {
                 let y = origin.y + px((i as f32 + frac) * cell.height);
                 paint_row(row, y, window, cx);
             }
@@ -357,14 +360,31 @@ mod tests {
         let rows = |s: &str| RowsForPaint { display_offset: 0, above: None, visible: vec![s.chars().map(|c| (c, plain, CellKind::Normal)).collect()], links: vec![] };
         let mut state = None;
         let t = Some(decode::timing(true, false));
-        let first = decoded_rows(&mut state, &rows("   "), t, 3, t0);
+        let first = decoded_rows(&mut state, &rows("   "), t, 3, t0).expect("a decoding effect draws its own rows");
         assert!(state.is_some());
         assert_eq!(first[0][0].0, ' ');
-        let second = decoded_rows(&mut state, &rows("ok "), t, 3, t0 + Duration::from_millis(20));
+        let second = decoded_rows(&mut state, &rows("ok "), t, 3, t0 + Duration::from_millis(20)).unwrap();
         assert_ne!(second[0][0].0, 'o', "a changed cell scrambles");
-        let plain = decoded_rows(&mut state, &rows("ok "), None, 3, t0 + Duration::from_millis(30));
+        assert!(decoded_rows(&mut state, &rows("ok "), None, 3, t0 + Duration::from_millis(30)).is_none(), "no effect: the rows are drawn as they are");
         assert!(state.is_none(), "no effect: the state is dropped");
-        assert_eq!(plain[0][0].0, 'o');
+
+        // A wide character keeps its kind, and its spacer stays a spacer, while it decodes; the
+        // row above the screen is never touched.
+        let above = vec![('x', plain, CellKind::Normal), ('y', plain, CellKind::Normal)];
+        let wide = |c: char| RowsForPaint {
+            display_offset: 0,
+            above: Some(above.clone()),
+            visible: vec![vec![(c, plain, CellKind::Wide), (' ', plain, CellKind::Spacer)]],
+            links: vec![],
+        };
+        decoded_rows(&mut state, &wide(' '), t, 2, t0);
+        let fresh = wide('漢');
+        let shown = decoded_rows(&mut state, &fresh, t, 2, t0 + Duration::from_millis(20)).unwrap();
+        assert_ne!(shown[0][0].0, '漢', "the wide character scrambles");
+        assert_eq!((shown[0][0].2, shown[0][1].2), (CellKind::Wide, CellKind::Spacer));
+        assert_eq!(shown[0][1].0, ' ');
+        assert_eq!(shown.len(), 1, "only the visible rows are decoded");
+        assert_eq!(fresh.above.as_ref(), Some(&above), "the row above is left alone");
     }
 
     #[test]

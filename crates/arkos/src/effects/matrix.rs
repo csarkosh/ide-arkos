@@ -211,6 +211,14 @@ mod tests {
         for (name, value) in [("GLITCH_SLOT", GLITCH_SLOT), ("GLITCH_CHANCE", GLITCH_CHANCE), ("GLITCH_FLASH", GLITCH_FLASH)] {
             assert!(g.contains(&format!("constant float {name} = {value:?};")), "the mirror's {name} is {value:?}");
         }
+        // The arithmetic `glitch_key` and `glitches` mirror.
+        for line in [
+            "return (origin.x * 73856093u) ^ (origin.y * 19349663u) ^ (slot * 83492791u);",
+            "if (slot == 0u || hash01(key) >= GLITCH_CHANCE) {",
+            "uint mode = 1u + uint(hash01(key ^ 0x9E3779B9u) * 3.0);",
+        ] {
+            assert!(g.contains(line), "glyphs.metal's glitch lacks {line}");
+        }
         assert!(!g.contains("SCANLINES"), "no scanlines on the matrix display");
         let emoji = &g[g.find("arkos_emoji_vertex(").expect("matrix draws its emoji")..];
         assert!(emoji.contains("arkos_emoji_fragment(") && emoji.contains("GLITCH_") && emoji.contains("[[buffer(5)]]"));

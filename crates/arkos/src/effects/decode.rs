@@ -72,8 +72,9 @@ impl Decode {
     }
 
     /// Takes in the grid as it is now. A new size or display offset resets to this grid with no
-    /// cell changed, as does the very first grid; otherwise each cell whose character differs is marked changed at `now`, or
-    /// cleared when it became a space.
+    /// cell changed, as does the very first grid; otherwise each cell whose character differs is
+    /// marked changed at `now`, or cleared when it became a space. The first row sets the width:
+    /// a shorter row reads as spaces past its end, and a longer one's extra cells are left out.
     pub fn observe(&mut self, rows: &[Vec<(char, CellStyle, CellKind)>], display_offset: usize, now: Instant) {
         let cols = rows.first().map_or(0, |r| r.len());
         let reset = !self.seeded || rows.len() != self.rows || cols != self.cols || display_offset != self.display_offset;
@@ -84,14 +85,16 @@ impl Decode {
             self.seeded = true;
             self.cells = rows
                 .iter()
-                .flat_map(|r| r.iter().map(|c| Seen { ch: c.0, changed: None }))
+                .flat_map(|r| (0..cols).map(move |c| Seen { ch: r.get(c).map_or(' ', |x| x.0), changed: None }))
                 .collect();
             return;
         }
         let nanos = now.saturating_duration_since(self.epoch).as_nanos() as u64;
         for (row, line) in rows.iter().enumerate() {
-            for (col, cell) in line.iter().enumerate() {
-                let seen = &mut self.cells[row * self.cols + col];
+            for (col, cell) in line.iter().enumerate().take(self.cols) {
+                let Some(seen) = self.cells.get_mut(row * self.cols + col) else {
+                    continue;
+                };
                 if seen.ch != cell.0 {
                     seen.ch = cell.0;
                     seen.changed = if cell.0 == ' ' { None } else { Some(nanos) };
@@ -114,7 +117,7 @@ impl Decode {
         if col >= self.cols || row >= self.rows || cell.2 == CellKind::Spacer {
             return own;
         }
-        let Some(changed) = self.cells[row * self.cols + col].changed else {
+        let Some(changed) = self.cells.get(row * self.cols + col).and_then(|s| s.changed) else {
             return own;
         };
         let at = self.epoch + Duration::from_nanos(changed);
@@ -183,6 +186,34 @@ mod tests {
         assert_eq!(d.shown(0, 0, cell('o'), t0 + Duration::from_millis(401), t).0, 'o');
         // The cell that stayed a space is untouched.
         assert_eq!(d.shown(2, 0, cell(' '), t0 + Duration::from_millis(100), t).0, ' ');
+    }
+
+    #[test]
+    fn the_first_grid_over_existing_text_is_a_baseline_and_decodes_nothing() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(3, 2, 0);
+        let text = grid(&["abc", "def"]);
+        d.observe(&text, 0, t0);
+        let t = timing(true, false);
+        for (row, line) in text.iter().enumerate() {
+            for (col, &c) in line.iter().enumerate() {
+                assert_eq!(d.shown(col, row, c, t0 + Duration::from_millis(10), t), (c.0, c.1), "cell {col},{row}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_ragged_grid_never_panics_and_a_short_row_reads_as_spaces() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(3, 2, 0);
+        d.observe(&grid(&["abc", "d"]), 0, t0);
+        d.observe(&grid(&["abc", "dxyzw"]), 0, t0);
+        let t = timing(true, false);
+        let (c, _) = d.shown(1, 1, cell('x'), t0 + Duration::from_millis(10), t);
+        assert_ne!(c, 'x', "past the short row's end was a space, so the x is a change");
+        assert_eq!(d.shown(4, 1, cell('w'), t0 + Duration::from_millis(10), t).0, 'w', "past the width: its own");
+        d.observe(&grid(&["abc"]), 0, t0);
+        d.observe(&grid(&["abc", ""]), 0, t0);
     }
 
     #[test]
