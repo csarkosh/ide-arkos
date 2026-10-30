@@ -5,6 +5,7 @@ pub mod active;
 pub mod bench;
 pub mod blocks;
 pub mod cli;
+pub mod decode;
 pub mod hash;
 pub mod inputs;
 pub mod layer;
