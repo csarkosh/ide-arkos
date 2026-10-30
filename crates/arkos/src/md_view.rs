@@ -46,7 +46,8 @@ use gpui::{
     PathBuilder, Pixels, Point, ScrollHandle, SharedString, Stateful, StrikethroughStyle, Style, StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, WeakEntity, Window,
 };
 use gpui::{svg, AnyView};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
@@ -634,6 +635,32 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     }
 }
 
+/// The players of block `ix`'s videos playing in the page (`Viewer::inline_videos`), each the video
+/// tab's picture and strip (`video_element::render`, taking no keys) in a box the poster's size
+/// with the strip under it, left in `ctx.players` for `media_element`.
+fn prepare_players(ix: usize, ctx: &BlockCtx, cx: &mut App) {
+    let videos: Vec<(PathBuf, Entity<crate::video_view::VideoView>, (f32, f32))> = {
+        let v = ctx.viewer.read(cx);
+        if v.inline_videos.is_empty() {
+            return;
+        }
+        let Some(Some(r)) = v.block_cache.get(ix) else { return };
+        r.pieces
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Media(m) if m.kind == Some(Media::Video) => resolve_image(&ctx.base_dir, &m.path),
+                _ => None,
+            })
+            .filter_map(|file| v.inline_videos.get(&file).map(|iv| (file, iv.view.clone(), iv.size)))
+            .collect()
+    };
+    for (file, view, (w, h)) in videos {
+        let body = crate::video_element::render(&view, &ctx.theme, ctx.style, ctx.ui.clone(), false, None, cx);
+        let player = div().w(px(w)).max_w_full().h(px(h + crate::video_element::STRIP_H)).rounded(px(4.0)).overflow_hidden().child(body).into_any_element();
+        ctx.players.borrow_mut().insert(file, player);
+    }
+}
+
 /// Block `ix`'s display math, as a diagram is tracked (`track_diagram`): its key made for the
 /// frame's text colour and size, then its state moved along once, sharing the diagrams' queue,
 /// cache and states.
@@ -800,6 +827,12 @@ pub struct BlockCtx {
     pub presenting: bool,
     /// The space added on each side to keep the text a letter page wide (`columns`).
     pub inset: f32,
+    /// The theme and the effect style, for a video playing in the page (`prepare_players`).
+    pub theme: Rc<Theme>,
+    pub style: crate::effects::active::Style,
+    /// The players of the block being drawn, made by the row (which has the App), taken by its
+    /// media pieces (`media_element`), by file.
+    pub players: RefCell<HashMap<PathBuf, AnyElement>>,
     /// The colours diagrams are drawn in, from the chrome.
     pub mermaid: MermaidTheme,
     /// The raw blocks' colours: the raw view's markdown colours, the selection (the find match
@@ -935,6 +968,9 @@ pub fn render(
         alerts: [colors.link, calm(theme.tree.added.hsla()), calm(theme.terminal.magenta.hsla()), calm(theme.terminal.yellow.hsla()), calm(theme.tree.deleted.hsla())],
         notes: v.notes.clone(),
         inset,
+        theme: Rc::new(theme.clone()),
+        style,
+        players: RefCell::new(HashMap::new()),
         presenting: v.presenting,
         mermaid: MermaidTheme::from_chrome(&theme.chrome),
         raw: colors.raw,
@@ -991,6 +1027,7 @@ pub fn render(
                     fill(v, ix, highlighter.as_ref(), &ctx, cx);
                     measure_table(v, ix, &ctx, window);
                 });
+                prepare_players(ix, &ctx, cx);
                 let v = ctx.viewer.read(cx);
                 match (v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) {
                     (Some(block), Some(r)) => block_element(ix, &block.kind, r, v, &ctx, None),
@@ -1200,6 +1237,7 @@ pub struct Reveal<'a> {
 /// text. Its cache is filled before this is called.
 fn reveal_row(ix: usize, ctx: &BlockCtx, window: &mut Window, cx: &mut App) -> AnyElement {
     let Some(tree) = ctx.viewer.update(cx, |v, _| v.block_tree(ix)) else { return div().into_any_element() };
+    prepare_players(ix, ctx, cx);
     let v = ctx.viewer.read(cx);
     let (Some(doc), Some(block), Some(r)) = (v.doc.as_ref(), v.blocks.get(ix), v.block_cache.get(ix).and_then(Option::as_ref)) else { return div().into_any_element() };
     let text = block_source(doc.lines(), block);
@@ -2886,9 +2924,14 @@ fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<boo
             press.set(true);
         }
     };
+    // A video playing in the page is its player, whose clicks are its own (play, pause, scrub).
+    if let Some(player) = file.as_ref().and_then(|f| ctx.players.borrow_mut().remove(f)) {
+        let press = press.clone();
+        return div().flex().child(div().max_w_full().on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true)).child(player)).into_any_element();
+    }
     let shown: AnyElement = match (m.kind, &file) {
         (Some(Media::Video), Some(file)) => match v.posters.get(file) {
-            Some(Poster::Ready(poster)) => poster_element(poster.clone(), m.label.clone(), ctx).into_any_element(),
+            Some(Poster::Ready(poster)) => poster_element(poster.clone(), m.label.clone(), Some((file.clone(), press.clone())), ctx).into_any_element(),
             Some(Poster::Failed) => alt_box(m.label.clone(), ctx.dim, ctx.border).into_any_element(),
             Some(Poster::Making) | None => alt_box(format!("{} (loading)", m.label).into(), ctx.dim, ctx.border).into_any_element(),
         },
@@ -2924,7 +2967,7 @@ fn media_element(m: &MediaPiece, v: &Viewer, ctx: &BlockCtx, press: &Rc<Cell<boo
 /// over its centre: a `PLAY_DISC` disc in the text colour at 60 percent around a triangle in the
 /// window's background colour. A poster that cannot be drawn shows the label in the dashed box,
 /// with no glyph over it, and so does one still loading (the glyph needs room for the disc).
-fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
+fn poster_element(poster: PathBuf, label: SharedString, play_target: Option<(PathBuf, Rc<Cell<bool>>)>, ctx: &BlockCtx) -> Div {
     let (dim, border, disc, glyph) = (ctx.dim, ctx.border, ctx.text.opacity(0.6), ctx.on_accent);
     // gpui asks for the fallback while it lays the image out, before anything is painted, so the
     // glyph's paint knows whether the poster was drawn.
@@ -2959,12 +3002,44 @@ fn poster_element(poster: PathBuf, label: SharedString, ctx: &BlockCtx) -> Div {
             }
         },
     );
+    // The play button plays the video where the poster is (`Viewer::play_inline`), at the
+    // poster's size as last laid out; a click elsewhere on the poster is the caret's, and
+    // Cmd+click opens the video tab as before.
+    let laid_out = Rc::new(Cell::new((0.0f32, 0.0f32)));
+    let measure = {
+        let laid_out = laid_out.clone();
+        canvas(move |b, _, _| laid_out.set((f32::from(b.size.width), f32::from(b.size.height))), |_, _, _, _| ())
+    };
+    let button = play_target.map(|(file, press)| {
+        let viewer = ctx.viewer.clone();
+        let id = SharedString::from(format!("md-play-{}", file.display()));
+        div().absolute().inset_0().flex().items_center().justify_center().child(
+            div()
+                .id(id)
+                .size(px(PLAY_DISC))
+                .rounded_full()
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, _cx| {
+                    if !ev.modifiers.platform {
+                        press.set(true);
+                    }
+                })
+                .on_click(move |_ev, window, cx| {
+                    if !window.modifiers().platform {
+                        let size = laid_out.get();
+                        viewer.update(cx, |v, cx| v.play_inline(file.clone(), size, cx));
+                    }
+                }),
+        )
+    });
     div()
         .relative()
         .flex()
         .max_w_full()
         .child(img(poster).max_w_full().with_fallback(fallback))
         .child(play.absolute().inset_0())
+        .child(measure.absolute().inset_0())
+        .children(button)
 }
 
 /// Where a revealed text was laid out this frame: its block, the part of the block's text it

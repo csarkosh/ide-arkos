@@ -649,6 +649,9 @@ pub struct Viewer {
     pub diagram_drag: Option<(usize, Point<Pixels>, (f32, f32))>,
     /// When the document last changed, so a diagram being typed is drawn once the typing pauses.
     pub edited_at: Instant,
+    /// The videos playing in the page (a poster's play button), by their file: each plays where
+    /// its poster was, at the poster's size, while its tab is shown (`Root::update_video_activity`).
+    pub inline_videos: HashMap<PathBuf, InlineVideo>,
     /// The last picture each Split diagram being edited had, by its block (`md_view::split_preview`).
     pub split_last: HashMap<usize, (PathBuf, u32, u32)>,
     /// The config's `viewer.image_destination`, kept here by `Root` (`md_links::image_dir`).
@@ -701,6 +704,13 @@ pub struct Viewer {
     /// edit, load and fold.
     pub heads: Vec<md_fold::Head>,
     pub hidden: Vec<bool>,
+}
+
+/// A video playing in the rendered page: its player, and the size of the poster it took the place
+/// of (the picture's box; the control strip goes under it).
+pub struct InlineVideo {
+    pub view: Entity<crate::video_view::VideoView>,
+    pub size: (f32, f32),
 }
 
 /// What a table's edge selectors pick: a row (the grid's, 0 the header), a column, or all of it.
@@ -831,6 +841,7 @@ impl Viewer {
             diagram_drag: None,
             edited_at: Instant::now(),
             split_last: HashMap::new(),
+            inline_videos: HashMap::new(),
             image_destination: String::new(),
             table_edit: false,
             table_pick: None,
@@ -2244,6 +2255,20 @@ impl Viewer {
         let Some((i, from, base)) = self.diagram_drag.filter(|(i, _, _)| *i == index) else { return };
         let moved = (base.0 + f32::from(at.x - from.x), base.1 + f32::from(at.y - from.y));
         self.diagram_zoom.insert(i, (zoom, crate::md_diagram::clamp(moved, size, zoom)));
+        cx.notify();
+    }
+
+    /// Plays video `file` in the page where its poster is, at the poster's `size`: a player made
+    /// the first time (it loads the file and starts as soon as it can), played again after.
+    pub fn play_inline(&mut self, file: PathBuf, size: (f32, f32), cx: &mut Context<Self>) {
+        if !self.inline_videos.contains_key(&file) {
+            let path = file.clone();
+            let view = cx.new(|cx| crate::video_view::VideoView::new(path, None, None, Box::new(crate::av_player::AvPlayer::new()), cx));
+            self.inline_videos.insert(file.clone(), InlineVideo { view, size });
+        }
+        if let Some(v) = self.inline_videos.get(&file) {
+            v.view.update(cx, |v, cx| v.play(cx));
+        }
         cx.notify();
     }
 

@@ -1363,7 +1363,7 @@ fn render_video(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pat
     div()
         .size_full()
         .on_mouse_down(MouseButton::Left, cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| root.focus_pane(pane, cx)))
-        .child(crate::video_element::render(&view, &theme, style, family, cx))
+        .child(crate::video_element::render(&view, &theme, style, family, true, Some(cx.weak_entity()), cx))
 }
 
 /// A web tab: its view, made the first time the tab is shown, drawn by `web_element` (the bar,

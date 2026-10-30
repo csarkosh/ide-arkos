@@ -2307,6 +2307,14 @@ impl Root {
             let plays = video_plays(&self.tree, &shown, *tab, hidden);
             v.update(cx, |v, cx| v.set_inactive(!plays, cx));
         }
+        // A video playing in a markdown page follows its document's tab the same way.
+        for (tab, viewer) in &self.viewers {
+            let plays = video_plays(&self.tree, &shown, *tab, hidden);
+            let inline: Vec<_> = viewer.read(cx).inline_videos.values().map(|iv| iv.view.clone()).collect();
+            for v in inline {
+                v.update(cx, |v, cx| v.set_inactive(!plays, cx));
+            }
+        }
     }
 
     /// Opens `path` in `pane` as the kind its name says (`sidebar::file_tab`): a video as a video

@@ -11,8 +11,8 @@ use crate::video::{fmt_time, PlayerState, VideoModel};
 use crate::video_view::VideoView;
 use crate::Root;
 use gpui::{
-    canvas, div, img, point, prelude::*, px, size, surface, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels, Point, SharedString, Window,
+    canvas, div, img, point, prelude::*, px, size, surface, App, Bounds, ClickEvent, Context, DispatchPhase, Div, Entity, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels, Point, SharedString, WeakEntity, Window,
 };
 use std::time::Instant;
 
@@ -132,10 +132,12 @@ fn paint_glyph(b: Bounds<Pixels>, playing: bool, color: Hsla, window: &mut Windo
     }
 }
 
-/// The video tab's body: the picture over the control strip, holding the keys of the "Video"
-/// context while focused. Every draw takes the newest frame; display frames are asked for only
-/// while the view needs them (`VideoView::frame_step`), so a paused tab paints nothing.
-pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::active::Style, family: SharedString, cx: &mut Context<Root>) -> Div {
+/// A video's body: the picture over the control strip. In a video tab (`keys`) it holds the keys
+/// of the "Video" context while focused; a video playing in a markdown page takes no keys, which
+/// are the document's. Every draw takes the newest frame; display frames are asked for only while
+/// the view needs them (`VideoView::frame_step`), so a paused video paints nothing. `root` is the
+/// window, for the outline an effect draws around the picture, when there is one to report to.
+pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::active::Style, family: SharedString, keys: bool, root: Option<WeakEntity<Root>>, cx: &mut App) -> Div {
     let now = Instant::now();
     let more = view.update(cx, |v, cx| v.frame_step(now, cx));
     let v = view.read(cx);
@@ -195,10 +197,10 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
                     .cursor_pointer()
                     .child("Open in QuickTime Player")
                     // The button's click is its own, not the picture's under it.
-                    .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| {
+                    .on_click(move |_ev: &ClickEvent, _window: &mut Window, cx: &mut App| {
                         cx.stop_propagation();
                         crate::md_view::open_media(path.clone(), crate::media::quicktime_args, cx)
-                    })),
+                    }),
             )
     });
     let (border, span_bg) = (c.border.hsla(), c.focus_ring.hsla().opacity(0.4));
@@ -260,12 +262,12 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
         .cursor_pointer()
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |_root, ev: &MouseDownEvent, _window, cx| {
+            move |ev: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
                 let _ = press.update(cx, |v, cx| v.scrub_press(f32::from(ev.position.x), ev.modifiers.shift, cx));
-            }),
+            },
         )
         .child(track);
-    let toggle = |id: &'static str, label: &'static str, on: bool, act: fn(&mut VideoView, &mut Context<VideoView>), cx: &mut Context<Root>| {
+    let toggle = |id: &'static str, label: &'static str, on: bool, act: fn(&mut VideoView, &mut Context<VideoView>)| {
         let target = view.downgrade();
         div()
             .id((id, eid))
@@ -273,12 +275,12 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
             .text_color(if on { c.focus_ring.hsla() } else { dim })
             .cursor_pointer()
             .child(label)
-            .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| {
+            .on_click(move |_ev: &ClickEvent, _window: &mut Window, cx: &mut App| {
                 let _ = target.update(cx, |v, cx| act(v, cx));
-            }))
+            })
     };
-    let looping = toggle("video-loop", "loop", loop_range.is_some(), VideoView::toggle_loop, cx);
-    let mute = toggle("video-mute", "mute", muted, VideoView::mute, cx);
+    let looping = toggle("video-loop", "loop", loop_range.is_some(), VideoView::toggle_loop);
+    let mute = toggle("video-mute", "mute", muted, VideoView::mute);
     let (play_target, tap) = (view.downgrade(), view.downgrade());
     let play_button = div()
         .id(("video-play", eid))
@@ -286,9 +288,9 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
         .size(px(GLYPH + 4.0))
         .cursor_pointer()
         .child(canvas(|_, _, _| (), move |b, _, window, _| paint_glyph(b, playing, text, window)).size_full())
-        .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| {
+        .on_click(move |_ev: &ClickEvent, _window: &mut Window, cx: &mut App| {
             let _ = play_target.update(cx, |v, cx| v.play_pause(cx));
-        }));
+        });
     let strip = div()
         .flex_none()
         .h(px(STRIP_H))
@@ -312,8 +314,7 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
         .size_full()
         .flex()
         .flex_col()
-        .key_context("Video")
-        .track_focus(&focus)
+        .when(keys, |d| d.key_context("Video").track_focus(&focus))
         // The letterbox is the window's ground: gone under an effect, so the wash shows beside
         // the picture as it does around the other panes.
         .bg(c.window_bg.alpha(style.ground_alpha))
@@ -328,18 +329,17 @@ pub fn render(view: &Entity<VideoView>, theme: &Theme, style: crate::effects::ac
                 // focused by the press, in `render_video`). The strip is its own element below,
                 // so a scrub never arrives here; a press that travels is a drag and toggles
                 // nothing. A video that cannot play or is waiting for its file: `play` refuses.
-                .on_click(cx.listener(move |_root, ev: &ClickEvent, _window, cx| {
+                .on_click(move |ev: &ClickEvent, _window: &mut Window, cx: &mut App| {
                     if let ClickEvent::Mouse(m) = ev {
                         if picture_click_toggles(m.down.position, m.up.position) {
                             let _ = tap.update(cx, |v, cx| v.play_pause(cx));
                         }
                     }
-                }))
+                })
                 .child(picture)
                 // Under an effect that inks the borders, the fitted picture reports where it
                 // is, and the wash outlines it.
-                .when_some(frame_px.filter(|_| style.ink_borders), |el, (w, h)| {
-                    let root = cx.weak_entity();
+                .when_some(frame_px.filter(|_| style.ink_borders).zip(root), |el, ((w, h), root)| {
                     let key = eid.as_u64();
                     el.child(
                         canvas(
