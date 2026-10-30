@@ -61,6 +61,9 @@ constant float EDGE_REACH = 8.0;
 // How much nearer a busy block's edge counts, in points, so a line it shares with an idle block
 // (two panes side by side, a tab bar under the title bar) is the busy one's.
 constant float EDGE_TIE = 1.0;
+// How near the window's border an edge's line lies, in points, for the wash to skip it (the
+// window's own outline is no pane's edge); the menu stage keeps every edge.
+constant float EDGE_BORDER = 1.5;
 // An edge's rune cell along a vertical edge, as a share of the rune's size.
 constant float EDGE_RUNE_TALL = 1.15;
 // An edge's rune across a vertical edge, as a share of its size (across a horizontal one it is
@@ -236,16 +239,24 @@ void take_edge(thread EdgeHit& h, ArkosBlock blk, uint side, float across, float
     }
 }
 
-// Takes blk's reported edges into h when one is nearer p; d is p's distance to blk's box.
-void nearest_edge(float2 p, ArkosBlock blk, float d, thread EdgeHit& h) {
+// Whether an edge's line at line lies on the window's border along an axis lim points long: within
+// EDGE_BORDER of either end. A lim of 0 keeps every edge.
+bool on_border(float line, float lim) {
+    return lim > 0.0 && (line < EDGE_BORDER || line > lim - EDGE_BORDER);
+}
+
+// Takes blk's reported edges into h when one is nearer p; d is p's distance to blk's box. An edge
+// whose line lies on the border of a window of size win is skipped, as the mock-up skips them; a
+// win of 0 (the menu stage) keeps every edge.
+void nearest_edge(float2 p, ArkosBlock blk, float d, thread EdgeHit& h, float2 win) {
     uint edges = uint(blk.edges);
     if (edges != 0u && abs(d) < EDGE_REACH) {
         float4 r = blk.rect;
         float x0 = r.x, y0 = r.y, x1 = r.x + r.z, y1 = r.y + r.w;
-        if (edges & ARKOS_EDGE_TOP) { take_edge(h, blk, 0u, y0 - p.y, p.x - x0, r.z); }
-        if (edges & ARKOS_EDGE_RIGHT) { take_edge(h, blk, 1u, p.x - x1, p.y - y0, r.w); }
-        if (edges & ARKOS_EDGE_BOTTOM) { take_edge(h, blk, 2u, p.y - y1, p.x - x0, r.z); }
-        if (edges & ARKOS_EDGE_LEFT) { take_edge(h, blk, 3u, x0 - p.x, p.y - y0, r.w); }
+        if ((edges & ARKOS_EDGE_TOP) && !on_border(y0, win.y)) { take_edge(h, blk, 0u, y0 - p.y, p.x - x0, r.z); }
+        if ((edges & ARKOS_EDGE_RIGHT) && !on_border(x1, win.x)) { take_edge(h, blk, 1u, p.x - x1, p.y - y0, r.w); }
+        if ((edges & ARKOS_EDGE_BOTTOM) && !on_border(y1, win.y)) { take_edge(h, blk, 2u, p.y - y1, p.x - x0, r.z); }
+        if ((edges & ARKOS_EDGE_LEFT) && !on_border(x0, win.x)) { take_edge(h, blk, 3u, x0 - p.x, p.y - y0, r.w); }
     }
 }
 
@@ -293,6 +304,8 @@ float4 edge_glow(EdgeHit h, float t, float3 green, float3 white_c) {
     }
     float pace = mix(1.0, E_SPEED, h.busy);
     float bright = mix(1.0, E_BRIGHT, h.busy);
+    // The edge's hashes, one role each: 2 A's rune bits, 3 B's slot offsets, 4 B's rune bits,
+    // 5 A's speed, 6 A's phase, 7 A's slot offsets (the tears hash the slot in apart from these).
     uint base = h.key * 8u;
 
     // D: a stretch of the edge tears sideways and flashes, about D_PER_MINUTE a minute across
@@ -336,7 +349,7 @@ float4 edge_glow(EdgeHit h, float t, float3 green, float3 white_c) {
         float behind = (floor(head / c.cell_len) - c.cell) * c.cell_len;
         if (behind >= 0.0 && behind < A_TRAIL && c.inside && h.over <= 0.0) {
             float slot = floor(t / A_FLIP + hash01((base + 7u) ^ (uint(c.cell) * 2654435761u)));
-            float lit = rune_bit(c, true, base + 7u, uint(slot), A_DENSITY);
+            float lit = rune_bit(c, true, base + 2u, uint(slot), A_DENSITY);
             a_head = behind < c.cell_len ? 1.0 : 0.0;
             a_glow = lit * (1.0 - behind / A_TRAIL) * mix(1.0, A_HEAD, a_head);
         }
@@ -405,13 +418,19 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                 lift = max(lift, s * saturate(fill));
             }
         }
-        nearest_edge(p, blk, d, hit);
+        nearest_edge(p, blk, d, hit, u.size);
     }
     col = mix(col, bg * 0.8, dim * k);
     col = mix(col, green, lift * k);
-    // The nearest reported edge's light, laid over the rest: on black, the mock-up's sum.
+    // The nearest reported edge's light, laid over the rest. On a dark ground it is added, as
+    // the mock-up adds it, so a busy head or a tear burns on toward white until each channel
+    // clips; on a light ground added light would vanish, so the colour is mixed in instead.
     float4 e = edge_glow(hit, u.time, green, white_c);
-    col = mix(col, e.rgb, saturate(e.a * k));
+    if (u.dark > 0.5) {
+        col = min(col + e.rgb * e.a * k, 1.0);
+    } else {
+        col = mix(col, e.rgb, saturate(e.a * k));
+    }
     return float4(col, 1.0);
 }
 
@@ -429,13 +448,18 @@ fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs&
         ArkosBlock blk = u.blocks[i];
         float4 r = blk.rect;
         float2 hb = r.zw * 0.5;
-        nearest_edge(p, blk, sd_box(p - (r.xy + hb), hb), hit);
+        // A menu may sit against the window's border, and keeps every edge.
+        nearest_edge(p, blk, sd_box(p - (r.xy + hb), hb), hit, float2(0.0));
     }
     if (hit.d >= EDGE_REACH) {
         return float4(0.0);
     }
     float4 e = edge_glow(hit, u.time, green, white_c);
-    // The edges fade with their menu (blk.value, carried in the hit).
-    float a = saturate(e.a * k * hit.value);
-    return float4(e.rgb * a, a);
+    // The edges fade with their menu (blk.value, carried in the hit). The alpha is the light's
+    // coverage; on a dark ground the colour is the light added, unclamped up to 1 a channel, as
+    // the wash adds it, and on a light one the mixed colour.
+    float strength = e.a * k * hit.value;
+    float a = saturate(strength);
+    float3 c = u.dark > 0.5 ? min(e.rgb * strength, 1.0) : e.rgb * a;
+    return float4(c, a);
 }

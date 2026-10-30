@@ -345,6 +345,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_matrix_wash_draws_no_edge_on_the_window_s_own_border() {
+        if Device::system_default().is_none() {
+            return;
+        }
+        let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
+        let theme = crate::theme::builtin("matrix").unwrap();
+        let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
+        // A pane whose right and bottom edges are the window's right and bottom.
+        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::PaneBody, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0 }];
+        let added = |with: &[Rgb], without: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> i32 {
+            pixels(with, x0, y0, x1, y1).iter().zip(pixels(without, x0, y0, x1, y1)).map(|(a, b)| (a.g as i32 - b.g as i32).abs()).sum()
+        };
+        for t in [1.3, 9.1, 22.2, 40.4] {
+            let with = render_frame(&matrix.wash, &theme, (W, H), t, &pane(all));
+            let without = render_frame(&matrix.wash, &theme, (W, H), t, &pane(0));
+            // Along the right and bottom borders, away from the corners the left and top edges
+            // light: nothing.
+            assert_eq!(added(&with, &without, W - 4, W, 30, H - 4), 0, "an edge on the right border at {t}");
+            assert_eq!(added(&with, &without, 30, W - 4, H - 4, H), 0, "an edge on the bottom border at {t}");
+            // The left edge, inside the window, is lit.
+            assert!(added(&with, &without, 12, 21, 30, H - 4) > 0, "the left edge draws nothing at {t}");
+        }
+    }
+
     // Run by hand (`cargo test -p arkos effects::bench -- --ignored`): the GPU time is only
     // meaningful on an idle machine, not inside the parallel suite.
     #[test]

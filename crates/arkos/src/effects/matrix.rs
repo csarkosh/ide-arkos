@@ -190,6 +190,23 @@ mod tests {
         }
         // Packets (the mock-up's C) are not ported.
         assert!(!wash.contains("constant float C_"), "the packets came along");
+        // On a dark ground the light is added as the mock-up adds it, clipping a channel at 1;
+        // on a light one it is mixed in.
+        for line in ["if (u.dark > 0.5) {", "col = min(col + e.rgb * e.a * k, 1.0);", "col = mix(col, e.rgb, saturate(e.a * k));"] {
+            assert!(wash.contains(line), "wash.metal lays its edges without {line}");
+        }
+        // A's slot offsets and rune bits hash apart, as B's do.
+        assert!(wash.contains("rune_bit(c, true, base + 2u, uint(slot), A_DENSITY)"), "A's rune bits share a hash");
+        assert!(!wash.contains("rune_bit(c, true, base + 7u"), "A's rune bits share its slot offsets' hash");
+    }
+
+    #[test]
+    fn the_wash_skips_edges_on_the_window_s_border_and_the_menu_stage_keeps_them() {
+        let wash = matrix().wash;
+        assert!(wash.contains("constant float EDGE_BORDER = 1.5;"));
+        assert!(wash.contains("nearest_edge(p, blk, d, hit, u.size);"), "the wash does not skip the border's edges");
+        let overlay = &wash[wash.find("fragment float4 arkos_overlay(").unwrap()..];
+        assert!(overlay.contains("hit, float2(0.0));"), "the menu stage skips a menu's edges on the border");
     }
 
     #[test]

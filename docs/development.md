@@ -375,7 +375,9 @@ Things only a person at the screen can check, in order of value:
   through the bars and the sidebar, never competing with the text; a menu's backdrop shows it
 - effects: Matrix edges: code falls down the vertical pane edges, the horizontal edges are runes
   that flip, a stretch of edge tears now and then, and a pane whose Claude session works has
-  faster, brighter edges
+  faster, brighter edges; at 30 fps idle streams move about 4 to 10 pt a frame and busy ones 9
+  to 21 pt, so look for choppiness on a busy pane; a pane flipping between working and idle
+  jumps its stream and brightness (no fade yet)
 - effects: Matrix, a markdown tab and the sidebar: green glow, the idle glitch, no decode
 - effects: Matrix, scrolling (the wheel in Claude Code's fullscreen renderer, and Arkos's own
   scrollback) shows no scramble and no glitches while it moves

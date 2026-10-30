@@ -261,7 +261,8 @@ theme's green: the greenest of its `ANSI green`, its terminal text and its focus
 - **Menus (`menus = "glow"`).** The backdrop is the wash over the menu's place, as space's.
 - **Time.** Every stream is a pure function of `u.time`; a frozen clock shows still rain.
 - **Budget.** Within 4 ms at half scale by `arkos effect bench matrix`. The rain is one hash
-  and one bit lookup per pixel; the edges are space's.
+  and one bit lookup per pixel; the edges are one pass over the blocks for the nearest edge,
+  then the line, a tear's test and at most one rune bit (A's or B's) for that edge alone.
 - All the constants sit at the top of the file with one comment each.
 
 ## Tests (written first, headless)
@@ -396,5 +397,13 @@ wash's `hash01`, so streams and tears land in other places.
    pane's tab bar and body blocks with the preamble's new `busy` flag (`ArkosBlock`'s first
    float of padding; the block stays 64 bytes). Where two blocks share a line, the busy one's
    edge wins it (`EDGE_TIE`).
-8. The wash keeps `frame_rate = 30`: a stream moves about 7 pt a frame, near a rune cell, and is
-   judged in the look.
+8. The wash keeps `frame_rate = 30`. At 30 fps an idle stream moves about 4 to 10 pt a frame
+   (222 pt/s times 0.6 to 1.4) and a busy one 9 to 21 pt, so busy panes are where choppiness
+   would show; it is judged in the look.
+9. On a dark ground the edges' light is added to the wash, as the mock-up adds it, so a busy
+   head or a tear burns on toward white until a channel clips; on a light ground it is mixed in,
+   since added light would vanish there. The menu stage does the same in its premultiplied
+   colour.
+10. As in the mock-up, an edge whose line lies within 1.5 pt of the window's border
+    (`EDGE_BORDER`) is skipped by the wash: the window's own outline carries no line, rain or
+    runes. The menu stage keeps every edge.
