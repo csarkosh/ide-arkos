@@ -38,6 +38,7 @@ mod launch_link;
 mod link_menu;
 mod icons;
 mod md_links;
+mod md_math;
 mod md_menu;
 mod lang_menu;
 mod outline;
@@ -68,6 +69,7 @@ mod pulse;
 mod recent;
 mod reflow;
 mod remote_image;
+mod render_view;
 mod sandbox;
 mod screen;
 mod scroll;
@@ -4975,6 +4977,10 @@ fn open_project_window(
                         let mut root = Root::new(client_for_view, view_project, view_saved, view_config, view_theme, system_is_dark, installed, cx);
                         root.ns_window = screen::ns_window_of(window);
                         root.ns_view = screen::ns_view_of(window);
+                        // The hidden web view diagrams and equations are drawn in.
+                        if let (Some(w), Some(v)) = (root.ns_window.as_ref(), root.ns_view.as_ref()) {
+                            render_view::install(w, v);
+                        }
                         if let (Some(ns), Some(view)) = (&root.ns_window, &root.ns_view) {
                             root.key_monitor = screen::install_key_monitor(ns.clone(), view.clone());
                         }

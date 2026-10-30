@@ -43,7 +43,9 @@ impl BlockTree {
         let image = |n: &Node| n.kind == NodeKind::Image || (matches!(n.kind, NodeKind::Link { .. }) && n.children.len() == 1 && n.children[0].kind == NodeKind::Image);
         let blank = |n: &Node| n.kind == NodeKind::SoftBreak || (n.kind == NodeKind::Text && n.text.trim().is_empty());
         let image_only = matches!(&nodes[..], [p] if p.kind == NodeKind::Paragraph && p.children.iter().any(image) && p.children.iter().all(|c| image(c) || blank(c)));
-        let picture = image_only || md_blocks::html_image(text).is_some();
+        // Display math draws as a picture too, with its source under it while edited.
+        let math = text.trim_start().starts_with("$$") && matches!(md_blocks::inline(text, &BlockKind::Paragraph)[..], [md_blocks::Inline::Math(_)]);
+        let picture = image_only || math || md_blocks::html_image(text).is_some();
         BlockTree { nodes, markers, revealable, picture }
     }
 }

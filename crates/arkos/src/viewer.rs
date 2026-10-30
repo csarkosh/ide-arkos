@@ -859,16 +859,39 @@ impl Viewer {
         }
     }
 
-    /// Starts the diagram render that has the turn in the process-wide queue (`mermaid::queue`,
-    /// one at a time), on the background executor (Chrome blocks its thread). The render frees
-    /// its turn itself, whether or not this viewer is still open; then this viewer starts the next
-    /// one and draws again, and every view showing the diagram finds it in the cache, or its
-    /// error (`md_view::fill`).
+    /// Starts the diagram or equation render that has the turn in the process-wide queue
+    /// (`mermaid::queue`, one at a time) in the window's hidden web view (`render_view`): its page
+    /// written and loaded, then the render moved along every few frames' worth of time on this
+    /// thread until it has its picture or its error (`mermaid::finish`, which frees the turn,
+    /// whether or not this viewer is still open). Then this viewer starts the next one and draws
+    /// again, and every view showing the picture finds it in the cache, or its error
+    /// (`md_view::fill`).
     pub fn start_renders(cx: &mut Context<Self>) {
         let ready = mermaid::queue().start_ready();
         for job in ready {
+            let dir = mermaid::cache_dir();
+            let started = mermaid::prepare(&dir, &job).and_then(|page| crate::render_view::Render::start(&page, &dir).map_err(|e| (e, Some(page))).map_err(|(e, page)| {
+                if let Some(page) = page {
+                    let _ = std::fs::remove_file(page);
+                }
+                e
+            }));
+            let mut render = match started {
+                Ok(r) => r,
+                Err(e) => {
+                    mermaid::finish(&dir, &job.key, Path::new(""), Err(e));
+                    cx.notify();
+                    continue;
+                }
+            };
             cx.spawn(async move |this, cx| {
-                cx.background_executor().spawn(async move { mermaid::run_job(&mermaid::cache_dir(), &job) }).await;
+                let result = loop {
+                    cx.background_executor().timer(Duration::from_millis(40)).await;
+                    if let Some(result) = render.poll() {
+                        break result;
+                    }
+                };
+                mermaid::finish(&dir, &job.key, render.page(), result);
                 let _ = this.update(cx, |_, cx| {
                     Viewer::start_renders(cx);
                     cx.notify();

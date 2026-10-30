@@ -168,6 +168,8 @@ enum Piece {
     Alert(md_blocks::AlertKind, Option<SharedString>, Rc<[Run]>),
     /// A footnote's definition: its key and its text.
     Note(SharedString, Rc<[Run]>),
+    /// A paragraph of display math.
+    Math(MathPiece),
     Rule,
     Table(TablePiece),
     Html(SharedString),
@@ -273,6 +275,13 @@ struct DiagramPiece {
     runs: Option<CodeRuns>,
 }
 
+/// Display math as a row draws it: its TeX, and its cache key with the colour and size it was
+/// made for (`md_math::cache_key`).
+struct MathPiece {
+    tex: Rc<str>,
+    key: Option<((String, u32), String)>,
+}
+
 /// One video, audio file or media link as a row draws it: its label (as an image's), its path, the
 /// target of the link around it, and what it is drawn as (`None`: a link, for a web address or a
 /// `webm`).
@@ -330,6 +339,7 @@ impl From<Inline> for Piece {
             Inline::Quote(runs) => Piece::Quote(runs.into()),
             Inline::Alert { kind, title, runs } => Piece::Alert(kind, title.map(Into::into), runs.into()),
             Inline::Note { key, runs } => Piece::Note(key.into(), runs.into()),
+            Inline::Math(tex) => Piece::Math(MathPiece { tex: tex.into(), key: None }),
             Inline::Rule => Piece::Rule,
             Inline::Table(t) => Piece::Table(TablePiece::new(t)),
             Inline::Html(t) => Piece::Html(t.into()),
@@ -578,6 +588,7 @@ pub fn fill(v: &mut Viewer, ix: usize, highlighter: Option<&Arc<Highlighter>>, c
     track_remote(v, ix, cx);
     track_media(v, ix, &ctx.base_dir, cx);
     track_diagram(v, ix, ctx, cx);
+    track_math(v, ix, ctx, cx);
 }
 
 /// Block `ix`'s diagram: its cache key made for the frame's colours (again when they changed),
@@ -599,13 +610,13 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     }
     let (Some((_, key)), text) = (d.key.as_ref(), &d.text) else { return };
     let state = v.diagrams.get(key);
-    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoChrome)) {
+    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoRenderer)) {
         return;
     }
     if state.is_none() {
         crate::telemetry::md(crate::telemetry::MdFeature::Mermaid);
     }
-    let next = mermaid::advance(state, key, || mermaid::page(text, theme), mermaid::cache_dir, || mermaid::chrome().is_some());
+    let next = mermaid::advance(state, key, || mermaid::page(text, theme), mermaid::cache_dir, crate::render_view::available);
     if matches!(next, Some(Diagram::Error(_))) {
         crate::telemetry::error(crate::telemetry::Failure::MermaidFailed);
     }
@@ -616,6 +627,37 @@ fn track_diagram(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Vie
     if rendering {
         Viewer::start_renders(cx);
     }
+}
+
+/// Block `ix`'s display math, as a diagram is tracked (`track_diagram`): its key made for the
+/// frame's text colour and size, then its state moved along once, sharing the diagrams' queue,
+/// cache and states.
+fn track_math(v: &mut Viewer, ix: usize, ctx: &BlockCtx, cx: &mut Context<Viewer>) {
+    let made_for = (ctx.mermaid.text.clone(), math_size(ctx));
+    let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
+    let Some(Piece::Math(m)) = r.pieces.first_mut() else { return };
+    if !m.key.as_ref().is_some_and(|(f, _)| *f == made_for) {
+        m.key = Some((made_for.clone(), crate::md_math::cache_key(&m.tex, &made_for.0, made_for.1)));
+    }
+    let (Some((_, key)), tex) = (m.key.as_ref(), m.tex.clone()) else { return };
+    let state = v.diagrams.get(key);
+    if matches!(state, Some(Diagram::Ready { .. } | Diagram::Error(_) | Diagram::NoRenderer)) {
+        return;
+    }
+    let (color, size) = made_for;
+    let next = mermaid::advance(state, key, || crate::md_math::page(&tex, &color, size), mermaid::cache_dir, crate::render_view::available);
+    let rendering = next.as_ref().is_none_or(|n| *n == Diagram::Rendering);
+    if let Some(next) = next {
+        v.diagrams.insert(key.clone(), next);
+    }
+    if rendering {
+        Viewer::start_renders(cx);
+    }
+}
+
+/// The size display math is drawn at: the text's, a little larger, as a page sets an equation.
+fn math_size(ctx: &BlockCtx) -> u32 {
+    (ctx.font_size * PARA * 1.1).round() as u32
 }
 
 /// Block `ix`'s local videos and audio, an open section's included: each video's poster moved
@@ -1379,6 +1421,7 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
             let body = (!runs.is_empty()).then(|| text_element(j, runs, FontWeight::NORMAL, ctx.text, ctx, parts));
             alert_shell(*kind, title.as_ref(), body, ctx)
         }
+        Piece::Math(m) => math_element(m, v, ctx),
         Piece::Note(key, runs) => {
             let text = text_element(j, runs, FontWeight::NORMAL, ctx.dim, ctx, parts);
             note_shell(key, text, ctx, parts)
@@ -1631,6 +1674,29 @@ fn note_shell(key: &SharedString, text: AnyElement, ctx: &BlockCtx, parts: &Part
         .child(div().min_w_0().child(text))
         .children(back)
         .into_any_element()
+}
+
+/// Display math: its picture centred once drawn; while it is drawn, or when it cannot be, its
+/// TeX as text (`md_math::inline_text`), with the error under it in the error colour.
+fn math_element(m: &MathPiece, v: &Viewer, ctx: &BlockCtx) -> AnyElement {
+    let state = m.key.as_ref().and_then(|(_, key)| v.diagrams.get(key));
+    let row = div().w_full().flex().flex_col().items_center();
+    match state {
+        Some(Diagram::Ready { png, w, .. }) => {
+            let (dim, border) = (ctx.dim, ctx.border);
+            row.child(img(png.clone()).w(px(*w as f32)).max_w_full().with_fallback(move || alt_box("equation".into(), dim, border).into_any_element())).into_any_element()
+        }
+        other => {
+            let error = match other {
+                Some(Diagram::Error(e)) => Some(format!("equation: {e}")),
+                Some(Diagram::NoRenderer) => Some("equation: this window cannot draw equations".into()),
+                _ => None,
+            };
+            row.child(div().italic().text_color(ctx.dim).child(crate::md_math::inline_text(&m.tex)))
+                .children(error.map(|e| div().text_size(px(ctx.font_size * NOTE_SCALE)).text_color(ctx.deleted).child(e)))
+                .into_any_element()
+        }
+    }
 }
 
 /// A footnote reference's number as raised digits.
@@ -2215,7 +2281,7 @@ fn diagram_element(ix: usize, d: &DiagramPiece, v: &Viewer, ctx: &BlockCtx, part
             return img(png.clone()).w(px(*w as f32)).max_w_full().with_fallback(move || alt_box("diagram".into(), dim, border).into_any_element()).into_any_element();
         }
         Some(Diagram::Error(e)) => format!("diagram: {e}").into(),
-        Some(Diagram::NoChrome) => "diagram: install Google Chrome to render".into(),
+        Some(Diagram::NoRenderer) => "diagram: this window cannot draw diagrams".into(),
         Some(Diagram::Rendering) | None => "diagram: rendering".into(),
     };
     let colour = if matches!(state, Some(Diagram::Error(_))) { ctx.deleted } else { ctx.dim };

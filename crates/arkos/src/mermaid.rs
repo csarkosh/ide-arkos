@@ -1,27 +1,22 @@
-//! Mermaid diagrams in the rendered view (spec 6): a fenced code block whose info string is
-//! `mermaid` is drawn by Google Chrome, headless, from a page Arkos writes into
-//! `<cache>/mermaid/` beside the bundled mermaid script, to a PNG cached by the SHA-256 of the
-//! source, the theme's colours and the scale (`<key>.png`, with its size in `<key>.json`). Two
-//! Chrome runs per render: `--dump-dom` reads the size the page puts in its title, then
-//! `--screenshot` takes a transparent picture of exactly that size at twice the pixels. Nothing
-//! leaves the machine: the page is a local file whose content security policy allows only local
-//! files and its own inline script (by its hash), and Chrome runs with every background service off, the name resolver
-//! pointed nowhere and a throwaway profile of the process's own (`profile-<pid>`, made for each
-//! render and removed after it). One render runs at a time in the process (a window is a
+//! Mermaid diagrams in the rendered view (spec 6; diagrams and math spec, section 1): a fenced
+//! code block whose info string is `mermaid` is drawn by the window's own hidden web view
+//! (`render_view`) from a page Arkos writes into `<cache>/mermaid/` beside the bundled mermaid
+//! script, to a PNG cached by the SHA-256 of the source, the theme's colours and the scale
+//! (`<key>.png`, with its size in `<key>.json`). The page's script puts `ok <w> <h>` or
+//! `error <message>` in its title, and the view takes a snapshot of that size. Nothing leaves the
+//! machine: the page is a local file whose content security policy allows only local files and its
+//! own inline script (by its hash). One render runs at a time in the process (a window is a
 //! process), through the `queue()` gate, and only for a block drawn rendered, never for the one
 //! being typed in; the folder is swept at launch (`cache::sweep_all`).
 
-use crate::remote_image::{self, FetchQueue};
+use crate::remote_image::FetchQueue;
 use crate::theme::Chrome;
 use sha2::{Digest, Sha256};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard};
 
 /// The version of the vendored mermaid, in a macro so `SCRIPT_NAME` can be built from it.
 macro_rules! version {
@@ -37,11 +32,11 @@ pub const VERSION: &str = version!();
 pub const SCRIPT_NAME: &str = concat!("mermaid-", version!(), ".min.js");
 /// The bundled script.
 const SCRIPT: &[u8] = include_bytes!("../assets/mermaid.min.js");
-/// The device scale factor of the screenshot: a diagram's PNG has twice the pixels of its size
-/// in CSS pixels, and is drawn at that size.
+/// The scale of the snapshot: a diagram's PNG has twice the pixels of its size in CSS pixels on
+/// any screen, and is drawn at that size.
 pub const SCALE: u32 = 2;
 /// The widest a diagram is drawn, in CSS pixels; a wider one is scaled down to it.
-const MAX_W: u32 = 2000;
+pub const MAX_W: u32 = 2000;
 /// The longest side, in pixels, of an image gpui can draw (its Metal atlas's limit): a PNG with
 /// a longer side would be ready and draw nothing.
 const MAX_SIDE: u32 = 16_384;
@@ -49,24 +44,20 @@ const MAX_SIDE: u32 = 16_384;
 /// is an error.
 const MAX_H: u32 = MAX_SIDE / SCALE;
 /// The most pixels a diagram's PNG may have (64 million, 256 MB decoded): a bigger one is an
-/// error rather than a screenshot Chrome and the view both have to hold.
+/// error rather than a snapshot the web view and the rendered view both have to hold.
 const MAX_PIXELS: u64 = 64_000_000;
-/// The wall clock after which a Chrome run that is still going is killed.
-const BACKSTOP: Duration = Duration::from_secs(20);
-/// How long the DOM is waited for once the first Chrome run has ended.
-const READ_GRACE: Duration = Duration::from_secs(2);
 /// The info line of a diagram whose render ended with no PNG and no message of its own.
 const FAILED: &str = "the render failed";
 
 /// Where one diagram is, for the rendered view, by its cache key: being rendered (or waiting
-/// for its turn), in the cache with its size in CSS pixels, failed with mermaid's or Chrome's
-/// message, or not to be rendered on this Mac, which has no Google Chrome.
+/// for its turn), in the cache with its size in CSS pixels, failed with mermaid's or the web
+/// view's message, or not to be rendered in this window, which has no web view to draw with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Diagram {
     Rendering,
     Ready { png: PathBuf, w: u32, h: u32 },
     Error(String),
-    NoChrome,
+    NoRenderer,
 }
 
 /// The theme colours a diagram is drawn in, each as `#rrggbb`: mermaid's primary colour (the
@@ -140,7 +131,7 @@ fn colour(value: &str) -> String {
     value.chars().filter(|c| *c == '#' || c.is_ascii_hexdigit()).collect()
 }
 
-/// The page Chrome renders `source` from, in `theme`'s colours: a content security policy that
+/// The page the web view renders `source` from, in `theme`'s colours: a content security policy that
 /// allows only local files and the one inline script the page holds, by its hash (no network,
 /// and no other script, whatever the diagram holds), the bundled script beside it, the source
 /// escaped in a `<pre class="mermaid">`, and a script that awaits `mermaid.run()` and then puts
@@ -198,7 +189,7 @@ mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: {{ back
 
 /// A content security policy source that allows the inline script `script` and nothing else:
 /// `'sha256-<the base64 of its SHA-256>'`, over the exact text between its tags.
-fn script_hash(script: &str) -> String {
+pub(crate) fn script_hash(script: &str) -> String {
     format!("'sha256-{}'", base64(&Sha256::digest(script.as_bytes())))
 }
 
@@ -215,153 +206,20 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The Google Chrome bundle: in `/Applications`, else in `~/Applications`, as the browser pane
-/// finds it by name. This is the one place a path to it is needed.
-pub fn chrome_app() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(|h| Path::new(&h).join("Applications/Google Chrome.app"));
-    std::iter::once(PathBuf::from("/Applications/Google Chrome.app")).chain(home).find(|app| app.is_dir())
-}
-
-/// The Chrome program to render with, looked for once in the process; `None` when Google Chrome
-/// is not installed.
-pub fn chrome() -> Option<&'static Path> {
-    static CHROME: OnceLock<Option<PathBuf>> = OnceLock::new();
-    CHROME.get_or_init(|| chrome_app().map(|app| app.join("Contents/MacOS/Google Chrome")).filter(|exe| exe.is_file())).as_deref()
-}
-
-/// The throwaway Chrome profile of process `pid` in `dir`: made for each render and removed
-/// after it; one a process left behind is swept once that process has ended.
-pub fn profile_dir(dir: &Path, pid: u32) -> PathBuf {
-    dir.join(format!("profile-{pid}"))
-}
-
-/// The `file:` url of an absolute path, every byte but the unreserved ones and `/`
-/// percent-encoded (the cache is under "Application Support").
-fn file_url(path: &Path) -> String {
-    let mut url = String::from("file://");
-    for &b in path.as_os_str().as_encoded_bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
-            url.push(b as char);
-        } else {
-            url.push_str(&format!("%{b:02X}"));
-        }
-    }
-    url
-}
-
-/// The flags of both Chrome runs: headless, with the user data in `profile`, and nothing that
-/// reaches out: no background networking, component updates, sync, default apps, extensions or
-/// crash reports, every host name resolving to nothing, no proxy (a PAC script would be fetched)
-/// and no WebRTC traffic outside one, and no keychain prompt. Virtual time lets the page's
-/// script finish before Chrome reads the page, and `--timeout` ends a page that never settles.
-pub fn common_args(profile: &Path) -> Vec<String> {
-    [
-        "--headless=new",
-        "--disable-gpu",
-        "--no-first-run",
-        "--use-mock-keychain",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--disable-default-apps",
-        "--disable-extensions",
-        "--no-default-browser-check",
-        "--disable-breakpad",
-        "--host-resolver-rules=MAP * ~NOTFOUND",
-        "--no-proxy-server",
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-    ]
-    .into_iter()
-    .map(String::from)
-    .chain([format!("--user-data-dir={}", profile.display()), "--virtual-time-budget=5000".into(), "--timeout=15000".into()])
-    .collect()
-}
-
-/// The first run's command line, the program first: `page` loaded and its DOM printed on
-/// stdout, where `size_from_dom` reads the title.
-pub fn dump_args(chrome: &Path, profile: &Path, page: &Path) -> Vec<String> {
-    let mut args = vec![chrome.to_string_lossy().into_owned()];
-    args.extend(common_args(profile));
-    args.extend(["--dump-dom".into(), file_url(page)]);
-    args
-}
-
-/// The second run's command line, the program first: `page` in a window of `w` by `h` CSS
-/// pixels at `SCALE` times the pixels, on a transparent background with no scroll bars,
-/// screenshot into `out` (a PNG of `SCALE * w` by `SCALE * h`).
-pub fn shot_args(chrome: &Path, profile: &Path, page: &Path, out: &Path, w: u32, h: u32) -> Vec<String> {
-    let mut args = vec![chrome.to_string_lossy().into_owned()];
-    args.extend(common_args(profile));
-    args.extend([
-        "--hide-scrollbars".into(),
-        format!("--force-device-scale-factor={SCALE}"),
-        "--default-background-color=00000000".into(),
-        format!("--window-size={w},{h}"),
-        format!("--screenshot={}", out.display()),
-        file_url(page),
-    ]);
-    args
-}
-
-/// `text` with the entities Chrome writes in a page's text read back: the named ones HTML text
-/// needs and numeric ones. An entity not known is left as it is.
-fn unescape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        let entity = rest.find(';').map(|end| (&rest[1..end], end));
-        let decoded = entity.and_then(|(name, end)| {
-            let c = match name {
-                "amp" => Some('&'),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "nbsp" => Some(' '),
-                _ => match name.strip_prefix("#x").or_else(|| name.strip_prefix("#X")) {
-                    Some(hex) => u32::from_str_radix(hex, 16).ok().and_then(char::from_u32),
-                    None => name.strip_prefix('#').and_then(|d| d.parse().ok()).and_then(char::from_u32),
-                },
-            };
-            c.map(|c| (c, end))
-        });
-        match decoded {
-            Some((c, end)) => {
-                out.push(c);
-                rest = &rest[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// What the page's script put in its title, from the DOM Chrome printed: the diagram's size in
-/// CSS pixels for `ok <w> <h>`, the message for `error <message>`, and an error when the title
-/// is neither (the script did not finish within the virtual time).
-pub fn size_from_dom(dom: &str) -> Result<(u32, u32), String> {
-    let title = dom.find("<title>").and_then(|at| {
-        let rest = &dom[at + "<title>".len()..];
-        rest.find("</title>").map(|end| unescape_html(&rest[..end]))
-    });
-    let title = title.ok_or_else(|| "the page has no title".to_string())?;
+/// What the page's script put in its title: the diagram's size in CSS pixels for `ok <w> <h>`,
+/// the message for `error <message>`, and `None` while the title is neither (the script has not
+/// finished).
+pub fn size_from_title(title: &str) -> Result<Option<(u32, u32)>, String> {
     if let Some(message) = title.strip_prefix("error ") {
-        return Err(message.trim().to_string());
+        let message = message.trim();
+        return Err(if message.is_empty() { FAILED.to_string() } else { message.to_string() });
     }
-    let size = title.strip_prefix("ok ").and_then(|wh| {
-        let mut parts = wh.split_whitespace().map(str::parse::<u32>);
-        match (parts.next(), parts.next(), parts.next()) {
-            (Some(Ok(w)), Some(Ok(h)), None) if w > 0 && h > 0 => Some((w, h)),
-            _ => None,
-        }
-    });
-    size.ok_or_else(|| "mermaid did not finish".to_string())
+    let Some(wh) = title.strip_prefix("ok ") else { return Ok(None) };
+    let mut parts = wh.split_whitespace().map(str::parse::<u32>);
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(w)), Some(Ok(h)), None) if w > 0 && h > 0 => Ok(Some((w, h))),
+        _ => Err(format!("the page gave no size: {title}")),
+    }
 }
 
 /// The PNG and the size file of the diagram with `key` in `dir`.
@@ -435,10 +293,10 @@ fn errors() -> MutexGuard<'static, BTreeMap<String, String>> {
 
 /// What the diagram with `key` the rendered view shows becomes, `None` when it stays as it is:
 /// one not seen yet (`state` is `None`) is ready when an earlier render left it in the cache,
-/// not to be rendered when there is no Chrome, else queued with its page and rendering; one
+/// not to be rendered when the window cannot draw, else queued with its page and rendering; one
 /// rendering whose job has ended (the queue no longer has it) is ready or failed by what the
-/// cache holds. `page`, `dir` and `has_chrome` are asked for only when they are needed.
-pub fn advance(state: Option<&Diagram>, key: &str, page: impl FnOnce() -> String, dir: impl FnOnce() -> PathBuf, has_chrome: impl FnOnce() -> bool) -> Option<Diagram> {
+/// cache holds. `page`, `dir` and `can_render` are asked for only when they are needed.
+pub fn advance(state: Option<&Diagram>, key: &str, page: impl FnOnce() -> String, dir: impl FnOnce() -> PathBuf, can_render: impl FnOnce() -> bool) -> Option<Diagram> {
     match state {
         None => {
             // One guard from the pending check to the want: a render that lands in between is
@@ -449,7 +307,7 @@ pub fn advance(state: Option<&Diagram>, key: &str, page: impl FnOnce() -> String
             }
             Some(match cached(&dir(), key) {
                 Some(ready) => ready,
-                None if !has_chrome() => Diagram::NoChrome,
+                None if !can_render() => Diagram::NoRenderer,
                 None => {
                     errors().remove(key);
                     queue.want(Job { key: key.to_string(), page: page() });
@@ -462,61 +320,45 @@ pub fn advance(state: Option<&Diagram>, key: &str, page: impl FnOnce() -> String
     }
 }
 
-/// Runs `job` with the process's Chrome into `dir`, blocking the calling thread; a failure's
-/// message is kept for the views waiting on it (`advance`). Frees the job's turn either way.
-pub fn run_job(dir: &Path, job: &Job) {
-    let rendered = chrome().ok_or_else(|| "Google Chrome is not installed".to_string()).and_then(|chrome| render(dir, chrome, job));
-    if let Err(e) = rendered {
-        eprintln!("arkos: cannot render a mermaid diagram (mermaid {VERSION}): {e}");
-        errors().insert(job.key.clone(), e);
-    }
-    queue().done(job.key.as_str());
-}
-
-/// Renders `job` with `chrome` into `dir` (made when missing), blocking the calling thread: the
-/// bundled script written out once, the page written to `<key>.<pid>.html` (two windows may
-/// render the same diagram), the size read in a first run and the screenshot taken in a second
-/// into `<key>.<pid>.png`, then the size file and the PNG renamed into place, the size first so
-/// a PNG is never there without it. The page, the profile and anything half made are removed
-/// either way. Returns the diagram's size in CSS pixels.
-pub fn render(dir: &Path, chrome: &Path, job: &Job) -> Result<(u32, u32), String> {
+/// Writes the bundled scripts and `job`'s page into `dir` (made when missing), the page as
+/// `<key>.<pid>.html` (two windows may render the same diagram); returns the page's path.
+pub fn prepare(dir: &Path, job: &Job) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     write_script(dir)?;
-    let pid = std::process::id();
-    let page = dir.join(format!("{}.{pid}.html", job.key));
-    let shot = dir.join(format!("{}.{pid}.png", job.key));
-    let size_part = dir.join(format!("{}.{pid}.json", job.key));
-    let (png, size) = cache_files(dir, &job.key);
-    let profile = profile_dir(dir, pid);
-    // A folder left by an earlier process with this pid that ended in the middle of a render.
-    let _ = std::fs::remove_dir_all(&profile);
-    let rendered = std::fs::create_dir_all(&profile)
-        .and_then(|()| std::fs::write(&page, &job.page))
-        .map_err(|e| e.to_string())
-        .and_then(|()| run_chrome(&dump_args(chrome, &profile, &page), true))
-        .and_then(|dom| size_from_dom(&dom))
-        .and_then(|(w, h)| fits(w, h).map(|()| (w, h)))
-        .and_then(|(w, h)| run_chrome(&shot_args(chrome, &profile, &page, &shot, w, h), false).map(|_| (w, h)))
-        .and_then(|(w, h)| {
-            if !std::fs::metadata(&shot).is_ok_and(|m| m.len() > 0) {
-                return Err("Chrome made no screenshot".to_string());
-            }
-            std::fs::write(&size_part, serde_json::json!({ "w": w, "h": h }).to_string())
-                .and_then(|()| std::fs::rename(&size_part, &size))
-                .and_then(|()| std::fs::rename(&shot, &png))
-                .map_err(|e| e.to_string())
-                .map(|()| (w, h))
-        });
-    for leftover in [&page, &shot, &size_part] {
-        let _ = std::fs::remove_file(leftover);
-    }
-    let _ = std::fs::remove_dir_all(&profile);
-    rendered
+    crate::md_math::write_script(dir)?;
+    let page = dir.join(format!("{}.{}.html", job.key, std::process::id()));
+    std::fs::write(&page, &job.page).map_err(|e| format!("cannot write {}: {e}", page.display()))?;
+    Ok(page)
 }
 
-/// Whether a diagram of `w` by `h` CSS pixels can be screenshot and drawn: its PNG's sides at
+/// Ends the render of `key` from `page`: its size and PNG written into the cache (the size file
+/// first, each through a file of the process's own and a rename, so a PNG is never there without
+/// its size), or its message kept for the views waiting on it (`advance`). The page goes, and the
+/// turn is freed, either way.
+pub fn finish(dir: &Path, key: &str, page: &Path, result: Result<(u32, u32, Vec<u8>), String>) {
+    let pid = std::process::id();
+    let (png, size) = cache_files(dir, key);
+    let (png_part, size_part) = (dir.join(format!("{key}.{pid}.png")), dir.join(format!("{key}.{pid}.json")));
+    let written = result.and_then(|(w, h, bytes)| {
+        std::fs::write(&size_part, serde_json::json!({ "w": w, "h": h }).to_string())
+            .and_then(|()| std::fs::write(&png_part, bytes))
+            .and_then(|()| std::fs::rename(&size_part, &size))
+            .and_then(|()| std::fs::rename(&png_part, &png))
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = written {
+        eprintln!("arkos: cannot render a diagram (mermaid {VERSION}): {e}");
+        errors().insert(key.to_string(), e);
+    }
+    for leftover in [page, &png_part, &size_part] {
+        let _ = std::fs::remove_file(leftover);
+    }
+    queue().done(key);
+}
+
+/// Whether a diagram of `w` by `h` CSS pixels can be snapshot and drawn: its PNG's sides at
 /// most `MAX_SIDE` and its pixels at most `MAX_PIXELS`; else the error the block shows.
-fn fits(w: u32, h: u32) -> Result<(), String> {
+pub fn fits(w: u32, h: u32) -> Result<(), String> {
     if w.max(h) > MAX_H {
         return Err(format!("the diagram is {w} by {h} pixels, more than {MAX_H} on a side"));
     }
@@ -557,48 +399,12 @@ fn old_scripts(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Runs one Chrome command line (`dump_args` or `shot_args`, the program first) with a minimal
-/// environment in a process group of its own, killed with the group once `BACKSTOP` passes.
-/// Returns what it printed on stdout when `capture` is set (read on a thread of its own, so a
-/// large page cannot fill the pipe while the wait goes on), else nothing.
-fn run_chrome(command: &[String], capture: bool) -> Result<String, String> {
-    use std::os::unix::process::CommandExt;
-    let (program, args) = command.split_first().ok_or_else(|| "no command".to_string())?;
-    let mut cmd = Command::new(program);
-    cmd.args(args).env_clear().env("PATH", "/usr/bin:/bin");
-    if let Some(home) = std::env::var_os("HOME") {
-        cmd.env("HOME", home);
-    }
-    let stdout = if capture { Stdio::piped() } else { Stdio::null() };
-    let mut child = cmd.stdin(Stdio::null()).stdout(stdout).stderr(Stdio::null()).process_group(0).spawn().map_err(|e| format!("cannot run Google Chrome: {e}"))?;
-    let reader = child.stdout.take().map(|mut pipe| {
-        let (send, receive) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut out = String::new();
-            let _ = pipe.read_to_string(&mut out);
-            let _ = send.send(out);
-        });
-        receive
-    });
-    let waited = remote_image::wait_bounded(&mut child, BACKSTOP, "Google Chrome");
-    // A helper Chrome started could hold the pipe open after Chrome itself ended: the reader is
-    // given a moment, not waited for.
-    let out = reader.and_then(|r| r.recv_timeout(READ_GRACE).ok()).unwrap_or_default();
-    let status = waited?;
-    if status.success() {
-        Ok(out)
-    } else {
-        Err(format!("Google Chrome: {status}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
-    fn the_page_carries_the_theme_the_csp_and_the_escaped_source_and_the_arguments_are_fixed() {
+    fn the_page_carries_the_theme_the_csp_and_the_escaped_source_and_the_title_says_how_it_went() {
         let t = MermaidTheme { primary: "#2a0062".into(), text: "#f3edff".into(), line: "#f3edff".into(), secondary: "#3b1a86".into(), tertiary: "#330076".into() };
         let html = page("graph TD; A-->B & <C>", &t);
         assert!(html.contains("primaryColor: '#2a0062'") && html.contains("fontFamily: '-apple-system, system-ui'"));
@@ -620,23 +426,30 @@ mod tests {
         assert_eq!(cache_key("a", &t, 2), cache_key("a", &t, 2));
         let t2 = MermaidTheme { primary: "#000000".into(), ..t.clone() };
         assert_ne!(cache_key("a", &t, 2), cache_key("a", &t2, 2), "the values, not a name");
-        let c = Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-        let common = common_args(Path::new("/p"));
-        for flag in ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps", "--disable-extensions", "--no-default-browser-check", "--disable-breakpad", "--host-resolver-rules=MAP * ~NOTFOUND", "--no-proxy-server", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--user-data-dir=/p", "--virtual-time-budget=5000", "--timeout=15000"] {
-            assert!(common.contains(&flag.to_string()), "{flag}");
-        }
-        let d = dump_args(c, Path::new("/p"), Path::new("/k.html"));
-        assert!(d.contains(&"--dump-dom".to_string()) && d.last().unwrap() == "file:///k.html");
-        let s = shot_args(c, Path::new("/p"), Path::new("/k.html"), Path::new("/k.png"), 640, 480);
-        for flag in ["--window-size=640,480", "--screenshot=/k.png", "--force-device-scale-factor=2", "--default-background-color=00000000", "--hide-scrollbars"] {
-            assert!(s.contains(&flag.to_string()), "{flag}");
-        }
-        assert_eq!(size_from_dom("<html><head><title>ok 640 480</title></head></html>"), Ok((640, 480)));
-        assert_eq!(size_from_dom("<title>error Parse error on line 2: &lt;x&gt;</title>"), Err("Parse error on line 2: <x>".into()));
-        assert!(size_from_dom("<title></title>").is_err());
+        assert_eq!(size_from_title("ok 640 480"), Ok(Some((640, 480))));
+        assert_eq!(size_from_title(""), Ok(None), "not finished yet");
+        assert_eq!(size_from_title("error Parse error on line 2: <x>"), Err("Parse error on line 2: <x>".into()));
+        assert_eq!(size_from_title("error "), Err(FAILED.into()));
+        assert!(size_from_title("ok 0 10").is_err() && size_from_title("ok 1 2 3").is_err());
         assert!(is_diagram_info("mermaid") && is_diagram_info(" mermaid ") && !is_diagram_info("mermaidjs"));
         assert_eq!(SCRIPT_NAME, format!("mermaid-{VERSION}.min.js"));
-        assert!(profile_dir(Path::new("/c"), 42).ends_with("profile-42"));
+    }
+
+    #[test]
+    fn a_finished_render_lands_in_the_cache_or_leaves_its_message_and_frees_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let job = Job { key: "test-finish-diagram".into(), page: "<p>".into() };
+        queue().want(job.clone());
+        let page = prepare(dir.path(), &job).unwrap();
+        assert!(page.is_file() && dir.path().join(SCRIPT_NAME).is_file());
+        finish(dir.path(), &job.key, &page, Ok((12, 8, b"png".to_vec())));
+        assert!(!page.exists() && !queue().is_pending(job.key.as_str()));
+        assert_eq!(cached(dir.path(), &job.key), Some(Diagram::Ready { png: dir.path().join("test-finish-diagram.png"), w: 12, h: 8 }));
+        let bad = Job { key: "test-finish-error".into(), page: "<p>".into() };
+        queue().want(bad.clone());
+        let page = prepare(dir.path(), &bad).unwrap();
+        finish(dir.path(), &bad.key, &page, Err("Parse error".into()));
+        assert_eq!(advance(Some(&Diagram::Rendering), &bad.key, || unreachable!(), || dir.path().to_path_buf(), || true), Some(Diagram::Error("Parse error".into())));
     }
 
     #[test]
@@ -644,14 +457,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let at = || dir.path().to_path_buf();
         let page = || "<p>".to_string();
-        let (old, new, gone) = ("test-cached-diagram", "test-fresh-diagram", "test-no-chrome-diagram");
+        let (old, new, gone) = ("test-cached-diagram", "test-fresh-diagram", "test-no-renderer-diagram");
         std::fs::write(dir.path().join(format!("{old}.png")), "png").unwrap();
         std::fs::write(dir.path().join(format!("{old}.json")), r#"{"w":320,"h":200}"#).unwrap();
         let ready = Diagram::Ready { png: dir.path().join(format!("{old}.png")), w: 320, h: 200 };
-        assert_eq!(advance(None, old, page, at, || panic!("no Chrome check for a cached diagram")), Some(ready.clone()), "a diagram an earlier render left is used at once, with its size");
+        assert_eq!(advance(None, old, page, at, || panic!("no renderer check for a cached diagram")), Some(ready.clone()), "a diagram an earlier render left is used at once, with its size");
         assert!(!queue().is_pending(old));
-        assert_eq!(advance(None, gone, page, at, || false), Some(Diagram::NoChrome));
-        assert!(!queue().is_pending(gone), "nothing is queued without Chrome");
+        assert_eq!(advance(None, gone, page, at, || false), Some(Diagram::NoRenderer));
+        assert!(!queue().is_pending(gone), "nothing is queued without a renderer");
         assert_eq!(advance(None, new, page, at, || true), Some(Diagram::Rendering));
         assert!(queue().is_pending(new), "a diagram not in the cache is queued");
         assert_eq!(advance(None, new, || panic!("no second page"), at, || true), Some(Diagram::Rendering), "a second view waits on the same job");
@@ -679,16 +492,11 @@ mod tests {
     }
 
     #[test]
-    fn the_theme_comes_from_the_chrome_and_the_page_url_is_encoded() {
+    fn the_theme_comes_from_the_chrome_and_a_colour_cannot_end_its_string() {
         let theme = crate::theme::builtin("navy").unwrap();
         let t = MermaidTheme::from_chrome(&theme.chrome);
         assert_eq!(t, MermaidTheme { primary: theme.chrome.tab_inactive.hex(), text: theme.chrome.text.hex(), line: theme.chrome.text.hex(), secondary: theme.chrome.banner.hex(), tertiary: theme.chrome.window_bg.hex() });
-        let d = dump_args(Path::new("/c"), Path::new("/p"), Path::new("/Users/a/Library/Application Support/arkos/cache/mermaid/k.1.html"));
-        assert_eq!(d.first().unwrap(), "/c", "the program first");
-        assert_eq!(d.last().unwrap(), "file:///Users/a/Library/Application%20Support/arkos/cache/mermaid/k.1.html");
         assert!(!page("a", &MermaidTheme { primary: "#fff'); alert(1); ('".into(), ..t }).contains("alert(1)"), "a colour cannot end its string");
-        assert_eq!(size_from_dom("<title>ok 0 10</title>"), Err("mermaid did not finish".into()));
-        assert_eq!(size_from_dom("<title>error a &amp; b &#39;c&#x27;</title>"), Err("a & b 'c'".into()));
     }
 
     #[test]
