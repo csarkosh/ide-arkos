@@ -1051,9 +1051,10 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
     row.children(children)
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
-            // A task box's press is for the box, and Cmd+click is for a link or an image: the
-            // block stays rendered so their clicks land.
-            if task_press.replace(false) || ev.modifiers.platform {
+            // A task box's press is for the box, Cmd+click is for a link or an image, and a press
+            // on a revealed link's address is for the address: the caret stays put so their
+            // clicks land.
+            if task_press.replace(false) || ev.modifiers.platform || on_link_address(&texts_down, ev.position) {
                 return;
             }
             v_down.update(cx, |v, cx| {
@@ -1188,6 +1189,14 @@ fn caret_at(v: &Viewer, ix: usize, texts: &[(TextLayout, Part)], at: Point<Pixel
         Part::Runs(runs) => md_blocks::pos_of_offset(block, lines, md_blocks::source_offset_at(runs, byte)),
         Part::Code(text) => code_pos(block, lines, text, byte),
         Part::Reveal(display) => md_blocks::pos_of_offset(block, lines, display.source_of(byte)),
+    })
+}
+
+/// Whether a window point is on a revealed link's address in one of a row's texts.
+fn on_link_address(texts: &[(TextLayout, Part)], at: Point<Pixels>) -> bool {
+    texts.iter().any(|(layout, part)| match part {
+        Part::Reveal(d) if !d.links.is_empty() && layout.bounds().contains(&at) => layout.index_for_position(at).is_ok_and(|b| d.links.iter().any(|(r, _)| r.start <= b && b < r.end)),
+        _ => false,
     })
 }
 
@@ -1555,14 +1564,17 @@ fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, co
     let styled = StyledText::new(shown).with_runs(runs);
     let layout = styled.layout().clone();
     parts.texts.push((layout.clone(), Part::Reveal(display.clone())));
-    let text = if links.is_empty() {
+    // A revealed link's address follows on a plain click; anywhere else in a link, Cmd+click. The
+    // addresses come first, so a click on one is the address's.
+    let dests = display.links.len();
+    let text = if links.is_empty() && dests == 0 {
         styled.into_any_element()
     } else {
-        let (ranges, targets): (Vec<_>, Vec<_>) = links.into_iter().unzip();
+        let (ranges, targets): (Vec<_>, Vec<_>) = display.links.iter().cloned().chain(links).unzip();
         let (base_dir, viewer) = (ctx.base_dir.clone(), ctx.viewer.clone());
         InteractiveText::new(("md-text", j), styled)
             .on_click(ranges, move |i, window, cx| {
-                if window.modifiers().platform {
+                if i < dests || window.modifiers().platform {
                     if let Some(target) = targets.get(i) {
                         follow_link(link_action(target, &base_dir), &viewer, cx);
                     }
