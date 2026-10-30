@@ -1044,6 +1044,11 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
         };
         children.push(el);
     }
+    // An active picture keeps its picture and shows its source under it, where the caret is.
+    if let Some(rv) = reveal.filter(|rv| rv.tree.picture) {
+        let source = Rc::new(Display::verbatim(rv.text, 0..rv.text.trim_end().len()));
+        children.push(reveal_text(ix, r.pieces.len(), source, FontWeight::NORMAL, ctx.dim, rv, ctx, &mut parts));
+    }
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
     // A grid's cells place the caret themselves and give the row no text to map a drag through.

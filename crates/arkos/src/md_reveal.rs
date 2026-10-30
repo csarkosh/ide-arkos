@@ -24,14 +24,15 @@ pub struct Focus {
 }
 
 /// A block's element tree with its markers, made once per block text and kept with the block's
-/// cached rendering: whether the reveal can draw it (`md_blocks::revealable`) and whether it is a
-/// paragraph of images only, which keeps its picture form until it has a reveal of its own.
+/// cached rendering: whether the reveal can draw it (`md_blocks::revealable`), and whether it is
+/// a picture (a paragraph of images only, or an HTML block that is one `<img>`), which keeps its
+/// picture while active and shows its source under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockTree {
     pub nodes: Vec<Node>,
     pub markers: Vec<Marker>,
     pub revealable: bool,
-    pub image_only: bool,
+    pub picture: bool,
 }
 
 impl BlockTree {
@@ -42,19 +43,25 @@ impl BlockTree {
         let image = |n: &Node| n.kind == NodeKind::Image || (matches!(n.kind, NodeKind::Link { .. }) && n.children.len() == 1 && n.children[0].kind == NodeKind::Image);
         let blank = |n: &Node| n.kind == NodeKind::SoftBreak || (n.kind == NodeKind::Text && n.text.trim().is_empty());
         let image_only = matches!(&nodes[..], [p] if p.kind == NodeKind::Paragraph && p.children.iter().any(image) && p.children.iter().all(|c| image(c) || blank(c)));
-        BlockTree { nodes, markers, revealable, image_only }
+        let picture = image_only || md_blocks::html_image(text).is_some();
+        BlockTree { nodes, markers, revealable, picture }
     }
 }
 
-/// Whether a block of `kind` can be revealed at all: paragraphs, headings, lists and quotes.
+/// Whether a block of `kind` can be revealed at all: paragraphs, headings, lists and quotes, and
+/// an HTML block when it is one `<img>`.
 pub fn kind_reveals(kind: &BlockKind) -> bool {
-    matches!(kind, BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote)
+    matches!(kind, BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote | BlockKind::Html)
 }
 
 /// Whether the active block of `kind` with this tree is drawn revealed; otherwise it is drawn as
 /// its source, as every active block was before.
 pub fn reveals(kind: &BlockKind, tree: &BlockTree) -> bool {
-    kind_reveals(kind) && tree.revealable && !tree.image_only
+    match kind {
+        BlockKind::Html => tree.picture,
+        BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::List | BlockKind::Quote => tree.revealable || tree.picture,
+        _ => false,
+    }
 }
 
 /// What a segment of the source shows as.
@@ -588,6 +595,14 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_s_source_is_its_text_as_written_with_the_identity_map() {
+        let src = "![a](a.png)\n\n";
+        let d = Display::verbatim(src, 0..11);
+        assert_eq!(d.text, "![a](a.png)");
+        assert!((0..=11).all(|o| d.display_of(o) == o && d.source_of(o) == o));
+    }
+
+    #[test]
     fn a_revealed_link_offers_its_address_as_a_display_range() {
         let src = "[e](https://x) [f](https://y)";
         let d = display(src, &[1]);
@@ -637,9 +652,13 @@ mod tests {
         assert!(!reveals(&K::CodeBlock { info: String::new() }, &BlockTree::new("```\nx\n```")));
         assert!(!reveals(&K::Table, &BlockTree::new("| a |\n|---|\n| 1 |")));
         assert!(!reveals(&K::Paragraph, &BlockTree::new("[t][r]\n\n[r]: https://x")), "a definition the tree cannot place");
-        assert!(!reveals(&K::Paragraph, &BlockTree::new("![a](a.png)")), "an image paragraph waits for its own form");
-        assert!(!reveals(&K::Paragraph, &BlockTree::new("[![a](a.svg)](https://a) ![b](b.png)")), "a badge row too");
-        assert!(reveals(&K::Paragraph, &BlockTree::new("![a](a.png) beside text")));
+        let picture = BlockTree::new("![a](a.png)");
+        assert!(picture.picture && reveals(&K::Paragraph, &picture), "an image paragraph keeps its picture and shows its source");
+        assert!(BlockTree::new("[![a](a.svg)](https://a) ![b](b.png)").picture, "a badge row too");
+        assert!(reveals(&K::Html, &BlockTree::new("<p align=\"center\"><img src=\"a.png\" width=\"300\"></p>")), "an <img> block");
+        assert!(!reveals(&K::Html, &BlockTree::new("<div>text</div>")), "any other HTML stays source");
+        let mixed = BlockTree::new("![a](a.png) beside text");
+        assert!(!mixed.picture && reveals(&K::Paragraph, &mixed), "an image in a sentence is part of the text");
     }
 
     #[test]
