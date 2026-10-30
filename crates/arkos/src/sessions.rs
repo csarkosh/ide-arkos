@@ -787,7 +787,7 @@ mod tests {
         let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let left = tree.panes()[0];
         let right = tree.split(left, crate::tree::Side::Right, Tab::Terminal { session: SessionId(2), cwd: None }).unwrap();
-        tree.add_tab(right, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default() });
+        tree.add_tab(right, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default(), presenting: false });
         assert!(m.working_panes(&tree).is_empty());
         m.note_state(SessionId(1), ClaudeState::Working);
         m.note_state(SessionId(2), ClaudeState::Working);
@@ -807,7 +807,7 @@ mod tests {
         let mut tree = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = tree.panes()[0];
         tree.add_tab(root, Tab::Terminal { session: SessionId(2), cwd: None });
-        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default() });
+        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default(), presenting: false });
         m.note_state(SessionId(1), ClaudeState::Waiting);
         m.note_state(SessionId(2), ClaudeState::Waiting);
         m.note_state(SessionId(9), ClaudeState::Waiting);
@@ -877,7 +877,7 @@ mod tests {
         let here = tempfile::tempdir().unwrap();
         let mut t = Tree::new(term(1));
         let a = t.focused;
-        t.add_tab(a, Tab::Viewer { path: PathBuf::from("/x"), mode: crate::tree::ViewMode::default() });
+        t.add_tab(a, Tab::Viewer { path: PathBuf::from("/x"), mode: crate::tree::ViewMode::default(), presenting: false });
         t.add_tab(a, Tab::Browser { url: "https://example.com".into() });
         let plan = reconcile(&t, &[info(1, here.path(), true)], here.path());
         assert_eq!(plan, vec![Reconcile::Attach { tab: t.tab_id(a, 0).unwrap(), session: SessionId(1) }]);

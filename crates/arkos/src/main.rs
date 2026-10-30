@@ -5364,7 +5364,7 @@ mod tests {
         let mut tree = Tree::new(Tab::Terminal { session: SessionId(5), cwd: None });
         let root = tree.panes()[0];
         assert_eq!(focused_session_of(&tree), Some(SessionId(5)));
-        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default() });
+        tree.add_tab(root, Tab::Viewer { path: "/f".into(), mode: crate::tree::ViewMode::default(), presenting: false });
         tree.activate(root, 1);
         assert_eq!(focused_session_of(&tree), None);
     }

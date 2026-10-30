@@ -1849,7 +1849,7 @@ mod tests {
     #[test]
     fn a_tab_is_a_terminal_a_viewer_a_browser_or_a_video() {
         assert_eq!(kind_of(&Tab::Terminal { session: protocol::SessionId(1), cwd: None }), PaneKind::Terminal);
-        assert_eq!(kind_of(&Tab::Viewer { path: "/p/a.md".into(), mode: crate::tree::ViewMode::Raw }), PaneKind::Viewer);
+        assert_eq!(kind_of(&Tab::Viewer { path: "/p/a.md".into(), mode: crate::tree::ViewMode::Raw, presenting: false }), PaneKind::Viewer);
         assert_eq!(kind_of(&Tab::Browser { url: String::new() }), PaneKind::Browser);
         assert_eq!(kind_of(&Tab::Video { path: "/p/a.mp4".into(), at: None, loop_range: None }), PaneKind::Video);
     }

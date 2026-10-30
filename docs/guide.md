@@ -182,7 +182,7 @@ Presentation mode reads a document without editing it: click "present" under the
 press Alt+Cmd+P. There is no caret and nothing reveals, a single click follows a link or a
 footnote, and the drag handles, the table's strips, the code block's language list, the
 right-click menu and the front matter label are gone. "edit" (or Alt+Cmd+P again, or Raw mode)
-ends it. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
+ends it. A tab remembers it: reopen the window and the tab is still presenting. To read in a column a letter page wide (816 px) in a wide pane, choose "Letter" under
 "Page width" in Settings, or run `arkos settings set viewer.page_width letter`. Cmd+= and Cmd+-
 make the focused document's text larger and smaller.
 
