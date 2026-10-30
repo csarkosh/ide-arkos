@@ -2763,6 +2763,12 @@ impl Root {
                     v.update(cx, |v, cx| v.save_command(cx));
                 }
             }
+            Bold | Italic => {
+                if let Some(v) = self.active_viewer() {
+                    let format = if matches!(cmd, Bold) { md_format::Format::Bold } else { md_format::Format::Italic };
+                    v.update(cx, |v, cx| v.format(format, cx));
+                }
+            }
             OpenFolder => self.pick_folder(cx),
             NewWindow => self.new_window(cx),
             About => aux::open_about(cx),

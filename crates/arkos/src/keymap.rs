@@ -20,7 +20,7 @@ actions!(
         MoveTabLeft, MoveTabRight,
         NewTerminal, ClearToStart, FontBigger, FontSmaller,
         About, OpenSettings, Keybindings, Documentation, OpenConfig, CommandPalette, Find, CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, OpenFolder, NewWindow,
+        ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, OpenFolder, NewWindow,
         NewBrowserTab, Quit,
         OpenFileInPane,
         VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
@@ -107,6 +107,10 @@ pub enum Command {
     ToggleMarkdownView,
     /// Write the focused markdown document now; during a conflict, keep mine.
     SaveFile,
+    /// Bold the selection, the word under the caret, or take the bold the caret is in away.
+    Bold,
+    /// The same for italic.
+    Italic,
     /// Pick a folder with the native picker and open it in a new window.
     OpenFolder,
     /// Show the project chooser in its own window (the "New Window" item in the Arkos IDE menu);
@@ -254,6 +258,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "toggle inline diff", keys: "cmd-shift-d", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "toggle markdown view", keys: "cmd-shift-m", context: Some("Viewer"), section: Section::Markdown },
     ActionSpec { name: "save file", keys: "cmd-s", context: Some("Viewer"), section: Section::Markdown },
+    // A markdown document only, so Cmd+B still toggles the sidebar from a code viewer.
+    ActionSpec { name: "bold", keys: "cmd-b", context: Some("Markdown"), section: Section::Markdown },
+    ActionSpec { name: "italic", keys: "cmd-i", context: Some("Markdown"), section: Section::Markdown },
     row(Section::Window, "open folder", "cmd-o"),
     row(Section::Window, "new window", "cmd-n"),
     row(Section::Browser, "new browser tab", "cmd-shift-b"),
@@ -378,6 +385,8 @@ fn binding(name: &str, keys: &str, context: Option<&str>) -> Option<KeyBinding> 
         "toggle inline diff" => KeyBinding::new(keys, ToggleInlineDiff, context),
         "toggle markdown view" => KeyBinding::new(keys, ToggleMarkdownView, context),
         "save file" => KeyBinding::new(keys, SaveFile, context),
+        "bold" => KeyBinding::new(keys, Bold, context),
+        "italic" => KeyBinding::new(keys, Italic, context),
         "open folder" => KeyBinding::new(keys, OpenFolder, context),
         "new window" => KeyBinding::new(keys, NewWindow, context),
         "new browser tab" => KeyBinding::new(keys, NewBrowserTab, context),
@@ -689,6 +698,8 @@ pub fn command_for(name: &str) -> Option<Command> {
         "toggle inline diff" => Command::ToggleInlineDiff,
         "toggle markdown view" => Command::ToggleMarkdownView,
         "save file" => Command::SaveFile,
+        "bold" => Command::Bold,
+        "italic" => Command::Italic,
         "open folder" => Command::OpenFolder,
         "new window" => Command::NewWindow,
         "new browser tab" => Command::NewBrowserTab,
@@ -757,7 +768,7 @@ pub fn attach(div: Div, cx: &mut Context<Root>) -> Div {
         UpdateNow => Command::UpdateNow, CheckForUpdates => Command::CheckForUpdates, Notifications => Command::Notifications, Doctor => Command::Doctor, RetryUpdate => Command::RetryUpdate, StartAtLogin => Command::StartAtLogin, InstallHooks => Command::InstallHooks, InstallAgentGuide => Command::InstallAgentGuide,
         ToggleSidebar => Command::ToggleSidebar, FocusFileTree => Command::FocusFileTree, ShowIgnoredFiles => Command::ShowIgnoredFiles,
         FocusWorktrees => Command::FocusWorktrees, ToggleInlineDiff => Command::ToggleInlineDiff,
-        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile,
+        ToggleMarkdownView => Command::ToggleMarkdownView, SaveFile => Command::SaveFile, Bold => Command::Bold, Italic => Command::Italic,
         OpenFolder => Command::OpenFolder, NewWindow => Command::NewWindow,
         NewBrowserTab => Command::NewBrowserTab,
         OpenFileInPane => Command::OpenFileInPane,
@@ -821,6 +832,8 @@ mod tests {
         ("cmd-shift-d", "toggle inline diff", "ToggleInlineDiff"),
         ("cmd-shift-m", "toggle markdown view", "ToggleMarkdownView"),
         ("cmd-s", "save file", "SaveFile"),
+        ("cmd-b", "bold", "Bold"),
+        ("cmd-i", "italic", "Italic"),
         ("cmd-o", "open folder", "OpenFolder"),
         ("cmd-n", "new window", "NewWindow"),
         ("cmd-shift-b", "new browser tab", "NewBrowserTab"),
@@ -872,6 +885,9 @@ mod tests {
         for name in ["toggle markdown view", "save file"] {
             assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Viewer"), "{name} acts on the focused viewer only");
         }
+        for name in ["bold", "italic"] {
+            assert_eq!(ACTIONS.iter().find(|a| a.name == name).unwrap().context, Some("Markdown"), "{name} acts on a markdown document only, so Cmd+B still toggles the sidebar elsewhere");
+        }
         let copy = ACTIONS.iter().find(|a| a.name == "copy as shown").map(|a| (a.context, a.section));
         assert_eq!(copy, Some((Some("Terminal"), Section::Terminal)), "Shift+Cmd+C copies the focused terminal's selection only");
     }
@@ -883,8 +899,10 @@ mod tests {
         // A row with empty keys is unbound by default: nothing to press.
         for (keys, name, want) in SPEC_ROWS.iter().filter(|(keys, _, _)| !keys.is_empty()) {
             // Registered as gpui reports them: a shifted symbol is its shifted character.
-            let kb = b.iter().find(|kb| keys_of(kb) == as_gpui(keys)).unwrap_or_else(|| panic!("{keys} ({name}) unbound"));
-            assert_eq!(kb.action().name(), format!("arkos::{want}"), "{keys}");
+            // Cmd+B is bound twice, in different contexts (the sidebar, a markdown document's bold).
+            let on_keys: Vec<_> = b.iter().filter(|kb| keys_of(kb) == as_gpui(keys)).collect();
+            assert!(!on_keys.is_empty(), "{keys} ({name}) unbound");
+            assert!(on_keys.iter().any(|kb| kb.action().name() == format!("arkos::{want}")), "{keys} runs {want}");
         }
     }
 
@@ -1024,11 +1042,11 @@ mod tests {
         let maint = &g.iter().find(|(s, _)| *s == Section::Maintenance).unwrap().1;
         assert!(maint.iter().any(|r| r.label == "Doctor" && r.keys.is_none()));
         let md = &g.iter().find(|(s, _)| *s == Section::Markdown).unwrap().1;
-        let viewer: Vec<&str> = md[..3].iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file"], "the viewer's actions come first");
-        assert_eq!(md.len(), 3 + MARKDOWN_KEYS.len());
-        assert_eq!(md[3], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
-        assert!(md[3..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
+        let viewer: Vec<&str> = md[..5].iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(viewer, ["Toggle inline diff", "Toggle markdown view", "Save file", "Bold", "Italic"], "the viewer's actions come first");
+        assert_eq!(md.len(), 5 + MARKDOWN_KEYS.len());
+        assert_eq!(md[5], KeyRow { label: "Leave the block".into(), keys: Some("Escape".into()) });
+        assert!(md[5..].iter().zip(MARKDOWN_KEYS).all(|(r, (label, keys))| r.label == *label && r.keys.as_deref() == Some(*keys)));
         let table: Vec<(&str, &str)> = MARKDOWN_KEYS.iter().copied().filter(|(label, _)| label.ends_with("(in a table)")).collect();
         assert_eq!(
             table,

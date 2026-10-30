@@ -639,6 +639,8 @@ pub fn command_name(command: &Command) -> &'static str {
         ToggleInlineDiff => "toggle_inline_diff",
         ToggleMarkdownView => "toggle_markdown_view",
         SaveFile => "save_file",
+        Bold => "bold",
+        Italic => "italic",
         OpenFolder => "open_folder",
         NewWindow => "new_window",
         NewBrowserTab => "new_browser_tab",

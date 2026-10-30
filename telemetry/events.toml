@@ -80,6 +80,8 @@ command = [
     "toggle_inline_diff",
     "toggle_markdown_view",
     "save_file",
+    "bold",
+    "italic",
     "open_folder",
     "new_window",
     "new_browser_tab",

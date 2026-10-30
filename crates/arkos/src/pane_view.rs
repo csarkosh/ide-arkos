@@ -1225,7 +1225,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     div()
         .size_full()
         .relative()
-        .key_context("Viewer")
+        // A markdown document adds `Markdown`, where Cmd+B and Cmd+I format text.
+        .key_context(if viewer.read(cx).doc.is_some() { "Viewer Markdown" } else { "Viewer" })
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;

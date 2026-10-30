@@ -15,6 +15,7 @@ use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
+use crate::md_format;
 use crate::md_reveal;
 use crate::md_table;
 use crate::md_view;
@@ -1668,6 +1669,41 @@ impl Viewer {
         let (lo, hi) = (c.head.min(c.anchor), c.head.max(c.anchor));
         let selected = md_blocks::block_at(&self.blocks, lo.line)..=md_blocks::block_at(&self.blocks, hi.line);
         (self.caret_placed && !self.pending_append && focused && selected.contains(&ix)) || self.find.as_ref().and_then(|f| f.hits.get(f.current)).is_some_and(|h| md_blocks::block_at(&self.blocks, h.line) == ix)
+    }
+
+    /// Cmd+B, Cmd+I and the menu's formats (`md_format::toggle`) on the selection, or at the caret,
+    /// on one line: one undoable edit, after which the selection is the formatted text (or the
+    /// caret keeps its place). A selection over more than one line, or a caret not yet placed in
+    /// the rendered view, does nothing.
+    pub fn format(&mut self, fmt: md_format::Format, cx: &mut Context<Self>) {
+        if self.doc.is_none() || (self.rendered() && !self.caret_placed) {
+            return;
+        }
+        self.finish_composition(cx);
+        let Some(doc) = self.doc.as_ref() else { return };
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (doc.clamp(c.anchor), doc.clamp(c.head)) } else { (doc.clamp(c.head), doc.clamp(c.anchor)) };
+        if lo.line != hi.line {
+            return;
+        }
+        let line = doc.lines()[lo.line].clone();
+        let byte = |ch: usize| line.char_indices().nth(ch).map_or(line.len(), |(b, _)| b);
+        let Some(e) = md_format::toggle(&line, byte(lo.ch)..byte(hi.ch), fmt) else { return };
+        let n = lo.line;
+        let ch = |s: &str, b: usize| s[..b.min(s.len())].chars().count();
+        let (from, to) = (edit::Pos { line: n, ch: ch(&line, e.range.start) }, edit::Pos { line: n, ch: ch(&line, e.range.end) });
+        let mut after = line.clone();
+        after.replace_range(e.range.clone(), &e.text);
+        let (a, b) = (edit::Pos { line: n, ch: ch(&after, e.select.start) }, edit::Pos { line: n, ch: ch(&after, e.select.end) });
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(from, to, &e.text, now);
+                doc.break_coalescing();
+                edit::Caret { head: b, anchor: a, goal_col: None }
+            },
+            cx,
+        );
     }
 
     /// Block `ix`'s element tree: the cached one when its rendering is cached (made there the
