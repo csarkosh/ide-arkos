@@ -112,6 +112,30 @@ pub fn toggle(line: &str, sel: Range<usize>, fmt: Format) -> Option<LineEdit> {
     Some(LineEdit { range: c..c, text: format!("{d}{d}"), select: c + d.len()..c + d.len() })
 }
 
+/// The menu's Link on one line: the selection (its spaces left outside), else the word under the
+/// caret, else nothing, becomes `[text](target)`. With no target the caret goes between the
+/// parentheses, for the address to be typed; with one, after the link.
+pub fn link(line: &str, sel: Range<usize>, target: Option<&str>) -> LineEdit {
+    let sel = sel.start.min(line.len())..sel.end.min(line.len()).max(sel.start.min(line.len()));
+    let (mut a, mut b) = (sel.start, sel.end);
+    if a < b {
+        let text = &line[a..b];
+        a += text.len() - text.trim_start().len();
+        b = (b - (text.len() - text.trim_end().len())).max(a);
+    } else {
+        while let Some(ch) = line[..a].chars().next_back().filter(|&ch| word_char(ch)) {
+            a -= ch.len_utf8();
+        }
+        while let Some(ch) = line[b..].chars().next().filter(|&ch| word_char(ch)) {
+            b += ch.len_utf8();
+        }
+    }
+    let target = target.unwrap_or("");
+    let text = format!("[{}]({target})", &line[a..b]);
+    let caret = if target.is_empty() { a + text.len() - 1 } else { a + text.len() };
+    LineEdit { range: a..b, text, select: caret..caret }
+}
+
 /// What a link made from the clipboard points at (spec section 7): one line that is a web or mail
 /// address, or a path to something that exists (absolute, `~`, or relative to `base_dir`, the
 /// document's folder), written relative to `base_dir` when it is inside it. In `<...>` when it
@@ -213,5 +237,15 @@ mod tests {
         assert_eq!(paste_link("", "https://a.b", &dir, home), None, "no selection");
         assert_eq!(paste_link("a\nb", "https://a.b", &dir, home), None, "a selection over two lines");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_menu_s_link_wraps_the_selection_or_the_word_and_waits_for_the_address() {
+        let e = link("see the docs here", 8..12, None);
+        assert_eq!((e.range.clone(), e.text.as_str(), e.select.clone()), (8..12, "[docs]()", 15..15), "the caret between the parentheses");
+        let e = link("see the docs here", 9..9, Some("https://x"));
+        assert_eq!((e.text.as_str(), e.select.start), ("[docs](https://x)", 8 + 17), "the word under the caret, the caret after the link");
+        assert_eq!(link("a  b", 2..2, None).text, "[]()", "no word: an empty link");
+        assert_eq!(link("a b c", 1..4, None).range, 2..3, "the spaces stay outside");
     }
 }

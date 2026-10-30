@@ -1448,10 +1448,75 @@ impl Viewer {
     }
 
     fn run_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        match key_action(ks) {
+            Some(action) => self.run_action(action, cx),
+            None => false,
+        }
+    }
+
+    /// A menu row's Cut, Copy or Paste, done as its key does (the paste makes a link as Cmd+V's
+    /// does).
+    pub fn act(&mut self, action: KeyAction, cx: &mut Context<Self>) {
+        if self.doc.is_none() {
+            return;
+        }
+        if self.run_action(action, cx) && places_caret(action) {
+            self.caret_placed = true;
+        }
+        self.note_caret_moved(false, cx);
+    }
+
+    /// The menu's Link (`md_format::link`) on one line: the selection or the word under the caret
+    /// becomes a link to the address on the clipboard (`md_format::link_target`), or to nothing yet
+    /// with the caret between the parentheses.
+    pub fn insert_link(&mut self, cx: &mut Context<Self>) {
+        let clip = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+        let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let target = md_format::link_target(&clip, &base, dirs_home().as_deref());
+        let Some(doc) = self.doc.as_ref() else { return };
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (doc.clamp(c.anchor), doc.clamp(c.head)) } else { (doc.clamp(c.head), doc.clamp(c.anchor)) };
+        if lo.line != hi.line {
+            return;
+        }
+        let line = doc.lines()[lo.line].clone();
+        let byte = |ch: usize| line.char_indices().nth(ch).map_or(line.len(), |(b, _)| b);
+        let e = md_format::link(&line, byte(lo.ch)..byte(hi.ch), target.as_deref());
+        let n = lo.line;
+        let ch = |s: &str, b: usize| s[..b.min(s.len())].chars().count();
+        let (from, to) = (edit::Pos { line: n, ch: ch(&line, e.range.start) }, edit::Pos { line: n, ch: ch(&line, e.range.end) });
+        let mut after = line.clone();
+        after.replace_range(e.range.clone(), &e.text);
+        let at = edit::Pos { line: n, ch: ch(&after, e.select.start) };
+        self.caret_placed = true;
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(from, to, &e.text, now);
+                doc.break_coalescing();
+                edit::Caret::at(at)
+            },
+            cx,
+        );
+    }
+
+    /// Whether the selection is empty or does not hold `p`: a right press there moves the caret
+    /// before the menu opens, as a left press would.
+    pub fn press_outside_selection(&self, p: edit::Pos) -> bool {
+        let c = self.caret;
+        let (lo, hi) = if c.anchor <= c.head { (c.anchor, c.head) } else { (c.head, c.anchor) };
+        lo == hi || p < lo || p > hi
+    }
+
+    /// Whether anything is selected.
+    pub fn has_selection(&self) -> bool {
+        self.caret.anchor != self.caret.head
+    }
+
+    fn run_action(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
         if self.doc.is_none() {
             return false;
         }
-        let Some(action) = key_action(ks) else { return false };
         // A key the input method passed on ends its composition, keeping the text.
         if self.marked.is_some() {
             self.finish_composition(cx);
