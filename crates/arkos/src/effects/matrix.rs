@@ -110,6 +110,30 @@ mod tests {
         ] {
             assert!(wash.contains(line), "wash.metal's rain lacks {line}");
         }
+        // The theme's green is chosen from its ANSI green, its text and its focus ring.
+        for line in [
+            "u.colors[ARKOS_ANSI + 2].rgb",
+            "u.colors[ARKOS_TERMINAL_FG].rgb",
+            "u.colors[ARKOS_FOCUS_RING].rgb",
+        ] {
+            assert!(wash.contains(line), "wash.metal's theme_green lacks {line}");
+        }
+    }
+
+    #[test]
+    fn both_shaders_hash_with_the_rust_hash01_line_for_line() {
+        // Each shader carries its own copy of `hash01` (crates/arkos/src/effects/hash.rs), so a
+        // hand-copied drift in either shows here.
+        for (file, src) in [("wash.metal", matrix().wash), ("glyphs.metal", matrix().glyphs.unwrap())] {
+            for line in [
+                "uint h = n * 747796405u + 2891336453u;",
+                "h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;",
+                "h ^= h >> 22u;",
+                "return float(h >> 8u) * (1.0 / 16777216.0);",
+            ] {
+                assert!(src.contains(line), "{file}'s hash01 lacks {line}");
+            }
+        }
     }
 
     #[test]
@@ -199,7 +223,7 @@ mod tests {
             "constant float BRIGHTNESS = 1.0;",
             "float3(0.35, 1.0, 0.45)",
             "float3(0.0, 0.4, 0.15)",
-            "bool dark = luminance < 0.3;",
+            "bool dark = luminance < 0.45;",
             "core * 0.55",
             "ARKOS_SCALE",
             "[[buffer(5)]]",
@@ -219,6 +243,9 @@ mod tests {
         ] {
             assert!(g.contains(line), "glyphs.metal's glitch lacks {line}");
         }
+        // The fresh text's dark rule is the shader's own.
+        let dark = crate::effects::decode::DARK_TEXT;
+        assert!(g.contains(&format!("bool dark = luminance < {dark:?};")), "the decode's DARK_TEXT is {dark:?}");
         assert!(!g.contains("SCANLINES"), "no scanlines on the matrix display");
         let emoji = &g[g.find("arkos_emoji_vertex(").expect("matrix draws its emoji")..];
         assert!(emoji.contains("arkos_emoji_fragment(") && emoji.contains("GLITCH_") && emoji.contains("[[buffer(5)]]"));

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::hash::hash01;
 use crate::layout::{CellKind, CellStyle};
 use crate::palette::Rgb;
-use crate::theme::mix;
+use crate::theme::{luminance, mix};
 
 /// How long a changed cell scrambles while the agent is working, in milliseconds.
 pub const DECODE_MS_WORKING: u64 = 400;
@@ -14,12 +14,17 @@ pub const DECODE_MS_WORKING: u64 = 400;
 pub const DECODE_MS_IDLE: u64 = 120;
 /// How long freshly settled text takes to cool back to its own colour, in milliseconds.
 pub const FRESH_MS: u64 = 1500;
-/// How far toward `FRESH_WHITE` a cell's foreground starts when it settles.
+/// How far toward `FRESH_WHITE` (or `FRESH_DEEP`) a cell's text colour starts when it settles.
 pub const FRESH_MIX: f32 = 0.6;
 /// The characters a scrambling cell draws from.
 pub const DECODE_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+=<>/\\|";
 /// The colour fresh text is brightened toward.
 pub const FRESH_WHITE: Rgb = Rgb { r: 217, g: 255, b: 217 };
+/// The colour fresh dark text (a light theme's) deepens toward, so it stays dark on its paper.
+pub const FRESH_DEEP: Rgb = Rgb { r: 0, g: 90, b: 30 };
+/// The luminance (`crate::theme::luminance`) under which the matrix glyph shader draws text as
+/// dark, its `bool dark = luminance < 0.45;`, and fresh text deepens rather than whitens.
+pub const DARK_TEXT: f32 = 0.45;
 /// The step of the frame index that picks the random character, in milliseconds.
 pub const TICK_MS: u64 = 50;
 
@@ -104,7 +109,7 @@ impl Decode {
     }
 
     /// What this cell shows now: its own character and style, or a random character while it
-    /// decodes, with the foreground brightened while it is fresh.
+    /// decodes, with the colour its text is drawn in brightened while it is fresh.
     pub fn shown(
         &self,
         col: usize,
@@ -128,10 +133,19 @@ impl Decode {
         }
         let mut style = cell.1;
         if since < t.fresh {
-            style.fg = mix(style.fg, FRESH_WHITE, fresh_mix(since, t.fresh));
+            // The text is drawn in `bg` once `layout::build_runs` swaps an inverse cell's colours.
+            let text = if style.inverse { &mut style.bg } else { &mut style.fg };
+            *text = freshened(*text, fresh_mix(since, t.fresh));
         }
         (ch, style)
     }
+}
+
+/// A text colour `share` of the way to fresh: toward `FRESH_DEEP` when the glyph shader draws it
+/// as dark text (under `DARK_TEXT`), so a light theme's text stays dark, else toward `FRESH_WHITE`.
+fn freshened(text: Rgb, share: f32) -> Rgb {
+    let target = if luminance(text) < DARK_TEXT { FRESH_DEEP } else { FRESH_WHITE };
+    mix(text, target, share)
 }
 
 /// The random character for a cell: a pure function of the cell, the instant it changed and the
@@ -146,7 +160,7 @@ pub fn random_char(col: usize, row: usize, changed_nanos: u64, frame: u64) -> ch
     chars[i] as char
 }
 
-/// How far toward white fresh text is, falling from `FRESH_MIX` to nothing over `fresh`.
+/// How far toward its fresh colour fresh text is, falling from `FRESH_MIX` to nothing over `fresh`.
 pub fn fresh_mix(since: Duration, fresh: Duration) -> f32 {
     if fresh.is_zero() {
         return 0.0;
@@ -229,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_character_decodes_over_two_cells_and_a_spacer_never() {
+    fn a_wide_character_decodes_as_one_ascii_glyph_in_its_cell_and_its_spacer_never() {
         let t0 = Instant::now();
         let mut d = Decode::new(2, 1, 0);
         d.observe(&grid(&["  "]), 0, t0);
@@ -258,6 +272,50 @@ mod tests {
         assert_eq!(s.fg, crate::theme::mix(own.fg, FRESH_WHITE, fresh_mix(Duration::from_millis(121), t.fresh)));
         assert_eq!(s.bg, own.bg, "only the foreground brightens");
         assert_eq!(d.shown(0, 0, ('x', own, CellKind::Normal), t0 + Duration::from_millis(1600), t).1, own);
+    }
+
+    /// A cell that changed from a space at `t0` and is drawn with `style` at 121 ms, past the
+    /// idle decode, and the fresh share it is drawn with then.
+    fn fresh_at_121_ms(style: CellStyle) -> (CellStyle, f32) {
+        let t0 = Instant::now();
+        let mut d = Decode::new(1, 1, 0);
+        d.observe(&grid(&[" "]), 0, t0);
+        d.observe(&grid(&["x"]), 0, t0);
+        let t = timing(false, false);
+        let (_, s) = d.shown(0, 0, ('x', style, CellKind::Normal), t0 + Duration::from_millis(121), t);
+        (s, fresh_mix(Duration::from_millis(121), t.fresh))
+    }
+
+    #[test]
+    fn fresh_dark_text_deepens_toward_the_deep_green_and_bright_text_whitens() {
+        // Peach Light's foreground, under the shader's dark-text threshold: whitened it would
+        // fall to about 2:1 on its paper and take the emissive branch.
+        let dark = CellStyle { fg: Rgb { r: 0x4a, g: 0x30, b: 0x28 }, bg: Rgb { r: 0xff, g: 0xf6, b: 0xef }, ..plain() };
+        assert!(crate::theme::luminance(dark.fg) < DARK_TEXT);
+        let (s, share) = fresh_at_121_ms(dark);
+        assert_eq!(s.fg, crate::theme::mix(dark.fg, FRESH_DEEP, share));
+        assert!(crate::theme::luminance(s.fg) < DARK_TEXT, "fresh dark text stays on the dark branch");
+        let bright = plain();
+        assert!(crate::theme::luminance(bright.fg) >= DARK_TEXT);
+        let (s, share) = fresh_at_121_ms(bright);
+        assert_eq!(s.fg, crate::theme::mix(bright.fg, FRESH_WHITE, share));
+    }
+
+    #[test]
+    fn a_fresh_inverse_cell_brightens_its_background_which_its_text_is_drawn_in() {
+        let inverse = CellStyle { inverse: true, ..plain() };
+        let (s, share) = fresh_at_121_ms(inverse);
+        assert_eq!(s.fg, inverse.fg, "the block, drawn in fg once swapped, keeps its colour");
+        // The background is black, so the text drawn in it is dark and deepens.
+        assert_eq!(s.bg, crate::theme::mix(inverse.bg, FRESH_DEEP, share));
+        let bright_text = CellStyle { inverse: true, bg: Rgb { r: 200, g: 255, b: 200 }, ..plain() };
+        let (s, share) = fresh_at_121_ms(bright_text);
+        assert_eq!(s.bg, crate::theme::mix(bright_text.bg, FRESH_WHITE, share));
+        assert_eq!(s.fg, bright_text.fg);
+        let normal = plain();
+        let (s, share) = fresh_at_121_ms(normal);
+        assert_eq!(s.fg, crate::theme::mix(normal.fg, FRESH_WHITE, share));
+        assert_eq!(s.bg, normal.bg, "a normal cell's background is untouched");
     }
 
     #[test]

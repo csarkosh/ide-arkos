@@ -715,8 +715,9 @@ light = "peach-light"
 
 [effect]
 # A shader drawn under the window's text. "theme" draws the one the theme was designed with
-# (peach-light's watercolor, navy's space), "none" draws nothing, or name an effect: a built-in, or a
-# folder in ~/.config/arkos/effects/. intensity runs from 0.0 (invisible) to 1.0 (as designed).
+# (peach-light's watercolor, navy's space, matrix's matrix), "none" draws nothing, or name an
+# effect: a built-in, or a folder in ~/.config/arkos/effects/. intensity runs from 0.0
+# (invisible) to 1.0 (as designed).
 name = "theme"
 intensity = 1.0
 

@@ -28,7 +28,7 @@
 2. Scrolling into history (display offset above 0) while output streams: history rows must never decode or brighten, and coming back to the live screen must not flash the whole screen as "changed" (Task 5: an offset change resets the state without marking cells changed).
 3. A `dim` or `inverse` cell that is fresh: the brightening mixes `fg` toward white-green; `inverse` cells swap fg and bg at paint, so the mix must apply to the colour the glyph is drawn in, never the background (Task 6 tests that `shown` touches only `fg`).
 4. An effect folder with `terminal_decode = true` and no `glyph_motion`: refused with an error naming both keys, so random characters never stick (Task 1).
-5. A light theme with `matrix` chosen: dark text (luminance under 0.3) takes the teal branch and draws no halo, so it stays readable; the matrix theme itself has no text under 0.35 (Task 2, Task 4).
+5. A light theme with `matrix` chosen: dark text (luminance under 0.45) takes the teal branch and draws no halo, so it stays readable; the matrix theme itself has no text under 0.47 (Task 2, Task 4). Amended 2026-10-29 from 0.3 and 0.35 (spec amendment, whole-branch review).
 
 ---
 

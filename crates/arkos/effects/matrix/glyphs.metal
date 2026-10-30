@@ -182,9 +182,11 @@ fragment float4 arkos_glyph_fragment(
 
   // The display assumes light text on a dark ground. Dark text leans toward the deep green,
   // keeps its full brightness and draws no halo and no flash, so it stays readable on a light
-  // theme. The matrix theme keeps its text above this, so all of it glows.
+  // theme (a light theme's text sits under 0.45). The matrix theme keeps its text above this,
+  // so all of it glows. The terminal's decode freshens by the same rule (DARK_TEXT in
+  // crates/arkos/src/effects/decode.rs): a change here is made there too.
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
-  bool dark = luminance < 0.3;
+  bool dark = luminance < 0.45;
   float3 hue = dark ? MATRIX_DEEP : MATRIX_GREEN;
 
   // The halo's three rings, skipped for dark text, which draws none.

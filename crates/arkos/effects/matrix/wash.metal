@@ -168,12 +168,19 @@ Glow edge_glow(EdgeHit h, float3 ring, float3 white_c) {
     return g;
 }
 
-// The theme's green: the terminal's text colour when it is greener than the focus ring (its
-// green above its red and blue), else the ring, so another theme's rain reads in its own colour.
+// How green a colour is: its green above the larger of its red and blue.
+float greenness(float3 c) {
+    return c.g - max(c.r, c.b);
+}
+
+// The theme's green: the greenest of its ANSI green, the terminal's text colour and the focus
+// ring, the ANSI green on a tie, so another theme's rain reads in its own green.
 float3 theme_green(constant ArkosInputs& u) {
+    float3 best = u.colors[ARKOS_ANSI + 2].rgb;
     float3 fg = u.colors[ARKOS_TERMINAL_FG].rgb;
     float3 ring = u.colors[ARKOS_FOCUS_RING].rgb;
-    return fg.g - max(fg.r, fg.b) > ring.g - max(ring.r, ring.b) ? fg : ring;
+    best = greenness(fg) > greenness(best) ? fg : best;
+    return greenness(ring) > greenness(best) ? ring : best;
 }
 
 fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u [[buffer(0)]]) {

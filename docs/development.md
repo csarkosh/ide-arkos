@@ -374,6 +374,8 @@ Things only a person at the screen can check, in order of value:
 - effects: Matrix, the rain: faint columns of runes falling at different speeds under the panes,
   through the bars and the sidebar, never competing with the text; a menu's backdrop shows it
 - effects: Matrix, a markdown tab and the sidebar: green glow, the idle glitch, no decode
+- effects: Matrix, scrolling a markdown tab or a terminal: single-frame flickers as moving glyphs
+  re-roll their glitch each frame are expected, and they must not be tiring to watch
 - effects: Matrix, emoji on the display: their colours tinted green, haloed, glitching as letters do
 - effects: Matrix with Reduce Motion on: the rain is still, no glitches, changed cells settle at once
 - effects: Matrix, the window's CPU idle in front (debug now; release after the release): write the figure here

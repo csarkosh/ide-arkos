@@ -102,9 +102,9 @@ document is a starting point, named in one place, and expected to change.
   `semantic.working` is the bright green, `semantic.waiting` an amber, as in Navy's roles.
 - Every colour drawn as text (`chrome.text`, `text_dim`, `terminal.foreground`, the sixteen ANSI
   colours, the `semantic`, `tree` and `viewer` colours) has an sRGB luminance (`0.2126 r + 0.7152
-  g + 0.0722 b` of the components as the shader sees them) of at least 0.35, so none of it takes
-  the glyph shader's dark-text branch (threshold 0.3, below) and all of it glows. A theme test
-  asserts this for matrix.
+  g + 0.0722 b` of the components as the shader sees them) of at least 0.47, so none of it takes
+  the glyph shader's dark-text branch (threshold 0.45, below) and all of it glows. A theme test
+  asserts this for matrix (amended 2026-10-29, see the end).
 - `[effect] name = "matrix"`.
 - The exact values are the builder's, found with `arkos theme contrast matrix` until every pair
   passes. The theme test that holds every built-in to the rules covers it.
@@ -142,11 +142,12 @@ the emoji stages at the end) with these changes:
 - **Halo.** Space's three rings at a glow around 1.6, in the glyph's own colour mixed toward the
   green. The halo scales with the glyph's luminance, so a fresh, brightened cell (below) glows
   more than a settled one with no other signal from the app.
-- **Dark text.** As space, but with the threshold at 0.3 rather than 0.5: a glyph whose colour
-  has luminance under 0.3 (a light theme with matrix chosen) leans toward a deep green `(0.0,
+- **Dark text.** As space, but with the threshold at 0.45 rather than 0.5: a glyph whose colour
+  has luminance under 0.45 (a light theme with matrix chosen) leans toward a deep green `(0.0,
   0.4, 0.15)`, keeps its brightness and draws no halo. The shader knows only the glyph's colour,
-  so the matrix theme keeps every text colour above 0.35 (theme section) and all of its text,
-  coloured ANSI output included, takes the emissive branch.
+  so the matrix theme keeps every text colour at 0.47 or more (theme section) and all of its
+  text, coloured ANSI output included, takes the emissive branch (amended 2026-10-29, see the
+  end).
 - **The idle glitch.** The shader reads the clock (`constant float *time [[buffer(5)]]`) in the
   vertex stage. Time is cut into slots of `GLITCH_SLOT` = 0.1 s. For each glyph and slot a hash
   of the glyph's position (its bounds origin in device pixels, which is stable for a letter that
@@ -197,7 +198,9 @@ letters can really change. The decode lives in a new module `crates/arkos/src/ef
   redraw shows: a brief flicker where the text changed.
 - **Fresh text.** For `FRESH_MS` = 1500 ms after a cell settles, its foreground is mixed toward
   white-green `(0.85, 1.0, 0.85)` by a share that falls from `FRESH_MIX` = 0.6 to 0 over that
-  time. The shader's halo follows the brightness, so new output glows and cools. A cell whose
+  time; a foreground the shader draws as dark text deepens toward `FRESH_DEEP` instead, and an
+  inverse cell's background (its text colour once swapped) is the one mixed (amended 2026-10-29,
+  see the end). The shader's halo follows the brightness, so new output glows and cools. A cell whose
   colour is not the terminal's foreground (ANSI-coloured text) brightens the same way.
 - **Frames.** The glyph timer at `glyph_rate` already redraws the window while the effect is
   settled and seen, so the decode and the cooling need no timer of their own. Between frames
@@ -215,7 +218,8 @@ letters can really change. The decode lives in a new module `crates/arkos/src/ef
 ## The wash (`matrix/wash.metal`)
 
 Everything derives from the theme's colours, so matrix chosen with another theme reads in that
-theme's green (its `ANSI green`, or its focus ring when that is nearer the text).
+theme's green: the greenest of its `ANSI green`, its terminal text and its focus ring (amended
+2026-10-29, see the end).
 
 - **Ground.** `ARKOS_WINDOW_BG`, flat.
 - **Rain.** The window is cut into columns `RAIN_COL` = 14 points wide and rows `RAIN_ROW` = 18
@@ -249,11 +253,12 @@ theme's green (its `ANSI green`, or its focus ring when that is nearer the text)
 - Manifest: `glyph_rate` and `terminal_decode` parse, default as the table says, and a value out
   of range names the key and the range; `terminal_decode` without `glyph_motion` is invalid with
   an error naming both; the built-in manifest sets them as this document says.
-- Theme: every text colour of matrix has luminance 0.35 or more as the shader measures it.
+- Theme: every text colour of matrix has luminance 0.47 or more as the shader measures it.
 - `glyph_wait` uses `glyph_rate`: at 10 the wait is 100 ms.
 - Decode rules: a changed cell decodes for the working or idle time and then settles on its own
   character; an unchanged cell is untouched; a cell that became a space clears at once; a wide
-  character decodes over two cells and a spacer never; the random character for a given cell,
+  character decodes as one ASCII glyph in its cell and its spacer never; fresh dark text deepens
+  and bright text whitens; an inverse cell freshens its background; the random character for a given cell,
   instant and frame is the predicted one and is ASCII; the fresh mix falls from `FRESH_MIX` to 0
   over `FRESH_MS`; Reduce Motion settles at once; a resize or a change of display offset resets
   the state.
@@ -317,3 +322,20 @@ A wide character decodes as one ASCII character drawn in its two-column cell, no
 characters over its two cells. The terminal paints a wide cell as one run two columns wide, so
 the decode keeps the cell's kind (`CellKind::Wide`, then its `CellKind::Spacer`) and changes only
 the character; the spacer never decodes. The decode section above says so.
+
+## Amendment (2026-10-29, whole-branch review)
+
+1. The glyph shader's dark-text threshold is 0.45, not 0.3. Peach Light and Lavender Light carry
+   30 to 35 text colours between 0.33 and 0.44 that took the emissive branch at 0.3 and fell to
+   2.6 to 3.5:1 on their paper. Matrix's lowest text colour (`text_dim`) is 0.498, so the theme
+   test's floor is 0.47, a margin over the threshold. This supersedes ruling 2's figures.
+2. Fresh text follows the shader's rule: a text colour under 0.45 (`DARK_TEXT` in `decode.rs`)
+   deepens toward `FRESH_DEEP` `(0, 90, 30)`, so a light theme's text stays dark and readable on
+   its paper (Peach Light's `#4a3028` had whitened to 2.2:1); any other whitens toward
+   `FRESH_WHITE` as before.
+3. An inverse cell is drawn with its colours swapped (`layout::build_runs`), so its fresh mix
+   applies to `bg`, the colour its text is drawn in, and leaves `fg`, its block, alone.
+4. The wash's theme green is the greenest (green above the larger of red and blue) of the ANSI
+   green, the terminal's text and the focus ring, the ANSI green on a tie. Navy's and Timo
+   Purple's rain now read in their ANSI greens, Peach Light's in its own green rather than brown;
+   matrix keeps its text green, as before.

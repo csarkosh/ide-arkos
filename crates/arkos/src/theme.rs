@@ -1,4 +1,4 @@
-//! Themes (spec 7): one flat set of named colours per TOML file. Two are built in and embedded;
+//! Themes (spec 7): one flat set of named colours per TOML file. Five are built in and embedded;
 //! user files in `~/.config/arkos/themes/` override or add to them. `Root` holds the active
 //! `Theme`; views read it, and each terminal resolves cells against `Theme::palette` at paint.
 use crate::palette::{Palette, Rgb};
@@ -170,8 +170,8 @@ pub const BUILTIN: [(&str, &str); 5] = [
 
 /// The luminance a glyph shader sees: the sRGB dot product `0.2126 r + 0.7152 g + 0.0722 b` of
 /// the components over 255, with no linearising. It is not the WCAG luminance the contrast
-/// check uses. The matrix shader draws a glyph under 0.3 as dark text, without a halo.
-#[cfg_attr(not(test), allow(dead_code))] // The matrix theme test holds every text colour to it.
+/// check uses. The matrix shader draws a glyph under 0.45 as dark text, without a halo, and the
+/// terminal's decode (`effects::decode::DARK_TEXT`) freshens such text toward a deep green.
 pub fn luminance(c: Rgb) -> f32 {
     let ch = |v: u8| f32::from(v) / 255.0;
     0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn both_builtins_parse_and_name_themselves() {
+    fn every_builtin_parses_and_names_itself() {
         for (name, text) in BUILTIN {
             let t = parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(t.name, *name);
@@ -744,7 +744,7 @@ mod tests {
             s.working, s.waiting, s.bell, tr.added, tr.modified, tr.deleted, tr.untracked, tr.ignored,
             v.keyword, v.string, v.comment, v.number, v.function, v.type_name, v.constant, v.operator, v.punctuation];
         for x in text {
-            assert!(luminance(x) >= 0.35, "{} is {:.2}, under the shader's 0.35", x.hex(), luminance(x));
+            assert!(luminance(x) >= 0.47, "{} is {:.2}, under 0.47, too near the shader's 0.45", x.hex(), luminance(x));
         }
         assert!((luminance(Rgb { r: 255, g: 255, b: 255 }) - 1.0).abs() < 1e-6);
     }
