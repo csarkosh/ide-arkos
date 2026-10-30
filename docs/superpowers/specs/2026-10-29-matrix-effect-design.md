@@ -225,13 +225,19 @@ letters can really change. The decode lives in a new module `crates/arkos/src/ef
   nothing is computed.
 - **Reduce Motion.** `DECODE_MS` and `FRESH_MS` are 0: cells settle at once with their own
   colour.
-- **Scrolling output.** A line that scrolls up moves every character in the viewport, so while
-  Claude streams output whole rows decode together. That is the look Cyrus asked for while
-  Claude works. If it proves too busy in Claude Code's fullscreen renderer (which redraws whole
-  screens), the first lever is `DECODE_MS_WORKING`, the second a cap on the share of cells
-  decoding in one frame; the builder adds the cap only if the dev window shows the need.
+- **Scrolling output.** A line that scrolls up is recognised and does not scramble again: a row
+  whose text (trailing spaces left out) is not blank and was on screen before takes that
+  remembered row's cells whole, each with its own change instant, so a line still scrambling
+  keeps scrambling as it moves and a settled one stays settled. The remembered row at the same
+  place is taken first, then the nearest below (output scrolls up), then the nearest above. A
+  blank row is never taken for a moved one; any row that matches none is diffed cell by cell.
+  At most `DECODE_ROWS` = 3 rows scramble at once, the newest: past that the oldest settle at
+  once (their change instants set back by the decode time, so they keep cooling), and among
+  rows that changed in the same frame the lowest on screen is the newest. While Claude streams,
+  only the newest few lines scramble and the rest of the screen stays still (amended
+  2026-10-30, see the end).
 - All the constants (`DECODE_MS_WORKING`, `DECODE_MS_IDLE`, `FRESH_MS`, `FRESH_MIX`,
-  `DECODE_CHARS`) live in `decode.rs` with one comment each.
+  `DECODE_CHARS`, `DECODE_ROWS`) live in `decode.rs` with one comment each.
 
 ## The wash (`matrix/wash.metal`)
 
@@ -454,3 +460,23 @@ headers:
 4. The tab strips are no longer darkened (the tab bars' darkening 0.42 to 0), and carry a second
    layer of rain: `TAB_RAIN` = 0.4 of `RAIN_ALPHA` laid again over them (first tried at 1.0, too strong).
 5. The active tab over the wash: `active_tab_alpha` 0.5 to 0.3 (first tried at 0.2).
+
+## Amendment (2026-10-30, Cyrus: only a few lines scramble)
+
+"Update the matrix text effect that makes the terminal text scrambled. Shorten the number of lines
+that get scrambled. It should just be a few of the most-recent lines."
+
+1. Moved lines do not scramble. Before the cell diff, `Decode::observe` recognises a row that
+   moved: a new row whose text (trailing spaces left out) is not blank and equals a remembered
+   row's takes that row's cells whole, change instants included, so a line already scrambling
+   keeps scrambling as it scrolls up and a settled one stays settled. The remembered row at the
+   same place wins, then the nearest below (output scrolls up), then the nearest above. Blank rows
+   are never matched. A row that matches nothing is diffed cell by cell as before, and the quiet
+   window still marks nothing.
+2. At most `DECODE_ROWS` = 3 of the newest lines scramble at once. After the diff, when more rows
+   than that have a cell still scrambling (`observe` takes the decode time in force), the oldest
+   settle: a row's age is its newest scrambling cell's change, and among rows that changed in the
+   same frame the lowest on screen is the newest. A settled cell's change instant is set back by
+   the decode time, so it stops scrambling and keeps its fresh brightening, cooling from there.
+3. This replaces the "Scrolling output" plan of a cap on the share of cells decoding: the
+   decode section above says so.

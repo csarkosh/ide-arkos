@@ -56,7 +56,7 @@ pub fn decoded_rows(
         return None;
     };
     let state = decode.get_or_insert_with(|| Decode::new(cols, rows.visible.len(), rows.display_offset));
-    state.observe(&rows.visible, rows.display_offset, now, quiet);
+    state.observe(&rows.visible, rows.display_offset, now, quiet, timing.decode);
     let shown = rows
         .visible
         .iter()

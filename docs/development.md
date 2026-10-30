@@ -370,8 +370,9 @@ Things only a person at the screen can check, in order of value:
 - effects: Matrix (`effect.name = "theme"`) at rest for five minutes: a letter glitches
   (mirrored and brighter for a tenth of a second) a few times a second across the window and
   never more; between glitches every letter is still and whole; the text is not tiring to read
-- effects: Matrix, Claude Code streaming output: whole rows scramble through ASCII for under half
-  a second and settle on the real text, which starts brighter and cools over about 1.5 s
+- effects: Matrix, Claude Code streaming output: while Claude streams, only the newest few lines
+  scramble, the rest of the screen stays still; a scrambled line settles on the real text within
+  half a second, starting brighter and cooling over about 1.5 s
 - effects: Matrix, typing at the prompt shows no scramble; the typed text looks like the rest
 - effects: Matrix, Claude Code's fullscreen renderer redrawing: readable; if the whole screen
   decodes too often, note it (DECODE_MS_WORKING is the first lever)
