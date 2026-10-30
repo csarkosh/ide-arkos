@@ -129,6 +129,20 @@ it, Escape closes the menu and keeps what you typed. On a list item a list entry
 kind, and a heading entry turns the line into that heading. A slash inside a word, a code block or
 a table is just a slash.
 
+Hover a heading and a chevron shows in the margin to its left: a click folds the heading, hiding
+everything under it up to the next heading of its level or higher (a folded heading ends with
+"…" and keeps its chevron). Fold All and Unfold All are in the palette, and Cmd+K Cmd+0 and Cmd+K
+Cmd+J in a markdown document. Folds are the view's, never the file's: they are kept per file in the
+workspace, survive a relaunch, and the caret never stands in a folded section (Up and Down step
+over it; landing in one unfolds it). Hover any block and a six-dot handle shows in the margin:
+drag it to move the block (a paragraph, a heading, a whole list or table), with a line showing
+where it will land; one undo puts it back.
+
+The sidebar's Outline section lists the focused markdown document's headings as a tree. A click
+scrolls to a heading (unfolding it if a fold hides it), the heading in view is highlighted as you
+scroll, a chevron collapses a heading's children in the outline, and resting the pointer on a row
+shows a preview of its section beside the sidebar.
+
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
 them. A file with both kinds of line ending, or one that is not valid UTF-8, opens read-only with
@@ -394,6 +408,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+click | in a markdown file: open a link, or an image, poster, video or audio; a plain click on a revealed link's address opens it too |
 | Enter | in a rendered markdown paragraph or heading: a new paragraph; in a quote: a new quoted paragraph; in a list: the next item; on an empty item, end the list or move a nested item out a level |
 | Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
+| Cmd+K Cmd+0, Cmd+K Cmd+J | in a markdown document: fold all headings, unfold them all |
 | / | in a rendered markdown document, at a line's start or after a space: the slash menu (Up, Down, Enter or Tab, Right and Left for a submenu, Escape) |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Space | in a video tab: play or pause |

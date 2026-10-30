@@ -660,6 +660,8 @@ option_as_meta = true
 # "save file" = "cmd-s"
 # "bold" = "cmd-b"
 # "italic" = "cmd-i"
+# "fold all" = "cmd-k cmd-0"
+# "unfold all" = "cmd-k cmd-j"
 # "open folder" = "cmd-o"
 # "new window" = "cmd-n"
 # "new browser tab" = "cmd-shift-b"
@@ -939,7 +941,7 @@ pub(crate) mod tests {
             ReopenClosedTab, CloseAllInPane, MoveTabWithin(1), NewTerminal, ClearToStart, FontDelta(1.0), About, OpenSettings, Keybindings,
             Documentation, OpenConfig, TextPreset(String::new()), ReloadConfig, ExtractThemes, CommandPalette, SetTheme(String::new()), Find,
             CopyAsShown, UpdateNow, CheckForUpdates, Notifications, Doctor, RetryUpdate, StartAtLogin, InstallHooks, InstallAgentGuide,
-            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, OpenFolder,
+            ToggleSidebar, FocusFileTree, ShowIgnoredFiles, FocusWorktrees, ToggleInlineDiff, ToggleMarkdownView, SaveFile, Bold, Italic, FoldAll, UnfoldAll, OpenFolder,
             NewWindow, NewBrowserTab, OpenFileInPane, VideoPlayPause, VideoBack, VideoForward, VideoBackFine, VideoForwardFine, VideoStepBack, VideoStepForward,
             VideoStart, VideoLoop, VideoMute, VideoReload, PageBack, PageForward, ReloadPage, FocusAddress, OpenInBrowser, ZoomReset,
         ];
@@ -951,7 +953,7 @@ pub(crate) mod tests {
                 | CloseAllInPane | MoveTabWithin(_) | NewTerminal | ClearToStart | FontDelta(_) | About | OpenSettings | Keybindings
                 | Documentation | OpenConfig | TextPreset(_) | ReloadConfig | ExtractThemes | CommandPalette | SetTheme(_) | Find | CopyAsShown
                 | UpdateNow | CheckForUpdates | Notifications | Doctor | RetryUpdate | StartAtLogin | InstallHooks | InstallAgentGuide
-                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile | Bold | Italic
+                | ToggleSidebar | FocusFileTree | ShowIgnoredFiles | FocusWorktrees | ToggleInlineDiff | ToggleMarkdownView | SaveFile | Bold | Italic | FoldAll | UnfoldAll
                 | OpenFolder | NewWindow | NewBrowserTab | OpenFileInPane | VideoPlayPause | VideoBack | VideoForward | VideoBackFine | VideoForwardFine
                 | VideoStepBack | VideoStepForward | VideoStart | VideoLoop | VideoMute | VideoReload | PageBack | PageForward | ReloadPage
                 | FocusAddress | OpenInBrowser | ZoomReset => {}

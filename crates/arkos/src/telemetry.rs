@@ -641,6 +641,8 @@ pub fn command_name(command: &Command) -> &'static str {
         SaveFile => "save_file",
         Bold => "bold",
         Italic => "italic",
+        FoldAll => "fold_all",
+        UnfoldAll => "unfold_all",
         OpenFolder => "open_folder",
         NewWindow => "new_window",
         NewBrowserTab => "new_browser_tab",

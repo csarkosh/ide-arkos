@@ -227,6 +227,10 @@ pub struct Shot {
     /// opens a context menu for the picture.
     #[serde(default)]
     pub right_click: Option<[f64; 2]>,
+    /// A drag from the first point to the second, fractions of the window, after the clicks and
+    /// before the keys: the left button held over a dozen moves.
+    #[serde(default)]
+    pub drag: Option<[[f64; 2]; 2]>,
     /// Keys sent to the window after the wait and before the capture, in order: `down`,
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
@@ -249,10 +253,15 @@ pub struct Key {
     pub times: usize,
 }
 
-/// The ANSI key code of a lowercase letter on a US layout.
+/// The ANSI key code of a lowercase letter or a digit on a US layout.
 fn letter_code(c: u8) -> Option<u16> {
-    const CODES: [u16; 26] = [0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6];
-    c.checked_sub(b'a').and_then(|i| CODES.get(i as usize)).copied()
+    const LETTERS: [u16; 26] = [0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6];
+    const DIGITS: [u16; 10] = [29, 18, 19, 20, 21, 23, 22, 26, 28, 25];
+    match c {
+        b'a'..=b'z' => LETTERS.get((c - b'a') as usize).copied(),
+        b'0'..=b'9' => DIGITS.get((c - b'0') as usize).copied(),
+        _ => None,
+    }
 }
 
 impl Key {
@@ -279,7 +288,7 @@ impl Key {
             "return" | "enter" => Some(36), "tab" => Some(48), "escape" | "esc" => Some(53), "delete" | "backspace" => Some(51),
             // A letter with a modifier goes by its own key code: an app reads Cmd+Z from the key,
             // not from the text, so a letter sent as text on key 0 arrives as Cmd+A.
-            letter if !modifiers.is_empty() && letter.len() == 1 && letter.as_bytes()[0].is_ascii_lowercase() => letter_code(letter.as_bytes()[0]),
+            letter if !modifiers.is_empty() && letter.len() == 1 && letter.as_bytes()[0].is_ascii_alphanumeric() => letter_code(letter.as_bytes()[0]),
             _ => None,
         };
         let text = if code.is_none() {
@@ -732,6 +741,7 @@ theme = "light"
         assert_eq!((k.code, k.text.as_deref()), (None, Some("a")));
         assert_eq!(Key::parse("cmd+z").unwrap().code, Some(6), "a modified letter goes by its key, so Cmd+Z is not Cmd+A");
         assert_eq!(Key::parse("cmd+shift+z").unwrap().code, Some(6));
+        assert_eq!(Key::parse("cmd+0").unwrap().code, Some(29), "a digit with a modifier too");
         assert_eq!(Key::parse("**2").unwrap().text.as_deref(), Some("*"), "a star is typed as text");
         assert!(Key::parse("meta+x").is_err());
         assert!(Key::parse("rightt").is_err());

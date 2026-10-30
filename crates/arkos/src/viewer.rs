@@ -15,6 +15,7 @@ use crate::find::{FindLook, BAR_TOP};
 use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
+use crate::md_fold;
 use crate::md_format;
 use crate::md_slash;
 use crate::md_reveal;
@@ -97,6 +98,8 @@ pub enum ViewerEvent {
     /// A `<details>` section was opened or closed: the file's section states now, for the
     /// workspace file.
     DetailsToggled(Vec<DetailsOpen>),
+    /// The folded headings changed (`Viewer::folded`), for the workspace and the file's other tabs.
+    FoldsChanged(Vec<workspace::Fold>),
 }
 
 /// What a press on a media block in the rendered view does (`md_view::media_element`).
@@ -661,6 +664,13 @@ pub struct Viewer {
     /// section with no state here is shown as its `open` attribute says. Taken from the workspace
     /// when the viewer is made and saved there on every toggle (`ViewerEvent::DetailsToggled`).
     pub open_details: BTreeMap<(String, usize), bool>,
+    /// The headings folded in the rendered view, by text and place among namesakes; taken from
+    /// the workspace when the viewer is made and saved there on every change.
+    pub folded: std::collections::BTreeSet<md_fold::FoldKey>,
+    /// The document's headings and, per block, whether a fold hides it: made again after every
+    /// edit, load and fold.
+    pub heads: Vec<md_fold::Head>,
+    pub hidden: Vec<bool>,
 }
 
 /// The slash menu's state: where the `/` is (its line and column), the text typed after it, the
@@ -760,6 +770,9 @@ impl Viewer {
             sizes: HashMap::new(),
             diagrams: HashMap::new(),
             open_details: BTreeMap::new(),
+            folded: Default::default(),
+            heads: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 
@@ -916,6 +929,7 @@ impl Viewer {
             }
         }
         reset_rows(&self.blocks, &mut self.block_cache, &self.list_state);
+        self.refresh_structure();
         if let Some(line) = old_top_line.filter(|_| !self.blocks.is_empty()) {
             self.list_state.scroll_to(ListOffset { item_ix: md_blocks::block_at(&self.blocks, line), offset_in_item: px(0.0) });
         }
@@ -1013,6 +1027,7 @@ impl Viewer {
         }
         splice_rows(&mut self.blocks, &mut self.block_cache, &self.list_state, &old_lines, &new_lines);
         self.content = Content::Text { lines: new_lines, spans: Vec::new() };
+        self.refresh_structure();
         // The marks point at lines that may have moved; the next save computes them again.
         self.diff = None;
         self.scroll.clamp_max(self.max_scroll());
@@ -1372,7 +1387,13 @@ impl Viewer {
         let Some(f) = &self.find else { return };
         let Some(h) = f.hits.get(f.current) else { return };
         if self.rendered() {
-            self.list_state.scroll_to_reveal_item(md_blocks::block_at(&self.blocks, h.line));
+            let ix = md_blocks::block_at(&self.blocks, h.line);
+            // A hit in a folded section shows it.
+            for key in md_fold::hiding(&self.heads, &self.folded, ix, self.blocks.len()) {
+                self.folded.remove(&key);
+            }
+            self.hidden = md_fold::hidden(&self.heads, &self.folded, self.blocks.len());
+            self.list_state.scroll_to_reveal_item(ix);
             return;
         }
         let target = (self.row_of_line(h.line) as f32 - (self.rows_visible as f32 / 3.0).floor()).max(0.0);
@@ -1700,7 +1721,14 @@ impl Viewer {
                 } else {
                     let dir = if m == edit::Move::Up { md_view::Dir::Up } else { md_view::Dir::Down };
                     let Some(doc) = self.doc.as_ref() else { return false };
-                    let c = md_view::navigate(doc, &self.blocks, self.caret, dir, select);
+                    let mut c = md_view::navigate(doc, &self.blocks, self.caret, dir, select);
+                    // Over a folded section, as if it were not there.
+                    for _ in 0..self.blocks.len() {
+                        if !self.is_hidden(md_blocks::block_at(&self.blocks, c.head.line)) {
+                            break;
+                        }
+                        c = md_view::navigate(doc, &self.blocks, c, dir, select);
+                    }
                     // Into a revealed list: not onto its first item's bullet.
                     let side = if m == edit::Move::Up { md_reveal::Dir::Left } else { md_reveal::Dir::Right };
                     let head = snap_pos(doc.lines(), &self.blocks, c.head, side);
@@ -1814,6 +1842,106 @@ impl Viewer {
                 doc.replace_range(from, to, &e.text, now);
                 doc.break_coalescing();
                 edit::Caret { head: b, anchor: a, goal_col: None }
+            },
+            cx,
+        );
+    }
+
+    /// The headings and the hidden blocks, after an edit, a load or a fold.
+    pub fn refresh_structure(&mut self) {
+        let Some(doc) = self.doc.as_ref() else {
+            self.heads.clear();
+            self.hidden.clear();
+            return;
+        };
+        self.heads = md_fold::headings(&self.blocks, doc.lines());
+        self.hidden = md_fold::hidden(&self.heads, &self.folded, self.blocks.len());
+    }
+
+    /// Whether block `ix` is hidden by a fold.
+    pub fn is_hidden(&self, ix: usize) -> bool {
+        self.hidden.get(ix).copied().unwrap_or(false)
+    }
+
+    fn folds_changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_structure();
+        let saved = self.folded.iter().map(|(heading, index)| workspace::Fold { heading: heading.clone(), index: *index }).collect();
+        cx.emit(ViewerEvent::FoldsChanged(saved));
+        cx.notify();
+    }
+
+    /// Folds or unfolds the heading at block `ix`. A caret its fold hides goes to the heading.
+    pub fn toggle_fold(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(h) = self.heads.iter().find(|h| h.block == ix) else { return };
+        let key = h.key();
+        if !self.folded.remove(&key) {
+            self.folded.insert(key);
+        }
+        self.folds_changed(cx);
+        self.keep_caret_visible();
+    }
+
+    /// Fold All: every heading with something under it is folded.
+    pub fn fold_all(&mut self, cx: &mut Context<Self>) {
+        let n = self.blocks.len();
+        self.folded = self.heads.iter().enumerate().filter(|(i, _)| !md_fold::section(&self.heads, *i, n).is_empty()).map(|(_, h)| h.key()).collect();
+        self.folds_changed(cx);
+        self.keep_caret_visible();
+    }
+
+    /// Unfold All.
+    pub fn unfold_all(&mut self, cx: &mut Context<Self>) {
+        self.folded.clear();
+        self.folds_changed(cx);
+    }
+
+    /// Unfolds the headings hiding block `ix`.
+    pub fn unfold_for(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if !self.is_hidden(ix) {
+            return;
+        }
+        for key in md_fold::hiding(&self.heads, &self.folded, ix, self.blocks.len()) {
+            self.folded.remove(&key);
+        }
+        self.folds_changed(cx);
+    }
+
+    /// A caret a fold now hides goes to the nearest heading above it that shows.
+    fn keep_caret_visible(&mut self) {
+        let ix = self.active_block();
+        if !self.is_hidden(ix) {
+            return;
+        }
+        let Some(h) = self.heads.iter().rev().find(|h| h.block < ix && !self.is_hidden(h.block)) else { return };
+        let line = self.blocks[h.block].lines.start;
+        if let Some(doc) = self.doc.as_ref() {
+            let end = md_blocks::pos_of_offset(&self.blocks[h.block], doc.lines(), usize::MAX);
+            self.caret = edit::Caret::at(edit::Pos { line: end.line.max(line), ch: end.ch });
+        }
+    }
+
+    /// The outline's click: the block a fold hides is shown, and the view scrolls to it.
+    pub fn reveal_block(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.unfold_for(ix, cx);
+        self.list_state.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(0.0) });
+        cx.notify();
+    }
+
+    /// Moves block `from` to before block `to` (`md_fold::move_block`), as one undoable edit, the
+    /// caret at the moved block's start.
+    pub fn move_block(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        let Some(m) = md_fold::move_block(doc.lines(), &self.blocks, from, to) else { return };
+        let last = m.lines.end - 1;
+        let end = edit::Pos { line: last, ch: doc.lines()[last].chars().count() };
+        let text = m.text.join("\n");
+        self.caret_placed = true;
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(edit::Pos { line: m.lines.start, ch: 0 }, end, &text, now);
+                doc.break_coalescing();
+                edit::Caret::at(doc.clamp(edit::Pos { line: m.at, ch: 0 }))
             },
             cx,
         );
@@ -2341,6 +2469,11 @@ impl Viewer {
     /// rendered view nothing is realigned and the entry is forgotten.
     fn note_caret_moved(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.refresh_slash();
+        // The caret never stands in a folded section: landing there unfolds it.
+        if self.rendered() && self.caret_placed {
+            let ix = self.active_block();
+            self.unfold_for(ix, cx);
+        }
         if !self.rendered() {
             self.table_entry = None;
             return;
@@ -3488,10 +3621,12 @@ impl Root {
             _ => ViewMode::default(),
         };
         let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
+        let folded: std::collections::BTreeSet<md_fold::FoldKey> = self.folds.get(path).map(|f| f.iter().map(|f| (f.heading.clone(), f.index)).collect()).unwrap_or_default();
         let v = cx.new(|cx| {
             let mut v = Viewer::new(path.to_path_buf(), font_size, line_height, cx);
             v.mode = mode;
             v.open_details = open_details;
+            v.folded = folded;
             v
         });
         cx.subscribe(&v, move |root, v, event: &ViewerEvent, cx| {
@@ -3520,6 +3655,22 @@ impl Root {
                         other.update(cx, |o, cx| {
                             if o.path == path {
                                 o.open_details = shown.clone();
+                                cx.notify();
+                            }
+                        });
+                    }
+                    root.save(cx);
+                }
+                // The folds are the file's too.
+                ViewerEvent::FoldsChanged(folds) => {
+                    let path = v.read(cx).path.clone();
+                    workspace::set_folds(&mut root.folds, &path, folds.clone());
+                    let keys: std::collections::BTreeSet<md_fold::FoldKey> = folds.iter().map(|f| (f.heading.clone(), f.index)).collect();
+                    for other in root.viewers.values().filter(|o| o.entity_id() != v.entity_id()) {
+                        other.update(cx, |o, cx| {
+                            if o.path == path {
+                                o.folded = keys.clone();
+                                o.refresh_structure();
                                 cx.notify();
                             }
                         });
