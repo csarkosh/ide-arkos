@@ -1251,7 +1251,13 @@ impl Root {
         }
         self.fonts = fonts;
         let shown = effects::active::contrasted(&theme, self.text_contrast());
+        let accent_changed = theme.chrome.focus_ring != self.base_theme.chrome.focus_ring;
         self.base_theme = Arc::new(theme);
+        // The glyph shader is told the theme's accent when it is compiled, so a new accent
+        // compiles it again; the turn of its colours cuts rather than fades, as glyphs can only.
+        if accent_changed && self.effect.as_ref().is_some_and(|e| e.settled()) {
+            self.glyphs_pending = Some(self.glyph_shader_for(effects::active::WindowKind::Project));
+        }
         self.fade_theme_to(shown, cx);
     }
 
@@ -3805,9 +3811,10 @@ impl Root {
     }
 
     /// The glyph shader a window of `kind` draws with: the effect's, in the project window
-    /// only. The aux windows never ask, so they keep gpui's own glyphs.
+    /// only, told the configured theme's focus ring as its accent. The aux windows never ask,
+    /// so they keep gpui's own glyphs.
     pub fn glyph_shader_for(&self, kind: effects::active::WindowKind) -> Option<gpui::GlyphShader> {
-        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale)
+        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale, self.base_theme.chrome.focus_ring)
     }
 
     /// How far the text is deepened: the effect's `text_contrast` while it is settled on, else

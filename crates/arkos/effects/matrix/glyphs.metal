@@ -42,8 +42,9 @@ constant float GLITCH_SLOT = 0.1;
 constant float GLITCH_CHANCE = 0.0001;
 // How much brighter a glitching glyph and its halo are lit.
 constant float GLITCH_FLASH = 1.4;
-// The phosphor green the text and its halo lean toward.
-constant float3 MATRIX_GREEN = float3(0.35, 1.0, 0.45);
+// The phosphor green the text and its halo lean toward: soft rather than full phosphor, as the
+// matrix theme's text is, so long reading is easy on the eyes.
+constant float3 MATRIX_GREEN = float3(0.44, 0.8, 0.49);
 // Dark text (a light theme with matrix chosen) leans toward a deep green instead.
 constant float3 MATRIX_DEEP = float3(0.0, 0.4, 0.15);
 // The soft pale green reading text leans toward.
@@ -52,6 +53,39 @@ constant float3 CALM_GREEN = float3(0.72, 0.86, 0.72);
 constant float CALM_TINT = 0.6;
 // Reading text's light: a little under the display's, easier on the eyes.
 constant float CALM_BRIGHTNESS = 0.9;
+
+// The colour the greens above were made around: the matrix theme's focus ring. Under another
+// theme each green is turned round the colour wheel by the distance from this hue to the hue of
+// the theme's focus ring (ARKOS_ACCENT, declared by the window ahead of this source), keeping
+// its saturation and brightness, so navy's text leans blue; a ring with under MIN_SATURATION
+// has no hue to speak of and turns nothing. The wash carries the same arithmetic, mirrored in
+// crates/arkos/src/effects/accent.rs; a change to one is made to all three.
+constant float3 HOME = float3(0.494118, 0.839216, 0.419608);
+constant float MIN_SATURATION = 0.2;
+
+// Hue (0 to 1, a full turn), saturation and value.
+float3 rgb_to_hsv(float3 c) {
+  float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+  float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  return float3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+
+float3 hsv_to_rgb(float3 c) {
+  float3 p = abs(fract(c.xxx + float3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return c.z * mix(float3(1.0), saturate(p - 1.0), c.y);
+}
+
+float3 toward_accent(float3 c, float3 accent) {
+  float3 a = rgb_to_hsv(accent);
+  if (a.y < MIN_SATURATION) {
+    return c;
+  }
+  float3 h = rgb_to_hsv(c);
+  h.x = fract(h.x + a.x - rgb_to_hsv(HOME).x + 1.0);
+  return hsv_to_rgb(h);
+}
 
 // Whether a glyph's colour alpha marks it as reading text: within 0.002 of the window's
 // ARKOS_CALM_ALPHA, so a fade that scales the alpha a little still counts.
@@ -205,14 +239,15 @@ fragment float4 arkos_glyph_fragment(
   // crates/arkos/src/effects/decode.rs): a change here is made there too.
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
   bool dark = luminance < 0.45;
-  float3 hue = dark ? MATRIX_DEEP : MATRIX_GREEN;
+  float3 green = toward_accent(MATRIX_GREEN, ARKOS_ACCENT);
+  float3 hue = dark ? toward_accent(MATRIX_DEEP, ARKOS_ACCENT) : green;
 
   // Reading text on a dark ground: a soft pale green at a little less light, with no halo and
   // (from the vertex stage) no glitch, its coverage the glyph's own. Dark reading text goes on
   // as dark text, which has no halo and no flash already.
   bool calm = calm_text(input.color.a);
   if (calm && !dark) {
-    float3 soft = mix(col, CALM_GREEN, CALM_TINT) * CALM_BRIGHTNESS;
+    float3 soft = mix(col, toward_accent(CALM_GREEN, ARKOS_ACCENT), CALM_TINT) * CALM_BRIGHTNESS;
     return float4(soft, core * input.color.a);
   }
 
@@ -229,7 +264,7 @@ fragment float4 arkos_glyph_fragment(
   // The tint: coloured output keeps as much of its own hue as KEEP says.
   float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
   col = mix(col, hue, w);
-  float3 gcol = mix(hcol, MATRIX_GREEN, max(w, 0.35));
+  float3 gcol = mix(hcol, green, max(w, 0.35));
 
   float light = dark ? 1.0 : BRIGHTNESS * input.flash;
   float halo = dark ? 0.0 : GLOW * input.flash;
@@ -352,8 +387,9 @@ fragment float4 arkos_emoji_fragment(
 
   // The tint, the halo's colour and the light, as a letter's.
   float w = TINT * (1.0 - KEEP * clamp(sat * 2.5, 0.0, 1.0));
-  col = mix(col, MATRIX_GREEN, w);
-  float3 gcol = mix(hcol, MATRIX_GREEN, max(w, 0.35));
+  float3 green = toward_accent(MATRIX_GREEN, ARKOS_ACCENT);
+  col = mix(col, green, w);
+  float3 gcol = mix(hcol, green, max(w, 0.35));
   float light = BRIGHTNESS * input.flash;
 
   float glow_a = saturate(g * GLOW * input.flash * 0.55) * (1.0 - a);

@@ -676,7 +676,11 @@ whose colour alpha is within 0.002 of `ARKOS_CALM_ALPHA` (after any fade) is rea
 rendered markdown's; a shader may draw it calmly (the built-in matrix draws it a soft pale green
 with no halo and no glitch, testing `abs(input.color.a - ARKOS_CALM_ALPHA) < 0.002` in its
 fragment and the same band on the sprite's colour in its vertex stage). Draw its output alpha from `input.color.a` as for any glyph; without an effect the
-mark is 0.5% transparency, which nobody can see. The
+mark is 0.5% transparency, which nobody can see. Then comes `ARKOS_ACCENT`, a `float3`: the
+theme's primary colour, its `focus_ring`, which the window declares ahead of your source and
+rebuilds when the theme changes. A shader may lean its own colours toward it: the built-in matrix
+turns its greens round the colour wheel to the accent's hue, so they are green under the matrix
+theme and blue under navy (a wash reads the same colour at `u.colors[ARKOS_FOCUS_RING]`). The
 built-in's `glyphs.metal` (from `arkos effect template`) is a worked one: it widens each glyph's
 quad so the ink can bleed, measures everything in points, and keeps a stroke's core at least 55%
 of its coverage so thin text stays legible. Keep to that floor in any glyph shader you write.

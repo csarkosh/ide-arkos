@@ -37,6 +37,9 @@ constant float RUNE_CHANGE = 0.5;
 constant float RAIN_ALPHA = 0.22;
 // How much more rain the tab strips carry, as a share of RAIN_ALPHA laid again over them.
 constant float TAB_RAIN = 0.4;
+// How much more rain the pane bodies carry, as a share of RAIN_ALPHA laid again over them: a
+// terminal's paper covers the wash (paper_alpha), so without it the rain all but vanishes there.
+constant float PANE_RAIN = 1.5;
 // The head's extra brightness: how far its rune leans from the green toward white.
 constant float RAIN_HEAD = 0.35;
 // A rune's bit, in points: its 5 by 7 bits make a shape 10 by 14 points, centred in its cell.
@@ -377,6 +380,39 @@ float greenness(float3 c) {
     return c.g - max(c.r, c.b);
 }
 
+// The colour the effect's greens were made around: the matrix theme's focus ring. Under another
+// theme the green is turned round the colour wheel by the distance from this hue to the hue of
+// the theme's focus ring, keeping its saturation and brightness, so navy's rain and edges are
+// blue; a ring with under MIN_SATURATION has no hue to speak of and turns nothing. The glyph
+// shader carries the same arithmetic, mirrored in crates/arkos/src/effects/accent.rs; a change
+// to one is made to all three.
+constant float3 HOME = float3(0.494118, 0.839216, 0.419608);
+constant float MIN_SATURATION = 0.2;
+
+// Hue (0 to 1, a full turn), saturation and value.
+float3 rgb_to_hsv(float3 c) {
+  float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+  float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  return float3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+
+float3 hsv_to_rgb(float3 c) {
+  float3 p = abs(fract(c.xxx + float3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return c.z * mix(float3(1.0), saturate(p - 1.0), c.y);
+}
+
+float3 toward_accent(float3 c, float3 accent) {
+  float3 a = rgb_to_hsv(accent);
+  if (a.y < MIN_SATURATION) {
+    return c;
+  }
+  float3 h = rgb_to_hsv(c);
+  h.x = fract(h.x + a.x - rgb_to_hsv(HOME).x + 1.0);
+  return hsv_to_rgb(h);
+}
+
 // The theme's green: the greenest of its ANSI green, the terminal's text colour and the focus
 // ring, the ANSI green on a tie, so another theme's rain reads in its own green.
 float3 theme_green(constant ArkosInputs& u) {
@@ -393,7 +429,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
 
     float3 bg = u.colors[ARKOS_WINDOW_BG].rgb;
     float3 white_c = u.colors[ARKOS_ANSI + 15].rgb;
-    float3 green = theme_green(u);
+    float3 green = toward_accent(theme_green(u), u.colors[ARKOS_FOCUS_RING].rgb);
 
     // The ground, flat, and the rain laid over it, so it shows on a light ground as on black.
     float4 r = rain(p, u.time, green);
@@ -403,8 +439,10 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     int nb = min(int(u.block_count), 48);
     float dim = 0.0;
     float lift = 0.0;
-    // How much of a tab bar covers p, for the extra rain laid on the tab strips.
+    // How much of a tab bar covers p, for the extra rain laid on the tab strips, and how much of
+    // a pane body, for the extra rain laid under the panes' paper.
     float tab = 0.0;
+    float pane = 0.0;
     EdgeHit hit = no_edge();
     for (int i = 0; i < nb; i++) {
         ArkosBlock blk = u.blocks[i];
@@ -419,6 +457,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (kind == ARKOS_TAB_BAR_BLOCK) {
                 tab = max(tab, inside);
             }
+        } else if (kind == ARKOS_PANE_BODY_BLOCK) {
+            pane = max(pane, 1.0 - smoothstep(-0.5, 0.5, d));
         } else if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
             if (d < 6.0) {
                 float s = HIGHLIGHT_STRENGTH[min(max(int(blk.ordinal), 0), 2)] * blk.value;
@@ -431,6 +471,8 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     col = mix(col, bg * 0.8, dim * k);
     // The tab strips carry the rain more strongly: TAB_RAIN more of it, laid over the first.
     col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);
+    // The pane bodies carry it more strongly still: PANE_RAIN more, under the panes' paper.
+    col = mix(col, r.rgb, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);
     col = mix(col, green, lift * k);
     // The nearest reported edge's light, laid over the rest. On a dark ground it is added, as
     // the mock-up adds it, so a busy head or a tear burns on toward white until each channel
@@ -451,7 +493,7 @@ fragment float4 arkos_overlay(ArkosVertex in [[stage_in]], constant ArkosInputs&
     float2 p = in.uv * u.size;
     float k = saturate(u.intensity);
     float3 white_c = u.colors[ARKOS_ANSI + 15].rgb;
-    float3 green = theme_green(u);
+    float3 green = toward_accent(theme_green(u), u.colors[ARKOS_FOCUS_RING].rgb);
     int nb = min(int(u.block_count), 48);
     EdgeHit hit = no_edge();
     for (int i = 0; i < nb; i++) {

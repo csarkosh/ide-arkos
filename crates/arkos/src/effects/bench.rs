@@ -285,18 +285,25 @@ mod tests {
         }
         let matrix = super::super::manifest::load("matrix", std::path::Path::new("/nonexistent")).unwrap();
         let theme = crate::theme::builtin("matrix").unwrap();
-        // Inside a pane body, away from the edges' glow: the rain never lays more than RAIN_ALPHA
-        // of the text green over the black ground (with 5% for the head, which leans toward white,
-        // and the bytes' rounding), and it does show. The left pane's body below its highlighted
-        // row and that row's soft spill (6 points out), over a few moments, since about three fifths of
-        // the columns carry a stream at a time.
+        // Inside a pane body, away from the edges' glow: the wash lays its rain twice there, at
+        // RAIN_ALPHA and again at PANE_RAIN times it, so that it shows through a terminal's paper.
+        // Through the paper (paper_alpha), what is seen of it is never more than RAIN_ALPHA of
+        // the text green over the black ground, and it does show. The brightest rune is a head,
+        // which leans RAIN_HEAD of the way toward white, with 2% for the bytes' rounding. The left
+        // pane's body below its highlighted row and that row's soft spill (6 points out), over a
+        // few moments, since about three fifths of the columns carry a stream at a time.
         let interior: Vec<Rgb> = [7.0, 23.0, 61.0]
             .iter()
             .flat_map(|&t| pixels(&render_frame(&matrix.wash, &theme, (W, H), t, &small_window()), 4, 108, 116, 156))
             .collect();
         let text = theme.terminal.foreground.g as f32 / 255.0;
+        let head = text + (1.0 - text) * crate::effects::matrix::RAIN_HEAD;
         let max = interior.iter().map(|p| p.g as f32 / 255.0).fold(0.0, f32::max);
-        assert!(max <= text * crate::effects::matrix::RAIN_ALPHA * 1.05, "the rain is too bright: green channel {max:.3}");
+        let (rain, pane) = (crate::effects::matrix::RAIN_ALPHA, crate::effects::matrix::PANE_RAIN);
+        let laid = 1.0 - (1.0 - rain) * (1.0 - rain * pane);
+        assert!(max <= head * laid * 1.02, "the rain is too bright: green channel {max:.3}");
+        let seen = max * (1.0 - matrix.manifest.paper_alpha);
+        assert!(seen <= head * rain * 1.02, "the rain seen through the paper is too bright: green channel {seen:.3}");
         assert!(interior.iter().any(|p| p.g > 4), "the rain does not show at all");
     }
 

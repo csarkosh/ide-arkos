@@ -1,6 +1,7 @@
 //! Effects: shaders drawn under the window and, optionally, over its text (spec 4). An effect is
 //! a folder with a manifest and Metal shaders; the built-ins are compiled in, and a folder of
 //! the same name in the effects folder replaces one.
+pub mod accent;
 pub mod active;
 pub mod bench;
 pub mod blocks;

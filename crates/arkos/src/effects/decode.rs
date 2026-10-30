@@ -33,20 +33,34 @@ pub const TICK_MS: u64 = 50;
 /// with no scramble and no brightening, in milliseconds.
 pub const USER_QUIET_MS: u64 = 400;
 
-/// How long a cell scrambles and how long it stays brightened after it changes.
+/// How long a cell scrambles, how long it stays brightened after it changes, and the colours it
+/// is brightened toward: `FRESH_WHITE` and, for dark text, `FRESH_DEEP`, turned toward the
+/// theme's accent (`toward`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Timing {
     pub decode: Duration,
     pub fresh: Duration,
+    pub white: Rgb,
+    pub deep: Rgb,
+}
+
+impl Timing {
+    /// This timing with its fresh colours turned toward a theme's focus ring, as the matrix
+    /// glyph shader turns its greens (`effects::accent`).
+    pub fn toward(self, accent: Rgb) -> Timing {
+        let turn = |c| crate::effects::accent::toward_accent(c, accent);
+        Timing { white: turn(FRESH_WHITE), deep: turn(FRESH_DEEP), ..self }
+    }
 }
 
 /// The timing for the agent's state; with Reduce Motion both are zero, so a cell settles at once.
 pub fn timing(working: bool, reduce_motion: bool) -> Timing {
+    let (white, deep) = (FRESH_WHITE, FRESH_DEEP);
     if reduce_motion {
-        return Timing { decode: Duration::ZERO, fresh: Duration::ZERO };
+        return Timing { decode: Duration::ZERO, fresh: Duration::ZERO, white, deep };
     }
     let ms = if working { DECODE_MS_WORKING } else { DECODE_MS_IDLE };
-    Timing { decode: Duration::from_millis(ms), fresh: Duration::from_millis(FRESH_MS) }
+    Timing { decode: Duration::from_millis(ms), fresh: Duration::from_millis(FRESH_MS), white, deep }
 }
 
 /// What the decode remembers of one cell: its real character and the instant that last changed.
@@ -193,7 +207,7 @@ impl Decode {
         if since < t.fresh {
             // The text is drawn in `bg` once `layout::build_runs` swaps an inverse cell's colours.
             let text = if style.inverse { &mut style.bg } else { &mut style.fg };
-            *text = freshened(*text, fresh_mix(since, t.fresh));
+            *text = freshened(*text, fresh_mix(since, t.fresh), t);
         }
         (ch, style)
     }
@@ -216,10 +230,10 @@ fn moved_from(old_texts: &[String], row: usize, text: &str) -> Option<usize> {
     below.or_else(|| (0..row.min(old_texts.len())).rev().find(|&r| old_texts[r] == text))
 }
 
-/// A text colour `share` of the way to fresh: toward `FRESH_DEEP` when the glyph shader draws it
-/// as dark text (under `DARK_TEXT`), so a light theme's text stays dark, else toward `FRESH_WHITE`.
-fn freshened(text: Rgb, share: f32) -> Rgb {
-    let target = if luminance(text) < DARK_TEXT { FRESH_DEEP } else { FRESH_WHITE };
+/// A text colour `share` of the way to fresh: toward the deep colour when the glyph shader draws
+/// it as dark text (under `DARK_TEXT`), so a light theme's text stays dark, else toward the white.
+fn freshened(text: Rgb, share: f32, t: Timing) -> Rgb {
+    let target = if luminance(text) < DARK_TEXT { t.deep } else { t.white };
     mix(text, target, share)
 }
 
@@ -262,9 +276,25 @@ mod tests {
 
     #[test]
     fn working_decodes_longer_than_idle_and_reduce_motion_settles_at_once() {
-        assert_eq!(timing(true, false), Timing { decode: Duration::from_millis(400), fresh: Duration::from_millis(1500) });
+        let (white, deep) = (FRESH_WHITE, FRESH_DEEP);
+        assert_eq!(timing(true, false), Timing { decode: Duration::from_millis(400), fresh: Duration::from_millis(1500), white, deep });
         assert_eq!(timing(false, false).decode, Duration::from_millis(120));
-        assert_eq!(timing(true, true), Timing { decode: Duration::ZERO, fresh: Duration::ZERO });
+        assert_eq!(timing(true, true), Timing { decode: Duration::ZERO, fresh: Duration::ZERO, white, deep });
+    }
+
+    #[test]
+    fn fresh_text_turns_toward_the_theme_s_accent() {
+        use crate::effects::accent::{toward_accent, HOME};
+        assert_eq!(timing(true, false).toward(HOME), timing(true, false), "the matrix theme turns nothing");
+        let navy = Rgb { r: 0x3a, g: 0x7b, b: 0xd5 };
+        let t = timing(false, false).toward(navy);
+        assert_eq!((t.white, t.deep), (toward_accent(FRESH_WHITE, navy), toward_accent(FRESH_DEEP, navy)));
+        let t0 = Instant::now();
+        let mut d = Decode::new(1, 1, 0);
+        d.observe(&grid(&[" "]), 0, t0, false, DEC);
+        d.observe(&grid(&["x"]), 0, t0, false, DEC);
+        let (_, s) = d.shown(0, 0, cell('x'), t0 + Duration::from_millis(121), t);
+        assert_eq!(s.fg, crate::theme::mix(plain().fg, t.white, fresh_mix(Duration::from_millis(121), t.fresh)));
     }
 
     #[test]

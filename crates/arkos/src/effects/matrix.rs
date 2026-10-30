@@ -28,6 +28,11 @@ pub const RUNE_CHANGE: f32 = 0.5;
 pub const RAIN_ALPHA: f32 = 0.22;
 /// How much more rain the tab strips carry, as a share of `RAIN_ALPHA` laid again over them.
 pub const TAB_RAIN: f32 = 0.4;
+/// How much more rain the pane bodies carry, as a share of `RAIN_ALPHA` laid again over them, so
+/// the rain shows through a terminal's paper.
+pub const PANE_RAIN: f32 = 1.5;
+/// How far a stream's head rune leans from the green toward white.
+pub const RAIN_HEAD: f32 = 0.35;
 
 /// Signal tears a minute across a window of `D_EDGES` edges.
 pub const D_PER_MINUTE: f32 = 6.0;
@@ -120,6 +125,8 @@ mod tests {
             ("constant float RUNE_CHANGE = 0.5;", RUNE_CHANGE),
             ("constant float RAIN_ALPHA = 0.22;", RAIN_ALPHA),
             ("constant float TAB_RAIN = 0.4;", TAB_RAIN),
+            ("constant float PANE_RAIN = 1.5;", PANE_RAIN),
+            ("constant float RAIN_HEAD = 0.35;", RAIN_HEAD),
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
             assert!(line.ends_with(&format!(" = {value:?};")), "the mirror's value for {line} is {value:?}");
@@ -181,6 +188,9 @@ mod tests {
             "constant float TAB_RAIN = 0.4;",
             "col = mix(col, r.rgb, r.a * RAIN_ALPHA * TAB_RAIN * tab * k);",
             "kind == ARKOS_TAB_BAR_BLOCK ? 0.0 : 0.42",
+            // The pane bodies: a stronger second layer, so the rain shows through the paper.
+            "constant float PANE_RAIN = 1.5;",
+            "col = mix(col, r.rgb, r.a * RAIN_ALPHA * PANE_RAIN * pane * k);",
         ] {
             assert!(wash.contains(line), "wash.metal lacks {line}");
         }
@@ -346,7 +356,7 @@ mod tests {
             "constant float KEEP = 0.15;",
             "constant float GLOW = 1.6;",
             "constant float BRIGHTNESS = 1.0;",
-            "float3(0.35, 1.0, 0.45)",
+            "float3(0.44, 0.8, 0.49)",
             "float3(0.0, 0.4, 0.15)",
             "bool dark = luminance < 0.45;",
             "core * 0.55",
@@ -388,7 +398,7 @@ mod tests {
         ] {
             assert!(g.contains(line), "glyphs.metal lacks {line}");
         }
-        assert!(crate::effects::active::glyph_source(g, 2.0).contains("constant float ARKOS_CALM_ALPHA = 0.995;"));
+        assert!(crate::effects::active::glyph_source(g, 2.0, crate::effects::accent::HOME).contains("constant float ARKOS_CALM_ALPHA = 0.995;"));
         // The vertex stage gives calm text no glitch: no mirror and no flash.
         let vertex = &g[g.find("vertex MatrixVertexOutput arkos_glyph_vertex(").unwrap()..g.find("float matrix_tx(").unwrap()];
         assert!(vertex.contains("float3 g = calm_text(color.a) ? float3(1.0) : glitch(glitch_origin(sprite.bounds), slot);"), "{vertex}");
@@ -399,7 +409,7 @@ mod tests {
         let branch = fragment.find("if (calm && !dark) {").expect("the calm branch");
         assert!(branch < fragment.find("matrix_ring(").unwrap(), "the calm branch returns before the halo");
         let calm = &fragment[branch..branch + fragment[branch..].find('}').unwrap()];
-        assert!(calm.contains("mix(col, CALM_GREEN, CALM_TINT) * CALM_BRIGHTNESS"), "{calm}");
+        assert!(calm.contains("mix(col, toward_accent(CALM_GREEN, ARKOS_ACCENT), CALM_TINT) * CALM_BRIGHTNESS"), "{calm}");
         assert!(calm.contains("return float4(soft, core * input.color.a);"), "{calm}");
         assert!(!calm.contains("flash") && !calm.contains("GLOW"), "no flash and no halo: {calm}");
         // Emoji carry no mark and keep their glitch.

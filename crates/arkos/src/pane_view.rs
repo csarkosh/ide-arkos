@@ -389,7 +389,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => {
                 let family = root.family();
                 let now = root.frame_now;
-                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion(), root.effects_paused);
+                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion(), root.effects_paused).map(|t| t.toward(theme.chrome.focus_ring));
                 render_terminal(terminal, pane, family, &theme, style, decode, &mut root.find_bars, now, cx)
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
@@ -1414,7 +1414,7 @@ mod tests {
     #[test]
     fn a_paused_window_s_terminal_shows_its_output_plainly_with_no_decode() {
         use protocol::ClaudeState::*;
-        let zero = decode::Timing { decode: std::time::Duration::ZERO, fresh: std::time::Duration::ZERO };
+        let zero = decode::Timing { decode: std::time::Duration::ZERO, fresh: std::time::Duration::ZERO, white: decode::FRESH_WHITE, deep: decode::FRESH_DEEP };
         assert_eq!(decode_timing(true, Some(Working), false, true), Some(zero));
         assert_eq!(decode_timing(true, Some(Idle), false, true), Some(zero));
         assert_eq!(decode_timing(false, Some(Working), false, true), None);
