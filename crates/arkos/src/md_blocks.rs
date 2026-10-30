@@ -1038,7 +1038,7 @@ pub fn markers(text: &str, nodes: &[Node]) -> Vec<Marker> {
 
 /// `Hidden` when every byte of `range` is a line break or lies in its line's prefix
 /// (`line_prefix_len`), else `Revealable`.
-fn marker_class(text: &str, range: Range<usize>) -> MarkerClass {
+pub fn marker_class(text: &str, range: Range<usize>) -> MarkerClass {
     let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
     let mut start = line_start;
     let mut prefix = line_prefix_len(&text[start..text[start..].find('\n').map_or(text.len(), |i| start + i)]);
