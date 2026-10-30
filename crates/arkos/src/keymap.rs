@@ -599,6 +599,7 @@ pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
     ("Open a link", "Cmd+click"),
     ("Open a revealed link's address", "Click"),
     ("Cut, Copy, Paste and the formats", "Right-click"),
+    ("The slash menu (at a line's start or after a space)", "/"),
     ("Outdent an item, or take it out of its list (at the text start)", "Delete"),
     ("Scroll to the top or end", "Home, End"),
 ];

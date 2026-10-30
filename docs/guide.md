@@ -120,6 +120,15 @@ markdown document they are the editor's, and Cmd+B toggles the sidebar everywher
 address or the path of a file over a selection and it becomes a link. A right-click (or
 Control+click) opens a menu with Cut, Copy, Paste, Bold, Italic, Strikethrough, Code and Link.
 
+Type `/` at the start of a line or after a space and the slash menu opens under it: lists,
+headings, a table, a code block, a quote or an alert, a divider, a Mermaid diagram (empty or from
+one of eighteen templates), an image from a file picker, a footnote, an HTML block and an equation
+block. Keep typing to filter (`/h2`, `/todo`, `/pie`, `/math`); `/3x4` makes a table of three rows
+and four columns. Up and Down choose, Enter or Tab inserts, Right opens a submenu and Left closes
+it, Escape closes the menu and keeps what you typed. On a list item a list entry changes the item's
+kind, and a heading entry turns the line into that heading. A slash inside a word, a code block or
+a table is just a slash.
+
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
 them. A file with both kinds of line ending, or one that is not valid UTF-8, opens read-only with
@@ -385,6 +394,7 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+click | in a markdown file: open a link, or an image, poster, video or audio; a plain click on a revealed link's address opens it too |
 | Enter | in a rendered markdown paragraph or heading: a new paragraph; in a quote: a new quoted paragraph; in a list: the next item; on an empty item, end the list or move a nested item out a level |
 | Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
+| / | in a rendered markdown document, at a line's start or after a space: the slash menu (Up, Down, Enter or Tab, Right and Left for a submenu, Escape) |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Space | in a video tab: play or pause |
 | Left, Right | in a video tab: back or forward 5 seconds |

@@ -620,6 +620,10 @@ pub struct Viewer {
     reveal_goal: Option<(edit::Pos, f32)>,
     /// The slash menu while it is open (`md_slash`).
     pub slash: Option<Slash>,
+    /// Where the open slash menu's `/` was laid out, in window pixels, with its line height:
+    /// recorded as the revealed text holding it is laid out (`note_slash_layout`), so the menu,
+    /// built before that layout in a frame, hangs from the last one.
+    pub slash_at: Option<(Point<Pixels>, Pixels)>,
     /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
@@ -745,6 +749,7 @@ impl Viewer {
             reveal_blocks: Vec::new(),
             reveal_goal: None,
             slash: None,
+            slash_at: None,
             caret_placed: false,
             pending_append: false,
             compose: None,
@@ -1932,11 +1937,21 @@ impl Viewer {
         .detach();
     }
 
-    /// Where the slash menu hangs: the window point of the `/` in the revealed text of the last
-    /// frame, and that text's line height.
-    pub fn slash_anchor(&self) -> Option<(Point<Pixels>, Pixels)> {
-        let s = self.slash.as_ref()?;
-        self.reveal_point_of(edit::Pos { line: s.line, ch: s.col })
+    /// A revealed text was laid out: when it holds the open slash menu's `/`, its window point is
+    /// recorded for the menu. `true` when that point moved, so the frame is drawn again with the
+    /// menu where the `/` now is.
+    pub fn note_slash_layout(&mut self, r: &md_view::RevealLayout) -> bool {
+        let (Some(s), Some(doc)) = (self.slash.as_ref(), self.doc.as_ref()) else { return false };
+        let Some(block) = self.blocks.get(r.block).filter(|b| b.lines == r.lines && b.lines.contains(&s.line)) else { return false };
+        let offset = md_blocks::offset_of_pos(block, doc.lines(), edit::Pos { line: s.line, ch: s.col });
+        if offset < r.covers.start || offset > r.covers.end {
+            return false;
+        }
+        let Some(at) = r.layout.position_for_index(r.display.display_of(offset)) else { return false };
+        let new = Some((at, r.layout.line_height()));
+        let moved = self.slash_at != new;
+        self.slash_at = new;
+        moved
     }
 
     /// Block `ix`'s element tree: the cached one when its rendering is cached (made there the
@@ -2453,6 +2468,7 @@ impl EntityInputHandler for Viewer {
             let (line, col) = (self.caret.head.line, self.caret.head.ch - 1);
             if self.doc.as_ref().is_some_and(|d| slash_opens(d.lines(), &self.blocks, line, col)) {
                 self.slash = Some(Slash { line, col, query: String::new(), selected: 0, sub: None, sub_selected: 0 });
+                self.slash_at = None;
                 cx.notify();
             }
         }

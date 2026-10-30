@@ -90,7 +90,7 @@ pub fn render_slash_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div>
     let viewer = root.active_viewer()?;
     let v = viewer.read(cx);
     let s = v.slash.clone()?;
-    let (at, line_h) = v.slash_anchor()?;
+    let (at, line_h) = v.slash_at?;
     let rows = s.rows();
     let row_h = px(root.ui_size(12.0) * 1.9);
     let main = panel(root, &viewer, &rows, s.selected, None, row_h);

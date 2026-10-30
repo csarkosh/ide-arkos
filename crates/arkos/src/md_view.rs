@@ -1620,8 +1620,15 @@ fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, co
     let (viewer, caret_color) = (ctx.viewer.clone(), ctx.caret);
     let (covers, lines) = (display.covers.clone(), rv.lines.clone());
     let overlay = canvas(
-        move |_bounds, _window, cx| {
-            viewer.update(cx, |v, _| v.reveal_blocks.push(RevealLayout { block: ix, lines, covers, layout: layout.clone(), display }));
+        move |_bounds, window, cx| {
+            let r = RevealLayout { block: ix, lines, covers, layout: layout.clone(), display };
+            if viewer.update(cx, |v, _| {
+                let moved = v.note_slash_layout(&r);
+                v.reveal_blocks.push(r);
+                moved
+            }) {
+                window.refresh();
+            }
             layout
         },
         move |_bounds, layout, window, _cx| {
