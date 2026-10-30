@@ -7,7 +7,11 @@
 //! The view sits in the window's content view under gpui's own view, which covers it: WebKit
 //! paints only a view it takes to be on screen, so it is neither hidden nor outside the window.
 //! It keeps nothing between loads (a non-persistent data store) and draws no background, so a
-//! picture is transparent where the page is. Everything here runs on the main thread; the
+//! picture is transparent where the page is. It must not take drags: WebKit registers its views
+//! for files dragged over them, and AppKit gives a drag to a registered view under the pointer even
+//! behind gpui's (gpui registers only the window), so this view would catch every file dropped on
+//! the lower part of the window. Its views refuse drags, and between renders it is parked at no
+//! size, where no point of the window is in it. Everything here runs on the main thread; the
 //! completion handlers only fill cells that the next `poll` reads. Nothing in `cargo test`
 //! constructs a view.
 #![cfg(target_os = "macos")]
@@ -30,6 +34,8 @@ use crate::screen::{self, Frame};
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// The view's width while a page lays out: the widest a diagram is drawn (`mermaid::MAX_W`).
 const LAYOUT_W: f64 = 2000.0;
+/// Where the view waits between renders: no size, so no drag or click can land in it.
+const PARKED: Frame = Frame { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
 
 thread_local! {
     static VIEW: RefCell<Option<Retained<WKWebView>>> = const { RefCell::new(None) };
@@ -47,13 +53,14 @@ pub fn install(window: &NSWindow, view: &NSView) {
     let web = unsafe {
         let config = WKWebViewConfiguration::new(mtm);
         config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
-        let web = WKWebView::initWithFrame_configuration(mtm.alloc(), screen::ns_rect(Frame { x: 0.0, y: 0.0, w: LAYOUT_W, h: 600.0 }), &config);
+        let web = WKWebView::initWithFrame_configuration(mtm.alloc(), screen::ns_rect(PARKED), &config);
         let no = NSNumber::new_bool(false);
         let key = NSString::from_str("drawsBackground");
         let _: () = msg_send![&*web, setValue: &*no, forKey: &*key];
         web
     };
     content.addSubview_positioned_relativeTo(&web, NSWindowOrderingMode::Below, Some(view));
+    refuse_drags(&web);
     VIEW.with(|v| *v.borrow_mut() = Some(web));
 }
 
@@ -83,6 +90,7 @@ impl Render {
         let root = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&dir.to_string_lossy()), true);
         with_view(|web| {
             web.setFrame(screen::ns_rect(Frame { x: 0.0, y: 0.0, w: LAYOUT_W, h: 600.0 }));
+            refuse_drags(web);
             // SAFETY: the view is live and on the main thread; the URLs are value types.
             unsafe {
                 let _ = web.loadFileURL_allowingReadAccessToURL(&url, &root);
@@ -99,6 +107,16 @@ impl Render {
     /// Moves the render along: `None` while it goes on, else the picture's size in CSS pixels
     /// and its PNG, or the message to show.
     pub fn poll(&mut self) -> Option<Result<(u32, u32, Vec<u8>), String>> {
+        // WebKit may register a view of its own again as a page loads.
+        let _ = with_view(|web| refuse_drags(web));
+        let done = self.step();
+        if done.is_some() {
+            let _ = with_view(|web| web.setFrame(screen::ns_rect(PARKED)));
+        }
+        done
+    }
+
+    fn step(&mut self) -> Option<Result<(u32, u32, Vec<u8>), String>> {
         if self.started.elapsed() > TIMEOUT {
             return Some(Err(format!("the diagram did not finish in {} seconds", TIMEOUT.as_secs())));
         }
@@ -174,6 +192,14 @@ impl Render {
                 web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block);
             }
         });
+    }
+}
+
+/// `view` and every view in it taken off AppKit's drag destinations (`install`'s note).
+fn refuse_drags(view: &NSView) {
+    view.unregisterDraggedTypes();
+    for sub in view.subviews().iter() {
+        refuse_drags(&sub);
     }
 }
 

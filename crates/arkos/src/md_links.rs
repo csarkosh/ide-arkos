@@ -153,7 +153,8 @@ pub fn link_path(path: &Path, base_dir: &Path) -> String {
 
 /// Where a file dropped on a document in `doc_dir` is linked: a file inside the document's folder
 /// where it is (`None` to copy), an image from elsewhere at the next free name in `image_dir` with
-/// its own extension (`Some` of where it came from), any other file from elsewhere where it is.
+/// its own extension (`Some` of where it came from), any other file from elsewhere (a video or
+/// audio file among them, which can be large) where it is.
 pub fn place_dropped(file: &Path, doc_dir: &Path, image_dir: &Path, taken: impl Fn(&Path) -> bool) -> (PathBuf, Option<PathBuf>) {
     if normalize(file).starts_with(normalize(doc_dir)) || !is_image(file) {
         return (file.to_path_buf(), None);
@@ -162,13 +163,14 @@ pub fn place_dropped(file: &Path, doc_dir: &Path, image_dir: &Path, taken: impl 
     (image_name(image_dir, &ext, taken), Some(file.to_path_buf()))
 }
 
-/// The markdown a dropped or pasted file goes in as: `![name](path)` for an image, `[name](path)`
-/// for anything else, `name` being the file it came from's name (an image's without its extension)
-/// and `path` its link from the document (`link_path`).
+/// The markdown a dropped or pasted file goes in as: `![name](path)` for an image, a video or an
+/// audio file (the rendered view draws a video as its poster and audio as its player row),
+/// `[name](path)` for anything else, `name` being the file it came from's name (an embedded file's
+/// without its extension) and `path` its link from the document (`link_path`).
 pub fn file_markdown(came_from: &Path, linked: &Path, doc_dir: &Path) -> String {
     let path = link_path(linked, doc_dir);
     let label = |s: Option<&std::ffi::OsStr>| s.map(|s| s.to_string_lossy().replace(['[', ']'], "")).unwrap_or_default();
-    if is_image(linked) {
+    if is_image(linked) || crate::media::kind(&linked.to_string_lossy()).is_some() {
         format!("![{}]({path})", label(came_from.file_stem()))
     } else {
         format!("[{}]({path})", label(came_from.file_name()))
@@ -258,6 +260,10 @@ mod tests {
         assert_eq!(file_markdown(Path::new("/d/Shot [1].png"), Path::new("/w/notes/images/image.png"), doc), "![Shot 1](images/image.png)");
         assert_eq!(file_markdown(Path::new("/Users/me/spec.pdf"), Path::new("/Users/me/spec.pdf"), doc), "[spec.pdf](/Users/me/spec.pdf)");
         assert_eq!(file_markdown(Path::new("/w/notes/a b.md"), Path::new("/w/notes/a b.md"), doc), "[a b.md](<a b.md>)");
+        let video = Path::new("/Users/me/Desktop/Screen Recording.mov");
+        assert_eq!(place_dropped(video, doc, images, none), (video.to_path_buf(), None), "a video is linked where it is, never copied");
+        assert_eq!(file_markdown(video, video, doc), "![Screen Recording](</Users/me/Desktop/Screen Recording.mov>)", "and embedded, so it draws as its poster");
+        assert_eq!(file_markdown(Path::new("/w/notes/talk.mp3"), Path::new("/w/notes/talk.mp3"), doc), "![talk](talk.mp3)", "audio too");
     }
 
     #[test]
