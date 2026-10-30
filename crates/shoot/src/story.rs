@@ -245,6 +245,12 @@ pub struct Key {
     pub times: usize,
 }
 
+/// The ANSI key code of a lowercase letter on a US layout.
+fn letter_code(c: u8) -> Option<u16> {
+    const CODES: [u16; 26] = [0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6];
+    c.checked_sub(b'a').and_then(|i| CODES.get(i as usize)).copied()
+}
+
 impl Key {
     pub fn parse(spec: &str) -> Result<Key> {
         let (name, times) = match spec.rsplit_once('*') {
@@ -267,6 +273,9 @@ impl Key {
             "left" => Some(123), "right" => Some(124), "down" => Some(125), "up" => Some(126),
             "home" => Some(115), "end" => Some(119), "pageup" => Some(116), "pagedown" => Some(121),
             "return" | "enter" => Some(36), "tab" => Some(48), "escape" | "esc" => Some(53), "delete" | "backspace" => Some(51),
+            // A letter with a modifier goes by its own key code: an app reads Cmd+Z from the key,
+            // not from the text, so a letter sent as text on key 0 arrives as Cmd+A.
+            letter if !modifiers.is_empty() && letter.len() == 1 && letter.as_bytes()[0].is_ascii_lowercase() => letter_code(letter.as_bytes()[0]),
             _ => None,
         };
         let text = if code.is_none() {
@@ -717,6 +726,9 @@ theme = "light"
         assert_eq!((k.code, k.modifiers.clone()), (Some(125), vec!["command down", "shift down"]));
         let k = Key::parse("a").unwrap();
         assert_eq!((k.code, k.text.as_deref()), (None, Some("a")));
+        assert_eq!(Key::parse("cmd+z").unwrap().code, Some(6), "a modified letter goes by its key, so Cmd+Z is not Cmd+A");
+        assert_eq!(Key::parse("cmd+shift+z").unwrap().code, Some(6));
+        assert_eq!(Key::parse("**2").unwrap().text.as_deref(), Some("*"), "a star is typed as text");
         assert!(Key::parse("meta+x").is_err());
         assert!(Key::parse("rightt").is_err());
         assert!(Key::parse("right*x").is_err());

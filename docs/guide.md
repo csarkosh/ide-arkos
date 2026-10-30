@@ -96,10 +96,18 @@ Arkos's light markdown colouring (not a TextMate grammar, so a 5 MB file stays q
 the top right of the pane, or Shift+Cmd+M, switches between them, and each tab remembers its mode
 across a relaunch.
 
-In Rendered mode one block is active at a time. Click a paragraph, heading or list and that block
-turns into its raw text with the caret where you clicked; type and the file changes. Click
-another block, or press the arrows past the end of this one, and the active block moves. When the
-pane loses focus the active block renders again.
+In Rendered mode one block is active at a time: the one holding the caret. A paragraph, heading,
+list or quote stays as it reads while you edit it; the markdown element under the caret shows its
+syntax (the `**` around a bold word, a heading's `#`, a link's `[text](url)`) and the rest of the
+block does not. Bullets, task boxes and quote bars never show their markers. Delete at the start
+of a nested item moves it out a level; at the start of a top-level item the item leaves the list
+as a paragraph of its own; at the start of a quoted paragraph the paragraph leaves the quote. Type the syntax
+and it takes effect as you close it: `**x**` is bold the moment the second `*` lands. Click a
+link's text to edit it and its revealed address to follow it, or Cmd+click anywhere in it. An
+image keeps its picture and shows its `![alt](path)` under it. Code blocks, tables, HTML and front
+matter still turn into their source when the caret enters them. Click another block, or press the
+arrows past the end of this one, and the active block moves; Up and Down move by displayed row.
+When the pane loses focus the active block renders again.
 
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
@@ -142,8 +150,9 @@ keeps it 30 days. A reply that is not an image (a Wi-Fi sign-in page, say) is no
 image is fetched again the next time the file opens. There is no switch for this. Badge rows wrap
 in a narrow pane, and an image wider than the view is scaled to the view.
 
-An HTML block that is one `<img>` tag, alone or inside a `<p>`, `<div>` or `<a>`, renders as the
-image too, local or remote. Its `width` is honoured up to the view's width, and it is centred
+An HTML block that is one `<img>` tag, alone or inside a `<p>`, `<div>`, `<a>` or `<picture>`,
+renders as the image too, local or remote. In a `<picture>` the `<img>` shows, as a browser shows
+it when no `<source>` applies. Its `width` is honoured up to the view's width, and it is centred
 when the wrapper has `align="center"`. Inside an `<a href>` it follows the link, and its `alt`
 shows when the image cannot be drawn.
 
@@ -353,15 +362,15 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Cmd+D | inline diff in the viewer |
 | Shift+Cmd+M | toggle markdown view: rendered or raw |
 | Cmd+S | save file (a markdown file also saves itself a second after you stop typing) |
-| Arrows | in a markdown file: move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select |
-| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward |
+| Arrows | in a markdown file: move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select; in a rendered paragraph Up, Down and Cmd+Left, Cmd+Right go by displayed row |
+| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward; Delete at the start of a rendered list item or quoted paragraph moves a nested item out a level, or takes the item out of its list (the paragraph out of its quote) |
 | Option+Fn+Delete | in a markdown file: delete the word after the caret |
 | Cmd+Fn+Delete | in a markdown file: delete to the line end |
 | Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
 | Tab, Shift+Tab | in a markdown list: indent or outdent the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
 | Up, Down | in a table: the cell above or below |
-| Cmd+click | in a markdown file: open a link, or an image, poster, video or audio |
+| Cmd+click | in a markdown file: open a link, or an image, poster, video or audio; a plain click on a revealed link's address opens it too |
 | Enter | in a markdown list: start the next item; on an empty item, end the list |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Space | in a video tab: play or pause |

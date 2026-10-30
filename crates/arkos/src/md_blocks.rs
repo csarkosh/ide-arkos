@@ -335,8 +335,8 @@ pub struct HtmlImage {
 }
 
 /// The image an HTML block shows when it is one `<img>` tag with a `src` (its attributes in any
-/// order, in either quotes, `/>` or `>`), alone or inside `<p>`, `<div>` or `<a>` tags with no
-/// text between them; `center` when one of those has `align="center"`, `link` an `<a>`'s
+/// order, in either quotes, `/>` or `>`), alone or inside `<p>`, `<div>`, `<a>` or `<picture>`
+/// tags (a picture's `<source>` tags passed over) with no text between them; `center` when one of those has `align="center"`, `link` an `<a>`'s
 /// `href`. Anything else (text, a second image, another tag) is `None`: the block stays its
 /// source.
 pub fn html_image(block: &str) -> Option<HtmlImage> {
@@ -368,7 +368,9 @@ pub fn html_image(block: &str) -> Option<HtmlImage> {
                     link = attribute(&attrs, "href").filter(|h| !h.is_empty()).map(str::to_string).or(link);
                 }
             }
-            "/p" | "/div" | "/a" => {}
+            // A `<picture>`'s sources choose by media query, which Arkos does not evaluate; its
+            // `<img>` is the fallback every browser shows.
+            "/p" | "/div" | "/a" | "picture" | "/picture" | "source" => {}
             _ => return None,
         }
     }
@@ -799,6 +801,329 @@ pub fn pos_of_offset(block: &Block, lines: &[String], byte: usize) -> edit::Pos 
     edit::Pos { line: last, ch: lines[last].chars().count() }
 }
 
+/// The byte offset in the block's text (its lines joined with a newline) of a document position:
+/// the inverse of `pos_of_offset`. A position above the block is its start and one below it its
+/// end; a column past a line's end is the line's end.
+pub fn offset_of_pos(block: &Block, lines: &[String], p: edit::Pos) -> usize {
+    let end = block.lines.end.min(lines.len());
+    let start = block.lines.start.min(end);
+    let mut at = 0;
+    for (n, line) in lines.iter().enumerate().take(end).skip(start) {
+        if n == p.line {
+            return at + line.char_indices().nth(p.ch).map_or(line.len(), |(b, _)| b);
+        }
+        at += line.len() + 1;
+    }
+    if p.line < start {
+        0
+    } else {
+        at.saturating_sub(1)
+    }
+}
+
+/// What a node of a block's element tree is. The containers and the inline elements have
+/// children; `Text`, `SoftBreak`, `HardBreak` and `Html` are leaves. `Other` is anything the
+/// inline reveal does not draw (a code block, a table, an HTML block, a rule).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeKind {
+    Paragraph,
+    Heading(u8),
+    List,
+    Item,
+    Quote,
+    Strong,
+    Emphasis,
+    Strike,
+    /// A code span: its node spans the backticks and its one child is the code between them.
+    Code,
+    /// A link: the address it goes to, and where that address is written in the source, when it
+    /// is (an inline link's destination, an autolink's text, a full reference's label).
+    Link { dest: Option<Range<usize>>, url: String },
+    Image,
+    Text,
+    SoftBreak,
+    HardBreak,
+    Html,
+    Other,
+}
+
+impl NodeKind {
+    /// Whether the node is an inline element, whose markers show while the caret is in it.
+    pub fn is_inline(&self) -> bool {
+        matches!(self, NodeKind::Strong | NodeKind::Emphasis | NodeKind::Strike | NodeKind::Code | NodeKind::Link { .. } | NodeKind::Image)
+    }
+}
+
+/// One node of a block's element tree: its kind, the byte range of its whole source in the block's
+/// text (delimiters included), for a leaf the text it renders as, and its children in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    pub kind: NodeKind,
+    pub span: Range<usize>,
+    pub text: String,
+    pub children: Vec<Node>,
+}
+
+impl Node {
+    fn leaf(kind: NodeKind, span: Range<usize>, text: impl Into<String>) -> Node {
+        Node { kind, span, text: text.into(), children: Vec::new() }
+    }
+}
+
+/// The element tree of one block's text: its top-level nodes in source order, built from the
+/// parser's offset events, so every node's span holds its delimiters and every leaf's its text.
+/// A task box's `[x]` is no node, so it is part of its item's marker.
+pub fn elements(block_text: &str) -> Vec<Node> {
+    fn add(stack: &mut [Node], top: &mut Vec<Node>, n: Node) {
+        match stack.last_mut() {
+            Some(parent) => parent.children.push(n),
+            None => top.push(n),
+        }
+    }
+    let mut stack: Vec<Node> = Vec::new();
+    let mut top: Vec<Node> = Vec::new();
+    // The label of each open reference link, by its place in `stack`.
+    let mut labels: Vec<(usize, Option<String>)> = Vec::new();
+    for (event, range) in Parser::new_ext(block_text, OPTIONS).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                let kind = match &tag {
+                    Tag::Paragraph => NodeKind::Paragraph,
+                    Tag::Heading { level, .. } => NodeKind::Heading(*level as u8),
+                    Tag::List(_) => NodeKind::List,
+                    Tag::Item => NodeKind::Item,
+                    Tag::BlockQuote(_) => NodeKind::Quote,
+                    Tag::Strong => NodeKind::Strong,
+                    Tag::Emphasis => NodeKind::Emphasis,
+                    Tag::Strikethrough => NodeKind::Strike,
+                    Tag::Link { link_type, dest_url, id, .. } => {
+                        let label = match link_type {
+                            pulldown_cmark::LinkType::Reference => Some(id.to_string()),
+                            pulldown_cmark::LinkType::Inline | pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email => None,
+                            _ => Some(String::new()),
+                        };
+                        labels.push((stack.len(), label));
+                        NodeKind::Link { dest: None, url: dest_url.to_string() }
+                    }
+                    Tag::Image { .. } => NodeKind::Image,
+                    _ => NodeKind::Other,
+                };
+                stack.push(Node { kind, span: range, text: String::new(), children: Vec::new() });
+            }
+            Event::End(_) => {
+                let Some(mut n) = stack.pop() else { continue };
+                if let NodeKind::Link { dest, .. } = &mut n.kind {
+                    let label = match labels.last() {
+                        Some((at, _)) if *at == stack.len() => labels.pop().and_then(|(_, l)| l),
+                        _ => None,
+                    };
+                    let after = n.children.last().map_or(n.span.start + 1, |c| c.span.end).min(n.span.end);
+                    *dest = link_dest(block_text, n.span.clone(), after, label.as_deref(), n.children.first().map(|c| c.span.clone()));
+                }
+                add(&mut stack, &mut top, n);
+            }
+            Event::Text(t) => add(&mut stack, &mut top, Node::leaf(NodeKind::Text, range, t.to_string())),
+            Event::Code(t) => {
+                let raw = &block_text[range.clone()];
+                let ticks = raw.chars().take_while(|&c| c == '`').count();
+                let inner = (range.start + ticks).min(range.end)..range.end.saturating_sub(ticks).max((range.start + ticks).min(range.end));
+                let mut code = Node { kind: NodeKind::Code, span: range, text: String::new(), children: Vec::new() };
+                code.children.push(Node::leaf(NodeKind::Text, inner, t.to_string()));
+                add(&mut stack, &mut top, code);
+            }
+            Event::SoftBreak => add(&mut stack, &mut top, Node::leaf(NodeKind::SoftBreak, range, " ")),
+            Event::HardBreak => add(&mut stack, &mut top, Node::leaf(NodeKind::HardBreak, range, "\n")),
+            Event::InlineHtml(h) | Event::Html(h) => add(&mut stack, &mut top, Node::leaf(NodeKind::Html, range, h.to_string())),
+            Event::TaskListMarker(_) => {}
+            _ => add(&mut stack, &mut top, Node::leaf(NodeKind::Other, range, String::new())),
+        }
+    }
+    // A tag left open (the parser always closes them) is kept rather than lost.
+    while let Some(n) = stack.pop() {
+        add(&mut stack, &mut top, n);
+    }
+    top
+}
+
+/// Where a link's address is written in the source: for an autolink its text (`first`), for an
+/// inline link the destination after `](` (inside `<` and `>` when it has them), for a full
+/// reference its label after `][`. A collapsed or shortcut reference (`label` empty) has none.
+/// `after` is where the link's text ends.
+fn link_dest(src: &str, span: Range<usize>, after: usize, label: Option<&str>, first: Option<Range<usize>>) -> Option<Range<usize>> {
+    let tail = src.get(after..span.end)?;
+    match label {
+        None if src[span.clone()].starts_with('<') => first,
+        None => {
+            let open = tail.find("](")? + 2;
+            let rest = &tail[open..];
+            let lead = rest.len() - rest.trim_start().len();
+            let rest = &rest[lead..];
+            let (skip, len) = if let Some(inner) = rest.strip_prefix('<') {
+                (1, inner.find('>')?)
+            } else {
+                let mut depth = 0i32;
+                let end = rest
+                    .char_indices()
+                    .find(|&(_, c)| {
+                        match c {
+                            '(' => depth += 1,
+                            ')' if depth == 0 => return true,
+                            ')' => depth -= 1,
+                            c if c.is_whitespace() => return true,
+                            _ => {}
+                        }
+                        false
+                    })
+                    .map_or(rest.len(), |(i, _)| i);
+                (0, end)
+            };
+            let start = after + open + lead + skip;
+            (len > 0).then_some(start..start + len)
+        }
+        Some("") => None,
+        Some(_) => {
+            let open = tail.find("][")? + 2;
+            let close = tail[open..].find(']')?;
+            (close > 0).then_some(after + open..after + open + close)
+        }
+    }
+}
+
+/// Whether a marker shows while the caret is in its element (`Revealable`: a heading's hashes,
+/// emphasis, a link's brackets and address) or never (`Hidden`: a list item's marker and task box,
+/// a quote's `>`, the indent of a continuation line, the line breaks between them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerClass {
+    Hidden,
+    Revealable,
+}
+
+/// A run of source bytes inside a node that no child covers: the node's own syntax. `owner` is
+/// the node's index path from the top-level nodes; `between` says the run has children of its
+/// node on both sides (the line break between a quote's two paragraphs, which reads as one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marker {
+    pub range: Range<usize>,
+    pub class: MarkerClass,
+    pub owner: Vec<usize>,
+    pub between: bool,
+}
+
+/// Every marker of `nodes` (the tree of `text`), in source order.
+pub fn markers(text: &str, nodes: &[Node]) -> Vec<Marker> {
+    fn walk(text: &str, node: &Node, path: &mut Vec<usize>, out: &mut Vec<Marker>) {
+        if node.children.is_empty() && node.kind != NodeKind::Code && !node.kind.is_inline() && !matches!(node.kind, NodeKind::Paragraph | NodeKind::Heading(_) | NodeKind::Item | NodeKind::Quote | NodeKind::List) {
+            return;
+        }
+        let gap = |from: usize, to: usize, between: bool, path: &Vec<usize>, out: &mut Vec<Marker>| {
+            if from < to {
+                out.push(Marker { range: from..to, class: marker_class(text, from..to), owner: path.clone(), between });
+            }
+        };
+        let mut cursor = node.span.start;
+        for (i, child) in node.children.iter().enumerate() {
+            gap(cursor, child.span.start, i > 0, path, out);
+            path.push(i);
+            walk(text, child, path, out);
+            path.pop();
+            cursor = cursor.max(child.span.end);
+        }
+        gap(cursor, node.span.end, false, path, out);
+    }
+    let mut out = Vec::new();
+    for (i, n) in nodes.iter().enumerate() {
+        walk(text, n, &mut vec![i], &mut out);
+    }
+    out.sort_by_key(|m| m.range.start);
+    out
+}
+
+/// `Hidden` when every byte of `range` is a line break or lies in its line's prefix
+/// (`line_prefix_len`), else `Revealable`.
+pub fn marker_class(text: &str, range: Range<usize>) -> MarkerClass {
+    let line_start = text[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let mut start = line_start;
+    let mut prefix = line_prefix_len(&text[start..text[start..].find('\n').map_or(text.len(), |i| start + i)]);
+    for (i, b) in text.as_bytes()[range.clone()].iter().enumerate() {
+        let at = range.start + i;
+        if *b == b'\n' {
+            start = at + 1;
+            prefix = line_prefix_len(&text[start..text[start..].find('\n').map_or(text.len(), |i| start + i)]);
+            continue;
+        }
+        if at - start >= prefix {
+            return MarkerClass::Revealable;
+        }
+    }
+    MarkerClass::Hidden
+}
+
+/// The length in bytes of a line's prefix: its indent, then any run of quote marks (`>`), list
+/// markers (`-`, `*`, `+`, or up to nine digits and `.` or `)`, each followed by a space or the
+/// line's end) and task boxes (`[ ]`, `[x]`), with the spaces after each.
+pub fn line_prefix_len(line: &str) -> usize {
+    let b = line.as_bytes();
+    let space = |i: usize| i >= b.len() || b[i] == b' ' || b[i] == b'\t';
+    let mut i = 0;
+    loop {
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+            i += 1;
+        }
+        if i >= b.len() {
+            return i;
+        }
+        let marker = if b[i] == b'>' {
+            Some(i + 1)
+        } else if matches!(b[i], b'-' | b'*' | b'+') && space(i + 1) {
+            Some(i + 1)
+        } else {
+            let d = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+            (d > 0 && d <= 9 && i + d < b.len() && matches!(b[i + d], b'.' | b')') && space(i + d + 1)).then_some(i + d + 1)
+        };
+        let Some(mut next) = marker else { return i };
+        if b[i] != b'>' {
+            // A task box right after a list marker and its space.
+            let boxed = next + 1;
+            if boxed + 3 <= b.len() && matches!(&b[boxed..boxed + 3], b"[ ]" | b"[x]" | b"[X]") && space(boxed + 3) {
+                next = boxed + 3;
+            }
+        }
+        i = next;
+    }
+}
+
+/// Whether the inline reveal can draw a block: every non-blank byte of `text` is inside a
+/// top-level node, and the tree holds only paragraphs, headings, lists of items, and quotes of
+/// paragraphs, so the rendered view's pieces and the tree agree. Anything else (a code block in an
+/// item, a list in a quote, a link definition, a table) is shown as its source when active.
+pub fn revealable(text: &str, nodes: &[Node]) -> bool {
+    fn prose(n: &Node, parent: Option<&NodeKind>) -> bool {
+        let ok = match (&n.kind, parent) {
+            (NodeKind::Other, _) => false,
+            (NodeKind::Paragraph | NodeKind::Heading(_), None | Some(NodeKind::Item | NodeKind::Quote)) => true,
+            (NodeKind::Heading(_), _) => false,
+            (NodeKind::List, None | Some(NodeKind::Item)) => true,
+            (NodeKind::List, _) => false,
+            (NodeKind::Item, Some(NodeKind::List)) => true,
+            (NodeKind::Item, _) => false,
+            (NodeKind::Quote, None) => true,
+            (NodeKind::Quote, _) => false,
+            (NodeKind::Paragraph, _) => false,
+            (_, Some(NodeKind::List | NodeKind::Quote)) => false,
+            _ => true,
+        };
+        ok && n.children.iter().all(|c| prose(c, Some(&n.kind)))
+    }
+    let mut cursor = 0;
+    for n in nodes {
+        if !text[cursor.min(n.span.start)..n.span.start].trim().is_empty() {
+            return false;
+        }
+        cursor = cursor.max(n.span.end);
+    }
+    !nodes.is_empty() && text[cursor.min(text.len())..].trim().is_empty() && nodes.iter().all(|n| prose(n, None))
+}
+
 /// The parts of a list item line: its indent, its marker, and the byte where the content starts
 /// after the marker and the space that follows it.
 fn list_parts(line: &str) -> Option<(&str, &str, usize)> {
@@ -1177,5 +1502,115 @@ mod tests {
         println!("split of {} bytes into {} blocks took {took:?}", text.len(), blocks.len());
         assert!(blocks.len() > 1000);
         assert!(took < Duration::from_millis(4), "split took {took:?}");
+    }
+
+    fn find(nodes: &[Node], want: &impl Fn(&Node) -> bool) -> Option<Node> {
+        for n in nodes {
+            if want(n) {
+                return Some(n.clone());
+            }
+            if let Some(found) = find(&n.children, want) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn marker_texts<'a>(src: &'a str, m: &[Marker]) -> Vec<(&'a str, MarkerClass)> {
+        m.iter().map(|k| (&src[k.range.clone()], k.class)).collect()
+    }
+
+    #[test]
+    fn the_element_tree_spans_every_delimiter_and_its_markers_are_the_bytes_no_leaf_covers() {
+        let src = "a **b _c_** `d` [e](https://x \"T\") ~~f~~ ![g](h.png) <https://y> i\\\nj";
+        let nodes = elements(src);
+        let strong = find(&nodes, &|n| n.kind == NodeKind::Strong).unwrap();
+        assert_eq!(&src[strong.span.clone()], "**b _c_**");
+        assert_eq!(&src[find(&nodes, &|n| n.kind == NodeKind::Emphasis).unwrap().span.clone()], "_c_");
+        let code = find(&nodes, &|n| n.kind == NodeKind::Code).unwrap();
+        assert_eq!((&src[code.span.clone()], &src[code.children[0].span.clone()], code.children[0].text.as_str()), ("`d`", "d", "d"));
+        let link = find(&nodes, &|n| matches!(n.kind, NodeKind::Link { .. })).unwrap();
+        let NodeKind::Link { dest: Some(dest), url } = &link.kind else { panic!("{link:?}") };
+        assert_eq!((&src[link.span.clone()], &src[dest.clone()], url.as_str()), ("[e](https://x \"T\")", "https://x", "https://x"));
+        let auto = find(&nodes, &|n| matches!(&n.kind, NodeKind::Link { url, .. } if url == "https://y")).unwrap();
+        let NodeKind::Link { dest: Some(dest), .. } = &auto.kind else { panic!("{auto:?}") };
+        assert_eq!(&src[dest.clone()], "https://y", "an autolink's address is its text");
+        let hard = find(&nodes, &|n| n.kind == NodeKind::HardBreak).unwrap();
+        assert_eq!((&src[hard.span.clone()], hard.text.as_str()), ("\\\n", "\n"), "a hard break is a leaf shown as a newline");
+        let m = markers(src, &nodes);
+        let shown: Vec<&str> = m.iter().map(|k| &src[k.range.clone()]).collect();
+        for want in ["**", "_", "`", "[", "](https://x \"T\")", "~~", "![", "](h.png)", "<", ">"] {
+            assert!(shown.contains(&want), "{want} in {shown:?}");
+        }
+        assert!(m.iter().all(|k| k.class == MarkerClass::Revealable), "nothing in a paragraph is a line prefix: {m:?}");
+        let refs = "[t][r] and [u]\n\n[r]: https://x\n[u]: https://u";
+        let link = find(&elements(refs), &|n| matches!(&n.kind, NodeKind::Link { url, .. } if url == "https://x")).unwrap();
+        let NodeKind::Link { dest: Some(dest), .. } = &link.kind else { panic!("{link:?}") };
+        assert_eq!(&refs[dest.clone()], "r", "a reference link's address is its label");
+        let short = find(&elements(refs), &|n| matches!(&n.kind, NodeKind::Link { url, .. } if url == "https://u")).unwrap();
+        assert!(matches!(short.kind, NodeKind::Link { dest: None, .. }), "a shortcut reference has no address to show");
+    }
+
+    #[test]
+    fn headings_reveal_their_hashes_while_items_and_quotes_hide_their_prefixes() {
+        let h = "## Title ##";
+        assert_eq!(marker_texts(h, &markers(h, &elements(h))), vec![("## ", MarkerClass::Revealable), (" ##", MarkerClass::Revealable)]);
+        let l = "1. first\n2. second\n   - [x] done\n   - [ ] todo";
+        let m = markers(l, &elements(l));
+        assert!(m.iter().all(|k| k.class == MarkerClass::Hidden), "{:?}", marker_texts(l, &m));
+        assert!(marker_texts(l, &m).contains(&("- [x] ", MarkerClass::Hidden)), "{:?}", marker_texts(l, &m));
+        let q = "> one\n> two";
+        let m = markers(q, &elements(q));
+        assert_eq!(marker_texts(q, &m), vec![("> ", MarkerClass::Hidden), ("> ", MarkerClass::Hidden)], "each line's prefix");
+        let c = "- item\n  continued";
+        assert_eq!(marker_texts(c, &markers(c, &elements(c))), vec![("- ", MarkerClass::Hidden), ("  ", MarkerClass::Hidden)]);
+        let two = "> a\n>\n> b";
+        let m = markers(two, &elements(two));
+        assert!(m.iter().any(|k| k.between && two[k.range.clone()].contains('\n')), "the gap between a quote's paragraphs sits between them: {m:?}");
+        assert_eq!(line_prefix_len("  - [ ] x"), 8);
+        assert_eq!(line_prefix_len("> > y"), 4);
+        assert_eq!(line_prefix_len("12) z"), 4);
+        assert_eq!(line_prefix_len("## z"), 0);
+        assert_eq!(line_prefix_len("**bold**"), 0);
+    }
+
+    #[test]
+    fn a_block_is_revealable_when_the_tree_places_all_its_text_and_holds_only_prose() {
+        assert!(revealable("a **b** [c](d)\n\n", &elements("a **b** [c](d)\n\n")));
+        assert!(revealable("- a\n  - b\n- c", &elements("- a\n  - b\n- c")));
+        assert!(revealable("> a\n>\n> b", &elements("> a\n>\n> b")));
+        let defs = "[t][r]\n\n[r]: https://x";
+        assert!(!revealable(defs, &elements(defs)), "a definition's text is placed by no node");
+        let fenced = "- a\n\n  ```\n  x\n  ```";
+        assert!(!revealable(fenced, &elements(fenced)), "a code block inside an item");
+        let listed = "> - a";
+        assert!(!revealable(listed, &elements(listed)), "a list inside a quote");
+    }
+
+    #[test]
+    fn a_picture_element_renders_its_img_and_its_sources_are_passed_over() {
+        let readme = "<picture>\n  <img alt=\"Three windows\" src=\"docs/images/hero-dark.png\" width=\"900\">\n</picture>";
+        assert_eq!(html_image(readme), Some(HtmlImage { src: "docs/images/hero-dark.png".into(), alt: "Three windows".into(), link: None, width: Some(900), center: false }));
+        let sourced = "<p align=\"center\"><picture>\n<source media=\"(prefers-color-scheme: dark)\" srcset=\"d.png\">\n<source srcset=\"l.png\" />\n<img src=\"l.png\" alt=\"x\">\n</picture></p>";
+        assert!(html_image(sourced).is_some_and(|i| i.src == "l.png" && i.center), "the img is the fallback every browser shows");
+        assert!(html_image("<picture><source srcset=\"d.png\"></picture>").is_none(), "no img, no picture");
+        let lines: Vec<String> = readme.lines().map(String::from).collect();
+        assert!(matches!(&inline(&lines.join("\n"), &split(&lines)[0].kind)[0], Inline::HtmlImage(_)), "the block renders as the image");
+    }
+
+    #[test]
+    fn offset_of_pos_is_the_inverse_of_pos_of_offset() {
+        let doc = lines("# T\n\npara one\npara two\n\n- a");
+        for b in &split(&doc) {
+            let text = doc[b.lines.clone()].join("\n");
+            for off in (0..=text.len()).filter(|&o| text.is_char_boundary(o)) {
+                let p = pos_of_offset(b, &doc, off);
+                assert_eq!(pos_of_offset(b, &doc, offset_of_pos(b, &doc, p)), p);
+            }
+        }
+        let doc = lines("aé b\ncd");
+        let b = &split(&doc)[0];
+        assert_eq!(offset_of_pos(b, &doc, edit::Pos { line: 0, ch: 2 }), 3, "chars, not bytes");
+        assert_eq!(offset_of_pos(b, &doc, edit::Pos { line: 1, ch: 1 }), 7);
     }
 }
