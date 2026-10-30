@@ -16,6 +16,7 @@ use crate::highlight::{self, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
 use crate::md_format;
+use crate::md_slash;
 use crate::md_reveal;
 use crate::md_table;
 use crate::md_view;
@@ -617,6 +618,8 @@ pub struct Viewer {
     /// The x Up and Down aim for in a revealed text, with the caret position it holds for: a move
     /// that lands elsewhere makes the next one start from the caret's own x.
     reveal_goal: Option<(edit::Pos, f32)>,
+    /// The slash menu while it is open (`md_slash`).
+    pub slash: Option<Slash>,
     /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
@@ -654,6 +657,38 @@ pub struct Viewer {
     /// section with no state here is shown as its `open` attribute says. Taken from the workspace
     /// when the viewer is made and saved there on every toggle (`ViewerEvent::DetailsToggled`).
     pub open_details: BTreeMap<(String, usize), bool>,
+}
+
+/// The slash menu's state: where the `/` is (its line and column), the text typed after it, the
+/// selected row, and the submenu open beside it with its own selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slash {
+    pub line: usize,
+    pub col: usize,
+    pub query: String,
+    pub selected: usize,
+    pub sub: Option<usize>,
+    pub sub_selected: usize,
+}
+
+impl Slash {
+    /// The rows for the text typed (`md_slash::filter`).
+    pub fn rows(&self) -> Vec<md_slash::Entry> {
+        md_slash::filter(&self.query)
+    }
+}
+
+/// Whether a `/` typed at column `ch` of `line` opens the slash menu: where a word could start
+/// (the line's start, or after a space), in a paragraph, heading, list or quote (a `/` on a line of
+/// its own is a paragraph), never in a code block, a table or HTML. `blocks` are the document's
+/// after the `/` went in.
+pub fn slash_opens(lines: &[String], blocks: &[md_blocks::Block], line: usize, ch: usize) -> bool {
+    use md_blocks::BlockKind as K;
+    let Some(l) = lines.get(line) else { return false };
+    if l.chars().take(ch).last().is_some_and(|c| !c.is_whitespace()) {
+        return false;
+    }
+    blocks.get(md_blocks::block_at(blocks, line)).is_none_or(|b| matches!(b.kind, K::Paragraph | K::Heading(_) | K::List | K::Quote | K::Blank))
 }
 
 /// An input method composition in progress: the caret before it began, and whether its marked
@@ -709,6 +744,7 @@ impl Viewer {
             raw_blocks: Vec::new(),
             reveal_blocks: Vec::new(),
             reveal_goal: None,
+            slash: None,
             caret_placed: false,
             pending_append: false,
             compose: None,
@@ -980,6 +1016,7 @@ impl Viewer {
             f.hits.clear();
         }
         self.search(false, cx);
+        self.refresh_slash();
         self.dirty = true;
         self.save_seq += 1;
         self.schedule_autosave(cx);
@@ -1344,6 +1381,9 @@ impl Viewer {
     pub fn key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
         if self.doc.is_none() {
             return false;
+        }
+        if self.slash.is_some() && self.slash_key(ks, cx) {
+            return true;
         }
         if self.rendered() && !self.caret_placed {
             return self.key_before_placement(ks, cx);
@@ -1774,6 +1814,131 @@ impl Viewer {
         );
     }
 
+    /// After an edit or a caret move: the slash menu follows the text typed after the `/`, and
+    /// closes when the `/` is gone, the caret leaves its line or goes before it, something is
+    /// selected, or the text holds a space.
+    fn refresh_slash(&mut self) {
+        let Some(s) = self.slash.as_mut() else { return };
+        let (Some(doc), c) = (self.doc.as_ref(), self.caret) else { return };
+        let line: Vec<char> = doc.lines().get(s.line).map(|l| l.chars().collect()).unwrap_or_default();
+        let ok = c.anchor == c.head && c.head.line == s.line && c.head.ch > s.col && line.get(s.col) == Some(&'/');
+        let query: String = if ok { line[s.col + 1..c.head.ch.min(line.len())].iter().collect() } else { String::new() };
+        if !ok || query.chars().any(char::is_whitespace) || query.chars().count() > 40 {
+            self.slash = None;
+            return;
+        }
+        if query != s.query {
+            s.query = query;
+            s.selected = 0;
+            s.sub = None;
+            s.sub_selected = 0;
+        }
+    }
+
+    /// A key while the slash menu is open: Up and Down move the selection (in the open submenu when
+    /// there is one), Enter and Tab run it, Right opens a submenu and Left closes it, Escape closes
+    /// the menu and keeps the text. `false` for any other key, which the editor takes as usual.
+    fn slash_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(s) = self.slash.as_mut() else { return false };
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt {
+            return false;
+        }
+        let rows = s.rows();
+        let sub_len = s.sub.and_then(|i| rows.get(i)).map_or(0, |e| e.submenu.len());
+        match (ks.key.as_str(), m.shift) {
+            ("escape", _) => self.slash = None,
+            ("down" | "up", false) => {
+                let (len, at) = if s.sub.is_some() { (sub_len, &mut s.sub_selected) } else { (rows.len(), &mut s.selected) };
+                if len > 0 {
+                    *at = if ks.key == "down" { (*at + 1) % len } else { (*at + len - 1) % len };
+                }
+            }
+            ("right", false) if s.sub.is_none() && rows.get(s.selected).is_some_and(|e| !e.submenu.is_empty()) => {
+                s.sub = Some(s.selected);
+                s.sub_selected = 0;
+            }
+            ("left", false) if s.sub.is_some() => s.sub = None,
+            ("enter" | "tab", false) => {
+                let picked = match s.sub {
+                    Some(i) => rows.get(i).and_then(|e| e.submenu.get(s.sub_selected)).map(|e| e.command),
+                    None => rows.get(s.selected).map(|e| e.command),
+                };
+                match picked {
+                    Some(cmd) => self.run_slash(cmd, cx),
+                    // "No Results": the menu closes and the key does what it always does.
+                    None => {
+                        self.slash = None;
+                        return false;
+                    }
+                }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// Runs a slash menu entry (`md_slash::apply`) in place of the `/` and the text after it, as one
+    /// undoable edit; an image asks for its file first.
+    pub fn run_slash(&mut self, cmd: md_slash::Command, cx: &mut Context<Self>) {
+        let Some(s) = self.slash.take() else { return };
+        let Some(doc) = self.doc.as_ref() else { return };
+        let end = self.caret.head.ch;
+        if cmd == md_slash::Command::Image {
+            self.pick_image(s.line, s.col, end, cx);
+            return;
+        }
+        let Some(e) = md_slash::apply(cmd, doc.lines(), s.line, s.col, end) else { return };
+        self.apply_slash_edit(e, cx);
+    }
+
+    fn apply_slash_edit(&mut self, e: md_slash::SlashEdit, cx: &mut Context<Self>) {
+        let p = |(line, ch): (usize, usize)| edit::Pos { line, ch };
+        self.caret_placed = true;
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(p(e.from), p(e.to), &e.text, now);
+                doc.break_coalescing();
+                edit::Caret::at(doc.clamp(p(e.caret)))
+            },
+            cx,
+        );
+    }
+
+    /// The slash menu's Image: the system's file picker, then `![name](path)` in place of the
+    /// slash, the path relative to the document's folder when the image is inside it. A picker
+    /// cancelled, or a document changed under the slash meanwhile, changes nothing.
+    fn pick_image(&mut self, line: usize, col: usize, end: usize, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        let before = self.doc.as_ref().and_then(|d| d.lines().get(line).cloned());
+        let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(file) = paths.into_iter().next() else { return };
+            let _ = this.update(cx, |v, cx| {
+                let Some(doc) = v.doc.as_ref() else { return };
+                if doc.lines().get(line) != before.as_ref() {
+                    return;
+                }
+                let name = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let path = file.strip_prefix(&base).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| file.to_string_lossy().into_owned());
+                if let Some(e) = md_slash::image_edit(doc.lines(), line, col, end, &name, &path) {
+                    v.apply_slash_edit(e, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Where the slash menu hangs: the window point of the `/` in the revealed text of the last
+    /// frame, and that text's line height.
+    pub fn slash_anchor(&self) -> Option<(Point<Pixels>, Pixels)> {
+        let s = self.slash.as_ref()?;
+        self.reveal_point_of(edit::Pos { line: s.line, ch: s.col })
+    }
+
     /// Block `ix`'s element tree: the cached one when its rendering is cached (made there the
     /// first time), else made now.
     pub fn block_tree(&mut self, ix: usize) -> Option<Rc<md_reveal::BlockTree>> {
@@ -2160,6 +2325,7 @@ impl Viewer {
     /// not placed (after Escape, where the grid draws again) has left the table. Outside the
     /// rendered view nothing is realigned and the entry is forgotten.
     fn note_caret_moved(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        self.refresh_slash();
         if !self.rendered() {
             self.table_entry = None;
             return;
@@ -2281,6 +2447,14 @@ impl EntityInputHandler for Viewer {
         match target {
             Some((a, b)) if (a, b) != selection => self.edit_raw(|doc, _caret, now| edit::Caret::at(doc.replace_range(a, b, text, now)), cx),
             _ => self.edit_raw(|doc, caret, now| doc.insert(caret, text, now), cx),
+        }
+        // A `/` where a word could start opens the slash menu (the rendered view only).
+        if text == "/" && self.rendered() && self.caret.anchor == self.caret.head && self.caret.head.ch > 0 {
+            let (line, col) = (self.caret.head.line, self.caret.head.ch - 1);
+            if self.doc.as_ref().is_some_and(|d| slash_opens(d.lines(), &self.blocks, line, col)) {
+                self.slash = Some(Slash { line, col, query: String::new(), selected: 0, sub: None, sub_selected: 0 });
+                cx.notify();
+            }
         }
     }
 
@@ -4256,6 +4430,22 @@ mod tests {
         let mut d = edit::Document::from_text("- a\n  - ");
         let c = newline(&mut d, edit::Caret::at(Pos { line: 1, ch: 4 }), &[], now);
         assert_eq!((d.lines().to_vec(), c.head), (lines_of(&["- a", "- "]), Pos { line: 1, ch: 2 }), "Enter on an empty nested item moves it out a level");
+    }
+
+    #[test]
+    fn a_slash_opens_the_menu_where_a_word_could_start_outside_code_and_tables() {
+        let opens = |text: &str, line: usize, ch: usize| {
+            let lines: Vec<String> = text.split('\n').map(String::from).collect();
+            slash_opens(&lines, &md_blocks::split(&lines), line, ch)
+        };
+        assert!(opens("/", 0, 0), "a line of its own");
+        assert!(opens("some text /", 0, 10), "after a space");
+        assert!(!opens("and/or", 0, 3), "inside a word: a slash is text");
+        assert!(opens("- item /", 0, 7));
+        assert!(opens("# Head /", 0, 7));
+        assert!(!opens("```\n/\n```", 1, 0), "in a code block");
+        assert!(!opens("| a |\n|---|\n| / |", 2, 2), "in a table");
+        assert!(opens("```\nx\n```\n\n/", 4, 0), "on a line after a code block");
     }
 
     #[test]

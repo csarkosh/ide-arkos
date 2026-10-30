@@ -37,6 +37,7 @@ mod launch;
 mod launch_link;
 mod link_menu;
 mod md_menu;
+mod slash_menu;
 mod links;
 mod launch_agent;
 mod layout;
@@ -4355,6 +4356,7 @@ impl Render for Root {
             .children(sidebar::render_context_menu(self, cx))
             .children(link_menu::render_link_menu(self, cx))
             .children(md_menu::render_md_menu(self, cx))
+            .children(slash_menu::render_slash_menu(self, cx))
             .children(self.render_popover(window, cx))
             .children(sidebar::render_worktree_menu(self, cx));
         // One request per frame while anything eases; an idle window asks for none.
