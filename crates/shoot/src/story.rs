@@ -23,7 +23,7 @@ pub struct Story {
 /// `[effect]`: the theme's built-in effect drawn at another wash scale for the picture. A
 /// runner's display draws one pixel a point, half of a Retina Mac's two, so a wash at its
 /// manifest's 0.5 has half the pixels a point it has on a Retina screen and its fine detail
-/// (the matrix rain's runes) blurs away; 1.0 there draws as a Retina Mac draws 0.5. The shoot
+/// (the runic rain's runes) blurs away; 1.0 there draws as a Retina Mac draws 0.5. The shoot
 /// copies `crates/arkos/effects/<name>` into its own config with this scale, which shadows the
 /// built-in.
 #[derive(Debug, Deserialize)]
@@ -228,7 +228,7 @@ pub struct Shot {
     #[serde(default)]
     pub keys: Vec<String>,
     /// Take this many captures a tenth of a second apart, without waiting for a still frame, and
-    /// keep the one that changed most from the one before: an effect's motion (the matrix
+    /// keep the one that changed most from the one before: an effect's motion (the runic
     /// decode, 400 ms on changed text) is what a still frame never shows. Every capture is
     /// framed into the progress folder, so a person can choose another.
     #[serde(default)]
@@ -609,16 +609,16 @@ theme = "light"
 
     #[test]
     fn a_story_s_effect_scale_replaces_the_manifest_s_and_keeps_its_comment() {
-        let manifest = "name = \"matrix\"\nscale = 0.5                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n";
+        let manifest = "name = \"runic\"\nscale = 0.5                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n";
         let out = scaled_manifest(manifest, 1.0).unwrap();
-        assert_eq!(out, "name = \"matrix\"\nscale = 1.0                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n");
+        assert_eq!(out, "name = \"runic\"\nscale = 1.0                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n");
         assert!(scaled_manifest("name = \"x\"\n", 1.0).unwrap_err().to_string().contains("no scale line"));
     }
 
     #[test]
-    fn the_built_in_matrix_manifest_takes_a_story_s_scale() {
+    fn the_built_in_runic_manifest_takes_a_story_s_scale() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let manifest = std::fs::read_to_string(root.join("crates/arkos/effects/matrix/effect.toml")).unwrap();
+        let manifest = std::fs::read_to_string(root.join("crates/arkos/effects/runic/effect.toml")).unwrap();
         let out = scaled_manifest(&manifest, 1.0).unwrap();
         assert_eq!(out.lines().filter(|l| l.starts_with("scale = 1.0")).count(), 1);
         assert_eq!(out.lines().count(), manifest.lines().count());
@@ -626,10 +626,10 @@ theme = "light"
 
     #[test]
     fn a_story_s_effect_and_a_burst_shot_parse_and_bad_ones_are_refused() {
-        let text = format!("{STORY}\n[effect]\nname = \"matrix\"\nscale = 1.0\n").replace("wait = { work = \"working\", tests = \"waiting\" }", "wait = { work = \"working\", tests = \"waiting\" }\nburst = 8");
+        let text = format!("{STORY}\n[effect]\nname = \"runic\"\nscale = 1.0\n").replace("wait = { work = \"working\", tests = \"waiting\" }", "wait = { work = \"working\", tests = \"waiting\" }\nburst = 8");
         let s = Story::parse(&text).unwrap();
         let e = s.effect.as_ref().unwrap();
-        assert_eq!((e.name.as_str(), e.scale), ("matrix", 1.0));
+        assert_eq!((e.name.as_str(), e.scale), ("runic", 1.0));
         assert_eq!(s.shots[0].burst, Some(8));
         assert_eq!(s.shots[1].burst, None);
         let err = Story::parse(&text.replace("scale = 1.0", "scale = 1.5")).unwrap_err().to_string();

@@ -94,7 +94,7 @@ identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every ke
 
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the
   browser pane, the video pane, keys, settings and updates.
-- **[Themes](docs/themes.md)**: the five built in, and how to make your own.
+- **[Themes](docs/themes.md)**: the six built in, and how to make your own.
 - **Agents**: run `arkos guide` in an Arkos terminal for how to show the user a video or a
   document and how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.

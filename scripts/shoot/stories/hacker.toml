@@ -2,7 +2,7 @@
 # the audit to find, and it only ever runs as a target here). Claude Code audits and hardens the
 # sign-in and the server while a second session fixes the path traversal behind it, a third reads
 # the box's ssh log for a break-in, and a shell shows the end of that log. Shot in the built-in
-# matrix theme with its effect.
+# matrix theme with its effect, runic.
 
 [scene]
 name = "hacker"
@@ -63,5 +63,5 @@ burst = 40
 # The rain's runes are a couple of points across: at the manifest's 0.5 on the runner's one
 # pixel a point they blur away, so the wash draws at 1.0 there, a Retina Mac's density.
 [effect]
-name = "matrix"
+name = "runic"
 scale = 1.0
