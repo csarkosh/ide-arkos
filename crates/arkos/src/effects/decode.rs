@@ -527,4 +527,25 @@ mod tests {
             assert_eq!(d.shown(col, 2, cell(' '), now, t), (' ', plain()), "a blank row is its own");
         }
     }
+
+    #[test]
+    fn a_line_identical_to_another_keeps_its_own_state_when_nothing_moves() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(3, 5, 0);
+        d.observe(&grid(&["   ", "   ", "   ", "   ", "   "]), 0, t0, false, DEC);
+        // Four lines at once: the top one, b, settles at once and the bottom rule keeps scrambling.
+        d.observe(&grid(&["   ", "bbb", "ccc", "ddd", "───"]), 0, t0, false, DEC);
+        // A second rule on the top row takes the bottom one's state, and as the oldest of four
+        // scrambling lines it settles at once.
+        d.observe(&grid(&["───", "bbb", "ccc", "ddd", "───"]), 0, t0 + Duration::from_millis(10), false, DEC);
+        assert!(!scrambles(&d, 0, 0, '─', t0 + Duration::from_millis(15)), "the top rule settled");
+        // The lines between clear, then the screen holds still: neither rule moves.
+        d.observe(&grid(&["───", "   ", "   ", "   ", "───"]), 0, t0 + Duration::from_millis(20), false, DEC);
+        d.observe(&grid(&["───", "   ", "   ", "   ", "───"]), 0, t0 + Duration::from_millis(30), false, DEC);
+        let now = t0 + Duration::from_millis(50);
+        for col in 0..3 {
+            assert!(scrambles(&d, col, 4, '─', now), "the bottom rule still scrambles");
+            assert!(!scrambles(&d, col, 0, '─', now), "the top rule keeps its own settled state");
+        }
+    }
 }
