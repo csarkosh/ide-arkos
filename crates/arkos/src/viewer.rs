@@ -2675,7 +2675,13 @@ pub fn rendered_break(doc: &mut edit::Document, blocks: &[md_blocks::Block], car
         (K::Quote, false) => {
             let prefix = quote_prefix(&line).to_string();
             if line[prefix.len()..].trim().is_empty() {
-                doc.replace_range(edit::Pos { line: at.line, ch: 0 }, line_end, "", now);
+                // The bare `>` line Enter left above goes too, so a blank line ends the quote.
+                let prev = at.line.checked_sub(1).filter(|&p| block.lines.contains(&p)).filter(|&p| {
+                    let l = &doc.lines()[p];
+                    l.contains('>') && l[quote_prefix(l).len()..].trim().is_empty()
+                });
+                let from = edit::Pos { line: prev.unwrap_or(at.line), ch: 0 };
+                doc.replace_range(from, line_end, if prev.is_some() { "\n" } else { "" }, now);
                 return Some(edit::Caret::at(edit::Pos { line: at.line, ch: 0 }));
             }
             let bare = prefix.trim_end();
@@ -3160,7 +3166,21 @@ fn indent_item(doc: &mut edit::Document, caret: &mut edit::Caret, deeper: bool, 
         above.into_iter().find(|&(i, _)| i < indent).map_or(0, |(i, _)| i)
     };
     let shift = target as isize - indent as isize;
-    let moved: Vec<String> = lines[at..=end]
+    // A numbered item takes the number after the sibling it lands beside, or 1 when it starts a
+    // sublist (markdown starts a nested numbered list only at 1).
+    let number = {
+        let sibling = (0..at).rev().take_while(|&n| !lines[n].trim().is_empty()).filter_map(|n| item(n).map(|c| (n, c))).find(|&(_, (i, _))| i <= target);
+        match sibling {
+            Some((n, (i, _))) if i == target => md_blocks::list_number(&lines[n]).map(|v| v + 1),
+            _ if deeper => Some(1),
+            _ => None,
+        }
+    };
+    let mut lines_moved: Vec<String> = lines[at..=end].to_vec();
+    if let Some(renumbered) = number.and_then(|v| md_blocks::renumber(&lines_moved[0], v)) {
+        lines_moved[0] = renumbered;
+    }
+    let moved: Vec<String> = lines_moved
         .iter()
         .map(|l| {
             if shift > 0 {
@@ -4197,6 +4217,7 @@ mod tests {
         assert_eq!(broken("> one two", Pos { line: 0, ch: 5 }, false), (lines_of(&["> one", ">", ">  two"]), Pos { line: 2, ch: 2 }), "a new paragraph in the quote");
         assert_eq!(broken("> > deep", Pos { line: 0, ch: 8 }, false).0, lines_of(&["> > deep", "> >", "> > "]), "as deep as the line");
         assert_eq!(broken("> one\n> ", Pos { line: 1, ch: 2 }, false), (lines_of(&["> one", ""]), Pos { line: 1, ch: 0 }), "Enter on an empty quote line ends the quote");
+        assert_eq!(broken("> one\n>\n> ", Pos { line: 2, ch: 2 }, false), (lines_of(&["> one", "", ""]), Pos { line: 2, ch: 0 }), "and takes the bare > line above with it");
         assert_eq!(broken("```\ncode\n```", Pos { line: 1, ch: 4 }, false).1, Pos { line: usize::MAX, ch: 0 }, "a code block keeps the plain break");
         assert_eq!(broken("- a", Pos { line: 0, ch: 3 }, false).1, Pos { line: usize::MAX, ch: 0 }, "a list keeps its continuation");
     }
@@ -4223,7 +4244,10 @@ mod tests {
             let out = apply_action(&mut d, &mut c, &[], action, 20, now);
             (d.lines().to_vec(), c.head, out)
         };
-        assert_eq!(run("1. one\n2. two", 1, 4, KeyAction::Tab).0, lines_of(&["1. one", "   2. two"]), "under a numbered item, its content column");
+        assert_eq!(run("1. one\n2. two", 1, 4, KeyAction::Tab).0, lines_of(&["1. one", "   1. two"]), "under a numbered item, its content column, numbered 1 to start the sublist");
+        assert_eq!(run("1. a\n   1. b\n2. c", 2, 4, KeyAction::Tab).0, lines_of(&["1. a", "   1. b", "   2. c"]), "after a sibling, the next number");
+        assert_eq!(run("1. a\n   1. b", 1, 6, KeyAction::ShiftTab).0, lines_of(&["1. a", "2. b"]), "back out, after the item above");
+        assert_eq!(run("- a\n- b", 1, 3, KeyAction::Tab).0, lines_of(&["- a", "  - b"]), "a bullet keeps its marker");
         assert_eq!(run("- a\n  - b", 1, 5, KeyAction::Tab).2, Outcome::Nothing, "one level under the item above at most");
         let (lines, head, _) = run("- a\n- b\n  more\n  - c\n- d", 1, 3, KeyAction::Tab);
         assert_eq!((lines, head), (lines_of(&["- a", "  - b", "    more", "    - c", "- d"]), Pos { line: 1, ch: 5 }), "its continuation lines and children move with it");
