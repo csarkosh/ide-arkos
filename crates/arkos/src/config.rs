@@ -104,17 +104,19 @@ impl Default for SidebarConfig {
 }
 
 /// The viewer's limits: a file larger than `highlight_limit_bytes` opens without syntax colours;
-/// and how the rendered markdown view draws a table wider than the view (`wide_tables`).
+/// how the rendered markdown view draws a table wider than the view (`wide_tables`); and the
+/// folder pasted and dropped images go in (`image_destination`, `md_links::image_dir`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ViewerConfig {
     pub highlight_limit_bytes: usize,
     pub wide_tables: WideTables,
+    pub image_destination: String,
 }
 
 impl Default for ViewerConfig {
     fn default() -> Self {
-        Self { highlight_limit_bytes: 5 * 1024 * 1024, wide_tables: WideTables::default() }
+        Self { highlight_limit_bytes: 5 * 1024 * 1024, wide_tables: WideTables::default(), image_destination: String::new() }
     }
 }
 
@@ -699,6 +701,9 @@ highlight_limit_bytes = 5242880
 # A markdown table wider than the rendered view: "wrap" shrinks its columns and wraps the cells;
 # "scroll" keeps the column widths and scrolls the table sideways (Shift+wheel).
 # wide_tables = "wrap"
+# Where an image pasted or dropped into a markdown file is written, relative to the file's folder;
+# {name} is the file's name without its extension. Empty is the file's own folder.
+# image_destination = "images"
 
 [browser]
 # A browser tab shows a web page inside the pane. "New browser tab" (Cmd+Shift+B) asks for a
@@ -1172,6 +1177,13 @@ pub(crate) mod tests {
         let zero: Config = toml::from_str("[viewer]\nhighlight_limit_bytes = 0\n").unwrap();
         assert!(zero.validate().unwrap_err().contains("viewer.highlight_limit_bytes"));
         assert!(toml::from_str::<Config>(DEFAULT_CONFIG).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn images_go_beside_the_document_by_default_and_the_folder_reads_as_written() {
+        assert_eq!(Config::default().viewer.image_destination, "");
+        let c: Config = toml::from_str("[viewer]\nimage_destination = \"{name}.assets\"\n").unwrap();
+        assert_eq!(c.viewer.image_destination, "{name}.assets");
     }
 
     #[test]

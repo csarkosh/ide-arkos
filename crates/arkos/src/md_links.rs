@@ -151,6 +151,30 @@ pub fn link_path(path: &Path, base_dir: &Path) -> String {
     }
 }
 
+/// Where a file dropped on a document in `doc_dir` is linked: a file inside the document's folder
+/// where it is (`None` to copy), an image from elsewhere at the next free name in `image_dir` with
+/// its own extension (`Some` of where it came from), any other file from elsewhere where it is.
+pub fn place_dropped(file: &Path, doc_dir: &Path, image_dir: &Path, taken: impl Fn(&Path) -> bool) -> (PathBuf, Option<PathBuf>) {
+    if normalize(file).starts_with(normalize(doc_dir)) || !is_image(file) {
+        return (file.to_path_buf(), None);
+    }
+    let ext = file.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
+    (image_name(image_dir, &ext, taken), Some(file.to_path_buf()))
+}
+
+/// The markdown a dropped or pasted file goes in as: `![name](path)` for an image, `[name](path)`
+/// for anything else, `name` being the file it came from's name (an image's without its extension)
+/// and `path` its link from the document (`link_path`).
+pub fn file_markdown(came_from: &Path, linked: &Path, doc_dir: &Path) -> String {
+    let path = link_path(linked, doc_dir);
+    let label = |s: Option<&std::ffi::OsStr>| s.map(|s| s.to_string_lossy().replace(['[', ']'], "")).unwrap_or_default();
+    if is_image(linked) {
+        format!("![{}]({path})", label(came_from.file_stem()))
+    } else {
+        format!("[{}]({path})", label(came_from.file_name()))
+    }
+}
+
 /// Whether a file is an image Arkos draws, by its extension.
 pub fn is_image(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff"].contains(&e.to_lowercase().as_str()))
@@ -222,6 +246,18 @@ mod tests {
         let taken = |p: &Path| p.ends_with("image.png") || p.ends_with("image-1.png");
         assert_eq!(image_name(Path::new("/w"), "png", taken), Path::new("/w/image-2.png"));
         assert_eq!(image_name(Path::new("/w"), "jpg", taken), Path::new("/w/image.jpg"));
+    }
+
+    #[test]
+    fn a_dropped_file_is_linked_where_it_is_unless_it_is_an_image_from_elsewhere() {
+        let (doc, images) = (Path::new("/w/notes"), Path::new("/w/notes/images"));
+        let none = |_: &Path| false;
+        assert_eq!(place_dropped(Path::new("/w/notes/sub/a.png"), doc, images, none), (PathBuf::from("/w/notes/sub/a.png"), None), "inside the folder: linked in place");
+        assert_eq!(place_dropped(Path::new("/Users/me/Desktop/Shot 1.PNG"), doc, images, none), (PathBuf::from("/w/notes/images/image.png"), Some(PathBuf::from("/Users/me/Desktop/Shot 1.PNG"))));
+        assert_eq!(place_dropped(Path::new("/Users/me/spec.pdf"), doc, images, none), (PathBuf::from("/Users/me/spec.pdf"), None), "not an image: linked where it is");
+        assert_eq!(file_markdown(Path::new("/d/Shot [1].png"), Path::new("/w/notes/images/image.png"), doc), "![Shot 1](images/image.png)");
+        assert_eq!(file_markdown(Path::new("/Users/me/spec.pdf"), Path::new("/Users/me/spec.pdf"), doc), "[spec.pdf](/Users/me/spec.pdf)");
+        assert_eq!(file_markdown(Path::new("/w/notes/a b.md"), Path::new("/w/notes/a b.md"), doc), "[a b.md](<a b.md>)");
     }
 
     #[test]

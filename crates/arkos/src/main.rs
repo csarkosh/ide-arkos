@@ -1473,6 +1473,12 @@ impl Root {
             // `cx.notify()` below re-renders): panes re-measure before a restore trusts a grid.
             self.grids.clear();
         }
+        if old.viewer.image_destination != self.config.viewer.image_destination {
+            for v in self.viewers.values() {
+                let folder = self.config.viewer.image_destination.clone();
+                v.update(cx, |v, _| v.image_destination = folder);
+            }
+        }
         let t = &self.config.terminal;
         self.sessions.set_defaults(t.scrollback, t.shell.clone(), t.nice);
         self.shell_name = shell_name(t.shell.as_deref(), std::env::var("SHELL").ok().as_deref());

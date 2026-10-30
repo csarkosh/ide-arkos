@@ -1236,9 +1236,10 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
 
 /// A row as a drop target for a dragged block: its top border turns into the accent line while a
 /// block from this document is over it, and a drop moves that block to just before it (`to`, or
-/// the end of the document for the tail row).
+/// the end of the document for the tail row). Files dragged from Finder show the same line and go
+/// in there (`Viewer::drop_files`).
 fn drop_target(row: Stateful<Div>, to: usize, ctx: &BlockCtx) -> Stateful<Div> {
-    let (viewer, accent) = (ctx.viewer.clone(), ctx.link);
+    let (viewer, viewer_files, accent) = (ctx.viewer.clone(), ctx.viewer.clone(), ctx.link);
     let id = viewer.entity_id();
     row.border_t(px(DROP_LINE))
         .border_color(gpui::transparent_black())
@@ -1250,6 +1251,14 @@ fn drop_target(row: Stateful<Div>, to: usize, ctx: &BlockCtx) -> Stateful<Div> {
                     v.move_block(d.from, to, cx);
                 });
             }
+        })
+        // Files from Finder go in here too (images and links spec, section 3).
+        .drag_over::<gpui::ExternalPaths>(move |style, _paths, _window, _cx| style.border_color(accent))
+        .on_drop(move |paths: &gpui::ExternalPaths, _window, cx| {
+            viewer_files.update(cx, |v, cx| {
+                let to = if to == usize::MAX { v.blocks.len() } else { to };
+                v.drop_files(paths.paths(), to, cx);
+            });
         })
 }
 
