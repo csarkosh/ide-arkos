@@ -1021,7 +1021,10 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     let items = reveal.map(|rv| md_reveal::item_paths(&rv.tree.nodes)).unwrap_or_default();
     // The caret is drawn in one item: the last one starting at or before it whose own text reaches
     // it, so an offset on the line between two items is the lower one's, as a press maps it.
-    let caret_item = reveal.and_then(|rv| {
+    // A caret on a blank line after the block's text (after Enter, before typing) is drawn on an
+    // empty row of its own below the text, and nowhere else.
+    let tail_caret = reveal.and_then(|rv| md_reveal::tail_caret(rv.text, rv.focus.caret?));
+    let caret_item = reveal.filter(|_| tail_caret.is_none()).and_then(|rv| {
         let c = rv.focus.caret?;
         items.iter().rposition(|p| md_reveal::node_at(&rv.tree.nodes, p).is_some_and(|n| n.span.start <= c && c <= md_reveal::item_end(n)))
     });
@@ -1031,7 +1034,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
             (Some(rv), Piece::Para(_) | Piece::Heading(..) | Piece::Quote(_)) => {
                 let display = Rc::new(Display::new(rv.text, &rv.tree.nodes, &rv.focus.offsets));
                 let (weight, color) = if matches!(piece, Piece::Quote(_)) { (FontWeight::NORMAL, ctx.dim) } else if matches!(piece, Piece::Heading(..)) { (FontWeight::SEMIBOLD, ctx.text) } else { (FontWeight::NORMAL, ctx.text) };
-                let text = reveal_text(ix, j, display, weight, color, true, rv, ctx, &mut parts);
+                let text = reveal_text(ix, j, display, weight, color, tail_caret.is_none(), rv, ctx, &mut parts);
                 match piece {
                     Piece::Heading(level, _) => div().pt(px(HEADING_GAP)).text_size(px(ctx.font_size * heading_scale(*level))).child(text).into_any_element(),
                     Piece::Quote(_) => div().border_l(px(QUOTE_BAR)).border_color(ctx.border).pl(px(10.0)).child(text).into_any_element(),
@@ -1057,7 +1060,11 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     // An active picture keeps its picture and shows its source under it, where the caret is.
     if let Some(rv) = reveal.filter(|rv| rv.tree.picture) {
         let source = Rc::new(Display::verbatim(rv.text, 0..rv.text.trim_end().len()));
-        children.push(reveal_text(ix, r.pieces.len(), source, FontWeight::NORMAL, ctx.dim, true, rv, ctx, &mut parts));
+        children.push(reveal_text(ix, r.pieces.len(), source, FontWeight::NORMAL, ctx.dim, tail_caret.is_none(), rv, ctx, &mut parts));
+    }
+    if let (Some(rv), Some(c)) = (reveal, tail_caret) {
+        let empty = Rc::new(Display::verbatim(rv.text, c..c));
+        children.push(reveal_text(ix, r.pieces.len() + 1, empty, FontWeight::NORMAL, ctx.text, true, rv, ctx, &mut parts));
     }
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
@@ -1613,8 +1620,15 @@ fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, co
     let (viewer, caret_color) = (ctx.viewer.clone(), ctx.caret);
     let (covers, lines) = (display.covers.clone(), rv.lines.clone());
     let overlay = canvas(
-        move |_bounds, _window, cx| {
-            viewer.update(cx, |v, _| v.reveal_blocks.push(RevealLayout { block: ix, lines, covers, layout: layout.clone(), display }));
+        move |_bounds, window, cx| {
+            let r = RevealLayout { block: ix, lines, covers, layout: layout.clone(), display };
+            if viewer.update(cx, |v, _| {
+                let moved = v.note_slash_layout(&r);
+                v.reveal_blocks.push(r);
+                moved
+            }) {
+                window.refresh();
+            }
             layout
         },
         move |_bounds, layout, window, _cx| {

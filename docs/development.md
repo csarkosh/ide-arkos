@@ -579,6 +579,11 @@ Things only a person at the screen can check, in order of value:
 - typing rules: Cmd+B on a word bolds it and again un-bolds it; Cmd+I on a selection italicizes it;
   Cmd+B in a code viewer still toggles the sidebar; copy `https://example.com`, select a word, Cmd+V:
   it becomes a link; right-click a word: the menu shows Cut and Copy dimmed, and Bold bolds the word
+- slash menu: Enter at a paragraph's end: the caret is on an empty row below it; `/` there: the menu
+  opens under the slash with its hints and chevrons; `/h2` narrows it to Heading 2 and Enter makes
+  the heading; Right on Mermaid Diagram opens its templates beside it, and Pie renders within two
+  seconds; `/3x4` makes the table with the caret in its first cell; ` /todo` after a list item makes
+  it a task; `/` then Escape leaves the slash; `and/or` opens nothing; Image opens the file picker
 - the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
   back; the choice survives a relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and

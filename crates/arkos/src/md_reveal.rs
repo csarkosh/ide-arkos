@@ -97,6 +97,13 @@ pub struct Display {
     pub links: Vec<(Range<usize>, String)>,
 }
 
+/// A caret offset on a blank line after the last text of a block's `text`: the offset, which the
+/// block draws on an empty row of its own; `None` for a caret on the text's lines.
+pub fn tail_caret(text: &str, caret: usize) -> Option<usize> {
+    let end = text.trim_end().len();
+    (caret > end && caret <= text.len() && text[end..caret].contains('\n')).then_some(caret)
+}
+
 /// A caret move's direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
@@ -621,6 +628,15 @@ mod tests {
     #[test]
     fn a_selection_reveals_both_ends_and_nothing_between() {
         assert_eq!(display("**a** b `c` d ~~e~~", &[2, 17]).text, "**a** b c d ~~e~~");
+    }
+
+    #[test]
+    fn a_caret_on_a_blank_line_after_the_text_is_drawn_on_a_row_of_its_own() {
+        let text = "para\n\n";
+        assert_eq!(tail_caret(text, 6), Some(6), "the new paragraph's line");
+        assert_eq!(tail_caret(text, 5), Some(5), "the blank line between");
+        assert_eq!(tail_caret(text, 4), None, "the text's end");
+        assert_eq!(tail_caret("para  ", 6), None, "trailing spaces on the text's line");
     }
 
     #[test]
