@@ -419,7 +419,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
   (system, dark, light), `theme.dark`, `theme.light`, `font.family`, `font.preset`,
   `font.presets.<name>.size` (8 to 48), `font.presets.<name>.line_height` (1.0 to 2.5),
   `effect.name` (theme, none, or an installed effect's name), `effect.intensity` (0.0 to 1.0),
-  `viewer.wide_tables` (wrap, scroll), `update.auto` (true, false),
+  `effect.run_unfocused` (true, false: false pauses a window's effects while it is not in
+  focus), `viewer.wide_tables` (wrap, scroll), `update.auto` (true, false),
   `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
   `telemetry.crashes` (never, ask, always). Another key exits 2
   with the list. A bad value is refused before anything is written. Then every window reloads:
@@ -625,7 +626,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
 ```
 
 What it is handed: `u.time`, seconds since the effect started, frozen under Reduce Motion (the
-wash then draws only when something changes); `u.intensity`, the user's slider from 0 to 1;
+wash then draws only when something changes); it also holds while a window not in focus pauses
+its effects (`effect.run_unfocused = false`) and goes on from there, so it counts only the time
+the effect has run; `u.intensity`, the user's slider from 0 to 1;
 `u.size`, the window in points; `u.scale`, the drawable's pixels per point; `u.colors`, the
 theme's colours, opaque; and `u.blocks`, the first `u.block_count` of up to 48 blocks, each a
 rectangle in window points from the top left with its kind, the edges the app no longer draws, a

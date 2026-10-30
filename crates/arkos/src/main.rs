@@ -298,8 +298,9 @@ pub struct Root {
     /// The find bars as drawn, by terminal or viewer entity: the open bar, and a closed one
     /// while it fades out.
     pub find_bars: motion::Fades<gpui::EntityId, find::FindLook>,
-    /// When each empty pane's animation started; settled panes keep an old instant.
-    pub empty_anim: HashMap<PaneId, std::time::Instant>,
+    /// Each empty pane's animation clock, from when it started; it holds while the window's
+    /// effects are paused (`effects_paused`).
+    pub empty_anim: HashMap<PaneId, effects::active::Clock>,
     /// The basename of `$SHELL`, shown on a tab whose program set no title.
     pub shell_name: String,
     /// The last good config; `apply_config` replaces it.
@@ -345,7 +346,7 @@ pub struct Root {
     glyph_scale: f32,
     /// The wash's timer (`ensure_effect_timer`): `None` while it is stopped, else whether it
     /// rests (waits `effects::active::REST` because the wash could not be seen). It ends once
-    /// `effect` is `None`, and under Reduce Motion once nothing moves.
+    /// `effect` is `None`, and under Reduce Motion or while `effects_paused` once nothing moves.
     effect_timer: Option<bool>,
     /// Counts the timers started, so a timer started afresh ends the one it replaces.
     effect_timer_gen: u64,
@@ -465,6 +466,10 @@ pub struct Root {
     pub tab_rename_focus: FocusHandle,
     /// Whether this is the key window, read each frame; the pulse ticks only while it is.
     pub window_active: bool,
+    /// Whether the window's effects and other decorative motion are paused, holding their last
+    /// frame: "Use more battery to run effects while using other apps" is off and neither this
+    /// window nor Settings is the key window (`sync_pause`). Reduce Motion is separate and wins.
+    pub effects_paused: bool,
     /// The breath of the working glyphs, the focus glow and the icon dots (`pulse::Breath`):
     /// at rest unless something shown is working.
     pub breath: pulse::Breath,
@@ -725,6 +730,7 @@ impl Root {
             tab_rename: None,
             tab_rename_focus: cx.focus_handle(),
             window_active: true,
+            effects_paused: false,
             breath: pulse::Breath::default(),
             frame_now: Instant::now(),
             last_scroll: None,
@@ -1424,6 +1430,8 @@ impl Root {
         self.switch_theme(cx);
         // In step with the theme's fade when both change; the intensity is read every frame.
         self.resolve_effect(cx);
+        // `[effect] run_unfocused` may have changed: an unfocused window pauses or resumes now.
+        self.sync_pause(Instant::now());
         if let Some(name) = config::preset_after_reload(&self.text_preset, &old.font, &self.config.font) {
             self.apply_text_preset(&name, cx);
         }
@@ -1658,6 +1666,22 @@ impl Root {
         match p.tabs.get(p.active)? {
             Tab::Terminal { session, .. } => self.sessions.terminals.get(session).cloned(),
             Tab::Viewer { .. } | Tab::Browser { .. } | Tab::Video { .. } => None,
+        }
+    }
+
+    /// Pauses the effect's clock and the empty panes' at `now`, or resumes them, as the setting
+    /// and the window's focus say (`effects::active::paused`). Settings in front counts as focus,
+    /// so its effect preview keeps moving. Called where the focus or the config changes and on
+    /// every render; pausing what is paused changes nothing.
+    pub fn sync_pause(&mut self, now: Instant) {
+        let focused = self.window_active || settings::settings_is_key();
+        let paused = effects::active::paused(self.config.effect.run_unfocused, focused);
+        self.effects_paused = paused;
+        if let Some(e) = self.effect.as_mut() {
+            e.set_paused(paused, now);
+        }
+        for clock in self.empty_anim.values_mut() {
+            clock.set_paused(paused, now);
         }
     }
 
@@ -3754,7 +3778,9 @@ impl Root {
             }
         };
         match effects::active::start(effect, &mut WindowInstaller { ns, view }, now, cut) {
-            Ok(active) => {
+            Ok(mut active) => {
+                // Put on while the window is paused, it holds its first frame until focus.
+                active.set_paused(self.effects_paused, now);
                 self.effect = Some(active);
                 if cut {
                     self.effect_fade_settled(cx);
@@ -3809,7 +3835,8 @@ impl Root {
     /// rate (sixty a second while a highlight fades) until the effect is gone. A timer that
     /// rests is replaced, so its first tick comes now rather than at the end of its rest. Called
     /// by `render`, which runs on every change of what the wash reads, so a timer stopped under
-    /// Reduce Motion ticks once after each such frame, and runs on only while something moves.
+    /// Reduce Motion or while the window is paused out of focus ticks once after each such
+    /// frame, and runs on only while something moves.
     fn ensure_effect_timer(&mut self, cx: &mut Context<Self>) {
         if self.effect.is_none() || self.effect_timer == Some(false) {
             return;
@@ -3825,7 +3852,8 @@ impl Root {
                 let now = Instant::now();
                 root.step_effect_fade(now, cx);
                 let seen = root.effect_tick(now);
-                if seen.is_some() && !root.effect_menus.is_empty() {
+                // The open menus repaint with the wash, which a paused window holds still.
+                if seen.is_some() && !root.effect_menus.is_empty() && !root.effects_paused {
                     cx.notify();
                 }
                 // The text's own timer stops while the window cannot be seen and only `render`
@@ -3833,8 +3861,9 @@ impl Root {
                 if seen.is_some() {
                     root.ensure_glyph_timer(cx);
                 }
+                let paused = root.effects_paused;
                 let wait = root.effect.as_ref().and_then(|e| {
-                    effects::active::next_wait(e.effect.manifest.frame_rate, seen.is_some(), seen == Some(true), !e.settled(), motion::reduce_motion())
+                    effects::active::next_wait(e.effect.manifest.frame_rate, seen.is_some(), seen == Some(true), !e.settled(), motion::reduce_motion(), paused)
                 });
                 root.effect_timer = wait.map(|_| seen.is_none());
                 wait
@@ -3851,9 +3880,10 @@ impl Root {
     /// redrawn: see `effects::active::glyph_wait`.
     fn glyph_wait(&self) -> Option<std::time::Duration> {
         let e = self.effect.as_ref()?;
-        // As the wash, the text moves on with a menu or a prompt open; only an unseen window rests it.
+        // As the wash, the text moves on with a menu or a prompt open; an unseen window rests it,
+        // and so does one paused while it is not in focus (`effects_paused`).
         let seen = !self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
-        effects::active::glyph_wait(e.effect.manifest.glyph_rate(), e.effect.manifest.glyph_motion, e.settled(), seen, motion::reduce_motion())
+        effects::active::glyph_wait(e.effect.manifest.glyph_rate(), e.effect.manifest.glyph_motion, e.settled(), seen, motion::reduce_motion(), self.effects_paused)
     }
 
     /// Starts the text's timer unless it runs: while the effect's glyphs move it asks for a
@@ -3894,15 +3924,17 @@ impl Root {
     /// One frame of the wash at `now`: the blocks from the current layout, the divider and the
     /// highlights' strokes, with the theme as it is now (a theme fade reads the blend). Nothing
     /// is built or drawn while the window is hidden, occluded or covered, and `None` says so;
-    /// under Reduce Motion nothing is drawn when nothing changed. `Some(true)` while a
-    /// highlight's stroke fades, so the next frame comes sooner (the surfaces' own fade is
-    /// gpui's frames, through `any_motion`).
+    /// under Reduce Motion, or while the window is paused out of focus (`effects_paused`, whose
+    /// clock holds), nothing is drawn when nothing changed. `Some(true)` while a highlight's
+    /// stroke fades, so the next frame comes sooner (the surfaces' own fade is gpui's frames,
+    /// through `any_motion`).
     pub fn effect_tick(&mut self, now: Instant) -> Option<bool> {
         self.effect.as_ref()?;
         let hidden = self.ns_window.as_ref().is_some_and(|ns| screen::window_unseen(ns));
         let reduce = motion::reduce_motion();
-        // Only a window that cannot be seen rests the wash: with a menu or a prompt open the user
-        // is still at work in it.
+        let paused = self.effects_paused;
+        // A window that cannot be seen rests the wash. With a menu or a prompt open the user is
+        // still at work in it; a window out of focus holds still only when the setting says so.
         if hidden {
             return None;
         }
@@ -3917,7 +3949,7 @@ impl Root {
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
         let inputs = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
-        if e.should_draw(&inputs, hidden, reduce) {
+        if e.should_draw(&inputs, hidden, reduce, paused) {
             e.layer.draw(&inputs);
             e.last_inputs = Some(inputs);
             if let Some(ms) = e.layer.gpu_ms().filter(|ms| effects::active::should_log(e.logged, now, *ms)) {
@@ -3930,7 +3962,7 @@ impl Root {
         if style.menu_edges && !self.effect_menus.is_empty() {
             let blocks = effects::blocks::menu_blocks(&self.effect_menus);
             let overlay = effects::inputs::build(&self.theme, self.config.effect.intensity, size, scale, e.time(now, reduce), &blocks);
-            if !(reduce && e.last_overlay.as_ref() == Some(&overlay)) {
+            if !((reduce || paused) && e.last_overlay.as_ref() == Some(&overlay)) {
                 e.layer.draw_overlay(Some(&overlay));
                 e.last_overlay = Some(overlay);
             }
@@ -3944,7 +3976,8 @@ impl Root {
 
     /// The backdrop of the open menu `key` at `area`, faded to `opacity`: the effect's wash over
     /// the menu's place with the highlight strokes inside it, for the menu to show behind its
-    /// text. `None` unless the effect paints the menus.
+    /// text. `None` unless the effect paints the menus. A paused window's clock holds, so the
+    /// backdrop holds with the wash.
     pub fn menu_backdrop(&mut self, key: u64, area: Rect, opacity: f32) -> Option<core_video::pixel_buffer::CVPixelBuffer> {
         let reduce = motion::reduce_motion();
         let now = Instant::now();
@@ -4004,6 +4037,8 @@ impl Render for Root {
         self.window_active = window.is_window_active();
         self.note_focus();
         let now = Instant::now();
+        // Before the clocks are read: a change of focus or of Settings' focus re-renders.
+        self.sync_pause(now);
         let last_frame = std::mem::replace(&mut self.frame_now, now);
         self.painted = true;
         self.settle(now, last_frame);
@@ -4859,6 +4894,8 @@ fn open_project_window(
                         cx.observe_window_activation(window, |root: &mut Root, window, cx| {
                             root.window_active = window.is_window_active();
                             root.note_focus();
+                            // The effects pause or resume at the change itself, not the next frame.
+                            root.sync_pause(Instant::now());
                             // A minimize deactivates first: a video pauses as soon as the window
                             // reads as hidden, here or on the next poll.
                             root.update_video_activity(cx);

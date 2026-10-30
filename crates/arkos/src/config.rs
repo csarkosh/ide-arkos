@@ -198,17 +198,22 @@ impl<'de> Deserialize<'de> for EffectChoice {
     }
 }
 
-/// `[effect]`: which effect is drawn and how strongly (1.0 is the effect as designed).
+/// `[effect]`: which effect is drawn, how strongly (1.0 is the effect as designed), and whether
+/// it keeps moving while another app is in front.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EffectConfig {
     pub name: EffectChoice,
     pub intensity: f32,
+    /// Settings' "Use more battery to run effects while using other apps": true (the default)
+    /// keeps the effects moving in a window that is not in focus; false pauses them there, on
+    /// their last frame.
+    pub run_unfocused: bool,
 }
 
 impl Default for EffectConfig {
     fn default() -> Self {
-        Self { name: EffectChoice::Theme, intensity: 1.0 }
+        Self { name: EffectChoice::Theme, intensity: 1.0, run_unfocused: true }
     }
 }
 
@@ -720,6 +725,10 @@ light = "peach-light"
 # (invisible) to 1.0 (as designed).
 name = "theme"
 intensity = 1.0
+# Settings' "Use more battery to run effects while using other apps". false pauses the effect,
+# the moving text and the empty pane's dots in a window that is not in focus, holding their last
+# frame until you come back; true keeps them moving.
+run_unfocused = true
 
 [appearance]
 # "system" follows macOS light and dark: the evidence points at matching the room, which the
@@ -1001,7 +1010,7 @@ pub(crate) mod tests {
     #[test]
     fn the_effect_section_defaults_to_the_theme_s_choice_at_full_intensity() {
         let cfg = Config::default();
-        assert_eq!(cfg.effect, EffectConfig { name: EffectChoice::Theme, intensity: 1.0 });
+        assert_eq!(cfg.effect, EffectConfig { name: EffectChoice::Theme, intensity: 1.0, run_unfocused: true });
         assert_eq!(parse("").unwrap().effect, cfg.effect);
         assert_eq!(parse(DEFAULT_CONFIG).unwrap(), cfg, "the commented defaults say the same");
     }
@@ -1019,6 +1028,18 @@ pub(crate) mod tests {
         assert!(e.contains("effect.name"), "{e}");
         let e = parse("[effect]\nname = \"../x\"\n").unwrap_err().to_string();
         assert!(e.contains("effect.name"), "{e}");
+    }
+
+    #[test]
+    fn effects_run_while_another_app_is_in_front_unless_the_config_says_otherwise() {
+        assert!(Config::default().effect.run_unfocused);
+        assert!(parse("[effect]\nname = \"none\"\n").unwrap().effect.run_unfocused, "absent, on");
+        assert!(!parse("[effect]\nrun_unfocused = false\n").unwrap().effect.run_unfocused);
+        assert!(parse("[effect]\nrun_unfocused = true\n").unwrap().effect.run_unfocused);
+        assert!(parse("[effect]\nrun_unfocused = \"no\"\n").is_err());
+        assert!(DEFAULT_CONFIG.contains("\nrun_unfocused = true\n"), "the default file names the key");
+        let text = apply_edits(DEFAULT_CONFIG, &[(&["effect", "run_unfocused"], false.into())]).unwrap();
+        assert!(!parse(&text).unwrap().effect.run_unfocused, "an edit reads back");
     }
 
     #[test]

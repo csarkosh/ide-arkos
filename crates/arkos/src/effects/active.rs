@@ -111,14 +111,21 @@ pub fn cadence(frame_rate: u32, moving: bool) -> Duration {
 /// the wash comes back soon after the window does.
 pub const REST: Duration = Duration::from_millis(500);
 
+/// Whether a window's effects are paused: when the setting "Use more battery to run effects while
+/// using other apps" (`[effect] run_unfocused`) is off and the window is not `focused` (neither it
+/// nor this process's Settings window is the key window). A paused effect holds its last frame.
+pub fn paused(run_unfocused: bool, focused: bool) -> bool {
+    !run_unfocused && !focused
+}
+
 /// What the wash's timer waits after a tick, or `None` to stop it. While the window is not
-/// `seen` (hidden, occluded or covered) it rests; under Reduce Motion with no highlight
-/// `moving` and no `fading` it stops, and the next render starts it again; otherwise it keeps
-/// the `cadence`.
-pub fn next_wait(frame_rate: u32, seen: bool, moving: bool, fading: bool, reduce: bool) -> Option<Duration> {
+/// `seen` (hidden, occluded or covered) it rests; under Reduce Motion, or while the window is
+/// `paused`, with no highlight `moving` and no `fading` it stops, and the next render starts it
+/// again; otherwise it keeps the `cadence`.
+pub fn next_wait(frame_rate: u32, seen: bool, moving: bool, fading: bool, reduce: bool, paused: bool) -> Option<Duration> {
     if !seen {
         Some(REST)
-    } else if reduce && !moving && !fading {
+    } else if (reduce || paused) && !moving && !fading {
         None
     } else {
         Some(cadence(frame_rate, moving))
@@ -131,10 +138,11 @@ pub const GLYPH_RATE_CAP: u32 = 20;
 
 /// What the text's timer waits after a frame, or `None` to stop it. The text is redrawn only
 /// while the effect's glyph shader `motion` is on, the effect is `settled` (not fading in or
-/// out), the window is `seen` and Reduce Motion is off; the wait is one frame at `glyph_rate`
-/// (the manifest's resolved rate), clamped to `1..=GLYPH_RATE_CAP` a second.
-pub fn glyph_wait(glyph_rate: u32, motion: bool, settled: bool, seen: bool, reduce: bool) -> Option<Duration> {
-    if motion && settled && seen && !reduce {
+/// out), the window is `seen`, Reduce Motion is off and the window is not `paused`; the wait is
+/// one frame at `glyph_rate` (the manifest's resolved rate), clamped to `1..=GLYPH_RATE_CAP` a
+/// second.
+pub fn glyph_wait(glyph_rate: u32, motion: bool, settled: bool, seen: bool, reduce: bool, paused: bool) -> Option<Duration> {
+    if motion && settled && seen && !reduce && !paused {
         Some(Duration::from_secs_f64(1.0 / glyph_rate.clamp(1, GLYPH_RATE_CAP) as f64))
     } else {
         None
@@ -334,12 +342,70 @@ pub trait Installer {
     fn install(&mut self, effect: &Effect) -> Result<Self::Layer, String>;
 }
 
+/// A clock that can be paused: the time since it started less the time spent paused, held at
+/// the moment of the pause while paused. So what it drives holds its last frame and, resumed,
+/// goes on from there with no jump.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clock {
+    started: Instant,
+    /// Since when it is paused, while it is.
+    paused_at: Option<Instant>,
+    /// The time spent in the pauses that have ended.
+    paused_for: Duration,
+}
+
+impl Clock {
+    /// A clock running from `now`.
+    pub fn new(now: Instant) -> Clock {
+        Clock { started: now, paused_at: None, paused_for: Duration::ZERO }
+    }
+
+    /// A clock that starts at `now` paused, so it reads zero until it resumes.
+    pub fn paused_from(now: Instant) -> Clock {
+        Clock { paused_at: Some(now), ..Clock::new(now) }
+    }
+
+    /// A clock running from `now`, or held from it when `paused`.
+    pub fn starting(now: Instant, paused: bool) -> Clock {
+        if paused {
+            Clock::paused_from(now)
+        } else {
+            Clock::new(now)
+        }
+    }
+
+    /// Pauses the clock at `now`, or resumes it; pausing a paused clock or resuming a running one
+    /// changes nothing.
+    pub fn set_paused(&mut self, paused: bool, now: Instant) {
+        match (paused, self.paused_at) {
+            (true, None) => self.paused_at = Some(now),
+            (false, Some(at)) => {
+                self.paused_for += now.saturating_duration_since(at);
+                self.paused_at = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether it is paused. Only the tests ask; the window keeps its own `effects_paused`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_paused(&self) -> bool {
+        self.paused_at.is_some()
+    }
+
+    /// The time it has run by `now`.
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        self.paused_at.unwrap_or(now).saturating_duration_since(self.started).saturating_sub(self.paused_for)
+    }
+}
+
 /// An effect on the window, or on its way in or out.
 pub struct ActiveEffect<L = Layer> {
     pub effect: Effect,
     pub layer: L,
-    /// When it was put on: the shader's clock starts here.
-    pub started: Instant,
+    /// The shader's clock: it starts when the effect is put on and holds while the window is
+    /// paused (`paused`).
+    pub clock: Clock,
     /// What the layer last drew, so a still window under Reduce Motion draws nothing more.
     pub last_inputs: Option<Inputs>,
     /// What the menu stage last drew; `None` while its layer is hidden.
@@ -354,7 +420,7 @@ pub struct ActiveEffect<L = Layer> {
 /// a window not yet drawn). A shader that does not compile gives the notice to show instead.
 pub fn start<I: Installer>(effect: Effect, installer: &mut I, now: Instant, cut: bool) -> Result<ActiveEffect<I::Layer>, String> {
     match installer.install(&effect) {
-        Ok(layer) => Ok(ActiveEffect { effect, layer, started: now, last_inputs: None, last_overlay: None, fade: if cut { None } else { Some((now, Direction::In)) }, logged: None }),
+        Ok(layer) => Ok(ActiveEffect { effect, layer, clock: Clock::new(now), last_inputs: None, last_overlay: None, fade: if cut { None } else { Some((now, Direction::In)) }, logged: None }),
         Err(message) => Err(compile_notice(&effect.manifest.name, &effect.manifest.wash, &message)),
     }
 }
@@ -429,32 +495,38 @@ impl<L> ActiveEffect<L> {
         Some(direction)
     }
 
-    /// The shader's clock at `now`: seconds since the effect started, frozen under Reduce Motion.
+    /// Pauses the effect's clock at `now`, or resumes it: see `Clock`.
+    pub fn set_paused(&mut self, paused: bool, now: Instant) {
+        self.clock.set_paused(paused, now);
+    }
+
+    /// The shader's clock at `now`: the seconds the effect has run less the time paused, held
+    /// while paused and zero under Reduce Motion.
     pub fn time(&self, now: Instant, reduce: bool) -> f32 {
         if reduce {
             0.0
         } else {
-            now.duration_since(self.started).as_secs_f32()
+            self.clock.elapsed(now).as_secs_f32()
         }
     }
 
-    /// The clock the glyph shader reads: seconds since the effect started, wrapped in f64 before
-    /// it is narrowed so an f32 keeps its sub-frame precision in a long session. Zero under
-    /// Reduce Motion.
+    /// The clock the glyph shader reads: as `time`, wrapped in f64 before it is narrowed so an
+    /// f32 keeps its sub-frame precision in a long session. Zero under Reduce Motion.
     pub fn glyph_time(&self, now: Instant, reduce: bool) -> f32 {
         if reduce {
             0.0
         } else {
-            (now.duration_since(self.started).as_secs_f64() % GLYPH_CLOCK_WRAP) as f32
+            (self.clock.elapsed(now).as_secs_f64() % GLYPH_CLOCK_WRAP) as f32
         }
     }
 
     /// Whether a frame with `inputs` is drawn: never while the window is hidden (minimised,
-    /// occluded or on another Space), and under Reduce Motion only when the inputs differ from
-    /// the last frame's. A menu, the palette or a prompt open over the panes does not stop it:
-    /// the user is still at work in the window.
-    pub fn should_draw(&self, inputs: &Inputs, hidden: bool, reduce: bool) -> bool {
-        !hidden && !(reduce && self.last_inputs.as_ref() == Some(inputs))
+    /// occluded or on another Space), and under Reduce Motion or while the window is `paused`
+    /// only when the inputs differ from the last frame's. A menu, the palette or a prompt open
+    /// over the panes does not stop it: the user is still at work in the window; a window not
+    /// in focus holds still only when the setting says so.
+    pub fn should_draw(&self, inputs: &Inputs, hidden: bool, reduce: bool, paused: bool) -> bool {
+        !hidden && !((reduce || paused) && self.last_inputs.as_ref() == Some(inputs))
     }
 }
 
@@ -481,14 +553,14 @@ mod tests {
 
     #[test]
     fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
-        assert_eq!(glyph_wait(20, false, true, true, false), None);
-        assert_eq!(glyph_wait(20, true, false, true, false), None);
-        assert_eq!(glyph_wait(20, true, true, false, false), None);
-        assert_eq!(glyph_wait(20, true, true, true, true), None);
-        assert_eq!(glyph_wait(20, true, true, true, false), Some(Duration::from_millis(50)));
-        assert_eq!(glyph_wait(10, true, true, true, false), Some(Duration::from_millis(100)));
-        assert_eq!(glyph_wait(60, true, true, true, false), Some(Duration::from_millis(50)));
-        assert_eq!(glyph_wait(12, true, true, true, false), Some(Duration::from_secs_f64(1.0 / 12.0)));
+        assert_eq!(glyph_wait(20, false, true, true, false, false), None);
+        assert_eq!(glyph_wait(20, true, false, true, false, false), None);
+        assert_eq!(glyph_wait(20, true, true, false, false, false), None);
+        assert_eq!(glyph_wait(20, true, true, true, true, false), None);
+        assert_eq!(glyph_wait(20, true, true, true, false, false), Some(Duration::from_millis(50)));
+        assert_eq!(glyph_wait(10, true, true, true, false, false), Some(Duration::from_millis(100)));
+        assert_eq!(glyph_wait(60, true, true, true, false, false), Some(Duration::from_millis(50)));
+        assert_eq!(glyph_wait(12, true, true, true, false, false), Some(Duration::from_secs_f64(1.0 / 12.0)));
     }
 
     #[test]
@@ -531,7 +603,7 @@ mod tests {
 
     /// An effect already on, with a stand-in for its layer.
     fn on(effect: Effect, now: Instant) -> ActiveEffect<()> {
-        ActiveEffect { effect, layer: (), started: now, last_inputs: None, last_overlay: None, fade: None, logged: None }
+        ActiveEffect { effect, layer: (), clock: Clock::new(now), last_inputs: None, last_overlay: None, fade: None, logged: None }
     }
 
     fn inputs_at(time: f32) -> inputs::Inputs {
@@ -556,12 +628,13 @@ mod tests {
     #[test]
     fn the_wash_keeps_moving_while_a_menu_or_prompt_is_open_and_rests_only_when_the_window_cannot_be_seen() {
         // A menu, the palette or a prompt over the panes is the user still at work in the window:
-        // only a hidden, minimised or occluded window stops the wash.
+        // only a hidden, minimised or occluded window stops the wash (and, with the setting off,
+        // a window out of focus holds it still: `paused`).
         let t0 = Instant::now();
         let e = on(watercolor(), t0);
         let inputs = super::super::inputs::build(&theme::builtin("peach-light").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
-        assert!(e.should_draw(&inputs, false, false));
-        assert!(!e.should_draw(&inputs, true, false), "hidden");
+        assert!(e.should_draw(&inputs, false, false, false));
+        assert!(!e.should_draw(&inputs, true, false, false), "hidden");
     }
 
     #[test]
@@ -684,17 +757,17 @@ mod tests {
     #[test]
     fn the_timer_rests_while_nothing_can_be_drawn_and_stops_when_reduce_motion_holds_still() {
         // Hidden, occluded or covered: a slow look, whatever moves, until the window is seen.
-        assert_eq!(next_wait(30, false, false, false, false), Some(REST));
-        assert_eq!(next_wait(30, false, true, true, false), Some(REST));
-        assert_eq!(next_wait(30, false, false, false, true), Some(REST));
+        assert_eq!(next_wait(30, false, false, false, false, false), Some(REST));
+        assert_eq!(next_wait(30, false, true, true, false, false), Some(REST));
+        assert_eq!(next_wait(30, false, false, false, true, false), Some(REST));
         assert!(REST >= Duration::from_millis(250));
         // Seen and in motion: the manifest's rate, sixty while a highlight fades.
-        assert_eq!(next_wait(30, true, false, false, false), Some(cadence(30, false)));
-        assert_eq!(next_wait(30, true, true, false, false), Some(cadence(30, true)));
+        assert_eq!(next_wait(30, true, false, false, false, false), Some(cadence(30, false)));
+        assert_eq!(next_wait(30, true, true, false, false, false), Some(cadence(30, true)));
         // Under Reduce Motion with nothing moving the timer stops; a render starts it again.
-        assert_eq!(next_wait(30, true, false, false, true), None);
-        assert_eq!(next_wait(30, true, true, false, true), Some(cadence(30, true)));
-        assert_eq!(next_wait(30, true, false, true, true), Some(cadence(30, false)), "a fade still ends");
+        assert_eq!(next_wait(30, true, false, false, true, false), None);
+        assert_eq!(next_wait(30, true, true, false, true, false), Some(cadence(30, true)));
+        assert_eq!(next_wait(30, true, false, true, true, false), Some(cadence(30, false)), "a fade still ends");
     }
 
     #[test]
@@ -702,12 +775,12 @@ mod tests {
         let t0 = Instant::now();
         let mut e = on(watercolor(), t0);
         let same = inputs_at(0.0);
-        assert!(e.should_draw(&same, false, true), "the first frame always draws");
+        assert!(e.should_draw(&same, false, true, false), "the first frame always draws");
         e.last_inputs = Some(same.clone());
-        assert!(!e.should_draw(&same, false, true));
-        assert!(e.should_draw(&inputs_at(0.5), false, true), "something changed");
-        assert!(e.should_draw(&same, false, false), "in motion it draws every tick");
-        assert!(!e.should_draw(&inputs_at(0.5), true, false), "hidden");
+        assert!(!e.should_draw(&same, false, true, false));
+        assert!(e.should_draw(&inputs_at(0.5), false, true, false), "something changed");
+        assert!(e.should_draw(&same, false, false, false), "in motion it draws every tick");
+        assert!(!e.should_draw(&inputs_at(0.5), true, false, false), "hidden");
         // The clock is frozen, so a still window hands the shader the same inputs.
         assert_eq!(e.time(t0 + Duration::from_secs(3), true), 0.0);
         assert_eq!(e.time(t0 + Duration::from_secs(3), false), 3.0);
@@ -935,6 +1008,96 @@ mod tests {
             let t = crate::theme::builtin(name).unwrap();
             assert_eq!(contrasted(&t, 0.0), t);
         }
+    }
+
+    #[test]
+    fn a_window_pauses_its_effects_only_when_the_setting_is_off_and_it_is_not_focused() {
+        assert!(!paused(true, true));
+        assert!(!paused(true, false), "on, the default: effects run while another app is in front");
+        assert!(!paused(false, true), "off, a focused window still runs them");
+        assert!(paused(false, false));
+    }
+
+    #[test]
+    fn a_paused_clock_holds_the_moment_it_paused_and_resumes_from_there_with_no_jump() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut e = on(watercolor(), t0);
+        assert!(!e.clock.is_paused());
+        e.set_paused(true, t0 + s(3));
+        assert!(e.clock.is_paused());
+        assert_eq!(e.time(t0 + s(3), false), 3.0);
+        assert_eq!(e.time(t0 + s(10), false), 3.0, "held while paused");
+        assert_eq!(e.glyph_time(t0 + s(10), false), 3.0);
+        // Pausing again changes nothing: the pause began at 3 s.
+        e.set_paused(true, t0 + s(9));
+        assert_eq!(e.time(t0 + s(10), false), 3.0);
+        e.set_paused(false, t0 + s(8));
+        assert!(!e.clock.is_paused());
+        assert_eq!(e.time(t0 + s(8), false), 3.0, "resumed from where it was");
+        assert_eq!(e.time(t0 + s(13), false), 8.0, "and five seconds on, five seconds later");
+        assert_eq!(e.glyph_time(t0 + s(13), false), 8.0);
+        // Resuming a clock that runs changes nothing.
+        e.set_paused(false, t0 + s(14));
+        assert_eq!(e.time(t0 + s(14), false), 9.0);
+    }
+
+    #[test]
+    fn two_pauses_add_up_and_reduce_motion_still_reads_zero() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut e = on(watercolor(), t0);
+        e.set_paused(true, t0 + s(2));
+        e.set_paused(false, t0 + s(7));
+        e.set_paused(true, t0 + s(10));
+        e.set_paused(false, t0 + s(20));
+        assert_eq!(e.time(t0 + s(21), false), 6.0, "21 s less 5 s and 10 s paused");
+        assert_eq!(e.glyph_time(t0 + s(21), false), 6.0);
+        e.set_paused(true, t0 + s(22));
+        assert_eq!(e.time(t0 + s(30), false), 7.0);
+        assert_eq!(e.time(t0 + s(30), true), 0.0, "Reduce Motion wins");
+        assert_eq!(e.glyph_time(t0 + s(30), true), 0.0);
+    }
+
+    #[test]
+    fn the_same_clock_freezes_for_anything_else_that_drifts() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut c = Clock::new(t0);
+        assert_eq!(c.elapsed(t0 + s(4)), s(4));
+        c.set_paused(true, t0 + s(4));
+        assert_eq!(c.elapsed(t0 + s(60)), s(4));
+        c.set_paused(false, t0 + s(60));
+        assert_eq!(c.elapsed(t0 + s(61)), s(5));
+        // A clock started while paused holds at zero until it resumes.
+        let held = Clock::paused_from(t0);
+        assert!(held.is_paused());
+        assert_eq!(held.elapsed(t0 + s(9)), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_paused_window_stops_the_wash_s_timer_when_nothing_moves() {
+        // Seen, nothing moving, not fading: paused stops the timer, as Reduce Motion does.
+        assert_eq!(next_wait(30, true, false, false, false, true), None);
+        assert_eq!(next_wait(30, true, false, false, false, false), Some(cadence(30, false)), "not paused, the cadence");
+        // A highlight's stroke or a fade still finishes.
+        assert_eq!(next_wait(30, true, true, false, false, true), Some(cadence(30, true)));
+        assert_eq!(next_wait(30, true, false, true, false, true), Some(cadence(30, false)));
+        // An unseen window rests as before, so uncovering it shows its held frame.
+        assert_eq!(next_wait(30, false, false, false, false, true), Some(REST));
+    }
+
+    #[test]
+    fn a_paused_window_s_text_is_not_redrawn_and_its_wash_draws_only_what_changed() {
+        assert_eq!(glyph_wait(20, true, true, true, false, true), None);
+        assert_eq!(glyph_wait(20, true, true, true, false, false), Some(Duration::from_millis(50)));
+        let t0 = Instant::now();
+        let mut e = on(watercolor(), t0);
+        let same = inputs_at(3.0);
+        e.last_inputs = Some(same.clone());
+        assert!(!e.should_draw(&same, false, false, true), "paused: the same frame is not drawn again");
+        assert!(e.should_draw(&inputs_at(3.5), false, false, true), "something changed");
+        assert!(e.should_draw(&same, false, false, false), "running, every tick draws");
     }
 
     #[test]

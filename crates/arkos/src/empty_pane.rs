@@ -1,13 +1,16 @@
 //! The friendly empty pane (spec 4): a greeting, the bindings you want next, and a slow,
 //! low-contrast ambient animation: three dots that keep drifting along slow arcs for as long as
-//! the pane is shown (the user asked for them never to stop). Reduce Motion holds them still.
+//! the pane is shown (the user asked for them never to stop). Reduce Motion holds them still, and
+//! so does a window whose effects are paused while it is not in focus (`Root::effects_paused`),
+//! where they hold where they were.
 
+use crate::effects::active::Clock;
 use crate::motion::reduce_motion;
 use crate::theme::Theme;
 use crate::tree::PaneId;
 use crate::Root;
 use gpui::{div, prelude::*, px, Context, Div, FocusHandle, Window};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// How far each dot wanders from its rest position, as a fraction of the pane.
 pub const DRIFT: f32 = 0.06;
@@ -42,10 +45,25 @@ pub fn dot_positions(elapsed: Option<f32>, w: f32, h: f32) -> [(f32, f32); 3] {
     out
 }
 
+/// Whether the dots ask for another frame: only while they move, neither held by Reduce Motion
+/// nor by a `paused` window (one whose effects are paused while it is not in focus).
+pub fn asks_for_frames(reduce: bool, paused: bool) -> bool {
+    !reduce && !paused
+}
+
+/// The seconds the dots are placed at, from the time their clock has run: `None`, at rest,
+/// under Reduce Motion. A paused clock holds, so a paused window's dots stay where they were.
+pub fn dot_time(reduce: bool, elapsed: Duration) -> Option<f32> {
+    (!reduce).then(|| elapsed.as_secs_f32())
+}
+
 pub fn render(root: &mut Root, pane: PaneId, w: f32, h: f32, focus: FocusHandle, theme: &Theme, window: &mut Window, _cx: &mut Context<Root>) -> Div {
-    let started = *root.empty_anim.entry(pane).or_insert_with(Instant::now);
-    let elapsed = (!reduce_motion()).then(|| started.elapsed().as_secs_f32());
-    if elapsed.is_some() {
+    let now = Instant::now();
+    let paused = root.effects_paused;
+    let clock = *root.empty_anim.entry(pane).or_insert_with(|| Clock::starting(now, paused));
+    let reduce = reduce_motion();
+    let elapsed = dot_time(reduce, clock.elapsed(now));
+    if asks_for_frames(reduce, paused) {
         window.request_animation_frame();
     }
     let dots = dot_positions(elapsed, w, h);
@@ -104,5 +122,16 @@ mod tests {
         }
         let rest = dot_positions(None, 400.0, 300.0);
         assert_eq!(rest, [(120.0, 105.0), (200.0, 90.0), (280.0, 105.0)], "Reduce Motion: the rest positions, at any time");
+    }
+
+    #[test]
+    fn a_paused_window_s_dots_hold_where_they_are_and_ask_for_no_frames() {
+        assert!(asks_for_frames(false, false), "running: a frame after each");
+        assert!(!asks_for_frames(false, true), "paused: none");
+        assert!(!asks_for_frames(true, false), "Reduce Motion: none");
+        // Paused, the dots are where their frozen clock leaves them, not at their rest spots.
+        assert_eq!(dot_time(false, std::time::Duration::from_millis(7500)), Some(7.5));
+        assert_eq!(dot_time(true, std::time::Duration::from_millis(7500)), None, "Reduce Motion holds them at rest");
+        assert_ne!(dot_positions(dot_time(false, std::time::Duration::from_millis(7500)), 400.0, 300.0), dot_positions(None, 400.0, 300.0));
     }
 }

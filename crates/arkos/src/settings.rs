@@ -56,6 +56,20 @@ static FIXED_PITCH: OnceLock<Vec<String>> = OnceLock::new();
 /// Set when the advance check starts, so a window opened while it runs does not start another.
 static FIXED_PITCH_STARTED: AtomicBool = AtomicBool::new(false);
 
+/// Whether this process's Settings window is the key window, set by its activation observer and
+/// read by the project window (`Root::sync_pause`), whose effects keep moving while it is.
+static SETTINGS_KEY: AtomicBool = AtomicBool::new(false);
+
+/// Records whether the Settings window is the key window.
+fn set_settings_key(key: bool) {
+    SETTINGS_KEY.store(key, Ordering::Relaxed);
+}
+
+/// Whether this process's Settings window is the key window.
+pub fn settings_is_key() -> bool {
+    SETTINGS_KEY.load(Ordering::Relaxed)
+}
+
 /// Whether this window should start the advance check: true once per run, and never once its
 /// result is in.
 fn claim_fixed_pitch_check() -> bool {
@@ -220,6 +234,15 @@ fn intensity_edit(value: f64) -> Edit {
     edit(&["effect", "intensity"], value)
 }
 
+/// The switch under Intensity, in Cyrus's words: on (the default) the effects keep moving while
+/// another app is in front; off, a window not in focus pauses them on their last frame.
+const RUN_UNFOCUSED_ROW: &str = "Use more battery to run effects while using other apps";
+
+/// The edit for the `RUN_UNFOCUSED_ROW` switch: `effect.run_unfocused`.
+fn run_unfocused_edit(on: bool) -> Edit {
+    edit(&["effect", "run_unfocused"], on)
+}
+
 /// Which `[theme]` key an imported theme is selected under: the mode's, or with the mode System,
 /// the one for what macOS shows now.
 pub fn theme_key_for(mode: AppearanceMode, system_is_dark: bool) -> &'static str {
@@ -298,13 +321,22 @@ pub fn open(cx: &mut App, shown: Shown, theme: Theme, fonts: Vec<String>, on_cha
             cx.observe_window_activation(window, |w: &mut SettingsWindow, window, cx| {
                 let active = window.is_window_active();
                 crate::telemetry::settings_focus(active);
+                // Settings in front keeps the project window's effects moving, so its preview
+                // does: the project window renders again and reads this (`Root::sync_pause`).
+                set_settings_key(active);
+                cx.defer(aux::poke_root);
                 if active {
                     w.privacy.forget();
                     cx.notify();
                 }
             })
             .detach();
-            cx.on_release(|_, _| crate::telemetry::settings_focus(false)).detach();
+            cx.on_release(|_, cx| {
+                crate::telemetry::settings_focus(false);
+                set_settings_key(false);
+                cx.defer(aux::poke_root);
+            })
+            .detach();
             let fonts = FIXED_PITCH.get().filter(|f| !f.is_empty()).cloned().unwrap_or(fonts);
             if claim_fixed_pitch_check() {
                 let text = cx.text_system().clone();
@@ -692,7 +724,7 @@ impl SettingsWindow {
     }
 
     /// The Appearance section's effect controls, under the themes: the Effect list, the
-    /// Intensity stepper and "Show effects folder".
+    /// Intensity stepper, the `RUN_UNFOCUSED_ROW` switch and "Show effects folder".
     fn effect_controls(&self, enabled: bool, c: Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let cfg = &self.shown.config.effect;
         let mut out = vec![heading("Effect", c).into_any_element()];
@@ -718,6 +750,8 @@ impl SettingsWindow {
         let (minus, plus) = (press(0, "−", -INTENSITY_STEP), press(1, "+", INTENSITY_STEP));
         let shown = div().min_w(px(28.0)).flex().justify_center().child(number(value));
         out.push(div().flex().items_center().gap(px(8.0)).child(minus).child(shown).child(plus).into_any_element());
+        out.push(heading(RUN_UNFOCUSED_ROW, c).into_any_element());
+        out.push(self.switch("run-unfocused", Some(cfg.run_unfocused), enabled, c, cx, run_unfocused_edit));
         let mut folder = pill("effects-folder", "Show effects folder", false, enabled, c);
         if enabled {
             folder = folder.on_click(|_, _, cx| {
@@ -1170,6 +1204,26 @@ mod tests {
 
     /// Like the Wide tables row: each choice writes its key as the config spells it, and the
     /// edited default file reads back as that choice.
+    #[test]
+    fn the_effect_switch_says_it_uses_more_battery_and_writes_run_unfocused() {
+        assert_eq!(RUN_UNFOCUSED_ROW, "Use more battery to run effects while using other apps");
+        for on in [true, false] {
+            let (keys, value) = run_unfocused_edit(on);
+            assert_eq!(keys, vec!["effect".to_string(), "run_unfocused".to_string()]);
+            assert_eq!(value.as_bool(), Some(on));
+            let text = config::apply_edits(DEFAULT_CONFIG, &[(&["effect", "run_unfocused"], value)]).unwrap();
+            assert_eq!(config::parse(&text).unwrap().effect.run_unfocused, on);
+        }
+    }
+
+    #[test]
+    fn the_settings_window_s_focus_is_read_by_the_project_window() {
+        set_settings_key(true);
+        assert!(settings_is_key());
+        set_settings_key(false);
+        assert!(!settings_is_key());
+    }
+
     #[test]
     fn the_privacy_rows_write_the_telemetry_keys() {
         use ::telemetry::visits_app::{Crashes, Usage};

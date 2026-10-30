@@ -358,9 +358,10 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab) -> (String, Tab
 }
 
 /// How the terminal decodes: under an effect that decodes it, longer while its session works and
-/// at once with Reduce Motion; None without one.
-pub fn decode_timing(style_decode: bool, state: Option<protocol::ClaudeState>, reduce: bool) -> Option<decode::Timing> {
-    style_decode.then(|| decode::timing(state == Some(protocol::ClaudeState::Working), reduce))
+/// at once with Reduce Motion or while the window is `paused` (so output appears plainly and no
+/// cell is left mid-scramble); None without one.
+pub fn decode_timing(style_decode: bool, state: Option<protocol::ClaudeState>, reduce: bool, paused: bool) -> Option<decode::Timing> {
+    style_decode.then(|| decode::timing(state == Some(protocol::ClaudeState::Working), reduce || paused))
 }
 
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
@@ -388,7 +389,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => {
                 let family = root.family();
                 let now = root.frame_now;
-                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion());
+                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion(), root.effects_paused);
                 render_terminal(terminal, pane, family, &theme, style, decode, &mut root.find_bars, now, cx)
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
@@ -1398,11 +1399,20 @@ mod tests {
     #[test]
     fn the_terminal_decodes_under_a_decoding_effect_longer_while_its_session_works() {
         use protocol::ClaudeState::*;
-        assert_eq!(decode_timing(false, Some(Working), false), None);
-        assert_eq!(decode_timing(true, Some(Working), false), Some(decode::timing(true, false)));
-        assert_eq!(decode_timing(true, Some(Idle), false), Some(decode::timing(false, false)));
-        assert_eq!(decode_timing(true, None, false), Some(decode::timing(false, false)));
-        assert_eq!(decode_timing(true, Some(Working), true), Some(decode::timing(true, true)));
+        assert_eq!(decode_timing(false, Some(Working), false, false), None);
+        assert_eq!(decode_timing(true, Some(Working), false, false), Some(decode::timing(true, false)));
+        assert_eq!(decode_timing(true, Some(Idle), false, false), Some(decode::timing(false, false)));
+        assert_eq!(decode_timing(true, None, false, false), Some(decode::timing(false, false)));
+        assert_eq!(decode_timing(true, Some(Working), true, false), Some(decode::timing(true, true)));
+    }
+
+    #[test]
+    fn a_paused_window_s_terminal_shows_its_output_plainly_with_no_decode() {
+        use protocol::ClaudeState::*;
+        let zero = decode::Timing { decode: std::time::Duration::ZERO, fresh: std::time::Duration::ZERO };
+        assert_eq!(decode_timing(true, Some(Working), false, true), Some(zero));
+        assert_eq!(decode_timing(true, Some(Idle), false, true), Some(zero));
+        assert_eq!(decode_timing(false, Some(Working), false, true), None);
     }
 
     #[test]

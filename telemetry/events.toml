@@ -127,6 +127,7 @@ key = [
     "theme.light",
     "effect.name",
     "effect.intensity",
+    "effect.run_unfocused",
     "appearance.mode",
     "recovery.start_at_login",
     "update.auto",

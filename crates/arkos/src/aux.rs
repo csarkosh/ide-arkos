@@ -411,6 +411,14 @@ pub fn forward_new_window(cx: &mut App) {
     });
 }
 
+/// Asks the project window for a frame, as when the Settings window comes to the front or
+/// leaves it: the project window's effects pause or resume as it renders (`Root::sync_pause`).
+pub fn poke_root(cx: &mut App) {
+    if let Some(root) = root(cx) {
+        root.update(cx, |_, cx| cx.notify());
+    }
+}
+
 /// The project window's Root while it lives.
 fn root(cx: &App) -> Option<gpui::Entity<Root>> {
     cx.try_global::<Aux>()?.root.as_ref()?.upgrade()

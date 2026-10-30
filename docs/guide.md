@@ -292,6 +292,11 @@ Effects stay out of About, Settings, Keybindings and the chooser, which keep the
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
 glitches, a changed cell settles at once, and a hidden,
 covered or occluded window (one wholly behind other windows) draws none.
+With "Use more battery to run effects while using other apps" turned off in Settings, Appearance
+(`[effect] run_unfocused = false`), a window you are not using pauses its effect, its moving
+text and an empty pane's dots, holding their last frame, and picks up where it left off when you
+come back to it; with Settings in front the window keeps moving, so you can watch a change. It is
+on by default, so the effects keep moving while another app is in front.
 
 Effects you add live in `~/.config/arkos/effects/<name>/` (or under `$XDG_CONFIG_HOME`), one
 folder each with an `effect.toml` and Metal shaders; a folder named like a built-in replaces it.
@@ -479,8 +484,10 @@ Settings (menu or Cmd+,) has the shared title bar and six sections.
   first as "(not installed)". Under the themes: Effect, a list of "Theme's choice" (the theme's
   recommendation, named, as in "Theme's choice (watercolor)"), "None", then every installed
   effect (a configured one that is missing is listed after None as "(not installed)", and a
-  broken one as "(invalid)", not choosable); an Intensity stepper from 0.0 to 1.0 by a tenth; and
-  "Show effects folder", which creates the folder, then reveals it. A change fades in or out
+  broken one as "(invalid)", not choosable); an Intensity stepper from 0.0 to 1.0 by a tenth;
+  "Use more battery to run effects while using other apps", On (the default) or Off, where Off
+  pauses the effects of a window not in focus on their last frame; and "Show effects folder",
+  which creates the folder, then reveals it. A change fades in or out
   over a fifth of a second, or cuts under Reduce Motion.
 - Text: the font family (installed monospace families; a configured family that is missing is
   listed first as "(not installed)"), the text preset, and Size and Line height steppers that
@@ -529,7 +536,7 @@ edit applies within a second. A bad edit shows a banner with the line number and
 good settings.
 Sections: `font` (family, the default text preset, and the presets), `terminal`
 (scrollback, shell, nice, option_as_meta), `keybindings` (action name to keys, `""` unbinds), `theme` (`dark`
-and `light`), `effect` (`name`: `theme`, `none` or an effect; `intensity`), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
+and `light`), `effect` (`name`: `theme`, `none` or an effect; `intensity`; `run_unfocused`, true by default, false to pause a window's effects while it is not in focus), `appearance` (`system`, `dark` or `light`), `daemon` (applies when the window starts
 the daemon), `recovery` (`start_at_login`: `ask`, `on` or `off`), `update` (below), `sidebar` (its width and
 whether it starts collapsed), `viewer` (`highlight_limit_bytes`, and `wide_tables`: `wrap` or `scroll`), and `browser` (`url`, the page a new
 browser tab opens when its prompt is left empty; `app_mode` is left over from 0.6's Chrome docking
@@ -728,7 +735,8 @@ the preview's colours with the error shown.
 `arkos settings set` takes `appearance.mode` (system, dark, light), `theme.dark`, `theme.light`,
 `font.family`, `font.preset`, `font.presets.<name>.size` (8 to 48),
 `font.presets.<name>.line_height` (1.0 to 2.5), `effect.name` (theme, none, or an installed
-effect's name), `effect.intensity` (0.0 to 1.0), `viewer.wide_tables` (wrap, scroll),
+effect's name), `effect.intensity` (0.0 to 1.0), `effect.run_unfocused` (true, false),
+`viewer.wide_tables` (wrap, scroll),
 `update.auto` (true, false), `recovery.start_at_login` (ask, on, off), `telemetry.usage` (off, local, on) and
 `telemetry.crashes` (never, ask, always). Any other key exits 2 and lists these. A bad value is
 refused before anything is written. `settings get <key>` reads the file only, so a key left at its

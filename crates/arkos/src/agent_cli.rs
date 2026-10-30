@@ -67,6 +67,7 @@ pub const SETTABLE: &[&str] = &[
     "font.presets.*.line_height",
     "effect.name",
     "effect.intensity",
+    "effect.run_unfocused",
     "viewer.wide_tables",
     "update.auto",
     "recovery.start_at_login",
@@ -794,17 +795,17 @@ fn one_of(key: &str, raw: &str, allowed: &[&str]) -> Result<toml_edit::Value, St
 }
 
 /// `raw` typed for `key` and checked with the config's own rules that need no file: a preset's
-/// `size` 8 to 48 and `line_height` 1.0 to 2.5 (numbers), `update.auto` true or false, the two
-/// enumerations, and a non-empty string for the rest.
+/// `size` 8 to 48 and `line_height` 1.0 to 2.5 (numbers), `update.auto` and
+/// `effect.run_unfocused` true or false, the enumerations, and a non-empty string for the rest.
 pub fn typed_value(key: &str, raw: &str) -> Result<toml_edit::Value, String> {
     if !settable(key) {
         return Err(format!("not settable: {key}"));
     }
     match key {
-        "update.auto" => match raw {
+        "update.auto" | "effect.run_unfocused" => match raw {
             "true" => Ok(true.into()),
             "false" => Ok(false.into()),
-            _ => Err(format!("update.auto must be true or false, not {raw:?}")),
+            _ => Err(format!("{key} must be true or false, not {raw:?}")),
         },
         "appearance.mode" => one_of(key, raw, &["system", "dark", "light"]),
         "viewer.wide_tables" => one_of(key, raw, &["wrap", "scroll"]),
@@ -1124,6 +1125,28 @@ mod tests {
         assert_eq!(run("effect.intensity", "1.5"), 1);
         assert_eq!(run("effect.name", "a/b"), 1);
         assert_eq!(config::load(&cfg).unwrap().effect.intensity, 0.25, "a refused value writes nothing");
+    }
+
+    #[test]
+    fn settings_set_turns_running_effects_while_using_other_apps_off_and_on() {
+        assert!(SETTABLE.contains(&"effect.run_unfocused"));
+        assert!(settable("effect.run_unfocused"));
+        assert_eq!(typed_value("effect.run_unfocused", "false").unwrap().as_bool(), Some(false));
+        assert_eq!(typed_value("effect.run_unfocused", "true").unwrap().as_bool(), Some(true));
+        let e = typed_value("effect.run_unfocused", "off").unwrap_err();
+        assert_eq!(e, "effect.run_unfocused must be true or false, not \"off\"");
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
+        let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
+        let run = |value: &str| settings_cli_to(&["set".into(), "effect.run_unfocused".into(), value.into()], &env, &mut Vec::new(), &mut Vec::new());
+        assert!(config::load(&cfg).unwrap().effect.run_unfocused, "on by default");
+        assert_eq!(run("false"), 0);
+        assert!(!config::load(&cfg).unwrap().effect.run_unfocused);
+        assert_eq!(run("maybe"), 1);
+        assert!(!config::load(&cfg).unwrap().effect.run_unfocused, "a refused value writes nothing");
+        assert_eq!(run("true"), 0);
+        assert!(config::load(&cfg).unwrap().effect.run_unfocused);
     }
 
     #[test]

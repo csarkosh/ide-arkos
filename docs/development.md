@@ -289,6 +289,10 @@ Things only a person at the screen can check, in order of value:
 - effects: a window wholly behind another app's window, or minimized, shows the process idle in
   Activity Monitor (no wash frames, a few wake-ups a second at most), and its wash moves again
   within half a second of coming back into view
+- effects: with "Use more battery to run effects while using other apps" off, switching to another
+  app freezes the effect on its last frame (Activity Monitor shows the window idle) and coming
+  back resumes it with no jump; on (the default), it keeps moving; Settings in front keeps the
+  preview moving; an empty pane's dots pause too
 - effects: with a menu, the palette or a prompt open the wash keeps moving (stars twinkle,
   shooting stars and the edges' bars go on, watercolor's bubbles drift); a resized window's wash
   follows its new size at once, with no stretched or offset blocks
