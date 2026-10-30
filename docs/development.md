@@ -24,6 +24,15 @@ build): a sandbox of the source build, with its own config, daemon and sessions 
 already aimed at it, and `target/debug/arkos sandbox stop` ends it. The user's side is in
 [Config](guide.md#config).
 
+macOS delivers no file drags to a window whose process was started from a bare executable, as
+`target/debug/arkos` is (checked on macOS 26.6, 2026-10-30: the window is registered, Finder's drag
+carries `NSFilenamesPboardType`, and `draggingEntered:` is never called). To try a drop from Finder
+on a dev build, start the sandbox from inside an app bundle: a folder `X.app/Contents` with an
+`Info.plist` (`CFBundleExecutable` `arkos`, a `CFBundleIdentifier` of its own, `CFBundlePackageType`
+`APPL`) and `MacOS/arkos` and `MacOS/arkosd` copied from `target/debug`, signed with
+`codesign --force --deep -s - X.app`, then `X.app/Contents/MacOS/arkos sandbox <folder>`. The
+installed app is a bundle and takes drops.
+
 Opening from the Dock (or Finder, or Spotlight) asks which folder to open: a small chooser lists
 the five most recent folders, newest first, with "Show all" for the rest and "Open another
 folder…" for the native picker. Up, Down and Enter choose; Escape quits. The chooser opens at
@@ -610,8 +619,8 @@ Things only a person at the screen can check, in order of value:
   heading; a link to `other.md#a-heading` opens the other file scrolled there; `[[other|text]]`
   reads "text" and its revealed name opens `other.md`; paste a screenshot mid-paragraph:
   `image.png` appears beside the file and the picture shows as the next paragraph; drag an image
-  and a PDF from Finder onto a rendered document: the drop line shows, the image is copied in as
-  `image-N` and drawn, the PDF is a link
+  and a PDF from Finder onto a rendered document (a bundled build; see "Build and run" for a dev
+  build): the drop line shows, the image is copied in as `image-N` and drawn, the PDF is a link
 - code blocks: a code block shows its language and Copy over numbered, coloured lines; click a line:
   the box, numbers and colours stay and the fences never show; Up and Down leave it from its first
   and last lines; click the language: the list opens under it, "py" and Enter make it Python;
