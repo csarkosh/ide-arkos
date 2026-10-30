@@ -45,6 +45,7 @@ mod line_edit;
 mod md_blocks;
 mod md_format;
 mod md_reveal;
+mod md_slash;
 mod md_table;
 mod md_view;
 mod media;
