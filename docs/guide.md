@@ -99,8 +99,9 @@ across a relaunch.
 In Rendered mode one block is active at a time: the one holding the caret. A paragraph, heading,
 list or quote stays as it reads while you edit it; the markdown element under the caret shows its
 syntax (the `**` around a bold word, a heading's `#`, a link's `[text](url)`) and the rest of the
-block does not. Bullets, task boxes and quote bars never show their markers, and Delete at the
-start of an item removes its bullet (at the start of a quoted paragraph, its `>`). Type the syntax
+block does not. Bullets, task boxes and quote bars never show their markers. Delete at the start
+of a nested item moves it out a level; at the start of a top-level item the item leaves the list
+as a paragraph of its own; at the start of a quoted paragraph the paragraph leaves the quote. Type the syntax
 and it takes effect as you close it: `**x**` is bold the moment the second `*` lands. Click a
 link's text to edit it and its revealed address to follow it, or Cmd+click anywhere in it. An
 image keeps its picture and shows its `![alt](path)` under it. Code blocks, tables, HTML and front
@@ -362,7 +363,7 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Cmd+M | toggle markdown view: rendered or raw |
 | Cmd+S | save file (a markdown file also saves itself a second after you stop typing) |
 | Arrows | in a markdown file: move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select; in a rendered paragraph Up, Down and Cmd+Left, Cmd+Right go by displayed row |
-| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward; Delete at the start of a rendered list item or quoted paragraph removes its marker |
+| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward; Delete at the start of a rendered list item or quoted paragraph moves a nested item out a level, or takes the item out of its list (the paragraph out of its quote) |
 | Option+Fn+Delete | in a markdown file: delete the word after the caret |
 | Cmd+Fn+Delete | in a markdown file: delete to the line end |
 | Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |

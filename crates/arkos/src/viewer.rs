@@ -937,6 +937,8 @@ impl Viewer {
         if let Some(caret) = doc.undo() {
             self.caret = caret;
             self.changed(old_lines, cx);
+            // A caret put back inside a hidden marker goes where typing would land.
+            self.snap_for_edit();
             self.reveal_caret();
             self.note_caret_moved(true, cx);
         }
@@ -949,6 +951,8 @@ impl Viewer {
         if let Some(caret) = doc.redo() {
             self.caret = caret;
             self.changed(old_lines, cx);
+            // A caret put back inside a hidden marker goes where typing would land.
+            self.snap_for_edit();
             self.reveal_caret();
             self.note_caret_moved(true, cx);
         }
@@ -2468,12 +2472,18 @@ pub fn backspace_revealed(doc: &mut edit::Document, blocks: &[md_blocks::Block],
     }
     let lines = doc.lines();
     let (block, text, tree) = revealed_block(lines, blocks, caret.head.line)?;
-    let (range, new) = md_reveal::unmark(&text, &tree.nodes, md_blocks::offset_of_pos(block, lines, caret.head))?;
-    let (from, to) = (md_blocks::pos_of_offset(block, lines, range.start), md_blocks::pos_of_offset(block, lines, range.end));
+    let un = md_reveal::unmark(&text, &tree.nodes, md_blocks::offset_of_pos(block, lines, caret.head))?;
+    let (from, to) = (md_blocks::pos_of_offset(block, lines, un.range.start), md_blocks::pos_of_offset(block, lines, un.range.end));
     doc.break_coalescing();
-    doc.replace_range(from, to, &new, now);
+    doc.replace_range(from, to, &un.text, now);
     doc.break_coalescing();
-    Some(edit::Caret::at(from))
+    // The caret `caret` bytes into the new text: down a line per line break, then along.
+    let lead = &un.text[..un.caret];
+    let at = match lead.rfind('\n') {
+        Some(i) => edit::Pos { line: from.line + lead.matches('\n').count(), ch: lead[i + 1..].chars().count() },
+        None => edit::Pos { line: from.line, ch: from.ch + lead.chars().count() },
+    };
+    Some(edit::Caret::at(doc.clamp(at)))
 }
 
 /// The displayed rows of a laid-out text: the runs of its char boundaries drawn at one height
@@ -3882,9 +3892,15 @@ mod tests {
         let now = Instant::now();
         let (mut doc, blocks) = md_doc("- [ ] a\n- b");
         let c = backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 0, ch: 6 }), now).expect("unmarked");
-        assert_eq!((doc.lines()[0].as_str(), c.head), ("a", Pos { line: 0, ch: 0 }));
+        assert_eq!((doc.lines().to_vec(), c.head), (vec!["a".to_string(), String::new(), "- b".to_string()], Pos { line: 0, ch: 0 }), "the item leaves the list as a paragraph");
         assert!(doc.undo().is_some());
-        assert_eq!(doc.lines()[0], "- [ ] a", "one undo brings it back");
+        assert_eq!(doc.lines().to_vec(), vec!["- [ ] a".to_string(), "- b".to_string()], "one undo brings it back");
+        let (mut doc, blocks) = md_doc("- a\n- b\n- c");
+        let c = backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 1, ch: 2 }), now).expect("unmarked");
+        assert_eq!((doc.lines().to_vec(), c.head), (["- a", "", "b", "", "- c"].map(String::from).to_vec(), Pos { line: 2, ch: 0 }), "a middle item splits the list");
+        let (mut doc, blocks) = md_doc("- a\n  - b");
+        let c = backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 1, ch: 4 }), now).expect("outdented");
+        assert_eq!((doc.lines()[1].as_str(), c.head), ("- b", Pos { line: 1, ch: 2 }), "a nested item moves out a level and keeps its bullet");
         let (mut doc, blocks) = md_doc("- ab");
         assert_eq!(backspace_revealed(&mut doc, &blocks, edit::Caret::at(Pos { line: 0, ch: 3 }), now), None, "elsewhere it is an ordinary delete");
         let (mut doc, blocks) = md_doc("> q1\n> q2");

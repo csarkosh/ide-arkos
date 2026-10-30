@@ -588,7 +588,7 @@ pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
     ("Cell below (in a table)", "Down"),
     ("Open a link", "Cmd+click"),
     ("Open a revealed link's address", "Click"),
-    ("Remove a list marker or quote mark (at the text start)", "Delete"),
+    ("Outdent an item, or take it out of its list (at the text start)", "Delete"),
     ("Scroll to the top or end", "Home, End"),
 ];
 

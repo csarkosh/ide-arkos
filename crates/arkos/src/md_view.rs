@@ -1019,13 +1019,19 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     let code_runs = r.code_runs.as_ref().map(|c| &c.runs);
     // A revealed list's item pieces and the tree's items are in the same order.
     let items = reveal.map(|rv| md_reveal::item_paths(&rv.tree.nodes)).unwrap_or_default();
+    // The caret is drawn in one item: the last one starting at or before it whose own text reaches
+    // it, so an offset on the line between two items is the lower one's, as a press maps it.
+    let caret_item = reveal.and_then(|rv| {
+        let c = rv.focus.caret?;
+        items.iter().rposition(|p| md_reveal::node_at(&rv.tree.nodes, p).is_some_and(|n| n.span.start <= c && c <= md_reveal::item_end(n)))
+    });
     let mut item = 0;
     for (j, piece) in r.pieces.iter().enumerate() {
         let el = match (reveal, piece) {
             (Some(rv), Piece::Para(_) | Piece::Heading(..) | Piece::Quote(_)) => {
                 let display = Rc::new(Display::new(rv.text, &rv.tree.nodes, &rv.focus.offsets));
                 let (weight, color) = if matches!(piece, Piece::Quote(_)) { (FontWeight::NORMAL, ctx.dim) } else if matches!(piece, Piece::Heading(..)) { (FontWeight::SEMIBOLD, ctx.text) } else { (FontWeight::NORMAL, ctx.text) };
-                let text = reveal_text(ix, j, display, weight, color, rv, ctx, &mut parts);
+                let text = reveal_text(ix, j, display, weight, color, true, rv, ctx, &mut parts);
                 match piece {
                     Piece::Heading(level, _) => div().pt(px(HEADING_GAP)).text_size(px(ctx.font_size * heading_scale(*level))).child(text).into_any_element(),
                     Piece::Quote(_) => div().border_l(px(QUOTE_BAR)).border_color(ctx.border).pl(px(10.0)).child(text).into_any_element(),
@@ -1034,10 +1040,11 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
             }
             (Some(rv), Piece::Item { depth, marker, task, runs }) => {
                 let path = items.get(item);
+                let draws_caret = caret_item == Some(item);
                 item += 1;
                 match path.and_then(|p| item_display(rv, p)) {
                     Some(display) => {
-                        let text = reveal_text(ix, j, Rc::new(display), FontWeight::NORMAL, ctx.text, rv, ctx, &mut parts);
+                        let text = reveal_text(ix, j, Rc::new(display), FontWeight::NORMAL, ctx.text, draws_caret, rv, ctx, &mut parts);
                         item_shell(ix, j, *depth, marker, *task, runs.first().map(|r| r.source.start), size, true, ctx, &parts, text)
                     }
                     None => piece_element(ix, j, piece, size, code_runs, false, v, ctx, &mut parts),
@@ -1050,7 +1057,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     // An active picture keeps its picture and shows its source under it, where the caret is.
     if let Some(rv) = reveal.filter(|rv| rv.tree.picture) {
         let source = Rc::new(Display::verbatim(rv.text, 0..rv.text.trim_end().len()));
-        children.push(reveal_text(ix, r.pieces.len(), source, FontWeight::NORMAL, ctx.dim, rv, ctx, &mut parts));
+        children.push(reveal_text(ix, r.pieces.len(), source, FontWeight::NORMAL, ctx.dim, true, rv, ctx, &mut parts));
     }
     let Parts { texts, task_press } = parts;
     let texts = Rc::new(texts);
@@ -1558,10 +1565,11 @@ fn display_runs(display: &Display, weight: FontWeight, color: Hsla, focus: &md_r
 /// A revealed text: the display's text and runs as a `StyledText` (opening its links on
 /// Cmd+click), its layout in `parts` for a press to map through, and over it a canvas that
 /// records the layout on the viewer (`Viewer::reveal_blocks`) and paints the caret where the
-/// caret's offset is shown, while the viewer has the focus. An empty text is drawn as a zero-width
-/// space, so the caret has a line to stand on.
+/// caret's offset is shown, while the viewer has the focus and `draws_caret` says this text is the
+/// one that holds it. An empty text is drawn as a zero-width space, so the caret has a line to
+/// stand on.
 #[allow(clippy::too_many_arguments)]
-fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, color: Hsla, rv: &Reveal, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
+fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, color: Hsla, draws_caret: bool, rv: &Reveal, ctx: &BlockCtx, parts: &mut Parts) -> AnyElement {
     let (runs, links) = display_runs(&display, weight, color, rv.focus, ctx);
     let (shown, runs) = if display.text.is_empty() {
         let f = font(ctx.ui.clone());
@@ -1590,7 +1598,7 @@ fn reveal_text(ix: usize, j: usize, display: Rc<Display>, weight: FontWeight, co
             })
             .into_any_element()
     };
-    let caret = rv.focus.caret.filter(|&c| rv.focused && display.covers.start <= c && c <= display.covers.end).map(|c| display.display_of(c));
+    let caret = rv.focus.caret.filter(|&c| draws_caret && rv.focused && display.covers.start <= c && c <= display.covers.end).map(|c| display.display_of(c));
     let (viewer, caret_color) = (ctx.viewer.clone(), ctx.caret);
     let (covers, lines) = (display.covers.clone(), rv.lines.clone());
     let overlay = canvas(

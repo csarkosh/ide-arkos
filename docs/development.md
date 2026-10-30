@@ -547,7 +547,8 @@ Things only a person at the screen can check, in order of value:
 - inline reveal: click a bold word: `**` appears around that word only; press Right past the
   closing `**`: it hides; click a heading: its `##` shows, click elsewhere: it hides; click a bullet
   item: the bullet stays and the caret lands at the text; Left from its first letter lands at the end
-  of the item above; Delete there: the bullet goes and one undo brings it back; type `**x**` in a
+  of the item above; Delete there: the item becomes a paragraph between two lists, and on a nested
+  item it moves out a level with its bullet; one undo brings it back with a single caret where it was; type `**x**` in a
   paragraph: `x` is bold as the second `*` lands; type `- ` at a line start: a bullet appears
 - inline reveal: click a link's text: `[text](url)` shows and nothing opens; a plain click on the url
   opens it once and the caret stays; Cmd+click a link in another paragraph opens it as before

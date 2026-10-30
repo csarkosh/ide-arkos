@@ -453,25 +453,54 @@ pub fn snap(text: &str, markers: &[md_blocks::Marker], mut o: usize, dir: Dir) -
     o
 }
 
-/// Backspace at the first visible offset of a list item or of a paragraph in a quote: the source
-/// range to replace and its new text, which takes the item's marker away (the line becomes text)
-/// or every line's `>` of that paragraph (it leaves the quote), as one edit. `None` anywhere else.
-pub fn unmark(text: &str, nodes: &[Node], o: usize) -> Option<(Range<usize>, String)> {
+/// What Backspace at a marker does: `range` of the block's text becomes `text`, and the caret
+/// goes `caret` bytes into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unmark {
+    pub range: Range<usize>,
+    pub text: String,
+    pub caret: usize,
+}
+
+/// Backspace at the first visible offset of a list item or of a paragraph in a quote, as Mark
+/// Sharp does it, as one edit: a nested item moves out one level; a top-level item leaves the
+/// list as a paragraph of its own (the list split around it, a blank line on each side); a quoted
+/// paragraph loses every line's `>` and leaves the quote. `None` anywhere else.
+pub fn unmark(text: &str, nodes: &[Node], o: usize) -> Option<Unmark> {
     fn first_text(n: &Node) -> Option<usize> {
         if is_leaf(n) {
             return Some(n.span.start);
         }
         n.children.first().and_then(first_text)
     }
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
     for path in item_paths(nodes).iter().rev() {
         let item = node_at(nodes, path)?;
-        if item.children.first().and_then(first_text) == Some(o) && item.span.start < o {
-            return Some((item.span.start..o, String::new()));
+        if item.children.first().and_then(first_text) != Some(o) || item.span.start >= o {
+            continue;
         }
+        // Nested: out one level, to the column of the item it sits in.
+        if path.len() > 2 {
+            let parent = node_at(nodes, &path[..path.len() - 2])?;
+            let col = parent.span.start - line_start(parent.span.start);
+            let from = line_start(item.span.start);
+            let indent = item.span.start - from;
+            let cut = indent.saturating_sub(col).max(1).min(indent);
+            // Up to the text, so the caret stays at its start, after the bullet.
+            let kept = text[from + cut..o].to_string();
+            return Some(Unmark { range: from..o, caret: kept.len(), text: kept });
+        }
+        let list = node_at(nodes, &path[..1])?;
+        let own_end = item_end(item);
+        let end = own_end - text[..own_end].len() + text[..own_end].trim_end_matches('\n').len();
+        let before = if item.span.start > list.span.start { "\n" } else { "" };
+        let after = if text[own_end..list.span.end].trim().is_empty() { "" } else { "\n" };
+        let body = &text[o..end];
+        return Some(Unmark { range: item.span.start..end, text: format!("{before}{body}{after}"), caret: before.len() });
     }
     let quote = nodes.iter().find(|n| n.kind == NodeKind::Quote)?;
     let para = quote.children.iter().find(|p| first_text(p) == Some(o))?;
-    let from = text[..para.span.start].rfind('\n').map_or(0, |i| i + 1);
+    let from = line_start(para.span.start);
     // A paragraph's span holds the line break after it, which stays.
     let to = from + text[from..para.span.end].trim_end_matches('\n').len();
     let rewritten: Vec<String> = text[from..to]
@@ -484,7 +513,7 @@ pub fn unmark(text: &str, nodes: &[Node], o: usize) -> Option<(Range<usize>, Str
             }
         })
         .collect();
-    Some((from..to, rewritten.join("\n")))
+    Some(Unmark { range: from..to, text: rewritten.join("\n"), caret: 0 })
 }
 
 /// The row of `rows` (display byte ranges, one per displayed row) holding display byte `at`.
@@ -620,12 +649,18 @@ mod tests {
         assert_eq!(snap(src, &m, 0, Dir::Left), 2, "with no line above, onward");
         assert_eq!(snap(src, &m, 5, Dir::Right), 5, "a line's end is alive");
         let nodes = elements(src);
-        assert_eq!(unmark(src, &nodes, 8), Some((6..8, String::new())));
+        assert_eq!(unmark(src, &nodes, 8), Some(Unmark { range: 6..11, text: "\ntwo".into(), caret: 1 }), "the last item becomes a paragraph after the list");
         assert_eq!(unmark(src, &nodes, 9), None);
+        let first = "- one\n- two";
+        assert_eq!(unmark(first, &elements(first), 2), Some(Unmark { range: 0..5, text: "one\n".into(), caret: 0 }), "the first item becomes a paragraph before the list");
+        let mid = "- a\n- b\n- c";
+        assert_eq!(unmark(mid, &elements(mid), 6), Some(Unmark { range: 4..7, text: "\nb\n".into(), caret: 1 }), "a middle item splits the list around it");
+        let nested = "- a\n  - b\n- c";
+        assert_eq!(unmark(nested, &elements(nested), 8), Some(Unmark { range: 4..8, text: "- ".into(), caret: 2 }), "a nested item moves out one level");
         let boxed = "- [ ] a";
-        assert_eq!(unmark(boxed, &elements(boxed), 6), Some((0..6, String::new())));
+        assert_eq!(unmark(boxed, &elements(boxed), 6), Some(Unmark { range: 0..7, text: "a".into(), caret: 0 }));
         let q = "> q1\n> q2\n\nafter";
-        assert_eq!(unmark(q, &elements(q), 2), Some((0..9, "q1\nq2".to_string())), "the paragraph leaves the quote");
+        assert_eq!(unmark(q, &elements(q), 2), Some(Unmark { range: 0..9, text: "q1\nq2".into(), caret: 0 }), "the paragraph leaves the quote");
         let h = "## h";
         assert_eq!(unmark(h, &elements(h), 3), None, "a heading's hashes are text to delete");
     }
