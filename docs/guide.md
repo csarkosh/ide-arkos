@@ -276,14 +276,21 @@ text two points larger. Navy comes with `space`: a calm night sky of twinkling s
 nebula, a planet drifting across over several minutes, and a shooting star every ten seconds
 or so; pane edges, videos and
 tables outlined in glowing lines with soft bars of light sweeping along them every few seconds, the highlights glowing softly, and the text as a still
-holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Under an effect a web tab's address
+holo display (a cool tint, faint scanlines and a soft glow), emoji with it. Matrix comes with
+`matrix`: faint columns of runes falling at different speeds behind everything, pane edges in
+thin green lines, and the text as glowing green type; now and then a letter flickers, mirrored
+and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
+random characters for a moment before it settles (longer while Claude is working), and fresh
+text starts brighter and cools over a second and a half. Under an effect a web tab's address
 bar is clear over the wash and the page is outlined; on a light theme a page that sets no
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Peach Light and Lavender Light, `space` for Navy, and none for Timo Purple.
+for Peach Light and Lavender Light, `space` for Navy, `matrix` for Matrix, and none for Timo
+Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
-Under Reduce Motion the wash holds still and draws only when something changes, and a hidden,
+Under Reduce Motion the wash holds still and draws only when something changes, no letter
+glitches, a changed cell settles at once, and a hidden,
 covered or occluded window (one wholly behind other windows) draws none.
 
 Effects you add live in `~/.config/arkos/effects/<name>/` (or under `$XDG_CONFIG_HOME`), one

@@ -100,4 +100,23 @@ mod tests {
         assert!(PREAMBLE.contains("float4 colors[39];"));
         assert!(PREAMBLE.contains("float dark;") && PREAMBLE.contains("float pigment_count;"));
     }
+
+    #[test]
+    fn the_guide_names_every_built_in_effect() {
+        let guide = crate::guide::TEXT;
+        let effects = guide.split("## 9. Effects").nth(1).expect("the guide has an Effects section");
+        let opening = effects.split("What an effect can touch").next().unwrap();
+        for b in BUILTIN {
+            let name = format!("`{}`", b.name);
+            assert!(opening.contains(&name), "the Effects section's opening names {name}");
+        }
+        assert!(opening.contains(&format!("{} are built in", match BUILTIN.len() {
+            2 => "Two",
+            3 => "Three",
+            4 => "Four",
+            n => panic!("{n} built-ins: teach this test the word"),
+        })));
+        assert!(guide.contains("| `glyph_rate` |"), "the manifest table has a glyph_rate row");
+        assert!(guide.contains("| `terminal_decode` |"), "the manifest table has a terminal_decode row");
+    }
 }

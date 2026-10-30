@@ -1,7 +1,7 @@
 # Matrix theme and effect
 
-Status: design agreed with Cyrus in chat, 2026-10-29; awaiting his look at a first build in a
-dev window. Builds on the effects design (`2026-10-28-effects-design.md`), the space effect
+Status: design agreed with Cyrus in chat, 2026-10-29; implemented on branch matrix, awaiting
+Cyrus's look. Builds on the effects design (`2026-10-28-effects-design.md`), the space effect
 design (`2026-10-28-space-effect-design.md`) and everything shipped through 0.7.13.
 
 ## Intent

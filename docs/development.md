@@ -363,6 +363,24 @@ Things only a person at the screen can check, in order of value:
 - effects, space: in a release build with Navy and space on, the window idle in front, Activity
   Monitor's CPU for the process (write the figure here); the text is still, so it is redrawn
   only when it changes, and only the wash runs on its timer
+- effects: Matrix (`effect.name = "theme"`) at rest for five minutes: a letter glitches
+  (mirrored and brighter for a tenth of a second) a few times a second across the window and
+  never more; between glitches every letter is still and whole; the text is not tiring to read
+- effects: Matrix, Claude Code streaming output: whole rows scramble through ASCII for under half
+  a second and settle on the real text, which starts brighter and cools over about 1.5 s; typing
+  at the prompt shows a brief flicker on the cell typed and nothing else
+- effects: Matrix, Claude Code's fullscreen renderer redrawing: readable; if the whole screen
+  decodes too often, note it (DECODE_MS_WORKING is the first lever)
+- effects: Matrix, the rain: faint columns of runes falling at different speeds under the panes,
+  through the bars and the sidebar, never competing with the text; a menu's backdrop shows it
+- effects: Matrix, a markdown tab and the sidebar: green glow, the idle glitch, no decode
+- effects: Matrix, emoji on the display: their colours tinted green, haloed, glitching as letters do
+- effects: Matrix with Reduce Motion on: the rain is still, no glitches, changed cells settle at once
+- effects: Matrix, the window's CPU idle in front (debug now; release after the release): write the figure here
+- effects: Matrix, the wash's GPU time on an idle machine: `cargo test -p arkos effects::bench --
+  --ignored` passes (the suite skips it, since the time means nothing under load)
+- colours: vim or htop with a 256-colour scheme in Matrix shows green-cast colours, not xterm's
+- colours: Claude Code's colours after a restart in Matrix are the theme's greens
 - sandbox: `arkos sandbox ~/Projects/x` opens a second window titled "Arkos IDE (sandbox)" with
   `sandbox` in its title bar; the first window is unchanged; `arkos sandbox status` lists it
 - sandbox: `arkos sandbox theme use timo-purple` changes only the sandbox window;
