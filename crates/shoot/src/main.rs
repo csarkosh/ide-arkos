@@ -364,7 +364,9 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
         }
         if shot.click.is_some() || shot.right_click.is_some() || shot.drag.is_some() || shot.hover.is_some() || !shot.keys.is_empty() {
-            activate(window_pid);
+            if shot.activate {
+                activate(window_pid);
+            }
             pause(Duration::from_millis(400))?;
             send_input(shot, frame)?;
             pause(Duration::from_millis(800))?;
@@ -383,6 +385,13 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             None => capture_steady(repo, window_id, &raw)?,
         }
         frame_image(repo, &raw, &out.join(format!("{picture}.png")), shot, None)?;
+        if shot.screen {
+            let whole = out.join(format!("{picture}.screen.png"));
+            let status = Command::new("screencapture").args(["-x", "-m"]).arg(&whole).status().context("screencapture")?;
+            if !status.success() {
+                say(&format!("{}: the display could not be captured", shot.name));
+            }
+        }
         say(&format!("{}: {}", shot.name, out.join(format!("{picture}.png")).display()));
     }
     if !failures.is_empty() {

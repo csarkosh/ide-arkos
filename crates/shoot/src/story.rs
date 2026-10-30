@@ -239,6 +239,14 @@ pub struct Shot {
     /// hover's tooltip or highlight for the picture.
     #[serde(default)]
     pub hover: Option<[f64; 2]>,
+    /// The whole display captured too, as `<picture>.screen.png` beside the picture: what lies
+    /// outside the window, such as the Finder window a drag starts in.
+    #[serde(default)]
+    pub screen: bool,
+    /// `false` leaves whichever app is in front there for the input, so a drag can start in
+    /// another app's window (an inactive Finder window only takes a press as a click).
+    #[serde(default = "yes")]
+    pub activate: bool,
     /// Keys sent to the window after the wait and before the capture, in order: `down`,
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
@@ -307,6 +315,10 @@ impl Key {
         } else { None };
         Ok(Key { code, text, modifiers, times })
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_theme() -> String {
