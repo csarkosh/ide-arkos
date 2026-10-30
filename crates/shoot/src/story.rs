@@ -223,6 +223,10 @@ pub struct Shot {
     /// keyboard focus and places the caret, so a picture can show a file being edited.
     #[serde(default)]
     pub click: Option<[f64; 2]>,
+    /// A right click at `[x, y]`, fractions of the window, after `click` and before the keys: it
+    /// opens a context menu for the picture.
+    #[serde(default)]
+    pub right_click: Option<[f64; 2]>,
     /// Keys sent to the window after the wait and before the capture, in order: `down`,
     /// `right*40`, `cmd+down`, `shift+end`, or a letter.
     #[serde(default)]
