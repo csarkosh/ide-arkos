@@ -165,11 +165,21 @@ Every other file type stays a read-only viewer.
 ### Tables
 
 A table renders as a grid: a bold header row, rules between the cells, the column alignment from
-the delimiter row. A click lands in the cell, with the caret where you clicked, and the block
-turns into its raw text. In that block, Tab moves to the next cell and Shift+Tab to the previous
-one, Up and Down move to the cell above and below, and Tab in the last cell adds a row. Where a
-move has nowhere to go, the key does what it does in any block. These keys work in Rendered mode
-only; Raw mode is a plain text editor.
+the delimiter row. It edits like a spreadsheet and stays a grid while you do. A click selects a
+cell (a ring around it), and typing replaces what it holds. A double click or F2 edits the cell
+instead, its markdown shown with the caret after it; Escape goes back to selecting it. The arrows
+move between cells (inside an edited cell, Left and Right move in its text), Up from the header
+and Down from the last row leave the table. Enter moves down and Tab to the next cell, and either
+adds a row from the end; Shift+Enter and Shift+Tab go back. Delete clears the cell, and Cmd+C,
+Cmd+X and Cmd+V copy, cut and paste its text. A `|` you type goes in as `\|`, so it stays in the
+cell.
+
+A thin strip on a row's left edge selects the row, on a column's top edge the column, and the
+top-left corner the whole table; Delete then clears it. Hover the table to see a "+" at its right
+and below it, which adds a column or a row. Right-click a cell for Cut, Copy and Paste, inserting a
+row above or below and a column left or right, deleting the row, the column or the table, and
+aligning the column left, center or right. Every change is one undo. These keys work in Rendered
+mode only; Raw mode is a plain text editor.
 
 When you leave an edited table, or press Escape in it, Arkos re-aligns its pipes so the source
 reads as a grid too. One undo takes the alignment back, and an undone table is not re-aligned
@@ -411,7 +421,9 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
 | Tab, Shift+Tab | in a markdown list: nest the item one level under the item above, or bring it back, from anywhere in the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
-| Up, Down | in a table: the cell above or below |
+| Arrows | in a table: the neighbouring cell; Up from the header and Down from the last row leave it |
+| F2 | in a table: edit the selected cell, the caret after its text |
+| Delete | in a table: clear the selected cell, or the picked row, column or table |
 | Cmd+click | in a markdown file: open a link, or an image, poster, video or audio; a plain click on a revealed link's address opens it too |
 | Enter | in a rendered markdown paragraph or heading: a new paragraph; in a quote: a new quoted paragraph; in a list: the next item; on an empty item, end the list or move a nested item out a level |
 | Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
