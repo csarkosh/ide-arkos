@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       scenes:
-        description: "Scenes to shoot, space-separated: probe, multitasker, web-developer, blogger"
+        description: "Scenes to shoot, space-separated: probe, multitasker, web-developer, blogger, hacker"
         required: true
         default: probe
         type: string

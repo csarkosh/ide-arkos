@@ -1,6 +1,6 @@
 #!/bin/sh
 # Takes Arkos IDE's pictures from a dev build: one scene per storyboard in scripts/shoot/stories
-# (multitasker, web-developer, blogger), each a real session in a demo project, then the hero
+# (multitasker, web-developer, blogger, hacker), each a real session in a demo project, then the hero
 # composed from the scenes' stills. Any scene can be redone alone; the hero is recomposed from
 # whatever stills exist.
 #

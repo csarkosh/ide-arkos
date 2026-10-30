@@ -1,0 +1,22 @@
+[
+  {
+    "name": "mara",
+    "admin": true,
+    "hash": "0aef9551bb6eeee80af4c7bc700e8d31"
+  },
+  {
+    "name": "devon",
+    "admin": false,
+    "hash": "bb834ec54553cd09d92f34ced6aa5c15"
+  },
+  {
+    "name": "ines",
+    "admin": false,
+    "hash": "3cb4e732631f47e6eb961f34554b7cde"
+  },
+  {
+    "name": "kofi",
+    "admin": false,
+    "hash": "7439d8948d939fa835e2309a0705d9e9"
+  }
+]

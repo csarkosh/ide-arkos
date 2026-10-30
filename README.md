@@ -3,7 +3,7 @@
 <p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
-  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with the app's page in a web tab and tests, and the blogger with posts open in the markdown editor" src="docs/images/hero-dark.png" width="900">
+  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with the app's page in a web tab, and the blogger with posts open in the markdown editor" src="docs/images/hero-dark.png" width="900">
 </picture>
 
 <p align="center">
@@ -37,8 +37,8 @@ the command palette once, and the tabs follow what each session is doing.
 
 ## Who it's for
 
-Three ways people use it, each in one of the built-in themes (navy, lavender-light,
-peach-light); every picture is a real session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
+Four ways people use it, each in one of the built-in themes (navy, lavender-light,
+peach-light, matrix); every picture is a real session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
 
 **The multi tasker** runs several Claude Code sessions on unrelated workstreams at once and
 orchestrates the agents that orchestrate the subagents: here a rate limiter for a web service,
@@ -51,11 +51,11 @@ which session is working and which is waiting on you.
 </picture>
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
-checkout, the app's page in a web tab next to the code, and the tests in a shell; the file
-tree and the worktree list show what changed.
+checkout, and the app's page in a web tab next to the code; the file tree and the worktree list
+show what changed. It is shot in Lavender Light, with its watercolor effect.
 
 <picture>
-  <img alt="An Arkos IDE window: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, a web tab showing the app's page and a shell running tests on the right" src="docs/images/web-developer-dark.png" width="760">
+  <img alt="An Arkos IDE window in Lavender Light with its watercolor effect: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
@@ -69,6 +69,16 @@ panes and the table, and draws the text as if in ink.
 
 <picture>
   <img alt="An Arkos IDE window in Peach Light with its watercolor effect, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with an apricot wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in peach and rose with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
+</picture>
+
+**The hacker** works on security: Claude Code audits a small file-drop service for bugs while a
+second session fixes the path traversal it is known to have and tests the fix, a third reads the
+server's ssh log for the address that guessed its way in, and a shell shows the end of that log.
+It is shot in Matrix, black with soft phosphor green, whose matrix effect runs rune rain behind
+the panes and lights the text with a green glow.
+
+<picture>
+  <img alt="An Arkos IDE window in the Matrix theme, black with green text and faint rune rain behind the panes: the file tree on the left, Claude Code auditing a service for security bugs with a second tab fixing a path traversal, a session reading an ssh log for a break-in, and a shell showing the end of that log" src="docs/images/hacker-dark.png" width="760">
 </picture>
 
 ## Privacy

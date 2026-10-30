@@ -210,7 +210,7 @@ them back into Rust paths.
 
 The pictures in `docs/images/` (the README's and csarko.sh's) are taken of the real app by
 `scripts/shoot.sh`: one scene per storyboard in `scripts/shoot/stories/` (the multi tasker, the
-web developer, the blogger), each a dev build on a demo project of its own (`scripts/shoot/demo`)
+web developer, the blogger, the hacker), each a dev build on a demo project of its own (`scripts/shoot/demo`)
 with real Claude Code sessions given the prompts written there, captured once the tabs show the
 states the storyboard asks for, and the hero (`hero-dark.png`) composed from
 the scenes' stills with the multi tasker in front. Nothing in them is staged afterwards; change a

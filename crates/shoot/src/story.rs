@@ -531,6 +531,30 @@ theme = "light"
     }
 
     #[test]
+    fn every_storyboard_in_the_repository_parses_and_its_fixture_has_what_it_names() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(root.join("scripts/shoot/stories")).unwrap() {
+            let path = entry.unwrap().path();
+            let story = Story::parse(&std::fs::read_to_string(&path).unwrap()).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(Some(story.scene.name.as_str()), path.file_stem().and_then(|s| s.to_str()), "{}: the scene is named after its file", path.display());
+            let fixture = root.join(&story.demo.fixture);
+            assert!(fixture.is_dir(), "{}: no fixture {}", path.display(), fixture.display());
+            for folder in &story.window.expanded {
+                assert!(fixture.join(folder).is_dir(), "{}: the fixture has no folder {folder}", path.display());
+            }
+            for pane in &story.panes {
+                if let Some(view) = &pane.view {
+                    assert!(fixture.join(view).is_file(), "{}: the fixture has no file {view}", path.display());
+                }
+            }
+            names.push(story.scene.name);
+        }
+        names.sort();
+        assert_eq!(names, ["blogger", "hacker", "multitasker", "probe", "web-developer"]);
+    }
+
+    #[test]
     fn a_pane_missing_from_the_layout_is_refused() {
         let text = STORY.replace(r#"first = { tabs = ["work", "tests", "readme"] }"#, r#"first = { tabs = ["work", "readme"] }"#);
         let err = Story::parse(&text).unwrap_err().to_string();

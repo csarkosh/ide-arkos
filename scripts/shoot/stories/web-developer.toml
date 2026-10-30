@@ -1,5 +1,5 @@
 # The web developer: a project with a worktree, Claude Code on a feature branch and on the
-# main checkout, the app's page in a web tab, tests in a shell.
+# main checkout, and the app's page in a web tab beside them, the whole height of the window.
 
 [scene]
 name = "web-developer"
@@ -31,10 +31,6 @@ name = "durations"
 claude = "Add tests for parseDuration in src/time.js to test/time.test.js: 30s, 5m, 2h, 1h30m, an empty string and junk. Run them."
 
 [[pane]]
-name = "shell"
-run = "npm test"
-
-[[pane]]
 name = "site"
 browser = "http://localhost:4173/"
 
@@ -42,7 +38,7 @@ browser = "http://localhost:4173/"
 split = "horizontal"
 ratio = 0.6
 first = { tabs = ["rate limit", "durations"] }
-second = { split = "vertical", ratio = 0.55, first = { tabs = ["site"] }, second = { tabs = ["shell"] } }
+second = { tabs = ["site"] }
 
 [[shot]]
 name = "dark"

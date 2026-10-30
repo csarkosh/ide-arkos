@@ -1,0 +1,2 @@
+mon: devon on the upload limit, ines on the admin page
+tue: kofi rotating the ssh keys (not done)

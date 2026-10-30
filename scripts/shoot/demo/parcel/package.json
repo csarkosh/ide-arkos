@@ -1,0 +1,11 @@
+{
+  "name": "parcel",
+  "version": "0.4.2",
+  "description": "A small file drop for the team: one process, no dependencies.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

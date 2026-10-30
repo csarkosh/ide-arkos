@@ -1,0 +1,54 @@
+# The hacker: a security engineer on a small file-drop service (the demo's bugs are planted for
+# the audit to find, and it only ever runs as a target here). Claude Code audits the code while a
+# second session fixes the path traversal behind it, a third reads the box's ssh log for a
+# break-in, and a shell shows the end of that log. Shot in the built-in matrix theme with its
+# matrix effect.
+
+[scene]
+name = "hacker"
+caption = "The hacker"
+
+[demo]
+name = "parcel"
+dir = "~/Projects/parcel"
+fixture = "scripts/shoot/demo/parcel"
+
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar_width = 240
+expanded = ["src", "logs"]
+theme = { dark = "matrix", light = "matrix" }
+
+# The audit reads every file itself: a session waiting on background agents reports "waiting",
+# and the picture wants this one working.
+[[pane]]
+name = "audit"
+claude = "Audit this service for security bugs. Read every file in src/ yourself, no subagents. Write findings.md with one short section per finding, most severe first: the file and line, how an attacker would use it, and the fix. Do not change any file in src/."
+
+[[pane]]
+name = "traversal"
+claude = "GET /files/:name in src/files.js lets a name like ..%2F..%2Fetc%2Fpasswd out of the uploads folder. Fix readUpload so only files inside uploads/ are served and anything else is refused, with a 400 from src/server.js. Add tests in test/files.test.js for a normal file, ../ and an encoded %2e%2e%2f, then run npm test."
+
+[[pane]]
+name = "logs"
+claude = "Read logs/auth.log. Which addresses are brute-forcing ssh, how many attempts each, and did any of them get in? Answer with a short table, then the one thing I should do first. Do not change any file."
+
+[[pane]]
+name = "shell"
+run = "tail -n 30 logs/auth.log"
+
+[layout]
+split = "horizontal"
+ratio = 0.58
+first = { tabs = ["audit", "traversal"] }
+second = { split = "vertical", ratio = 0.5, first = { tabs = ["logs"] }, second = { tabs = ["shell"] } }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { audit = "working", traversal = "waiting", logs = "waiting" }
+changed = { traversal = 2 }
+after_secs = 45
+timeout_secs = 420
