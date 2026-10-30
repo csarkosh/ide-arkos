@@ -461,6 +461,8 @@ pub struct Root {
     /// with the layout: a viewer takes its file's when it is made, and a toggle in any of them
     /// updates it.
     pub details_open: BTreeMap<PathBuf, Vec<workspace::DetailsOpen>>,
+    /// The folded headings of each markdown file (`Workspace::folds`).
+    pub folds: BTreeMap<PathBuf, Vec<workspace::Fold>>,
     /// A tab dragged within its own bar: the slot and gap that slide (`pane_view::Reorder`).
     pub reorder: Option<pane_view::Reorder>,
     /// Each tab's painted width, from the last frame, for the gap a reorder opens.
@@ -601,6 +603,7 @@ impl Root {
         let reconcile_with_note = saved.is_some();
         let window_saved = saved.as_ref().and_then(|w| w.window.clone());
         let details_open = saved.as_ref().map(|w| w.details_open.clone()).unwrap_or_default();
+        let folds = saved.as_ref().map(|w| w.folds.clone()).unwrap_or_default();
         // The folder's own sidebar when it saved one, else the config's defaults.
         let (sidebar, explorer, worktrees) = match saved.as_ref().and_then(|w| w.sidebar.clone()) {
             Some(s) => (sidebar::Sidebar::new(s.width, s.collapsed, s.explorer_open, s.worktrees_open, cx), explorer::Explorer::new(project.clone(), s.expanded, s.show_ignored), worktrees::Worktrees::new(s.worktrees_expanded)),
@@ -732,6 +735,7 @@ impl Root {
             ns_window: None,
             window_saved,
             details_open,
+            folds,
             reorder: None,
             tab_widths: HashMap::new(),
             url_prompt: Transient::Hidden,
@@ -1604,7 +1608,7 @@ impl Root {
 
     pub fn save(&mut self, cx: &mut App) {
         let sidebar = SidebarSaved { width: self.sidebar.width, collapsed: self.sidebar.collapsed, show_ignored: self.explorer.show_ignored, expanded: self.explorer.expanded_dirs(), worktrees_expanded: self.worktrees.expanded.iter().cloned().collect(), explorer_open: self.sidebar.explorer_open, worktrees_open: self.sidebar.worktrees_open };
-        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone() };
+        let ws = Workspace { version: FORMAT_VERSION, project: self.project.clone(), tree: self.tree.clone(), text_preset: Some(self.text_preset.clone()), sidebar: Some(sidebar), window: self.window_saved.clone(), details_open: self.details_open.clone(), folds: self.folds.clone() };
         request_save(&self.save_queue, ws, cx);
     }
 
@@ -2771,6 +2775,12 @@ impl Root {
             SaveFile => {
                 if let Some(v) = self.active_viewer() {
                     v.update(cx, |v, cx| v.save_command(cx));
+                }
+            }
+            FoldAll | UnfoldAll => {
+                if let Some(v) = self.active_viewer() {
+                    let all = matches!(cmd, FoldAll);
+                    v.update(cx, |v, cx| if all { v.fold_all(cx) } else { v.unfold_all(cx) });
                 }
             }
             Bold | Italic => {

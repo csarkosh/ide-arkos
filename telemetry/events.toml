@@ -82,6 +82,8 @@ command = [
     "save_file",
     "bold",
     "italic",
+    "fold_all",
+    "unfold_all",
     "open_folder",
     "new_window",
     "new_browser_tab",
