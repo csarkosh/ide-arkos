@@ -608,6 +608,13 @@ impl TerminalCore {
         out
     }
 
+    /// Whether the viewport cell at `col`, `row` is tinted as part of the selection, which is
+    /// where a right-click opens the selection's menu. A selection that copies nothing (the
+    /// press before a drag) covers no cell.
+    pub fn selection_covers(&self, col: usize, row: usize) -> bool {
+        self.selection_text().is_some() && self.selection_spans().iter().any(|s| s.row == row && (s.start..=s.end).contains(&col))
+    }
+
     /// Applies a gesture from `mouse::Clicks` to the selection: a clear, a word or a line, a
     /// drag's start, or its end following the pointer.
     pub fn apply_gesture(&mut self, gesture: Gesture) {
@@ -989,6 +996,16 @@ impl Terminal {
         }
         let (col, row, _) = self.point_at(position)?;
         self.core.link_at(col, row)
+    }
+
+    /// Whether a window position is over the tinted selection; false before the first paint and
+    /// in the padding off the grid, as for a link.
+    pub fn selection_at_position(&self, position: gpui::Point<gpui::Pixels>) -> bool {
+        let (Some(origin), Some(cell)) = (self.origin, self.cell) else { return false };
+        if !inside_grid(f32::from(position.x), f32::from(position.y), origin, cell, self.core.columns(), self.core.screen_lines()) {
+            return false;
+        }
+        self.point_at(position).is_some_and(|(col, row, _)| self.core.selection_covers(col, row))
     }
 
     /// A wheel step of `lines` (positive is up); `precise` is a trackpad's pixel step rather than
@@ -1410,6 +1427,26 @@ mod tests {
         assert_eq!(t.mouse_mode(), MouseMode::Local);
         t.apply_output(b"\x1b[?1049l\x1b[?1007h");
         assert_eq!(t.mouse_mode(), MouseMode::Local, "alternate scroll means nothing on the primary screen");
+    }
+
+    #[test]
+    fn a_right_click_is_on_the_selection_only_over_its_tinted_cells() {
+        let mut t = TerminalCore::new(20, 3, 100);
+        t.apply_output(b"hello world\r\nsecond line");
+        assert!(!t.selection_covers(0, 0), "nothing selected");
+        t.selection_start(0, Line(0), Side::Left, SelectionType::Simple);
+        assert!(!t.selection_covers(0, 0), "a press alone selects nothing");
+        t.selection_update(4, Line(0), Side::Right);
+        assert!(t.selection_covers(0, 0) && t.selection_covers(4, 0));
+        assert!(!t.selection_covers(5, 0), "past the end of the word");
+        assert!(!t.selection_covers(0, 1), "the next row");
+        // Across rows: the first row is tinted to its end, the last from its start.
+        t.selection_start(6, Line(0), Side::Left, SelectionType::Simple);
+        t.selection_update(5, Line(1), Side::Right);
+        assert!(t.selection_covers(19, 0) && t.selection_covers(0, 1) && t.selection_covers(5, 1));
+        assert!(!t.selection_covers(5, 0) && !t.selection_covers(6, 1));
+        t.selection_clear();
+        assert!(!t.selection_covers(6, 0));
     }
 
     #[test]

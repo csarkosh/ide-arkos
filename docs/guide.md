@@ -430,7 +430,9 @@ Notes:
 - A link in terminal output (anything starting `http://` or `https://`, up to the next space
   or quote) is underlined, and Cmd+click opens it in your browser, as in
   Terminal.app. A plain click does nothing to it. A right-click (or Control+click) on a link
-  offers Open Link and Copy Link. A URL wider than the pane is one link across the rows it
+  offers Open Link and Copy Link. A right-click on selected text offers Copy (what Cmd+C copies)
+  and Paste (what Cmd+V pastes), with the link's two rows after them when the press is on a
+  link. A URL wider than the pane is one link across the rows it
   takes, whether the terminal wrapped it or Claude Code cut it at its own width, and Cmd+click
   opens the whole of it.
 - A pane closes with its last tab and its neighbour takes the space; the last pane stays and

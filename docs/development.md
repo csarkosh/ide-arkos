@@ -469,7 +469,10 @@ Things only a person at the screen can check, in order of value:
   Shift+wheel on a mouse, in a shell with history: wheel up shows older lines, not newer
 - terminal selection and links: a right-click on a link in Claude Code's output shows "Open Link" and
   "Copy Link" and nothing elsewhere, and Control+click on a link opens the same menu, while a
-  right-click in the pane's padding opens nothing; the menu looks like the file tree's (the card,
+  right-click in the pane's padding opens nothing; a right-click on selected text shows "Copy"
+  and "Paste" (then the link's rows on a link), Copy keeps the selection and pastes what Cmd+C
+  would, Paste types the clipboard as Cmd+V would, and a right-click beside the selection opens
+  nothing; the menu looks like the file tree's (the card,
   the hover, the fade) and closes on Escape, on a click elsewhere and after an item runs; Cmd+C on a
   wrapped Claude Code paragraph pastes one line while a bulleted list keeps its lines, and
   Cmd+Shift+C pastes it as shown; in a terminal 160 columns or wider, Claude Code's prose should

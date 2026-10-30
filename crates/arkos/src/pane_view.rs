@@ -816,20 +816,25 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     bar
 }
 
-/// Opens the link menu when the press asks for it (see `link_menu::press_kind`) and returns
-/// whether it did: a right press on a link, which is also what gpui delivers for a Control+click.
-/// The link is the one under the press now, not the one the last paint saw. The
+/// Opens the terminal's menu when the press asks for it (see `link_menu::press_kind`) and
+/// returns whether it did: a right press on a link or on the selection, which is also what gpui
+/// delivers for a Control+click. The link and the selection are the ones under the press now,
+/// not the ones the last paint saw. The
 /// event stops here, which skips the root's mouse-downs, so what they would close is closed here
 /// instead: the other menus and the popovers (one floating card at a time), the URL prompt, and
 /// a tab rename, which keeps what was typed. A press that does not open the menu is left alone
 /// for the caller.
 fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEvent, cx: &mut Context<Root>) -> bool {
-    // Only a press that could open the menu looks for a link.
-    let link = if ev.button == MouseButton::Right { terminal.read(cx).link_at_position(ev.position) } else { None };
-    if press_kind(ev.button, link.is_some()) != PressKind::LinkMenu {
+    // Only a press that could open the menu looks for a link or the selection.
+    let (link, selection) = if ev.button == MouseButton::Right {
+        let t = terminal.read(cx);
+        (t.link_at_position(ev.position), t.selection_at_position(ev.position))
+    } else {
+        (None, false)
+    };
+    if press_kind(ev.button, link.is_some(), selection) != PressKind::Menu {
         return false;
     }
-    let Some(link) = link else { return false };
     cx.stop_propagation();
     let now = std::time::Instant::now();
     root.last_input = now;
@@ -839,7 +844,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.close_popovers(now);
     root.url_prompt.hide(now);
     root.commit_tab_rename(cx);
-    root.link_menu.show(LinkMenu { url: link.url, at: ev.position }, now);
+    root.link_menu.show(LinkMenu { url: link.map(|l| l.url), selection, terminal: terminal.downgrade(), at: ev.position }, now);
     cx.notify();
     true
 }
@@ -923,7 +928,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 });
             }),
         )
-        // A right-click on a link opens its menu, and so does a Control+click, which gpui
+        // A right-click on a link or the selection opens the menu, and so does a Control+click, which gpui
         // delivers as a right press; anywhere else it does nothing and the event goes on to the
         // root, which closes whatever menu was open.
         .on_mouse_down(
