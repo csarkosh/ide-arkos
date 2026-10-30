@@ -1533,7 +1533,10 @@ impl Viewer {
             }
             KeyAction::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    let text = normalize_paste(&text);
+                    // An address or a path pasted over a selection on one line makes a link.
+                    let selected = self.doc.as_ref().map(|d| d.text_in(self.caret.anchor, self.caret.head)).unwrap_or_default();
+                    let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let text = md_format::paste_link(&selected, &text, &base, dirs_home().as_deref()).unwrap_or_else(|| normalize_paste(&text));
                     self.edit(|doc, caret, now| doc.insert(caret, &text, now), cx);
                 }
             }
@@ -2641,6 +2644,11 @@ pub fn rendered_break(doc: &mut edit::Document, blocks: &[md_blocks::Block], car
         }
         _ => None,
     }
+}
+
+/// The user's home folder, for a `~` path pasted as a link.
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
 }
 
 /// Of laid-out texts given as `(top, bottom)` in window order, the one a point at `y` maps

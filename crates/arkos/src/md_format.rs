@@ -5,6 +5,7 @@
 
 use crate::md_blocks::{self, Node, NodeKind};
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -111,6 +112,44 @@ pub fn toggle(line: &str, sel: Range<usize>, fmt: Format) -> Option<LineEdit> {
     Some(LineEdit { range: c..c, text: format!("{d}{d}"), select: c + d.len()..c + d.len() })
 }
 
+/// What a link made from the clipboard points at (spec section 7): one line that is a web or mail
+/// address, or a path to something that exists (absolute, `~`, or relative to `base_dir`, the
+/// document's folder), written relative to `base_dir` when it is inside it. In `<...>` when it
+/// holds a space or a parenthesis. `None` for anything else.
+pub fn link_target(clip: &str, base_dir: &Path, home: Option<&Path>) -> Option<String> {
+    let t = clip.trim();
+    if t.is_empty() || t.contains('\n') {
+        return None;
+    }
+    let lower = t.to_ascii_lowercase();
+    if ["http://", "https://", "mailto:"].iter().any(|p| lower.starts_with(p)) {
+        return (!t.contains(char::is_whitespace)).then(|| t.to_string());
+    }
+    let full: PathBuf = match t.strip_prefix("~/") {
+        Some(rest) => home?.join(rest),
+        None if Path::new(t).is_absolute() => PathBuf::from(t),
+        None => base_dir.join(t),
+    };
+    if !full.exists() {
+        return None;
+    }
+    let written = match full.strip_prefix(base_dir) {
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.to_string_lossy().into_owned(),
+        _ if !Path::new(t).is_absolute() && !t.starts_with("~/") => t.to_string(),
+        _ => full.to_string_lossy().into_owned(),
+    };
+    Some(if written.contains([' ', '(', ')']) { format!("<{written}>") } else { written })
+}
+
+/// The link Cmd+V makes over a selection on one line (`selected`) from the clipboard, when
+/// `link_target` finds one in it.
+pub fn paste_link(selected: &str, clip: &str, base_dir: &Path, home: Option<&Path>) -> Option<String> {
+    if selected.trim().is_empty() || selected.contains('\n') {
+        return None;
+    }
+    link_target(clip, base_dir, home).map(|target| format!("[{selected}]({target})"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +193,25 @@ mod tests {
         assert_eq!(apply("a  b", 2..2, Format::Bold), ("a **** b".into(), 4..4), "between words: an empty pair, the caret inside");
         assert_eq!(apply("", 0..0, Format::Italic), ("__".into(), 1..1));
         assert_eq!(apply("café au lait", 2..2, Format::Bold).0, "**café** au lait");
+    }
+
+    #[test]
+    fn an_address_or_an_existing_path_pasted_over_a_selection_makes_a_link() {
+        let dir = std::env::temp_dir().join(format!("arkos-paste-link-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("notes dir")).unwrap();
+        std::fs::write(dir.join("notes.md"), "x").unwrap();
+        let home = Some(dir.as_path());
+        assert_eq!(paste_link("Arkos", "https://csarko.sh/arkos\n", &dir, home).as_deref(), Some("[Arkos](https://csarko.sh/arkos)"));
+        assert_eq!(paste_link("mail", "mailto:a@b.c", &dir, home).as_deref(), Some("[mail](mailto:a@b.c)"));
+        assert_eq!(paste_link("the notes", "notes.md", &dir, home).as_deref(), Some("[the notes](notes.md)"), "relative to the document");
+        assert_eq!(paste_link("abs", &dir.join("notes.md").to_string_lossy(), &dir, home).as_deref(), Some("[abs](notes.md)"), "inside the folder: written relative");
+        assert_eq!(paste_link("d", "notes dir", &dir, home).as_deref(), Some("[d](<notes dir>)"), "a space: in angle brackets");
+        assert_eq!(paste_link("h", "~/notes.md", &dir, home).as_deref(), Some("[h](notes.md)"));
+        assert_eq!(paste_link("x", "missing.md", &dir, home), None, "a path that does not exist pastes as text");
+        assert_eq!(paste_link("x", "two\nlines", &dir, home), None);
+        assert_eq!(paste_link("x", "just words", &dir, home), None);
+        assert_eq!(paste_link("", "https://a.b", &dir, home), None, "no selection");
+        assert_eq!(paste_link("a\nb", "https://a.b", &dir, home), None, "a selection over two lines");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
