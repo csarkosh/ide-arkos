@@ -9,6 +9,7 @@ workspace's crates live in `crates/`; the app is `crates/arkos`.
   Status checklist (what only a person at the screen can check; add a row when you add such a
   thing). `docs/guide.md` is the user guide and `docs/agent-guide.md` the agent CLI; keep them
   true when behaviour changes.
+
 - Designs live in `docs/superpowers/specs`, implementation plans in `docs/superpowers/plans`.
   A feature starts from a spec there; a plan names its tasks.
 - Motion rule: every transition uses `crates/arkos/src/motion.rs` (ENTER 120 ms, EXIT 90 ms,

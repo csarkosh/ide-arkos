@@ -335,8 +335,8 @@ pub struct HtmlImage {
 }
 
 /// The image an HTML block shows when it is one `<img>` tag with a `src` (its attributes in any
-/// order, in either quotes, `/>` or `>`), alone or inside `<p>`, `<div>` or `<a>` tags with no
-/// text between them; `center` when one of those has `align="center"`, `link` an `<a>`'s
+/// order, in either quotes, `/>` or `>`), alone or inside `<p>`, `<div>`, `<a>` or `<picture>`
+/// tags (a picture's `<source>` tags passed over) with no text between them; `center` when one of those has `align="center"`, `link` an `<a>`'s
 /// `href`. Anything else (text, a second image, another tag) is `None`: the block stays its
 /// source.
 pub fn html_image(block: &str) -> Option<HtmlImage> {
@@ -368,7 +368,9 @@ pub fn html_image(block: &str) -> Option<HtmlImage> {
                     link = attribute(&attrs, "href").filter(|h| !h.is_empty()).map(str::to_string).or(link);
                 }
             }
-            "/p" | "/div" | "/a" => {}
+            // A `<picture>`'s sources choose by media query, which Arkos does not evaluate; its
+            // `<img>` is the fallback every browser shows.
+            "/p" | "/div" | "/a" | "picture" | "/picture" | "source" => {}
             _ => return None,
         }
     }
@@ -1583,6 +1585,17 @@ mod tests {
         assert!(!revealable(fenced, &elements(fenced)), "a code block inside an item");
         let listed = "> - a";
         assert!(!revealable(listed, &elements(listed)), "a list inside a quote");
+    }
+
+    #[test]
+    fn a_picture_element_renders_its_img_and_its_sources_are_passed_over() {
+        let readme = "<picture>\n  <img alt=\"Three windows\" src=\"docs/images/hero-dark.png\" width=\"900\">\n</picture>";
+        assert_eq!(html_image(readme), Some(HtmlImage { src: "docs/images/hero-dark.png".into(), alt: "Three windows".into(), link: None, width: Some(900), center: false }));
+        let sourced = "<p align=\"center\"><picture>\n<source media=\"(prefers-color-scheme: dark)\" srcset=\"d.png\">\n<source srcset=\"l.png\" />\n<img src=\"l.png\" alt=\"x\">\n</picture></p>";
+        assert!(html_image(sourced).is_some_and(|i| i.src == "l.png" && i.center), "the img is the fallback every browser shows");
+        assert!(html_image("<picture><source srcset=\"d.png\"></picture>").is_none(), "no img, no picture");
+        let lines: Vec<String> = readme.lines().map(String::from).collect();
+        assert!(matches!(&inline(&lines.join("\n"), &split(&lines)[0].kind)[0], Inline::HtmlImage(_)), "the block renders as the image");
     }
 
     #[test]

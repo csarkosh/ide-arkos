@@ -149,8 +149,9 @@ keeps it 30 days. A reply that is not an image (a Wi-Fi sign-in page, say) is no
 image is fetched again the next time the file opens. There is no switch for this. Badge rows wrap
 in a narrow pane, and an image wider than the view is scaled to the view.
 
-An HTML block that is one `<img>` tag, alone or inside a `<p>`, `<div>` or `<a>`, renders as the
-image too, local or remote. Its `width` is honoured up to the view's width, and it is centred
+An HTML block that is one `<img>` tag, alone or inside a `<p>`, `<div>`, `<a>` or `<picture>`,
+renders as the image too, local or remote. In a `<picture>` the `<img>` shows, as a browser shows
+it when no `<source>` applies. Its `width` is honoured up to the view's width, and it is centred
 when the wrapper has `align="center"`. Inside an `<a href>` it follows the link, and its `alt`
 shows when the image cannot be drawn.
 
