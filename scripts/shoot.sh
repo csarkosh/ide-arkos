@@ -17,7 +17,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
+# The cargo on PATH first: a runner image may install rustup somewhere other than ~/.cargo.
+CARGO="${CARGO:-$(command -v cargo || echo "$HOME/.cargo/bin/cargo")}"
 PROFILE=debug
 FLAGS=""
 if [ "${1:-}" = "--release" ]; then PROFILE=release; FLAGS="--release"; shift; fi
