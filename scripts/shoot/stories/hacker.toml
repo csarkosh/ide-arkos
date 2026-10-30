@@ -21,11 +21,12 @@ sidebar_width = 240
 expanded = ["src", "logs"]
 theme = { dark = "matrix", light = "matrix" }
 
-# The audit reads every file itself: a session waiting on background agents reports "waiting",
-# and the picture wants this one working.
+# The audit reads every file itself (a session waiting on background agents reports "waiting")
+# and then proves its findings with tests, so it is still working once the other two have
+# answered: findings alone took it under 30 s on the runner.
 [[pane]]
 name = "audit"
-claude = "Audit this service for security bugs. Read every file in src/ yourself, no subagents. Write findings.md with one short section per finding, most severe first: the file and line, how an attacker would use it, and the fix. Do not change any file in src/."
+claude = "Audit this service for security bugs. Read every file in src/ yourself, no subagents. Write findings.md with one short section per finding, most severe first: the file and line, how an attacker would use it, and the fix. Then prove each finding except the path traversal (another session is fixing that one): write a test per finding in test/exploits.test.js that carries out the attack against the code as it is and passes while the bug is there, run npm test until they all pass, and name each finding's test in findings.md. Do not change any file in src/."
 
 [[pane]]
 name = "traversal"
@@ -37,7 +38,8 @@ claude = "Read logs/auth.log. Which addresses are brute-forcing ssh, how many at
 
 [[pane]]
 name = "shell"
-run = "tail -n 30 logs/auth.log"
+# A short prompt: the runner's host name is forty characters of noise.
+run = "PS1='$ '; tail -n 30 logs/auth.log"
 
 [layout]
 split = "horizontal"
