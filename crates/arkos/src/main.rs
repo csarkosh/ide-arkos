@@ -44,6 +44,7 @@ mod layout;
 mod ledger;
 mod line_edit;
 mod md_blocks;
+mod md_fold;
 mod md_format;
 mod md_reveal;
 mod md_slash;
