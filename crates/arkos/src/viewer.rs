@@ -4448,9 +4448,9 @@ impl Root {
             return v.clone();
         }
         let (font_size, line_height) = (self.font_size, self.line_height);
-        let mode = match self.tree.locate(tab).and_then(|(pane, idx)| self.tree.pane(pane)?.tabs.get(idx)) {
-            Some(Tab::Viewer { mode, .. }) => *mode,
-            _ => ViewMode::default(),
+        let (mode, presenting) = match self.tree.locate(tab).and_then(|(pane, idx)| self.tree.pane(pane)?.tabs.get(idx)) {
+            Some(Tab::Viewer { mode, presenting, .. }) => (*mode, *presenting && *mode == ViewMode::Rendered),
+            _ => (ViewMode::default(), false),
         };
         let open_details = self.details_open.get(path).map(|saved| sections_from(saved)).unwrap_or_default();
         let anchor = self.pending_anchors.remove(path);
@@ -4463,6 +4463,8 @@ impl Root {
             v.diagram_modes = diagram_modes;
             v.image_destination = image_destination;
             v.mode = mode;
+            // Presentation mode comes back with the tab.
+            v.presenting = presenting;
             v.open_details = open_details;
             v.folded = folded;
             v
@@ -4712,10 +4714,11 @@ impl Root {
         written
     }
 
-    /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer.
+    /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer. Raw
+    /// ends presentation mode (only the rendered view presents).
     pub fn toggle_markdown_view_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
-        let Some(Tab::Viewer { path, mode }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
+        let Some(Tab::Viewer { path, mode, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
         if !is_markdown(&path) {
             return;
         }
@@ -4724,6 +4727,9 @@ impl Root {
             ViewMode::Raw => ViewMode::Rendered,
         };
         self.tree.set_viewer_mode(pane, idx, next);
+        if next == ViewMode::Raw {
+            self.tree.set_viewer_presenting(pane, idx, false);
+        }
         if let Some(v) = self.viewers.get(&tab).cloned() {
             v.update(cx, |v, cx| v.set_mode(next, cx));
         }
@@ -4731,20 +4737,23 @@ impl Root {
         cx.notify();
     }
 
-    /// Presentation mode on or off in a markdown tab: from Raw it shows Rendered too, since only
-    /// the rendered view presents.
+    /// Presentation mode on or off in a markdown tab, in the layout (saved with the tab) and in its
+    /// viewer: from Raw it shows Rendered too, since only the rendered view presents.
     pub fn toggle_presentation_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
-        let Some(Tab::Viewer { path, mode }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
+        let Some(Tab::Viewer { path, mode, presenting }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
         if !is_markdown(&path) {
             return;
         }
         if mode == ViewMode::Raw {
             self.toggle_markdown_view_for(tab, cx);
         }
+        let on = !presenting || mode == ViewMode::Raw;
+        self.tree.set_viewer_presenting(pane, idx, on);
         if let Some(v) = self.viewers.get(&tab).cloned() {
-            v.update(cx, |v, cx| v.set_presenting(!v.presenting || mode == ViewMode::Raw, cx));
+            v.update(cx, |v, cx| v.set_presenting(on, cx));
         }
+        self.save(cx);
         cx.notify();
     }
 

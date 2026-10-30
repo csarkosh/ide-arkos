@@ -567,7 +567,7 @@ pub fn file_tab(path: &Path) -> Tab {
         // which the viewer shows when the page is opened as text some other way.
         Tab::Browser { url: crate::web::file_url(path) }
     } else {
-        Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default() }
+        Tab::Viewer { path: path.to_path_buf(), mode: ViewMode::default(), presenting: false }
     }
 }
 
@@ -1704,7 +1704,7 @@ mod tests {
         tree.add_tab(pane, Tab::Terminal { session: SessionId(2), cwd: Some("/p-f".into()) });
         tree.add_tab(pane, Tab::Terminal { session: SessionId(3), cwd: Some("/p-f/sub".into()) });
         tree.add_tab(pane, Tab::Terminal { session: SessionId(4), cwd: Some("/p-feat".into()) });
-        tree.add_tab(pane, Tab::Viewer { path: "/p-f/a.rs".into(), mode: ViewMode::default() });
+        tree.add_tab(pane, Tab::Viewer { path: "/p-f/a.rs".into(), mode: ViewMode::default(), presenting: false });
         assert_eq!(terminals_inside(&tree, Path::new("/p-f")), 2, "by path components: /p-feat is not inside /p-f, a viewer is no terminal");
         assert_eq!(terminals_inside(&tree, Path::new("/elsewhere")), 0);
         assert_eq!(removed_notice(1), "worktree removed; 1 terminal was open in it");
@@ -1780,7 +1780,7 @@ mod tests {
         let pane = tree.panes()[0];
         // Nothing open yet: a new tab.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), None, false), OpenPlan::Add);
-        let a = tree.add_tab(pane, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        let a = tree.add_tab(pane, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default(), presenting: false });
         let a_id = tree.tab_id(pane, a).unwrap();
         // The same file again, previewed: just activate it.
         assert_eq!(open_plan(&tree, pane, Path::new("/p/a.rs"), Some(a_id), false), OpenPlan::Activate(a));
@@ -1803,7 +1803,7 @@ mod tests {
         let pane = tree.panes()[0];
         let cut = Path::new("/p/cut.mp4");
         assert_eq!(file_tab(cut), Tab::Video { path: cut.into(), at: None, loop_range: None }, "a video opens as a video tab");
-        assert_eq!(file_tab(Path::new("/p/a.rs")), Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        assert_eq!(file_tab(Path::new("/p/a.rs")), Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default(), presenting: false });
         assert_eq!(file_tab(Path::new("/p/out/report.html")), Tab::Browser { url: "file:///p/out/report.html".into() }, "a page opens as a web tab");
         let v = tree.add_tab(pane, file_tab(cut));
         let v_id = tree.tab_id(pane, v).unwrap();

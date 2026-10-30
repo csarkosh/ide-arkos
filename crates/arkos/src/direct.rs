@@ -260,8 +260,8 @@ pub fn new_tab(path: &Path, kind: OpenKind, at: Option<f64>, loop_change: LoopCh
             };
             Tab::Video { path, at: at.map(|a| a.max(0.0)), loop_range }
         }
-        OpenKind::Markdown { raw: true } => Tab::Viewer { path, mode: ViewMode::Raw },
-        OpenKind::Markdown { raw: false } | OpenKind::Text => Tab::Viewer { path, mode: ViewMode::Rendered },
+        OpenKind::Markdown { raw: true } => Tab::Viewer { path, mode: ViewMode::Raw, presenting: false },
+        OpenKind::Markdown { raw: false } | OpenKind::Text => Tab::Viewer { path, mode: ViewMode::Rendered, presenting: false },
         OpenKind::Web => Tab::Browser { url: crate::web::web_url_of(&path) },
     }
 }
@@ -619,7 +619,7 @@ mod tests {
     }
 
     fn viewer(p: &str) -> Tab {
-        Tab::Viewer { path: p.into(), mode: ViewMode::default() }
+        Tab::Viewer { path: p.into(), mode: ViewMode::default(), presenting: false }
     }
 
     fn video(p: &str) -> Tab {
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(new_tab(p, OpenKind::Video, None, LoopChange::WholeFile), video("/p/cut.mp4"));
         assert_eq!(new_tab(p, OpenKind::Video, Some(-1.0), LoopChange::Set { start: 5.0, end: 5.0 }), Tab::Video { path: p.into(), at: Some(0.0), loop_range: None });
         let md = Path::new("/p/notes.md");
-        assert_eq!(new_tab(md, OpenKind::Markdown { raw: true }, None, LoopChange::Keep), Tab::Viewer { path: md.into(), mode: ViewMode::Raw });
+        assert_eq!(new_tab(md, OpenKind::Markdown { raw: true }, None, LoopChange::Keep), Tab::Viewer { path: md.into(), mode: ViewMode::Raw, presenting: false });
         assert_eq!(new_tab(md, OpenKind::Markdown { raw: false }, None, LoopChange::Keep), viewer("/p/notes.md"));
         assert_eq!(new_tab(Path::new("/p/a.rs"), OpenKind::Text, None, LoopChange::Keep), viewer("/p/a.rs"));
     }

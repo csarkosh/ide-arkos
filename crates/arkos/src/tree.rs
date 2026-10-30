@@ -73,6 +73,9 @@ pub enum Tab {
         path: PathBuf,
         #[serde(default)]
         mode: ViewMode,
+        /// Presentation mode is on (reading spec, section 4). Written only when it is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        presenting: bool,
     },
     /// A web tab (web pane spec, section 3.1): the page it shows, kept current as it navigates;
     /// empty is a blank tab. Files from 0.6 wrote `null` for a blank tab and an `app_mode` flag,
@@ -454,6 +457,13 @@ impl Tree {
         }
     }
 
+    /// Turns a viewer tab's presentation mode on or off; any other tab is left alone.
+    pub fn set_viewer_presenting(&mut self, pane: PaneId, idx: usize, on: bool) {
+        if let Some(Tab::Viewer { presenting, .. }) = self.pane_mut(pane).and_then(|p| p.tabs.get_mut(idx)) {
+            *presenting = on;
+        }
+    }
+
     /// Writes a video tab's saved position and loop; any other tab is left alone.
     pub fn set_video_state(&mut self, pane: PaneId, idx: usize, at: Option<f64>, loop_range: Option<(f64, f64)>) {
         if let Some(Tab::Video { at: a, loop_range: l, .. }) = self.pane_mut(pane).and_then(|p| p.tabs.get_mut(idx)) {
@@ -798,8 +808,8 @@ mod tests {
     fn find_path_locates_a_tab_by_path_in_one_pane() {
         let mut t = Tree::new(Tab::Terminal { session: SessionId(1), cwd: None });
         let root = t.panes()[0];
-        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
-        let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into(), mode: ViewMode::default() }).unwrap();
+        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default(), presenting: false });
+        let right = t.split(root, Side::Right, Tab::Viewer { path: "/p/b.rs".into(), mode: ViewMode::default(), presenting: false }).unwrap();
         assert_eq!(t.find_path(root, Path::new("/p/a.rs")), Some(1));
         assert_eq!(t.find_path(root, Path::new("/p/b.rs")), None, "another pane's tab does not count");
         assert_eq!(t.find_path(right, Path::new("/p/b.rs")), Some(0));
@@ -809,20 +819,20 @@ mod tests {
     fn set_video_state_writes_only_a_video_tab() {
         let mut t = Tree::new(Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None });
         let root = t.panes()[0];
-        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        t.add_tab(root, Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default(), presenting: false });
         t.set_video_state(root, 0, Some(12.5), Some((12.0, 18.0)));
         t.set_video_state(root, 1, Some(3.0), Some((1.0, 2.0)));
         let tabs = &t.pane(root).unwrap().tabs;
         assert_eq!(tabs[0], Tab::Video { path: "/p/cut.mp4".into(), at: Some(12.5), loop_range: Some((12.0, 18.0)) });
-        assert_eq!(tabs[1], Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default() });
+        assert_eq!(tabs[1], Tab::Viewer { path: "/p/a.rs".into(), mode: ViewMode::default(), presenting: false });
     }
 
     #[test]
     fn find_path_and_tabs_on_see_every_kind() {
-        let mut t = Tree::new(Tab::Viewer { path: "/p/cut.mp4".into(), mode: ViewMode::default() });
+        let mut t = Tree::new(Tab::Viewer { path: "/p/cut.mp4".into(), mode: ViewMode::default(), presenting: false });
         let root = t.panes()[0];
         t.add_tab(root, Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None });
-        t.add_tab(root, Tab::Viewer { path: "/p/other.rs".into(), mode: ViewMode::default() });
+        t.add_tab(root, Tab::Viewer { path: "/p/other.rs".into(), mode: ViewMode::default(), presenting: false });
         let right = t.split(root, Side::Right, Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None }).unwrap();
         assert_eq!(t.find_path(root, Path::new("/p/cut.mp4")), Some(0));
         assert_eq!(t.find_path(root, Path::new("/p/none.mp4")), None);
@@ -831,12 +841,19 @@ mod tests {
 
     #[test]
     fn a_viewer_tab_s_mode_round_trips_and_an_old_file_renders() {
-        let mut t = Tree::new(Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Raw });
+        let mut t = Tree::new(Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Raw, presenting: false });
         let json = serde_json::to_string(&t).unwrap();
         let back: Tree = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.pane(back.panes()[0]).unwrap().tabs[0], Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Raw });
+        assert_eq!(back.pane(back.panes()[0]).unwrap().tabs[0], Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Raw, presenting: false });
         let old: Tree = serde_json::from_str(&json.replace(",\"mode\":\"Raw\"", "")).unwrap();
-        assert_eq!(old.pane(old.panes()[0]).unwrap().tabs[0], Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Rendered });
+        assert_eq!(old.pane(old.panes()[0]).unwrap().tabs[0], Tab::Viewer { path: "/p/a.md".into(), mode: ViewMode::Rendered, presenting: false });
+        assert!(!json.contains("presenting"), "written only when on");
+        t.set_viewer_presenting(t.panes()[0], 0, true);
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"presenting\":true"));
+        let back: Tree = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.pane(back.panes()[0]).unwrap().tabs[0], Tab::Viewer { presenting: true, .. }), "presentation mode comes back with the tab");
+        t.set_viewer_presenting(t.panes()[0], 0, false);
         t.set_viewer_mode(t.panes()[0], 0, ViewMode::Rendered);
         assert!(matches!(t.pane(t.panes()[0]).unwrap().tabs[0], Tab::Viewer { mode: ViewMode::Rendered, .. }));
     }

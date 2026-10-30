@@ -554,7 +554,7 @@ mod tests {
         let ws = load_from(&file, Path::new("/p")).unwrap();
         let pane = ws.tree.pane(1).unwrap();
         assert_eq!(pane.tabs[0], Tab::Video { path: "/p/cut.mp4".into(), at: None, loop_range: None });
-        assert_eq!(pane.tabs[1], Tab::Viewer { path: "/p/a.rs".into(), mode: crate::tree::ViewMode::default() });
+        assert_eq!(pane.tabs[1], Tab::Viewer { path: "/p/a.rs".into(), mode: crate::tree::ViewMode::default(), presenting: false });
         assert_eq!(pane.ids, vec![5, 6]);
     }
 
