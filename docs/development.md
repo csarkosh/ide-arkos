@@ -584,6 +584,13 @@ Things only a person at the screen can check, in order of value:
   the heading; Right on Mermaid Diagram opens its templates beside it, and Pie renders within two
   seconds; `/3x4` makes the table with the caret in its first cell; ` /todo` after a list item makes
   it a task; `/` then Escape leaves the slash; `and/or` opens nothing; Image opens the file picker
+- structure: hover a heading: its chevron shows; click it: the section hides and the heading ends
+  with "…"; Cmd+K Cmd+0 folds all, Cmd+K Cmd+J unfolds all; the folds survive a relaunch; Down from
+  a folded heading lands after its section
+- structure: the Outline section lists the headings as a tree; a click on a heading a fold hides
+  shows it and scrolls there; paging through a long document moves the highlight; resting on a row
+  shows its preview; drag a paragraph's handle above a heading: the accent line shows where, and it
+  lands there with blank lines around it; one undo puts it back
 - the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
   back; the choice survives a relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
