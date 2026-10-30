@@ -16,7 +16,8 @@ the sweep are unchanged. `error <message>` is the diagram's error, as before; a 
 answered in ten seconds is an error too. One render at a time per window, on the main thread,
 started by the frame that wants it. "Install Google Chrome" is gone: every Mac can draw.
 
-`SCALE` goes from 2 to 3, so a diagram zoomed to 150 percent on a Retina screen is still sharp.
+`SCALE` stays 2 (twice the pixels of the CSS size): at 3 the area cap would refuse diagrams that
+draw today, and a picture zoomed to 150 percent still reads well.
 
 ## 2. A diagram's modes, zoom and pan
 
