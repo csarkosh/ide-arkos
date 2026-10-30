@@ -1159,6 +1159,13 @@ fn task_box(s: &str) -> Option<bool> {
 
 /// What Enter does on a list item line: the marker to insert on the next line (a number is
 /// incremented, a task starts unchecked) and whether the item was empty, which ends the list.
+/// A list item line's marker column and content column, in characters (`- a` gives 0 and 2,
+/// `  10. a` gives 2 and 6); `None` for any other line.
+pub fn list_item_columns(line: &str) -> Option<(usize, usize)> {
+    let (indent, _, content) = list_parts(line)?;
+    Some((indent.chars().count(), line[..content].chars().count()))
+}
+
 pub fn list_continuation(line: &str) -> Option<(String, bool)> {
     let (indent, marker, content) = list_parts(line)?;
     let rest = &line[content..];
