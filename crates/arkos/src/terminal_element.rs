@@ -2,7 +2,8 @@
 //! viewport plus one above are shaped and painted, which is the virtualization.
 use crate::layout::{build_runs, CellKind, CellStyle};
 use crate::palette::Rgb;
-use crate::terminal::{CellMetrics, Terminal};
+use crate::effects::decode::{Decode, Timing};
+use crate::terminal::{CellMetrics, RowsForPaint, Terminal};
 use crate::links::{span_at, Span};
 use crate::terminal::HoveredLink;
 use gpui::{
@@ -26,12 +27,45 @@ pub struct TerminalElement {
     family: SharedString,
     /// The alpha of the terminal's paper: 1 without an effect, the effect's `paper_alpha` under one.
     paper_alpha: f32,
+    /// How changed cells decode under an effect that decodes the terminal; None without one.
+    decode: Option<Timing>,
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32) -> Self {
-        Self { terminal, font_size, line_height, family, paper_alpha }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, decode: Option<Timing>) -> Self {
+        Self { terminal, font_size, line_height, family, paper_alpha, decode }
     }
+}
+
+/// The visible rows as they are drawn. With a timing, the decode state (made here when it is
+/// missing) takes in the rows and each cell shows what the decode says; without one, the state
+/// is dropped and the rows are drawn as they are.
+pub fn decoded_rows(
+    decode: &mut Option<Decode>,
+    rows: &RowsForPaint,
+    timing: Option<Timing>,
+    cols: usize,
+    now: Instant,
+) -> Vec<Vec<(char, CellStyle, CellKind)>> {
+    let Some(timing) = timing else {
+        *decode = None;
+        return rows.visible.clone();
+    };
+    let state = decode.get_or_insert_with(|| Decode::new(cols, rows.visible.len(), rows.display_offset));
+    state.observe(&rows.visible, rows.display_offset, now);
+    rows.visible
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            line.iter()
+                .enumerate()
+                .map(|(col, &cell)| {
+                    let (ch, style) = state.shown(col, row, cell, now, timing);
+                    (ch, style, cell.2)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn hsla(c: Rgb) -> Hsla {
@@ -139,7 +173,8 @@ impl Element for TerminalElement {
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
         // The colours come from the terminal's palette, which follows the theme.
         let mouse = window.mouse_position();
-        let (rows, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
+        let decode = self.decode;
+        let (rows, visible, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -170,7 +205,11 @@ impl Element for TerminalElement {
             let find_owed = t.refresh_find();
             let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
-            (t.core.rows_for_paint(), frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
+            // The decode observes once per paint; under a decoding effect the window's glyph
+            // timer supplies the frames that carry a changed cell through its scramble.
+            let rows = t.core.rows_for_paint();
+            let visible = decoded_rows(&mut t.decode, &rows, decode, t.core.columns(), now);
+            (rows, visible, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         // Under an effect the wash shows faintly through the paper.
@@ -212,7 +251,7 @@ impl Element for TerminalElement {
                 let y = origin.y + px((frac - 1.0) * cell.height);
                 paint_row(above, y, window, cx);
             }
-            for (i, row) in rows.visible.iter().enumerate() {
+            for (i, row) in visible.iter().enumerate() {
                 let y = origin.y + px((i as f32 + frac) * cell.height);
                 paint_row(row, y, window, cx);
             }
@@ -305,6 +344,28 @@ mod tests {
 
     use crate::scroll::ScrollAnimator;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_rows_are_drawn_as_the_decode_says_and_the_state_goes_when_the_effect_does() {
+        use super::decoded_rows;
+        use crate::effects::decode;
+        use crate::layout::{CellKind, CellStyle};
+        use crate::palette::Rgb;
+        use crate::terminal::RowsForPaint;
+        let t0 = Instant::now();
+        let plain = CellStyle { fg: Rgb { r: 74, g: 246, b: 38 }, bg: Rgb { r: 0, g: 0, b: 0 }, bold: false, italic: false, dim: false, underline: false, inverse: false };
+        let rows = |s: &str| RowsForPaint { display_offset: 0, above: None, visible: vec![s.chars().map(|c| (c, plain, CellKind::Normal)).collect()], links: vec![] };
+        let mut state = None;
+        let t = Some(decode::timing(true, false));
+        let first = decoded_rows(&mut state, &rows("   "), t, 3, t0);
+        assert!(state.is_some());
+        assert_eq!(first[0][0].0, ' ');
+        let second = decoded_rows(&mut state, &rows("ok "), t, 3, t0 + Duration::from_millis(20));
+        assert_ne!(second[0][0].0, 'o', "a changed cell scrambles");
+        let plain = decoded_rows(&mut state, &rows("ok "), None, 3, t0 + Duration::from_millis(30));
+        assert!(state.is_none(), "no effect: the state is dropped");
+        assert_eq!(plain[0][0].0, 'o');
+    }
 
     #[test]
     fn split_offset_clamps_negative_drift() {

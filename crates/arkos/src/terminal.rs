@@ -47,8 +47,6 @@ pub struct Wakeup {
 }
 
 pub struct RowsForPaint {
-    // Not read in milestone 1; kept for milestone 2's per-tab scroll position.
-    #[allow(dead_code)]
     pub display_offset: usize,
     /// The line just above the viewport, present when scrolled into history.
     pub above: Option<Vec<(char, CellStyle, CellKind)>>,
@@ -901,6 +899,9 @@ pub struct Terminal {
     pub wheel_carry: WheelCarry,
     /// The left button between a press and its release (see `mouse::Clicks`).
     pub clicks: Clicks,
+    /// What the decode remembers of the grid while a decoding effect is on, kept across paints
+    /// so a change shows against the grid painted before it; None without one.
+    pub decode: Option<crate::effects::decode::Decode>,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -933,6 +934,7 @@ impl Terminal {
             frac: 0.0,
             wheel_carry: WheelCarry::default(),
             clicks: Clicks::default(),
+            decode: None,
         }
     }
 

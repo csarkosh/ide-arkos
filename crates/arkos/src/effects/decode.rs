@@ -8,39 +8,29 @@ use crate::layout::{CellKind, CellStyle};
 use crate::palette::Rgb;
 use crate::theme::mix;
 
-// Task 6 wires this module into the terminal; until then only the tests call most of it.
 /// How long a changed cell scrambles while the agent is working, in milliseconds.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const DECODE_MS_WORKING: u64 = 400;
 /// How long a changed cell scrambles when the agent is idle, in milliseconds.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const DECODE_MS_IDLE: u64 = 120;
 /// How long freshly settled text takes to cool back to its own colour, in milliseconds.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const FRESH_MS: u64 = 1500;
 /// How far toward `FRESH_WHITE` a cell's foreground starts when it settles.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const FRESH_MIX: f32 = 0.6;
 /// The characters a scrambling cell draws from.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const DECODE_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+=<>/\\|";
 /// The colour fresh text is brightened toward.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const FRESH_WHITE: Rgb = Rgb { r: 217, g: 255, b: 217 };
 /// The step of the frame index that picks the random character, in milliseconds.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const TICK_MS: u64 = 50;
 
 /// How long a cell scrambles and how long it stays brightened after it changes.
 #[derive(Clone, Copy, PartialEq, Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct Timing {
     pub decode: Duration,
     pub fresh: Duration,
 }
 
 /// The timing for the agent's state; with Reduce Motion both are zero, so a cell settles at once.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn timing(working: bool, reduce_motion: bool) -> Timing {
     if reduce_motion {
         return Timing { decode: Duration::ZERO, fresh: Duration::ZERO };
@@ -52,14 +42,12 @@ pub fn timing(working: bool, reduce_motion: bool) -> Timing {
 /// What the decode remembers of one cell: its real character and when that last changed, in
 /// nanoseconds since the state's epoch.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))]
 struct Seen {
     ch: char,
     changed: Option<u64>,
 }
 
 /// The remembered grid of one terminal.
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct Decode {
     epoch: Instant,
     cols: usize,
@@ -70,10 +58,8 @@ pub struct Decode {
     cells: Vec<Seen>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl Decode {
     /// A state for a grid of this size with no cell marked changed.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(cols: usize, rows: usize, display_offset: usize) -> Decode {
         Decode {
             epoch: Instant::now(),
@@ -88,7 +74,6 @@ impl Decode {
     /// Takes in the grid as it is now. A new size or display offset resets to this grid with no
     /// cell changed, as does the very first grid; otherwise each cell whose character differs is marked changed at `now`, or
     /// cleared when it became a space.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn observe(&mut self, rows: &[Vec<(char, CellStyle, CellKind)>], display_offset: usize, now: Instant) {
         let cols = rows.first().map_or(0, |r| r.len());
         let reset = !self.seeded || rows.len() != self.rows || cols != self.cols || display_offset != self.display_offset;
@@ -117,7 +102,6 @@ impl Decode {
 
     /// What this cell shows now: its own character and style, or a random character while it
     /// decodes, with the foreground brightened while it is fresh.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn shown(
         &self,
         col: usize,
@@ -149,7 +133,6 @@ impl Decode {
 
 /// The random character for a cell: a pure function of the cell, the instant it changed and the
 /// frame, so a frame drawn twice agrees with itself.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn random_char(col: usize, row: usize, changed_nanos: u64, frame: u64) -> char {
     let mut h = (col as u32).wrapping_mul(0x9E37_79B1);
     h = (h ^ (row as u32)).wrapping_mul(0x85EB_CA6B);
@@ -161,7 +144,6 @@ pub fn random_char(col: usize, row: usize, changed_nanos: u64, frame: u64) -> ch
 }
 
 /// How far toward white fresh text is, falling from `FRESH_MIX` to nothing over `fresh`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn fresh_mix(since: Duration, fresh: Duration) -> f32 {
     if fresh.is_zero() {
         return 0.0;

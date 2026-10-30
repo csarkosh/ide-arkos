@@ -5,6 +5,7 @@
 use crate::effects::active::Style;
 use crate::drag;
 use crate::effects::blocks;
+use crate::effects::decode;
 use crate::find;
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::link_menu::{press_kind, LinkMenu, PressKind};
@@ -356,6 +357,12 @@ fn automatic_label(root: &Root, p: &Pane, idx: usize, tab: &Tab) -> (String, Tab
     }
 }
 
+/// How the terminal decodes: under an effect that decodes it, longer while its session works and
+/// at once with Reduce Motion; None without one.
+pub fn decode_timing(style_decode: bool, state: Option<protocol::ClaudeState>, reduce: bool) -> Option<decode::Timing> {
+    style_decode.then(|| decode::timing(state == Some(protocol::ClaudeState::Working), reduce))
+}
+
 pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Window, cx: &mut Context<Root>) -> Div {
     let style = root.effect_style();
     let focused = root.tree.focused == pane;
@@ -381,7 +388,8 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => {
                 let family = root.family();
                 let now = root.frame_now;
-                render_terminal(terminal, pane, family, &theme, style, &mut root.find_bars, now, cx)
+                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion());
+                render_terminal(terminal, pane, family, &theme, style, decode, &mut root.find_bars, now, cx)
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
@@ -835,7 +843,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     true
 }
 
-fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, style: Style, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, style: Style, decode: Option<decode::Timing>, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let (font_size, line_height) = {
         let t = terminal.read(cx);
@@ -964,7 +972,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .id(("term-hover", pane))
                 .size_full()
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
-                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha)),
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, decode)),
         )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
@@ -1379,6 +1387,16 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_terminal_decodes_under_a_decoding_effect_longer_while_its_session_works() {
+        use protocol::ClaudeState::*;
+        assert_eq!(decode_timing(false, Some(Working), false), None);
+        assert_eq!(decode_timing(true, Some(Working), false), Some(decode::timing(true, false)));
+        assert_eq!(decode_timing(true, Some(Idle), false), Some(decode::timing(false, false)));
+        assert_eq!(decode_timing(true, None, false), Some(decode::timing(false, false)));
+        assert_eq!(decode_timing(true, Some(Working), true), Some(decode::timing(true, true)));
+    }
 
     #[test]
     fn the_pill_names_the_other_mode() {
