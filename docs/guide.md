@@ -109,6 +109,17 @@ matter still turn into their source when the caret enters them. Click another bl
 arrows past the end of this one, and the active block moves; Up and Down move by displayed row.
 When the pane loses focus the active block renders again.
 
+The keys shape the document as you type, as in Mark Sharp. Enter starts a new paragraph (inside a
+quote, a new paragraph of the quote; an empty quote line ends the quote), the next item in a list,
+and on an empty item ends the list, or moves a nested item out a level. Shift+Enter breaks the
+line inside a paragraph or an item (written as a `\` at the line's end), leaves a quote, and on a
+code block's last line leaves the block. Tab nests a list item one level under the item above, no
+deeper, and Shift+Tab brings it back, from anywhere in the item. Cmd+B and Cmd+I bold and italicize
+the selection, or the word under the caret, and take the bold or italic the caret is in away; in a
+markdown document they are the editor's, and Cmd+B toggles the sidebar everywhere else. Paste a web
+address or the path of a file over a selection and it becomes a link. A right-click (or
+Control+click) opens a menu with Cut, Copy, Paste, Bold, Italic, Strikethrough, Code and Link.
+
 Arkos saves a second after you stop typing, and Cmd+S saves at once. The tab shows " •" until the
 file is written. Line endings (`\n` or `\r\n`) and a byte order mark are kept as the file had
 them. A file with both kinds of line ending, or one that is not valid UTF-8, opens read-only with
@@ -356,7 +367,8 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+C | copy the selected terminal text, with the lines a program wrapped to the pane's width joined |
 | Shift+Cmd+C | copy as shown: the selected terminal text with its rows as they are on screen, for code or a table |
 | Cmd+V | paste |
-| Cmd+B | toggle the sidebar |
+| Cmd+B | toggle the sidebar (in a markdown document: bold) |
+| Cmd+I | in a markdown document: italic |
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
@@ -368,10 +380,11 @@ The VS Code map, in a terminal-friendly form.
 | Cmd+Fn+Delete | in a markdown file: delete to the line end |
 | Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
 | Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
-| Tab, Shift+Tab | in a markdown list: indent or outdent the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
+| Tab, Shift+Tab | in a markdown list: nest the item one level under the item above, or bring it back, from anywhere in the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
 | Up, Down | in a table: the cell above or below |
 | Cmd+click | in a markdown file: open a link, or an image, poster, video or audio; a plain click on a revealed link's address opens it too |
-| Enter | in a markdown list: start the next item; on an empty item, end the list |
+| Enter | in a rendered markdown paragraph or heading: a new paragraph; in a quote: a new quoted paragraph; in a list: the next item; on an empty item, end the list or move a nested item out a level |
+| Shift+Enter | in a rendered markdown paragraph or item: a line break; in a quote: out of the quote; on a code block's last line: out of the block |
 | Escape | in a markdown file: collapse the selection, leave the active block, or close find |
 | Space | in a video tab: play or pause |
 | Left, Right | in a video tab: back or forward 5 seconds |

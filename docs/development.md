@@ -570,6 +570,15 @@ Things only a person at the screen can check, in order of value:
   method's candidates sit under the caret; click an image: its `![alt](path)` shows under the
   picture; with the find bar open the hit's paragraph shows the hit highlighted in the document
   font; a code block and a table still turn raw; the selection paints across a revealed paragraph
+- typing rules: Enter in a paragraph's middle splits it into two paragraphs; at a heading's end the
+  next line is plain text; Enter twice in a quote makes a second quoted paragraph and Enter on its
+  empty `>` line ends the quote; Shift+Enter in a paragraph breaks the line (a `\` in the file) and
+  in an item keeps the text in the item; Shift+Enter on a code block's last line lands after it
+- typing rules: Tab on the second item of a numbered list nests it under the first, a second Tab
+  does nothing, Shift+Tab brings it back; Enter on an empty nested item moves it out a level
+- typing rules: Cmd+B on a word bolds it and again un-bolds it; Cmd+I on a selection italicizes it;
+  Cmd+B in a code viewer still toggles the sidebar; copy `https://example.com`, select a word, Cmd+V:
+  it becomes a link; right-click a word: the menu shows Cut and Copy dimmed, and Bold bolds the word
 - the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
   back; the choice survives a relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
