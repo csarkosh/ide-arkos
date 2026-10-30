@@ -337,7 +337,7 @@ impl TablePiece {
         match md_table::parse(&source) {
             Some(t) if t.rows.len() <= GRID_MAX_ROWS => {
                 let rows = std::iter::once(t.header).chain(t.rows).map(|row| row.into_iter().map(GridCell::new).collect()).collect();
-                TablePiece::Grid(Grid { align: t.align, rows }, Widths { key: None, natural: Vec::new(), floors: Vec::new(), scroll: ScrollHandle::new() })
+                TablePiece::Grid(Grid { align: t.align, rows }, Widths { key: None, natural: Vec::new(), floors: Vec::new(), scroll: ScrollHandle::new(), editing: None })
             }
             _ => TablePiece::Source(source.into()),
         }
@@ -388,6 +388,8 @@ struct Widths {
     natural: Vec<f32>,
     floors: Vec<f32>,
     scroll: ScrollHandle,
+    /// The editing cell's column and the width its markdown needs (`measure_table`).
+    editing: Option<(usize, f32)>,
 }
 
 /// The columns' drawn widths from their natural widths and their floors (each column's widest
@@ -443,9 +445,23 @@ fn runs_in(runs: &[TextRun], range: Range<usize>) -> Vec<TextRun> {
 /// closure calls it, the one place with a `Window` to measure text with.
 fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window) {
     let open = section_open(v, ix);
+    let editing = editing_cell(v, ix);
     let Some(Some(r)) = v.block_cache.get_mut(ix) else { return };
     match r.pieces.first_mut() {
-        Some(Piece::Table(TablePiece::Grid(grid, widths))) => measure_grid(grid, widths, ctx, window),
+        Some(Piece::Table(TablePiece::Grid(grid, widths))) => {
+            measure_grid(grid, widths, ctx, window);
+            // The cell being edited shows its markdown, which can be wider than what it renders
+            // (`\|`, `**`): its column is as wide as that, measured each frame, so the row never
+            // wraps under the caret.
+            widths.editing = editing.map(|(row, c, raw)| {
+                let weight = if row == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
+                let mut f = font(ctx.ui.clone());
+                f.weight = weight;
+                let run = TextRun { len: raw.len(), font: f, color: ctx.text, background_color: None, underline: None, strikethrough: None };
+                let w = if raw.is_empty() { 0.0 } else { f32::from(window.text_system().layout_line(&raw, px(ctx.font_size * PARA), &[run], None).width).ceil() };
+                (c, w + CELL_PAD_X * 2.0 + 1.0)
+            });
+        }
         Some(Piece::Details(d)) if open => {
             for piece in d.blocks.iter_mut().flat_map(|(_, pieces)| pieces) {
                 if let Piece::Table(TablePiece::Grid(grid, widths)) = piece {
@@ -455,6 +471,17 @@ fn measure_table(v: &mut Viewer, ix: usize, ctx: &BlockCtx, window: &mut Window)
         }
         _ => {}
     }
+}
+
+/// The cell of table block `ix` being edited: its grid row, its column and its markdown.
+fn editing_cell(v: &Viewer, ix: usize) -> Option<(usize, usize, String)> {
+    if !v.table_edit {
+        return None;
+    }
+    let (_, source, p) = v.table_cell().filter(|(b, _, _)| *b == ix)?;
+    let range = md_table::cell_range(&source, p)?;
+    let raw = source.split('\n').nth(p.row)?.chars().skip(range.start).take(range.len()).collect();
+    Some((md_table::row_of_line(p.row)?, p.cell, raw))
 }
 
 /// Whether block `ix` is a `<details>` section that is open (`Viewer::details_open`).
@@ -482,14 +509,15 @@ fn measure_grid(grid: &Grid, widths: &mut Widths, ctx: &BlockCtx, window: &mut W
         let weight = if i == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
         for ((w, floor), cell) in natural.iter_mut().zip(floors.iter_mut()).zip(row) {
             let (text, runs, _) = styled_runs(&cell.runs, weight, ctx.text, ctx);
-            let text_w = if text.is_empty() { 0.0 } else { f32::from(window.text_system().layout_line(&text, px(size), &runs, None).width) };
+            // Rounded up: a column exactly as wide as its widest cell can wrap that cell's last letter.
+            let text_w = if text.is_empty() { 0.0 } else { f32::from(window.text_system().layout_line(&text, px(size), &runs, None).width).ceil() };
             *w = w.max(text_w + CELL_PAD_X * 2.0 + 1.0);
             let word = widest_word(&text);
             if !word.is_empty() {
                 // The word is a slice of the cell's text, so its offset in it is the pointers' difference.
                 let at = word.as_ptr() as usize - text.as_ptr() as usize;
                 let word_runs = runs_in(&runs, at..at + word.len());
-                let word_w = f32::from(window.text_system().layout_line(word, px(size), &word_runs, None).width);
+                let word_w = f32::from(window.text_system().layout_line(word, px(size), &word_runs, None).width).ceil();
                 *floor = floor.max(word_w + CELL_PAD_X * 2.0 + 1.0);
             }
         }
@@ -860,6 +888,11 @@ pub fn render(
                 if hidden {
                     return div().id(("md-hidden", ix)).h(px(0.0)).into_any_element();
                 }
+                // A table that parses stays a grid while the caret is in it (tables spec).
+                let raw = raw && !{
+                    let v = ctx.viewer.read(cx);
+                    v.doc.as_ref().zip(v.blocks.get(ix)).is_some_and(|(d, b)| b.kind == BlockKind::Table && md_table::parse(&block_source(d.lines(), b)).is_some())
+                };
                 if raw {
                     // A paragraph, heading, list or quote stays rendered and reveals the element
                     // under the caret; any other block, or one the reveal cannot draw, is its
@@ -1154,7 +1187,7 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
     };
     let press_gutter = task_press.clone();
     let (v_down, v_move, texts_down) = (ctx.viewer.clone(), ctx.viewer.clone(), texts.clone());
-    let (v_right, texts_right) = (ctx.viewer.clone(), texts.clone());
+    let (v_right, texts_right, press_right) = (ctx.viewer.clone(), texts.clone(), task_press.clone());
     row.children(children)
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, _window, cx| {
             // A task box's press is for the box, Cmd+click is for a link or an image, and a press
@@ -1172,6 +1205,10 @@ pub fn block_element(ix: usize, kind: &BlockKind, r: &Rendered, v: &Viewer, ctx:
         // A right press outside the selection moves the caret there, so the menu's formats act on
         // the word under it; the pane's own handler then opens the menu.
         .on_mouse_down(MouseButton::Right, move |ev: &MouseDownEvent, _window, cx| {
+            // A table cell selected itself for the menu.
+            if press_right.replace(false) {
+                return;
+            }
             v_right.update(cx, |v, cx| {
                 if let Some(p) = caret_at(v, ix, &texts_right, ev.position).filter(|p| v.press_outside_selection(*p)) {
                     v.place_caret(p, false, cx);
@@ -1305,7 +1342,7 @@ fn piece_element(ix: usize, j: usize, piece: &Piece, size: f32, code_runs: Optio
         }
         Piece::Diagram(d) => diagram_element(ix, d, v, ctx, parts),
         Piece::Rule => div().my(px(RULE_GAP)).h(px(1.0)).w_full().bg(ctx.border).into_any_element(),
-        Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, ctx, (!inner).then_some(&parts.task_press)),
+        Piece::Table(TablePiece::Grid(grid, widths)) => grid_element(ix, grid, widths, v, ctx, (!inner).then_some(&parts.task_press)),
         Piece::Table(TablePiece::Source(t)) => mono_box(t, ctx.text, Some(ctx.code_bg), ctx),
         // An HTML block is its source, dimmed (spec 5.2).
         Piece::Html(t) => mono_box(t, ctx.dim, Some(ctx.code_bg), ctx),
@@ -2012,18 +2049,43 @@ fn code_runs(lines: &[String], spans: Option<&[Vec<Span>]>, mono: &SharedString,
 /// the window's background and a 4 percent tint of the text, 1 px hairlines between rows and
 /// columns, each cell padded and aligned by its column, the columns as wide as `column_widths`
 /// makes them for the view (a grid in `WideTables::Scroll` scrolls sideways in its block, the
-/// vertical wheel still scrolling the list). A press on a cell puts the caret at the matching
-/// source position (`Viewer::click_table_cell`), the block's own press standing aside through
-/// `press`, as for a task box; with no `press` (a table inside a `<details>` section) the cells
-/// take no press and the row's places the caret.
-fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: Option<&Rc<Cell<bool>>>) -> AnyElement {
+/// vertical wheel still scrolling the list). With the caret in it the grid stays: the caret's cell
+/// has an accent ring, an editing cell shows its markdown with the caret, a picked row, column or
+/// grid is tinted, each row's left edge and each column's top edge pick it, and "+" strips at the
+/// right and bottom add a column or a row (tables spec). A press on a cell selects it
+/// (`Viewer::press_table_cell`), the block's own press standing aside through `press`, as for a
+/// task box; with no `press` (a table inside a `<details>` section) the cells take no press and
+/// the row's places the caret.
+fn grid_element(ix: usize, grid: &Grid, widths: &Widths, v: &Viewer, ctx: &BlockCtx, press: Option<&Rc<Cell<bool>>>) -> AnyElement {
     ctx.drew_grid.set(true);
+    // The caret's cell when the caret is in this table, whether it is being edited (its text as
+    // written, with the caret's place in it), and the row, column or grid picked.
+    let selected = v.table_cell().filter(|(b, _, _)| *b == ix).and_then(|(_, source, p)| md_table::row_of_line(p.row).map(|r| (r, p.cell, source, p)));
+    let editing = selected.as_ref().filter(|_| v.table_edit).and_then(|(_, _, source, p)| {
+        let range = md_table::cell_range(source, *p)?;
+        let line = source.split('\n').nth(p.row)?;
+        let text: String = line.chars().skip(range.start).take(range.len()).collect();
+        Some((text, v.caret.head.ch.saturating_sub(range.start).min(range.len())))
+    });
+    let selected = selected.map(|(r, c, _, _)| (r, c));
+    let pick = v.table_pick.filter(|(b, _)| *b == ix).map(|(_, p)| p);
+    let picked = |r: usize, c: usize| match pick {
+        Some(crate::viewer::Pick::Row(pr)) => pr == r,
+        Some(crate::viewer::Pick::Column(pc)) => pc == c,
+        Some(crate::viewer::Pick::All) => true,
+        None => false,
+    };
+    let accent = ctx.link;
     let columns = grid.align.len();
     // The grid's own border takes 2 px of the view.
     let view = if ctx.view_w > 0.0 { ctx.view_w - 2.0 } else { f32::INFINITY };
-    let natural = if widths.natural.len() == columns { widths.natural.clone() } else { vec![CELL_PAD_X * 2.0 + 1.0; columns] };
+    let mut natural = if widths.natural.len() == columns { widths.natural.clone() } else { vec![CELL_PAD_X * 2.0 + 1.0; columns] };
     // Floors not measured for these columns yet are 0, which is the cap and shrink alone.
-    let floors = if widths.floors.len() == columns { widths.floors.clone() } else { vec![0.0; columns] };
+    let mut floors = if widths.floors.len() == columns { widths.floors.clone() } else { vec![0.0; columns] };
+    if let Some((c, w)) = widths.editing.filter(|(c, _)| *c < columns && v.table_edit) {
+        natural[c] = natural[c].max(w);
+        floors[c] = floors[c].max(w);
+    }
     let drawn = column_widths(&natural, &floors, view, ctx.wide_tables);
     let tint = ctx.text.opacity(0.04);
     // Under an effect that inks the borders, the inner lines are ink and the wash draws the
@@ -2036,16 +2098,56 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
         let line = if r == 0 { 0 } else { r + 1 };
         let cells = row.iter().zip(&grid.align).zip(&drawn).enumerate().map(|(c, ((cell, align), w))| {
             let weight = if r == 0 { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
-            let (text, layout) = runs_text(r * columns + c, &cell.runs, weight, ctx.text, ctx);
+            let is_selected = selected == Some((r, c));
+            // The cell being edited shows its markdown as written, with the caret.
+            let edit_here = editing.as_ref().filter(|_| is_selected);
+            let (text, layout) = match edit_here {
+                Some((raw, _)) => {
+                    let mut f = font(ctx.ui.clone());
+                    f.weight = weight;
+                    // An empty cell lays out a zero-width space so the caret has a line to sit on.
+                    let shown = if raw.is_empty() { "\u{200b}".to_string() } else { raw.clone() };
+                    let len = shown.len();
+                    let styled = StyledText::new(shown).with_runs(vec![TextRun { len, font: f, color: ctx.text, background_color: None, underline: None, strikethrough: None }]);
+                    let layout = styled.layout().clone();
+                    (styled.into_any_element(), layout)
+                }
+                None => runs_text(r * columns + c, &cell.runs, weight, ctx.text, ctx),
+            };
+            let caret_byte = edit_here.map(|(raw, ch)| raw.char_indices().nth(*ch).map_or(raw.len(), |(b, _)| b));
+            let edit_text = edit_here.map(|(raw, _)| raw.clone());
             let (viewer, press, cell_text, cell_runs) = (ctx.viewer.clone(), press.cloned(), cell.text.clone(), cell.runs.clone());
+            let (v_right, p_right) = (ctx.viewer.clone(), press.clone());
+            let caret_layout = layout.clone();
+            let caret_color = ctx.caret;
             div()
                 .flex_none()
                 .w(px(*w))
                 .min_w_0()
+                .relative()
                 .when(c > 0, |d| d.border_l_1().border_color(rule))
+                .when(picked(r, c), |d| d.bg(accent.opacity(0.15)))
                 .px(px(CELL_PAD_X))
                 .py(px(CELL_PAD_Y))
+                .when(is_selected, |d| d.child(div().absolute().inset_0().border_2().border_color(accent)))
+                .when_some(caret_byte, move |d, byte| {
+                    d.child(
+                        canvas(
+                            move |_, _, _| caret_layout,
+                            move |_, layout, window, _| {
+                                if let Some(p) = layout.position_for_index(byte) {
+                                    element::paint_caret(window, p.x, p.y, layout.line_height(), caret_color);
+                                }
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                })
+                // An editing cell reads from the left, as a spreadsheet's does (and gpui places a
+                // caret as if its text were).
                 .map(|d| match align {
+                    _ if edit_here.is_some() => d,
                     Align::Right => d.text_right(),
                     Align::Center => d.text_center(),
                     Align::Default | Align::Left => d,
@@ -2058,17 +2160,65 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
                             return;
                         }
                         press.set(true);
-                        let ch = if cell_text.is_empty() {
-                            0
-                        } else {
-                            let byte = md_blocks::source_offset_at(&cell_runs, index_near(&layout, ev.position)).min(cell_text.len());
-                            cell_text[..cell_text.floor_char_boundary(byte)].chars().count()
+                        let ch = match &edit_text {
+                            // The cell being edited: the char under the press in its markdown.
+                            Some(raw) => {
+                                let byte = index_near(&layout, ev.position).min(raw.len());
+                                raw[..raw.floor_char_boundary(byte)].chars().count()
+                            }
+                            None if cell_text.is_empty() => 0,
+                            None => {
+                                let byte = md_blocks::source_offset_at(&cell_runs, index_near(&layout, ev.position)).min(cell_text.len());
+                                cell_text[..cell_text.floor_char_boundary(byte)].chars().count()
+                            }
                         };
-                        viewer.update(cx, |v, cx| v.click_table_cell(ix, line, c, ch, ev.modifiers.shift, cx));
+                        viewer.update(cx, |v, cx| v.press_table_cell(ix, line, c, ch, ev.click_count, cx));
+                    })
+                })
+                // A right press selects the cell for the menu the pane opens.
+                .when_some(p_right, move |d, press| {
+                    d.on_mouse_down(MouseButton::Right, move |_ev: &MouseDownEvent, _window, cx| {
+                        press.set(true);
+                        v_right.update(cx, |v, cx| {
+                            // A right press in the caret's own cell leaves it (and its editing) as is.
+                            let pos = md_table::CellPos { row: line, cell: c };
+                            if v.table_cell().map(|(b, _, p)| (b, p)) != Some((ix, pos)) {
+                                v.select_cell(ix, pos, false, cx);
+                            }
+                        });
                     })
                 })
         });
         let above = if r == 1 { outline } else { rule };
+        // The edge selectors: the row's left edge, and in the header each column's top edge and the
+        // corner.
+        let selector = |id: (&'static str, usize), pick: crate::viewer::Pick| {
+            let viewer = ctx.viewer.clone();
+            div()
+                .id(id)
+                .absolute()
+                .cursor_pointer()
+                .hover(move |s| s.bg(accent.opacity(0.5)))
+                // Interactive only where the cells are (not inside a `<details>` section).
+                .when(press.is_some(), move |d| {
+                    d.on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, cx| {
+                        // The cell and the row under the edge never see the press: the cell would
+                        // select itself and drop the pick.
+                        cx.stop_propagation();
+                        viewer.update(cx, |v, cx| v.pick_table(ix, pick, cx));
+                    })
+                })
+        };
+        let mut x = 0.0;
+        let column_selectors: Vec<_> = if r == 0 {
+            drawn.iter().enumerate().map(|(c, w)| {
+                let left = x;
+                x += w;
+                selector(("md-col-pick", ix * 1000 + c), crate::viewer::Pick::Column(c)).top_0().left(px(left)).w(px(*w)).h(px(5.0))
+            }).collect()
+        } else {
+            Vec::new()
+        };
         div()
             .flex()
             .flex_row()
@@ -2076,6 +2226,9 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
             .bg(bg)
             .when(r > 0, |d| d.border_t_1().border_color(above))
             .children(cells)
+            .child(selector(("md-row-pick", ix * 1000 + r), crate::viewer::Pick::Row(r)).left_0().top_0().bottom_0().w(px(5.0)))
+            .children(column_selectors)
+            .when(r == 0, |d| d.child(selector(("md-all-pick", ix), crate::viewer::Pick::All).left_0().top_0().size(px(9.0))))
             .when_some(ctx.shapes.clone().filter(|_| r == 0), |d, root| d.child(shape_reporter(root, key, crate::effects::blocks::Kind::TableHeader)))
     });
     let table = div()
@@ -2091,15 +2244,41 @@ fn grid_element(ix: usize, grid: &Grid, widths: &Widths, ctx: &BlockCtx, press: 
         .line_height(relative(PARA_LINE))
         .children(rows)
         .when_some(ctx.shapes.clone(), |d, root| d.child(shape_reporter(root, key, crate::effects::blocks::Kind::Table)));
-    match ctx.wide_tables {
+    let grid = match ctx.wide_tables {
         WideTables::Wrap => table.into_any_element(),
         WideTables::Scroll => {
-            let mut scroller = div().id(("md-table", ix)).w_full().overflow_x_scroll().track_scroll(&widths.scroll).child(table);
+            let mut scroller = div().id(("md-table", ix)).flex_1().min_w_0().overflow_x_scroll().track_scroll(&widths.scroll).child(table);
             // A vertical wheel over the table scrolls the list, not the table.
             scroller.style().restrict_scroll_to_axis = Some(true);
             scroller.into_any_element()
         }
-    }
+    };
+    // The "+" strips at the right and bottom edges, shown while the block is hovered.
+    let Some(press) = press else { return grid };
+    let strip = |id: (&'static str, usize), column: bool| {
+        let (viewer, press, dim) = (ctx.viewer.clone(), press.clone(), ctx.dim);
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(3.0))
+            .text_color(dim)
+            .cursor_pointer()
+            .opacity(0.0)
+            .group_hover("md-row", |s| s.opacity(1.0))
+            .hover(move |s| s.bg(accent.opacity(0.2)))
+            .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, _cx| press.set(true))
+            .on_click(move |_ev, _window, cx| viewer.update(cx, |v, cx| v.table_grow(ix, column, cx)))
+            .child("+")
+    };
+    let width = drawn.iter().sum::<f32>() + 2.0;
+    div()
+        .flex()
+        .flex_col()
+        .child(div().flex().flex_row().gap(px(2.0)).child(grid).child(strip(("md-add-column", ix), true).w(px(16.0))))
+        .child(strip(("md-add-row", ix), false).mt(px(2.0)).h(px(16.0)).w(px(width)))
+        .into_any_element()
 }
 
 /// A table, HTML or front matter block: its source in the terminal font, on a background when

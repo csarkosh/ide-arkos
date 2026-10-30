@@ -276,6 +276,136 @@ fn pad(text: &str, align: Align, w: usize) -> String {
     format!("{}{text}{}", " ".repeat(left), " ".repeat(right))
 }
 
+/// A table's rows as the grid counts them (0 the header, 1 the first body row) to the block's
+/// lines (the delimiter row, line 1, between them), and back.
+pub fn line_of_row(row: usize) -> usize {
+    if row == 0 {
+        0
+    } else {
+        row + 1
+    }
+}
+
+pub fn row_of_line(line: usize) -> Option<usize> {
+    match line {
+        0 => Some(0),
+        1 => None,
+        l => Some(l - 1),
+    }
+}
+
+/// Cell `pos`'s text on its line, as a char range: trimmed, or empty where `cell_start` puts the
+/// caret in an empty cell.
+pub fn cell_range(source: &str, pos: CellPos) -> Option<std::ops::Range<usize>> {
+    let text = source.split('\n').nth(pos.row)?;
+    let chars: Vec<char> = text.chars().collect();
+    let seg = segments(text).get(pos.cell).cloned()?;
+    let start = (seg.start..seg.end).find(|&i| !chars[i].is_whitespace());
+    Some(match start {
+        Some(a) => a..(seg.start..seg.end).rev().find(|&i| !chars[i].is_whitespace()).map_or(a, |b| b + 1),
+        None => {
+            let at = cell_start(source, pos)?.1;
+            at..at
+        }
+    })
+}
+
+/// Text typed into a cell: a pipe escaped so it does not end the cell, a line break a space.
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev = '\0';
+    for c in text.chars() {
+        match c {
+            '|' if prev != '\\' => out.push_str("\\|"),
+            '\n' | '\r' => out.push(' '),
+            c => out.push(c),
+        }
+        prev = c;
+    }
+    out
+}
+
+/// A change to a table's structure or cells; rows are the grid's (0 the header).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    Set(usize, usize, String),
+    Clear(Vec<(usize, usize)>),
+    /// A new empty row at this grid row; 0 puts it above the header, which it becomes.
+    InsertRow(usize),
+    /// The header deleted makes the first body row the header; the only row deleted, the table.
+    DeleteRow(usize),
+    InsertColumn(usize),
+    /// The last column deleted deletes the table.
+    DeleteColumn(usize),
+    Align(usize, Align),
+    DeleteTable,
+}
+
+/// The block's source after `op`, the table re-aligned and what follows it kept. `None` when the
+/// table does not parse or the op names a cell it does not have.
+pub fn apply(source: &str, op: &Op) -> Option<String> {
+    let t = parse(source)?;
+    let rest = tail(source);
+    let mut align = t.align.clone();
+    let mut rows: Vec<Vec<String>> = std::iter::once(t.header.clone()).chain(t.rows.iter().cloned()).collect();
+    let columns = align.len();
+    let gone = || Some(rest.trim_start_matches('\n').to_string());
+    match op {
+        Op::Set(r, c, text) => *rows.get_mut(*r)?.get_mut(*c)? = escape(text.trim()),
+        Op::Clear(cells) => {
+            for (r, c) in cells {
+                if let Some(cell) = rows.get_mut(*r).and_then(|row| row.get_mut(*c)) {
+                    cell.clear();
+                }
+            }
+        }
+        Op::InsertRow(at) => rows.insert((*at).min(rows.len()), vec![String::new(); columns]),
+        Op::DeleteRow(r) => {
+            if *r >= rows.len() {
+                return None;
+            }
+            if rows.len() == 1 {
+                return gone();
+            }
+            rows.remove(*r);
+        }
+        Op::InsertColumn(at) => {
+            let at = (*at).min(columns);
+            align.insert(at, Align::Default);
+            for row in &mut rows {
+                row.insert(at, String::new());
+            }
+        }
+        Op::DeleteColumn(c) => {
+            if *c >= columns {
+                return None;
+            }
+            if columns == 1 {
+                return gone();
+            }
+            align.remove(*c);
+            for row in &mut rows {
+                row.remove(*c);
+            }
+        }
+        Op::Align(c, a) => *align.get_mut(*c)? = *a,
+        Op::DeleteTable => return gone(),
+    }
+    let line = |cells: &[String]| format!("| {} |", cells.join(" | "));
+    let delimiter: Vec<&str> = align
+        .iter()
+        .map(|a| match a {
+            Align::Default => "---",
+            Align::Left => ":--",
+            Align::Right => "--:",
+            Align::Center => ":-:",
+        })
+        .collect();
+    let mut text = vec![line(&rows[0]), format!("| {} |", delimiter.join(" | "))];
+    text.extend(rows[1..].iter().map(|r| line(r)));
+    realign(&(text.join("\n") + rest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +486,36 @@ mod tests {
         assert_eq!(cell_at(src, 4, 0), None, "the definition is not a cell");
         let note = "| a |\n|---|\n| 1 |\n\n[^1]: a note\n\n[b]: https://y \"t\"\n";
         assert_eq!(realign(note).unwrap(), note, "an aligned table and the definitions after it are left alone");
+    }
+
+    const T: &str = "| a | b |\n|:--|--:|\n| 1 | 2 |\n| 3 | 4 |\n\n[ref]: https://x";
+
+    #[test]
+    fn a_cell_s_range_is_its_trimmed_text_and_an_empty_cell_s_is_where_the_caret_goes() {
+        assert_eq!(cell_range(T, CellPos { row: 2, cell: 1 }), Some(6..7));
+        assert_eq!(cell_range("| x |  |\n|---|---|", CellPos { row: 0, cell: 1 }), Some(6..6));
+        assert_eq!((line_of_row(0), line_of_row(1), row_of_line(1), row_of_line(3)), (0, 2, None, Some(2)));
+        assert_eq!(escape("a|b\\|c\nd"), "a\\|b\\|c d");
+    }
+
+    #[test]
+    fn operations_rewrite_the_table_aligned_and_keep_what_follows_it() {
+        let set = apply(T, &Op::Set(1, 0, "one|x".into())).unwrap();
+        assert!(set.starts_with("| a      |  b |\n|:-------|---:|\n| one\\|x |  2 |"), "{set}");
+        assert!(set.ends_with("\n\n[ref]: https://x"), "the definition after the table stays");
+        let rows = |s: &str| parse(s).unwrap().rows;
+        assert_eq!(rows(&apply(T, &Op::InsertRow(2)).unwrap()), vec![vec!["1", "2"], vec!["", ""], vec!["3", "4"]]);
+        assert_eq!(parse(&apply(T, &Op::InsertRow(0)).unwrap()).unwrap().header, vec!["", ""], "a row above the header becomes it");
+        let no_header = parse(&apply(T, &Op::DeleteRow(0)).unwrap()).unwrap();
+        assert_eq!((no_header.header, no_header.rows), (vec!["1".to_string(), "2".to_string()], vec![vec!["3".to_string(), "4".to_string()]]), "the first body row becomes the header");
+        let cols = parse(&apply(T, &Op::InsertColumn(1)).unwrap()).unwrap();
+        assert_eq!((cols.header, cols.align), (vec!["a".to_string(), String::new(), "b".to_string()], vec![Align::Left, Align::Default, Align::Right]));
+        assert_eq!(parse(&apply(T, &Op::DeleteColumn(0)).unwrap()).unwrap().header, vec!["b"]);
+        assert_eq!(parse(&apply(T, &Op::Align(0, Align::Center)).unwrap()).unwrap().align[0], Align::Center);
+        assert_eq!(rows(&apply(T, &Op::Clear(vec![(1, 0), (2, 1)])).unwrap()), vec![vec!["", "2"], vec!["3", ""]]);
+        assert_eq!(apply(T, &Op::DeleteTable).unwrap(), "[ref]: https://x", "the table goes, the rest stays");
+        assert_eq!(apply("| a |\n|---|", &Op::DeleteColumn(0)).unwrap(), "", "the last column deletes the table");
+        assert_eq!(apply("| a |\n|---|", &Op::DeleteRow(0)).unwrap(), "", "and so does the only row");
+        assert!(apply(T, &Op::Set(9, 0, "x".into())).is_none());
     }
 }

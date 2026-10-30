@@ -632,6 +632,10 @@ pub struct Viewer {
     pub lang_at: Option<Point<Pixels>>,
     /// The code block whose Copy was clicked, and when: its button reads "Copied" for a moment.
     pub copied: Option<(usize, Instant)>,
+    /// A table cell is being edited (its markdown shown with the caret), not only selected.
+    pub table_edit: bool,
+    /// A table's row, column or whole grid picked by its edge, with the table's block.
+    pub table_pick: Option<(usize, Pick)>,
     /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
@@ -676,6 +680,27 @@ pub struct Viewer {
     /// edit, load and fold.
     pub heads: Vec<md_fold::Head>,
     pub hidden: Vec<bool>,
+}
+
+/// What a table's edge selectors pick: a row (the grid's, 0 the header), a column, or all of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Row(usize),
+    Column(usize),
+    All,
+}
+
+/// The table menu's actions on the selected cell's row and column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableAction {
+    RowAbove,
+    RowBelow,
+    ColumnLeft,
+    ColumnRight,
+    DeleteRow,
+    DeleteColumn,
+    DeleteTable,
+    Align(md_table::Align),
 }
 
 /// A code block's language list: the block, the text typed in its search field, and the row
@@ -777,6 +802,8 @@ impl Viewer {
             lang: None,
             lang_at: None,
             copied: None,
+            table_edit: false,
+            table_pick: None,
             caret_placed: false,
             pending_append: false,
             compose: None,
@@ -1431,6 +1458,9 @@ impl Viewer {
         if self.lang.is_some() && self.lang_key(ks, cx) {
             return true;
         }
+        if self.table_key(ks, cx) {
+            return true;
+        }
         if self.rendered() && !self.caret_placed {
             return self.key_before_placement(ks, cx);
         }
@@ -1544,6 +1574,9 @@ impl Viewer {
     /// does).
     pub fn act(&mut self, action: KeyAction, cx: &mut Context<Self>) {
         if self.doc.is_none() {
+            return;
+        }
+        if matches!(action, KeyAction::Copy | KeyAction::Cut | KeyAction::Paste) && self.table_clipboard(action, cx) {
             return;
         }
         if self.run_action(action, cx) && places_caret(action) {
@@ -2085,6 +2118,209 @@ impl Viewer {
         .detach();
     }
 
+    /// The table holding the caret in the rendered view, when it parses: its block, its source and
+    /// the caret's cell (its `row` a line of the block).
+    pub fn table_cell(&self) -> Option<(usize, String, md_table::CellPos)> {
+        if !self.rendered() || !self.caret_placed {
+            return None;
+        }
+        let doc = self.doc.as_ref()?;
+        let ix = md_blocks::block_at(&self.blocks, self.caret.head.line);
+        let block = self.blocks.get(ix).filter(|b| b.kind == md_blocks::BlockKind::Table)?;
+        let source = md_view::block_source(doc.lines(), block);
+        md_table::parse(&source)?;
+        let pos = md_table::cell_at(&source, self.caret.head.line - block.lines.start, self.caret.head.ch)?;
+        Some((ix, source, pos))
+    }
+
+    /// The caret to a table cell: its text's start (or end, `edit`, to type after it), selecting
+    /// it, or editing it with `edit`.
+    pub fn select_cell(&mut self, ix: usize, pos: md_table::CellPos, edit: bool, cx: &mut Context<Self>) {
+        let (Some(doc), Some(block)) = (self.doc.as_mut(), self.blocks.get(ix)) else { return };
+        let source = md_view::block_source(doc.lines(), block);
+        let Some(range) = md_table::cell_range(&source, pos) else { return };
+        doc.break_coalescing();
+        let ch = if edit { range.end } else { range.start };
+        self.caret = edit::Caret::at(edit::Pos { line: block.lines.start + pos.row, ch });
+        self.caret_placed = true;
+        self.selecting = false;
+        self.table_edit = edit;
+        self.table_pick = None;
+        self.lang = None;
+        self.note_caret_moved(false, cx);
+        cx.notify();
+    }
+
+    /// A table's row, column or all of it picked by its edge: its first cell selected and the
+    /// pick drawn, for Delete and the menu.
+    pub fn pick_table(&mut self, ix: usize, pick: Pick, cx: &mut Context<Self>) {
+        let (row, cell) = match pick {
+            Pick::Row(r) => (md_table::line_of_row(r), 0),
+            Pick::Column(c) => (0, c),
+            Pick::All => (0, 0),
+        };
+        self.select_cell(ix, md_table::CellPos { row, cell }, false, cx);
+        self.table_pick = Some((ix, pick));
+        cx.notify();
+    }
+
+    /// Applies a table operation (`md_table::apply`) to block `ix` as one undoable edit, then
+    /// selects cell `then` (grid row and column) when the table is still there.
+    fn table_op(&mut self, ix: usize, op: md_table::Op, then: Option<(usize, usize)>, cx: &mut Context<Self>) {
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return };
+        let source = md_view::block_source(doc.lines(), block);
+        let Some(new) = md_table::apply(&source, &op) else { return };
+        let start = block.lines.start;
+        let last = block.lines.end.min(doc.lines().len()) - 1;
+        let end = edit::Pos { line: last, ch: doc.lines()[last].chars().count() };
+        self.table_pick = None;
+        self.table_edit = false;
+        self.edit(
+            |doc, _caret, now| {
+                doc.break_coalescing();
+                doc.replace_range(edit::Pos { line: start, ch: 0 }, end, &new, now);
+                doc.break_coalescing();
+                edit::Caret::at(doc.clamp(edit::Pos { line: start, ch: 0 }))
+            },
+            cx,
+        );
+        match then {
+            Some((r, c)) if md_table::parse(&new).is_some() => self.select_cell(ix, md_table::CellPos { row: md_table::line_of_row(r), cell: c }, false, cx),
+            // The table went: the caret stays where it was, which starts no table now.
+            _ => {}
+        }
+    }
+
+    /// The grid row and column of the caret's cell, and the table's row and column counts.
+    fn table_shape(source: &str, pos: md_table::CellPos) -> Option<(usize, usize, usize, usize)> {
+        let t = md_table::parse(source)?;
+        Some((md_table::row_of_line(pos.row)?, pos.cell, t.rows.len() + 1, t.header.len()))
+    }
+
+    /// The table menu's actions on the selected cell's row and column.
+    pub fn table_menu(&mut self, action: TableAction, cx: &mut Context<Self>) {
+        use md_table::Op;
+        let Some((ix, source, pos)) = self.table_cell() else { return };
+        let Some((r, c, rows, _cols)) = Self::table_shape(&source, pos) else { return };
+        let (op, then) = match action {
+            TableAction::RowAbove => (Op::InsertRow(r), Some((r, c))),
+            TableAction::RowBelow => (Op::InsertRow(r + 1), Some((r + 1, c))),
+            TableAction::ColumnLeft => (Op::InsertColumn(c), Some((r, c))),
+            TableAction::ColumnRight => (Op::InsertColumn(c + 1), Some((r, c + 1))),
+            TableAction::DeleteRow => (Op::DeleteRow(r), Some((r.min(rows.saturating_sub(2)), c))),
+            TableAction::DeleteColumn => (Op::DeleteColumn(c), Some((r, c.saturating_sub(1)))),
+            TableAction::DeleteTable => (Op::DeleteTable, None),
+            TableAction::Align(a) => (Op::Align(c, a), Some((r, c))),
+        };
+        self.table_op(ix, op, then, cx);
+    }
+
+    /// A "+" strip: a column at the table's right, or a row at its bottom, its first cell selected.
+    pub fn table_grow(&mut self, ix: usize, column: bool, cx: &mut Context<Self>) {
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return };
+        let Some(t) = md_table::parse(&md_view::block_source(doc.lines(), block)) else { return };
+        let (rows, cols) = (t.rows.len() + 1, t.header.len());
+        if column {
+            self.table_op(ix, md_table::Op::InsertColumn(cols), Some((0, cols)), cx);
+        } else {
+            self.table_op(ix, md_table::Op::InsertRow(rows), Some((rows, 0)), cx);
+        }
+    }
+
+    /// A click on a table cell (its source line `row` in the block, column `cell`, char `ch` into
+    /// its text): selects the cell, or, on a second click or in the cell being edited, edits it
+    /// with the caret there.
+    pub fn press_table_cell(&mut self, ix: usize, row: usize, cell: usize, ch: usize, clicks: usize, cx: &mut Context<Self>) {
+        let pos = md_table::CellPos { row, cell };
+        let editing_here = self.table_edit && self.table_cell().is_some_and(|(b, _, p)| b == ix && p == pos);
+        if clicks < 2 && !editing_here {
+            self.select_cell(ix, pos, false, cx);
+            return;
+        }
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return };
+        let source = md_view::block_source(doc.lines(), block);
+        let Some(range) = md_table::cell_range(&source, pos) else { return };
+        let ch = if clicks >= 2 && !editing_here { range.end } else { (range.start + ch).min(range.end) };
+        self.caret = edit::Caret::at(edit::Pos { line: block.lines.start + row, ch });
+        self.caret_placed = true;
+        self.selecting = false;
+        self.table_edit = true;
+        self.table_pick = None;
+        cx.notify();
+    }
+
+    /// Cut, Copy and Paste on a selected cell (or a pick): its text to the clipboard, or the
+    /// clipboard's first line into it. `false` when no cell is selected.
+    pub fn table_clipboard(&mut self, action: KeyAction, cx: &mut Context<Self>) -> bool {
+        if self.table_edit {
+            return false;
+        }
+        let Some((ix, source, pos)) = self.table_cell() else { return false };
+        let Some((r, c, _, _)) = Self::table_shape(&source, pos) else { return false };
+        let text = || md_table::cell_range(&source, pos).map(|range| source.split('\n').nth(pos.row).unwrap_or("").chars().skip(range.start).take(range.len()).collect::<String>()).unwrap_or_default();
+        match action {
+            KeyAction::Copy => cx.write_to_clipboard(ClipboardItem::new_string(text())),
+            KeyAction::Cut => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text()));
+                self.table_op(ix, md_table::Op::Set(r, c, String::new()), Some((r, c)), cx);
+            }
+            KeyAction::Paste => {
+                let clip = cx.read_from_clipboard().and_then(|i| i.text()).unwrap_or_default();
+                let line = clip.lines().next().unwrap_or("").to_string();
+                self.table_op(ix, md_table::Op::Set(r, c, line), Some((r, c)), cx);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// A key while the caret is in a table of the rendered view (tables spec, section 1), as
+    /// `table_move` decides it. `false` for a key it leaves to the editor (typing, and moves inside
+    /// an editing cell's text).
+    fn table_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        use md_table::Op;
+        let Some((ix, source, pos)) = self.table_cell() else { return false };
+        let Some((r, c, rows, cols)) = Self::table_shape(&source, pos) else { return false };
+        let range = md_table::cell_range(&source, pos).unwrap_or(0..0);
+        let cell = TableCell { r, c, rows, cols, ch: self.caret.head.ch, text: range.clone(), editing: self.table_edit };
+        let at = |r: usize, c: usize| md_table::CellPos { row: md_table::line_of_row(r), cell: c };
+        match table_move(ks, &cell) {
+            TableMove::Pass => return false,
+            TableMove::Stay => {}
+            TableMove::Select(r, c) => self.select_cell(ix, at(r, c), false, cx),
+            TableMove::Edit => self.select_cell(ix, pos, true, cx),
+            TableMove::Caret(ch) => {
+                self.caret = edit::Caret::at(edit::Pos { line: self.caret.head.line, ch });
+                cx.notify();
+            }
+            TableMove::AppendRow(c) => self.table_op(ix, Op::InsertRow(rows), Some((rows, c)), cx),
+            TableMove::Leave(up) => {
+                let Some(doc) = self.doc.as_ref() else { return true };
+                let dir = if up { md_view::Dir::Up } else { md_view::Dir::Down };
+                self.caret = md_view::navigate(doc, &self.blocks, self.caret, dir, false);
+                self.table_edit = false;
+                self.table_pick = None;
+                self.note_caret_moved(false, cx);
+                cx.notify();
+            }
+            TableMove::Clipboard(action) => return self.table_clipboard(action, cx),
+            TableMove::Clear => {
+                let pick = self.table_pick.filter(|(b, _)| *b == ix).map(|(_, p)| p);
+                self.table_op(ix, Op::Clear(picked_cells(pick, r, c, rows, cols)), Some((r, c)), cx);
+            }
+            TableMove::Escape if self.table_pick.is_some() => {
+                self.table_pick = None;
+                cx.notify();
+            }
+            TableMove::Escape => {
+                self.caret_placed = false;
+                self.note_caret_moved(false, cx);
+                cx.notify();
+            }
+        }
+        true
+    }
+
     /// Opens a code block's language list under its pill (closing it when it is open there).
     pub fn open_lang_picker(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.slash = None;
@@ -2537,15 +2773,6 @@ impl Viewer {
         cx.notify();
     }
 
-    /// A press on a cell of rendered table block `block`: the cell's source row (`row`, a line
-    /// within the block) and column (`cell`), and the char offset into its text the cell's layout
-    /// found under the pointer (`ch`). The caret goes there as for any press (Shift extends the
-    /// selection), so the block renders raw.
-    pub fn click_table_cell(&mut self, block: usize, row: usize, cell: usize, ch: usize, extend: bool, cx: &mut Context<Self>) {
-        let (Some(doc), Some(b)) = (self.doc.as_ref(), self.blocks.get(block)) else { return };
-        let Some(p) = table_cell_pos(doc.lines(), b, md_table::CellPos { row, cell }, ch) else { return };
-        self.place_caret(p, extend, cx);
-    }
 
     /// Block `ix`'s index among the document's `<details>` sections, in document order
     /// (`section_index`).
@@ -2580,6 +2807,10 @@ impl Viewer {
     /// rendered view nothing is realigned and the entry is forgotten.
     fn note_caret_moved(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.refresh_slash();
+        if self.table_cell().is_none() {
+            self.table_edit = false;
+            self.table_pick = None;
+        }
         // The caret never stands in a folded section: landing there unfolds it.
         if self.rendered() && self.caret_placed {
             let ix = self.active_block();
@@ -2682,6 +2913,24 @@ impl EntityInputHandler for Viewer {
             l.selected = 0;
             cx.notify();
             return;
+        }
+        // In a table: typing into a selected cell replaces its text and edits it; in an editing
+        // cell a pipe goes in escaped.
+        if self.marked.is_none() {
+            if let Some((ix, source, pos)) = self.table_cell() {
+                if !self.table_edit {
+                    if let Some((r, c, _, _)) = Self::table_shape(&source, pos) {
+                        self.table_op(ix, md_table::Op::Set(r, c, text.to_string()), Some((r, c)), cx);
+                        if let Some((_, _, p)) = self.table_cell() {
+                            self.select_cell(ix, p, true, cx);
+                        }
+                    }
+                    return;
+                }
+                let escaped = md_table::escape(text);
+                self.edit_raw(|doc, caret, now| doc.insert(caret, &escaped, now), cx);
+                return;
+            }
         }
         let range = if self.place_for_input(cx) { None } else { range };
         if range.is_none() {
@@ -3272,12 +3521,112 @@ fn splice_rows(blocks: &mut Vec<md_blocks::Block>, cache: &mut Vec<Option<md_vie
 /// The document position `ch` chars into the text of cell `pos` of table block `block`: the cell's
 /// start (`md_table::cell_start`, its first character or an empty cell's caret place) plus `ch`,
 /// at most the line's end. `None` when the block's source has no such row.
-fn table_cell_pos(lines: &[String], block: &md_blocks::Block, pos: md_table::CellPos, ch: usize) -> Option<edit::Pos> {
-    let source = md_view::block_source(lines, block);
-    let (line, start) = md_table::cell_start(&source, pos)?;
-    let line = block.lines.start + line;
-    Some(edit::Pos { line, ch: (start + ch).min(lines.get(line)?.chars().count()) })
+/// The caret's table cell as the keys see it: its grid row and column, the table's row and
+/// column counts, the caret's char on its line and the cell's text there, and whether it is
+/// being edited.
+struct TableCell {
+    r: usize,
+    c: usize,
+    rows: usize,
+    cols: usize,
+    ch: usize,
+    text: Range<usize>,
+    editing: bool,
 }
+
+/// What a key does in a table (tables spec, section 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableMove {
+    /// The editor takes the key.
+    Pass,
+    /// The key is taken and does nothing (an edge, a pipe Delete would reach).
+    Stay,
+    /// Select this cell (grid row, column).
+    Select(usize, usize),
+    /// Edit the selected cell, the caret after its text.
+    Edit,
+    /// The caret to this char of the editing cell's line.
+    Caret(usize),
+    /// A new row at the bottom, its cell in this column selected.
+    AppendRow(usize),
+    /// Leave the table, up or down.
+    Leave(bool),
+    Clipboard(KeyAction),
+    /// Clear the selected cell or the pick.
+    Clear,
+    /// Drop the pick, or leave the table with no caret.
+    Escape,
+}
+
+fn table_move(ks: &Keystroke, t: &TableCell) -> TableMove {
+    use TableMove::*;
+    let m = &ks.modifiers;
+    let (cmd, shift) = (m.platform, m.shift);
+    if m.control || (m.alt && !t.editing) {
+        return Pass;
+    }
+    let (r, c) = (t.r, t.c);
+    let down = || if r + 1 < t.rows { Select(r + 1, c) } else { AppendRow(c) };
+    let tab = |back: bool| match (back, c + 1 < t.cols, r + 1 < t.rows) {
+        (false, true, _) => Select(r, c + 1),
+        (false, false, true) => Select(r + 1, 0),
+        (false, false, false) => AppendRow(0),
+        (true, _, _) if c > 0 => Select(r, c - 1),
+        (true, _, _) if r > 0 => Select(r - 1, t.cols - 1),
+        (true, _, _) => Stay,
+    };
+    let up_or_leave = || if r > 0 { Select(r - 1, c) } else { Leave(true) };
+    let down_or_leave = || if r + 1 < t.rows { Select(r + 1, c) } else { Leave(false) };
+    let key = ks.key.as_str();
+    if t.editing {
+        return match (key, cmd) {
+            ("left", true) | ("home", _) => Caret(t.text.start),
+            ("right", true) | ("end", _) => Caret(t.text.end),
+            (_, true) => Pass,
+            ("left", _) if t.ch <= t.text.start && !m.alt => Stay,
+            ("right", _) if t.ch >= t.text.end && !m.alt => Stay,
+            (_, _) if m.alt => Pass,
+            ("up", _) => up_or_leave(),
+            ("down", _) => down_or_leave(),
+            ("enter", _) if !shift => down(),
+            ("tab", _) => tab(shift),
+            ("escape", _) => Select(r, c),
+            ("backspace", _) if t.ch <= t.text.start => Stay,
+            ("delete", _) if t.ch >= t.text.end => Stay,
+            _ => Pass,
+        };
+    }
+    match (key, cmd) {
+        ("c", true) if !shift => Clipboard(KeyAction::Copy),
+        ("x", true) if !shift => Clipboard(KeyAction::Cut),
+        ("v", true) if !shift => Clipboard(KeyAction::Paste),
+        (_, true) => Pass,
+        ("enter", _) if shift && r > 0 => Select(r - 1, c),
+        ("enter", _) if shift => Stay,
+        ("enter", _) => down(),
+        ("tab", _) => tab(shift),
+        ("left", _) if c > 0 => Select(r, c - 1),
+        ("right", _) if c + 1 < t.cols => Select(r, c + 1),
+        ("left" | "right", _) => Stay,
+        ("up", _) => up_or_leave(),
+        ("down", _) => down_or_leave(),
+        ("f2", _) => Edit,
+        ("backspace" | "delete", _) => Clear,
+        ("escape", _) => Escape,
+        _ => Pass,
+    }
+}
+
+/// The cells a Delete clears: the pick's (a row, a column, all), or the caret's cell alone.
+fn picked_cells(pick: Option<Pick>, r: usize, c: usize, rows: usize, cols: usize) -> Vec<(usize, usize)> {
+    match pick {
+        Some(Pick::Row(pr)) => (0..cols).map(|cc| (pr, cc)).collect(),
+        Some(Pick::Column(pc)) => (0..rows).map(|rr| (rr, pc)).collect(),
+        Some(Pick::All) => (0..rows).flat_map(|rr| (0..cols).map(move |cc| (rr, cc))).collect(),
+        None => vec![(r, c)],
+    }
+}
+
 
 /// The lines of table block `block` that hold the table (`md_table::line_count`: down to the line
 /// before its first blank one), the lines `realign` rewrites. The reference definitions the block
@@ -4115,16 +4464,53 @@ mod tests {
     }
 
     #[test]
-    fn a_press_on_a_table_cell_maps_to_the_cell_s_text_in_the_source() {
-        let d = edit::Document::from_text("intro\n\n| a | b |\n|---|---|\n| one | |\n");
-        let blocks = md_blocks::split(d.lines());
-        let table = &blocks[md_blocks::block_at(&blocks, 2)];
-        assert_eq!(table.kind, md_blocks::BlockKind::Table);
-        let at = |row, cell, ch| table_cell_pos(d.lines(), table, md_table::CellPos { row, cell }, ch);
-        assert_eq!(at(2, 0, 2), Some(Pos { line: 4, ch: 4 }), "two chars into \"one\"");
-        assert_eq!(at(2, 1, 0), Some(Pos { line: 4, ch: 8 }), "an empty cell: after its pipe and a space, clamped to the next pipe");
-        assert_eq!(at(0, 1, 5), Some(Pos { line: 2, ch: 9 }), "past the text: at most the line's end");
-        assert_eq!(at(9, 0, 0), None, "no such row");
+    fn table_keys_walk_the_cells_grow_at_the_end_and_leave_at_the_edges() {
+        let ks = |k: &str| Keystroke::parse(k).unwrap();
+        // A 2 by 2 table (header and one row), the caret's cell selected.
+        let cell = |r, c| TableCell { r, c, rows: 2, cols: 2, ch: 4, text: 2..5, editing: false };
+        assert_eq!(table_move(&ks("tab"), &cell(0, 0)), TableMove::Select(0, 1));
+        assert_eq!(table_move(&ks("tab"), &cell(0, 1)), TableMove::Select(1, 0), "over to the next row");
+        assert_eq!(table_move(&ks("tab"), &cell(1, 1)), TableMove::AppendRow(0), "Tab from the last cell adds a row");
+        assert_eq!(table_move(&ks("shift-tab"), &cell(1, 0)), TableMove::Select(0, 1));
+        assert_eq!(table_move(&ks("shift-tab"), &cell(0, 0)), TableMove::Stay);
+        assert_eq!(table_move(&ks("enter"), &cell(0, 1)), TableMove::Select(1, 1));
+        assert_eq!(table_move(&ks("enter"), &cell(1, 1)), TableMove::AppendRow(1), "Enter from the last row adds one");
+        assert_eq!(table_move(&ks("shift-enter"), &cell(1, 1)), TableMove::Select(0, 1));
+        assert_eq!(table_move(&ks("up"), &cell(0, 0)), TableMove::Leave(true));
+        assert_eq!(table_move(&ks("down"), &cell(1, 0)), TableMove::Leave(false));
+        assert_eq!(table_move(&ks("right"), &cell(0, 1)), TableMove::Stay, "the arrows stop at the sides");
+        assert_eq!(table_move(&ks("left"), &cell(0, 1)), TableMove::Select(0, 0));
+        assert_eq!(table_move(&ks("f2"), &cell(0, 0)), TableMove::Edit);
+        assert_eq!(table_move(&ks("backspace"), &cell(0, 0)), TableMove::Clear);
+        assert_eq!(table_move(&ks("cmd-c"), &cell(0, 0)), TableMove::Clipboard(KeyAction::Copy));
+        assert_eq!(table_move(&ks("cmd-z"), &cell(0, 0)), TableMove::Pass, "undo is the editor's");
+        assert_eq!(table_move(&ks("a"), &cell(0, 0)), TableMove::Pass, "typing goes to the editor, which replaces the cell");
+    }
+
+    #[test]
+    fn in_an_editing_cell_the_arrows_move_in_its_text_and_never_cross_a_pipe() {
+        let ks = |k: &str| Keystroke::parse(k).unwrap();
+        let cell = |ch| TableCell { r: 1, c: 0, rows: 3, cols: 2, ch, text: 2..5, editing: true };
+        assert_eq!(table_move(&ks("left"), &cell(3)), TableMove::Pass, "inside the text the editor moves the caret");
+        assert_eq!(table_move(&ks("left"), &cell(2)), TableMove::Stay);
+        assert_eq!(table_move(&ks("right"), &cell(5)), TableMove::Stay);
+        assert_eq!(table_move(&ks("backspace"), &cell(2)), TableMove::Stay, "a Backspace at the start would reach the pipe");
+        assert_eq!(table_move(&ks("backspace"), &cell(3)), TableMove::Pass);
+        assert_eq!(table_move(&ks("delete"), &cell(5)), TableMove::Stay);
+        assert_eq!(table_move(&ks("cmd-left"), &cell(4)), TableMove::Caret(2));
+        assert_eq!(table_move(&ks("end"), &cell(2)), TableMove::Caret(5));
+        assert_eq!(table_move(&ks("escape"), &cell(3)), TableMove::Select(1, 0), "Escape goes back to selecting the cell");
+        assert_eq!(table_move(&ks("enter"), &cell(3)), TableMove::Select(2, 0));
+        assert_eq!(table_move(&ks("alt-left"), &cell(3)), TableMove::Pass, "word moves are the editor's");
+        assert_eq!(table_move(&ks("cmd-c"), &cell(3)), TableMove::Pass, "the clipboard works on the text");
+    }
+
+    #[test]
+    fn delete_clears_the_picked_row_column_or_grid_or_else_the_cell() {
+        assert_eq!(picked_cells(None, 1, 0, 2, 2), vec![(1, 0)]);
+        assert_eq!(picked_cells(Some(Pick::Row(1)), 0, 0, 2, 2), vec![(1, 0), (1, 1)]);
+        assert_eq!(picked_cells(Some(Pick::Column(1)), 0, 0, 3, 2), vec![(0, 1), (1, 1), (2, 1)]);
+        assert_eq!(picked_cells(Some(Pick::All), 0, 0, 2, 2).len(), 4);
     }
 
     #[test]

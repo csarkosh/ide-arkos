@@ -1,11 +1,13 @@
 //! A markdown document's right-click menu (spec `2026-10-30-typing-rules-design.md`, section 8),
 //! drawn and dismissed like the terminal's (`link_menu`): Cut, Copy and Paste, a line, then Bold,
 //! Italic, Strikethrough, Code and Link, each doing what its key does. gpui delivers a
-//! Control+click as a right press, so it opens the menu too.
+//! Control+click as a right press, so it opens the menu too. On a selected table cell the formats
+//! give way to the table's rows (tables spec, section 1).
 
 use crate::md_format::Format;
 use crate::motion;
-use crate::viewer::{KeyAction, Viewer};
+use crate::md_table::Align;
+use crate::viewer::{KeyAction, TableAction, Viewer};
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseDownEvent, Pixels, Point, WeakEntity};
 use std::time::Instant;
@@ -15,6 +17,8 @@ use std::time::Instant;
 pub struct MdMenu {
     pub viewer: WeakEntity<Viewer>,
     pub selection: bool,
+    /// A table cell was selected when it opened: the table's rows replace the formats.
+    pub table: bool,
     pub at: Point<Pixels>,
 }
 
@@ -25,11 +29,33 @@ pub enum MdRow {
     Paste,
     Format(Format),
     Link,
+    Table(TableAction),
 }
 
-/// The rows in order, each with whether it can run: Cut and Copy need a selection. `None` is the
-/// line between the clipboard rows and the formats.
-pub fn menu_rows(selection: bool) -> Vec<Option<(&'static str, MdRow, bool)>> {
+/// The rows in order, each with whether it can run: Cut and Copy need a selection (a selected
+/// table cell is one). `None` is a line between groups.
+pub fn menu_rows(selection: bool, table: bool) -> Vec<Option<(&'static str, MdRow, bool)>> {
+    if table {
+        let t = |label, a| Some((label, MdRow::Table(a), true));
+        return vec![
+            Some(("Cut", MdRow::Cut, true)),
+            Some(("Copy", MdRow::Copy, true)),
+            Some(("Paste", MdRow::Paste, true)),
+            None,
+            t("Insert Row Above", TableAction::RowAbove),
+            t("Insert Row Below", TableAction::RowBelow),
+            t("Insert Column Left", TableAction::ColumnLeft),
+            t("Insert Column Right", TableAction::ColumnRight),
+            None,
+            t("Delete Row", TableAction::DeleteRow),
+            t("Delete Column", TableAction::DeleteColumn),
+            t("Delete Table", TableAction::DeleteTable),
+            None,
+            t("Align Left", TableAction::Align(Align::Left)),
+            t("Align Center", TableAction::Align(Align::Center)),
+            t("Align Right", TableAction::Align(Align::Right)),
+        ];
+    }
     vec![
         Some(("Cut", MdRow::Cut, selection)),
         Some(("Copy", MdRow::Copy, selection)),
@@ -51,6 +77,7 @@ fn run_row(row: MdRow, viewer: &WeakEntity<Viewer>, cx: &mut Context<Root>) {
         MdRow::Paste => v.act(KeyAction::Paste, cx),
         MdRow::Format(f) => v.format(f, cx),
         MdRow::Link => v.insert_link(cx),
+        MdRow::Table(a) => v.table_menu(a, cx),
     });
 }
 
@@ -82,7 +109,7 @@ pub fn render_md_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x12, opacity, cx));
     }
-    for (i, row) in menu_rows(menu.selection).into_iter().enumerate() {
+    for (i, row) in menu_rows(menu.selection, menu.table).into_iter().enumerate() {
         let Some((label, action, enabled)) = row else {
             m = m.child(div().my(px(4.0)).h(px(1.0)).mx(px(8.0)).bg(line));
             continue;
@@ -112,10 +139,21 @@ mod tests {
 
     #[test]
     fn the_menu_lists_the_clipboard_then_the_formats_and_dims_cut_and_copy_without_a_selection() {
-        let labels: Vec<Option<&str>> = menu_rows(true).iter().map(|r| r.map(|(l, _, _)| l)).collect();
+        let labels: Vec<Option<&str>> = menu_rows(true, false).iter().map(|r| r.map(|(l, _, _)| l)).collect();
         assert_eq!(labels, vec![Some("Cut"), Some("Copy"), Some("Paste"), None, Some("Bold"), Some("Italic"), Some("Strikethrough"), Some("Code"), Some("Link")]);
-        let enabled = |sel: bool| menu_rows(sel).iter().flatten().filter(|(_, _, on)| *on).map(|(l, _, _)| *l).collect::<Vec<_>>();
+        let enabled = |sel: bool| menu_rows(sel, false).iter().flatten().filter(|(_, _, on)| *on).map(|(l, _, _)| *l).collect::<Vec<_>>();
         assert_eq!(enabled(false), vec!["Paste", "Bold", "Italic", "Strikethrough", "Code", "Link"], "Cut and Copy need a selection");
         assert_eq!(enabled(true).len(), 8);
+    }
+
+    #[test]
+    fn on_a_table_cell_the_menu_lists_the_clipboard_then_rows_columns_deletes_and_alignments() {
+        let rows = menu_rows(false, true);
+        let labels: Vec<Option<&str>> = rows.iter().map(|r| r.map(|(l, _, _)| l)).collect();
+        assert_eq!(labels[..4], [Some("Cut"), Some("Copy"), Some("Paste"), None], "a selected cell can be cut and copied");
+        assert!(rows.iter().flatten().all(|(_, _, on)| *on));
+        assert_eq!(labels.iter().flatten().filter(|l| l.starts_with("Insert")).count(), 4);
+        assert_eq!(labels.last(), Some(&Some("Align Right")));
+        assert!(!labels.contains(&Some("Bold")));
     }
 }

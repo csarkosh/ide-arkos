@@ -612,6 +612,8 @@ pub const MARKDOWN_KEYS: &[(&str, &str)] = &[
     ("Move a block", "Drag its handle"),
     ("A code block's language", "Click its name"),
     ("Select a whole code block", "Click its header"),
+    ("Edit a table cell", "F2 or double-click"),
+    ("A table's row or column", "Click its edge"),
     ("Outdent an item, or take it out of its list (at the text start)", "Delete"),
     ("Scroll to the top or end", "Home, End"),
 ];

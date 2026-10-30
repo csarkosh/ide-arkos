@@ -1300,7 +1300,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.link_menu.hide(now);
                 root.close_popovers(now);
                 let selection = v.read(cx).has_selection();
-                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, at: ev.position }, now);
+                let table = { let v = v.read(cx); v.table_cell().is_some() && !v.table_edit };
+                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, at: ev.position }, now);
                 cx.notify();
             }),
         )

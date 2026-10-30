@@ -285,7 +285,7 @@ impl Key {
         let code = match last {
             "left" => Some(123), "right" => Some(124), "down" => Some(125), "up" => Some(126),
             "home" => Some(115), "end" => Some(119), "pageup" => Some(116), "pagedown" => Some(121),
-            "return" | "enter" => Some(36), "tab" => Some(48), "escape" | "esc" => Some(53), "delete" | "backspace" => Some(51),
+            "return" | "enter" => Some(36), "tab" => Some(48), "escape" | "esc" => Some(53), "delete" | "backspace" => Some(51), "f2" => Some(120),
             // A letter with a modifier goes by its own key code: an app reads Cmd+Z from the key,
             // not from the text, so a letter sent as text on key 0 arrives as Cmd+A.
             letter if !modifiers.is_empty() && letter.len() == 1 && letter.as_bytes()[0].is_ascii_alphanumeric() => letter_code(letter.as_bytes()[0]),
@@ -743,6 +743,7 @@ theme = "light"
         assert_eq!(Key::parse("cmd+shift+z").unwrap().code, Some(6));
         assert_eq!(Key::parse("cmd+0").unwrap().code, Some(29), "a digit with a modifier too");
         assert_eq!(Key::parse("**2").unwrap().text.as_deref(), Some("*"), "a star is typed as text");
+        assert_eq!(Key::parse("f2").unwrap().code, Some(120), "F2 edits a table cell");
         assert!(Key::parse("meta+x").is_err());
         assert!(Key::parse("rightt").is_err());
         assert!(Key::parse("right*x").is_err());

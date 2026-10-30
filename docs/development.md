@@ -455,8 +455,13 @@ Things only a person at the screen can check, in order of value:
 - video pane: a paused seek shows its frame within half a second on a 4K HEVC file, and a
   trackpad tap on the scrubber does not leave it stuck paused
 
-- markdown, Rendered: a table draws as a grid and a click lands in the cell with the caret there;
-  Tab, Shift+Tab, Up and Down move by cell; Tab in the last cell adds a row; leaving the block
+- markdown, Rendered: a table draws as a grid and stays one with the caret in it; a click rings the
+  cell and typing replaces it; F2 shows its markdown with the caret (a right-aligned column's
+  editing cell reads from the left) and its column widens to fit, a typed `|` goes in as `\|`;
+  Tab, Shift+Tab, Enter and the arrows move by cell; Tab in the last cell and Enter in the last
+  row add one; a row's left edge, a column's top edge and the corner tint what they pick and
+  Delete clears it; the "+" right of and below the hovered table add a column and a row; the
+  right-click menu inserts, deletes and aligns, each one undo; leaving the block
   realigns the pipes and one undo restores them; a wide table wraps, and with "Scroll" in Settings
   (or `arkos settings set viewer.wide_tables scroll`) it scrolls sideways with Shift+wheel, while a
   vertical wheel still scrolls the list; a table over 500 rows shows as source
