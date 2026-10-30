@@ -478,7 +478,7 @@ Things only a person at the screen can check, in order of value:
   (`[ref]: https://...`), edit the table and leave it: only the table is realigned, the definitions
   stay as they were and every `[text][ref]` link still works; the grid shows no row for them
 - a remote image shows "loading" and then the image; a plain click places the caret and Cmd+click
-  opens it in Preview; a `.mov` shows its poster and Cmd+click opens a video tab beside the document; audio opens
+  opens it in Preview; a `.mov` shows its poster; its play button plays it in the page under the video controls, a click on the picture pauses, another tab pauses it; Cmd+click opens a video tab beside the document; audio opens
   in QuickTime Player; a local `.webm` is shown in Finder; a badge row wraps in a narrow pane
 - a `mermaid` block renders within a second, with no Chrome running and nothing in the Dock, and
   again after an edit; a broken one shows mermaid's message over its source; hover it: the header

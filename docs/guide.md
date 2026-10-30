@@ -245,9 +245,12 @@ the text out and leaves the file. To keep images in a folder, set `image_destina
 
 A plain click on an image, a video's poster or a badge places the caret in the block. Cmd+click
 opens it: an image in Preview, or the link for a linked image. A video (`.mp4`, `.mov` and the
-like) shows a poster frame made by Quick Look, with "loading" first, and Cmd+click opens it in a
-video tab beside the document; a file Arkos cannot play shows why, with a button for QuickTime
-Player. Audio shows as a one-line box and plays in QuickTime Player. A local `.webm`
+like) shows a poster frame made by Quick Look, with "loading" first. Click its play button and it
+plays right there in the page, at the poster's size, with the video tab's controls under it
+(play and pause, the time, the scrubber, loop and mute; a click on the picture plays or pauses).
+It pauses when you switch away from the document's tab and picks up when you come back.
+Cmd+click opens it in a video tab beside the document instead. A file Arkos cannot play shows
+why, with a button for QuickTime Player. Audio shows as a one-line box and plays in QuickTime Player. A local `.webm`
 is shown in Finder instead, and remote media are links. Every local open resolves symlinks and
 checks the file type first.
 
