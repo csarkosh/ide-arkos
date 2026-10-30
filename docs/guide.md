@@ -138,6 +138,13 @@ over it; landing in one unfolds it). Hover any block and a six-dot handle shows 
 drag it to move the block (a paragraph, a heading, a whole list or table), with a line showing
 where it will land; one undo puts it back.
 
+A code block reads and edits as one: a header with the language and Copy over numbered lines in
+their syntax colours, and with the caret in it the same box, the fences never shown (Up from the
+first line and Down from the last leave the block; Shift+Enter on the last line too). Click the
+language to pick another from a list you can type to search; Copy puts the code on the clipboard
+and says "Copied". A click on the header elsewhere selects the whole block, so Delete removes it.
+A Mermaid block shows its diagram until you click it, then its code the same way.
+
 The sidebar's Outline section lists the focused markdown document's headings as a tree. A click
 scrolls to a heading (unfolding it if a fold hides it), the heading in view is highlighted as you
 scroll, a chevron collapses a heading's children in the outline, and resting the pointer on a row

@@ -627,6 +627,11 @@ pub struct Viewer {
     /// recorded as the revealed text holding it is laid out (`note_slash_layout`), so the menu,
     /// built before that layout in a frame, hangs from the last one.
     pub slash_at: Option<(Point<Pixels>, Pixels)>,
+    /// A code block's language list while it is open (`md_code`), and where its pill was laid out.
+    pub lang: Option<LangPicker>,
+    pub lang_at: Option<Point<Pixels>>,
+    /// The code block whose Copy was clicked, and when: its button reads "Copied" for a moment.
+    pub copied: Option<(usize, Instant)>,
     /// The user has put the caret somewhere since the file was opened or reloaded (a press in the
     /// text, a handled key, typing): until then the rendered view shows every block rendered, so a
     /// freshly opened file has no raw block at the caret's default place.
@@ -671,6 +676,15 @@ pub struct Viewer {
     /// edit, load and fold.
     pub heads: Vec<md_fold::Head>,
     pub hidden: Vec<bool>,
+}
+
+/// A code block's language list: the block, the text typed in its search field, and the row
+/// selected among the languages that text matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LangPicker {
+    pub block: usize,
+    pub query: String,
+    pub selected: usize,
 }
 
 /// The slash menu's state: where the `/` is (its line and column), the text typed after it, the
@@ -760,6 +774,9 @@ impl Viewer {
             reveal_goal: None,
             slash: None,
             slash_at: None,
+            lang: None,
+            lang_at: None,
+            copied: None,
             caret_placed: false,
             pending_append: false,
             compose: None,
@@ -1409,6 +1426,9 @@ impl Viewer {
             return false;
         }
         if self.slash.is_some() && self.slash_key(ks, cx) {
+            return true;
+        }
+        if self.lang.is_some() && self.lang_key(ks, cx) {
             return true;
         }
         if self.rendered() && !self.caret_placed {
@@ -2065,6 +2085,93 @@ impl Viewer {
         .detach();
     }
 
+    /// Opens a code block's language list under its pill (closing it when it is open there).
+    pub fn open_lang_picker(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.slash = None;
+        self.lang = match &self.lang {
+            Some(l) if l.block == ix => None,
+            _ => Some(LangPicker { block: ix, query: String::new(), selected: 0 }),
+        };
+        self.lang_at = None;
+        cx.notify();
+    }
+
+    /// Sets the code block's language (`md_code::set_language`) as one undoable edit, and closes
+    /// the list.
+    pub fn set_language(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(l) = self.lang.take() else { return };
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(l.block)) else { return };
+        let Some((line, text)) = crate::md_code::set_language(doc.lines(), block, id) else { return };
+        let end = doc.lines()[line].chars().count();
+        let caret = self.caret;
+        self.edit_elsewhere(
+            |doc, _c, now| {
+                doc.break_coalescing();
+                doc.replace_range(edit::Pos { line, ch: 0 }, edit::Pos { line, ch: end }, &text, now);
+                doc.break_coalescing();
+                edit::Caret { head: doc.clamp(caret.head), anchor: doc.clamp(caret.anchor), goal_col: None }
+            },
+            cx,
+        );
+    }
+
+    /// A key while the language list is open: Up and Down choose, Enter sets, Escape closes,
+    /// Delete takes a character off the search. `false` for keys it leaves alone.
+    fn lang_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(l) = self.lang.as_mut() else { return false };
+        let m = &ks.modifiers;
+        if m.platform || m.control || m.alt {
+            return false;
+        }
+        let n = crate::md_code::filter_languages(&l.query).len();
+        match ks.key.as_str() {
+            "escape" => self.lang = None,
+            "down" if n > 0 => l.selected = (l.selected + 1) % n,
+            "up" if n > 0 => l.selected = (l.selected + n - 1) % n,
+            "backspace" => {
+                l.query.pop();
+                l.selected = 0;
+            }
+            "enter" | "tab" => {
+                let id = crate::md_code::filter_languages(&l.query).get(l.selected).map(|(id, _)| *id);
+                match id {
+                    Some(id) => self.set_language(id, cx),
+                    None => self.lang = None,
+                }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// Copy on a code block's header: its code on the clipboard, and "Copied" on the button for a
+    /// moment.
+    pub fn copy_code(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return };
+        cx.write_to_clipboard(ClipboardItem::new_string(crate::md_code::copy_text(doc.lines(), block)));
+        self.copied = Some((ix, Instant::now()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1500)).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// A click on a code block's header selects the whole block, fences included, so Delete takes it
+    /// away.
+    pub fn select_block(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let (Some(doc), Some(block)) = (self.doc.as_ref(), self.blocks.get(ix)) else { return };
+        let last = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX);
+        self.lang = None;
+        self.caret = edit::Caret { head: last, anchor: edit::Pos { line: block.lines.start, ch: 0 }, goal_col: None };
+        self.caret_placed = true;
+        self.selecting = false;
+        self.note_caret_moved(false, cx);
+        cx.notify();
+    }
+
     /// A revealed text was laid out: when it holds the open slash menu's `/`, its window point is
     /// recorded for the menu. `true` when that point moved, so the frame is drawn again with the
     /// menu where the `/` now is.
@@ -2325,7 +2432,7 @@ impl Viewer {
             return;
         }
         let Some(doc) = self.doc.as_ref() else { return };
-        let p = snap_pos(doc.lines(), &self.blocks, self.caret.head, md_reveal::Dir::Right);
+        let p = snap_pos(doc.lines(), &self.blocks, self.caret.head, md_reveal::Dir::Here);
         if p != self.caret.head {
             self.caret = edit::Caret::at(p);
         }
@@ -2414,9 +2521,13 @@ impl Viewer {
         if self.marked.is_some() {
             self.finish_composition(cx);
         }
+        self.lang = None;
+        let rendered = self.rendered();
         let Some(doc) = self.doc.as_mut() else { return };
         doc.break_coalescing();
         let p = doc.clamp(p);
+        // A press that maps onto a hidden fence line (a click on a diagram) lands in the code.
+        let p = if rendered { snap_pos(doc.lines(), &self.blocks, p, md_reveal::Dir::Here) } else { p };
         let anchor = if extend { doc.clamp(self.caret.anchor) } else { p };
         self.caret = edit::Caret { head: p, anchor, goal_col: None };
         self.selecting = true;
@@ -2563,6 +2674,13 @@ impl EntityInputHandler for Viewer {
 
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, _window: &mut Window, cx: &mut Context<Self>) {
         if self.field().is_none() {
+            return;
+        }
+        // While a code block's language list is open, typing searches it.
+        if let Some(l) = self.lang.as_mut() {
+            l.query.push_str(text);
+            l.selected = 0;
+            cx.notify();
             return;
         }
         let range = if self.place_for_input(cx) { None } else { range };
@@ -2885,6 +3003,29 @@ fn revealed_block<'a>(lines: &[String], blocks: &'a [md_blocks::Block], line: us
 /// `p` moved off a hidden marker of a revealed block (`md_reveal::snap`), onward in `dir`; any
 /// other position as it is.
 pub fn snap_pos(lines: &[String], blocks: &[md_blocks::Block], p: edit::Pos, dir: md_reveal::Dir) -> edit::Pos {
+    use md_reveal::Dir as D;
+    // A fenced code block's fence lines never show: off the opening one Left goes above the block
+    // and anything else into its code; off the closing one Right goes below it and anything else
+    // to the code's end.
+    if let Some(block) = blocks.get(md_blocks::block_at(blocks, p.line)).filter(|b| b.lines.contains(&p.line)) {
+        let code = crate::md_code::code_lines(lines, block);
+        if let Some(f) = crate::md_code::fence(lines, block).filter(|_| !code.is_empty()) {
+            let line_end = |n: usize| edit::Pos { line: n, ch: lines[n].chars().count() };
+            if p.line == f.open {
+                return match dir {
+                    D::Left | D::Up if p.line > 0 => line_end(p.line - 1),
+                    _ => edit::Pos { line: code.start, ch: 0 },
+                };
+            }
+            if Some(p.line) == f.close {
+                return match dir {
+                    D::Right | D::Down if p.line + 1 < lines.len() => edit::Pos { line: p.line + 1, ch: 0 },
+                    _ => line_end(code.end - 1),
+                };
+            }
+            return p;
+        }
+    }
     let Some((block, text, tree)) = revealed_block(lines, blocks, p.line) else { return p };
     let at = md_blocks::offset_of_pos(block, lines, p);
     let to = md_reveal::snap(&text, &tree.markers, at, dir);
@@ -2980,6 +3121,11 @@ pub fn rendered_break(doc: &mut edit::Document, blocks: &[md_blocks::Block], car
     let line_end = edit::Pos { line: at.line, ch: len };
     let last_text = md_blocks::pos_of_offset(block, doc.lines(), usize::MAX).line;
     let down = |doc: &edit::Document, by: usize, ch: usize| edit::Caret::at(doc.clamp(edit::Pos { line: at.line + by, ch }));
+    // On a blank line after the block's text, either key adds a line.
+    if at.line > last_text && line.trim().is_empty() {
+        doc.insert(edit::Caret::at(at), "\n", now);
+        return Some(down(doc, 1, 0));
+    }
     match (&block.kind, shift) {
         (K::Paragraph | K::Heading(_), false) | (K::Heading(_), true) => {
             doc.insert(edit::Caret::at(at), "\n\n", now);
@@ -4574,6 +4720,7 @@ mod tests {
         assert_eq!(broken("```\ncode\n```\n\nafter", Pos { line: 1, ch: 2 }, true), (lines_of(&["```", "code", "```", "", "", "", "after"]), Pos { line: 4, ch: 0 }), "from the last code line, out of the block");
         assert_eq!(broken("```\na\nb\n```", Pos { line: 1, ch: 1 }, true).1, Pos { line: usize::MAX, ch: 0 }, "elsewhere in code, a plain break");
         assert_eq!(broken("# Title", Pos { line: 0, ch: 7 }, true).0, lines_of(&["# Title", "", ""]), "a heading has no hard break: a new paragraph");
+        assert_eq!(broken("end\n", Pos { line: 1, ch: 0 }, true), (lines_of(&["end", "", ""]), Pos { line: 2, ch: 0 }), "on the blank line after the text, a line, not a lone backslash");
     }
 
     #[test]
@@ -4613,6 +4760,25 @@ mod tests {
         assert!(!opens("```\n/\n```", 1, 0), "in a code block");
         assert!(!opens("| a |\n|---|\n| / |", 2, 2), "in a table");
         assert!(opens("```\nx\n```\n\n/", 4, 0), "on a line after a code block");
+    }
+
+    #[test]
+    fn the_caret_steps_over_a_code_block_s_fence_lines() {
+        let (doc, blocks) = md_doc("para\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n\nafter");
+        let at = |line, ch| edit::Caret::at(Pos { line, ch });
+        let lines = doc.lines();
+        assert_eq!(snap_pos(lines, &blocks, Pos { line: 2, ch: 3 }, md_reveal::Dir::Here), Pos { line: 3, ch: 0 }, "an edit on the opening fence lands in the code");
+        assert_eq!(snap_pos(lines, &blocks, Pos { line: 5, ch: 1 }, md_reveal::Dir::Here), Pos { line: 4, ch: 10 }, "on the closing fence, at the code's end");
+        assert_eq!(move_snapped(&doc, &blocks, at(3, 0), edit::Move::Left, false).head, Pos { line: 1, ch: 0 }, "Left from the code's start goes above the block");
+        assert_eq!(move_snapped(&doc, &blocks, at(4, 10), edit::Move::Right, false).head, Pos { line: 6, ch: 0 }, "Right from the code's end goes below it");
+        let down = md_view::navigate(&doc, &blocks, at(4, 3), md_view::Dir::Down, false);
+        assert_eq!(down.head, Pos { line: 7, ch: 0 }, "Down from the last code line leaves the block");
+        let up = md_view::navigate(&doc, &blocks, at(3, 3), md_view::Dir::Up, false);
+        assert_eq!(up.head, Pos { line: 0, ch: 4 }, "Up from the first leaves it");
+        let into = md_view::navigate(&doc, &blocks, at(0, 2), md_view::Dir::Down, false);
+        assert_eq!(into.head, Pos { line: 3, ch: 0 }, "Down into the block lands on its first code line");
+        let back = md_view::navigate(&doc, &blocks, at(7, 2), md_view::Dir::Up, false);
+        assert_eq!(back.head, Pos { line: 4, ch: 10 }, "Up into it, at its last code line's end");
     }
 
     #[test]

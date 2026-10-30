@@ -251,6 +251,29 @@ pub fn shape_raw_wrapped(window: &mut Window, line: &str, layout: &RawLayout, wr
     (shown.to_string(), shaped)
 }
 
+/// A code line shaped as a code block draws it: the syntax colours of `spans` (byte ranges of the
+/// line with tabs expanded) when they fit it, else the text colour, never bold or italic, so its
+/// glyphs sit exactly where `shape_raw_wrapped` puts them.
+pub fn shape_code_wrapped(window: &mut Window, line: &str, layout: &RawLayout, wrap_width: Pixels, spans: Option<&[crate::viewer::Span]>) -> (String, WrappedLine) {
+    let expanded = expand_tabs(line);
+    let (shown, _) = paint_cut(&expanded);
+    let c = &layout.colors;
+    let mut runs = Vec::new();
+    let mut at = 0;
+    for s in spans.unwrap_or(&[]) {
+        if s.start != at || s.end > shown.len() || s.end <= s.start || !shown.is_char_boundary(s.end) {
+            break;
+        }
+        runs.push(text_run(&layout.family, s.end - s.start, s.color, c.alpha, false, false));
+        at = s.end;
+    }
+    if at < shown.len() {
+        runs.push(text_run(&layout.family, shown.len() - at, c.text, c.alpha, false, false));
+    }
+    let shaped = window.text_system().shape_text(shown.to_string().into(), px(layout.font_size), &runs, Some(wrap_width), None).ok().and_then(|lines| lines.into_iter().next()).unwrap_or_default();
+    (shown.to_string(), shaped)
+}
+
 /// Rows as byte ranges from the bytes where each wrapped row after the first begins, for a line
 /// of `len` bytes.
 pub fn rows_from_breaks(breaks: &[usize], len: usize) -> Vec<Range<usize>> {

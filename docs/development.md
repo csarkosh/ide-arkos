@@ -591,6 +591,12 @@ Things only a person at the screen can check, in order of value:
   shows it and scrolls there; paging through a long document moves the highlight; resting on a row
   shows its preview; drag a paragraph's handle above a heading: the accent line shows where, and it
   lands there with blank lines around it; one undo puts it back
+- code blocks: a code block shows its language and Copy over numbered, coloured lines; click a line:
+  the box, numbers and colours stay and the fences never show; Up and Down leave it from its first
+  and last lines; click the language: the list opens under it, "py" and Enter make it Python;
+  Copy puts the code on the clipboard and reads "Copied"; a header click and Delete remove the
+  block; click a Mermaid diagram: its code shows with the caret at its start, and Shift+Enter on
+  its last line leaves it and the diagram draws again
 - the "show raw" pill at the top right of the pane, or Shift+Cmd+M, shows the raw file and
   back; the choice survives a relaunch; another markdown tab keeps its own mode
 - edit the file in another editor while a line is half typed: the banner offers Reload and
