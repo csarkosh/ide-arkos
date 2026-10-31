@@ -438,13 +438,17 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     let raw = progress.dir.join(format!("{picture}.raw.mp4"));
     let max_secs = rec.hold_secs * (rec.themes.len() as f64 + 1.0) + rec.seam_secs + 15.0;
     let child = start_recorder(recorder, window_id, &raw, rec.fps, max_secs)?;
+    let started = Instant::now();
     say(&format!("{}: recording {} themes, {:.1} s each", rec.name, rec.themes.len(), rec.hold_secs));
+    // Each switch at its own moment from the start, so the time a switch takes (the config
+    // write and the window's poll of it) never pushes the ones after it later.
+    let until = |deadline: Instant| pause(deadline.saturating_duration_since(Instant::now()));
     let switched = (|| -> Result<()> {
-        pause(hold)?;
-        for name in &rec.themes[1..] {
+        for (k, name) in rec.themes.iter().enumerate().skip(1) {
+            until(started + hold * k as u32)?;
             show(name)?;
-            pause(hold)?;
         }
+        until(started + hold * rec.themes.len() as u32)?;
         show(&rec.themes[0])?;
         // The return's fade and the seam's blend, with room for the config poll.
         pause(Duration::from_secs_f64(rec.seam_secs) + Duration::from_millis(900))
