@@ -1,8 +1,9 @@
 //! Paints a `Terminal`'s visible rows at a fractional line offset (spec 3). Only the rows in the
 //! viewport plus one above are shaped and painted, which is the virtualization.
-use crate::layout::{build_runs, CellKind, CellStyle};
+use crate::layout::{build_runs, build_stamped_runs, CellKind, CellStyle};
 use crate::palette::Rgb;
 use crate::effects::decode::{Decode, Timing};
+use crate::effects::paint;
 use crate::terminal::{CellMetrics, RowsForPaint, Terminal};
 use crate::links::{span_at, Span};
 use crate::terminal::HoveredLink;
@@ -27,13 +28,21 @@ pub struct TerminalElement {
     family: SharedString,
     /// The alpha of the terminal's paper: 1 without an effect, the effect's `paper_alpha` under one.
     paper_alpha: f32,
-    /// How changed cells decode under an effect that decodes the terminal; None without one.
-    decode: Option<Timing>,
+    /// What an effect does to the cells the program writes; None without one.
+    ink: Option<Ink>,
+}
+
+/// What an effect does to the cells the program writes: decodes them as runic does, with the
+/// decode's timing, or paints them in as watercolor does, with the glyph clock at this frame.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Ink {
+    Decode(Timing),
+    Paint(f32),
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, decode: Option<Timing>) -> Self {
-        Self { terminal, font_size, line_height, family, paper_alpha, decode }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, ink: Option<Ink>) -> Self {
+        Self { terminal, font_size, line_height, family, paper_alpha, ink }
     }
 }
 
@@ -74,8 +83,76 @@ pub fn decoded_rows(
     Some(shown)
 }
 
+/// Each visible row's ghosts: the characters its changed cells replaced, each with its stamp.
+pub type Ghosts = Vec<Vec<(char, f32)>>;
+
+/// The visible rows' glyph stamps under an effect that paints the terminal (`effects::paint`),
+/// the ghosts of the characters changed cells replaced (each with its stamp, empty for a row with
+/// none), and the instant the newest ink dries. The decode state (made here when it is missing) takes
+/// in the rows as it does for the decode, and a row with no wet ink gets no stamps at all, so it
+/// is drawn as ever. `x` is a column's left edge in points from the window's left.
+pub fn painted_rows(
+    decode: &mut Option<Decode>,
+    rows: &RowsForPaint,
+    quiet: bool,
+    cols: usize,
+    x: impl Fn(usize) -> f32,
+    clock: f32,
+    now: Instant,
+) -> (Vec<Vec<f32>>, Ghosts, Option<Instant>) {
+    let state = decode.get_or_insert_with(|| Decode::new(cols, rows.visible.len(), rows.display_offset));
+    state.observe(&rows.visible, rows.display_offset, now, quiet, std::time::Duration::ZERO);
+    let mut dry = None;
+    let mut order = std::collections::HashMap::new();
+    let (stamps, ghosts) = rows
+        .visible
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let changed: Vec<Option<Instant>> = (0..line.len()).map(|col| state.changed_at(col, row)).collect();
+            if changed.iter().all(Option::is_none) {
+                return (Vec::new(), Vec::new());
+            }
+            let chars: Vec<char> = line.iter().map(|(c, _, _)| *c).collect();
+            let was: Vec<char> = (0..line.len()).map(|col| state.was_at(col, row)).collect();
+            let (stamps, ghosts, until) = paint::row_stamps(&changed, &chars, &was, &x, clock, now, &mut order);
+            dry = dry.max(until);
+            if until.is_none() {
+                return (Vec::new(), Vec::new());
+            }
+            let ghosts = if ghosts.iter().all(|&g| g == 0.0) { Vec::new() } else { was.into_iter().zip(ghosts).collect() };
+            (stamps, ghosts)
+        })
+        .unzip();
+    (stamps, ghosts, dry)
+}
+
 fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
+}
+
+/// How far faint text (SGR 2) fades toward its background.
+const DIM_FADE: f32 = 0.4;
+/// The contrast with its background faint text keeps however far it would fade, so a theme's
+/// grey that is dim already (a hint, Claude Code's status lines) stays readable.
+const DIM_MIN_CONTRAST: f64 = 3.0;
+
+/// The alpha faint text of `fg` is drawn at over `bg`: `DIM_FADE` of the way to the background,
+/// or as far as keeps `DIM_MIN_CONTRAST`; full for a colour under that contrast already.
+fn dim_alpha(fg: Rgb, bg: Rgb) -> f32 {
+    let at = |fade: f32| {
+        let mix = |f: u8, b: u8| (f32::from(f) + (f32::from(b) - f32::from(f)) * fade).round() as u8;
+        crate::palette::contrast(Rgb { r: mix(fg.r, bg.r), g: mix(fg.g, bg.g), b: mix(fg.b, bg.b) }, bg)
+    };
+    if at(DIM_FADE) >= DIM_MIN_CONTRAST {
+        return 1.0 - DIM_FADE;
+    }
+    let (mut lo, mut hi) = (0.0, DIM_FADE);
+    for _ in 0..10 {
+        let mid = (lo + hi) / 2.0;
+        if at(mid) >= DIM_MIN_CONTRAST { lo = mid } else { hi = mid }
+    }
+    1.0 - lo
 }
 
 fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
@@ -88,7 +165,7 @@ fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
     }
     let mut color = hsla(style.fg);
     if style.dim {
-        color.a = 0.6;
+        color.a = dim_alpha(style.fg, style.bg);
     }
     TextRun { len: text.len(), font: f, color, background_color: None, underline: None, strikethrough: None }
 }
@@ -179,8 +256,8 @@ impl Element for TerminalElement {
         // Advance the scroll animation by wall-clock time, then split into integer offset + fraction.
         // The colours come from the terminal's palette, which follows the theme.
         let mouse = window.mouse_position();
-        let decode = self.decode;
-        let (rows, visible, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
+        let ink = self.ink;
+        let (rows, visible, (stamps, ghosts), dry, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -217,8 +294,17 @@ impl Element for TerminalElement {
             // The echo of the user's own typing and the redraw of their own scroll settle at
             // once: the decode is for what the program writes.
             let quiet = t.user_quiet(now);
-            let visible = decoded_rows(&mut t.decode, &rows, decode, quiet, t.core.columns(), now);
-            (rows, visible, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
+            let cols = t.core.columns();
+            let (visible, stamps, dry) = match ink {
+                Some(Ink::Paint(clock)) => {
+                    let x = |col: usize| f32::from(bounds.origin.x) + col as f32 * cw;
+                    let (stamps, ghosts, dry) = painted_rows(&mut t.decode, &rows, quiet, cols, x, clock, now);
+                    (None, (stamps, ghosts), dry)
+                }
+                Some(Ink::Decode(timing)) => (decoded_rows(&mut t.decode, &rows, Some(timing), quiet, cols, now), (Vec::new(), Vec::new()), None),
+                None => (decoded_rows(&mut t.decode, &rows, None, quiet, cols, now), (Vec::new(), Vec::new()), None),
+            };
+            (rows, visible, stamps, dry, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
         let (bg, cursor_color) = (palette.bg, palette.cursor);
         // Under an effect the wash shows faintly through the paper.
@@ -236,9 +322,15 @@ impl Element for TerminalElement {
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let origin = bounds.origin;
-            let paint_row = |cells: &Vec<(char, CellStyle, CellKind)>, y: Pixels, window: &mut Window, cx: &mut App| {
-                let runs = build_runs(cells.iter().copied());
-                for run in &runs {
+            // A row with wet ink is painted in runs that each keep one glyph stamp, the shader
+            // painting the ink in from it; any other row as ever.
+            let paint_row = |cells: &Vec<(char, CellStyle, CellKind)>, stamps: &[f32], y: Pixels, window: &mut Window, cx: &mut App| {
+                let runs = if stamps.is_empty() {
+                    build_runs(cells.iter().copied()).into_iter().map(|run| (run, 0.0)).collect()
+                } else {
+                    build_stamped_runs(cells.iter().copied().zip(stamps.iter().copied()))
+                };
+                for (run, stamp) in &runs {
                     let x = origin.x + px(run.col as f32 * cw);
                     let w = px(if run.wide { 2.0 * cw } else { run.text.chars().count() as f32 * cw });
                     if run.style.bg != bg {
@@ -249,7 +341,7 @@ impl Element for TerminalElement {
                     }
                     let text: SharedString = run.text.clone().into();
                     let line = window.text_system().shape_line(text, px(self.font_size), &[text_run(&run.text, &run.style, self.family.clone())], None);
-                    let _ = line.paint(point(x, y), lh, window, cx);
+                    let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(x, y), lh, window, cx));
                     if run.style.underline {
                         let uy = y + lh - px(2.0);
                         window.paint_quad(fill(Bounds { origin: point(x, uy), size: size(w, px(1.0)) }, hsla(run.style.fg)));
@@ -258,11 +350,22 @@ impl Element for TerminalElement {
             };
             if let Some(above) = &rows.above {
                 let y = origin.y + px((frac - 1.0) * cell.height);
-                paint_row(above, y, window, cx);
+                paint_row(above, &[], y, window, cx);
             }
             for (i, row) in visible.as_ref().unwrap_or(&rows.visible).iter().enumerate() {
                 let y = origin.y + px((i as f32 + frac) * cell.height);
-                paint_row(row, y, window, cx);
+                // The characters this row's changed cells replaced fade out under the new ones,
+                // in the new cells' style; everything else in the ghost row is a space.
+                if let Some(ghosts) = ghosts.get(i).filter(|g| !g.is_empty()) {
+                    let cells: Vec<(char, CellStyle, CellKind)> = row
+                        .iter()
+                        .zip(ghosts)
+                        .map(|(&(_, style, kind), &(was, stamp))| (if stamp == 0.0 { ' ' } else { was }, CellStyle { bg, ..style }, kind))
+                        .collect();
+                    let stamps: Vec<f32> = ghosts.iter().map(|g| g.1).collect();
+                    paint_row(&cells, &stamps, y, window, cx);
+                }
+                paint_row(row, stamps.get(i).map_or(&[][..], Vec::as_slice), y, window, cx);
             }
             if let Some((col, line)) = cursor {
                 if frac == 0.0 {
@@ -303,6 +406,11 @@ impl Element for TerminalElement {
         if animating || find_owed {
             window.request_animation_frame();
         }
+        // Wet ink moves on the GPU alone: gpui presents this scene again, the glyph clock moving
+        // on, until the newest ink is dry, and nothing is redrawn for it.
+        if let Some(dry) = dry {
+            window.present_glyphs_until(dry + paint::PAINT_MARGIN);
+        }
     }
 }
 
@@ -323,10 +431,25 @@ pub fn hovered_link(spans: &[Span], bounds: Bounds<Pixels>, mouse: gpui::Point<P
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_dt, hovered_link, split_offset};
+    use super::{dim_alpha, frame_dt, hovered_link, split_offset, DIM_FADE, DIM_MIN_CONTRAST};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
 
+    #[test]
+    fn faint_text_fades_toward_its_background_but_keeps_three_to_one_contrast_with_it() {
+        use crate::palette::Rgb;
+        let navy = Rgb { r: 0x0e, g: 0x17, b: 0x23 };
+        let white = Rgb { r: 0xc8, g: 0xcc, b: 0xd4 };
+        assert_eq!(dim_alpha(white, navy), 1.0 - DIM_FADE, "bright text fades the whole way");
+        let grey = Rgb { r: 0x7c, g: 0x87, b: 0x98 };
+        let a = dim_alpha(grey, navy);
+        assert!(a > 1.0 - DIM_FADE && a < 1.0, "{a}");
+        let faded = |c: u8, b: u8| (f32::from(c) * a + f32::from(b) * (1.0 - a)).round() as u8;
+        let shown = Rgb { r: faded(grey.r, navy.r), g: faded(grey.g, navy.g), b: faded(grey.b, navy.b) };
+        assert!(crate::palette::contrast(shown, navy) >= DIM_MIN_CONTRAST - 0.05, "{shown:?}");
+        let murk = Rgb { r: 0x30, g: 0x38, b: 0x44 };
+        assert_eq!(dim_alpha(murk, navy), 1.0, "a colour already under 3:1 does not fade further");
+    }
     #[test]
     fn the_hovered_link_follows_the_pointer_cell_and_the_fraction() {
         let rows: Vec<Vec<char>> = ["plain", "see https://csarko.sh now"].iter().map(|r| r.chars().collect()).collect();
@@ -391,6 +514,39 @@ mod tests {
         assert_eq!(shown[0][1].0, ' ');
         assert_eq!(shown.len(), 1, "only the visible rows are decoded");
         assert_eq!(fresh.above.as_ref(), Some(&above), "the row above is left alone");
+    }
+
+    #[test]
+    fn a_row_the_program_writes_is_stamped_until_its_ink_dries_and_the_user_s_own_echo_is_not() {
+        use super::painted_rows;
+        use crate::layout::{CellKind, CellStyle};
+        use crate::terminal::RowsForPaint;
+        use std::time::Duration;
+        let style = CellStyle { fg: crate::palette::Rgb { r: 46, g: 43, b: 58 }, bg: crate::palette::Rgb { r: 0, g: 0, b: 0 }, bold: false, italic: false, dim: false, underline: false, inverse: false };
+        let rows = |a: &str, b: &str| RowsForPaint { display_offset: 0, above: None, visible: [a, b].iter().map(|r| r.chars().map(|c| (c, style, CellKind::Normal)).collect()).collect(), links: vec![] };
+        let x = |col: usize| col as f32 * 10.0;
+        let t0 = Instant::now();
+        let mut state = None;
+        let none = (vec![vec![], vec![]], vec![vec![], vec![]], None);
+        assert_eq!(painted_rows(&mut state, &rows("   ", "   "), false, 3, x, 5.0, t0), none, "the first grid is the baseline");
+        let t1 = t0 + Duration::from_millis(20);
+        let (stamps, ghosts, dry) = painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 5.02, t1);
+        assert_eq!(ghosts, vec![vec![], vec![]], "new text replaced nothing");
+        assert!(stamps[0][0] != 0.0 && stamps[0][0] == stamps[0][1] && stamps[0][2] == 0.0, "{stamps:?}");
+        assert!(stamps[1].is_empty(), "an unchanged row is drawn as ever");
+        assert!(dry.is_some_and(|d| d > t1));
+        let t2 = t1 + Duration::from_secs(2);
+        assert_eq!(painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 7.02, t2), none, "dry ink is drawn as ever");
+        let typed = painted_rows(&mut state, &rows("ok ", "ls "), true, 3, x, 7.04, t2 + Duration::from_millis(20));
+        assert_eq!(typed, none, "the user's own echo is not painted");
+        let t3 = t2 + Duration::from_secs(1);
+        let (_, ghosts, _) = painted_rows(&mut state, &rows("ok1", "ls "), false, 3, x, 8.04, t3);
+        assert!(ghosts[0].is_empty(), "the 1 was written where nothing was");
+        let t4 = t3 + Duration::from_secs(2);
+        let (stamps, ghosts, _) = painted_rows(&mut state, &rows("ok2", "ls "), false, 3, x, 10.04, t4);
+        assert!(stamps[0][2] != 0.0 && stamps[0][0] == 0.0, "{stamps:?}");
+        assert_eq!(ghosts[0].iter().map(|g| g.0).collect::<String>(), "  1", "the replaced 1 fades out under the 2");
+        assert!(ghosts[0][2].1 != 0.0 && ghosts[0][0].1 == 0.0, "{ghosts:?}");
     }
 
     #[test]

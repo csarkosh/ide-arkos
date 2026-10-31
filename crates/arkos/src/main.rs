@@ -501,6 +501,9 @@ pub struct Root {
     /// When this frame is drawn: every transition in one render reads the same instant, and
     /// `any_motion` asks for the next frame with it.
     pub frame_now: Instant,
+    /// The glyph clock this frame gives the glyph shader, which the terminal's paint-in stamps
+    /// with (`effects::paint`).
+    pub glyph_now: f32,
     /// When the user last scrolled a document (the wheel, or a key that eases the view): the
     /// glyph clock rests meanwhile (`effects::active::glyph_clock`), as it does for each
     /// terminal's own `Terminal::last_scroll`. None before the first.
@@ -765,6 +768,7 @@ impl Root {
             effects_paused: false,
             breath: pulse::Breath::default(),
             frame_now: Instant::now(),
+            glyph_now: 0.0,
             last_scroll: None,
             user_closing: false,
             said_goodbye: false,
@@ -3882,7 +3886,7 @@ impl Root {
     /// only, told the configured theme's focus ring as its accent. The aux windows never ask,
     /// so they keep gpui's own glyphs.
     pub fn glyph_shader_for(&self, kind: effects::active::WindowKind) -> Option<gpui::GlyphShader> {
-        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale, self.base_theme.chrome.focus_ring)
+        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale, self.base_theme.chrome.focus_ring, self.base_theme.is_light())
     }
 
     /// How far the text is deepened: the effect's `text_contrast` while it is settled on, else
@@ -4132,15 +4136,18 @@ impl Render for Root {
         }
         // The seconds a moving glyph shader reads, wrapped in f64 (see
         // `GLYPH_CLOCK_WRAP`) so f32 keeps its sub-frame precision in a long session, and held
-        // at zero while the user scrolls a document or a terminal (`glyph_clock`).
+        // at zero while the user scrolls a document or a terminal (`glyph_clock`) under a glyph
+        // shader that moves on its own; the paint-in's ink would stop drying if it were.
         let glyph_seconds = match &self.effect {
-            Some(e) => {
+            Some(e) if e.effect.manifest.glyph_motion => {
                 let terminals = self.sessions.terminals.values().map(|t| t.read(cx).last_scroll);
                 let last_scroll = effects::active::latest_scroll(std::iter::once(self.last_scroll).chain(terminals));
                 effects::active::glyph_clock(e.glyph_time(now, motion::reduce_motion()), last_scroll, now)
             }
+            Some(e) => e.glyph_time(now, motion::reduce_motion()),
             None => 0.0,
         };
+        self.glyph_now = glyph_seconds;
         effects::active::GlyphSink::set_glyph_time(window, glyph_seconds);
         self.ensure_glyph_timer(cx);
         if let Some(shader) = self.glyphs_pending.take() {

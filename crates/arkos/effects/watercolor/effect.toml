@@ -15,3 +15,5 @@ paper_alpha = 0.5             # 0.5 to 1.0; a terminal's or document's paper ove
 chrome_alpha = 0.0            # 0.0 to 1.0; the bars and the sidebar over the wash
 active_tab_alpha = 0.55       # 0.0 to 1.0; the active tab over the wash
 text_contrast = 0.6           # 0.0 to 1.0; how far the text moves towards ink while the effect is on
+terminal_paint = true         # new terminal text is written in by a pen: the terminal stamps a changed
+                              # cell once and the glyph shader paints it in; needs a glyphs file

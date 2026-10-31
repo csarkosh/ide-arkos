@@ -208,7 +208,7 @@ fn compile(effect: &Effect) -> Result<(), String> {
 fn compile_glyphs(device: &DeviceRef, source: &str, file: &str) -> Result<(), String> {
     // A window puts its scale's, the calm alpha's and its theme's accent's lines first; a Retina
     // one under the matrix theme stands in for every window here.
-    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::glyph_header(2.0, crate::effects::accent::HOME));
+    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::glyph_header(2.0, crate::effects::accent::HOME, false));
     let library = device.new_library_with_source(&format!("{base}\n{source}"), &CompileOptions::new()).map_err(|e| layer::point_into(&e, &base, "gpui", file))?;
     let function = |name: &str| library.get_function(name, None).map_err(|_| format!("{file}: the glyph shader has no function named {name}"));
     let build = |vertex: &str, fragment: &str| -> Result<(), String> {
@@ -600,8 +600,10 @@ mod tests {
         let env = env!(s, s.path("none.sock"));
         let ink = watercolor().glyphs.unwrap();
         let own = "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {";
-        assert_eq!(ink.matches(own).count(), 2, "watercolor's glyph and emoji fragments end their parameters so");
-        // The clock's index is gpui's own name for it, and both fragments read it.
+        // Its glyph fragment reads the clock already, for the paint-in; its emoji fragment is made
+        // to, the clock's index being gpui's own name for it.
+        assert!(ink.contains("texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],\n    constant float *time [[buffer(5)]]) {"));
+        assert_eq!(ink.matches(own).count(), 1, "watercolor's emoji fragment ends its parameters so");
         let timed = format!(
             "static_assert(SpriteInputIndex_GlyphTime == 5, \"the glyph clock is buffer 5\");\n{}",
             ink.replace(own, "texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],\n    constant float *time [[buffer(5)]]) {\n  float tick = *time;\n  (void)tick;")

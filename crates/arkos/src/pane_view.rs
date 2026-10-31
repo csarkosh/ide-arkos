@@ -13,7 +13,7 @@ use crate::md_view;
 use crate::motion;
 use crate::sessions::Note;
 use crate::terminal::Terminal;
-use crate::terminal_element::{grid_for, TerminalElement};
+use crate::terminal_element::{grid_for, Ink, TerminalElement};
 use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId, ViewMode};
 use crate::viewer::{self, Content};
@@ -389,8 +389,10 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => {
                 let family = root.family();
                 let now = root.frame_now;
-                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion(), root.effects_paused).map(|t| t.toward(theme.chrome.focus_ring));
-                render_terminal(terminal, pane, family, &theme, style, decode, &mut root.find_bars, now, cx)
+                let (reduce, paused) = (motion::reduce_motion(), root.effects_paused);
+                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), reduce, paused).map(|t| t.toward(theme.chrome.focus_ring).on_ground(theme.is_light()));
+                let ink = decode.map(Ink::Decode).or_else(|| crate::effects::paint::paint_clock(style.terminal_paint, reduce, paused, root.glyph_now).map(Ink::Paint));
+                render_terminal(terminal, pane, family, &theme, style, ink, &mut root.find_bars, now, cx)
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),
         },
@@ -849,7 +851,7 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     true
 }
 
-fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, style: Style, decode: Option<decode::Timing>, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
+fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedString, theme: &Theme, style: Style, ink: Option<Ink>, find_bars: &mut motion::Fades<gpui::EntityId, find::FindLook>, now: std::time::Instant, cx: &mut Context<Root>) -> Div {
     let focus = terminal.read(cx).focus.clone();
     let (font_size, line_height) = {
         let t = terminal.read(cx);
@@ -978,7 +980,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .id(("term-hover", pane))
                 .size_full()
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
-                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, decode)),
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink)),
         )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();

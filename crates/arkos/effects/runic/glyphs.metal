@@ -239,6 +239,12 @@ fragment float4 arkos_glyph_fragment(
   // crates/arkos/src/effects/decode.rs): a change here is made there too.
   float luminance = dot(col, float3(0.2126, 0.7152, 0.0722));
   bool dark = luminance < 0.45;
+  // On a dark ground, text under 0.45 is the theme's dimmer colours (hints, comments, faint
+  // status lines), not a light theme's dark text: it stays plain, its own colour with no tint,
+  // no halo and no flash, so it keeps the contrast the theme gave it.
+  if (dark && !ARKOS_LIGHT_GROUND) {
+    return float4(col, core * input.color.a);
+  }
   float3 green = toward_accent(RUNE_GREEN, ARKOS_ACCENT);
   float3 hue = dark ? toward_accent(RUNE_DEEP, ARKOS_ACCENT) : green;
 

@@ -11,6 +11,7 @@ pub mod hash;
 pub mod inputs;
 pub mod layer;
 pub mod manifest;
+pub mod paint;
 /// The runic wash's rain mirrored in Rust, for its tests alone for now.
 #[cfg(test)]
 pub mod runic;

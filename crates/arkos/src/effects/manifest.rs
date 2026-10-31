@@ -48,6 +48,10 @@ pub struct Manifest {
     /// The terminal decodes changed cells and brightens fresh ones while the effect is settled
     /// on. Needs `glyph_motion`.
     pub terminal_decode: bool,
+    /// The terminal paints changed cells in while the effect is settled on: it stamps them and
+    /// its glyph shader paints the ink in from the stamp (`effects::paint`). Needs a glyphs file,
+    /// and an effect paints or decodes, not both.
+    pub terminal_paint: bool,
 }
 
 impl Manifest {
@@ -84,6 +88,7 @@ impl Default for Manifest {
             glyph_motion: false,
             glyph_rate: None,
             terminal_decode: false,
+            terminal_paint: false,
         }
     }
 }
@@ -152,6 +157,12 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     }
     if m.terminal_decode && !m.glyph_motion {
         return Err("terminal_decode = true requires glyph_motion = true".into());
+    }
+    if m.terminal_paint && m.glyphs.is_none() {
+        return Err("terminal_paint = true requires a glyphs file".into());
+    }
+    if m.terminal_paint && m.terminal_decode {
+        return Err("terminal_paint and terminal_decode cannot both be true".into());
     }
     Ok(m)
 }
@@ -348,6 +359,18 @@ mod tests {
         assert_eq!(e, "terminal_decode = true requires glyph_motion = true");
         for b in BUILTIN.iter().filter(|b| b.name != "runic") {
             assert!(!parse(b.manifest).unwrap().terminal_decode, "{} does not decode", b.name);
+        }
+    }
+
+    #[test]
+    fn a_manifest_may_ask_the_terminal_to_paint_changed_cells_in_only_with_a_glyphs_file_and_watercolor_does() {
+        assert!(!parse(MINIMAL).unwrap().terminal_paint);
+        assert!(parse(&with("glyphs = \"g.metal\"\nterminal_paint = true")).unwrap().terminal_paint);
+        assert_eq!(parse(&with("terminal_paint = true")).unwrap_err(), "terminal_paint = true requires a glyphs file");
+        let both = with("glyphs = \"g.metal\"\nglyph_motion = true\nterminal_decode = true\nterminal_paint = true");
+        assert_eq!(parse(&both).unwrap_err(), "terminal_paint and terminal_decode cannot both be true");
+        for b in BUILTIN.iter() {
+            assert_eq!(parse(b.manifest).unwrap().terminal_paint, b.name == "watercolor", "{}", b.name);
         }
     }
 

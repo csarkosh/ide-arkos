@@ -59,12 +59,14 @@ pub struct Style {
     pub menu_edges: bool,
     /// The terminal decodes changed cells: the effect's `terminal_decode`, once fully on.
     pub terminal_decode: bool,
+    /// The terminal paints changed cells in: the effect's `terminal_paint`, once fully on.
+    pub terminal_paint: bool,
 }
 
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -96,6 +98,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
         terminal_decode: full && manifest.terminal_decode,
+        terminal_paint: full && manifest.terminal_paint,
     }
 }
 
@@ -275,26 +278,34 @@ pub fn accent_line(accent: Rgb) -> String {
     format!("constant float3 ARKOS_ACCENT = {};", float3(accent))
 }
 
-/// What a window of `scale` under a theme of `accent` declares ahead of every glyph shader: the
-/// scale's line, the calm alpha's and the accent's.
-pub fn glyph_header(scale: f32, accent: Rgb) -> String {
-    format!("{}\n{}\n{}", scale_line(scale), calm_line(), accent_line(accent))
+/// The line that tells a glyph shader whether the theme is a light one, `ARKOS_LIGHT_GROUND`, so
+/// it can tell a light theme's dark text from a dark theme's dimmer colours: both sit under the
+/// same luminance, and only the first wants drawing as dark text.
+pub fn ground_line(light: bool) -> String {
+    format!("constant bool ARKOS_LIGHT_GROUND = {light};")
 }
 
-/// An effect's glyph shader as a window of `scale` under a theme of `accent` compiles it: the
-/// window's lines, then its own.
-pub fn glyph_source(glyphs: &str, scale: f32, accent: Rgb) -> String {
-    format!("{}\n{glyphs}", glyph_header(scale, accent))
+/// What a window of `scale` under a theme of `accent`, `light` or not, declares ahead of every
+/// glyph shader: the scale's line, the calm alpha's, the accent's, the ground's and the
+/// paint-in's timing.
+pub fn glyph_header(scale: f32, accent: Rgb, light: bool) -> String {
+    format!("{}\n{}\n{}\n{}\n{}", scale_line(scale), calm_line(), accent_line(accent), ground_line(light), crate::effects::paint::paint_lines())
+}
+
+/// An effect's glyph shader as a window of `scale` under a theme of `accent`, `light` or not,
+/// compiles it: the window's lines, then its own.
+pub fn glyph_source(glyphs: &str, scale: f32, accent: Rgb, light: bool) -> String {
+    format!("{}\n{glyphs}", glyph_header(scale, accent, light))
 }
 
 /// The glyph shader a window of `kind` at `scale` draws with under `effect`: the effect's own,
 /// only in the project window, only once it has faded in fully and until it starts to leave
 /// (glyphs can only cut), and only when the effect has a glyphs file.
-pub fn glyph_shader_for<L>(kind: WindowKind, effect: Option<&ActiveEffect<L>>, scale: f32, accent: Rgb) -> Option<GlyphShader> {
+pub fn glyph_shader_for<L>(kind: WindowKind, effect: Option<&ActiveEffect<L>>, scale: f32, accent: Rgb, light: bool) -> Option<GlyphShader> {
     let e = effect.filter(|e| kind == WindowKind::Project && e.settled())?;
     let glyphs = e.effect.glyphs.as_deref()?;
     Some(GlyphShader {
-        source: glyph_source(glyphs, scale, accent),
+        source: glyph_source(glyphs, scale, accent, light),
         vertex: "arkos_glyph_vertex".into(),
         fragment: "arkos_glyph_fragment".into(),
         emoji: emoji_stages(glyphs),
@@ -480,7 +491,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -566,6 +577,17 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_paints_only_once_the_effect_has_fully_faded_in_and_not_on_its_way_out() {
+        let now = Instant::now();
+        assert!(!style_at(&watercolor().manifest, 0.5).terminal_paint);
+        assert!(on(watercolor(), now).style(now).terminal_paint);
+        assert!(!Style::plain().terminal_paint);
+        let mut leaving = on(watercolor(), now);
+        leaving.leave(now);
+        assert!(!leaving.style(now).terminal_paint);
+    }
+
+    #[test]
     fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
         assert_eq!(glyph_wait(20, false, true, true, false, false), None);
         assert_eq!(glyph_wait(20, true, false, true, false, false), None);
@@ -627,19 +649,22 @@ mod tests {
     }
 
     #[test]
-    fn the_glyph_shader_is_told_the_window_s_scale_the_calm_alpha_and_the_theme_s_accent_ahead_of_its_own_source() {
+    fn the_glyph_shader_is_told_the_window_s_scale_the_calm_alpha_the_theme_s_accent_and_ground_and_the_paint_in_s_timing_ahead_of_its_own_source() {
         let e = on(watercolor(), Instant::now());
         let glyphs = watercolor().glyphs.unwrap();
         let navy = Rgb { r: 0x3a, g: 0x7b, b: 0xd5 };
         let accent = "constant float3 ARKOS_ACCENT = float3(0.227451, 0.482353, 0.835294);";
-        let header = format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{accent}");
-        let retina = glyph_shader_for(WindowKind::Project, Some(&e), 2.0, navy).unwrap();
+        let paint = crate::effects::paint::paint_lines();
+        assert!(paint.starts_with("constant float ARKOS_PAINT_DUR = 0.08;\nconstant float ARKOS_PAINT_DRY = 0.8;\nconstant float ARKOS_PAINT_STAGGER = 0.00229167;\n"), "{paint}");
+        let header = format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{accent}\nconstant bool ARKOS_LIGHT_GROUND = false;\n{paint}");
+        let retina = glyph_shader_for(WindowKind::Project, Some(&e), 2.0, navy, false).unwrap();
         assert_eq!(retina.source, format!("{header}\n{glyphs}"));
-        assert_eq!(glyph_source(&glyphs, 2.0, navy), retina.source);
-        assert_eq!(glyph_header(2.0, navy), header);
+        assert_eq!(glyph_source(&glyphs, 2.0, navy, false), retina.source);
+        assert_eq!(glyph_header(2.0, navy, false), header);
         assert_eq!(calm_line(), format!("constant float ARKOS_CALM_ALPHA = {CALM_ALPHA};"));
         assert_eq!(accent_line(navy), accent);
-        let plain_screen = glyph_shader_for(WindowKind::Project, Some(&e), 1.0, navy).unwrap();
+        assert_eq!(ground_line(true), "constant bool ARKOS_LIGHT_GROUND = true;");
+        let plain_screen = glyph_shader_for(WindowKind::Project, Some(&e), 1.0, navy, false).unwrap();
         assert!(plain_screen.source.starts_with("constant float ARKOS_SCALE = 1.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n"));
         // The built-in measures its ink in points, so a 1x screen sees the look a 2x one does.
         assert!(glyphs.contains("ARKOS_SCALE"), "the built-in ink ignores the scale");
@@ -687,7 +712,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
@@ -886,7 +911,7 @@ mod tests {
         let _lock = test_lock(true);
         let mut window = Recorder::default();
         let a = start(watercolor(), &mut Fine, Instant::now(), true).unwrap();
-        apply_glyphs(&mut window, &a.effect, glyph_shader_for(WindowKind::Project, Some(&a), 2.0, HOME_ACCENT)).unwrap();
+        apply_glyphs(&mut window, &a.effect, glyph_shader_for(WindowKind::Project, Some(&a), 2.0, HOME_ACCENT, false)).unwrap();
         assert!(window.times.is_empty(), "setting the stages does not set the clock");
         window.set_glyph_time(1.5);
         window.set_glyph_time(1.55);
@@ -900,7 +925,7 @@ mod tests {
         let mut window = Recorder::default();
         // Effect A is on, cut in under Reduce Motion, with its ink.
         let a = start(watercolor(), &mut Fine, t0, true).unwrap();
-        let ink_a = glyph_shader_for(WindowKind::Project, Some(&a), 2.0, HOME_ACCENT);
+        let ink_a = glyph_shader_for(WindowKind::Project, Some(&a), 2.0, HOME_ACCENT, false);
         assert!(ink_a.is_some());
         apply_glyphs(&mut window, &a.effect, ink_a.clone()).unwrap();
         // B replaces A at once, and the window refuses B's glyph shader.
@@ -909,7 +934,7 @@ mod tests {
         b_effect.glyphs = Some("garbage".into());
         let b = start(b_effect, &mut Fine, t0, true).unwrap();
         window.refuse = Some("Compilation failed: \n\nprogram_source:3:1: error: garbage\n".into());
-        let notice = apply_glyphs(&mut window, &b.effect, glyph_shader_for(WindowKind::Project, Some(&b), 2.0, HOME_ACCENT)).unwrap_err();
+        let notice = apply_glyphs(&mut window, &b.effect, glyph_shader_for(WindowKind::Project, Some(&b), 2.0, HOME_ACCENT, false)).unwrap_err();
         assert_eq!(notice, "effect b: glyphs.metal: garbage");
         // gpui's own glyphs come back, rather than A's ink staying under B's wash.
         assert_eq!(window.calls, vec![ink_a, None]);
@@ -930,7 +955,7 @@ mod tests {
         );
         // Watercolor inks its emoji, and space shows them on its holo display.
         let t0 = Instant::now();
-        let ink = glyph_shader_for(WindowKind::Project, Some(&on(watercolor(), t0)), 2.0, HOME_ACCENT).unwrap();
+        let ink = glyph_shader_for(WindowKind::Project, Some(&on(watercolor(), t0)), 2.0, HOME_ACCENT, false).unwrap();
         assert_eq!(ink.emoji.map(|e| e.fragment), Some("arkos_emoji_fragment".to_string()));
         let space = crate::effects::BUILTIN.iter().find(|b| b.name == "space").unwrap();
         assert_eq!(
@@ -947,11 +972,11 @@ mod tests {
         let mut e = start(watercolor(), &mut Fine, t0, false).unwrap();
         // Midway in, the glyphs are still gpui's own: they can only cut, at the fade's end.
         assert_eq!(e.step(t0 + THEME_FADE / 2), None);
-        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT), None);
+        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT, false), None);
         assert_eq!(e.step(t0 + THEME_FADE), Some(Direction::In));
-        apply_glyphs(&mut window, &e.effect, glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT)).unwrap();
+        apply_glyphs(&mut window, &e.effect, glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT, false)).unwrap();
         let ink = GlyphShader {
-            source: glyph_source(&watercolor().glyphs.unwrap(), 2.0, HOME_ACCENT),
+            source: glyph_source(&watercolor().glyphs.unwrap(), 2.0, HOME_ACCENT, false),
             vertex: "arkos_glyph_vertex".into(),
             fragment: "arkos_glyph_fragment".into(),
             emoji: Some(gpui::EmojiStages { vertex: "arkos_emoji_vertex".into(), fragment: "arkos_emoji_fragment".into() }),
@@ -960,19 +985,19 @@ mod tests {
         // The fade out's first frame already draws gpui's own.
         let t1 = t0 + THEME_FADE * 2;
         e.leave(t1);
-        apply_glyphs(&mut window, &e.effect, glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT)).unwrap();
+        apply_glyphs(&mut window, &e.effect, glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT, false)).unwrap();
         assert_eq!(window.calls, vec![Some(ink.clone()), None]);
-        assert_eq!(glyph_shader_for::<()>(WindowKind::Project, None, 2.0, HOME_ACCENT), None, "no effect, no ink");
+        assert_eq!(glyph_shader_for::<()>(WindowKind::Project, None, 2.0, HOME_ACCENT, false), None, "no effect, no ink");
         // A cut in has the ink at once.
         let cut = start(watercolor(), &mut Fine, t0, true).unwrap();
-        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&cut), 2.0, HOME_ACCENT), Some(ink));
+        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&cut), 2.0, HOME_ACCENT, false), Some(ink));
         // An effect without a glyphs file leaves gpui's own.
         let mut plain = watercolor();
         plain.glyphs = None;
-        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&on(plain, t0)), 2.0, HOME_ACCENT), None);
+        assert_eq!(glyph_shader_for(WindowKind::Project, Some(&on(plain, t0)), 2.0, HOME_ACCENT, false), None);
         // A shader the window refuses is a notice naming the file; the effect stays on.
         let mut refusing = Recorder { refuse: Some("Compilation failed: \n\nprogram_source:1290:3: error: unknown type 'flaot'\n".into()), ..Default::default() };
-        let notice = apply_glyphs(&mut refusing, &cut.effect, glyph_shader_for(WindowKind::Project, Some(&cut), 2.0, HOME_ACCENT)).unwrap_err();
+        let notice = apply_glyphs(&mut refusing, &cut.effect, glyph_shader_for(WindowKind::Project, Some(&cut), 2.0, HOME_ACCENT, false)).unwrap_err();
         assert_eq!(notice, "effect watercolor: glyphs.metal: unknown type 'flaot'");
         assert_eq!(cut.style(t0).paper_alpha, 0.5, "still on");
     }
@@ -991,9 +1016,9 @@ mod tests {
     #[test]
     fn the_glyph_shader_is_the_window_s_own() {
         let e = on(watercolor(), Instant::now());
-        assert!(glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT).is_some());
+        assert!(glyph_shader_for(WindowKind::Project, Some(&e), 2.0, HOME_ACCENT, false).is_some());
         for kind in [WindowKind::About, WindowKind::Settings, WindowKind::Keybindings, WindowKind::Chooser] {
-            assert_eq!(glyph_shader_for(kind, Some(&e), 2.0, HOME_ACCENT), None, "{kind:?} keeps gpui's own glyphs");
+            assert_eq!(glyph_shader_for(kind, Some(&e), 2.0, HOME_ACCENT, false), None, "{kind:?} keeps gpui's own glyphs");
         }
     }
 
