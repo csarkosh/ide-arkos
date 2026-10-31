@@ -36,12 +36,29 @@ const ICONS: &[(&str, &str)] = &[
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(svg) = wash(path) {
+            return Ok(Some(Cow::Owned(svg.into_bytes())));
+        }
         Ok(ICONS.iter().find(|(p, _)| *p == path).map(|(_, svg)| Cow::Borrowed(svg.as_bytes())))
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
         Ok(ICONS.iter().filter(|(p, _)| p.starts_with(path)).map(|(p, _)| SharedString::from(*p)).collect())
     }
+}
+
+/// A wash's path: a filled band `w` by `h` points, which the terminal paints its cell backgrounds
+/// with under watercolor, so they reach the glyph shader and take its ink.
+pub fn wash_path(w: u32, h: u32) -> SharedString {
+    format!("wash/{w}x{h}.svg").into()
+}
+
+/// The SVG a wash path names: a band of its size, drawn whole (gpui scales an SVG by its width,
+/// so the band's own size keeps its shape).
+fn wash(path: &str) -> Option<String> {
+    let (w, h) = path.strip_prefix("wash/")?.strip_suffix(".svg")?.split_once('x')?;
+    let (w, h): (u32, u32) = (w.parse().ok()?, h.parse().ok()?);
+    (w > 0 && h > 0).then(|| format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}"><rect width="{w}" height="{h}"/></svg>"##))
 }
 
 /// An alert kind's icon path.
@@ -58,6 +75,15 @@ pub fn alert(kind: AlertKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wash_path_serves_a_band_of_its_size_and_nothing_else_does() {
+        let svg = Assets.load(&wash_path(96, 24)).unwrap().unwrap();
+        let svg = std::str::from_utf8(&svg).unwrap();
+        assert!(svg.contains(r#"viewBox="0 0 96 24""#) && svg.contains(r#"<rect width="96" height="24"/>"#), "{svg}");
+        assert!(Assets.load("wash/0x24.svg").unwrap().is_none());
+        assert!(Assets.load("wash/axb.svg").unwrap().is_none());
+    }
 
     #[test]
     fn every_alert_has_an_icon_that_parses_as_svg() {

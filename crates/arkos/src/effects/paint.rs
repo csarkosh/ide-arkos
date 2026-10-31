@@ -46,6 +46,10 @@ pub const PAINT_OVERWRITE_SHARE: f32 = 0.6;
 /// to plain ink over the last part, so a dot blinking off is held and a spinner that stops settles.
 pub const PAINT_DOODLE: u32 = 18;
 pub const PAINT_HIDE: u32 = 19;
+/// The variant a cell background is washed in with: a brush sweeping across the band, left to
+/// right, over `WASH_TIME` seconds from when its row's text starts.
+pub const PAINT_WASH: u32 = 20;
+pub const WASH_TIME: f32 = 0.3;
 pub const DOODLE_HOLD: f32 = 1.0;
 /// How many times a second the pen goes round a doodled mark.
 pub const DOODLE_TURNS: f32 = 0.9;
@@ -87,6 +91,9 @@ pub const PAINT_JITTER: f32 = 0.1;
 /// and bead how strong its wet bead is (0.6 to 1.2). The soak and the fade, and the spare
 /// variants past them, have no stagger and last `PAINT_INLINE`. The shader reads the same table.
 pub fn hand(variant: u32) -> [f32; 4] {
+    if variant == PAINT_WASH {
+        return [0.0, WASH_TIME / PAINT_DUR, 0.92, 0.6];
+    }
     if variant >= PAINT_HANDS {
         return [0.0, PAINT_INLINE / PAINT_DUR, 0.62, 1.0];
     }
@@ -109,7 +116,7 @@ pub fn paint_lines() -> String {
         })
         .collect();
     format!(
-        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STAGGER = {PAINT_STAGGER_PER_PT:.8};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
+        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STAGGER = {PAINT_STAGGER_PER_PT:.8};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
         hands.join(", ")
     )
 }
@@ -123,10 +130,24 @@ pub fn encode(t: f32, variant: u32) -> f32 {
 }
 
 /// The hand a stamp names, as the shader reads it.
-#[cfg(test)]
 pub fn variant_of(stamp: f32) -> u32 {
     ((stamp * STEPS).round() as i32 & (PAINT_VARIANTS as i32 - 1)) as u32
 }
+
+/// The stamp a cell background under a run stamped `stamp` is washed in with, its left edge `x`
+/// points from the window's left and the glyph clock at `clock`: the wash starts where the run's
+/// text starts there. A band under no stamp (or a doodled or hidden one) still names the wash, so
+/// the shader draws it as one, but long dried.
+pub fn wash_stamp(stamp: f32, x: f32, clock: f32) -> f32 {
+    let variant = variant_of(stamp);
+    if stamp == 0.0 || variant == PAINT_DOODLE || variant == PAINT_HIDE {
+        return encode(clock - WASH_DRIED, PAINT_WASH);
+    }
+    encode(stamp + x * PAINT_STAGGER_PER_PT * hand(variant)[0], PAINT_WASH)
+}
+
+/// How long ago a band that is not washing in was washed, as its stamp says: past any wetness.
+const WASH_DRIED: f32 = 30.0;
 
 /// A run's key, from its characters, so a line keeps its hand while it scrolls.
 fn run_key(chars: impl Iterator<Item = char>) -> u32 {
@@ -347,6 +368,20 @@ mod tests {
         assert_eq!(doodle_mark('a', '⏺'), None);
         assert_eq!(doodle_mark('✻', 'W'), None);
         assert!(holds_doodle(' ') && holds_doodle('✽') && holds_doodle('●') && !holds_doodle('x'));
+    }
+
+    #[test]
+    fn a_background_washes_in_from_where_its_text_starts_and_a_still_one_does_not() {
+        let pen = encode(10.0, 3);
+        let wash = wash_stamp(pen, 96.0, 12.0);
+        assert_eq!(variant_of(wash), PAINT_WASH);
+        let start = 10.0 + 96.0 * PAINT_STAGGER_PER_PT * hand(3)[0];
+        assert!((wash - start).abs() <= 1.5 / PAINT_GRID, "{wash} {start}");
+        assert_eq!(hand(PAINT_WASH)[0], 0.0, "the whole band sweeps at once, not cell by cell");
+        let dried = wash_stamp(0.0, 96.0, 50.0);
+        assert_eq!(variant_of(dried), PAINT_WASH, "a still band is still a wash");
+        assert!(dried < 50.0 - 10.0, "and long dry: {dried}");
+        assert_eq!(variant_of(wash_stamp(encode(10.0, PAINT_HIDE), 96.0, 50.0)), PAINT_WASH);
     }
 
     #[test]

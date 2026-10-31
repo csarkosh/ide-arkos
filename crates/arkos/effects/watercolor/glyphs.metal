@@ -19,7 +19,12 @@
 // A working mark (Claude Code's spinner, a tool's blinking dot) is hidden (ARKOS_PAINT_HIDE) and
 // one steady mark doodled under it instead (ARKOS_PAINT_DOODLE): a pen keeps going round it
 // ARKOS_DOODLE_TURNS times a second, the ink heavier where it has just been and lighter behind,
-// the mark swaying a little with the hand, easing back to plain ink as ARKOS_DOODLE_HOLD runs out. The ink it leaves is wetter, deeper and bluer, with
+// the mark swaying a little with the hand, easing back to plain ink as ARKOS_DOODLE_HOLD runs out.
+// A cell background is a band the terminal paints as a filled shape in ARKOS_PAINT_WASH: a wash of
+// its colour, in broad soft blooms rather than the stroke's grain, its ends pooled a little darker
+// and bleeding raggedly past the band, its top and bottom straight so rows of one colour meet
+// without a seam. A band whose row is being written washes in behind a ragged brush front that
+// sweeps it left to right over its glyph time, and dries a shade lighter. The ink it leaves is wetter, deeper and bluer, with
 // a wide bleed, and dries to the ink above over ARKOS_PAINT_DRY. A glyph with no stamp (0), or
 // one whose ink has dried, is drawn exactly as it is without one.
 //
@@ -42,6 +47,7 @@ struct MonochromeInkVertexOutput {
   float4 clip_distance;
   float4 tile_rect [[flat]];
   float glyph_h [[flat]];
+  float glyph_w [[flat]];
   float4 paint [[flat]];
   float mode [[flat]];
   float2 box;
@@ -54,6 +60,7 @@ struct MonochromeInkFragmentInput {
   float4 clip_distance;
   float4 tile_rect [[flat]];
   float glyph_h [[flat]];
+  float glyph_w [[flat]];
   float4 paint [[flat]];
   float mode [[flat]];
   float2 box;
@@ -100,10 +107,12 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
       tile_rect,
       float(sprite.bounds.size.height) / PER_PX,
+      float(sprite.bounds.size.width) / PER_PX,
       float4(start, sprite.stamp != 0.0 ? hand.y : 0.0, hand.z, hand.w),
       // 0 for the pen, 1 for a change in place soaking in, 2 for the text it replaced fading out,
-      // 3 for a doodled mark and 4 for a cell drawn as nothing.
+      // 3 for a doodled mark, 4 for a cell drawn as nothing and 5 for a background's wash.
       sprite.stamp == 0.0 ? 0.0
+        : variant == ARKOS_PAINT_WASH ? 5.0
         : variant == ARKOS_PAINT_HIDE ? 4.0
         : variant == ARKOS_PAINT_DOODLE ? 3.0
         : variant == ARKOS_PAINT_FADE ? 2.0
@@ -132,6 +141,42 @@ float ink_at(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
   return atlas.sample(s, uv).a;
 }
 
+// A background band's wash (see the top of this file). Sizes are in half points, as px is.
+float4 arkos_wash(MonochromeInkFragmentInput input, float2 px, float now) {
+  float2 size = float2(input.glyph_w, input.glyph_h);
+  float2 b = input.box;
+  float bloom = arkos_noise(px * 0.025);
+  float grain = arkos_noise(px * 0.12 + 3.0);
+  // Past the band's ends (never its top or bottom), a ragged bleed; inside, the body, a little
+  // darker toward each end where the pigment pooled.
+  float beyond = max(-b.x, b.x - 1.0) * size.x;
+  if (b.y < 0.0 || b.y > 1.0) {
+    return float4(0.0);
+  }
+  float body;
+  float pooled = 0.0;
+  if (beyond > 0.0) {
+    body = saturate(1.0 - (beyond - (grain - 0.35) * 3.0) / 2.5) * 0.55;
+  } else {
+    body = 0.72 + 0.28 * bloom - 0.06 * grain;
+    float inside = min(b.x, 1.0 - b.x) * size.x;
+    pooled = (1.0 - smoothstep(0.0, 5.0, inside)) * (0.5 + 0.5 * grain);
+  }
+  float alpha = saturate(body + pooled * 0.12);
+  float3 rgb = input.color.rgb * (1.0 - 0.12 * pooled);
+  // Washing in: a ragged brush front crosses the band, and the wash dries a shade lighter.
+  float age = now - input.paint.x;
+  float dur = ARKOS_PAINT_DUR * input.paint.y;
+  if (age > -60.0 && age < dur + ARKOS_PAINT_DRY) {
+    float progress = saturate(age / dur);
+    float path = saturate(b.x) * 0.82 + bloom * 0.12 + grain * 0.06;
+    alpha *= progress >= 1.0 ? 1.0 : saturate((progress * 1.15 - path) / 0.1);
+    float wet = age > dur ? saturate(1.0 - (age - dur) / ARKOS_PAINT_DRY) : 1.0;
+    rgb *= 1.0 - 0.14 * wet;
+  }
+  return float4(rgb, alpha * input.color.a);
+}
+
 fragment float4 arkos_glyph_fragment(
     MonochromeInkFragmentInput input [[stage_in]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
@@ -154,6 +199,9 @@ fragment float4 arkos_glyph_fragment(
 
   // A working mark's doodle: how strongly (1 while the mark flips, easing to 0 as the hold runs
   // out) and where the pen is round it (0 to 1).
+  if (input.mode > 4.5) {
+    return arkos_wash(input, px, *time);
+  }
   if (input.mode > 3.5) {
     return float4(0.0);
   }

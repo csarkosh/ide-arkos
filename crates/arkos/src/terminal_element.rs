@@ -155,6 +155,30 @@ pub fn painted_rows(
     (stamps, ghosts, dry)
 }
 
+/// A stretch of one background colour across a row's cells.
+#[derive(Debug, PartialEq)]
+struct Band {
+    col: usize,
+    len: usize,
+    color: Rgb,
+}
+
+/// A row's backgrounds as bands, from each cell's background: every stretch of one colour other
+/// than the terminal's own `bg`.
+fn bands(cells: impl Iterator<Item = Rgb>, bg: Rgb) -> Vec<Band> {
+    let mut out: Vec<Band> = Vec::new();
+    for (col, color) in cells.enumerate() {
+        if color == bg {
+            continue;
+        }
+        match out.last_mut() {
+            Some(b) if b.color == color && b.col + b.len == col => b.len += 1,
+            _ => out.push(Band { col, len: 1, color }),
+        }
+    }
+    out
+}
+
 /// Whether a terminal last painted in window draw `painted` was left out of a draw since, so is
 /// shown again in `draw`: the window draws every visible terminal each time it draws.
 fn shown_again(painted: u64, draw: u64) -> bool {
@@ -364,7 +388,24 @@ impl Element for TerminalElement {
             let origin = bounds.origin;
             // A row with wet ink is painted in runs that each keep one glyph stamp, the shader
             // painting the ink in from it; any other row as ever.
+            let washed = match self.ink {
+                Some(Ink::Paint(clock)) => Some(clock),
+                _ => None,
+            };
             let paint_row = |cells: &Vec<(char, CellStyle, CellKind)>, stamps: &[f32], y: Pixels, window: &mut Window, cx: &mut App| {
+                // Under watercolor a cell background is a wash: each stretch of one colour is
+                // painted as a band the glyph shader inks, washed in as its row's text starts.
+                if let Some(clock) = washed {
+                    for band in bands(cells.iter().map(|c| c.1.bg), bg) {
+                        let x = origin.x + px(band.col as f32 * cw);
+                        let w = band.len as f32 * cw;
+                        let stamp = stamps.get(band.col..band.col + band.len).and_then(|s| s.iter().copied().find(|&s| s != 0.0)).unwrap_or(0.0);
+                        let stamp = paint::wash_stamp(stamp, f32::from(x), clock);
+                        let path = crate::icons::wash_path(w.round().max(1.0) as u32, f32::from(lh).round().max(1.0) as u32);
+                        let bounds = Bounds { origin: point(x, y), size: size(px(w), lh) };
+                        let _ = window.with_glyph_stamp(stamp, |window| window.paint_svg(bounds, path, gpui::TransformationMatrix::unit(), hsla(band.color), cx));
+                    }
+                }
                 let runs = if stamps.is_empty() {
                     build_runs(cells.iter().copied()).into_iter().map(|run| (run, 0.0)).collect()
                 } else {
@@ -373,7 +414,7 @@ impl Element for TerminalElement {
                 for (run, stamp) in &runs {
                     let x = origin.x + px(run.col as f32 * cw);
                     let w = px(if run.wide { 2.0 * cw } else { run.text.chars().count() as f32 * cw });
-                    if run.style.bg != bg {
+                    if run.style.bg != bg && washed.is_none() {
                         window.paint_quad(fill(Bounds { origin: point(x, y), size: size(w, lh) }, hsla(run.style.bg)));
                     }
                     if run.text.trim().is_empty() {
@@ -472,9 +513,21 @@ pub fn hovered_link(spans: &[Span], bounds: Bounds<Pixels>, mouse: gpui::Point<P
 
 #[cfg(test)]
 mod tests {
-    use super::{dim_alpha, frame_dt, hovered_link, shown_again, split_offset, DIM_FADE, DIM_MIN_CONTRAST};
+    use super::{bands, dim_alpha, frame_dt, hovered_link, shown_again, split_offset, Band, DIM_FADE, DIM_MIN_CONTRAST};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
+
+    #[test]
+    fn a_row_s_backgrounds_are_bands_of_one_colour_each() {
+        use crate::palette::Rgb;
+        let (bg, red, dark) = (Rgb { r: 0, g: 0, b: 0 }, Rgb { r: 240, g: 200, b: 200 }, Rgb { r: 220, g: 150, b: 150 });
+        let row = [bg, red, red, dark, dark, red, bg, bg, red];
+        assert_eq!(
+            bands(row.into_iter(), bg),
+            vec![Band { col: 1, len: 2, color: red }, Band { col: 3, len: 2, color: dark }, Band { col: 5, len: 1, color: red }, Band { col: 8, len: 1, color: red }]
+        );
+        assert!(bands([bg, bg].into_iter(), bg).is_empty());
+    }
 
     #[test]
     fn a_terminal_left_out_of_a_draw_is_shown_again_and_one_drawn_each_time_is_not() {

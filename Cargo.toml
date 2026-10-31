@@ -42,4 +42,4 @@ opt-level = 3
 
 # gpui with the per-window glyph shader hook, its clock, its emoji stages, BGRA surfaces and glyph stamps, from the fork (docs/development.md, "gpui fork").
 [patch.crates-io]
-gpui = { git = "https://github.com/csarkosh/gpui", tag = "v0.2.2-arkos.5" }
+gpui = { path = "/Users/csarko/Projects/gpui" } # TRY: the local clone until v0.2.2-arkos.6 is tagged
