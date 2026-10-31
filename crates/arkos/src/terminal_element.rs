@@ -83,8 +83,12 @@ pub fn decoded_rows(
     Some(shown)
 }
 
+/// Each visible row's ghosts: the characters its changed cells replaced, each with its stamp.
+pub type Ghosts = Vec<Vec<(char, f32)>>;
+
 /// The visible rows' glyph stamps under an effect that paints the terminal (`effects::paint`),
-/// with the instant the newest ink dries. The decode state (made here when it is missing) takes
+/// the ghosts of the characters changed cells replaced (each with its stamp, empty for a row with
+/// none), and the instant the newest ink dries. The decode state (made here when it is missing) takes
 /// in the rows as it does for the decode, and a row with no wet ink gets no stamps at all, so it
 /// is drawn as ever. `x` is a column's left edge in points from the window's left.
 pub fn painted_rows(
@@ -95,25 +99,32 @@ pub fn painted_rows(
     x: impl Fn(usize) -> f32,
     clock: f32,
     now: Instant,
-) -> (Vec<Vec<f32>>, Option<Instant>) {
+) -> (Vec<Vec<f32>>, Ghosts, Option<Instant>) {
     let state = decode.get_or_insert_with(|| Decode::new(cols, rows.visible.len(), rows.display_offset));
     state.observe(&rows.visible, rows.display_offset, now, quiet, std::time::Duration::ZERO);
     let mut dry = None;
-    let stamps = rows
+    let mut order = std::collections::HashMap::new();
+    let (stamps, ghosts) = rows
         .visible
         .iter()
         .enumerate()
         .map(|(row, line)| {
             let changed: Vec<Option<Instant>> = (0..line.len()).map(|col| state.changed_at(col, row)).collect();
             if changed.iter().all(Option::is_none) {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             }
-            let (stamps, until) = paint::row_stamps(&changed, &x, clock, now);
+            let chars: Vec<char> = line.iter().map(|(c, _, _)| *c).collect();
+            let was: Vec<char> = (0..line.len()).map(|col| state.was_at(col, row)).collect();
+            let (stamps, ghosts, until) = paint::row_stamps(&changed, &chars, &was, &x, clock, now, &mut order);
             dry = dry.max(until);
-            if until.is_none() { Vec::new() } else { stamps }
+            if until.is_none() {
+                return (Vec::new(), Vec::new());
+            }
+            let ghosts = if ghosts.iter().all(|&g| g == 0.0) { Vec::new() } else { was.into_iter().zip(ghosts).collect() };
+            (stamps, ghosts)
         })
-        .collect();
-    (stamps, dry)
+        .unzip();
+    (stamps, ghosts, dry)
 }
 
 fn hsla(c: Rgb) -> Hsla {
@@ -246,7 +257,7 @@ impl Element for TerminalElement {
         // The colours come from the terminal's palette, which follows the theme.
         let mouse = window.mouse_position();
         let ink = self.ink;
-        let (rows, visible, stamps, dry, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
+        let (rows, visible, (stamps, ghosts), dry, frac, cursor, animating, highlights, selection, palette, find_owed) = self.terminal.update(cx, |t, _| {
             // vte only checks the synchronized update deadline when bytes arrive, so a program
             // killed inside one would freeze the grid. Releasing it here means this frame paints
             // the released rows; while one is still open, keep frames coming to check again.
@@ -287,11 +298,11 @@ impl Element for TerminalElement {
             let (visible, stamps, dry) = match ink {
                 Some(Ink::Paint(clock)) => {
                     let x = |col: usize| f32::from(bounds.origin.x) + col as f32 * cw;
-                    let (stamps, dry) = painted_rows(&mut t.decode, &rows, quiet, cols, x, clock, now);
-                    (None, stamps, dry)
+                    let (stamps, ghosts, dry) = painted_rows(&mut t.decode, &rows, quiet, cols, x, clock, now);
+                    (None, (stamps, ghosts), dry)
                 }
-                Some(Ink::Decode(timing)) => (decoded_rows(&mut t.decode, &rows, Some(timing), quiet, cols, now), Vec::new(), None),
-                None => (decoded_rows(&mut t.decode, &rows, None, quiet, cols, now), Vec::new(), None),
+                Some(Ink::Decode(timing)) => (decoded_rows(&mut t.decode, &rows, Some(timing), quiet, cols, now), (Vec::new(), Vec::new()), None),
+                None => (decoded_rows(&mut t.decode, &rows, None, quiet, cols, now), (Vec::new(), Vec::new()), None),
             };
             (rows, visible, stamps, dry, frac, t.core.cursor(), animating || sync_open || drag_scrolling, highlights, t.core.selection_spans(), palette.clone(), find_owed)
         });
@@ -343,6 +354,17 @@ impl Element for TerminalElement {
             }
             for (i, row) in visible.as_ref().unwrap_or(&rows.visible).iter().enumerate() {
                 let y = origin.y + px((i as f32 + frac) * cell.height);
+                // The characters this row's changed cells replaced fade out under the new ones,
+                // in the new cells' style; everything else in the ghost row is a space.
+                if let Some(ghosts) = ghosts.get(i).filter(|g| !g.is_empty()) {
+                    let cells: Vec<(char, CellStyle, CellKind)> = row
+                        .iter()
+                        .zip(ghosts)
+                        .map(|(&(_, style, kind), &(was, stamp))| (if stamp == 0.0 { ' ' } else { was }, CellStyle { bg, ..style }, kind))
+                        .collect();
+                    let stamps: Vec<f32> = ghosts.iter().map(|g| g.1).collect();
+                    paint_row(&cells, &stamps, y, window, cx);
+                }
                 paint_row(row, stamps.get(i).map_or(&[][..], Vec::as_slice), y, window, cx);
             }
             if let Some((col, line)) = cursor {
@@ -505,16 +527,26 @@ mod tests {
         let x = |col: usize| col as f32 * 10.0;
         let t0 = Instant::now();
         let mut state = None;
-        assert_eq!(painted_rows(&mut state, &rows("   ", "   "), false, 3, x, 5.0, t0), (vec![vec![], vec![]], None), "the first grid is the baseline");
+        let none = (vec![vec![], vec![]], vec![vec![], vec![]], None);
+        assert_eq!(painted_rows(&mut state, &rows("   ", "   "), false, 3, x, 5.0, t0), none, "the first grid is the baseline");
         let t1 = t0 + Duration::from_millis(20);
-        let (stamps, dry) = painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 5.02, t1);
+        let (stamps, ghosts, dry) = painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 5.02, t1);
+        assert_eq!(ghosts, vec![vec![], vec![]], "new text replaced nothing");
         assert!(stamps[0][0] != 0.0 && stamps[0][0] == stamps[0][1] && stamps[0][2] == 0.0, "{stamps:?}");
         assert!(stamps[1].is_empty(), "an unchanged row is drawn as ever");
         assert!(dry.is_some_and(|d| d > t1));
         let t2 = t1 + Duration::from_secs(2);
-        assert_eq!(painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 7.02, t2), (vec![vec![], vec![]], None), "dry ink is drawn as ever");
+        assert_eq!(painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 7.02, t2), none, "dry ink is drawn as ever");
         let typed = painted_rows(&mut state, &rows("ok ", "ls "), true, 3, x, 7.04, t2 + Duration::from_millis(20));
-        assert_eq!(typed, (vec![vec![], vec![]], None), "the user's own echo is not painted");
+        assert_eq!(typed, none, "the user's own echo is not painted");
+        let t3 = t2 + Duration::from_secs(1);
+        let (_, ghosts, _) = painted_rows(&mut state, &rows("ok1", "ls "), false, 3, x, 8.04, t3);
+        assert!(ghosts[0].is_empty(), "the 1 was written where nothing was");
+        let t4 = t3 + Duration::from_secs(2);
+        let (stamps, ghosts, _) = painted_rows(&mut state, &rows("ok2", "ls "), false, 3, x, 10.04, t4);
+        assert!(stamps[0][2] != 0.0 && stamps[0][0] == 0.0, "{stamps:?}");
+        assert_eq!(ghosts[0].iter().map(|g| g.0).collect::<String>(), "  1", "the replaced 1 fades out under the 2");
+        assert!(ghosts[0][2].1 != 0.0 && ghosts[0][0].1 == 0.0, "{ghosts:?}");
     }
 
     #[test]

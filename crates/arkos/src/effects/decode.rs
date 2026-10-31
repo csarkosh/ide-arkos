@@ -70,11 +70,13 @@ pub fn timing(working: bool, reduce_motion: bool) -> Timing {
     Timing { decode: Duration::from_millis(ms), fresh: Duration::from_millis(FRESH_MS), white, deep }
 }
 
-/// What the decode remembers of one cell: its real character and the instant that last changed.
+/// What the decode remembers of one cell: its real character, the instant that last changed, and
+/// the character it replaced then (a space for a new cell), which the paint-in fades out.
 #[derive(Clone, Copy)]
 struct Seen {
     ch: char,
     changed: Option<Instant>,
+    was: char,
 }
 
 /// The remembered grid of one terminal.
@@ -98,7 +100,7 @@ impl Decode {
             rows,
             display_offset,
             seeded: false,
-            cells: vec![Seen { ch: ' ', changed: None }; cols * rows],
+            cells: vec![Seen { ch: ' ', changed: None, was: ' ' }; cols * rows],
         }
     }
 
@@ -131,7 +133,7 @@ impl Decode {
             self.seeded = true;
             self.cells = rows
                 .iter()
-                .flat_map(|r| (0..cols).map(move |c| Seen { ch: r.get(c).map_or(' ', |x| x.0), changed: None }))
+                .flat_map(|r| (0..cols).map(move |c| Seen { ch: r.get(c).map_or(' ', |x| x.0), changed: None, was: ' ' }))
                 .collect();
             return;
         }
@@ -140,11 +142,20 @@ impl Decode {
         }
         let old = std::mem::take(&mut self.cells);
         let old_texts: Vec<String> = old.chunks(self.cols).map(|r| row_text(r.iter().map(|s| s.ch))).collect();
+        let froms: Vec<Option<usize>> = rows
+            .iter()
+            .enumerate()
+            .map(|(row, line)| {
+                let text = row_text((0..self.cols).map(|c| line.get(c).map_or(' ', |x| x.0)));
+                if text.is_empty() { None } else { moved_from(&old_texts, row, &text) }
+            })
+            .collect();
+        // When rows moved (the screen scrolled), a changed row is a new line on a row that held
+        // another, which moved on rather than went away: it replaced nothing.
+        let scrolled = froms.iter().enumerate().any(|(row, from)| from.is_some_and(|f| f != row));
         let mut cells = Vec::with_capacity(old.len());
-        for (row, line) in rows.iter().enumerate() {
+        for ((row, line), from) in rows.iter().enumerate().zip(froms) {
             let chars = (0..self.cols).map(|c| line.get(c).map_or(' ', |x| x.0));
-            let text = row_text(chars.clone());
-            let from = if text.is_empty() { None } else { moved_from(&old_texts, row, &text) };
             let span = |r: usize| r * self.cols..(r + 1) * self.cols;
             match from {
                 Some(from) => cells.extend_from_slice(&old[span(from)]),
@@ -152,7 +163,8 @@ impl Decode {
                     if seen.ch == ch {
                         seen
                     } else {
-                        Seen { ch, changed: if quiet || ch == ' ' { None } else { Some(now) } }
+                        let was = if scrolled { ' ' } else { seen.ch };
+                        Seen { ch, changed: if quiet || ch == ' ' { None } else { Some(now) }, was }
                     }
                 })),
             }
@@ -194,6 +206,15 @@ impl Decode {
             return None;
         }
         self.cells.get(row * self.cols + col).and_then(|s| s.changed)
+    }
+
+    /// The character this cell replaced when it last changed, a space for a new one or one that
+    /// changed as the screen scrolled: for the paint-in, which fades it out under the new one.
+    pub fn was_at(&self, col: usize, row: usize) -> char {
+        if col >= self.cols || row >= self.rows {
+            return ' ';
+        }
+        self.cells.get(row * self.cols + col).map_or(' ', |s| s.was)
     }
 
     /// What this cell shows now: its own character and style, or a random character while it
@@ -296,6 +317,21 @@ mod tests {
         assert_eq!(timing(true, false), Timing { decode: Duration::from_millis(400), fresh: Duration::from_millis(1500), white, deep });
         assert_eq!(timing(false, false).decode, Duration::from_millis(120));
         assert_eq!(timing(true, true), Timing { decode: Duration::ZERO, fresh: Duration::ZERO, white, deep });
+    }
+
+    #[test]
+    fn a_cell_remembers_what_it_replaced_unless_the_screen_scrolled() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(6, 2, 0);
+        d.observe(&grid(&["step 1", "      "]), 0, t0, false, DEC);
+        d.observe(&grid(&["step 2", "      "]), 0, t0 + DEC, false, DEC);
+        assert_eq!(d.was_at(5, 0), '1', "a counter ticked in place");
+        assert_eq!(d.was_at(0, 0), ' ', "an unchanged cell replaced nothing");
+        // The screen scrolls: "step 2" moves up and a new line lands where it was.
+        d.observe(&grid(&["step 2", "stop 3"]), 0, t0 + DEC * 2, false, DEC);
+        d.observe(&grid(&["stop 3", "slip 4"]), 0, t0 + DEC * 3, false, DEC);
+        assert_eq!(d.was_at(1, 1), ' ', "a new line on a scrolled row replaced nothing");
+        assert!(d.changed_at(1, 1).is_some());
     }
 
     #[test]
