@@ -1200,8 +1200,9 @@ impl Viewer {
         }
         self.content = Content::Text { lines: new_lines, spans };
         self.refresh_structure();
-        // The marks point at lines that may have moved; the next save computes them again.
-        self.diff = None;
+        // The marks point at lines that may have moved; the next save computes them again. The
+        // column stays, so the text does not shift sideways between the edit and the save.
+        self.diff = self.diff.take().map(|_| DiffMarks::clean(self.line_count()));
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
             // The old hits point into the old lines.
@@ -3557,11 +3558,12 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
     Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured, code })
 }
 
-/// The file's changes against its worktree's HEAD, or `None` when it has no base or no changes.
-/// Spawns git: background executor only.
+/// The file's changes against its worktree's HEAD (clean marks when there are none, so the mark
+/// column is there from the first load), or `None` when it has no base. Spawns git: background
+/// executor only.
 pub fn diff_of(path: &Path, lines: &[String]) -> Option<DiffMarks> {
     let base = diff::base_for(path)?;
-    Some(diff::compute(&base, lines)).filter(DiffMarks::has_changes)
+    Some(diff::compute(&base, lines))
 }
 
 enum Capped {
@@ -5649,7 +5651,7 @@ mod tests {
         std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);
-        assert_eq!(read_file(&path, None, None, 100, true).unwrap().diff, None, "a clean file has no diff");
+        assert!(read_file(&path, None, None, 100, true).unwrap().diff.is_some_and(|d| !d.has_changes()), "a clean file has clean marks, so its mark column is there from the start");
         std::fs::write(&path, "one\nTWO\n").unwrap();
         let l = read_file(&path, None, None, 100, true).unwrap();
         let d = l.diff.expect("a changed tracked file");

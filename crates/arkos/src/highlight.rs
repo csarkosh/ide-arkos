@@ -46,22 +46,101 @@ pub fn scope_theme(colors: &ViewerColors, text: Rgb) -> Theme {
     }
 }
 
+/// File names and extensions the grammars do not claim themselves, and the grammar that reads
+/// them well enough: the shader languages without a grammar of their own go to their nearest
+/// relative, module JavaScript to JavaScript, and a few dot files to their formats.
+const ALIASES: &[(&str, &str)] = &[
+    ("mjs", "JavaScript"),
+    ("cjs", "JavaScript"),
+    ("jsonl", "JSON"),
+    ("jsonc", "JSON"),
+    ("gltf", "JSON"),
+    (".firebaserc", "JSON"),
+    ("hlsl", "GLSL"),
+    ("fx", "GLSL"),
+    ("fxh", "GLSL"),
+    ("metal", "C++"),
+    ("plist", "XML"),
+    ("npmrc", "INI"),
+    (".npmrc", "INI"),
+    ("dockerignore", "Git Ignore"),
+    (".dockerignore", "Git Ignore"),
+    ("gitexclude", "Git Ignore"),
+];
+
+/// The grammars that are not in the bundled set, as `.sublime-syntax` text compiled at startup
+/// into a set of their own (a few milliseconds; rebuilding the bundled set with them in it takes
+/// a quarter of a second).
+const EXTRA_SYNTAXES: &[&str] = &[include_str!("../syntaxes/PowerShell.sublime-syntax")];
+
+/// A grammar picked for a file: the set it lives in (the bundled one or the extras), and its
+/// index there, so the parser is always run against the set that holds the grammar.
+#[derive(Clone)]
+pub struct Grammar {
+    pub set: Arc<SyntaxSet>,
+    pub ix: usize,
+}
+
+impl Grammar {
+    pub fn reference(&self) -> &syntect::parsing::SyntaxReference {
+        &self.set.syntaxes()[self.ix]
+    }
+
+    pub fn name(&self) -> &str {
+        &self.reference().name
+    }
+}
+
 pub struct Highlighter {
-    /// Shared with the highlighters `with_theme` makes, so a theme change never reloads it.
+    /// bat's grammar set (`two-face`): syntect's defaults and about 140 more, TOML, TypeScript,
+    /// GLSL, Terraform, Swift and Dockerfile among them. Shared with the highlighters
+    /// `with_theme` makes, so a theme change never reloads it.
     syntaxes: Arc<SyntaxSet>,
+    /// `EXTRA_SYNTAXES`, compiled.
+    extra: Arc<SyntaxSet>,
     theme: Theme,
     text: Rgb,
 }
 
 impl Highlighter {
-    /// Loads the default grammars (about 100 ms): call it on the background executor.
+    /// Loads the grammars (about 50 ms in a debug build, a few in release): call it on the
+    /// background executor.
     pub fn new(colors: &ViewerColors, text: Rgb) -> Self {
-        Highlighter { syntaxes: Arc::new(SyntaxSet::load_defaults_newlines()), theme: scope_theme(colors, text), text }
+        let mut builder = syntect::parsing::SyntaxSetBuilder::new();
+        for text in EXTRA_SYNTAXES {
+            match syntect::parsing::SyntaxDefinition::load_from_str(text, true, None) {
+                Ok(def) => builder.add(def),
+                Err(e) => eprintln!("arkos: a bundled grammar does not load: {e}"),
+            }
+        }
+        Highlighter { syntaxes: Arc::new(two_face::syntax::extra_newlines()), extra: Arc::new(builder.build()), theme: scope_theme(colors, text), text }
     }
 
     /// The same grammars under another theme's colours; cheap enough for the UI thread.
     pub fn with_theme(&self, colors: &ViewerColors, text: Rgb) -> Self {
-        Highlighter { syntaxes: self.syntaxes.clone(), theme: scope_theme(colors, text), text }
+        Highlighter { syntaxes: self.syntaxes.clone(), extra: self.extra.clone(), theme: scope_theme(colors, text), text }
+    }
+
+    fn sets(&self) -> [&Arc<SyntaxSet>; 2] {
+        [&self.syntaxes, &self.extra]
+    }
+
+    fn grammar(&self, find: impl Fn(&SyntaxSet) -> Option<usize>) -> Option<Grammar> {
+        self.sets().into_iter().find_map(|set| find(set).map(|ix| Grammar { set: set.clone(), ix }))
+    }
+
+    fn index_of(set: &SyntaxSet, r: &syntect::parsing::SyntaxReference) -> usize {
+        set.syntaxes().iter().position(|c| std::ptr::eq(c, r)).expect("a reference into its own set")
+    }
+
+    /// A grammar by a file name or an extension, in either set, then through `ALIASES`.
+    fn by_extension(&self, ext: &str) -> Option<Grammar> {
+        self.grammar(|set| set.find_syntax_by_extension(ext).map(|r| Self::index_of(set, r)))
+            .or_else(|| ALIASES.iter().find(|(e, _)| *e == ext).and_then(|(_, name)| self.by_name(name)))
+    }
+
+    fn by_name(&self, name: &str) -> Option<Grammar> {
+        self.grammar(|set| set.find_syntax_by_name(name).map(|r| Self::index_of(set, r)))
     }
 
     /// One span list per line, contiguous and covering the line; an empty line has none. A file
@@ -71,27 +150,28 @@ impl Highlighter {
         self.highlight_with(self.syntax_for(path, lines), lines)
     }
 
-    /// The grammar `highlight` colours a file with: from the file name, then its extension, then
-    /// the first line; `None` when none claims it.
-    pub fn syntax_for(&self, path: &Path, lines: &[String]) -> Option<&syntect::parsing::SyntaxReference> {
-        let by_ext = |s: Option<&std::ffi::OsStr>| s.and_then(|s| s.to_str()).and_then(|s| self.syntaxes.find_syntax_by_extension(s));
+    /// The grammar `highlight` colours a file with: from the file name, then its extension
+    /// (either through `ALIASES` when no grammar claims it), then the first line; `None` when
+    /// none claims it.
+    pub fn syntax_for(&self, path: &Path, lines: &[String]) -> Option<Grammar> {
+        let by_ext = |s: Option<&std::ffi::OsStr>| s.and_then(|s| s.to_str()).and_then(|s| self.by_extension(s));
         by_ext(path.file_name())
             .or_else(|| by_ext(path.extension()))
-            .or_else(|| lines.first().and_then(|l| self.syntaxes.find_syntax_by_first_line(l)))
+            .or_else(|| lines.first().and_then(|l| self.grammar(|set| set.find_syntax_by_first_line(l).map(|r| Self::index_of(set, r)))))
     }
 
     /// `highlight` for a fenced code block: the grammar comes from the info string's first word
     /// ("rust", "py", "sh"), and an unknown or empty one gives plain spans.
     pub fn highlight_token(&self, info: &str, lines: &[String]) -> Vec<Vec<Span>> {
         let token = info.split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("");
-        let syntax = (!token.is_empty()).then(|| self.syntaxes.find_syntax_by_token(token)).flatten();
-        self.highlight_with(syntax, lines)
+        let grammar = (!token.is_empty()).then(|| self.grammar(|set| set.find_syntax_by_token(token).map(|r| Self::index_of(set, r)))).flatten();
+        self.highlight_with(grammar, lines)
     }
 
     /// `highlight` with the grammar already picked (`syntax_for`), so a caller that also needs
     /// the grammar picks it once.
-    pub fn highlight_with(&self, syntax: Option<&syntect::parsing::SyntaxReference>, lines: &[String]) -> Vec<Vec<Span>> {
-        CodeHighlight::new(self, syntax, lines).1
+    pub fn highlight_with(&self, grammar: Option<Grammar>, lines: &[String]) -> Vec<Vec<Span>> {
+        CodeHighlight::new(self, grammar, lines).1
     }
 }
 
@@ -108,6 +188,7 @@ pub const REHIGHLIGHT_BUDGET: usize = 2000;
 /// ends in the state it ended in before (the next line, for most edits). Built with the spans on
 /// the background thread (`new`); each edit splices it on the UI thread (`update`).
 pub struct CodeHighlight {
+    /// The set the grammar lives in.
     syntaxes: Arc<SyntaxSet>,
     theme: Theme,
     text: Rgb,
@@ -124,9 +205,12 @@ pub struct CodeHighlight {
 impl CodeHighlight {
     /// Colours every line of `lines` under `syntax` and remembers the state at the end of each,
     /// returning the highlight and the spans. Without a grammar every line is one plain span.
-    pub fn new(h: &Highlighter, syntax: Option<&syntect::parsing::SyntaxReference>, lines: &[String]) -> (CodeHighlight, Vec<Vec<Span>>) {
-        let syntax = syntax.and_then(|s| h.syntaxes.syntaxes().iter().position(|c| std::ptr::eq(c, s)));
-        let mut code = CodeHighlight { syntaxes: h.syntaxes.clone(), theme: h.theme.clone(), text: h.text, syntax, states: vec![None; lines.len()], pending: None };
+    pub fn new(h: &Highlighter, grammar: Option<Grammar>, lines: &[String]) -> (CodeHighlight, Vec<Vec<Span>>) {
+        let (syntaxes, syntax) = match grammar {
+            Some(g) => (g.set, Some(g.ix)),
+            None => (h.syntaxes.clone(), None),
+        };
+        let mut code = CodeHighlight { syntaxes, theme: h.theme.clone(), text: h.text, syntax, states: vec![None; lines.len()], pending: None };
         let mut spans = vec![Vec::new(); lines.len()];
         code.run(lines, &mut spans, 0, usize::MAX);
         (code, spans)
@@ -296,7 +380,7 @@ mod tests {
     #[test]
     fn the_grammar_comes_from_the_name_then_the_extension_then_the_first_line() {
         let h = Highlighter::new(&colors(), rgb(0x010203));
-        let name = |path: &str, first: &str| h.syntax_for(Path::new(path), &[first.to_string()]).map(|s| s.name.clone());
+        let name = |path: &str, first: &str| h.syntax_for(Path::new(path), &[first.to_string()]).map(|g| g.name().to_string());
         assert_eq!(name("/p/Makefile", "all:").as_deref(), Some("Makefile"));
         assert_eq!(name("/p/main.rs", "fn main() {}").as_deref(), Some("Rust"));
         assert_eq!(name("/p/notes.txt", "hello").as_deref(), Some("Plain Text"));
@@ -337,6 +421,65 @@ mod tests {
     }
 
     const SRC: &str = "fn main() {\n    let s = \"hi\"; // note\n    let n = 42;\n    println!(\"{s} {n}\");\n}\n// tail\nfn other() -> u32 {\n    7\n}";
+
+    /// The source file types found in the Projects folder on 2026-10-31, each with the grammar
+    /// that must colour it. A new kind of file in a repository goes here.
+    const REPO_FILES: &[(&str, &str)] = &[
+        ("shader.glsl", "GLSL"), ("shader.vert", "GLSL"), ("shader.frag", "GLSL"), ("effect.fx", "GLSL"), ("shade.hlsl", "GLSL"),
+        ("kernel.metal", "C++"), ("shade.wgsl", "WGSL"),
+        ("app.ts", "TypeScript"), ("mod.mts", "TypeScript"), ("view.tsx", "TypeScriptReact"),
+        ("index.js", "JavaScript"), ("index.mjs", "JavaScript"), ("index.cjs", "JavaScript"),
+        ("tool.py", "Python"), ("notes.ipynb", "JSON"), ("data.json", "JSON"), ("rows.jsonl", "JSON"), ("scene.gltf", "JSON"),
+        ("main.rs", "Rust"), ("Cargo.toml", "TOML"), ("Cargo.lock", "TOML"), ("config.toml", "TOML"),
+        ("main.tf", "Terraform"), ("prod.tfvars", "Terraform"), ("vars.hcl", "Terraform"), ("terraform.tfstate", "JSON (Terraform)"),
+        ("index.html", "HTML"), ("style.css", "CSS"), ("icon.svg", "XML"), ("Info.plist", "XML"), ("feed.xml", "XML"),
+        ("run.sh", "Bourne Again Shell (bash)"), ("setup.zsh", "Bourne Again Shell (bash)"),
+        ("schema.sql", "SQL"), ("deploy.yaml", "YAML"), ("ci.yml", "YAML"),
+        ("App.swift", "Swift"), ("patch.ps1", "PowerShell"), ("module.psm1", "PowerShell"),
+        ("Dockerfile", "Dockerfile"), (".dockerignore", "Git Ignore"), (".gitignore", "Git Ignore"), (".gitattributes", "Git Attributes"),
+        (".env.example", "DotENV"), (".npmrc", "INI"), (".firebaserc", "JSON"),
+        ("Gemfile", "Ruby"), ("tool.rb", "Ruby"), ("change.diff", "Diff"), ("Makefile", "Makefile"), ("README.md", "Markdown"),
+        ("mail.eml", "Email"), ("table.csv", "Separated Values"),
+    ];
+
+    #[test]
+    fn every_source_file_type_in_the_repositories_has_a_grammar() {
+        let h = Highlighter::new(&colors(), rgb(0xd6dae0));
+        let mut missing = Vec::new();
+        for (file, want) in REPO_FILES {
+            let got = h.syntax_for(Path::new(&format!("/p/{file}")), &[String::new()]).map(|g| g.name().to_string());
+            if got.as_deref() != Some(want) {
+                missing.push(format!("{file}: {got:?}, wanted {want}"));
+            }
+        }
+        assert!(missing.is_empty(), "{}", missing.join("\n"));
+    }
+
+    #[test]
+    fn powershell_colours_its_comments_strings_keywords_variables_and_cmdlets() {
+        let h = Highlighter::new(&colors(), rgb(0xd6dae0));
+        let lines = lines("# note\nif ($x -eq 1) { Write-Host \"hi $name\" }\n$y = [int]'7'");
+        let g = h.syntax_for(Path::new("/p/a.ps1"), &lines).expect("PowerShell");
+        assert!(g.set.syntaxes().len() < 10, "the extras are a small set of their own");
+        let spans = h.highlight_with(Some(g), &lines);
+        let at = |line: usize, byte: usize| spans[line].iter().find(|s| s.start <= byte && byte < s.end).map(|s| s.color).expect("covered");
+        assert_eq!(at(0, 2), colors().comment, "the comment");
+        assert_eq!(at(1, 0), colors().keyword, "if");
+        assert_eq!(at(1, 5), rgb(0xd6dae0), "a variable is text");
+        assert_eq!(at(1, 7), colors().operator, "-eq");
+        assert_eq!(at(1, 16), colors().function, "Write-Host");
+        assert_eq!(at(1, 28), colors().string, "the string");
+        assert_eq!(at(2, 5), colors().keyword, "[int]");
+        for (i, line) in lines.iter().enumerate() {
+            assert_eq!(spans[i].last().map(|s| s.end), Some(line.len()).filter(|l| *l > 0), "line {i} is covered");
+        }
+        // A fenced block names it too, and the incremental update works across the extra set.
+        assert_eq!(h.highlight_token("powershell", &lines)[1][0].color, colors().keyword);
+        let (mut code, mut spans) = CodeHighlight::new(&h, h.syntax_for(Path::new("/p/a.ps1"), &lines), &lines);
+        let new = edited(&mut code, &mut spans, &lines, 0, 1, &["<# open"], usize::MAX);
+        assert_eq!(spans, h.highlight(Path::new("/p/a.ps1"), &new));
+        assert!(spans[2].iter().all(|s| s.color == colors().comment), "an open block comment reaches the end");
+    }
 
     #[test]
     fn an_incremental_update_matches_a_full_highlight_for_an_insert_a_delete_and_a_paste() {
@@ -421,3 +564,4 @@ mod tests {
         assert!(!CodeHighlight::new(&h, h.syntax_for(Path::new("/p/a.txt"), &rs), &rs).0.coloured(), "Plain Text is not coloured");
     }
 }
+

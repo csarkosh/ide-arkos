@@ -821,6 +821,9 @@ Things only a person at the screen can check, in order of value:
   two, and deleting it puts the colours back; Enter keeps the indent and Tab types the file's
   indent; Cmd+B toggles the sidebar; the right-click menu is Cut, Copy, Paste; the tab shows " •"
   until the autosave a second later; a theme switch keeps the text, the caret and Cmd+Z's history
+- code editor: a `.toml`, a `.ts`, a `.glsl`, a `.tf`, a `.swift` and a `.ps1` open coloured, and
+  the colours hold while typing; the text never shifts sideways between an edit and the autosave
+  (the diff's mark column stays through the edit)
 - code editor: a `.toml`, a `.json`, a `Makefile` and a file with no extension all edit; a file
   made read-only (`chmod 444`) shows "read-only file: shown read-only" and takes no typing; a file
   with mixed line endings says so

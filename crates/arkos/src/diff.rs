@@ -39,6 +39,12 @@ impl DiffMarks {
     pub fn has_changes(&self) -> bool {
         self.marks.iter().any(Option::is_some) || !self.deleted_before.is_empty()
     }
+
+    /// No changes over `lines` lines: a file in a repository that matches HEAD, or a document
+    /// between an edit and the save that diffs it again, which keeps the mark column either way.
+    pub fn clean(lines: usize) -> DiffMarks {
+        DiffMarks { marks: vec![None; lines], deleted_before: Vec::new() }
+    }
 }
 
 /// Line diff of `base` against the current `lines`. The base is split as the viewer splits the

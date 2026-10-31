@@ -75,9 +75,11 @@ keyboard in the list. The tree's rows carry git status in the theme's pastels (a
 untracked) and a folder with changes inside carries a dot.
 
 The viewer shows a file with syntax colours from your theme's `[viewer]` section through
-syntect's TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a
-second of the file changing on disk; a text file you may write is also an editor (see Editing
-markdown and Editing code). Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
+syntect's TextMate grammars (bat's set of some two hundred: TOML, TypeScript and TSX, GLSL and
+WGSL, Terraform, Swift, Dockerfile, SQL, YAML and the rest, plus a PowerShell grammar of Arkos's
+own; `.mjs`, `.hlsl`, `.metal`, `.plist` and a few dot files are read by their nearest relative),
+line numbers, smooth scrolling, Cmd+F to find, and a reload within a second of the file changing
+on disk; a text file you may write is also an editor (see Editing markdown and Editing code). Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
 plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
 terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repository shows its
 changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
