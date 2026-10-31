@@ -180,6 +180,15 @@ impl Decode {
         }
     }
 
+    /// When this cell last changed, if it is marked changed: for the paint-in, which stamps
+    /// from it (`effects::paint`).
+    pub fn changed_at(&self, col: usize, row: usize) -> Option<Instant> {
+        if col >= self.cols || row >= self.rows {
+            return None;
+        }
+        self.cells.get(row * self.cols + col).and_then(|s| s.changed)
+    }
+
     /// What this cell shows now: its own character and style, or a random character while it
     /// decodes, with the colour its text is drawn in brightened while it is fresh.
     pub fn shown(

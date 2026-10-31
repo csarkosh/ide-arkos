@@ -59,12 +59,14 @@ pub struct Style {
     pub menu_edges: bool,
     /// The terminal decodes changed cells: the effect's `terminal_decode`, once fully on.
     pub terminal_decode: bool,
+    /// The terminal paints changed cells in: the effect's `terminal_paint`, once fully on.
+    pub terminal_paint: bool,
 }
 
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -96,6 +98,7 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
         terminal_decode: full && manifest.terminal_decode,
+        terminal_paint: full && manifest.terminal_paint,
     }
 }
 
@@ -276,9 +279,9 @@ pub fn accent_line(accent: Rgb) -> String {
 }
 
 /// What a window of `scale` under a theme of `accent` declares ahead of every glyph shader: the
-/// scale's line, the calm alpha's and the accent's.
+/// scale's line, the calm alpha's, the accent's and the paint-in's timing.
 pub fn glyph_header(scale: f32, accent: Rgb) -> String {
-    format!("{}\n{}\n{}", scale_line(scale), calm_line(), accent_line(accent))
+    format!("{}\n{}\n{}\n{}", scale_line(scale), calm_line(), accent_line(accent), crate::effects::paint::paint_lines())
 }
 
 /// An effect's glyph shader as a window of `scale` under a theme of `accent` compiles it: the
@@ -480,7 +483,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -566,6 +569,17 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_paints_only_once_the_effect_has_fully_faded_in_and_not_on_its_way_out() {
+        let now = Instant::now();
+        assert!(!style_at(&watercolor().manifest, 0.5).terminal_paint);
+        assert!(on(watercolor(), now).style(now).terminal_paint);
+        assert!(!Style::plain().terminal_paint);
+        let mut leaving = on(watercolor(), now);
+        leaving.leave(now);
+        assert!(!leaving.style(now).terminal_paint);
+    }
+
+    #[test]
     fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
         assert_eq!(glyph_wait(20, false, true, true, false, false), None);
         assert_eq!(glyph_wait(20, true, false, true, false, false), None);
@@ -627,12 +641,13 @@ mod tests {
     }
 
     #[test]
-    fn the_glyph_shader_is_told_the_window_s_scale_the_calm_alpha_and_the_theme_s_accent_ahead_of_its_own_source() {
+    fn the_glyph_shader_is_told_the_window_s_scale_the_calm_alpha_the_theme_s_accent_and_the_paint_in_s_timing_ahead_of_its_own_source() {
         let e = on(watercolor(), Instant::now());
         let glyphs = watercolor().glyphs.unwrap();
         let navy = Rgb { r: 0x3a, g: 0x7b, b: 0xd5 };
         let accent = "constant float3 ARKOS_ACCENT = float3(0.227451, 0.482353, 0.835294);";
-        let header = format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{accent}");
+        let paint = "constant float ARKOS_PAINT_DUR = 0.26;\nconstant float ARKOS_PAINT_DRY = 0.8;\nconstant float ARKOS_PAINT_STAGGER = 0.00166667;";
+        let header = format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{accent}\n{paint}");
         let retina = glyph_shader_for(WindowKind::Project, Some(&e), 2.0, navy).unwrap();
         assert_eq!(retina.source, format!("{header}\n{glyphs}"));
         assert_eq!(glyph_source(&glyphs, 2.0, navy), retina.source);
@@ -687,7 +702,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

@@ -7,6 +7,12 @@
 // end): they keep their own colours, drift with the stroke, take the paper's tooth, pool darker
 // at their rim and bleed softly in their own colour; pictures are never drawn by these.
 //
+// New terminal text soaks in: a glyph whose sprite carries a stamp (the terminal's paint-in,
+// effects/paint.rs) starts at the stamp plus its x in points times ARKOS_PAINT_STAGGER, shows
+// first where its stroke is thickest and spreads to the edges over ARKOS_PAINT_DUR, wetter,
+// deeper and bluer, with a wide bleed, and dries to the ink above over ARKOS_PAINT_DRY. A glyph
+// with no stamp (0), or one whose ink has dried, is drawn exactly as it is without one.
+//
 // gpui hands a glyph shader device pixels. Every distance and size below was drawn on a Retina
 // screen, two pixels a point, so each is measured in those half points: PER_PX turns them into
 // this screen's pixels (ARKOS_SCALE, the window's pixels per point, is declared by the window),
@@ -21,6 +27,7 @@ struct MonochromeInkVertexOutput {
   float4 clip_distance;
   float4 tile_rect [[flat]];
   float glyph_h [[flat]];
+  float2 paint [[flat]];
 };
 
 struct MonochromeInkFragmentInput {
@@ -30,6 +37,7 @@ struct MonochromeInkFragmentInput {
   float4 clip_distance;
   float4 tile_rect [[flat]];
   float glyph_h [[flat]];
+  float2 paint [[flat]];
 };
 
 vertex MonochromeInkVertexOutput arkos_glyph_vertex(
@@ -61,13 +69,16 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
   float2 tile_position = (tile_origin + local * per_px) / atlas;
   float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
   float4 color = hsla_to_rgba(sprite.color);
+  // The paint-in's start, and whether there is one: a cell further right starts a little later.
+  float start = sprite.stamp + float(sprite.bounds.origin.x) / ARKOS_SCALE * ARKOS_PAINT_STAGGER;
   return MonochromeInkVertexOutput{
       device_position,
       tile_position,
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
       tile_rect,
-      float(sprite.bounds.size.height) / PER_PX};
+      float(sprite.bounds.size.height) / PER_PX,
+      float2(start, sprite.stamp != 0.0 ? 1.0 : 0.0)};
 }
 
 float arkos_hash(float2 p) {
@@ -93,7 +104,8 @@ float ink_at(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
 fragment float4 arkos_glyph_fragment(
     MonochromeInkFragmentInput input [[stage_in]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
-    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],
+    constant float *time [[buffer(5)]]) {
   if (any(input.clip_distance < float4(0.0))) {
     return float4(0.0);
   }
@@ -138,12 +150,41 @@ fragment float4 arkos_glyph_fragment(
   // The paper's tooth.
   float tooth = 0.86 + 0.14 * arkos_hash(floor(px * 0.7));
 
+  // The paint-in: how far the stroke has soaked in (0 to 1) and how wet it still is (1 to 0).
+  // A stamp older than a minute, the clock's wrap among them, has long dried.
+  float progress = 1.0;
+  float wet = 0.0;
+  if (input.paint.y > 0.0) {
+    float age = *time - input.paint.x;
+    if (age > -60.0) {
+      progress = saturate(age / ARKOS_PAINT_DUR);
+      wet = age > ARKOS_PAINT_DUR ? saturate(1.0 - (age - ARKOS_PAINT_DUR) / ARKOS_PAINT_DRY) : 1.0;
+    }
+  }
+  // The ink shows first where the stroke is thickest (the core and both rings full) and seeps
+  // out to its edges, unevenly; once soaked in, all of it.
+  float soak = 1.0;
+  float bleed = 0.0;
+  if (progress < 1.0 || wet > 0.0) {
+    float thick = saturate(core * 0.45 + near * 0.35 + far * 0.2) + (feather - 0.5) * 0.15;
+    soak = progress >= 1.0 ? 1.0 : saturate((thick - (1.0 - progress * 1.3)) * 7.0);
+    // Wet ink bleeds wide around the stroke, and draws back as it dries.
+    bleed = max(near, far * 0.9) * (1.0 - core) * (0.6 + 0.4 * feather) * 0.55 * wet * smoothstep(0.0, 0.6, progress);
+  }
+
   float alpha = saturate(max(core * density * tooth, core * 0.55) + halo + pool * 0.3);
+  alpha = saturate(alpha * soak + bleed);
   float3 rgb = input.color.rgb;
   // Darker where it pooled, paler and warmer where it bled.
   rgb *= 1.0 - 0.4 * pool;
-  float bled = saturate(halo / max(alpha, 1e-4));
+  float bled = saturate((halo * soak + bleed) / max(alpha, 1e-4));
   rgb = mix(rgb, rgb * float3(1.25, 1.1, 0.95) + 0.08, bled * 0.6);
+  // Wet ink reads deeper and bluer: dark text toward a deep blue, light text toward a pale one.
+  if (wet > 0.0) {
+    bool dark = dot(input.color.rgb, float3(0.2126, 0.7152, 0.0722)) < 0.45;
+    float3 wet_rgb = dark ? float3(0.086, 0.118, 0.275) : mix(input.color.rgb, float3(0.70, 0.80, 1.0), 0.5);
+    rgb = mix(rgb, wet_rgb, wet * 0.6);
+  }
   return float4(rgb, alpha * input.color.a);
 }
 

@@ -29,8 +29,14 @@ pub struct Run {
 }
 
 pub fn build_runs(cells: impl Iterator<Item = (char, CellStyle, CellKind)>) -> Vec<Run> {
-    let mut runs: Vec<Run> = Vec::new();
-    for (col, (c, mut style, kind)) in cells.enumerate() {
+    build_stamped_runs(cells.map(|cell| (cell, 0.0))).into_iter().map(|(run, _)| run).collect()
+}
+
+/// `build_runs` for cells that each carry a glyph stamp (`effects::paint`): a run also ends where
+/// the stamp changes, and each run comes with its cells' stamp.
+pub fn build_stamped_runs(cells: impl Iterator<Item = ((char, CellStyle, CellKind), f32)>) -> Vec<(Run, f32)> {
+    let mut runs: Vec<(Run, f32)> = Vec::new();
+    for (col, ((c, mut style, kind), stamp)) in cells.enumerate() {
         if kind == CellKind::Spacer {
             continue;
         }
@@ -40,13 +46,13 @@ pub fn build_runs(cells: impl Iterator<Item = (char, CellStyle, CellKind)>) -> V
         }
         let wide = kind == CellKind::Wide;
         let extend = match runs.last() {
-            Some(last) => !wide && !last.wide && last.style == style && last.col + last.text.chars().count() == col,
+            Some((last, at)) => !wide && !last.wide && last.style == style && *at == stamp && last.col + last.text.chars().count() == col,
             None => false,
         };
         if extend {
-            runs.last_mut().unwrap().text.push(c);
+            runs.last_mut().unwrap().0.text.push(c);
         } else {
-            runs.push(Run { col, text: c.to_string(), style, wide });
+            runs.push((Run { col, text: c.to_string(), style, wide }, stamp));
         }
     }
     runs
@@ -59,6 +65,14 @@ mod tests {
 
     fn st(fg: u32, bg: u32) -> CellStyle {
         CellStyle { fg: rgb(fg), bg: rgb(bg), bold: false, italic: false, dim: false, underline: false, inverse: false }
+    }
+
+    #[test]
+    fn a_stamped_run_ends_where_the_stamp_changes() {
+        let a = st(0xffffff, 0x000000);
+        let cells = [('o', 0.0), ('k', 2.5), ('!', 2.5)].map(|(c, s)| ((c, a, CellKind::Normal), s));
+        let runs = build_stamped_runs(cells.into_iter());
+        assert_eq!(runs, vec![(Run { col: 0, text: "o".into(), style: a, wide: false }, 0.0), (Run { col: 1, text: "k!".into(), style: a, wide: false }, 2.5)]);
     }
 
     #[test]
