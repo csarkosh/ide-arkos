@@ -1,7 +1,7 @@
 # The multi tasker: one window, three Claude Code sessions on three unrelated workstreams,
 # each orchestrating its own subagents, and behind two of them a shorter session on yet
 # another workstream that has finished and waits on you, so the tabs show both marks. No
-# sidebar: just the sessions.
+# sidebar: just the sessions. Shot in the built-in navy-runic theme: Navy with the runic effect.
 # This is the hero.
 
 [scene]
@@ -21,6 +21,7 @@ width = 1320
 height = 860
 preset = "compact"
 sidebar = "collapsed"
+theme = { dark = "navy-runic", light = "navy-runic" }
 
 [[pane]]
 name = "lantern"
