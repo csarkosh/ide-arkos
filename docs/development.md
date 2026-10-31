@@ -827,6 +827,9 @@ Things only a person at the screen can check, in order of value:
 - code editor: a `.toml`, a `.json`, a `Makefile` and a file with no extension all edit; a file
   made read-only (`chmod 444`) shows "read-only file: shown read-only" and takes no typing; a file
   with mixed line endings says so
+- Delete: right-click a file open in a tab, Delete: the tab closes, the file leaves the tree and is
+  in the Trash (Put Back restores it), and the notice says "Moved to the Trash: <name>"; a folder
+  with a file open in a tab goes the same way, whole; a file with unsaved edits is not written back
 - New File: right-click a folder, New File: the row opens under it at its children's depth with
   the keys; a name with Enter makes the file, the tree shows it selected and it opens pinned with
   the caret in it; right-click a file: the row opens beside it; right-click the empty space under

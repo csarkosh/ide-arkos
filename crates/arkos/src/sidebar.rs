@@ -337,6 +337,8 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
 pub enum MenuAction {
     /// The New File prompt in this folder (`Root::open_new_file_prompt`; the tree's menu runs it).
     NewFile(PathBuf),
+    /// Moves the file or folder to the Trash (`Root::trash_path`; the tree's menu runs it).
+    Trash(PathBuf),
     Reveal(PathBuf),
     CopyText(String),
     OpenDefault(PathBuf),
@@ -345,7 +347,8 @@ pub enum MenuAction {
 }
 
 /// The right-click menu for a tree entry (spec 6), and for the project folder itself (a press on
-/// the tree's empty space). New File goes in a folder, or beside a file.
+/// the tree's empty space). New File goes in a folder, or beside a file; Delete, last, moves the
+/// entry to the Trash, and the project folder has none.
 pub fn context_menu_items(path: &Path, is_dir: bool, project: &Path) -> Vec<(&'static str, MenuAction)> {
     if path == project {
         return vec![
@@ -362,6 +365,7 @@ pub fn context_menu_items(path: &Path, is_dir: bool, project: &Path) -> Vec<(&'s
         ("Copy path", MenuAction::CopyText(path.to_string_lossy().into_owned())),
         ("Copy relative path", MenuAction::CopyText(relative)),
         ("Open in default app", MenuAction::OpenDefault(path.to_path_buf())),
+        ("Delete", MenuAction::Trash(path.to_path_buf())),
     ]
 }
 
@@ -374,8 +378,8 @@ pub struct ContextMenu {
 
 pub fn run_menu_action(action: &MenuAction, cx: &mut App) {
     match action {
-        // Needs the root: the tree's menu runs it itself.
-        MenuAction::NewFile(_) => {}
+        // Need the root: the tree's menu runs them itself.
+        MenuAction::NewFile(_) | MenuAction::Trash(_) => {}
         MenuAction::Reveal(p) => cx.reveal_path(p),
         MenuAction::CopyText(s) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.clone())),
         MenuAction::OpenDefault(p) => cx.open_with_system(p),
@@ -442,6 +446,14 @@ pub fn create_file(path: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::File::create_new(path).map(drop)
+}
+
+/// Moves a file or folder to the user's Trash, as Finder's Move to Trash does, so Put Back
+/// restores it. Blocks while the move runs (a rename on the same volume): background executor.
+pub fn move_to_trash(path: &Path) -> Result<(), String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, None).map_err(|e| e.localizedDescription().to_string())
 }
 
 /// What a failed create says: "already exists" for the common case, the error otherwise.
@@ -698,6 +710,7 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
             crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                 match &action {
                     MenuAction::NewFile(dir) => root.open_new_file_prompt(dir.clone(), cx),
+                    MenuAction::Trash(path) => root.trash_path(path.clone(), cx),
                     other => run_menu_action(other, cx),
                 }
                 root.context_menu.hide(Instant::now());
@@ -1562,6 +1575,48 @@ impl Root {
         cx.notify();
     }
 
+    /// The tree's Delete: the tabs on the file, or on anything in the folder, let their unsaved
+    /// edits go and close (so nothing writes the file back), then the file or folder moves to the
+    /// Trash off this thread and the tree forgets it. A notice says where it went, or why not.
+    pub fn trash_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if path == self.project || !path.starts_with(&self.project) {
+            return;
+        }
+        for id in self.tree.tabs_within(&path) {
+            if let Some(v) = self.viewers.get(&id).cloned() {
+                v.update(cx, |v, _| v.abandon_edits());
+            }
+            if let Some((pane, idx)) = self.tree.locate(id) {
+                self.close_tab(pane, idx, cx);
+            }
+        }
+        if self.new_file.value().is_some_and(|p| p.dir.starts_with(&path)) {
+            self.new_file.hide(Instant::now());
+        }
+        let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        cx.spawn(async move |this, cx| {
+            let moved = {
+                let path = path.clone();
+                cx.background_executor().spawn(async move { move_to_trash(&path) }).await
+            };
+            let _ = this.update(cx, |root, cx| {
+                match moved {
+                    Ok(()) => {
+                        root.explorer.forget(&path);
+                        root.load_pending_dirs(cx);
+                        root.refresh_status(cx);
+                        root.save(cx);
+                        root.show_notice(format!("Moved to the Trash: {name}"), cx);
+                    }
+                    Err(e) => root.show_notice(format!("Could not move {name} to the Trash: {e}"), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Opens the New File prompt under `dir` (expanded, so the row has a place) and gives the tree
     /// the keys.
     pub fn open_new_file_prompt(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
@@ -1750,17 +1805,19 @@ mod tests {
     }
 
     #[test]
-    fn the_context_menu_lists_new_file_then_the_four_file_actions_in_order() {
+    fn the_context_menu_lists_new_file_then_the_four_file_actions_then_delete() {
         let items = context_menu_items(Path::new("/p/src/a.rs"), false, Path::new("/p"));
         let labels: Vec<&str> = items.iter().map(|(l, _)| *l).collect();
-        assert_eq!(labels, ["New File", "Reveal in Finder", "Copy path", "Copy relative path", "Open in default app"]);
+        assert_eq!(labels, ["New File", "Reveal in Finder", "Copy path", "Copy relative path", "Open in default app", "Delete"]);
+        assert_eq!(items[5].1, MenuAction::Trash("/p/src/a.rs".into()), "the file itself");
+        assert_eq!(context_menu_items(Path::new("/p/src"), true, Path::new("/p"))[5].1, MenuAction::Trash("/p/src".into()), "a folder, whole");
         assert_eq!(items[0].1, MenuAction::NewFile("/p/src".into()), "beside a file");
         assert_eq!(items[2].1, MenuAction::CopyText("/p/src/a.rs".into()));
         assert_eq!(items[3].1, MenuAction::CopyText("src/a.rs".into()));
         assert_eq!(context_menu_items(Path::new("/p/src"), true, Path::new("/p"))[0].1, MenuAction::NewFile("/p/src".into()), "in a folder");
         assert_eq!(context_menu_items(Path::new("/elsewhere/f"), false, Path::new("/p"))[3].1, MenuAction::CopyText("/elsewhere/f".into()), "outside the project the full path");
         let root = context_menu_items(Path::new("/p"), true, Path::new("/p"));
-        assert_eq!(root.iter().map(|(l, _)| *l).collect::<Vec<_>>(), ["New File", "Reveal in Finder", "Copy path"], "the project folder: no relative path, no default app");
+        assert_eq!(root.iter().map(|(l, _)| *l).collect::<Vec<_>>(), ["New File", "Reveal in Finder", "Copy path"], "the project folder: no relative path, no default app, never Delete");
         assert_eq!(root[0].1, MenuAction::NewFile("/p".into()));
     }
 

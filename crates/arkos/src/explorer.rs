@@ -320,6 +320,23 @@ impl Explorer {
         }
     }
 
+    /// A file or folder went (to the Trash): nothing at or under `path` stays expanded, loaded,
+    /// queued or selected, and its folder is read again. A selection inside it moves to the folder
+    /// it was in, unless that is the project folder.
+    pub fn forget(&mut self, path: &Path) {
+        let within = |p: &PathBuf| p.starts_with(path);
+        self.expanded.retain(|p| !within(p));
+        self.loaded.retain(|p, _| !within(p));
+        self.loading.retain(|p| !within(p));
+        self.stale.retain(|p| !within(p));
+        if self.selected.as_ref().is_some_and(within) {
+            self.selected = path.parent().filter(|d| *d != self.root).map(Path::to_path_buf);
+        }
+        if let Some(parent) = path.parent() {
+            self.invalidate(parent);
+        }
+    }
+
     /// Marks a directory's children stale so the next `dirs_to_load` reads them again (the poll
     /// saw it change). What is shown stays until the new read lands.
     pub fn invalidate(&mut self, dir: &Path) {
@@ -750,5 +767,26 @@ mod tests {
         assert!(ex.rows().iter().all(|r| r.status.is_none() && !r.dirty));
         ex.set_status(Ok(vec![]));
         assert_eq!((ex.not_git, ex.status_off), (false, None), "a status that runs clears both");
+    }
+
+    #[test]
+    fn forgetting_a_deleted_folder_drops_it_and_everything_under_it_and_rereads_its_parent() {
+        let root = PathBuf::from("/p");
+        let mut e = Explorer::new(root.clone(), vec!["/p/src".into(), "/p/src/deep".into(), "/p/srcs".into()], false);
+        for d in ["/p", "/p/src", "/p/src/deep", "/p/srcs"] {
+            e.mark_loading(Path::new(d));
+            e.set_loaded(Path::new(d), Vec::new());
+        }
+        e.selected = Some("/p/src/deep/x.rs".into());
+        e.forget(Path::new("/p/src"));
+        assert_eq!(e.expanded.iter().cloned().collect::<Vec<_>>(), vec![PathBuf::from("/p/srcs")], "a folder that only starts with the name stays");
+        assert!(!e.loaded.contains_key(Path::new("/p/src")) && !e.loaded.contains_key(Path::new("/p/src/deep")));
+        assert_eq!(e.selected, None, "the selection was inside; the folder it was in went too, and the project folder is never selected");
+        assert_eq!(e.dirs_to_load(), vec![root.clone()], "the parent is read again");
+        let mut e = Explorer::new(root.clone(), vec!["/p/src".into()], false);
+        e.selected = Some("/p/src/a.rs".into());
+        e.forget(Path::new("/p/src/a.rs"));
+        assert_eq!(e.selected, Some(PathBuf::from("/p/src")), "a deleted file's selection moves to its folder");
+        assert!(e.expanded.contains(Path::new("/p/src")));
     }
 }

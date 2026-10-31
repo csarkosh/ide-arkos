@@ -27,7 +27,7 @@ metal = "0.29"
 core-graphics-types = "0.1"
 # Already in the tree through gpui: the AppKit view behind the window, for docking (spec 8).
 raw-window-handle = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime", "NSDictionary", "NSValue", "NSURL", "NSURLRequest", "NSGeometry", "NSError", "NSData"] }
+objc2-foundation = { version = "0.3.2", features = ["NSProcessInfo", "NSString", "NSObjCRuntime", "NSDictionary", "NSValue", "NSURL", "NSURLRequest", "NSGeometry", "NSError", "NSData", "NSFileManager"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "dump-load", "parsing", "yaml-load"] }
 similar = "2"
 # Markdown parsing for the editor's block layer (md_blocks).

@@ -54,8 +54,10 @@ expand it, with `.git` hidden and anything `.gitignore` ignores left out (the pa
 ignored files" lists them dimmed). It follows the file system within a second. A single click
 opens a file in a preview tab in the focused pane, which the next single click replaces; a
 double click, Enter in the tree, or dragging the tab pins it. Right click a file or a folder: New
-File, Reveal in Finder, Copy path, Copy relative path, Open in default app; right click the tree's
-empty space for the project folder's own menu. New File opens a row in the tree where the file
+File, Reveal in Finder, Copy path, Copy relative path, Open in default app, Delete; right click the
+tree's empty space for the project folder's own menu (it has no Delete). Delete moves the file or
+folder to the Trash, where Finder's Put Back restores it; tabs on the file, or on anything in the
+folder, close first without saving, and a notice says it went. New File opens a row in the tree where the file
 will go (under the folder, or beside the file): type the name, with `/` for folders on the way,
 and Enter makes the file, selects it and opens it for editing with the keys in the pane; Escape
 or a click anywhere else closes the row; a name that exists, or is no name, is said in a notice

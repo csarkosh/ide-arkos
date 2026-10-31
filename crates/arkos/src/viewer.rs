@@ -1365,6 +1365,16 @@ impl Viewer {
         .detach();
     }
 
+    /// Its file is being deleted: unsaved edits are let go so no autosave or close writes the
+    /// file back, and a pending autosave finds itself overtaken (`save_seq`). A save already in
+    /// flight is still waited for by the close.
+    pub fn abandon_edits(&mut self) {
+        self.dirty = false;
+        self.save_again = false;
+        self.conflict = false;
+        self.save_seq += 1;
+    }
+
     /// Writes unsaved edits now, on the calling thread, for a tab that closes or a window that
     /// quits. A save in flight is waited for, up to `SAVE_WAIT`; one still running then is written
     /// over without the fingerprint check (its own write may be what changed the file). `Err`

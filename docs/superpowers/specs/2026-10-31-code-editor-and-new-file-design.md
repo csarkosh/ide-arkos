@@ -24,7 +24,8 @@ created from the tree.
 | 5 | "New File" in the tree's right-click menu, on a file or a folder, and on the tree's empty space; an inline prompt for the name; the file opens for editing | `sidebar.rs`, `main.rs` |
 | 6 | Guide, Status rows, keybinding table | `docs/guide.md`, `docs/development.md` |
 
-Out of scope: New Folder, Rename and Delete in the tree (a later round); multiple carets;
+Delete was added on 2026-10-31 after the first round (section 5.3). Out of scope: New Folder and
+Rename in the tree (a later round); multiple carets;
 language features (completion, diagnostics, go to definition); wrapping in the code view; soft
 tabs that follow an `.editorconfig`.
 
@@ -129,6 +130,17 @@ The prompt is a `Transient<NewFile>` on `Root` (`new_file`), with its own focus 
 (`new_file_focus`) that the focus routing prefers while the tree holds the keys and the prompt is
 open. Its row fades in and out with the Motion rule (ENTER and EXIT), lifted a few points like the
 worktree prompt.
+
+### 5.3 Delete
+
+Cyrus asked for "a Delete option when right-clicking on a file or folder". It is the menu's last
+row on every entry, never on the project folder. It moves the entry to the Trash through
+`NSFileManager trashItemAtURL`, as Finder's Move to Trash does, so Put Back restores it; nothing is
+erased, so there is no confirmation. Before the move, each tab on the file or on anything inside
+the folder lets its unsaved edits go (`Viewer::abandon_edits`, so no autosave or close writes the
+file back) and closes; a save already in flight is waited for by the close. The move runs on the
+background executor; then the tree forgets everything at or under the path (`Explorer::forget`),
+reads its folder again, and a notice says "Moved to the Trash: <name>", or why it could not.
 
 ## 6. Tests
 

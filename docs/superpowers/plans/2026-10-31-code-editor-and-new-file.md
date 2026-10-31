@@ -31,4 +31,5 @@ unit tested.
 - [x] 5. `pane_view`: `editable` is any document, the pill only for markdown.
 - [x] 6. `sidebar`: "New File" in the menu, the root menu on the empty space, `NewFile` prompt and its row, `new_file_target`, create and open; `Root.new_file`, focus routing, the mouse-down close, `any_motion` and `settle`.
 - [x] 7. Docs: guide, development Status rows.
+- [x] 9. Delete in the tree's menu (spec 5.3): `Tree::tabs_within`, `Viewer::abandon_edits`, `move_to_trash`, `Explorer::forget`, `Root::trash_path`; docs and a Status row; screen pass deleting an open file and a folder with an open file.
 - [x] 8. `cargo test --workspace`, `cargo check --workspace --all-targets` clean, the screen pass on the local shoot.
