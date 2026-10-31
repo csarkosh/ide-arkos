@@ -77,4 +77,4 @@ clock's wrap among them, is dry.
 - `Window::present_glyphs_until(deadline)`: until then, a frame with nothing to redraw presents
   the last scene again with the glyph clock moved on by the time since the app last set it.
 
-Built against the local gpui clone first; the tag is pushed only once Cyrus approves.
+Built against the local gpui clone first; Cyrus approved it and the tag was pushed on 2026-10-31.
