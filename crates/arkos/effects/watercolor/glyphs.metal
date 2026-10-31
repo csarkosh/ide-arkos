@@ -15,7 +15,11 @@
 // writes (how much across is the hand's too), with a crisp edge and a wet bead just behind it.
 // Text that replaced text in place (a counter ticking) is no pen: it soaks in over its glyph time,
 // thickest strokes first and softly, while a ghost of the text it replaced (ARKOS_PAINT_FADE,
-// drawn under it by the terminal) lifts off the paper, so the change is one smooth crossfade. The ink it leaves is wetter, deeper and bluer, with
+// drawn under it by the terminal) lifts off the paper, so the change is one smooth crossfade.
+// A working mark (Claude Code's spinner, a tool's blinking dot) is hidden (ARKOS_PAINT_HIDE) and
+// one steady mark doodled under it instead (ARKOS_PAINT_DOODLE): a pen keeps going round it
+// ARKOS_DOODLE_TURNS times a second, the ink heavier where it has just been and lighter behind,
+// the mark swaying a little with the hand, easing back to plain ink as ARKOS_DOODLE_HOLD runs out. The ink it leaves is wetter, deeper and bluer, with
 // a wide bleed, and dries to the ink above over ARKOS_PAINT_DRY. A glyph with no stamp (0), or
 // one whose ink has dried, is drawn exactly as it is without one.
 //
@@ -97,8 +101,13 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
       tile_rect,
       float(sprite.bounds.size.height) / PER_PX,
       float4(start, sprite.stamp != 0.0 ? hand.y : 0.0, hand.z, hand.w),
-      // 0 for the pen, 1 for a change in place soaking in, 2 for the text it replaced fading out.
-      variant == ARKOS_PAINT_FADE ? 2.0 : (variant == ARKOS_PAINT_SOAK ? 1.0 : 0.0),
+      // 0 for the pen, 1 for a change in place soaking in, 2 for the text it replaced fading out,
+      // 3 for a doodled mark and 4 for a cell drawn as nothing.
+      sprite.stamp == 0.0 ? 0.0
+        : variant == ARKOS_PAINT_HIDE ? 4.0
+        : variant == ARKOS_PAINT_DOODLE ? 3.0
+        : variant == ARKOS_PAINT_FADE ? 2.0
+        : variant == ARKOS_PAINT_SOAK ? 1.0 : 0.0,
       // The pixel's place in the glyph's box, 0 to 1 across and down, past it in the reach.
       local / max(glyph_size, float2(1.0))};
 }
@@ -143,8 +152,22 @@ fragment float4 arkos_glyph_fragment(
   // so a label reads as painted as a page does. A period or a comma is clamped, not blown up.
   float small = clamp(22.0 / max(input.glyph_h, 1.0), 1.0, 2.2);
 
-  // The hand: the stroke drifts by up to a pixel along smooth noise.
+  // A working mark's doodle: how strongly (1 while the mark flips, easing to 0 as the hold runs
+  // out) and where the pen is round it (0 to 1).
+  if (input.mode > 3.5) {
+    return float4(0.0);
+  }
+  float doodle = 0.0;
+  float turn = fract(*time * ARKOS_DOODLE_TURNS);
+  if (input.mode > 2.5) {
+    float since = *time - input.paint.x;
+    doodle = since > -60.0 ? 1.0 - smoothstep(ARKOS_DOODLE_HOLD * 0.6, ARKOS_DOODLE_HOLD, since) : 0.0;
+  }
+
+  // The hand: the stroke drifts by up to a pixel along smooth noise, and a doodled mark sways
+  // round with the pen.
   float2 wob = (float2(arkos_noise(px * 0.07 * small), arkos_noise(px * 0.07 * small + 17.0)) - 0.5) * 1.8;
+  wob += float2(cos(turn * 6.2831853), sin(turn * 6.2831853)) * 0.8 * doodle;
   float2 uv = input.tile_position + wob * PER_PX * texel;
 
   float core = ink_at(atlas_texture, smp, uv, rect);
@@ -190,7 +213,17 @@ fragment float4 arkos_glyph_fragment(
   float bead = 0.0;
   float bleed = 0.0;
   float thick = saturate(core * 0.45 + near * 0.35 + far * 0.2) + (feather - 0.5) * 0.15;
-  if (input.mode > 1.5 && input.paint.y > 0.0) {
+  if (input.mode > 2.5) {
+    // The doodle: the pen's tip goes round the mark; the ink just behind it is full and wet, and
+    // it thins out to a little under half by the time the tip comes round again.
+    float2 d = saturate(input.box) - 0.5;
+    float angle = atan2(d.y, d.x) / 6.2831853 + 0.5;
+    float trail = fract(turn - angle + (feather - 0.5) * 0.08);
+    soak = mix(1.0, mix(0.45, 1.0, exp(-trail * 3.0)), doodle);
+    bead = doodle * exp(-trail * 8.0);
+    wet = doodle * 0.6;
+    progress = 1.0;
+  } else if (input.mode > 1.5 && input.paint.y > 0.0) {
     // The ghost of replaced text lifts off, its thin edges first, and is gone once the new text
     // has soaked in; it never reads wet.
     float lift = smoothstep(0.0, 1.0, progress);

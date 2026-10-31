@@ -923,6 +923,8 @@ pub struct Terminal {
     /// scroll or a drag past an edge. The window's glyph clock rests meanwhile
     /// (`effects::active::glyph_clock`); None before the first.
     pub last_scroll: Option<Instant>,
+    /// The window draw (`Root::draws`) this terminal was last painted in.
+    pub painted_draw: u64,
 }
 
 /// A link under the pointer: its row in the visible grid, its columns, and the URL.
@@ -958,6 +960,7 @@ impl Terminal {
             decode: None,
             last_user_input: None,
             last_scroll: None,
+            painted_draw: 0,
         }
     }
 

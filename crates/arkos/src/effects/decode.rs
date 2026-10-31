@@ -70,13 +70,17 @@ pub fn timing(working: bool, reduce_motion: bool) -> Timing {
     Timing { decode: Duration::from_millis(ms), fresh: Duration::from_millis(FRESH_MS), white, deep }
 }
 
-/// What the decode remembers of one cell: its real character, the instant that last changed, and
-/// the character it replaced then (a space for a new cell), which the paint-in fades out.
+/// What the decode remembers of one cell: its real character, the instant that last changed, the
+/// character it replaced then (a space for a new cell), which the paint-in fades out, and the
+/// working mark it last flipped as (`paint::doodle_mark`), with its style and when, which the
+/// paint-in doodles. And its style, so a dot that blinks off is held in the colour it showed.
 #[derive(Clone, Copy)]
 struct Seen {
     ch: char,
     changed: Option<Instant>,
     was: char,
+    mark: Option<(char, CellStyle, Instant)>,
+    style: Option<CellStyle>,
 }
 
 /// The remembered grid of one terminal.
@@ -100,7 +104,7 @@ impl Decode {
             rows,
             display_offset,
             seeded: false,
-            cells: vec![Seen { ch: ' ', changed: None, was: ' ' }; cols * rows],
+            cells: vec![Seen { ch: ' ', changed: None, was: ' ', mark: None, style: None }; cols * rows],
         }
     }
 
@@ -133,7 +137,7 @@ impl Decode {
             self.seeded = true;
             self.cells = rows
                 .iter()
-                .flat_map(|r| (0..cols).map(move |c| Seen { ch: r.get(c).map_or(' ', |x| x.0), changed: None, was: ' ' }))
+                .flat_map(|r| (0..cols).map(move |c| Seen { ch: r.get(c).map_or(' ', |x| x.0), changed: None, was: ' ', mark: None, style: r.get(c).map(|x| x.1) }))
                 .collect();
             return;
         }
@@ -155,16 +159,21 @@ impl Decode {
         let scrolled = froms.iter().enumerate().any(|(row, from)| from.is_some_and(|f| f != row));
         let mut cells = Vec::with_capacity(old.len());
         for ((row, line), from) in rows.iter().enumerate().zip(froms) {
-            let chars = (0..self.cols).map(|c| line.get(c).map_or(' ', |x| x.0));
+            let cells_now = (0..self.cols).map(|c| line.get(c).map_or((' ', None), |x| (x.0, Some(x.1))));
             let span = |r: usize| r * self.cols..(r + 1) * self.cols;
             match from {
                 Some(from) => cells.extend_from_slice(&old[span(from)]),
-                None => cells.extend(old[span(row)].iter().zip(chars).map(|(&seen, ch)| {
+                None => cells.extend(old[span(row)].iter().zip(cells_now).map(|(&seen, (ch, style))| {
                     if seen.ch == ch {
-                        seen
+                        Seen { style: style.or(seen.style), ..seen }
                     } else {
                         let was = if scrolled { ' ' } else { seen.ch };
-                        Seen { ch, changed: if quiet || ch == ' ' { None } else { Some(now) }, was }
+                        // A dot blinking off keeps the style it showed in.
+                        let mark = crate::effects::paint::doodle_mark(seen.ch, ch).and_then(|m| {
+                            let shown = if ch == ' ' { seen.style } else { style };
+                            shown.map(|s| (m, s, now))
+                        });
+                        Seen { ch, changed: if quiet || ch == ' ' { None } else { Some(now) }, was, mark, style }
                     }
                 })),
             }
@@ -215,6 +224,14 @@ impl Decode {
             return ' ';
         }
         self.cells.get(row * self.cols + col).map_or(' ', |s| s.was)
+    }
+
+    /// The working mark this cell last flipped as, its style and when, if it did.
+    pub fn mark_at(&self, col: usize, row: usize) -> Option<(char, CellStyle, Instant)> {
+        if col >= self.cols || row >= self.rows {
+            return None;
+        }
+        self.cells.get(row * self.cols + col).and_then(|s| s.mark)
     }
 
     /// What this cell shows now: its own character and style, or a random character while it

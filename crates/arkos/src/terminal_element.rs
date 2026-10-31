@@ -30,6 +30,8 @@ pub struct TerminalElement {
     paper_alpha: f32,
     /// What an effect does to the cells the program writes; None without one.
     ink: Option<Ink>,
+    /// The window draw this paint is part of (`Root::draws`).
+    draw: u64,
 }
 
 /// What an effect does to the cells the program writes: decodes them as runic does, with the
@@ -41,8 +43,8 @@ pub enum Ink {
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, ink: Option<Ink>) -> Self {
-        Self { terminal, font_size, line_height, family, paper_alpha, ink }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, ink: Option<Ink>, draw: u64) -> Self {
+        Self { terminal, font_size, line_height, family, paper_alpha, ink, draw }
     }
 }
 
@@ -83,15 +85,17 @@ pub fn decoded_rows(
     Some(shown)
 }
 
-/// Each visible row's ghosts: the characters its changed cells replaced, each with its stamp.
-pub type Ghosts = Vec<Vec<(char, f32)>>;
+/// Each visible row's ghosts, painted under it: the characters its changed cells replaced, or the
+/// steady mark a working mark is doodled as, each with its stamp and, for a mark, its style.
+pub type Ghosts = Vec<Vec<(char, f32, Option<CellStyle>)>>;
 
 /// The visible rows' glyph stamps under an effect that paints the terminal (`effects::paint`),
 /// the ghosts of the characters changed cells replaced (each with its stamp, empty for a row with
 /// none), and the instant the newest ink dries. The decode state (made here when it is missing) takes
 /// in the rows as it does for the decode. Only the `PAINT_ROWS` rows changed most recently are
 /// stamped; any other row, and a row with no wet ink, gets no stamps at all, so it is drawn as
-/// ever. `x` is a column's left edge in points from the window's left.
+/// ever. A working mark that flipped within `DOODLE_HOLD`, on any row, is hidden and its steady
+/// mark doodled under it. `x` is a column's left edge in points from the window's left.
 pub fn painted_rows(
     decode: &mut Option<Decode>,
     rows: &RowsForPaint,
@@ -116,21 +120,45 @@ pub fn painted_rows(
         .zip(changes)
         .enumerate()
         .map(|(row, (line, changed))| {
-            if !writing.contains(&row) {
-                return (Vec::new(), Vec::new());
+            let (mut stamps, mut ghosts) = if writing.contains(&row) && changed.iter().any(Option::is_some) {
+                let chars: Vec<char> = line.iter().map(|(c, _, _)| *c).collect();
+                let was: Vec<char> = (0..line.len()).map(|col| state.was_at(col, row)).collect();
+                let (stamps, ghosts, until) = paint::row_stamps(&changed, &chars, &was, &x, clock, now, &mut order);
+                dry = dry.max(until);
+                match until {
+                    None => (Vec::new(), Vec::new()),
+                    Some(_) if ghosts.iter().all(|&g| g == 0.0) => (stamps, Vec::new()),
+                    Some(_) => (stamps, was.into_iter().zip(ghosts).map(|(c, g)| (c, g, None)).collect()),
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            for (col, &(ch, _, _)) in line.iter().enumerate() {
+                let Some((mark, style, at)) = state.mark_at(col, row) else { continue };
+                let since = now.saturating_duration_since(at).as_secs_f32();
+                if since >= paint::DOODLE_HOLD || !paint::holds_doodle(ch) {
+                    continue;
+                }
+                if stamps.is_empty() {
+                    stamps = vec![0.0; line.len()];
+                }
+                if ghosts.is_empty() {
+                    ghosts = vec![(' ', 0.0, None); line.len()];
+                }
+                stamps[col] = paint::encode(clock, paint::PAINT_HIDE);
+                ghosts[col] = (mark, paint::encode(clock - since, paint::PAINT_DOODLE), Some(style));
+                dry = dry.max(Some(at + std::time::Duration::from_secs_f32(paint::DOODLE_HOLD)));
             }
-            let chars: Vec<char> = line.iter().map(|(c, _, _)| *c).collect();
-            let was: Vec<char> = (0..line.len()).map(|col| state.was_at(col, row)).collect();
-            let (stamps, ghosts, until) = paint::row_stamps(&changed, &chars, &was, &x, clock, now, &mut order);
-            dry = dry.max(until);
-            if until.is_none() {
-                return (Vec::new(), Vec::new());
-            }
-            let ghosts = if ghosts.iter().all(|&g| g == 0.0) { Vec::new() } else { was.into_iter().zip(ghosts).collect() };
             (stamps, ghosts)
         })
         .unzip();
     (stamps, ghosts, dry)
+}
+
+/// Whether a terminal last painted in window draw `painted` was left out of a draw since, so is
+/// shown again in `draw`: the window draws every visible terminal each time it draws.
+fn shown_again(painted: u64, draw: u64) -> bool {
+    painted != 0 && draw > painted + 1
 }
 
 fn hsla(c: Rgb) -> Hsla {
@@ -294,6 +322,12 @@ impl Element for TerminalElement {
             let find_owed = t.refresh_find();
             let highlights = t.find.as_ref().map(|f| t.core.highlights(&f.matches, f.current)).unwrap_or_default();
             let palette = t.core.palette();
+            // A terminal the window drew without (its tab was hidden) takes what arrived meanwhile
+            // as already written: the decode starts again from the grid as it is now.
+            if shown_again(t.painted_draw, self.draw) {
+                t.decode = None;
+            }
+            t.painted_draw = self.draw;
             // The decode observes once per paint; under a decoding effect the window's glyph
             // timer supplies the frames that carry a changed cell through its scramble.
             let rows = t.core.rows_for_paint();
@@ -360,13 +394,14 @@ impl Element for TerminalElement {
             }
             for (i, row) in visible.as_ref().unwrap_or(&rows.visible).iter().enumerate() {
                 let y = origin.y + px((i as f32 + frac) * cell.height);
-                // The characters this row's changed cells replaced fade out under the new ones,
-                // in the new cells' style; everything else in the ghost row is a space.
+                // The characters this row's changed cells replaced fade out under the new ones, in
+                // the new cells' style, and a doodled mark is drawn in its own; everything else in
+                // the ghost row is a space.
                 if let Some(ghosts) = ghosts.get(i).filter(|g| !g.is_empty()) {
                     let cells: Vec<(char, CellStyle, CellKind)> = row
                         .iter()
                         .zip(ghosts)
-                        .map(|(&(_, style, kind), &(was, stamp))| (if stamp == 0.0 { ' ' } else { was }, CellStyle { bg, ..style }, kind))
+                        .map(|(&(_, style, kind), &(was, stamp, shown))| (if stamp == 0.0 { ' ' } else { was }, CellStyle { bg, ..shown.unwrap_or(style) }, kind))
                         .collect();
                     let stamps: Vec<f32> = ghosts.iter().map(|g| g.1).collect();
                     paint_row(&cells, &stamps, y, window, cx);
@@ -437,9 +472,17 @@ pub fn hovered_link(spans: &[Span], bounds: Bounds<Pixels>, mouse: gpui::Point<P
 
 #[cfg(test)]
 mod tests {
-    use super::{dim_alpha, frame_dt, hovered_link, split_offset, DIM_FADE, DIM_MIN_CONTRAST};
+    use super::{dim_alpha, frame_dt, hovered_link, shown_again, split_offset, DIM_FADE, DIM_MIN_CONTRAST};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
+
+    #[test]
+    fn a_terminal_left_out_of_a_draw_is_shown_again_and_one_drawn_each_time_is_not() {
+        assert!(!shown_again(0, 7), "the first paint has nothing to forget");
+        assert!(!shown_again(6, 7), "drawn in the last draw: still on screen");
+        assert!(!shown_again(7, 7), "painted twice in one draw");
+        assert!(shown_again(5, 7), "the window drew once without it: its tab was hidden");
+    }
 
     #[test]
     fn faint_text_fades_toward_its_background_but_keeps_three_to_one_contrast_with_it() {
@@ -582,6 +625,39 @@ mod tests {
         assert!(!stamps[0].is_empty(), "the newest change is written");
         assert_eq!((0..8).filter(|&r| !stamps[r].is_empty()).count(), PAINT_ROWS);
         assert!(stamps[8 - PAINT_ROWS].is_empty(), "the oldest of the burst's rows shows as written");
+    }
+
+    #[test]
+    fn a_spinner_and_a_blinking_dot_are_hidden_and_doodled_as_one_steady_mark_under_them() {
+        use super::painted_rows;
+        use crate::effects::paint::{self, DOODLE_HOLD};
+        use crate::layout::{CellKind, CellStyle};
+        use crate::terminal::RowsForPaint;
+        use std::time::Duration;
+        let style = CellStyle { fg: crate::palette::Rgb { r: 46, g: 43, b: 58 }, bg: crate::palette::Rgb { r: 0, g: 0, b: 0 }, bold: false, italic: false, dim: false, underline: false, inverse: false };
+        let green = CellStyle { fg: crate::palette::Rgb { r: 40, g: 160, b: 80 }, ..style };
+        let grid = |a: &str, b: &str, dot: CellStyle| RowsForPaint {
+            display_offset: 0,
+            above: None,
+            visible: vec![a.chars().map(|c| (c, style, CellKind::Normal)).collect(), b.chars().enumerate().map(|(i, c)| (c, if i == 0 { dot } else { style }, CellKind::Normal)).collect()],
+            links: vec![],
+        };
+        let x = |col: usize| col as f32 * 10.0;
+        let t0 = Instant::now();
+        let mut state = None;
+        painted_rows(&mut state, &grid("✢ Working", "⏺ Read", green), false, 9, x, 5.0, t0);
+        // The spinner turns and the dot blinks off.
+        let t1 = t0 + Duration::from_millis(120);
+        let (stamps, ghosts, dry) = painted_rows(&mut state, &grid("✳ Working", "  Read", style), false, 9, x, 5.12, t1);
+        let variant = |s: f32| ((s * 4096.0).round() as i32 & 31) as u32;
+        assert_eq!(variant(stamps[0][0]), paint::PAINT_HIDE, "the frame itself is hidden");
+        assert_eq!((ghosts[0][0].0, variant(ghosts[0][0].1)), ('✻', paint::PAINT_DOODLE), "a steady star is doodled under it");
+        assert_eq!((ghosts[1][0].0, ghosts[1][0].2), ('⏺', Some(green)), "the dot blinked off is held, in its own colour");
+        assert!(dry.is_some_and(|d| d >= t1 + Duration::from_secs_f32(DOODLE_HOLD) - Duration::from_millis(1)));
+        // Once the spinner has stood still past the hold, it is drawn as it is.
+        let t2 = t1 + Duration::from_secs(2);
+        let (stamps, ghosts, _) = painted_rows(&mut state, &grid("✳ Working", "  Read", style), false, 9, x, 7.12, t2);
+        assert!(stamps.iter().all(Vec::is_empty) && ghosts.iter().all(Vec::is_empty), "{stamps:?}");
     }
 
     #[test]

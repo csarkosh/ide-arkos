@@ -504,6 +504,9 @@ pub struct Root {
     /// The glyph clock this frame gives the glyph shader, which the terminal's paint-in stamps
     /// with (`effects::paint`).
     pub glyph_now: f32,
+    /// How many times the window has drawn, so a terminal can tell it was not drawn last time
+    /// (its tab was hidden) and take what arrived meanwhile as already written.
+    pub draws: u64,
     /// When the user last scrolled a document (the wheel, or a key that eases the view): the
     /// glyph clock rests meanwhile (`effects::active::glyph_clock`), as it does for each
     /// terminal's own `Terminal::last_scroll`. None before the first.
@@ -769,6 +772,7 @@ impl Root {
             breath: pulse::Breath::default(),
             frame_now: Instant::now(),
             glyph_now: 0.0,
+            draws: 0,
             last_scroll: None,
             user_closing: false,
             said_goodbye: false,
@@ -4148,6 +4152,7 @@ impl Render for Root {
             None => 0.0,
         };
         self.glyph_now = glyph_seconds;
+        self.draws += 1;
         effects::active::GlyphSink::set_glyph_time(window, glyph_seconds);
         self.ensure_glyph_timer(cx);
         if let Some(shader) = self.glyphs_pending.take() {
