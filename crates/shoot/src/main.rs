@@ -493,7 +493,7 @@ fn build_recorder(repo: &Path, cache: &Path) -> Result<PathBuf> {
 }
 
 /// Starts the recorder on the window and returns once it says frames flow ("recording" on its
-/// first line), or fails with what it said instead.
+/// first line). What it and its ffmpeg say goes to this log as they say it.
 fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_secs: f64) -> Result<Child> {
     let mut child = Command::new(recorder)
         .arg(window_id.to_string())
@@ -501,7 +501,7 @@ fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_sec
         .args(["--fps", &fps.to_string(), "--max-secs", &format!("{max_secs:.0}")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("start {}", recorder.display()))?;
     let stdout = child.stdout.take().expect("piped");
@@ -510,15 +510,17 @@ fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_sec
         use std::io::BufRead;
         let mut lines = std::io::BufReader::new(stdout).lines();
         let _ = tx.send(lines.next().and_then(|l| l.ok()));
-        // Drained to the end, so the recorder never blocks on a full pipe.
-        for _ in lines {}
+        // The rest (its "finished" line) to this log; drained, so it never blocks on a full pipe.
+        for line in lines.map_while(Result::ok) {
+            say(&format!("recorder: {line}"));
+        }
     });
     match rx.recv_timeout(Duration::from_secs(45)) {
         Ok(Some(line)) if line.trim() == "recording" => Ok(child),
         Ok(said) => {
             let _ = child.kill();
-            let output = child.wait_with_output()?;
-            bail!("the recorder did not start: {}{}", said.unwrap_or_default(), String::from_utf8_lossy(&output.stderr).trim());
+            let _ = child.wait();
+            bail!("the recorder did not start{}", said.map(|s| format!(": {s}")).unwrap_or_default());
         }
         Err(_) => {
             let _ = child.kill();
@@ -527,23 +529,23 @@ fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_sec
     }
 }
 
-/// Asks the recorder to stop (SIGINT), which finishes the file, and waits for it.
+/// Asks the recorder to stop (SIGINT), which encodes what it captured, and waits for it: the
+/// encoding runs after the capture, at whatever pace the machine's ffmpeg manages.
 fn stop_recorder(mut child: Child) -> Result<()> {
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGINT);
     }
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
                 return Ok(());
             }
-            let output = child.wait_with_output()?;
-            bail!("the recorder failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+            bail!("the recorder failed ({status}); its words are above");
         }
         if Instant::now() > deadline {
             let _ = child.kill();
-            bail!("the recorder did not finish its file within 25 s");
+            bail!("the recorder did not finish its file within 5 minutes");
         }
         std::thread::sleep(Duration::from_millis(200));
     }
