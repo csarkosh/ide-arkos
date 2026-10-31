@@ -53,9 +53,15 @@ Cmd+B shows the sidebar: a file tree rooted at the folder, read one directory at
 expand it, with `.git` hidden and anything `.gitignore` ignores left out (the palette's "Show
 ignored files" lists them dimmed). It follows the file system within a second. A single click
 opens a file in a preview tab in the focused pane, which the next single click replaces; a
-double click, Enter in the tree, or dragging the tab pins it. Right click: Reveal in Finder,
-Copy path, Copy relative path, Open in default app. Drag a file onto a terminal to paste its
-path. Shift+Cmd+E puts the keyboard in the tree: arrows move and expand, Enter opens, Space
+double click, Enter in the tree, or dragging the tab pins it. Right click a file or a folder: New
+File, Reveal in Finder, Copy path, Copy relative path, Open in default app, Delete; right click the
+tree's empty space for the project folder's own menu (it has no Delete). Delete moves the file or
+folder to the Trash, where Finder's Put Back restores it; tabs on the file, or on anything in the
+folder, close first without saving, and a notice says it went. New File opens a row in the tree where the file
+will go (under the folder, or beside the file): type the name, with `/` for folders on the way,
+and Enter makes the file, selects it and opens it for editing with the keys in the pane; Escape
+or a click anywhere else closes the row; a name that exists, or is no name, is said in a notice
+and the row stays. Drag a file onto a terminal to paste its path. Shift+Cmd+E puts the keyboard in the tree: arrows move and expand, Enter opens, Space
 previews, Escape goes back to the pane.
 
 Under the Explorer, Worktrees lists `git worktree list`: each worktree's folder, branch and, once
@@ -70,9 +76,12 @@ safely creates nothing. The main checkout is first and cannot be removed. Ctrl+S
 keyboard in the list. The tree's rows carry git status in the theme's pastels (added, modified,
 untracked) and a folder with changes inside carries a dot.
 
-The viewer is read-only: syntax colours from your theme's `[viewer]` section through syntect's
-TextMate grammars, line numbers, smooth scrolling, Cmd+F to find, and a reload within a second
-of the file changing on disk. Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
+The viewer shows a file with syntax colours from your theme's `[viewer]` section through
+syntect's TextMate grammars (bat's set of some two hundred: TOML, TypeScript and TSX, GLSL and
+WGSL, Terraform, Swift, Dockerfile, SQL, YAML and the rest, plus a PowerShell grammar of Arkos's
+own; `.mjs`, `.hlsl`, `.metal`, `.plist` and a few dot files are read by their nearest relative),
+line numbers, smooth scrolling, Cmd+F to find, and a reload within a second of the file changing
+on disk; a text file you may write is also an editor (see Editing markdown and Editing code). Files over `[viewer] highlight_limit_bytes` (5 MB by default) open
 plain, and above 64 MB a notice; binaries show a notice. The text preset applies to viewers as to
 terminals, and Cmd+= and Cmd+- resize the focused one. A file in a git repository shows its
 changes against the worktree's HEAD in the gutter: an added line a green bar, a changed line an
@@ -166,7 +175,22 @@ with Reload (take the disk's version) and Keep mine (your text wins and the next
 the disk). Cmd+S means Keep mine. With nothing unsaved the file reloads on its own. A failed save
 shows its reason in a banner with Retry.
 
-Every other file type stays a read-only viewer.
+## Editing code
+
+Any other text file you may write opens as a plain editor: the file's own text with its syntax
+colours, line numbers and diff marks, a caret, a selection and the markdown editor's keys (the
+arrows with Option, Cmd and Shift, delete by word and line, undo and redo, Cmd+A, Cmd+C, Cmd+X,
+Cmd+V, Cmd+F, Cmd+S). The colours follow your typing: an edit recolours its line and whatever the
+grammar's state after it changes, so opening a block comment colours the rest of the file as you
+type and closing it puts the colours back. Enter starts the new line with the current line's
+indent, and Tab types the file's indent unit (a tab in a tab-indented file, else the width the
+file indents by, four spaces when it has none). Pasted text goes in as it is, Cmd+B toggles the
+sidebar, and the right-click menu has Cut, Copy and Paste. Saving, autosave, the " •" mark, the
+banner for a file changed on disk and the recovery of unsaved text are the markdown editor's.
+
+A file is shown read-only, with a banner saying why, when a save could not write it back as it was
+(not UTF-8, mixed line endings) or you may not write it; a file over the highlight limit, with a
+line over 8 KB, or that is not text (a binary, a 64 MB log) is shown as before, without a caret.
 
 ### Reading
 
@@ -466,14 +490,15 @@ The VS Code map, in a terminal-friendly form.
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
 | Shift+Cmd+M | toggle markdown view: rendered or raw |
-| Cmd+S | save file (a markdown file also saves itself a second after you stop typing) |
-| Arrows | in a markdown file: move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select; in a rendered paragraph Up, Down and Cmd+Left, Cmd+Right go by displayed row |
-| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a markdown file: delete a character, a word, to the line start, or forward; Delete at the start of a rendered list item or quoted paragraph moves a nested item out a level, or takes the item out of its list (the paragraph out of its quote) |
-| Option+Fn+Delete | in a markdown file: delete the word after the caret |
-| Cmd+Fn+Delete | in a markdown file: delete to the line end |
-| Cmd+Z, Shift+Cmd+Z | in a markdown file: undo, redo |
-| Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a markdown file: select all, copy, cut, paste |
-| Tab, Shift+Tab | in a markdown list: nest the item one level under the item above, or bring it back, from anywhere in the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
+| Cmd+S | save file (a document also saves itself a second after you stop typing) |
+| Arrows | in a document (a markdown or code file): move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select; in a rendered paragraph Up, Down and Cmd+Left, Cmd+Right go by displayed row |
+| Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a document: delete a character, a word, to the line start, or forward; Delete at the start of a rendered list item or quoted paragraph moves a nested item out a level, or takes the item out of its list (the paragraph out of its quote) |
+| Option+Fn+Delete | in a document: delete the word after the caret |
+| Cmd+Fn+Delete | in a document: delete to the line end |
+| Cmd+Z, Shift+Cmd+Z | in a document: undo, redo |
+| Cmd+A, Cmd+C, Cmd+X, Cmd+V | in a document: select all, copy, cut, paste |
+| Enter | in a code file: a new line with the current line's indent; in markdown see Editing markdown |
+| Tab, Shift+Tab | in a code file: the file's indent unit, and nothing; in a markdown list: nest the item one level under the item above, or bring it back, from anywhere in the item; in a table: the next or previous cell (Tab in the last cell adds a row) |
 | Arrows | in a table: the neighbouring cell; Up from the header and Down from the last row leave it |
 | F2 | in a table: edit the selected cell, the caret after its text |
 | Delete | in a table: clear the selected cell, or the picked row, column or table |

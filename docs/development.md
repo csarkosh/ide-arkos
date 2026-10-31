@@ -815,3 +815,24 @@ Things only a person at the screen can check, in order of value:
   `/src/...`
 - telemetry, the collector: the first-party check row is seen in BigQuery, with `rd` right on the
   second day; the shoot's source build sends nothing
+- code editor: open a `.rs` from the tree and type: the caret, the selection and the new text's
+  colours are there at once (a keyword turns to the keyword colour as its last letter lands);
+  type `/*` near the top of a long file: the rest turns to the comment colour within a frame or
+  two, and deleting it puts the colours back; Enter keeps the indent and Tab types the file's
+  indent; Cmd+B toggles the sidebar; the right-click menu is Cut, Copy, Paste; the tab shows " •"
+  until the autosave a second later; a theme switch keeps the text, the caret and Cmd+Z's history
+- code editor: a `.toml`, a `.ts`, a `.glsl`, a `.tf`, a `.swift` and a `.ps1` open coloured, and
+  the colours hold while typing; the text never shifts sideways between an edit and the autosave
+  (the diff's mark column stays through the edit)
+- code editor: a `.toml`, a `.json`, a `Makefile` and a file with no extension all edit; a file
+  made read-only (`chmod 444`) shows "read-only file: shown read-only" and takes no typing; a file
+  with mixed line endings says so
+- Delete: right-click a file open in a tab, Delete: the tab closes, the file leaves the tree and is
+  in the Trash (Put Back restores it), and the notice says "Moved to the Trash: <name>"; a folder
+  with a file open in a tab goes the same way, whole; a file with unsaved edits is not written back
+- New File: right-click a folder, New File: the row opens under it at its children's depth with
+  the keys; a name with Enter makes the file, the tree shows it selected and it opens pinned with
+  the caret in it; right-click a file: the row opens beside it; right-click the empty space under
+  the tree: the row opens at the top; `a/b/c.txt` makes the folders, which expand; an existing name
+  gives the notice "already exists" and keeps the row; Escape closes it; a click on a pane closes
+  it; the row fades in and out

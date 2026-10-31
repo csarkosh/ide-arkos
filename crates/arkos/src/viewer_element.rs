@@ -3,9 +3,9 @@
 //! A file with changes against HEAD gets a mark column at the gutter's left; with the inline
 //! diff on, the deleted lines are rows of their own.
 //!
-//! A markdown document is painted as raw text: its tabs drawn four columns wide, coloured from
-//! `md_blocks::raw_marks`, with the caret, the selection and an input method's marked text, scrolled
-//! sideways to follow the caret (it does not wrap). The painting helpers are free functions so the
+//! A document is painted as raw text: its tabs drawn four columns wide, a markdown one coloured
+//! from `md_blocks::raw_marks` and a code one from its syntax spans, with the caret, the selection
+//! and an input method's marked text, scrolled sideways to follow the caret (it does not wrap). The painting helpers are free functions so the
 //! rendered view's raw block paints the same way; that block wraps its lines, so the helpers that
 //! measure a line also come in a version for a wrapped line.
 use crate::diff::{display_rows, DisplayRow, Mark};
@@ -177,6 +177,10 @@ pub struct RawLayout {
     pub font_size: f32,
     pub family: SharedString,
     pub colors: RawColors,
+    /// A code document: its lines are coloured from their syntax spans (`code_runs`), never from
+    /// markdown's marks, and shaped regular, so a mapping shaped without the spans lands where the
+    /// paint did.
+    pub code: bool,
 }
 
 /// One run of text in the terminal family, its colour at `alpha`.
@@ -228,15 +232,57 @@ pub fn raw_runs(line: &str, family: &SharedString, colors: &RawColors, limit: us
         .collect()
 }
 
-/// A raw markdown line shaped as it is painted: the expanded text that was shaped (cut like any
-/// painted line) and the shaped line. An empty line shapes nothing.
+/// The runs of a code line with its tabs expanded, up to `limit` expanded bytes: each byte in the
+/// colour of the span (byte ranges of the line as it is, tabs one byte) that holds it, the text
+/// colour where none does, never bold or italic (`shape_raw` maps positions with regular runs).
+pub fn code_runs(line: &str, spans: &[Span], family: &SharedString, colors: &RawColors, limit: usize) -> Vec<TextRun> {
+    let mut styled: Vec<(usize, Rgb)> = Vec::new();
+    let mut at = 0;
+    let mut next = 0;
+    for (b, c) in line.char_indices() {
+        if at >= limit {
+            break;
+        }
+        let w = if c == '\t' { TAB_COLS } else { c.len_utf8() }.min(limit - at);
+        while next < spans.len() && spans[next].end <= b {
+            next += 1;
+        }
+        let color = spans.get(next).filter(|s| s.start <= b).map_or(colors.text, |s| s.color);
+        match styled.last_mut() {
+            Some((len, col)) if *col == color => *len += w,
+            _ => styled.push((w, color)),
+        }
+        at += w;
+    }
+    styled.into_iter().map(|(len, color)| text_run(family, len, color, colors.alpha, false, false)).collect()
+}
+
+/// A raw line shaped for mapping positions: the expanded text that was shaped (cut like any
+/// painted line) and the shaped line, a markdown line in its marks' runs and a code line in one
+/// regular run. An empty line shapes nothing.
 pub fn shape_raw(window: &mut Window, line: &str, layout: &RawLayout) -> (String, ShapedLine) {
     let expanded = expand_tabs(line);
     let (shown, _) = paint_cut(&expanded);
     if shown.is_empty() {
         return (String::new(), ShapedLine::default());
     }
-    let runs = raw_runs(line, &layout.family, &layout.colors, shown.len());
+    let c = &layout.colors;
+    let runs = if layout.code { vec![text_run(&layout.family, shown.len(), c.text, c.alpha, false, false)] } else { raw_runs(line, &layout.family, c, shown.len()) };
+    let shaped = window.text_system().shape_line(shown.to_string().into(), px(layout.font_size), &runs, None);
+    (shown.to_string(), shaped)
+}
+
+/// A document line shaped as it is painted: `shape_raw`, with a code line in its spans' colours.
+pub fn shape_doc(window: &mut Window, line: &str, spans: &[Span], layout: &RawLayout) -> (String, ShapedLine) {
+    if !layout.code {
+        return shape_raw(window, line, layout);
+    }
+    let expanded = expand_tabs(line);
+    let (shown, _) = paint_cut(&expanded);
+    if shown.is_empty() {
+        return (String::new(), ShapedLine::default());
+    }
+    let runs = code_runs(line, spans, &layout.family, &layout.colors, shown.len());
     let shaped = window.text_system().shape_line(shown.to_string().into(), px(layout.font_size), &runs, None);
     (shown.to_string(), shaped)
 }
@@ -511,14 +557,14 @@ impl Element for ViewerElement {
     }
 
     fn prepaint(&mut self, _id: Option<&GlobalElementId>, _inspector: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _state: &mut (), window: &mut Window, cx: &mut App) -> Prepaint {
-        let (font_size, line_height, line_count, has_diff, caret_line) = {
+        let (font_size, line_height, line_count, has_diff, caret_line, code) = {
             let v = self.viewer.read(cx);
             // The caret's line and char, for following the caret sideways.
             let caret_line = v.doc.as_ref().map(|d| {
                 let head = d.clamp(v.caret.head);
                 (d.lines()[head.line].clone(), head.ch)
             });
-            (v.font_size, v.line_height, v.line_count(), v.diff.is_some(), caret_line)
+            (v.font_size, v.line_height, v.line_count(), v.diff.is_some(), caret_line, !crate::viewer::is_markdown(&v.path))
         };
         let run = TextRun { len: 1, font: font(self.family.clone()), color: gpui::white(), background_color: None, underline: None, strikethrough: None };
         let cell_w = f32::from(window.text_system().layout_line("W", px(font_size), &[run], None).width);
@@ -532,7 +578,7 @@ impl Element for ViewerElement {
             return Prepaint { cell_w, line_h, hitbox: None };
         };
         let gutter = if has_diff { gutter_width_with_marks(line_count, cell_w) } else { gutter_width(line_count, cell_w) };
-        let layout = RawLayout { bounds, text_left: bounds.origin.x + px(gutter + LEFT_PAD), line_h, font_size, family: self.family.clone(), colors: self.raw };
+        let layout = RawLayout { bounds, text_left: bounds.origin.x + px(gutter + LEFT_PAD), line_h, font_size, family: self.family.clone(), colors: self.raw, code };
         let (expanded, shaped) = shape_raw(window, &line, &layout);
         let caret_x = f32::from(x_for_col(&shaped, &expanded, display_col(&line, ch)));
         // Two cells of room past the caret, so it never sits on the edge.
@@ -657,7 +703,7 @@ impl Element for ViewerElement {
                 let shaped = window.text_system().shape_line(num, font_size, &[num_run], None);
                 let _ = shaped.paint(point(origin.x + px(gutter - GUTTER_PAD - num_w), y), px(line_h), window, cx);
                 if let Some(doc) = &frame.doc {
-                    self.paint_doc_line(doc, n, line, x, y, line_h, cell_w, gutter, &frame.hits, frame.current, window, cx);
+                    self.paint_doc_line(doc, n, line, spans, x, y, line_h, cell_w, gutter, &frame.hits, frame.current, window, cx);
                     continue;
                 }
                 if line.is_empty() {
@@ -697,11 +743,11 @@ impl ViewerElement {
     /// One line of a document: the selection, the find hits, the coloured raw text, the marked
     /// text's underline and the caret, scrolled sideways by `scroll_x` and clipped to the text
     /// area right of the gutter.
-    fn paint_doc_line(&self, doc: &DocFrame, n: usize, line: &str, x: Pixels, y: Pixels, line_h: f32, cell_w: f32, gutter: f32, hits: &[Hit], current: Option<Hit>, window: &mut Window, cx: &mut App) {
+    fn paint_doc_line(&self, doc: &DocFrame, n: usize, line: &str, spans: &[Span], x: Pixels, y: Pixels, line_h: f32, cell_w: f32, gutter: f32, hits: &[Hit], current: Option<Hit>, window: &mut Window, cx: &mut App) {
         let bounds = doc.layout.bounds;
         let text_area = Bounds::from_corners(point(bounds.origin.x + px(gutter), bounds.origin.y), bounds.bottom_right());
         let (tx, lh) = (x - px(doc.scroll_x), px(line_h));
-        let (expanded, shaped) = shape_raw(window, line, &doc.layout);
+        let (expanded, shaped) = shape_doc(window, line, spans, &doc.layout);
         let at = |col: usize| tx + x_for_col(&shaped, &expanded, col);
         window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
             let c = doc.caret;
@@ -827,6 +873,26 @@ mod tests {
         assert_eq!(ch_for_col("a\tb", 40), 3, "past the end: the line end");
         assert_eq!(expanded_byte("\tx\u{e9}y", 1), 4);
         assert_eq!(expanded_byte("\tx\u{e9}y", 4), 7, "a two-byte char keeps its bytes");
+    }
+
+    #[test]
+    fn code_runs_colour_each_expanded_byte_from_the_span_that_holds_it() {
+        let (text, dim, code, link) = (Rgb { r: 1, g: 1, b: 1 }, Rgb { r: 2, g: 2, b: 2 }, Rgb { r: 3, g: 3, b: 3 }, Rgb { r: 4, g: 4, b: 4 });
+        let colors = RawColors::opaque(text, dim, code, link);
+        let family: SharedString = "Menlo".into();
+        let span = |start, end, color| Span { start, end, color, bold: true, italic: true };
+        // A tab, then `let` in one colour and ` x` in another; the tab's byte is uncoloured.
+        let runs = code_runs("\tlet x", &[span(1, 4, dim), span(4, 6, code)], &family, &colors, usize::MAX);
+        let shape: Vec<(usize, Hsla)> = runs.iter().map(|r| (r.len, r.color)).collect();
+        assert_eq!(shape, vec![(4, hsla(text)), (3, hsla(dim)), (2, hsla(code))], "the tab is four columns in the text colour");
+        assert!(runs.iter().all(|r| r.font.weight == FontWeight::NORMAL && r.font.style == gpui::FontStyle::Normal), "never bold or italic");
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), expand_tabs("\tlet x").len());
+        // Adjacent spans of one colour merge; a limit cuts the runs.
+        let runs = code_runs("abcd", &[span(0, 2, dim), span(2, 4, dim)], &family, &colors, 3);
+        assert_eq!(runs.iter().map(|r| (r.len, r.color)).collect::<Vec<_>>(), vec![(3, hsla(dim))]);
+        // No spans: one run in the text colour; a two-byte char is two bytes of one run.
+        let runs = code_runs("é!", &[], &family, &colors, usize::MAX);
+        assert_eq!(runs.iter().map(|r| (r.len, r.color)).collect::<Vec<_>>(), vec![(3, hsla(text))]);
     }
 
     #[test]

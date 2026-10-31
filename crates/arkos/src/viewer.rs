@@ -4,15 +4,17 @@
 //! reloaded when the poll sees the file change. A file in a repository carries its diff
 //! against HEAD (`diff`), recomputed on every load and on the ten-second timer.
 //!
-//! A markdown file that is clean UTF-8 with one kind of line ending, and that the user may write,
+//! A text file that is clean UTF-8 with one kind of line ending, and that the user may write,
 //! is also an editable `edit::Document`: edits mark the tab dirty and autosave a second later through `save_text`,
-//! and a change on disk either reloads the file or, over unsaved edits, raises a conflict.
+//! and a change on disk either reloads the file or, over unsaved edits, raises a conflict. A
+//! markdown document renders (`md_view`) or shows raw; any other document shows raw with its syntax
+//! colours kept by an incremental highlight (`CodeHighlight`) as it is edited.
 
 use crate::config_watch::fingerprint;
 use crate::diff::{self, DiffMarks};
 use crate::edit;
 use crate::find::{FindLook, BAR_TOP};
-use crate::highlight::{self, Highlighter};
+use crate::highlight::{self, CodeHighlight, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
 use crate::md_fold;
@@ -353,10 +355,10 @@ impl SaveFlight {
     }
 }
 
-/// The document a markdown file becomes, or why it stays read-only: strict UTF-8 with one kind
+/// The document a text file becomes, or why it stays read-only: strict UTF-8 with one kind
 /// of line ending. A carriage return without a line feed after it (an old Mac file, a stray one at
 /// the end) counts as mixed: the document could not write it back.
-fn markdown_document(bytes: &[u8]) -> Result<edit::Document, ReadOnlyWhy> {
+fn text_document(bytes: &[u8]) -> Result<edit::Document, ReadOnlyWhy> {
     let text = std::str::from_utf8(bytes).map_err(|_| ReadOnlyWhy::NotUtf8)?;
     let crlf = text.matches("\r\n").count();
     let lone_cr = text.matches('\r').count() != crlf;
@@ -364,6 +366,15 @@ fn markdown_document(bytes: &[u8]) -> Result<edit::Document, ReadOnlyWhy> {
         return Err(ReadOnlyWhy::MixedEndings);
     }
     Ok(edit::Document::from_text(text))
+}
+
+/// How `new` differs from `old` as one splice: the lines before it, the lines it took out and
+/// the lines it put in. The common prefix is taken first, then the common suffix of what is left,
+/// so an edit inside one line is `(line, 1, 1)`.
+pub fn line_splice(old: &[String], new: &[String]) -> (usize, usize, usize) {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..].iter().rev().zip(new[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+    (prefix, old.len() - prefix - suffix, new.len() - prefix - suffix)
 }
 
 /// Whether two documents write the same bytes: the same lines, line ending, byte order mark and
@@ -529,18 +540,22 @@ pub struct Loaded {
     /// The changes against HEAD; `None` outside a repository, for a file HEAD lacks, a clean
     /// file, or one shown plain for its size.
     pub diff: Option<DiffMarks>,
-    /// The editable document, built on the background thread for a markdown file that is strict
+    /// The editable document, built on the background thread for a text file that is strict
     /// UTF-8 with one kind of line ending and that the user may write (a byte order mark is set
     /// aside in `Document.bom`).
     pub doc: Option<edit::Document>,
-    /// Why a markdown file is shown read-only; `None` for every other file.
+    /// Why a text file that could have been a document is shown read-only; `None` for a document
+    /// and for a file that is no text.
     pub read_only: Option<ReadOnlyWhy>,
     /// The document's top-level blocks, split on the background thread with it; empty without a
-    /// document.
+    /// markdown document.
     pub blocks: Vec<md_blocks::Block>,
     /// Whether a grammar other than Plain Text coloured the text (`Highlighter::syntax_for`);
     /// `None` for text the grammars would colour while they are still loading.
     pub coloured: Option<bool>,
+    /// A code document's highlight, built with its spans; `None` for markdown, for a read-only
+    /// file and while the grammars load.
+    pub code: Option<CodeHighlight>,
 }
 
 pub struct Viewer {
@@ -572,8 +587,15 @@ pub struct Viewer {
     pub diff: Option<DiffMarks>,
     /// The deleted lines are shown between the current ones; the scroll is then in display rows.
     pub inline_diff: bool,
-    /// A markdown file's editable text; `content.lines` shares its lines.
+    /// The file's editable text; `content.lines` shares its lines.
     pub doc: Option<edit::Document>,
+    /// A code document's colours, spliced on every edit; `content.spans` are its spans.
+    pub code: Option<CodeHighlight>,
+    /// A highlight pass is scheduled to finish a `code.pending` tail.
+    highlight_scheduled: bool,
+    /// What the last load coloured with, so a reload after a conflict colours the same way.
+    pub highlighter: Option<Arc<Highlighter>>,
+    pub highlight_limit: usize,
     pub caret: edit::Caret,
     /// The document's top-level blocks, spliced on every edit.
     pub blocks: Vec<md_blocks::Block>,
@@ -807,6 +829,10 @@ impl Viewer {
             diff: None,
             inline_diff: false,
             doc: None,
+            code: None,
+            highlight_scheduled: false,
+            highlighter: None,
+            highlight_limit: usize::MAX,
             caret: edit::Caret::default(),
             blocks: Vec::new(),
             mode: ViewMode::default(),
@@ -1014,13 +1040,21 @@ impl Viewer {
         self.plain = loaded.plain;
         self.diff = loaded.diff;
         self.read_only = loaded.read_only;
+        // A load's colours are for its text, which the kept document has too.
+        self.code = loaded.code;
+        self.highlight_scheduled = false;
         // The rendered view keeps its place by line: the line the top row starts on.
         let old_top_line = self.blocks.get(self.list_state.logical_scroll_top().item_ix).map(|b| b.lines.start);
         match (self.doc.take(), loaded.doc) {
             // The same text again: the old document stays, and with it the undo history. The
-            // lines are compared one by one, never joined.
+            // lines are compared one by one, never joined. The load's spans (a theme's new
+            // colours) are taken.
             (Some(old), Some(new)) if same_text(&old, &new) => {
-                self.content = Content::Text { lines: old.shared_lines(), spans: Vec::new() };
+                let spans = match &mut self.content {
+                    Content::Text { spans, .. } => std::mem::take(spans),
+                    _ => Vec::new(),
+                };
+                self.content = Content::Text { lines: old.shared_lines(), spans };
                 self.doc = Some(old);
             }
             (_, new) => self.doc = new,
@@ -1144,12 +1178,31 @@ impl Viewer {
             cx.notify();
             return;
         }
-        splice_rows(&mut self.blocks, &mut self.block_cache, &self.list_state, &old_lines, &new_lines);
+        if is_markdown(&self.path) {
+            splice_rows(&mut self.blocks, &mut self.block_cache, &self.list_state, &old_lines, &new_lines);
+        }
         self.edited_at = Instant::now();
-        self.content = Content::Text { lines: new_lines, spans: Vec::new() };
+        // A code document's colours follow the edit: the changed lines and whatever the grammar's
+        // state after them changes, within the budget; the rest on the next pass.
+        let mut spans = match &mut self.content {
+            Content::Text { spans, .. } => std::mem::take(spans),
+            _ => Vec::new(),
+        };
+        match self.code.as_mut() {
+            Some(code) => {
+                let (prefix, removed, inserted) = line_splice(&old_lines, &new_lines);
+                code.update(&new_lines, &mut spans, prefix, removed, inserted, highlight::REHIGHLIGHT_BUDGET);
+                if code.pending.is_some() {
+                    self.schedule_highlight(cx);
+                }
+            }
+            None => spans.clear(),
+        }
+        self.content = Content::Text { lines: new_lines, spans };
         self.refresh_structure();
-        // The marks point at lines that may have moved; the next save computes them again.
-        self.diff = None;
+        // The marks point at lines that may have moved; the next save computes them again. The
+        // column stays, so the text does not shift sideways between the edit and the save.
+        self.diff = self.diff.take().map(|_| DiffMarks::clean(self.line_count()));
         self.scroll.clamp_max(self.max_scroll());
         if let Some(f) = &mut self.find {
             // The old hits point into the old lines.
@@ -1162,6 +1215,35 @@ impl Viewer {
         self.schedule_autosave(cx);
         cx.emit(ViewerEvent::Edited);
         cx.notify();
+    }
+
+    /// Finishes a highlight pass the budget cut short, on the foreground executor once the frame
+    /// is out, a budget at a time until nothing is pending.
+    fn schedule_highlight(&mut self, cx: &mut Context<Self>) {
+        if self.highlight_scheduled {
+            return;
+        }
+        self.highlight_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1)).await;
+            let _ = this.update(cx, |v, cx| {
+                v.highlight_scheduled = false;
+                v.finish_highlight(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_highlight(&mut self, cx: &mut Context<Self>) {
+        let (Some(code), Content::Text { lines, spans }) = (self.code.as_mut(), &mut self.content) else { return };
+        if !code.finish(lines, spans, highlight::REHIGHLIGHT_BUDGET) {
+            return;
+        }
+        let more = code.pending.is_some();
+        cx.notify();
+        if more {
+            self.schedule_highlight(cx);
+        }
     }
 
     /// Saves `AUTOSAVE_DELAY` after this edit unless a newer edit, a reload or a conflict came
@@ -1283,6 +1365,16 @@ impl Viewer {
         .detach();
     }
 
+    /// Its file is being deleted: unsaved edits are let go so no autosave or close writes the
+    /// file back, and a pending autosave finds itself overtaken (`save_seq`). A save already in
+    /// flight is still waited for by the close.
+    pub fn abandon_edits(&mut self) {
+        self.dirty = false;
+        self.save_again = false;
+        self.conflict = false;
+        self.save_seq += 1;
+    }
+
     /// Writes unsaved edits now, on the calling thread, for a tab that closes or a window that
     /// quits. A save in flight is waited for, up to `SAVE_WAIT`; one still running then is written
     /// over without the fingerprint check (its own write may be what changed the file). `Err`
@@ -1372,8 +1464,9 @@ impl Viewer {
     fn reload_document(&mut self, cx: &mut Context<Self>) {
         self.loads += 1;
         let (seq, path) = (self.loads, self.path.clone());
+        let (highlighter, limit) = (self.highlighter.clone(), self.highlight_limit);
         cx.spawn(async move |this, cx| {
-            let loaded = cx.background_executor().spawn(async move { read_file(&path, None, None, usize::MAX, true) }).await;
+            let loaded = cx.background_executor().spawn(async move { read_file(&path, None, highlighter.as_deref(), limit, true) }).await;
             let Some(loaded) = loaded else { return };
             let _ = this.update(cx, |v, cx| {
                 if !should_apply(seq, v.applied) {
@@ -1830,10 +1923,14 @@ impl Viewer {
                 if let Some(image) = image.filter(|_| is_markdown(&self.path)) {
                     self.paste_image(&image, cx);
                 } else if let Some(text) = item.and_then(|item| item.text()) {
-                    // An address or a path pasted over a selection on one line makes a link.
-                    let selected = self.doc.as_ref().map(|d| d.text_in(self.caret.anchor, self.caret.head)).unwrap_or_default();
-                    let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
-                    let text = md_format::paste_link(&selected, &text, &base, dirs_home().as_deref()).unwrap_or_else(|| normalize_paste(&text));
+                    // In markdown an address or a path pasted over a selection on one line makes
+                    // a link; code takes the text as it is.
+                    let linked = is_markdown(&self.path).then(|| {
+                        let selected = self.doc.as_ref().map(|d| d.text_in(self.caret.anchor, self.caret.head)).unwrap_or_default();
+                        let base = self.path.parent().map(Path::to_path_buf).unwrap_or_default();
+                        md_format::paste_link(&selected, &text, &base, dirs_home().as_deref())
+                    });
+                    let text = linked.flatten().unwrap_or_else(|| normalize_paste(&text));
                     self.edit(|doc, caret, now| doc.insert(caret, &text, now), cx);
                 }
             }
@@ -1855,11 +1952,12 @@ impl Viewer {
                 // and Shift+Tab (a table's cells).
                 let reads_blocks = matches!(action, KeyAction::Newline | KeyAction::BreakLine) || (self.rendered() && matches!(action, KeyAction::Tab | KeyAction::ShiftTab));
                 let blocks = if reads_blocks { self.blocks.clone() } else { Vec::new() };
+                let markdown = is_markdown(&self.path);
                 let mut outcome = Outcome::Nothing;
                 self.edit(
                     |doc, caret, now| {
                         let mut caret = caret;
-                        outcome = apply_action(doc, &mut caret, &blocks, action, rows, now);
+                        outcome = if markdown { apply_action(doc, &mut caret, &blocks, action, rows, now) } else { code_action(doc, &mut caret, action, rows, now) };
                         caret
                     },
                     cx,
@@ -1956,7 +2054,7 @@ impl Viewer {
 
     /// Whether the rendered view shows this viewer: a markdown document in Rendered mode.
     pub fn rendered(&self) -> bool {
-        self.mode == ViewMode::Rendered && self.doc.is_some()
+        self.mode == ViewMode::Rendered && self.doc.is_some() && is_markdown(&self.path)
     }
 
     /// The block holding the caret, which the rendered view shows raw.
@@ -1983,7 +2081,7 @@ impl Viewer {
     /// caret keeps its place). A selection over more than one line, or a caret not yet placed in
     /// the rendered view, does nothing.
     pub fn format(&mut self, fmt: md_format::Format, cx: &mut Context<Self>) {
-        if self.doc.is_none() || (self.rendered() && !self.caret_placed) {
+        if self.doc.is_none() || !is_markdown(&self.path) || (self.rendered() && !self.caret_placed) {
             return;
         }
         self.finish_composition(cx);
@@ -2899,6 +2997,13 @@ impl Viewer {
     /// line's end.
     fn field(&self) -> Option<(edit::Pos, edit::Pos)> {
         let doc = self.doc.as_ref()?;
+        // A code document has no blocks: the field is the selection's lines, whole (the caret's
+        // line alone with nothing selected), so an offset into it never counts the file.
+        if !is_markdown(&self.path) {
+            let (a, b) = (doc.clamp(self.caret.anchor), doc.clamp(self.caret.head));
+            let (lo, hi) = (a.min(b), a.max(b));
+            return Some((edit::Pos { line: lo.line, ch: 0 }, doc.clamp(edit::Pos { line: hi.line, ch: usize::MAX })));
+        }
         let b = self.blocks.get(md_blocks::block_at(&self.blocks, self.caret.head.line))?;
         let from = doc.clamp(edit::Pos { line: b.lines.start, ch: 0 });
         let to = doc.clamp(edit::Pos { line: b.lines.end.saturating_sub(1).max(b.lines.start), ch: usize::MAX });
@@ -3390,13 +3495,14 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         Content::Text { lines: Arc::new(lines), spans }
     };
     let mut doc = None;
+    let mut code = None;
     let mut read_only = None;
     let mut coloured = Some(false);
     let (content, why_plain) = match read_capped(path) {
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
         Ok(Capped::Binary) => (Content::Binary, None),
-        Ok(Capped::Bytes(bytes)) if is_markdown(path) => match markdown_document(&bytes).and_then(|d| if writable(path) { Ok(d) } else { Err(ReadOnlyWhy::NotWritable) }) {
+        Ok(Capped::Bytes(bytes)) if is_markdown(path) => match text_document(&bytes).and_then(|d| if writable(path) { Ok(d) } else { Err(ReadOnlyWhy::NotWritable) }) {
             Ok(d) => {
                 let lines = d.shared_lines();
                 doc = Some(d);
@@ -3412,18 +3518,40 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
             Classified::TooBig => (plain(split_lines(&String::from_utf8_lossy(&bytes))), Some(Plain::TooBig)),
             Classified::Text(text) => {
                 let lines = split_lines(&text);
-                match highlighter {
-                    _ if lines.iter().any(|l| l.len() > MAX_LINE_BYTES) => (plain(lines), Some(Plain::LongLine)),
-                    Some(h) => {
-                        let syntax = h.syntax_for(path, &lines);
-                        coloured = Some(syntax.is_some_and(|s| s.name != "Plain Text"));
-                        let spans = h.highlight_with(syntax, &lines);
-                        (Content::Text { lines: Arc::new(lines), spans }, None)
-                    }
-                    // The grammars are still loading: plain for now, coloured when they land.
-                    None => {
-                        coloured = None;
-                        (plain(lines), None)
+                if lines.iter().any(|l| l.len() > MAX_LINE_BYTES) {
+                    (plain(lines), Some(Plain::LongLine))
+                } else {
+                    // A document when a save could write it back as it was; shown read-only
+                    // otherwise, with the same colours as before.
+                    let document = text_document(&bytes).and_then(|d| if writable(path) { Ok(d) } else { Err(ReadOnlyWhy::NotWritable) });
+                    let lines = match &document {
+                        Ok(d) => d.shared_lines(),
+                        Err(_) => Arc::new(lines),
+                    };
+                    match highlighter {
+                        Some(h) => {
+                            let syntax = h.syntax_for(path, &lines);
+                            let (c, spans) = CodeHighlight::new(h, syntax, &lines);
+                            coloured = Some(c.coloured());
+                            match document {
+                                Ok(d) => {
+                                    doc = Some(d);
+                                    code = Some(c);
+                                }
+                                Err(why) => read_only = Some(why),
+                            }
+                            (Content::Text { lines, spans }, None)
+                        }
+                        // The grammars are still loading: plain for now, coloured when they land.
+                        None => {
+                            coloured = None;
+                            match document {
+                                Ok(d) => doc = Some(d),
+                                Err(why) => read_only = Some(why),
+                            }
+                            let spans = vec![Vec::new(); lines.len()];
+                            (Content::Text { lines, spans }, None)
+                        }
                     }
                 }
             }
@@ -3436,15 +3564,16 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
         _ => None,
     };
-    let blocks = doc.as_ref().map_or_else(Vec::new, |d| md_blocks::split(d.lines()));
-    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured })
+    let blocks = doc.as_ref().filter(|_| is_markdown(path)).map_or_else(Vec::new, |d| md_blocks::split(d.lines()));
+    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured, code })
 }
 
-/// The file's changes against its worktree's HEAD, or `None` when it has no base or no changes.
-/// Spawns git: background executor only.
+/// The file's changes against its worktree's HEAD (clean marks when there are none, so the mark
+/// column is there from the first load), or `None` when it has no base. Spawns git: background
+/// executor only.
 pub fn diff_of(path: &Path, lines: &[String]) -> Option<DiffMarks> {
     let base = diff::base_for(path)?;
-    Some(diff::compute(&base, lines)).filter(DiffMarks::has_changes)
+    Some(diff::compute(&base, lines))
 }
 
 enum Capped {
@@ -4451,6 +4580,54 @@ pub fn apply_action(doc: &mut edit::Document, caret: &mut edit::Caret, blocks_be
     }
 }
 
+/// The editor's keys in a code document, where markdown's rules do not apply: Enter (and
+/// Shift+Enter) breaks the line and keeps its indent, Tab types the file's indent unit, Shift+Tab
+/// does nothing, and everything else is `apply_action` with no structure to read.
+pub fn code_action(doc: &mut edit::Document, caret: &mut edit::Caret, action: KeyAction, rows: usize, now: Instant) -> Outcome {
+    match action {
+        KeyAction::Newline | KeyAction::BreakLine => {
+            *caret = code_newline(doc, *caret, now);
+            Outcome::Edited
+        }
+        KeyAction::Tab => {
+            let unit = indent_unit(doc.lines());
+            *caret = doc.insert(*caret, &unit, now);
+            Outcome::Edited
+        }
+        KeyAction::ShiftTab => Outcome::Nothing,
+        other => apply_action(doc, caret, &[], other, rows, now),
+    }
+}
+
+/// A line break that keeps the indent: the new line starts with the spaces and tabs the line
+/// held before the selection's start, so Enter in the middle of an indented line's indent keeps
+/// only what is left of the caret.
+pub fn code_newline(doc: &mut edit::Document, caret: edit::Caret, now: Instant) -> edit::Caret {
+    let from = doc.clamp(caret.head.min(caret.anchor));
+    let indent: String = doc.lines()[from.line].chars().take(from.ch).take_while(|c| *c == ' ' || *c == '\t').collect();
+    doc.insert(caret, &format!("\n{indent}"), now)
+}
+
+/// The lines looked at for the indent unit: enough for any file's style, cheap on a large one.
+const INDENT_SAMPLE: usize = 2000;
+
+/// What Tab types in a code document: a tab when the file indents with tabs, else the most common
+/// indent width among its indented lines, from two to eight spaces, or four when it has none.
+pub fn indent_unit(lines: &[String]) -> String {
+    let mut widths = [0usize; 9];
+    for line in lines.iter().take(INDENT_SAMPLE) {
+        if line.starts_with('\t') {
+            return "\t".into();
+        }
+        let n = line.bytes().take_while(|b| *b == b' ').count();
+        if (2..=8).contains(&n) && n < line.len() {
+            widths[n] += 1;
+        }
+    }
+    let (best, count) = (2..=8).map(|n| (n, widths[n])).max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))).unwrap_or((4, 0));
+    " ".repeat(if count == 0 { 4 } else { best })
+}
+
 impl Root {
     /// Loads the grammars off the UI thread, once, at launch. The result takes the theme's
     /// colours at the moment it lands, so a theme change during the load is not lost.
@@ -4595,12 +4772,12 @@ impl Root {
     }
 
     /// Reloads the viewers whose colours depend on the highlighter: plain text, binaries, files
-    /// too large to show and markdown documents (a theme change repaints them) have nothing to
-    /// recolour.
+    /// too large to show and markdown (a theme change repaints it) have nothing to recolour. A code
+    /// document keeps its text and undo history through the reload (`apply`).
     pub(crate) fn reload_all_viewers(&mut self, cx: &mut Context<Self>) {
         let tabs: Vec<TabId> = self.viewers.iter().filter(|(_, v)| {
             let v = v.read(cx);
-            v.plain.is_none() && v.doc.is_none() && matches!(v.content, viewer::Content::Text { .. })
+            v.plain.is_none() && !viewer::is_markdown(&v.path) && matches!(v.content, viewer::Content::Text { .. })
         }).map(|(t, _)| *t).collect();
         for tab in tabs {
             self.load_viewer(tab, cx);
@@ -4652,41 +4829,102 @@ impl Root {
     /// is left alone (the poll's first look at a viewer's file can report a change it already shows).
     fn load(&mut self, tab: TabId, if_changed: bool, cx: &mut Context<Self>) {
         let Some(viewer) = self.viewers.get(&tab).cloned() else { return };
+        // A code document asked to load again with its file unchanged (the grammars landed, the
+        // theme changed) keeps its text, caret and history and takes new colours alone.
+        if !if_changed && { let v = viewer.read(cx); v.doc.is_some() && !viewer::is_markdown(&v.path) } {
+            self.recolour_viewer(tab, cx);
+            return;
+        }
+        let highlighter = self.highlighter.clone();
+        let limit = self.config.viewer.highlight_limit_bytes;
         let (path, known, seq) = viewer.update(cx, |v, _| {
             v.loads += 1;
+            v.highlighter = highlighter.clone();
+            v.highlight_limit = limit;
             let known = if if_changed && v.loaded { v.fingerprint } else { None };
             (v.path.clone(), known, v.loads)
         });
-        let highlighter = self.highlighter.clone();
-        let limit = self.config.viewer.highlight_limit_bytes;
         let weak = viewer.downgrade();
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit, true) }).await;
             let Some(loaded) = loaded else { return };
-            let _ = weak.update(cx, |v, cx| {
+            let Ok(recolour) = weak.update(cx, |v, cx| {
                 if !should_apply(seq, v.applied) {
-                    return;
+                    return false;
                 }
                 // A document decides here, with the state it has now, never before the read.
                 if v.doc.is_some() {
+                    // A code document that appeared while this forced load was out (the grammars
+                    // landing during the first load) takes colours, not text.
+                    if !if_changed && !viewer::is_markdown(&v.path) {
+                        return true;
+                    }
                     match disk_change(loaded.fingerprint, v.fingerprint, v.dirty, v.saving) {
                         DiskChange::Ignore => {
                             if v.saving && loaded.fingerprint != v.fingerprint {
                                 v.recheck_after_save = true;
                             }
-                            return;
+                            return false;
                         }
                         DiskChange::Conflict => {
                             v.conflict = true;
                             cx.notify();
-                            return;
+                            return false;
                         }
                         DiskChange::Reload => {}
                     }
                 }
                 v.applied = seq;
                 v.apply(loaded, cx);
-            });
+                false
+            }) else { return };
+            if recolour {
+                let _ = this.update(cx, |root, cx| root.recolour_viewer(tab, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Colours a code document's lines as they are, off the UI thread, with the highlighter as it
+    /// is now; the result lands only if the lines are still the ones coloured, else it is done
+    /// again on the new lines.
+    fn recolour_viewer(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let (Some(viewer), Some(h)) = (self.viewers.get(&tab).cloned(), self.highlighter.clone()) else { return };
+        let (lines, path, applied) = {
+            let v = viewer.read(cx);
+            match &v.content {
+                Content::Text { lines, .. } => (lines.clone(), v.path.clone(), v.applied),
+                _ => return,
+            }
+        };
+        let limit = self.config.viewer.highlight_limit_bytes;
+        let weak = viewer.downgrade();
+        cx.spawn(async move |this, cx| {
+            let shown = lines.clone();
+            let built = {
+                let h = h.clone();
+                cx.background_executor().spawn(async move { CodeHighlight::new(&h, h.syntax_for(&path, &lines), &lines) }).await
+            };
+            let Ok(landed) = weak.update(cx, |v, cx| {
+                let same = matches!(&v.content, Content::Text { lines, .. } if Arc::ptr_eq(lines, &shown));
+                if v.applied != applied || !same {
+                    return false;
+                }
+                let (code, spans) = built;
+                crate::telemetry::viewed(&mut v.viewed, &v.content, v.plain.is_some(), Some(code.coloured()), &v.path, v.mode);
+                v.highlighter = Some(h);
+                v.highlight_limit = limit;
+                v.code = Some(code);
+                v.highlight_scheduled = false;
+                if let Content::Text { spans: s, .. } = &mut v.content {
+                    *s = spans;
+                }
+                cx.notify();
+                true
+            }) else { return };
+            if !landed {
+                let _ = this.update(cx, |root, cx| root.recolour_viewer(tab, cx));
+            }
         })
         .detach();
     }
@@ -4859,6 +5097,48 @@ mod tests {
         assert_ne!(shifted, sections, "the blocks moved");
         assert!(!section_shown_open(&states, "Setup", section_index(&moved, shifted[0]), false), "the first stays closed");
         assert!(section_shown_open(&states, "Setup", section_index(&moved, shifted[1]), false), "the second stays open");
+    }
+
+    #[test]
+    fn in_code_enter_keeps_the_indent_and_tab_types_the_indent_unit() {
+        let now = Instant::now();
+        let mut d = edit::Document::from_text("fn a() {\n    if x {\n        y();\n    }\n}\n");
+        let mut c = edit::Caret::at(Pos { line: 2, ch: 12 });
+        assert_eq!(code_action(&mut d, &mut c, KeyAction::Newline, 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[3], "        ", "the new line has the indent");
+        assert_eq!((c.head.line, c.head.ch), (3, 8));
+        // Enter inside the indent keeps what is left of the caret; Shift+Enter is the same break.
+        let mut c = edit::Caret::at(Pos { line: 2, ch: 4 });
+        code_action(&mut d, &mut c, KeyAction::BreakLine, 20, now);
+        assert_eq!((d.lines()[2].as_str(), d.lines()[3].as_str()), ("    ", "        y();"));
+        assert_eq!((c.head.line, c.head.ch), (3, 4));
+        // Tab types the file's unit (four spaces here), and Shift+Tab nothing.
+        let mut c = edit::Caret::at(Pos { line: 0, ch: 0 });
+        assert_eq!(code_action(&mut d, &mut c, KeyAction::Tab, 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[0], "    fn a() {");
+        assert_eq!(code_action(&mut d, &mut c, KeyAction::ShiftTab, 20, now), Outcome::Nothing);
+        // A selection over two lines: the break takes the first line's indent before the start.
+        let mut d = edit::Document::from_text("- a\n  b\n");
+        let mut c = edit::Caret { head: Pos { line: 1, ch: 1 }, anchor: Pos { line: 0, ch: 1 }, goal_col: None };
+        code_action(&mut d, &mut c, KeyAction::Newline, 20, now);
+        assert_eq!(d.lines(), &["-".to_string(), " b".to_string(), String::new()][..], "no list continuation in code");
+        // Deletes and moves are the editor's as ever.
+        let mut c = edit::Caret::at(Pos { line: 1, ch: 2 });
+        assert_eq!(code_action(&mut d, &mut c, KeyAction::DeleteBack(edit::Unit::Grapheme), 20, now), Outcome::Edited);
+        assert_eq!(d.lines()[1], " ");
+    }
+
+    #[test]
+    fn the_indent_unit_is_a_tab_the_commonest_width_or_four_spaces() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(indent_unit(&v(&["fn a() {", "\tb();", "}"])), "\t");
+        assert_eq!(indent_unit(&v(&["a:", "  b: 1", "  c:", "    d: 2"])), "  ", "two is the commonest");
+        assert_eq!(indent_unit(&v(&["fn a() {", "    if x {", "        y();", "    }", "}"])), "    ");
+        assert_eq!(indent_unit(&v(&["/**", " * doc", " */", "fn a() {", "    b();", "}"])), "    ", "a one-space continuation is not an indent");
+        assert_eq!(indent_unit(&v(&["plain", "lines"])), "    ", "no indent: four");
+        assert_eq!(indent_unit(&v(&["a", "    ", "b"])), "    ", "a line of spaces alone is not an indent");
+        assert_eq!(indent_unit(&[]), "    ");
+        assert_eq!(indent_unit(&v(&["x", "  a", "  b", "    c", "    d"])), "  ", "a tie goes to the narrower");
     }
 
     #[test]
@@ -5335,7 +5615,7 @@ mod tests {
         let text = dir.path().join("a.txt");
         std::fs::write(&text, "one\n\ttwo\n").unwrap();
         let l = read_file(&text, None, None, 100, false).expect("loaded");
-        assert_eq!(l.content, Content::Text { lines: Arc::new(vec!["one".into(), "    two".into()]), spans: vec![Vec::new(), Vec::new()] });
+        assert_eq!(l.content, Content::Text { lines: Arc::new(vec!["one".into(), "\ttwo".into(), String::new()]), spans: vec![Vec::new(); 3] }, "a document: the tab kept, an empty last line");
         assert!(l.plain.is_none() && l.fingerprint.is_some());
         assert!(read_file(&text, l.fingerprint, None, 100, false).is_none(), "an unchanged file is not read again");
         let big = read_file(&text, None, None, 4, false).expect("loaded");
@@ -5381,7 +5661,7 @@ mod tests {
         std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);
-        assert_eq!(read_file(&path, None, None, 100, true).unwrap().diff, None, "a clean file has no diff");
+        assert!(read_file(&path, None, None, 100, true).unwrap().diff.is_some_and(|d| !d.has_changes()), "a clean file has clean marks, so its mark column is there from the start");
         std::fs::write(&path, "one\nTWO\n").unwrap();
         let l = read_file(&path, None, None, 100, true).unwrap();
         let d = l.diff.expect("a changed tracked file");
@@ -5833,7 +6113,95 @@ mod tests {
         assert_eq!(again.blocks, md_blocks::split(again.doc.as_ref().unwrap().lines()), "the blocks come with the load");
         assert!(!again.blocks.is_empty());
         let rs = dir.path().join("x.rs"); std::fs::write(&rs, "fn main() {}\n").unwrap();
-        assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().doc.is_none(), "not markdown: no document");
+        let l = read_file(&rs, None, None, 1 << 20, false).unwrap();
+        assert!(l.doc.is_some() && l.blocks.is_empty(), "not markdown: a document without blocks");
+    }
+
+    fn test_highlighter() -> Highlighter {
+        let t = crate::theme::builtin("navy").expect("a built-in theme");
+        Highlighter::new(&t.viewer, t.chrome.text)
+    }
+
+    #[test]
+    fn a_text_file_the_user_may_write_loads_as_a_code_document_with_its_colours() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = test_highlighter();
+        let rs = dir.path().join("a.rs");
+        std::fs::write(&rs, "fn main() {\n\tlet x = 1;\n}\n").unwrap();
+        let l = read_file(&rs, None, Some(&h), 1 << 20, false).unwrap();
+        let doc = l.doc.as_ref().expect("a document");
+        assert_eq!(doc.lines(), &["fn main() {".to_string(), "\tlet x = 1;".to_string(), "}".to_string(), String::new()][..], "the document keeps its tab and its phantom last line");
+        assert_eq!(l.read_only, None);
+        assert_eq!(l.coloured, Some(true));
+        let code = l.code.as_ref().expect("a highlight");
+        assert!(code.coloured() && code.pending.is_none());
+        match &l.content {
+            Content::Text { lines, spans } => {
+                assert!(Arc::ptr_eq(lines, &doc.shared_lines()), "the content shares the document's lines");
+                assert_eq!(spans.len(), 4);
+                assert_eq!(spans[0][0].end, 2, "fn is the first span");
+                assert_eq!(spans[1][0].end, 1, "the tab is a span of its own byte");
+                assert!(spans[3].is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+        // The grammars not loaded yet: a document still, uncoloured until they land.
+        let early = read_file(&rs, None, None, 1 << 20, false).unwrap();
+        assert!(early.doc.is_some() && early.code.is_none() && early.coloured.is_none());
+        assert!(matches!(&early.content, Content::Text { spans, .. } if spans.len() == 4 && spans.iter().all(Vec::is_empty)));
+        // No grammar: a document in the text colour.
+        let odd = dir.path().join("notes.unknownext");
+        std::fs::write(&odd, "some text\n").unwrap();
+        let l = read_file(&odd, None, Some(&h), 1 << 20, false).unwrap();
+        assert!(l.doc.is_some() && l.coloured == Some(false));
+        assert!(matches!(&l.content, Content::Text { spans, .. } if spans[0].len() == 1));
+        // Empty: one empty line.
+        let empty = dir.path().join("empty.toml");
+        std::fs::write(&empty, "").unwrap();
+        let l = read_file(&empty, None, Some(&h), 1 << 20, false).unwrap();
+        assert_eq!(l.doc.as_ref().unwrap().lines(), &[String::new()][..]);
+        assert!(matches!(&l.content, Content::Text { lines, spans } if lines.len() == 1 && spans.len() == 1));
+    }
+
+    #[test]
+    fn a_text_file_that_cannot_be_written_back_as_it_was_stays_read_only_with_its_colours() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let h = test_highlighter();
+        let bad = dir.path().join("bad.rs");
+        std::fs::write(&bad, b"fn a() {}\n\xff\n").unwrap();
+        let l = read_file(&bad, None, Some(&h), 1 << 20, false).unwrap();
+        assert!(l.doc.is_none() && l.code.is_none());
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotUtf8));
+        assert!(matches!(&l.content, Content::Text { spans, .. } if spans[0][0].end == 2), "still coloured");
+        let mixed = dir.path().join("mixed.rs");
+        std::fs::write(&mixed, "a\r\nb\nc").unwrap();
+        assert_eq!(read_file(&mixed, None, Some(&h), 1 << 20, false).unwrap().read_only, Some(ReadOnlyWhy::MixedEndings));
+        let ro = dir.path().join("ro.rs");
+        std::fs::write(&ro, "fn a() {}\n").unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let l = read_file(&ro, None, Some(&h), 1 << 20, false).unwrap();
+        assert!(l.doc.is_none());
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotWritable));
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Over the limit or with a long line: plain, no document, no banner about writing.
+        let big = read_file(&ro, None, Some(&h), 4, false).unwrap();
+        assert!(big.doc.is_none() && big.plain == Some(Plain::TooBig) && big.read_only.is_none());
+        let long = dir.path().join("long.rs");
+        std::fs::write(&long, format!("{}\n", "x".repeat(MAX_LINE_BYTES + 1))).unwrap();
+        let l = read_file(&long, None, Some(&h), 1 << 20, false).unwrap();
+        assert!(l.doc.is_none() && l.plain == Some(Plain::LongLine));
+    }
+
+    #[test]
+    fn a_line_splice_is_the_common_prefix_then_the_common_suffix() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(line_splice(&v(&["a", "b", "c"]), &v(&["a", "B", "c"])), (1, 1, 1), "an edit inside a line");
+        assert_eq!(line_splice(&v(&["a", "b", "c"]), &v(&["a", "b", "x", "c"])), (2, 0, 1), "a line inserted");
+        assert_eq!(line_splice(&v(&["a", "b", "c"]), &v(&["a", "c"])), (1, 1, 0), "a line deleted");
+        assert_eq!(line_splice(&v(&["a", "a", "a"]), &v(&["a", "a"])), (2, 1, 0), "repeated lines: the prefix wins");
+        assert_eq!(line_splice(&v(&["a"]), &v(&["a"])), (1, 0, 0), "no change");
+        assert_eq!(line_splice(&v(&[]), &v(&["a"])), (0, 0, 1));
     }
 
     #[test]

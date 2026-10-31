@@ -593,6 +593,16 @@ impl Tree {
         self.tabs().into_iter().filter(|(_, _, t)| tab_path(t) == Some(path)).map(|(pane, idx, _)| (pane, idx)).collect()
     }
 
+    /// The tabs on `dir` or on anything inside it (a file or folder being deleted), as ids, since
+    /// closing one moves the others' indices.
+    pub fn tabs_within(&self, dir: &Path) -> Vec<TabId> {
+        self.tabs()
+            .into_iter()
+            .filter(|(_, _, t)| tab_path(t).is_some_and(|p| p.starts_with(dir)))
+            .filter_map(|(pane, idx, _)| self.tab_id(pane, idx))
+            .collect()
+    }
+
     /// Where a tab is now: its pane and index. `None` once it has closed.
     pub fn locate(&self, tab: TabId) -> Option<(PaneId, usize)> {
         let mut panes = Vec::new();
@@ -837,6 +847,19 @@ mod tests {
         assert_eq!(t.find_path(root, Path::new("/p/cut.mp4")), Some(0));
         assert_eq!(t.find_path(root, Path::new("/p/none.mp4")), None);
         assert_eq!(t.tabs_on(Path::new("/p/cut.mp4")), vec![(root, 0), (root, 1), (right, 0)]);
+    }
+
+    #[test]
+    fn tabs_within_finds_the_tabs_on_a_path_or_inside_it_and_no_others() {
+        let mut t = Tree::new(Tab::Viewer { path: "/p/src/a.rs".into(), mode: ViewMode::default(), presenting: false });
+        let root = t.panes()[0];
+        t.add_tab(root, Tab::Terminal { session: SessionId(1), cwd: Some("/p/src".into()) });
+        t.add_tab(root, Tab::Viewer { path: "/p/srcs/b.rs".into(), mode: ViewMode::default(), presenting: false });
+        let right = t.split(root, Side::Right, Tab::Video { path: "/p/src/deep/c.mp4".into(), at: None, loop_range: None }).unwrap();
+        let ids = |pairs: &[(PaneId, usize)]| pairs.iter().map(|&(p, i)| t.tab_id(p, i).unwrap()).collect::<Vec<_>>();
+        assert_eq!(t.tabs_within(Path::new("/p/src")), ids(&[(root, 0), (right, 0)]), "a terminal there is kept, and srcs is another folder");
+        assert_eq!(t.tabs_within(Path::new("/p/src/a.rs")), ids(&[(root, 0)]), "a file alone");
+        assert!(t.tabs_within(Path::new("/q")).is_empty());
     }
 
     #[test]

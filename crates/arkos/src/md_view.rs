@@ -3162,7 +3162,7 @@ impl RawBlockElement {
 
     /// The text layout before it has bounds: the font, the size, the colours.
     fn raw_layout(&self, bounds: Bounds<Pixels>) -> RawLayout {
-        RawLayout { bounds, text_left: bounds.origin.x, line_h: self.line_h, font_size: self.font_size, family: self.family.clone(), colors: self.colors }
+        RawLayout { bounds, text_left: bounds.origin.x, line_h: self.line_h, font_size: self.font_size, family: self.family.clone(), colors: self.colors, code: false }
     }
 }
 

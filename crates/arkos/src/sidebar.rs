@@ -197,10 +197,26 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         .key_context("Explorer")
         .track_focus(&root.sidebar.focus)
         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tree_key(&ev.keystroke, cx)))
+        // A right press on the section's empty space (the rows stop theirs) is the project
+        // folder's menu: New File at the top of the tree.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|root, ev: &MouseDownEvent, _window, cx| {
+                cx.stop_propagation();
+                let now = Instant::now();
+                root.wt_menu.hide(now);
+                root.link_menu.hide(now);
+                root.md_menu.hide(now);
+                root.context_menu.show(ContextMenu { path: root.project.clone(), is_dir: true, at: ev.position }, now);
+                cx.notify();
+            }),
+        )
         .child(header("explorer-header", "Explorer", explorer_open).on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
             root.sidebar.explorer_open = !root.sidebar.explorer_open;
             if !root.sidebar.explorer_open {
+                // A closed section cannot hold the keys or the prompt.
                 root.sidebar_focused = false;
+                root.new_file.hide(Instant::now());
             }
             root.save(cx);
             cx.notify();
@@ -319,6 +335,10 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
+    /// The New File prompt in this folder (`Root::open_new_file_prompt`; the tree's menu runs it).
+    NewFile(PathBuf),
+    /// Moves the file or folder to the Trash (`Root::trash_path`; the tree's menu runs it).
+    Trash(PathBuf),
     Reveal(PathBuf),
     CopyText(String),
     OpenDefault(PathBuf),
@@ -326,30 +346,152 @@ pub enum MenuAction {
     OpenUrl(String),
 }
 
-/// The right-click menu for a tree entry (spec 6).
-pub fn context_menu_items(path: &Path, project: &Path) -> Vec<(&'static str, MenuAction)> {
+/// The right-click menu for a tree entry (spec 6), and for the project folder itself (a press on
+/// the tree's empty space). New File goes in a folder, or beside a file; Delete, last, moves the
+/// entry to the Trash, and the project folder has none.
+pub fn context_menu_items(path: &Path, is_dir: bool, project: &Path) -> Vec<(&'static str, MenuAction)> {
+    if path == project {
+        return vec![
+            ("New File", MenuAction::NewFile(project.to_path_buf())),
+            ("Reveal in Finder", MenuAction::Reveal(project.to_path_buf())),
+            ("Copy path", MenuAction::CopyText(project.to_string_lossy().into_owned())),
+        ];
+    }
+    let folder = if is_dir { path } else { path.parent().unwrap_or(project) };
     let relative = path.strip_prefix(project).unwrap_or(path).to_string_lossy().into_owned();
     vec![
+        ("New File", MenuAction::NewFile(folder.to_path_buf())),
         ("Reveal in Finder", MenuAction::Reveal(path.to_path_buf())),
         ("Copy path", MenuAction::CopyText(path.to_string_lossy().into_owned())),
         ("Copy relative path", MenuAction::CopyText(relative)),
         ("Open in default app", MenuAction::OpenDefault(path.to_path_buf())),
+        ("Delete", MenuAction::Trash(path.to_path_buf())),
     ]
 }
 
 pub struct ContextMenu {
     pub path: PathBuf,
+    pub is_dir: bool,
     /// Window position of the click.
     pub at: gpui::Point<gpui::Pixels>,
 }
 
 pub fn run_menu_action(action: &MenuAction, cx: &mut App) {
     match action {
+        // Need the root: the tree's menu runs them itself.
+        MenuAction::NewFile(_) | MenuAction::Trash(_) => {}
         MenuAction::Reveal(p) => cx.reveal_path(p),
         MenuAction::CopyText(s) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(s.clone())),
         MenuAction::OpenDefault(p) => cx.open_with_system(p),
         MenuAction::OpenUrl(u) => cx.open_url(u),
     }
+}
+
+/// The New File prompt (spec `2026-10-31-code-editor-and-new-file-design.md`, section 5): the
+/// folder the file goes in and the name as typed, shown as a row of the tree.
+pub struct NewFile {
+    pub dir: PathBuf,
+    pub name: LineEdit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewFileStep {
+    Stay,
+    Cancel,
+    /// Enter on a name that is no file name: said in a notice, the prompt stays.
+    Refused(&'static str),
+    /// Enter on a name: the file to make.
+    Create(PathBuf),
+}
+
+impl NewFile {
+    pub fn new(dir: PathBuf) -> Self {
+        NewFile { dir, name: LineEdit::new() }
+    }
+
+    pub fn key(&mut self, ks: &Keystroke) -> NewFileStep {
+        match self.name.handle(ks) {
+            Edit::Cancel => NewFileStep::Cancel,
+            Edit::Submit | Edit::SubmitBack => match new_file_target(&self.dir, &self.name.text) {
+                Ok(path) => NewFileStep::Create(path),
+                Err(why) => NewFileStep::Refused(why),
+            },
+            _ => NewFileStep::Stay,
+        }
+    }
+
+    /// Pasted text goes into the name, newlines and carriage returns dropped.
+    pub fn paste(&mut self, text: &str) {
+        self.name.insert_str(text);
+    }
+}
+
+/// What a name typed into the prompt makes under `dir`: the name trimmed, `/` making folders on
+/// the way; refused when empty, absolute, with an empty, `.` or `..` part, or with a character
+/// macOS or a shell could not take in a name (a NUL, a colon).
+pub fn new_file_target(dir: &Path, name: &str) -> Result<PathBuf, &'static str> {
+    let name = name.trim();
+    if name.is_empty() || name.starts_with('/') || name.contains(['\0', ':']) {
+        return Err("a file name");
+    }
+    if name.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return Err("a file name");
+    }
+    Ok(dir.join(name))
+}
+
+/// Makes the file, and the folders on the way; refuses a path that exists.
+pub fn create_file(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::File::create_new(path).map(drop)
+}
+
+/// Moves a file or folder to the user's Trash, as Finder's Move to Trash does, so Put Back
+/// restores it. Blocks while the move runs (a rename on the same volume): background executor.
+pub fn move_to_trash(path: &Path) -> Result<(), String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, None).map_err(|e| e.localizedDescription().to_string())
+}
+
+/// What a failed create says: "already exists" for the common case, the error otherwise.
+pub fn create_error(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::AlreadyExists => "already exists".into(),
+        _ => e.to_string(),
+    }
+}
+
+/// One row of the tree as drawn: an entry, or the New File prompt at its folder's children's depth.
+enum Shown {
+    Entry(explorer::Row),
+    Prompt { depth: usize },
+}
+
+/// Where the prompt's row goes among the entries: under its folder's row (the folder is expanded
+/// when the prompt opens), or first for the project folder. A folder no longer shown puts it first.
+pub fn prompt_row(rows: &[explorer::Row], dir: &Path, project: &Path) -> (usize, usize) {
+    if dir == project {
+        return (0, 0);
+    }
+    rows.iter().position(|r| r.path == dir).map_or((0, 0), |i| (i + 1, rows[i].depth + 1))
+}
+
+/// The folders to expand and read again once `path` is made: from `dir` down to the file's own.
+pub fn folders_to_show(dir: &Path, path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut p = path.parent();
+    while let Some(d) = p {
+        out.push(d.to_path_buf());
+        if d == dir {
+            break;
+        }
+        p = d.parent();
+    }
+    out.reverse();
+    out
 }
 
 /// A row's element id: stable across renders for the same path, so hover and clicks stay put.
@@ -377,7 +519,20 @@ pub fn row_color(status: Option<Status>, ignored: bool, theme: &Theme) -> Rgb {
 /// built each frame. A click on a directory toggles it; on a file it previews (a double click
 /// pins); a right click opens the menu; a file drags out to a terminal.
 pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> UniformList {
-    let rows = Rc::new(root.explorer.rows());
+    let entries = root.explorer.rows();
+    // The New File prompt is a row of the tree while it is open or fading out.
+    let prompt = root.new_file.current(root.frame_now).map(|(p, opacity)| {
+        let (at, depth) = prompt_row(&entries, &p.dir, &root.project);
+        (at, depth, p.name.clone(), opacity, root.new_file.value().is_some())
+    });
+    let rows: Rc<Vec<Shown>> = Rc::new({
+        let mut shown: Vec<Shown> = entries.into_iter().map(Shown::Entry).collect();
+        if let Some((at, depth, ..)) = &prompt {
+            shown.insert((*at).min(shown.len()), Shown::Prompt { depth: *depth });
+        }
+        shown
+    });
+    let prompt_focus = root.new_file_focus.clone();
     let selected = root.explorer.selected.clone();
     let weak = cx.weak_entity();
     let family = root.ui_family();
@@ -389,7 +544,38 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
     uniform_list("explorer-rows", count, move |range, _window, _cx| {
         rows[range]
             .iter()
-            .map(|row| {
+            .map(|shown| {
+                let row = match shown {
+                    Shown::Entry(row) => row,
+                    Shown::Prompt { depth } => {
+                        let (_, _, edit, opacity, live) = prompt.as_ref().expect("a prompt row only with a prompt");
+                        let w_press = weak.clone();
+                        return div()
+                            .id("new-file-row")
+                            .w_full()
+                            .h(px(ROW_H))
+                            .pl(px(10.0 + *depth as f32 * INDENT))
+                            .pr(px(8.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .opacity(*opacity)
+                            .child(div().flex_none().w(px(12.0)))
+                            .child(div().min_w_0().flex_1().overflow_hidden().text_size(px(12.0)).child(line_edit::render(edit, "file name", &theme, family.clone(), 12.0)))
+                            // The keys reach `tree_key` through the Explorer's listener; a press
+                            // here keeps them in the tree (the root's press would close the prompt).
+                            .when(*live, |d| {
+                                d.track_focus(&prompt_focus).on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _window, cx| {
+                                    cx.stop_propagation();
+                                    let _ = w_press.update(cx, |root, cx| {
+                                        root.sidebar_focused = true;
+                                        root.wt_focused = false;
+                                        cx.notify();
+                                    });
+                                })
+                            });
+                    }
+                };
                 let path = row.path.clone();
                 let is_selected = selected.as_deref() == Some(path.as_path());
                 let chevron = if !row.is_dir {
@@ -465,7 +651,8 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                             let now = Instant::now();
                             root.wt_menu.hide(now);
                             root.link_menu.hide(now);
-                            root.context_menu.show(ContextMenu { path: p_menu.clone(), at: ev.position }, now);
+                            root.md_menu.hide(now);
+                            root.context_menu.show(ContextMenu { path: p_menu.clone(), is_dir, at: ev.position }, now);
                             cx.notify();
                         });
                     })
@@ -517,11 +704,15 @@ pub fn render_context_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Di
         m = m.child(crate::chrome::menu_report(0x12, opacity, cx));
     }
     let (effect_rows, hovered) = (style.menu_edges && style.highlights, root.effect_hover);
-    for (i, (label, action)) in context_menu_items(&menu.path, &root.project).into_iter().enumerate() {
+    for (i, (label, action)) in context_menu_items(&menu.path, menu.is_dir, &root.project).into_iter().enumerate() {
         m = m.child(div().id(("context-menu-row", i)).px(px(10.0)).py(px(4.0)).child(label).when(live, |row| {
             let key = blocks::menu_row_key(0x12, i);
             crate::chrome::menu_row_hover(row.cursor_pointer(), key, hovered == Some(key), effect_rows, hover, cx).on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                run_menu_action(&action, cx);
+                match &action {
+                    MenuAction::NewFile(dir) => root.open_new_file_prompt(dir.clone(), cx),
+                    MenuAction::Trash(path) => root.trash_path(path.clone(), cx),
+                    other => run_menu_action(other, cx),
+                }
                 root.context_menu.hide(Instant::now());
                 cx.notify();
             }))
@@ -1219,16 +1410,17 @@ impl Root {
         cx.notify();
     }
 
-    /// Escape while a right-click menu (the tree's, a worktree's or a terminal link's) or a
-    /// title bar popover is open closes it and nothing else.
+    /// Escape while a right-click menu (the tree's, a worktree's, a terminal link's or a
+    /// document's) or a title bar popover is open closes it and nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.popover.value().is_some()) {
+        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some()) {
             return false;
         }
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
         self.link_menu.hide(now);
+        self.md_menu.hide(now);
         self.close_popovers(now);
         cx.notify();
         true
@@ -1383,9 +1575,111 @@ impl Root {
         cx.notify();
     }
 
+    /// The tree's Delete: the tabs on the file, or on anything in the folder, let their unsaved
+    /// edits go and close (so nothing writes the file back), then the file or folder moves to the
+    /// Trash off this thread and the tree forgets it. A notice says where it went, or why not.
+    pub fn trash_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if path == self.project || !path.starts_with(&self.project) {
+            return;
+        }
+        for id in self.tree.tabs_within(&path) {
+            if let Some(v) = self.viewers.get(&id).cloned() {
+                v.update(cx, |v, _| v.abandon_edits());
+            }
+            if let Some((pane, idx)) = self.tree.locate(id) {
+                self.close_tab(pane, idx, cx);
+            }
+        }
+        if self.new_file.value().is_some_and(|p| p.dir.starts_with(&path)) {
+            self.new_file.hide(Instant::now());
+        }
+        let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        cx.spawn(async move |this, cx| {
+            let moved = {
+                let path = path.clone();
+                cx.background_executor().spawn(async move { move_to_trash(&path) }).await
+            };
+            let _ = this.update(cx, |root, cx| {
+                match moved {
+                    Ok(()) => {
+                        root.explorer.forget(&path);
+                        root.load_pending_dirs(cx);
+                        root.refresh_status(cx);
+                        root.save(cx);
+                        root.show_notice(format!("Moved to the Trash: {name}"), cx);
+                    }
+                    Err(e) => root.show_notice(format!("Could not move {name} to the Trash: {e}"), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Opens the New File prompt under `dir` (expanded, so the row has a place) and gives the tree
+    /// the keys.
+    pub fn open_new_file_prompt(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if dir != self.project {
+            self.explorer.expanded.insert(dir.clone());
+            self.explorer.selected = Some(dir.clone());
+            self.load_pending_dirs(cx);
+        }
+        self.new_file.show(NewFile::new(dir), now);
+        self.sidebar_focused = true;
+        self.wt_focused = false;
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// A key while the New File prompt is open: typed into the name, Cmd+V pastes, Escape closes,
+    /// Enter makes the file and opens it for editing with the keys in the pane. True when the
+    /// prompt took the key.
+    fn new_file_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(p) = self.new_file.value_mut() else { return false };
+        let now = Instant::now();
+        if ks.modifiers.platform && ks.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                p.paste(&text);
+            }
+            cx.notify();
+            return true;
+        }
+        match p.key(ks) {
+            NewFileStep::Stay => {}
+            NewFileStep::Refused(why) => self.show_notice(why.to_string(), cx),
+            NewFileStep::Cancel => {
+                self.new_file.hide(now);
+            }
+            NewFileStep::Create(path) => {
+                let dir = p.dir.clone();
+                match create_file(&path) {
+                    Ok(()) => {
+                        self.new_file.hide(now);
+                        for folder in folders_to_show(&dir, &path) {
+                            if folder != self.project {
+                                self.explorer.expanded.insert(folder.clone());
+                            }
+                            self.explorer.invalidate(&folder);
+                        }
+                        self.load_pending_dirs(cx);
+                        self.open_viewer(&path, true, cx);
+                    }
+                    Err(e) => self.show_notice(create_error(&e), cx),
+                }
+            }
+        }
+        cx.notify();
+        true
+    }
+
     /// Keys in the file tree (ruling 7): Up/Down move, Right expands or enters, Left collapses or
     /// goes to the parent, Enter opens pinned, Space previews, Escape returns to the pane.
     pub fn tree_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
+        if self.new_file_key(ks, cx) {
+            return;
+        }
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
             return;
         }
@@ -1511,13 +1805,70 @@ mod tests {
     }
 
     #[test]
-    fn the_context_menu_lists_the_four_file_actions_in_order() {
-        let items = context_menu_items(Path::new("/p/src/a.rs"), Path::new("/p"));
+    fn the_context_menu_lists_new_file_then_the_four_file_actions_then_delete() {
+        let items = context_menu_items(Path::new("/p/src/a.rs"), false, Path::new("/p"));
         let labels: Vec<&str> = items.iter().map(|(l, _)| *l).collect();
-        assert_eq!(labels, ["Reveal in Finder", "Copy path", "Copy relative path", "Open in default app"]);
-        assert_eq!(items[1].1, MenuAction::CopyText("/p/src/a.rs".into()));
-        assert_eq!(items[2].1, MenuAction::CopyText("src/a.rs".into()));
-        assert_eq!(context_menu_items(Path::new("/elsewhere/f"), Path::new("/p"))[2].1, MenuAction::CopyText("/elsewhere/f".into()), "outside the project the full path");
+        assert_eq!(labels, ["New File", "Reveal in Finder", "Copy path", "Copy relative path", "Open in default app", "Delete"]);
+        assert_eq!(items[5].1, MenuAction::Trash("/p/src/a.rs".into()), "the file itself");
+        assert_eq!(context_menu_items(Path::new("/p/src"), true, Path::new("/p"))[5].1, MenuAction::Trash("/p/src".into()), "a folder, whole");
+        assert_eq!(items[0].1, MenuAction::NewFile("/p/src".into()), "beside a file");
+        assert_eq!(items[2].1, MenuAction::CopyText("/p/src/a.rs".into()));
+        assert_eq!(items[3].1, MenuAction::CopyText("src/a.rs".into()));
+        assert_eq!(context_menu_items(Path::new("/p/src"), true, Path::new("/p"))[0].1, MenuAction::NewFile("/p/src".into()), "in a folder");
+        assert_eq!(context_menu_items(Path::new("/elsewhere/f"), false, Path::new("/p"))[3].1, MenuAction::CopyText("/elsewhere/f".into()), "outside the project the full path");
+        let root = context_menu_items(Path::new("/p"), true, Path::new("/p"));
+        assert_eq!(root.iter().map(|(l, _)| *l).collect::<Vec<_>>(), ["New File", "Reveal in Finder", "Copy path"], "the project folder: no relative path, no default app, never Delete");
+        assert_eq!(root[0].1, MenuAction::NewFile("/p".into()));
+    }
+
+    #[test]
+    fn a_new_file_name_is_trimmed_may_make_folders_and_is_refused_when_it_is_no_name() {
+        let dir = Path::new("/p/src");
+        assert_eq!(new_file_target(dir, " main.rs "), Ok(PathBuf::from("/p/src/main.rs")));
+        assert_eq!(new_file_target(dir, "a/b/c.toml"), Ok(PathBuf::from("/p/src/a/b/c.toml")), "folders on the way");
+        for bad in ["", "   ", "/abs", "a//b", "./a", "../a", "a/..", ".", "..", "a:b", "a\0b"] {
+            assert_eq!(new_file_target(dir, bad), Err("a file name"), "{bad:?}");
+        }
+        assert_eq!(new_file_target(dir, ".env"), Ok(PathBuf::from("/p/src/.env")), "a dot file is a name");
+    }
+
+    #[test]
+    fn the_new_file_prompt_types_a_name_refuses_a_bad_one_cancels_and_asks_to_create() {
+        use gpui::Keystroke;
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let mut p = NewFile::new(PathBuf::from("/p/src"));
+        assert_eq!(p.key(&key("enter")), NewFileStep::Refused("a file name"), "Enter on nothing");
+        for c in "lib.rs".chars() {
+            assert_eq!(p.key(&key(&format!("{c}->{c}"))), NewFileStep::Stay);
+        }
+        assert_eq!(p.name.text, "lib.rs");
+        p.paste("x\ny");
+        assert_eq!(p.name.text, "lib.rsxy", "a paste drops its line breaks");
+        assert_eq!(p.key(&key("backspace")), NewFileStep::Stay);
+        assert_eq!(p.key(&key("backspace")), NewFileStep::Stay);
+        assert_eq!(p.key(&key("enter")), NewFileStep::Create(PathBuf::from("/p/src/lib.rs")));
+        assert_eq!(p.key(&key("escape")), NewFileStep::Cancel);
+    }
+
+    #[test]
+    fn create_file_makes_the_folders_on_the_way_and_refuses_an_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/b/c.txt");
+        create_file(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "", "an empty file");
+        let err = create_file(&path).unwrap_err();
+        assert_eq!(create_error(&err), "already exists");
+        assert_eq!(folders_to_show(dir.path(), &path), vec![dir.path().to_path_buf(), dir.path().join("a"), dir.path().join("a/b")], "the prompt's folder down to the file's");
+        assert_eq!(folders_to_show(dir.path(), &dir.path().join("d.txt")), vec![dir.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn the_prompt_row_sits_under_its_folder_at_the_children_depth_or_first_for_the_project() {
+        let row = |path: &str, depth: usize, is_dir: bool| explorer::Row { path: path.into(), name: String::new(), depth, is_dir, expanded: is_dir, ignored: false, loading: false, status: None, dirty: false };
+        let rows = vec![row("/p/src", 0, true), row("/p/src/a.rs", 1, false), row("/p/x.md", 0, false)];
+        assert_eq!(prompt_row(&rows, Path::new("/p/src"), Path::new("/p")), (1, 1));
+        assert_eq!(prompt_row(&rows, Path::new("/p"), Path::new("/p")), (0, 0));
+        assert_eq!(prompt_row(&rows, Path::new("/p/gone"), Path::new("/p")), (0, 0), "a folder not shown: first");
     }
 
     #[test]
