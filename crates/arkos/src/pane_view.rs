@@ -390,7 +390,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
                 let family = root.family();
                 let now = root.frame_now;
                 let (reduce, paused) = (motion::reduce_motion(), root.effects_paused);
-                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), reduce, paused).map(|t| t.toward(theme.chrome.focus_ring));
+                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), reduce, paused).map(|t| t.toward(theme.chrome.focus_ring).on_ground(theme.is_light()));
                 let ink = decode.map(Ink::Decode).or_else(|| crate::effects::paint::paint_clock(style.terminal_paint, reduce, paused, root.glyph_now).map(Ink::Paint));
                 render_terminal(terminal, pane, family, &theme, style, ink, &mut root.find_bars, now, cx)
             }

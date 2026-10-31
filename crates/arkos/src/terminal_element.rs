@@ -120,6 +120,30 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
+/// How far faint text (SGR 2) fades toward its background.
+const DIM_FADE: f32 = 0.4;
+/// The contrast with its background faint text keeps however far it would fade, so a theme's
+/// grey that is dim already (a hint, Claude Code's status lines) stays readable.
+const DIM_MIN_CONTRAST: f64 = 3.0;
+
+/// The alpha faint text of `fg` is drawn at over `bg`: `DIM_FADE` of the way to the background,
+/// or as far as keeps `DIM_MIN_CONTRAST`; full for a colour under that contrast already.
+fn dim_alpha(fg: Rgb, bg: Rgb) -> f32 {
+    let at = |fade: f32| {
+        let mix = |f: u8, b: u8| (f32::from(f) + (f32::from(b) - f32::from(f)) * fade).round() as u8;
+        crate::palette::contrast(Rgb { r: mix(fg.r, bg.r), g: mix(fg.g, bg.g), b: mix(fg.b, bg.b) }, bg)
+    };
+    if at(DIM_FADE) >= DIM_MIN_CONTRAST {
+        return 1.0 - DIM_FADE;
+    }
+    let (mut lo, mut hi) = (0.0, DIM_FADE);
+    for _ in 0..10 {
+        let mid = (lo + hi) / 2.0;
+        if at(mid) >= DIM_MIN_CONTRAST { lo = mid } else { hi = mid }
+    }
+    1.0 - lo
+}
+
 fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
     let mut f = font(family);
     if style.bold {
@@ -130,7 +154,7 @@ fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
     }
     let mut color = hsla(style.fg);
     if style.dim {
-        color.a = 0.6;
+        color.a = dim_alpha(style.fg, style.bg);
     }
     TextRun { len: text.len(), font: f, color, background_color: None, underline: None, strikethrough: None }
 }
@@ -385,10 +409,25 @@ pub fn hovered_link(spans: &[Span], bounds: Bounds<Pixels>, mouse: gpui::Point<P
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_dt, hovered_link, split_offset};
+    use super::{dim_alpha, frame_dt, hovered_link, split_offset, DIM_FADE, DIM_MIN_CONTRAST};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
 
+    #[test]
+    fn faint_text_fades_toward_its_background_but_keeps_three_to_one_contrast_with_it() {
+        use crate::palette::Rgb;
+        let navy = Rgb { r: 0x0e, g: 0x17, b: 0x23 };
+        let white = Rgb { r: 0xc8, g: 0xcc, b: 0xd4 };
+        assert_eq!(dim_alpha(white, navy), 1.0 - DIM_FADE, "bright text fades the whole way");
+        let grey = Rgb { r: 0x7c, g: 0x87, b: 0x98 };
+        let a = dim_alpha(grey, navy);
+        assert!(a > 1.0 - DIM_FADE && a < 1.0, "{a}");
+        let faded = |c: u8, b: u8| (f32::from(c) * a + f32::from(b) * (1.0 - a)).round() as u8;
+        let shown = Rgb { r: faded(grey.r, navy.r), g: faded(grey.g, navy.g), b: faded(grey.b, navy.b) };
+        assert!(crate::palette::contrast(shown, navy) >= DIM_MIN_CONTRAST - 0.05, "{shown:?}");
+        let murk = Rgb { r: 0x30, g: 0x38, b: 0x44 };
+        assert_eq!(dim_alpha(murk, navy), 1.0, "a colour already under 3:1 does not fade further");
+    }
     #[test]
     fn the_hovered_link_follows_the_pointer_cell_and_the_fraction() {
         let rows: Vec<Vec<char>> = ["plain", "see https://csarko.sh now"].iter().map(|r| r.chars().collect()).collect();

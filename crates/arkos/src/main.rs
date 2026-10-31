@@ -3886,7 +3886,7 @@ impl Root {
     /// only, told the configured theme's focus ring as its accent. The aux windows never ask,
     /// so they keep gpui's own glyphs.
     pub fn glyph_shader_for(&self, kind: effects::active::WindowKind) -> Option<gpui::GlyphShader> {
-        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale, self.base_theme.chrome.focus_ring)
+        effects::active::glyph_shader_for(kind, self.effect.as_ref(), self.glyph_scale, self.base_theme.chrome.focus_ring, self.base_theme.is_light())
     }
 
     /// How far the text is deepened: the effect's `text_contrast` while it is settled on, else

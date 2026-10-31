@@ -1,16 +1,16 @@
 //! The terminal's paint-in, watercolor's counterpart to the decode: a cell the program writes
-//! soaks into the paper. The CPU only stamps: each row's cells changed at one instant share a
+//! is written in, as by a pen. The CPU only stamps: each row's cells changed at one instant share a
 //! stamp, the instant on the glyph clock less the stagger to the row's first changed cell, and
 //! the glyph shader paints from it (`watercolor/glyphs.metal`). Pure rules, no drawing.
 use std::time::{Duration, Instant};
 
-/// How long a cell's ink takes to soak in, in seconds.
-pub const PAINT_DUR: f32 = 0.26;
-/// How long soaked-in ink takes to dry, in seconds.
+/// How long the pen takes to write one cell's glyph, in seconds.
+pub const PAINT_DUR: f32 = 0.12;
+/// How long freshly written ink takes to dry, in seconds.
 pub const PAINT_DRY: f32 = 0.8;
-/// How much later each cell to the right starts, in seconds a point: 16 ms a cell of the
-/// default terminal's 9.6 point wide cells.
-pub const PAINT_STAGGER_PER_PT: f32 = 0.016 / 9.6;
+/// How much later each cell to the right starts, in seconds a point: 40 ms a cell of the
+/// default terminal's 9.6 point wide cells, a quick hand rather than a printer.
+pub const PAINT_STAGGER_PER_PT: f32 = 0.040 / 9.6;
 /// How long past its drying the scene is still presented, so the last frame shows the ink dry.
 pub const PAINT_MARGIN: Duration = Duration::from_millis(50);
 
@@ -86,7 +86,7 @@ mod tests {
         // The shader starts a glyph at its stamp plus its x times the stagger.
         let start = |c: usize| stamps[c] + x(c) * PAINT_STAGGER_PER_PT;
         assert!((start(1) - 49.9).abs() < 1e-4, "{}", start(1));
-        assert!((start(2) - start(1) - 0.016).abs() < 1e-4);
+        assert!((start(2) - start(1) - 0.040).abs() < 1e-4);
         assert!((start(3) - 50.0).abs() < 1e-4, "a cell changed now starts now, wherever it is");
         let wet = Duration::from_secs_f32(PAINT_DUR + PAINT_DRY);
         assert_eq!(dry, Some(now + wet));
@@ -108,7 +108,7 @@ mod tests {
         let now = t0 + Duration::from_millis(1100);
         let changed = vec![Some(t0); 80];
         let (stamps, dry) = row_stamps(&changed, x, 50.0, now);
-        assert!(stamps.iter().all(|&s| s != 0.0), "the run's end is still soaking in");
+        assert!(stamps.iter().all(|&s| s != 0.0), "the run's end is still wet");
         assert!(dry.is_some_and(|d| d > now));
     }
 

@@ -1,17 +1,23 @@
 # Arkos IDE: watercolor paints new terminal text in
 
 Date: 2026-10-30. Status: Cyrus picked the soak look (B of the three mock-ups), the terminal
-only, and a gpui sprite field for each glyph's start time (2026-10-30). Watercolor's counterpart
+only, and a gpui sprite field for each glyph's start time (2026-10-30). On seeing the first build
+he asked for each letter's lines to be stroked in rather than faded in, and slower (2026-10-31):
+the soak became a pen. Watercolor's counterpart
 to runic's decode. It works GPU first: the CPU stamps a changed cell once, the glyph shader
 paints it, and the frames while ink is wet re-present the last scene instead of redrawing views.
 
 ## 1. The look
 
-A cell the program writes soaks into the paper: ink shows first where its strokes are thickest
-and spreads out to their edges over `PAINT_DUR` (0.26 s), with a wide bleed around the letter.
+A cell the program writes is written in: a pen crosses its glyph over `PAINT_DUR` (0.12 s), left
+to right and down each stroke (`PEN_PATH`, 62% across and 38% down), so a stem draws from its top
+as the pen reaches it. The pen's edge is narrow (`PEN_EDGE`), so ink is drawn on, not faded in,
+and the stretch just behind it is a wet bead of fuller, bluer ink. A wide bleed follows the pen.
+The atlas holds only coverage, not strokes, so the path is the same slant for every glyph rather
+than each letter's own stroke order.
 While it is wet the ink reads deeper and bluer and the bleed is strong; over `PAINT_DRY` (0.8 s)
 it dries to watercolor's ink as it is today. A run of cells written at once paints left to
-right, each cell `PAINT_STAGGER` (16 ms) after the one before, counted from the first changed
+right, each cell `PAINT_STAGGER` (40 ms) after the one before, counted from the first changed
 cell of its row, so appended text paints at once and a new line writes itself out.
 
 What does not paint, as with runic's decode: the echo of the user's own typing, paste or scroll
