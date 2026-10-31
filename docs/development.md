@@ -67,8 +67,8 @@ new one) and ends every session, so do it when nothing important is running.
 ### gpui fork
 
 Arkos builds against gpui from its fork, https://github.com/csarkosh/gpui, pinned in the
-workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.5`). The fork is the
-crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with five commits on top, the hooks the effects
+workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.6`). The fork is the
+crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with six commits on top, the hooks the effects
 use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
 `GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`; tag `v0.2.2-arkos.1`), its clock
 (`Window::set_glyph_shader_time`, one `float` at Metal buffer index 5 in both glyph stages; tag
@@ -77,7 +77,9 @@ use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
 by the app's stages, pictures keeping gpui's; tag `v0.2.2-arkos.3`), BGRA surfaces
 (`Window::paint_surface`; tag `v0.2.2-arkos.4`) and glyph stamps (`MonochromeSprite.stamp`,
 `Window::with_glyph_stamp`, and `Window::present_glyphs_until`, which presents the last scene
-again with the glyph clock moved on while ink is wet; tag `v0.2.2-arkos.5`). An upgrade goes as the fork's `ARKOS.md` says:
+again with the glyph clock moved on while ink is wet; tag `v0.2.2-arkos.5`), and SVG stamps
+(`Window::paint_svg` carries the glyph stamp too, so watercolor's washed cell backgrounds reach the
+glyph stages with one; tag `v0.2.2-arkos.6`). An upgrade goes as the fork's `ARKOS.md` says:
 commit the next tarball as `v<version>`, rebase the patch commits onto it, tag
 `v<version>-arkos.1`, push, point `[patch.crates-io]` at the new tag and run
 `cargo update -p gpui`.

@@ -78,3 +78,29 @@ clock's wrap among them, is dry.
   the last scene again with the glyph clock moved on by the time since the app last set it.
 
 Built against the local gpui clone first; Cyrus approved it and the tag was pushed on 2026-10-31.
+
+## After 0.8.1 (2026-10-31)
+
+Cyrus asked for four more things, built on the branch `paint-rows`:
+
+- **Only the newest rows.** The pen writes only the `PAINT_ROWS` (4) rows changed most recently,
+  the lowest on screen first among rows changed at one instant, as the decode scrambles only its
+  newest few. Older text shows as written.
+- **Working marks are doodled.** Claude Code's spinner frames (`· ✢ ✳ ✶ ✻ ✽`) and a tool's
+  blinking dot (`⏺`, `●`) flip in place. The decode remembers a cell that flipped as one
+  (`paint::doodle_mark`, with its style and when), and for `DOODLE_HOLD` (1 s) after the last flip
+  the cell is drawn as nothing (`PAINT_HIDE`) while a steady mark is doodled under it
+  (`PAINT_DOODLE`): a pen goes round it `DOODLE_TURNS` (0.9) times a second, the ink heavier where
+  it has just been, the mark swaying with the hand, easing to plain ink as the hold runs out. A dot
+  blinked off is held in its colour.
+- **A hidden tab's output is already written.** A terminal the window drew without (its tab was
+  hidden; `Root::draws` against `Terminal::painted_draw`) starts its decode again from the grid as
+  it is, so neither the paint-in nor runic's decode plays over output that arrived unseen.
+- **Backgrounds are washes.** Each stretch of one cell background colour is painted as a band the
+  glyph shader inks: a rectangle SVG of the band's size (`icons::wash_path`, served by the asset
+  source), stamped `PAINT_WASH`, which needs gpui's `paint_svg` to carry the glyph stamp
+  (`v0.2.2-arkos.6`). The shader draws it in broad soft blooms, its ends pooled darker and bleeding
+  raggedly, its top and bottom straight so rows of one colour meet without a seam, and, while its
+  row is written, sweeps it in behind a ragged brush front over `WASH_TIME` (0.3 s), drying a shade
+  lighter. A run that mostly overwrote text (`PAINT_OVERWRITE_SHARE`) now crossfades too.
+
