@@ -1,7 +1,8 @@
 name: shoot
 # Takes the README's pictures on a macOS runner (scripts/shoot.sh): a real Arkos window per scene,
-# its Claude Code sessions running for real, captured in the dark theme, then the hero composed. The
-# stills come back as an artifact; nothing is committed here. `probe` needs no Claude Code and
+# its Claude Code sessions running for real, captured in the dark theme, then the hero composed,
+# and a scene's recording through the themes (the multi tasker's, for apps.csarko.sh). The
+# stills and recordings come back as an artifact; nothing is committed here. `probe` needs no Claude Code and
 # checks that the runner can draw, capture and click. The other scenes sign Claude Code in with
 # the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`), so they use the account's
 # subscription, not an API bill.
@@ -45,9 +46,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 (v2)
         with:
           shared-key: shoot
-      - name: Pillow and git for the frames and the demo
+      - name: Pillow and git for the frames and the demo, ffmpeg for the recordings
         run: |
           python3 -m pip install --break-system-packages --quiet pillow
+          command -v ffmpeg >/dev/null || brew install --quiet ffmpeg
+          ffmpeg -version | head -1
+          swiftc --version | head -1
           git config --global user.name "shoot workflow"
           git config --global user.email "shoot@csarko.sh"
           git config --global init.defaultBranch main
@@ -80,5 +84,7 @@ jobs:
           name: shoot-${{ github.run_number }}
           path: |
             docs/images/*.png
+            docs/images/*.mp4
+            docs/images/*.jpg
             docs/images/progress/**
           if-no-files-found: warn

@@ -2,8 +2,10 @@
 //! starts a second arkosd of its own (its state under `~/Library/Caches/arkos-shoot`, so the
 //! Arkos in use is untouched), opens a dev-build window on the demo with the storyboard's
 //! layout, types `claude` and a prompt into each pane, waits for the tab states the shot asks
-//! for, and captures the window with `screencapture`. `scripts/shoot.sh` builds and runs it;
-//! `scripts/shoot/story.toml` is the storyboard.
+//! for, and captures the window with `screencapture`; a storyboard's `[[recording]]` then
+//! records the window through its themes (`scripts/shoot/record.swift`) and makes the clip a
+//! loop (`scripts/shoot/loop.py`). `scripts/shoot.sh` builds and runs it; `scripts/shoot/stories/`
+//! holds the storyboards.
 mod daemon;
 mod story;
 
@@ -14,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use story::{Shot, Story};
+use story::{Recording, Shot, Story, ThemePair, Waits};
 
 const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>]
        arkos-shoot bundle [--story ...] [--bin target/debug]   (only makes and signs the bundle, to grant it Accessibility)
@@ -221,8 +223,10 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
     //    no login item and no update checks.
-    write_config(&dirs.config_file(), story, &story.shots[0].theme)?;
-    install_effect(repo, &dirs, story)?;
+    write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.window.theme)?;
+    install_effects(repo, dirs, story)?;
+    // The recorder, before anything slow: a Mac without swiftc fails here, not after a scene.
+    let recorder = if story.recordings.is_empty() { None } else { Some(build_recorder(repo, &dirs.cache)?) };
 
     // 4. The shoot's own daemon.
     let log = std::fs::File::create(dirs.state.join("arkosd.log"))?;
@@ -354,11 +358,11 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     let mut failures = Vec::new();
     for shot in &story.shots {
         if shot.theme != theme {
-            write_config(&dirs.config_file(), story, &shot.theme)?;
+            write_config(&dirs.config_file(), story, &shot.theme, &story.window.theme)?;
             theme = shot.theme.clone();
             pause(Duration::from_millis(1500))?;
         }
-        let unmet = wait_for(shot, story, &sessions, client, &progress, &demo)?;
+        let unmet = wait_for(&shot.waits(), story, &sessions, client, &progress, &demo)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", shot.name, shot.timeout_secs, unmet.join(", ")));
             failures.push(format!("{} ({})", shot.name, unmet.join(", ")));
@@ -394,16 +398,167 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         }
         say(&format!("{}: {}", shot.name, out.join(format!("{picture}.png")).display()));
     }
+
+    // 10. The recordings: the window through its themes, after the stills, each a loop.
+    for rec in &story.recordings {
+        let unmet = wait_for(&rec.waits(), story, &sessions, client, &progress, &demo)?;
+        if !unmet.is_empty() {
+            say(&format!("{}: after {} s these were not as asked: {}", rec.name, rec.timeout_secs, unmet.join(", ")));
+            failures.push(format!("{} ({})", rec.name, unmet.join(", ")));
+        }
+        let recorder = recorder.as_deref().expect("built when the story has a recording");
+        let result = record(rec, story, repo, recorder, dirs, window_id, window_pid, &progress, out);
+        // The shot's look again, whatever happened, for anything that follows.
+        write_config(&dirs.config_file(), story, &theme, &story.window.theme)?;
+        result?;
+    }
     if !failures.is_empty() {
         bail!("taken, but not as the story asked: {}", failures.join("; "));
     }
     Ok(())
 }
 
-/// Polls the sessions' states until the shot's are all as asked (or its timeout passes), and
-/// Returns what was not as asked.
+/// A `[[recording]]`: the window brought to the front and shown in the first theme, the
+/// recorder started on it, then each theme in turn for `hold_secs`, and the first again, so
+/// the clip's end returns to its start; `loop.py` then cuts the loop. The theme changes go
+/// through the config, which the window reloads and cross-fades, so the transitions are the
+/// IDE's own, and a theme's appearance (light or dark) goes with it.
 #[allow(clippy::too_many_arguments)]
-fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, progress: &Progress, demo: &Path) -> Result<Vec<String>> {
+fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &Dirs, window_id: u32, window_pid: u32, progress: &Progress, out: &Path) -> Result<()> {
+    let picture = format!("{}-{}", story.scene.name, rec.name);
+    let hold = Duration::from_secs_f64(rec.hold_secs);
+    let show = |name: &str| -> Result<()> {
+        let mode = theme_appearance(repo, name)?;
+        write_config(&dirs.config_file(), story, &mode, &ThemePair { dark: name.to_string(), light: name.to_string() })
+    };
+    // In front, so macOS draws it at its full rate (a window behind others is drawn less often).
+    activate(window_pid);
+    show(&rec.themes[0])?;
+    pause(Duration::from_millis(1500))?;
+    let raw = progress.dir.join(format!("{picture}.raw.mp4"));
+    let max_secs = rec.hold_secs * (rec.themes.len() as f64 + 1.0) + rec.seam_secs + 15.0;
+    let child = start_recorder(recorder, window_id, &raw, rec.fps, max_secs)?;
+    let started = Instant::now();
+    say(&format!("{}: recording {} themes, {:.1} s each", rec.name, rec.themes.len(), rec.hold_secs));
+    // Each switch at its own moment from the start, so the time a switch takes (the config
+    // write and the window's poll of it) never pushes the ones after it later.
+    let until = |deadline: Instant| pause(deadline.saturating_duration_since(Instant::now()));
+    let switched = (|| -> Result<()> {
+        for (k, name) in rec.themes.iter().enumerate().skip(1) {
+            until(started + hold * k as u32)?;
+            show(name)?;
+        }
+        until(started + hold * rec.themes.len() as u32)?;
+        show(&rec.themes[0])?;
+        // The return's fade and the seam's blend, with room for the config poll.
+        pause(Duration::from_secs_f64(rec.seam_secs) + Duration::from_millis(900))
+    })();
+    let stopped = stop_recorder(child);
+    switched?;
+    stopped?;
+    let mp4 = out.join(format!("{picture}.mp4"));
+    let poster = out.join(format!("{picture}.jpg"));
+    let status = Command::new("python3")
+        .arg("-I")
+        .arg(repo.join("scripts/shoot/loop.py"))
+        .arg(&raw)
+        .arg(&mp4)
+        .args(["--period", &format!("{}", rec.period_secs()), "--seam", &rec.seam_secs.to_string(), "--fps", &rec.fps.to_string(), "--width", &rec.width.to_string()])
+        .arg("--poster")
+        .arg(&poster)
+        .status()
+        .context("loop.py")?;
+    if !status.success() {
+        bail!("loop.py failed for {}", raw.display());
+    }
+    say(&format!("{}: {}", rec.name, mp4.display()));
+    Ok(())
+}
+
+/// A built-in theme's `appearance` (`crates/arkos/themes/<name>.toml`): `light` or `dark`, the
+/// mode the config must be in for the window to show it.
+fn theme_appearance(repo: &Path, name: &str) -> Result<String> {
+    let path = repo.join("crates/arkos/themes").join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(&path).with_context(|| format!("no built-in theme {name} ({})", path.display()))?;
+    Ok(text.lines().find_map(|l| l.strip_prefix("appearance = \"")).and_then(|r| r.split('"').next()).unwrap_or("dark").to_string())
+}
+
+/// `scripts/shoot/record.swift` built once a run into the cache: the window recorder through
+/// ScreenCaptureKit (macOS 14 and later), its frames encoded by ffmpeg.
+fn build_recorder(repo: &Path, cache: &Path) -> Result<PathBuf> {
+    let src = repo.join("scripts/shoot/record.swift");
+    let bin = cache.join("record");
+    std::fs::create_dir_all(cache)?;
+    let out = Command::new("swiftc").args(["-O", "-o"]).arg(&bin).arg(&src).output().context("swiftc (the Xcode command line tools)")?;
+    if !out.status.success() {
+        bail!("swiftc could not build {}: {}", src.display(), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(bin)
+}
+
+/// Starts the recorder on the window and returns once it says frames flow ("recording" on its
+/// first line). What it and its ffmpeg say goes to this log as they say it.
+fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_secs: f64) -> Result<Child> {
+    let mut child = Command::new(recorder)
+        .arg(window_id.to_string())
+        .arg(out)
+        .args(["--fps", &fps.to_string(), "--max-secs", &format!("{max_secs:.0}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("start {}", recorder.display()))?;
+    let stdout = child.stdout.take().expect("piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        let _ = tx.send(lines.next().and_then(|l| l.ok()));
+        // The rest (its "finished" line) to this log; drained, so it never blocks on a full pipe.
+        for line in lines.map_while(Result::ok) {
+            say(&format!("recorder: {line}"));
+        }
+    });
+    match rx.recv_timeout(Duration::from_secs(45)) {
+        Ok(Some(line)) if line.trim() == "recording" => Ok(child),
+        Ok(said) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("the recorder did not start{}", said.map(|s| format!(": {s}")).unwrap_or_default());
+        }
+        Err(_) => {
+            let _ = child.kill();
+            bail!("the recorder said nothing for 45 s (is Screen Recording granted?)");
+        }
+    }
+}
+
+/// Asks the recorder to stop (SIGINT), which encodes what it captured, and waits for it: the
+/// encoding runs after the capture, at whatever pace the machine's ffmpeg manages.
+fn stop_recorder(mut child: Child) -> Result<()> {
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+            bail!("the recorder failed ({status}); its words are above");
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            bail!("the recorder did not finish its file within 5 minutes");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Polls the sessions' states until the shot's (or the recording's) are all as asked, or its
+/// timeout passes, and returns what was not as asked.
+#[allow(clippy::too_many_arguments)]
+fn wait_for(shot: &Waits, story: &Story, sessions: &BTreeMap<String, u64>, client: &mut Daemon, progress: &Progress, demo: &Path) -> Result<Vec<String>> {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(shot.timeout_secs);
     let settle_until: Option<Instant> = None;
@@ -411,14 +566,14 @@ fn wait_for(shot: &Shot, story: &Story, sessions: &BTreeMap<String, u64>, client
     loop {
         let states = client.states()?;
         let state_of = |name: &str| sessions.get(name).and_then(|id| states.get(id)).copied().unwrap_or(ClaudeState::Idle);
-        progress.note(&shot.name, &story.panes.iter().filter(|p| p.is_terminal()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "));
+        progress.note(shot.name, &story.panes.iter().filter(|p| p.is_terminal()).map(|p| format!("{}={}", p.name, state_name(state_of(&p.name)))).collect::<Vec<_>>().join(" "));
         // Claude Code says it is working within seconds of a prompt (its UserPromptSubmit
         // hook). Every pane still idle a minute on: it never started, and waiting is waste.
         if !claude_panes.is_empty() && started.elapsed() > Duration::from_secs(60) && claude_panes.iter().all(|p| state_of(p) == ClaudeState::Idle) {
             bail!("{}: no Claude Code pane has reported working after a minute; the latest capture in {} shows what happened", shot.name, progress.dir.display());
         }
         let mut unmet: Vec<String> = shot.wait.iter().filter(|(pane, want)| state_name(state_of(pane)) != want.as_str()).map(|(pane, want)| format!("{pane} is {}, not {want}", state_name(state_of(pane)))).collect();
-        for (pane, want) in &shot.changed {
+        for (pane, want) in shot.changed {
             let n = changed_files(&story.pane(pane).dir(demo));
             if n < *want {
                 unmet.push(format!("{pane} has changed {n} files, not {want}"));
@@ -636,25 +791,26 @@ fn capture_burst(repo: &Path, id: u32, out: &Path, n: usize, shot: &Shot) -> Res
     Ok(())
 }
 
-/// The storyboard's `[effect]`: the built-in effect's folder copied into the shoot's own config,
-/// where it shadows the built-in, with the storyboard's wash scale in its manifest.
-fn install_effect(repo: &Path, dirs: &Dirs, story: &Story) -> Result<()> {
+/// The storyboard's `[effect]`s: each built-in effect's folder copied into the shoot's own
+/// config, where it shadows the built-in, with the storyboard's wash scale in its manifest.
+fn install_effects(repo: &Path, dirs: &Dirs, story: &Story) -> Result<()> {
     let effects = dirs.config_home.join("arkos/effects");
     let _ = std::fs::remove_dir_all(&effects);
-    let Some(effect) = &story.effect else { return Ok(()) };
-    let from = repo.join("crates/arkos/effects").join(&effect.name);
-    let to = effects.join(&effect.name);
-    std::fs::create_dir_all(&to)?;
-    for entry in std::fs::read_dir(&from).with_context(|| format!("read {}", from.display()))? {
-        let path = entry?.path();
-        let name = path.file_name().context("a file name")?;
-        if name == "effect.toml" {
-            std::fs::write(to.join(name), story::scaled_manifest(&std::fs::read_to_string(&path)?, effect.scale)?)?;
-        } else {
-            std::fs::copy(&path, to.join(name))?;
+    for effect in &story.effects {
+        let from = repo.join("crates/arkos/effects").join(&effect.name);
+        let to = effects.join(&effect.name);
+        std::fs::create_dir_all(&to)?;
+        for entry in std::fs::read_dir(&from).with_context(|| format!("read {}", from.display()))? {
+            let path = entry?.path();
+            let name = path.file_name().context("a file name")?;
+            if name == "effect.toml" {
+                std::fs::write(to.join(name), story::scaled_manifest(&std::fs::read_to_string(&path)?, effect.scale)?)?;
+            } else {
+                std::fs::copy(&path, to.join(name))?;
+            }
         }
+        say(&format!("effect {} at wash scale {:.1}", effect.name, effect.scale));
     }
-    say(&format!("effect {} at wash scale {:.1}", effect.name, effect.scale));
     Ok(())
 }
 
@@ -823,9 +979,10 @@ fn wait_for_daemon(socket: &Path) -> Result<Daemon> {
     }
 }
 
-/// The window's config for the shoot: the storyboard's text size and sidebar, the shot's
-/// theme, and nothing that reaches outside (no login item, no update checks).
-fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
+/// The window's config for the shoot: the storyboard's text size and sidebar, the themes and
+/// the mode (`theme`, `dark` or `light`) in force, and nothing that reaches outside (no login
+/// item, no update checks). The window reloads it as it changes.
+fn write_config(path: &Path, story: &Story, theme: &str, themes: &ThemePair) -> Result<()> {
     let text = format!(
         "# Written by arkos-shoot for each run; edit scripts/shoot/story.toml instead.\n\
          [font]\npreset = \"{preset}\"\n\n\
@@ -837,8 +994,8 @@ fn write_config(path: &Path, story: &Story, theme: &str) -> Result<()> {
         preset = story.window.preset,
         sidebar = story.window.sidebar_width,
         collapsed = story.window.sidebar == story::Sidebar::Collapsed,
-        dark = story.window.theme.dark,
-        light = story.window.theme.light,
+        dark = themes.dark,
+        light = themes.light,
         viewer = story.window.page_width.as_ref().map(|w| format!("\n[viewer]\npage_width = \"{w}\"\n")).unwrap_or_default(),
     );
     std::fs::write(path, text).with_context(|| format!("write {}", path.display()))

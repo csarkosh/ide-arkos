@@ -16,8 +16,99 @@ pub struct Story {
     pub layout: Node,
     #[serde(rename = "shot")]
     pub shots: Vec<Shot>,
+    /// `[[recording]]`: the window through its themes, after the shots, as a loop.
+    #[serde(default, rename = "recording")]
+    pub recordings: Vec<Recording>,
+    /// `[effect]` once, or `[[effect]]` for each of several: a recording through themes with
+    /// different effects wants each at the runner's scale.
+    #[serde(default, rename = "effect", deserialize_with = "one_or_many")]
+    pub effects: Vec<EffectSpec>,
+}
+
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<EffectSpec>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(EffectSpec),
+        Many(Vec<EffectSpec>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(e) => vec![e],
+        OneOrMany::Many(v) => v,
+    })
+}
+
+/// `[[recording]]`: after the shots, the window switched through `themes` (built-in theme
+/// names), each held `hold_secs`, then back to the first, recorded by `scripts/shoot/record.swift`
+/// and made a loop by `scripts/shoot/loop.py` as `<scene>-<name>.mp4` beside the stills, its
+/// first frame as `<scene>-<name>.jpg`. It waits as a shot does first.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Recording {
+    pub name: String,
     #[serde(default)]
-    pub effect: Option<EffectSpec>,
+    pub wait: BTreeMap<String, String>,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub after_secs: u64,
+    #[serde(default)]
+    pub changed: BTreeMap<String, usize>,
+    pub themes: Vec<String>,
+    /// How long each theme shows, in seconds; the loop is this times the number of themes.
+    #[serde(default = "default_hold")]
+    pub hold_secs: f64,
+    #[serde(default = "default_fps")]
+    pub fps: u32,
+    /// The cross-fade from the loop's end into its start, in seconds: the return to the first
+    /// theme as the window drew it, blended into the opening.
+    #[serde(default = "default_seam")]
+    pub seam_secs: f64,
+    /// The widest the picture is scaled to, in pixels.
+    #[serde(default = "default_width")]
+    pub width: u32,
+}
+
+fn default_hold() -> f64 {
+    4.0
+}
+
+fn default_fps() -> u32 {
+    30
+}
+
+fn default_seam() -> f64 {
+    1.0
+}
+
+fn default_width() -> u32 {
+    1320
+}
+
+/// What a shot or a recording waits for before it happens.
+pub struct Waits<'a> {
+    pub name: &'a str,
+    pub wait: &'a BTreeMap<String, String>,
+    pub changed: &'a BTreeMap<String, usize>,
+    pub after_secs: u64,
+    pub timeout_secs: u64,
+}
+
+impl Shot {
+    pub fn waits(&self) -> Waits<'_> {
+        Waits { name: &self.name, wait: &self.wait, changed: &self.changed, after_secs: self.after_secs, timeout_secs: self.timeout_secs }
+    }
+}
+
+impl Recording {
+    pub fn waits(&self) -> Waits<'_> {
+        Waits { name: &self.name, wait: &self.wait, changed: &self.changed, after_secs: self.after_secs, timeout_secs: self.timeout_secs }
+    }
+
+    /// The loop's length: every theme's hold together.
+    pub fn period_secs(&self) -> f64 {
+        self.hold_secs * self.themes.len() as f64
+    }
 }
 
 /// `[effect]`: the theme's built-in effect drawn at another wash scale for the picture. A
@@ -346,9 +437,29 @@ impl Story {
 
     fn check(&self) -> Result<()> {
         let mut seen = std::collections::BTreeSet::new();
-        if let Some(e) = &self.effect {
+        for e in &self.effects {
             if !(0.1..=1.0).contains(&e.scale) {
                 bail!("effect scale must be 0.1 to 1.0 (was {})", e.scale);
+            }
+        }
+        for r in &self.recordings {
+            if r.name.is_empty() || r.name.contains('/') {
+                bail!("a recording's name must be a plain name");
+            }
+            if r.themes.len() < 2 {
+                bail!("recording {:?}: themes must name at least two themes", r.name);
+            }
+            if !(1.0..=15.0).contains(&r.hold_secs) {
+                bail!("recording {:?}: hold_secs must be 1 to 15", r.name);
+            }
+            if !(1..=60).contains(&r.fps) {
+                bail!("recording {:?}: fps must be 1 to 60", r.name);
+            }
+            if !(0.2..=r.hold_secs).contains(&r.seam_secs) {
+                bail!("recording {:?}: seam_secs must be 0.2 to hold_secs", r.name);
+            }
+            if !(320..=3840).contains(&r.width) {
+                bail!("recording {:?}: width must be 320 to 3840 pixels", r.name);
             }
         }
         for shot in &self.shots {
@@ -406,23 +517,30 @@ impl Story {
         if self.shots.is_empty() {
             bail!("no [[shot]]");
         }
+        let waits_ok = |what: &str, w: &Waits| -> Result<()> {
+            for (pane, state) in w.wait {
+                if !seen.contains(pane.as_str()) {
+                    bail!("{what} {:?} waits on pane {pane:?}, which does not exist", w.name);
+                }
+                if !["working", "waiting", "idle"].contains(&state.as_str()) {
+                    bail!("{what} {:?}: state for {pane:?} must be working, waiting or idle", w.name);
+                }
+            }
+            for pane in w.changed.keys() {
+                if !seen.contains(pane.as_str()) || !self.pane(pane).is_terminal() {
+                    bail!("{what} {:?}: changed names {pane:?}, which is not a shell pane", w.name);
+                }
+            }
+            Ok(())
+        };
+        for r in &self.recordings {
+            waits_ok("recording", &r.waits())?;
+        }
         for s in &self.shots {
             if !["dark", "light"].contains(&s.theme.as_str()) {
                 bail!("shot {:?}: theme must be dark or light", s.name);
             }
-            for (pane, state) in &s.wait {
-                if !seen.contains(pane.as_str()) {
-                    bail!("shot {:?} waits on pane {pane:?}, which does not exist", s.name);
-                }
-                if !["working", "waiting", "idle"].contains(&state.as_str()) {
-                    bail!("shot {:?}: state for {pane:?} must be working, waiting or idle", s.name);
-                }
-            }
-            for pane in s.changed.keys() {
-                if !seen.contains(pane.as_str()) || !self.pane(pane).is_terminal() {
-                    bail!("shot {:?}: changed names {pane:?}, which is not a shell pane", s.name);
-                }
-            }
+            waits_ok("shot", &s.waits())?;
             for c in &s.crops {
                 let [x, y, w, h] = c.rect;
                 if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) || w <= 0.0 || h <= 0.0 || x + w > 1.0 + 1e-9 || y + h > 1.0 + 1e-9 {
@@ -637,8 +755,13 @@ theme = "light"
             for folder in &story.window.expanded {
                 assert!(fixture.join(folder).is_dir(), "{}: the fixture has no folder {folder}", path.display());
             }
-            if let Some(effect) = &story.effect {
+            for effect in &story.effects {
                 assert!(root.join("crates/arkos/effects").join(&effect.name).join("effect.toml").is_file(), "{}: no built-in effect {}", path.display(), effect.name);
+            }
+            for recording in &story.recordings {
+                for theme in &recording.themes {
+                    assert!(root.join("crates/arkos/themes").join(format!("{theme}.toml")).is_file(), "{}: recording {} names no built-in theme {theme}", path.display(), recording.name);
+                }
             }
             for pane in &story.panes {
                 if let Some(view) = &pane.view {
@@ -672,14 +795,55 @@ theme = "light"
     fn a_story_s_effect_and_a_burst_shot_parse_and_bad_ones_are_refused() {
         let text = format!("{STORY}\n[effect]\nname = \"runic\"\nscale = 1.0\n").replace("wait = { work = \"working\", tests = \"waiting\" }", "wait = { work = \"working\", tests = \"waiting\" }\nburst = 8");
         let s = Story::parse(&text).unwrap();
-        let e = s.effect.as_ref().unwrap();
-        assert_eq!((e.name.as_str(), e.scale), ("runic", 1.0));
+        let e = &s.effects[0];
+        assert_eq!((s.effects.len(), e.name.as_str(), e.scale), (1, "runic", 1.0));
         assert_eq!(s.shots[0].burst, Some(8));
         assert_eq!(s.shots[1].burst, None);
         let err = Story::parse(&text.replace("scale = 1.0", "scale = 1.5")).unwrap_err().to_string();
         assert!(err.contains("effect scale must be 0.1 to 1.0"), "{err}");
         let err = Story::parse(&text.replace("burst = 8", "burst = 1")).unwrap_err().to_string();
         assert!(err.contains("burst must be 2 to 60"), "{err}");
+    }
+
+    #[test]
+    fn several_effects_parse_as_a_list_and_each_scale_is_checked() {
+        let text = format!("{STORY}\n[[effect]]\nname = \"runic\"\nscale = 1.0\n\n[[effect]]\nname = \"watercolor\"\nscale = 0.8\n");
+        let s = Story::parse(&text).unwrap();
+        assert_eq!(s.effects.iter().map(|e| (e.name.as_str(), e.scale)).collect::<Vec<_>>(), [("runic", 1.0), ("watercolor", 0.8)]);
+        let err = Story::parse(&text.replace("scale = 0.8", "scale = 0.0")).unwrap_err().to_string();
+        assert!(err.contains("effect scale must be 0.1 to 1.0"), "{err}");
+        assert!(Story::parse(STORY).unwrap().effects.is_empty(), "no [effect] is an empty list");
+    }
+
+    const RECORDING: &str = "\n[[recording]]\nname = \"themes\"\nwait = { tests = \"waiting\" }\nchanged = { work = 1 }\nthemes = [\"navy\", \"peach-light\", \"matrix\"]\nhold_secs = 3\n";
+
+    #[test]
+    fn a_recording_parses_with_its_defaults_and_waits_as_a_shot_does() {
+        let s = Story::parse(&format!("{STORY}{RECORDING}")).unwrap();
+        assert_eq!(s.recordings.len(), 1);
+        let r = &s.recordings[0];
+        assert_eq!((r.name.as_str(), r.hold_secs, r.fps, r.seam_secs, r.width), ("themes", 3.0, 30, 1.0, 1320));
+        assert_eq!(r.themes, ["navy", "peach-light", "matrix"]);
+        assert_eq!(r.period_secs(), 9.0, "the loop is every hold together");
+        let w = r.waits();
+        assert_eq!((w.name, w.wait.get("tests").map(String::as_str), w.changed.get("work"), w.after_secs, w.timeout_secs), ("themes", Some("waiting"), Some(&1), 0, 300));
+        assert!(Story::parse(STORY).unwrap().recordings.is_empty());
+    }
+
+    #[test]
+    fn a_recording_that_cannot_loop_or_waits_on_nothing_real_is_refused() {
+        let text = format!("{STORY}{RECORDING}");
+        let refused = |from: &str, to: &str, says: &str| {
+            let err = Story::parse(&text.replace(from, to)).unwrap_err().to_string();
+            assert!(err.contains(says), "{from} -> {to}: {err}");
+        };
+        refused("themes = [\"navy\", \"peach-light\", \"matrix\"]", "themes = [\"navy\"]", "at least two themes");
+        refused("hold_secs = 3", "hold_secs = 0.5", "hold_secs must be 1 to 15");
+        refused("hold_secs = 3", "hold_secs = 3\nseam_secs = 4", "seam_secs must be 0.2 to hold_secs");
+        refused("hold_secs = 3", "hold_secs = 3\nfps = 0", "fps must be 1 to 60");
+        refused("hold_secs = 3", "hold_secs = 3\nwidth = 100", "width must be 320 to 3840");
+        refused("wait = { tests = \"waiting\" }\nchanged", "wait = { nobody = \"waiting\" }\nchanged", "recording \"themes\" waits on pane \"nobody\"");
+        refused("changed = { work = 1 }", "changed = { site = 1 }", "recording \"themes\": changed names \"site\"");
     }
 
     #[test]

@@ -13,7 +13,8 @@
 # Screen Recording permission for "Arkos Shoot" (the tool runs as an app of its own, so macOS
 # attributes the capture to it rather than to whatever shell started it; allow it when asked the
 # first time). The window need not stay in front: captures go by window id. Progress captures and the panes'
-# states land in docs/images/progress/<scene>/ every 20 s.
+# states land in docs/images/progress/<scene>/ every 20 s. A scene with a [[recording]] also
+# needs swiftc (Xcode's command line tools) and ffmpeg, and writes <scene>-<name>.mp4 and .jpg.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
