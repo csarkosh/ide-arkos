@@ -2043,7 +2043,7 @@ impl Viewer {
 
     /// Whether the rendered view shows this viewer: a markdown document in Rendered mode.
     pub fn rendered(&self) -> bool {
-        self.mode == ViewMode::Rendered && self.doc.is_some()
+        self.mode == ViewMode::Rendered && self.doc.is_some() && is_markdown(&self.path)
     }
 
     /// The block holding the caret, which the rendered view shows raw.
@@ -2986,6 +2986,13 @@ impl Viewer {
     /// line's end.
     fn field(&self) -> Option<(edit::Pos, edit::Pos)> {
         let doc = self.doc.as_ref()?;
+        // A code document has no blocks: the field is the selection's lines, whole (the caret's
+        // line alone with nothing selected), so an offset into it never counts the file.
+        if !is_markdown(&self.path) {
+            let (a, b) = (doc.clamp(self.caret.anchor), doc.clamp(self.caret.head));
+            let (lo, hi) = (a.min(b), a.max(b));
+            return Some((edit::Pos { line: lo.line, ch: 0 }, doc.clamp(edit::Pos { line: hi.line, ch: usize::MAX })));
+        }
         let b = self.blocks.get(md_blocks::block_at(&self.blocks, self.caret.head.line))?;
         let from = doc.clamp(edit::Pos { line: b.lines.start, ch: 0 });
         let to = doc.clamp(edit::Pos { line: b.lines.end.saturating_sub(1).max(b.lines.start), ch: usize::MAX });
@@ -4810,6 +4817,12 @@ impl Root {
     /// is left alone (the poll's first look at a viewer's file can report a change it already shows).
     fn load(&mut self, tab: TabId, if_changed: bool, cx: &mut Context<Self>) {
         let Some(viewer) = self.viewers.get(&tab).cloned() else { return };
+        // A code document asked to load again with its file unchanged (the grammars landed, the
+        // theme changed) keeps its text, caret and history and takes new colours alone.
+        if !if_changed && { let v = viewer.read(cx); v.doc.is_some() && !viewer::is_markdown(&v.path) } {
+            self.recolour_viewer(tab, cx);
+            return;
+        }
         let highlighter = self.highlighter.clone();
         let limit = self.config.viewer.highlight_limit_bytes;
         let (path, known, seq) = viewer.update(cx, |v, _| {
@@ -4820,33 +4833,86 @@ impl Root {
             (v.path.clone(), known, v.loads)
         });
         let weak = viewer.downgrade();
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             let loaded = cx.background_executor().spawn(async move { viewer::read_file(&path, known, highlighter.as_deref(), limit, true) }).await;
             let Some(loaded) = loaded else { return };
-            let _ = weak.update(cx, |v, cx| {
+            let Ok(recolour) = weak.update(cx, |v, cx| {
                 if !should_apply(seq, v.applied) {
-                    return;
+                    return false;
                 }
                 // A document decides here, with the state it has now, never before the read.
                 if v.doc.is_some() {
+                    // A code document that appeared while this forced load was out (the grammars
+                    // landing during the first load) takes colours, not text.
+                    if !if_changed && !viewer::is_markdown(&v.path) {
+                        return true;
+                    }
                     match disk_change(loaded.fingerprint, v.fingerprint, v.dirty, v.saving) {
                         DiskChange::Ignore => {
                             if v.saving && loaded.fingerprint != v.fingerprint {
                                 v.recheck_after_save = true;
                             }
-                            return;
+                            return false;
                         }
                         DiskChange::Conflict => {
                             v.conflict = true;
                             cx.notify();
-                            return;
+                            return false;
                         }
                         DiskChange::Reload => {}
                     }
                 }
                 v.applied = seq;
                 v.apply(loaded, cx);
-            });
+                false
+            }) else { return };
+            if recolour {
+                let _ = this.update(cx, |root, cx| root.recolour_viewer(tab, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Colours a code document's lines as they are, off the UI thread, with the highlighter as it
+    /// is now; the result lands only if the lines are still the ones coloured, else it is done
+    /// again on the new lines.
+    fn recolour_viewer(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let (Some(viewer), Some(h)) = (self.viewers.get(&tab).cloned(), self.highlighter.clone()) else { return };
+        let (lines, path, applied) = {
+            let v = viewer.read(cx);
+            match &v.content {
+                Content::Text { lines, .. } => (lines.clone(), v.path.clone(), v.applied),
+                _ => return,
+            }
+        };
+        let limit = self.config.viewer.highlight_limit_bytes;
+        let weak = viewer.downgrade();
+        cx.spawn(async move |this, cx| {
+            let shown = lines.clone();
+            let built = {
+                let h = h.clone();
+                cx.background_executor().spawn(async move { CodeHighlight::new(&h, h.syntax_for(&path, &lines), &lines) }).await
+            };
+            let Ok(landed) = weak.update(cx, |v, cx| {
+                let same = matches!(&v.content, Content::Text { lines, .. } if Arc::ptr_eq(lines, &shown));
+                if v.applied != applied || !same {
+                    return false;
+                }
+                let (code, spans) = built;
+                crate::telemetry::viewed(&mut v.viewed, &v.content, v.plain.is_some(), Some(code.coloured()), &v.path, v.mode);
+                v.highlighter = Some(h);
+                v.highlight_limit = limit;
+                v.code = Some(code);
+                v.highlight_scheduled = false;
+                if let Content::Text { spans: s, .. } = &mut v.content {
+                    *s = spans;
+                }
+                cx.notify();
+                true
+            }) else { return };
+            if !landed {
+                let _ = this.update(cx, |root, cx| root.recolour_viewer(tab, cx));
+            }
         })
         .detach();
     }

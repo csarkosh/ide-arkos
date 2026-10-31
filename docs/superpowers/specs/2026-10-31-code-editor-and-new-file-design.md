@@ -68,9 +68,16 @@ foreground executor, with the lines not yet reached shown in their old colours u
 typical keystroke recolours one or two lines in microseconds; the CPU stays with the GPU rule of
 the effects (`effects-gpu-first`): state once, frames only while something changes.
 
-A theme change rebuilds the highlighter and reloads the viewer (`reload_all_viewers` now
-includes code documents): the document with its undo history stays when the text on disk is the
-same (`same_text`), and the load's spans and states take over.
+A theme change, or the grammars landing after the first load, asks every code viewer to load
+again (`reload_all_viewers` now includes code documents). For a code document that is a
+recolour, not a read (`Root::recolour_viewer`): the lines it shows are coloured on the background
+thread with the highlighter as it is now, and the result lands only if they are still the lines
+shown (else it is done again), so the text, caret, undo history and dirty state are untouched. A
+forced load that finds a document where there was none when it started (the grammars landed
+during the first read) recolours the same way instead of being dropped as an unchanged file.
+
+The input method's field, the active block in markdown, is in code the selection's lines whole
+(the caret's line alone with nothing selected), so an offset into it never counts the file.
 
 ### 4.2 Keys
 
@@ -104,11 +111,12 @@ its children's depth (the folder expands if it was collapsed), or at the top of 
 project folder. The row is a `LineEdit` in the terminal font with a file icon's width of indent,
 empty, with the keys. The sidebar's selection moves to the folder.
 
-- Enter creates the file: the name is trimmed; empty, `.`, `..`, or a name with a NUL or a `:` is
-  refused with "a file name" under the row; a name with `/` makes the folders on the way
-  (`create_dir_all`) and then the file (`File::create_new`); an existing path is refused with
-  "already exists". An I/O error shows its message under the row. The row stays open on a
-  refusal with the text kept.
+- Enter creates the file: the name is trimmed; empty, absolute, with an empty, `.` or `..`
+  part, or with a NUL or a `:` is refused with the notice "a file name"; a name with `/` makes
+  the folders on the way (`create_dir_all`) and then the file (`File::create_new`); an existing
+  path is refused with the notice "already exists", and an I/O error with its message. The
+  notices are the bell's, since the tree's rows are one height and have no room under them. The
+  row stays open on a refusal with the text kept.
 - On success the prompt closes, the folders on the way expand, the tree reads them again at
   once (`invalidate` and `load_pending_dirs`), the new file is selected and opened pinned in the
   focused pane (`open_viewer(path, true)`), and the keys go to the pane so typing starts in the
@@ -133,15 +141,16 @@ Headless, written before the code:
 - `viewer::read_file`: a `.rs` file gets a document and coloured spans; one with a `.weird`
   extension a document and plain spans; a file over the limit no document and `Plain::TooBig`;
   a non-UTF-8 `.rs` no document and `ReadOnlyWhy::NotUtf8`; an empty file a document of one line.
-- `viewer::apply`: the same text landing again keeps the document and takes the new spans.
+- `viewer::line_splice`: the common prefix, then the common suffix, of two line lists.
 - `viewer`: `code_newline` keeps the indent; `indent_unit` on tab-indented, two-space,
   four-space and unindented files; Tab in code types the unit.
 - `viewer_element::code_runs`: spans map onto a line with a tab expanded to four columns.
 - `sidebar::context_menu_items`: "New File" first, aimed at the folder for a folder and the
   parent for a file; the root menu's three rows.
 - `sidebar::new_file_target`: the name rules.
-- `sidebar::NewFile::key`: Enter with a bad name stays with an error, Escape cancels, a good name
-  asks to create.
+- `sidebar::NewFile::key`: Enter with a bad name is refused, Escape cancels, a good name asks
+  to create; `create_file` makes the folders and refuses an existing path; `prompt_row` places
+  the row.
 - `md_menu::menu_rows`: a code document's menu is Cut, Copy, Paste.
 
 ## 7. Docs

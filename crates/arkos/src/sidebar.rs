@@ -206,6 +206,7 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 let now = Instant::now();
                 root.wt_menu.hide(now);
                 root.link_menu.hide(now);
+                root.md_menu.hide(now);
                 root.context_menu.show(ContextMenu { path: root.project.clone(), is_dir: true, at: ev.position }, now);
                 cx.notify();
             }),
@@ -638,6 +639,7 @@ pub fn render_rows(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Un
                             let now = Instant::now();
                             root.wt_menu.hide(now);
                             root.link_menu.hide(now);
+                            root.md_menu.hide(now);
                             root.context_menu.show(ContextMenu { path: p_menu.clone(), is_dir, at: ev.position }, now);
                             cx.notify();
                         });
@@ -1395,16 +1397,17 @@ impl Root {
         cx.notify();
     }
 
-    /// Escape while a right-click menu (the tree's, a worktree's or a terminal link's) or a
-    /// title bar popover is open closes it and nothing else.
+    /// Escape while a right-click menu (the tree's, a worktree's, a terminal link's or a
+    /// document's) or a title bar popover is open closes it and nothing else.
     pub(crate) fn escape_closes_menu(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.popover.value().is_some()) {
+        if !escape_closes(&ks.key, self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some()) {
             return false;
         }
         let now = Instant::now();
         self.context_menu.hide(now);
         self.wt_menu.hide(now);
         self.link_menu.hide(now);
+        self.md_menu.hide(now);
         self.close_popovers(now);
         cx.notify();
         true
