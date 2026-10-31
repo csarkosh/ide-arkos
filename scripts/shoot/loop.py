@@ -7,7 +7,7 @@ first theme again. The loop is the period, its seam hidden by cross-fading that 
 return to the first theme, as the window really drew it) into the opening seconds, so the last
 frame leads into the first with no cut:
 
-    python3 -I scripts/shoot/loop.py <in.mov> <out.mp4> --period 16 [--seam 1] [--fps 30] [--width 1320] [--poster out.jpg]
+    python3 -I scripts/shoot/loop.py <in.mp4> <out.mp4> --period 16 [--seam 1] [--fps 30] [--width 1320] [--poster out.jpg]
 
 The frames are re-timed at a constant rate (ScreenCaptureKit delivers one only when the window
 changes), scaled to at most `width` across, and written as H.264 without sound, ready to

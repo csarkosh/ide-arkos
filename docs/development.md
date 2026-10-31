@@ -259,8 +259,8 @@ A storyboard's `[[recording]]` (spec `docs/superpowers/specs/2026-10-31-shoot-re
 records the window after the shots: it waits as a shot does (`wait`, `changed`, `after_secs`,
 `timeout_secs`), then shows each of `themes` (built-in theme names, two or more) for `hold_secs`
 (4) and the first again, the switches made through the config so the window cross-fades them
-itself and a light theme draws as light. `scripts/shoot/record.swift` (ScreenCaptureKit's
-recording output, macOS 15 and later, built with `swiftc` once a run) records the window by its
+itself and a light theme draws as light. `scripts/shoot/record.swift` (ScreenCaptureKit, macOS 14
+and later, its frames encoded by ffmpeg, since a runner has no video encoder of its own; built with `swiftc` once a run) records the window by its
 id, without its shadow or the pointer, and `scripts/shoot/loop.py` (ffmpeg) cuts the loop: one
 period long (the holds together), the return to the first theme cross-faded into the opening
 `seam_secs` (1), at `fps` (30) and at most `width` (1320) pixels across, written as

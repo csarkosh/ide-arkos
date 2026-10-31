@@ -16,8 +16,8 @@ decode, the watercolor washes.
 - `[[recording]]` in a storyboard: `name`, the same `wait`, `changed`, `after_secs` and
   `timeout_secs` a shot has, `themes` (two or more built-in theme names), `hold_secs` (4 by
   default), `fps` (30), `seam_secs` (1) and `width` (1320). It runs after every `[[shot]]`.
-- The window is recorded by its id through ScreenCaptureKit's recording output
-  (`scripts/shoot/record.swift`, macOS 15 and later, compiled once a run with `swiftc`): the
+- The window is recorded by its id through ScreenCaptureKit, its raw frames encoded by ffmpeg
+  (`scripts/shoot/record.swift`, macOS 14 and later, compiled once a run with `swiftc`; a GitHub runner has no video encoder, so ScreenCaptureKit's own recording output fails there): the
   window alone, no shadow, no pointer, whatever lies over it. The tool switches themes by
   rewriting the shoot's config, which the window reloads and cross-fades (THEME_FADE), so the
   transitions are the IDE's own. A theme's `appearance` (from `crates/arkos/themes/<name>.toml`)

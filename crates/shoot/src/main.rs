@@ -435,7 +435,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     activate(window_pid);
     show(&rec.themes[0])?;
     pause(Duration::from_millis(1500))?;
-    let raw = progress.dir.join(format!("{picture}.mov"));
+    let raw = progress.dir.join(format!("{picture}.raw.mp4"));
     let max_secs = rec.hold_secs * (rec.themes.len() as f64 + 1.0) + rec.seam_secs + 15.0;
     let child = start_recorder(recorder, window_id, &raw, rec.fps, max_secs)?;
     say(&format!("{}: recording {} themes, {:.1} s each", rec.name, rec.themes.len(), rec.hold_secs));
@@ -480,7 +480,7 @@ fn theme_appearance(repo: &Path, name: &str) -> Result<String> {
 }
 
 /// `scripts/shoot/record.swift` built once a run into the cache: the window recorder through
-/// ScreenCaptureKit, macOS 15 and later.
+/// ScreenCaptureKit (macOS 14 and later), its frames encoded by ffmpeg.
 fn build_recorder(repo: &Path, cache: &Path) -> Result<PathBuf> {
     let src = repo.join("scripts/shoot/record.swift");
     let bin = cache.join("record");

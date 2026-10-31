@@ -1,14 +1,19 @@
-// Records one window, by its window server id, to a QuickTime file: the window alone, whatever
-// lies over it, without its shadow or the pointer, through ScreenCaptureKit's recording output
-// (macOS 15 and later). arkos-shoot compiles this with swiftc and runs it for a storyboard's
+// Records one window, by its window server id, to an H.264 file: the window alone, whatever
+// lies over it, without its shadow or the pointer, through ScreenCaptureKit (macOS 14 and
+// later). The frames go raw to ffmpeg, which encodes them in software: a GitHub macOS runner
+// has no video encoder of its own, so ScreenCaptureKit's recording output fails there on its
+// first frame. arkos-shoot compiles this with swiftc and runs it for a storyboard's
 // `[[recording]]`; it prints "recording" once frames flow, and stops, finishing the file, on
 // SIGINT or SIGTERM or after --max-secs.
 //
-//   record <window id> <out.mov> [--fps 30] [--max-secs 120]
+//   record <window id> <out.mp4> [--fps 30] [--max-secs 120]
 //
-// The window's frames come at most `fps` a second and only when something on it changes, so the
-// file's frame timing is uneven; scripts/shoot/loop.py re-times it at a constant rate.
-import AVFoundation
+// ScreenCaptureKit delivers a frame only when the window changes, so a timer writes the latest
+// frame `fps` times a second and the file keeps a constant rate. The capture is one pixel a
+// point, which is the runner's density and what the page shows.
+import AppKit
+import CoreMedia
+import CoreVideo
 import Foundation
 import ScreenCaptureKit
 
@@ -35,28 +40,69 @@ while !args.isEmpty {
     }
 }
 guard positional.count == 2, let windowId = UInt32(positional[0]) else {
-    fail("usage: record <window id> <out.mov> [--fps 30] [--max-secs 120]")
+    fail("usage: record <window id> <out.mp4> [--fps 30] [--max-secs 120]")
 }
-let outURL = URL(fileURLWithPath: positional[1])
-try? FileManager.default.removeItem(at: outURL)
+let outPath = positional[1]
+try? FileManager.default.removeItem(atPath: outPath)
 
-final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
+final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
+    let queue = DispatchQueue(label: "record.frames")
     var stream: SCStream?
+    var encoder: Process?
+    var sink: FileHandle?
+    var timer: DispatchSourceTimer?
+    var latest: Data?
+    var width = 0
+    var height = 0
+    var announced = false
     var stopping = false
 
-    func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
-        print("recording")
-        fflush(stdout)
+    /// ffmpeg reading raw BGRA frames on its standard input, writing the file.
+    func startEncoder() throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                       "-f", "rawvideo", "-pix_fmt", "bgra", "-s", "\(width)x\(height)", "-r", "\(fps)", "-i", "-",
+                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", outPath]
+        let pipe = Pipe()
+        p.standardInput = pipe
+        p.standardOutput = FileHandle.standardError
+        p.standardError = FileHandle.standardError
+        try p.run()
+        encoder = p
+        sink = pipe.fileHandleForWriting
     }
 
-    func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        print("finished \(outURL.path)")
-        fflush(stdout)
-        exit(0)
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen, sampleBuffer.isValid,
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let status = attachments.first?[.status] as? Int, status == SCFrameStatus.complete.rawValue,
+              let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixels) else { return }
+        let stride = CVPixelBufferGetBytesPerRow(pixels)
+        let rowBytes = width * 4
+        var frame = Data(capacity: rowBytes * height)
+        for y in 0..<height {
+            frame.append(base.advanced(by: y * stride).assumingMemoryBound(to: UInt8.self), count: rowBytes)
+        }
+        latest = frame
     }
 
-    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        fail("recording failed: \(error.localizedDescription)")
+    /// The latest frame to ffmpeg, `fps` times a second, from the first frame on.
+    func tick() {
+        guard let frame = latest, let sink, !stopping else { return }
+        do {
+            try sink.write(contentsOf: frame)
+        } catch {
+            fail("ffmpeg stopped taking frames: \(error.localizedDescription)")
+        }
+        if !announced {
+            announced = true
+            print("recording")
+            fflush(stdout)
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -64,17 +110,24 @@ final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
     }
 
     func stop() {
-        guard !stopping, let stream else { return }
-        stopping = true
-        Task {
-            do {
-                try await stream.stopCapture()
-            } catch {
-                fail("stopCapture: \(error.localizedDescription)")
+        queue.async {
+            guard !self.stopping else { return }
+            self.stopping = true
+            self.timer?.cancel()
+            if let stream = self.stream {
+                let done = DispatchSemaphore(value: 0)
+                stream.stopCapture { _ in done.signal() }
+                _ = done.wait(timeout: .now() + 5)
             }
-            // recordingOutputDidFinishRecording exits; if it never comes, do not hang the shoot.
-            try? await Task.sleep(for: .seconds(10))
-            fail("the recording did not finish within 10 s of stopping")
+            try? self.sink?.close()
+            if let encoder = self.encoder {
+                encoder.waitUntilExit()
+                if encoder.terminationStatus != 0 { fail("ffmpeg failed (status \(encoder.terminationStatus))") }
+            }
+            if !self.announced { fail("no frame of the window arrived") }
+            print("finished \(outPath)")
+            fflush(stdout)
+            exit(0)
         }
     }
 }
@@ -98,10 +151,13 @@ Task {
         guard let window = content.windows.first(where: { $0.windowID == windowId }) else {
             fail("the window server lists no window \(windowId)")
         }
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        // Even sides: the encoder's 4:2:0 wants them.
+        recorder.width = Int(window.frame.width) & ~1
+        recorder.height = Int(window.frame.height) & ~1
         let config = SCStreamConfiguration()
-        config.width = Int(window.frame.width * scale)
-        config.height = Int(window.frame.height * scale)
+        config.width = recorder.width
+        config.height = recorder.height
+        config.pixelFormat = kCVPixelFormatType_32BGRA
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.showsCursor = false
         config.ignoreShadowsSingleWindow = true
@@ -109,15 +165,19 @@ Task {
         config.queueDepth = 6
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let stream = SCStream(filter: filter, configuration: config, delegate: recorder)
-        let outputConfig = SCRecordingOutputConfiguration()
-        outputConfig.outputURL = outURL
-        outputConfig.outputFileType = .mov
-        outputConfig.videoCodecType = .h264
-        let output = SCRecordingOutput(configuration: outputConfig, delegate: recorder)
-        try stream.addRecordingOutput(output)
+        try stream.addStreamOutput(recorder, type: .screen, sampleHandlerQueue: recorder.queue)
         recorder.stream = stream
+        try recorder.startEncoder()
         try await stream.startCapture()
-        try? await Task.sleep(for: .seconds(maxSecs))
+        let timer = DispatchSource.makeTimerSource(queue: recorder.queue)
+        timer.schedule(deadline: .now(), repeating: 1.0 / Double(fps), leeway: .milliseconds(2))
+        timer.setEventHandler { recorder.tick() }
+        timer.resume()
+        recorder.timer = timer
+        let check = min(10.0, maxSecs)
+        try? await Task.sleep(for: .seconds(check))
+        if !recorder.announced { fail("no frame of window \(windowId) arrived in \(Int(check)) s") }
+        if maxSecs > check { try? await Task.sleep(for: .seconds(maxSecs - check)) }
         recorder.stop()
     } catch {
         fail("could not record window \(windowId): \(error.localizedDescription)")
