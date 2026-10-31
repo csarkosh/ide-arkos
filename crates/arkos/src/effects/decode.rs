@@ -168,8 +168,9 @@ impl Decode {
                         Seen { style: style.or(seen.style), ..seen }
                     } else {
                         let was = if scrolled { ' ' } else { seen.ch };
-                        // A dot blinking off keeps the style it showed in.
-                        let mark = crate::effects::paint::doodle_mark(seen.ch, ch).and_then(|m| {
+                        // A dot blinking off keeps the style it showed in. While the screen
+                        // scrolls nothing blinks: a dot leaving a row moved on with its line.
+                        let mark = if scrolled { None } else { crate::effects::paint::doodle_mark(seen.ch, ch) }.and_then(|m| {
                             let shown = if ch == ' ' { seen.style } else { style };
                             shown.map(|s| (m, s, now))
                         });
@@ -349,6 +350,19 @@ mod tests {
         d.observe(&grid(&["stop 3", "slip 4"]), 0, t0 + DEC * 3, false, DEC);
         assert_eq!(d.was_at(1, 1), ' ', "a new line on a scrolled row replaced nothing");
         assert!(d.changed_at(1, 1).is_some());
+    }
+
+    #[test]
+    fn a_dot_that_scrolls_past_a_blank_row_is_not_a_blink() {
+        let t0 = Instant::now();
+        let mut d = Decode::new(6, 3, 0);
+        d.observe(&grid(&["⏺ Read", "      ", "hello "]), 0, t0, false, DEC);
+        // The program scrolls its own view down a row: the line moves, its dot leaves row 0.
+        d.observe(&grid(&["      ", "⏺ Read", "hello "]), 0, t0 + DEC, false, DEC);
+        assert!(d.mark_at(0, 0).is_none(), "the row the dot left did not blink");
+        // In place, the same dot going and coming back is a blink.
+        d.observe(&grid(&["      ", "  Read", "hello "]), 0, t0 + DEC * 2, false, DEC);
+        assert_eq!(d.mark_at(0, 1).map(|m| m.0), Some('⏺'));
     }
 
     #[test]

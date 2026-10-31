@@ -47,8 +47,12 @@ pub const PAINT_OVERWRITE_SHARE: f32 = 0.6;
 pub const PAINT_DOODLE: u32 = 18;
 pub const PAINT_HIDE: u32 = 19;
 /// The variant a cell background is washed in with: a brush sweeping across the band, left to
-/// right, over `WASH_TIME` seconds from when its row's text starts.
+/// right, over `WASH_TIME` seconds from when its row's text starts. It and the three variants after
+/// it say which of the band's top and bottom meet a band of its colour in the next row (`WASH_UP`,
+/// `WASH_DOWN`): those edges stay straight so the rows join, and the others are softened.
 pub const PAINT_WASH: u32 = 20;
+pub const WASH_UP: u32 = 1;
+pub const WASH_DOWN: u32 = 2;
 pub const WASH_TIME: f32 = 0.3;
 pub const DOODLE_HOLD: f32 = 1.0;
 /// How many times a second the pen goes round a doodled mark.
@@ -91,7 +95,7 @@ pub const PAINT_JITTER: f32 = 0.1;
 /// and bead how strong its wet bead is (0.6 to 1.2). The soak and the fade, and the spare
 /// variants past them, have no stagger and last `PAINT_INLINE`. The shader reads the same table.
 pub fn hand(variant: u32) -> [f32; 4] {
-    if variant == PAINT_WASH {
+    if (PAINT_WASH..PAINT_WASH + 4).contains(&variant) {
         return [0.0, WASH_TIME / PAINT_DUR, 0.92, 0.6];
     }
     if variant >= PAINT_HANDS {
@@ -137,13 +141,14 @@ pub fn variant_of(stamp: f32) -> u32 {
 /// The stamp a cell background under a run stamped `stamp` is washed in with, its left edge `x`
 /// points from the window's left and the glyph clock at `clock`: the wash starts where the run's
 /// text starts there. A band under no stamp (or a doodled or hidden one) still names the wash, so
-/// the shader draws it as one, but long dried.
-pub fn wash_stamp(stamp: f32, x: f32, clock: f32) -> f32 {
+/// the shader draws it as one, but long dried. `joined` is `WASH_UP` and `WASH_DOWN` as they hold.
+pub fn wash_stamp(stamp: f32, x: f32, clock: f32, joined: u32) -> f32 {
     let variant = variant_of(stamp);
+    let wash = PAINT_WASH + (joined & (WASH_UP | WASH_DOWN));
     if stamp == 0.0 || variant == PAINT_DOODLE || variant == PAINT_HIDE {
-        return encode(clock - WASH_DRIED, PAINT_WASH);
+        return encode(clock - WASH_DRIED, wash);
     }
-    encode(stamp + x * PAINT_STAGGER_PER_PT * hand(variant)[0], PAINT_WASH)
+    encode(stamp + x * PAINT_STAGGER_PER_PT * hand(variant)[0], wash)
 }
 
 /// How long ago a band that is not washing in was washed, as its stamp says: past any wetness.
@@ -373,15 +378,17 @@ mod tests {
     #[test]
     fn a_background_washes_in_from_where_its_text_starts_and_a_still_one_does_not() {
         let pen = encode(10.0, 3);
-        let wash = wash_stamp(pen, 96.0, 12.0);
+        let wash = wash_stamp(pen, 96.0, 12.0, 0);
         assert_eq!(variant_of(wash), PAINT_WASH);
         let start = 10.0 + 96.0 * PAINT_STAGGER_PER_PT * hand(3)[0];
         assert!((wash - start).abs() <= 1.5 / PAINT_GRID, "{wash} {start}");
         assert_eq!(hand(PAINT_WASH)[0], 0.0, "the whole band sweeps at once, not cell by cell");
-        let dried = wash_stamp(0.0, 96.0, 50.0);
+        let dried = wash_stamp(0.0, 96.0, 50.0, 0);
         assert_eq!(variant_of(dried), PAINT_WASH, "a still band is still a wash");
         assert!(dried < 50.0 - 10.0, "and long dry: {dried}");
-        assert_eq!(variant_of(wash_stamp(encode(10.0, PAINT_HIDE), 96.0, 50.0)), PAINT_WASH);
+        assert_eq!(variant_of(wash_stamp(encode(10.0, PAINT_HIDE), 96.0, 50.0, 0)), PAINT_WASH);
+        assert_eq!(variant_of(wash_stamp(pen, 96.0, 12.0, WASH_UP | WASH_DOWN)), PAINT_WASH + 3, "the variant carries which edges join");
+        assert_eq!(hand(PAINT_WASH + 3), hand(PAINT_WASH));
     }
 
     #[test]

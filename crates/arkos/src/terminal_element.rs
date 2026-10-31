@@ -392,7 +392,7 @@ impl Element for TerminalElement {
                 Some(Ink::Paint(clock)) => Some(clock),
                 _ => None,
             };
-            let paint_row = |cells: &Vec<(char, CellStyle, CellKind)>, stamps: &[f32], y: Pixels, window: &mut Window, cx: &mut App| {
+            let paint_row = |cells: &Vec<(char, CellStyle, CellKind)>, stamps: &[f32], near: [Option<&Vec<(char, CellStyle, CellKind)>>; 2], y: Pixels, window: &mut Window, cx: &mut App| {
                 // Under watercolor a cell background is a wash: each stretch of one colour is
                 // painted as a band the glyph shader inks, washed in as its row's text starts.
                 if let Some(clock) = washed {
@@ -400,7 +400,10 @@ impl Element for TerminalElement {
                         let x = origin.x + px(band.col as f32 * cw);
                         let w = band.len as f32 * cw;
                         let stamp = stamps.get(band.col..band.col + band.len).and_then(|s| s.iter().copied().find(|&s| s != 0.0)).unwrap_or(0.0);
-                        let stamp = paint::wash_stamp(stamp, f32::from(x), clock);
+                        // Which of its top and bottom meet a band of its colour, so the rows join.
+                        let meets = |row: Option<&Vec<(char, CellStyle, CellKind)>>| row.is_some_and(|r| r.iter().skip(band.col).take(band.len).any(|c| c.1.bg == band.color));
+                        let joined = if meets(near[0]) { paint::WASH_UP } else { 0 } | if meets(near[1]) { paint::WASH_DOWN } else { 0 };
+                        let stamp = paint::wash_stamp(stamp, f32::from(x), clock, joined);
                         let path = crate::icons::wash_path(w.round().max(1.0) as u32, f32::from(lh).round().max(1.0) as u32);
                         let bounds = Bounds { origin: point(x, y), size: size(px(w), lh) };
                         let _ = window.with_glyph_stamp(stamp, |window| window.paint_svg(bounds, path, gpui::TransformationMatrix::unit(), hsla(band.color), cx));
@@ -431,7 +434,7 @@ impl Element for TerminalElement {
             };
             if let Some(above) = &rows.above {
                 let y = origin.y + px((frac - 1.0) * cell.height);
-                paint_row(above, &[], y, window, cx);
+                paint_row(above, &[], [None, None], y, window, cx);
             }
             for (i, row) in visible.as_ref().unwrap_or(&rows.visible).iter().enumerate() {
                 let y = origin.y + px((i as f32 + frac) * cell.height);
@@ -445,9 +448,11 @@ impl Element for TerminalElement {
                         .map(|(&(_, style, kind), &(was, stamp, shown))| (if stamp == 0.0 { ' ' } else { was }, CellStyle { bg, ..shown.unwrap_or(style) }, kind))
                         .collect();
                     let stamps: Vec<f32> = ghosts.iter().map(|g| g.1).collect();
-                    paint_row(&cells, &stamps, y, window, cx);
+                    paint_row(&cells, &stamps, [None, None], y, window, cx);
                 }
-                paint_row(row, stamps.get(i).map_or(&[][..], Vec::as_slice), y, window, cx);
+                let shown = visible.as_ref().unwrap_or(&rows.visible);
+                let near = [i.checked_sub(1).and_then(|j| shown.get(j)), shown.get(i + 1)];
+                paint_row(row, stamps.get(i).map_or(&[][..], Vec::as_slice), near, y, window, cx);
             }
             if let Some((col, line)) = cursor {
                 if frac == 0.0 {

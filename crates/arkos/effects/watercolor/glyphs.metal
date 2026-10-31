@@ -22,8 +22,9 @@
 // the mark swaying a little with the hand, easing back to plain ink as ARKOS_DOODLE_HOLD runs out.
 // A cell background is a band the terminal paints as a filled shape in ARKOS_PAINT_WASH: a wash of
 // its colour, in broad soft blooms rather than the stroke's grain, its ends pooled a little darker
-// and bleeding raggedly past the band, its top and bottom straight so rows of one colour meet
-// without a seam. A band whose row is being written washes in behind a ragged brush front that
+// and bleeding raggedly past the band. Its top and bottom are softened the same way, unless a band
+// of its colour goes on in the row above or below (the variant's two low bits, which the terminal
+// works out), where the edge stays straight so the rows meet without a seam. A band whose row is being written washes in behind a ragged brush front that
 // sweeps it left to right over its glyph time, and dries a shade lighter. The ink it leaves is wetter, deeper and bluer, with
 // a wide bleed, and dries to the ink above over ARKOS_PAINT_DRY. A glyph with no stamp (0), or
 // one whose ink has dried, is drawn exactly as it is without one.
@@ -100,6 +101,9 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
   int variant = int(round(sprite.stamp * ARKOS_PAINT_STEPS)) & (ARKOS_PAINT_VARIANTS - 1);
   float4 hand = ARKOS_PAINT_HAND[variant];
   float start = sprite.stamp + float(sprite.bounds.origin.x) / ARKOS_SCALE * ARKOS_PAINT_STAGGER * hand.x;
+  // A wash carries which of its top and bottom join the next row's band in place of the bead.
+  bool wash = variant >= ARKOS_PAINT_WASH && variant < ARKOS_PAINT_WASH + 4;
+  hand.w = wash ? float(variant - ARKOS_PAINT_WASH) : hand.w;
   return MonochromeInkVertexOutput{
       device_position,
       tile_position,
@@ -112,7 +116,7 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
       // 0 for the pen, 1 for a change in place soaking in, 2 for the text it replaced fading out,
       // 3 for a doodled mark, 4 for a cell drawn as nothing and 5 for a background's wash.
       sprite.stamp == 0.0 ? 0.0
-        : variant == ARKOS_PAINT_WASH ? 5.0
+        : (variant >= ARKOS_PAINT_WASH && variant < ARKOS_PAINT_WASH + 4) ? 5.0
         : variant == ARKOS_PAINT_HIDE ? 4.0
         : variant == ARKOS_PAINT_DOODLE ? 3.0
         : variant == ARKOS_PAINT_FADE ? 2.0
@@ -147,19 +151,26 @@ float4 arkos_wash(MonochromeInkFragmentInput input, float2 px, float now) {
   float2 b = input.box;
   float bloom = arkos_noise(px * 0.025);
   float grain = arkos_noise(px * 0.12 + 3.0);
-  // Past the band's ends (never its top or bottom), a ragged bleed; inside, the body, a little
-  // darker toward each end where the pigment pooled.
-  float beyond = max(-b.x, b.x - 1.0) * size.x;
-  if (b.y < 0.0 || b.y > 1.0) {
-    return float4(0.0);
-  }
+  // Which edges are open: both ends always; the top and bottom unless the next row's band joins.
+  int joined = int(input.paint.w + 0.5);
+  bool open_top = (joined & 1) == 0;
+  bool open_bottom = (joined & 2) == 0;
+  // Past an open edge, a ragged bleed; past a joined one, nothing, the next row's band takes over.
+  float beyond_x = max(-b.x, b.x - 1.0) * size.x;
+  float beyond_y = b.y < 0.0 ? (open_top ? -b.y * size.y : 1e4) : (b.y > 1.0 ? (open_bottom ? (b.y - 1.0) * size.y : 1e4) : 0.0);
+  float beyond = max(beyond_x, beyond_y);
   float body;
   float pooled = 0.0;
   if (beyond > 0.0) {
     body = saturate(1.0 - (beyond - (grain - 0.35) * 3.0) / 2.5) * 0.55;
   } else {
     body = 0.72 + 0.28 * bloom - 0.06 * grain;
+    // How far inside the nearest open edge, in half points: the body fades in raggedly over the
+    // last few and pools a little darker just inside.
     float inside = min(b.x, 1.0 - b.x) * size.x;
+    if (open_top) { inside = min(inside, b.y * size.y); }
+    if (open_bottom) { inside = min(inside, (1.0 - b.y) * size.y); }
+    body *= smoothstep(0.0, 4.0, inside + (grain - 0.5) * 3.0 + 1.0);
     pooled = (1.0 - smoothstep(0.0, 5.0, inside)) * (0.5 + 0.5 * grain);
   }
   float alpha = saturate(body + pooled * 0.12);
