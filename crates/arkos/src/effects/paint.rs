@@ -14,6 +14,11 @@ pub const PAINT_DRY: f32 = 0.8;
 /// How much later each cell to the right starts, in seconds a point, for a hand of pace 1: 22 ms
 /// a cell of the default terminal's 9.6 point wide cells.
 pub const PAINT_STAGGER_PER_PT: f32 = 0.022 / 9.6;
+/// How many rows the pen writes at a time, as the decode scrambles only its newest few
+/// (`decode::DECODE_ROWS`): the rows changed most recently, the lowest on screen first among rows
+/// changed at one instant. Older text shows as written, so a screenful of output does not all
+/// move at once.
+pub const PAINT_ROWS: usize = 4;
 /// How long past its drying the scene is still presented, so the last frame shows the ink dry.
 pub const PAINT_MARGIN: Duration = Duration::from_millis(50);
 /// Stamps sit on a grid of 1/`PAINT_GRID` seconds, and the `PAINT_VARIANTS` steps inside one of
@@ -29,10 +34,49 @@ pub const PAINT_HANDS: u32 = 16;
 pub const PAINT_SOAK: u32 = 16;
 pub const PAINT_FADE: u32 = 17;
 pub const PAINT_INLINE: f32 = 0.4;
-/// The most of a row's characters a change in place may touch at one instant: more is new
-/// writing (a scroll moved new lines onto rows that held others), written by the pen with
-/// nothing faded out.
+/// The most of a row's characters a change in place may touch at one instant, unless nearly all
+/// of the run overwrote text (`PAINT_OVERWRITE_SHARE` of it; a status line whose tail shifted when
+/// its timer grew a digit): more is new writing, written by the pen with nothing faded out.
 pub const PAINT_INLINE_SHARE: f32 = 0.4;
+pub const PAINT_OVERWRITE_SHARE: f32 = 0.6;
+/// The variant a working mark is doodled in (Claude Code's spinner, or a tool's blinking dot):
+/// one steady mark a pen keeps going round, instead of the frames the program flips through. The
+/// cell itself is drawn in `PAINT_HIDE`, which shows nothing, and the terminal paints the steady
+/// mark under it. A mark is doodled until `DOODLE_HOLD` seconds after it last changed, easing back
+/// to plain ink over the last part, so a dot blinking off is held and a spinner that stops settles.
+pub const PAINT_DOODLE: u32 = 18;
+pub const PAINT_HIDE: u32 = 19;
+/// The variant a cell background is washed in with: a brush sweeping across the band, left to
+/// right, over `WASH_TIME` seconds from when its row's text starts.
+pub const PAINT_WASH: u32 = 20;
+pub const WASH_TIME: f32 = 0.3;
+pub const DOODLE_HOLD: f32 = 1.0;
+/// How many times a second the pen goes round a doodled mark.
+pub const DOODLE_TURNS: f32 = 0.9;
+
+/// Claude Code's spinner frames, which a doodle draws as one steady star.
+const SPINNER: &[char] = &['·', '✢', '✳', '✶', '✻', '✽'];
+/// The dots a running tool blinks, which a doodle draws as one steady dot.
+const DOTS: &[char] = &['⏺', '●'];
+
+/// The steady mark a change from `was` to `now` is doodled as, if it is a working mark's: one
+/// spinner frame to another (a star), or a dot blinking on or off (a dot). Anything else, a middle
+/// dot written as text among them, is no working mark.
+pub fn doodle_mark(was: char, now: char) -> Option<char> {
+    let dot = |c: char| DOTS.contains(&c);
+    if was != now && SPINNER.contains(&was) && SPINNER.contains(&now) {
+        Some('✻')
+    } else if (dot(was) || dot(now)) && (was == ' ' || dot(was)) && (now == ' ' || dot(now)) {
+        Some('⏺')
+    } else {
+        None
+    }
+}
+
+/// Whether a cell showing `c` can carry a doodle: a working mark, or a space (a dot blinked off).
+pub fn holds_doodle(c: char) -> bool {
+    c == ' ' || SPINNER.contains(&c) || DOTS.contains(&c)
+}
 /// The steps a second a stamp is counted in.
 const STEPS: f32 = PAINT_GRID * PAINT_VARIANTS as f32;
 /// Runs written at one instant start one after another down the screen: each a little after the
@@ -47,6 +91,9 @@ pub const PAINT_JITTER: f32 = 0.1;
 /// and bead how strong its wet bead is (0.6 to 1.2). The soak and the fade, and the spare
 /// variants past them, have no stagger and last `PAINT_INLINE`. The shader reads the same table.
 pub fn hand(variant: u32) -> [f32; 4] {
+    if variant == PAINT_WASH {
+        return [0.0, WASH_TIME / PAINT_DUR, 0.92, 0.6];
+    }
     if variant >= PAINT_HANDS {
         return [0.0, PAINT_INLINE / PAINT_DUR, 0.62, 1.0];
     }
@@ -58,8 +105,9 @@ pub fn hand(variant: u32) -> [f32; 4] {
 const GLYPH_TIME_MAX: f32 = 1.25;
 
 /// The lines that tell a glyph shader the paint's timing: `ARKOS_PAINT_DUR`, `ARKOS_PAINT_DRY`,
-/// `ARKOS_PAINT_STAGGER` (seconds a point), the steps a second a stamp is counted in, the soak's
-/// and the fade's variants and the table of hands, `ARKOS_PAINT_HAND`.
+/// `ARKOS_PAINT_STAGGER` (seconds a point), the steps a second a stamp is counted in, the soak's,
+/// the fade's, the doodle's and the hidden variants, the doodle's timing and the table of hands,
+/// `ARKOS_PAINT_HAND`.
 pub fn paint_lines() -> String {
     let hands: Vec<String> = (0..PAINT_VARIANTS)
         .map(|v| {
@@ -68,7 +116,7 @@ pub fn paint_lines() -> String {
         })
         .collect();
     format!(
-        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STAGGER = {PAINT_STAGGER_PER_PT:.8};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
+        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STAGGER = {PAINT_STAGGER_PER_PT:.8};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
         hands.join(", ")
     )
 }
@@ -82,10 +130,24 @@ pub fn encode(t: f32, variant: u32) -> f32 {
 }
 
 /// The hand a stamp names, as the shader reads it.
-#[cfg(test)]
 pub fn variant_of(stamp: f32) -> u32 {
     ((stamp * STEPS).round() as i32 & (PAINT_VARIANTS as i32 - 1)) as u32
 }
+
+/// The stamp a cell background under a run stamped `stamp` is washed in with, its left edge `x`
+/// points from the window's left and the glyph clock at `clock`: the wash starts where the run's
+/// text starts there. A band under no stamp (or a doodled or hidden one) still names the wash, so
+/// the shader draws it as one, but long dried.
+pub fn wash_stamp(stamp: f32, x: f32, clock: f32) -> f32 {
+    let variant = variant_of(stamp);
+    if stamp == 0.0 || variant == PAINT_DOODLE || variant == PAINT_HIDE {
+        return encode(clock - WASH_DRIED, PAINT_WASH);
+    }
+    encode(stamp + x * PAINT_STAGGER_PER_PT * hand(variant)[0], PAINT_WASH)
+}
+
+/// How long ago a band that is not washing in was washed, as its stamp says: past any wetness.
+const WASH_DRIED: f32 = 30.0;
 
 /// A run's key, from its characters, so a line keeps its hand while it scrolls.
 fn run_key(chars: impl Iterator<Item = char>) -> u32 {
@@ -102,7 +164,8 @@ fn run_key(chars: impl Iterator<Item = char>) -> u32 {
 /// cascade, less the hand's stagger up to the first of them, so the shader, which adds each
 /// glyph's own x times that stagger, starts the first cell then and each one after it a little
 /// later. A run that replaced text in place (any of its cells was not a space, and the cells
-/// changed at its instant are at most `PAINT_INLINE_SHARE` of the row's characters) is no pen:
+/// changed at its instant are at most `PAINT_INLINE_SHARE` of the row's characters or at least
+/// `PAINT_OVERWRITE_SHARE` of the run's cells were not spaces) is no pen:
 /// it soaks in at its instant, all at once, and the text it replaced fades out under it. A cell whose
 /// ink is already dry gets 0, which the shader draws as ever, as does an unchanged one. The dry
 /// instant is that of the latest-drying cell still wet, None when none is.
@@ -130,7 +193,8 @@ pub fn row_stamps(
         let was_at = |c: usize| was.get(c).copied().unwrap_or(' ');
         let touched = changed.iter().filter(|&&c| c == Some(at)).count() as f32;
         let written = chars.iter().filter(|&&c| c != ' ').count().max(1) as f32;
-        let inline = same.iter().any(|&c| was_at(c) != ' ') && touched <= written * PAINT_INLINE_SHARE;
+        let over = same.iter().filter(|&&c| was_at(c) != ' ').count() as f32;
+        let inline = over > 0.0 && (touched <= written * PAINT_INLINE_SHARE || over >= same.len() as f32 * PAINT_OVERWRITE_SHARE);
         let (stamp, ghost, wet) = if inline {
             let t = clock - since;
             (encode(t, PAINT_SOAK), encode(t, PAINT_FADE), PAINT_INLINE + PAINT_DRY)
@@ -268,15 +332,56 @@ mod tests {
     }
 
     #[test]
-    fn a_row_mostly_rewritten_at_once_is_new_writing_and_fades_nothing_out() {
-        // A scroll put a new line on a row that held another: most of its cells differ.
+    fn a_row_mostly_rewritten_after_a_scroll_is_new_writing_and_fades_nothing_out() {
+        // A scroll put a new line on a row that held another: most of its cells differ, and the
+        // decode says they replaced nothing, since the old line moved on.
         let t0 = Instant::now();
         let chars: Vec<char> = "-r-xr-xr-x 1 root wheel 580 bundle".chars().collect();
-        let was: Vec<char> = "-rwxr-xr-x 2 root wheel 7013 json".chars().chain("  ".chars()).collect();
-        let changed: Vec<Option<Instant>> = chars.iter().zip(&was).map(|(a, b)| (a != b).then_some(t0)).collect();
+        let old: Vec<char> = "-rwxr-xr-x 2 root wheel 7013 json".chars().chain("  ".chars()).collect();
+        let changed: Vec<Option<Instant>> = chars.iter().zip(&old).map(|(a, b)| (a != b).then_some(t0)).collect();
+        let was = vec![' '; chars.len()];
         let (s, ghosts, _) = row_stamps(&changed, &chars, &was, x, 20.0, t0, &mut HashMap::new());
         assert!(s.iter().filter(|&&v| v != 0.0).all(|&v| variant_of(v) < PAINT_HANDS), "the pen writes it");
         assert!(ghosts.iter().all(|&g| g == 0.0), "nothing fades out");
+    }
+
+    #[test]
+    fn a_tail_shifted_over_its_old_self_crossfades_rather_than_being_rewritten() {
+        // "(9s · 4.0k)" became "(10s · 4.0k)": every cell from the digit on changed, over text.
+        let t0 = Instant::now();
+        let chars: Vec<char> = "x (10s · 4.0k)".chars().collect();
+        let was: Vec<char> = "x (9s · 4.0k) ".chars().collect();
+        // As the decode marks them: a cell that became a space is not a change.
+        let changed: Vec<Option<Instant>> = chars.iter().zip(&was).map(|(a, b)| (a != b && *a != ' ').then_some(t0)).collect();
+        let (s, ghosts, _) = row_stamps(&changed, &chars, &was, x, 20.0, t0, &mut HashMap::new());
+        assert!(s.iter().filter(|&&v| v != 0.0).all(|&v| variant_of(v) == PAINT_SOAK), "{s:?}");
+        assert!(ghosts.iter().any(|&g| g != 0.0));
+    }
+
+    #[test]
+    fn only_a_spinner_s_frames_and_a_blinking_dot_are_doodled() {
+        assert_eq!(doodle_mark('✢', '✳'), Some('✻'), "the spinner turns");
+        assert_eq!(doodle_mark('·', '✢'), Some('✻'));
+        assert_eq!(doodle_mark('⏺', ' '), Some('⏺'), "a dot blinks off");
+        assert_eq!(doodle_mark(' ', '⏺'), Some('⏺'), "and on");
+        assert_eq!(doodle_mark(' ', '·'), None, "a middle dot written as text");
+        assert_eq!(doodle_mark('a', '⏺'), None);
+        assert_eq!(doodle_mark('✻', 'W'), None);
+        assert!(holds_doodle(' ') && holds_doodle('✽') && holds_doodle('●') && !holds_doodle('x'));
+    }
+
+    #[test]
+    fn a_background_washes_in_from_where_its_text_starts_and_a_still_one_does_not() {
+        let pen = encode(10.0, 3);
+        let wash = wash_stamp(pen, 96.0, 12.0);
+        assert_eq!(variant_of(wash), PAINT_WASH);
+        let start = 10.0 + 96.0 * PAINT_STAGGER_PER_PT * hand(3)[0];
+        assert!((wash - start).abs() <= 1.5 / PAINT_GRID, "{wash} {start}");
+        assert_eq!(hand(PAINT_WASH)[0], 0.0, "the whole band sweeps at once, not cell by cell");
+        let dried = wash_stamp(0.0, 96.0, 50.0);
+        assert_eq!(variant_of(dried), PAINT_WASH, "a still band is still a wash");
+        assert!(dried < 50.0 - 10.0, "and long dry: {dried}");
+        assert_eq!(variant_of(wash_stamp(encode(10.0, PAINT_HIDE), 96.0, 50.0)), PAINT_WASH);
     }
 
     #[test]
