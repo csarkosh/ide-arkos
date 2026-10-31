@@ -70,3 +70,22 @@ timeout_secs = 420
 [[shot.crop]]
 name = "tabs"
 rect = [0.0, 0.0, 1.0, 0.075]
+
+# After the still, the same window through four of the built-in themes, four seconds each,
+# and back to the first, as a loop for the app's page (apps.csarko.sh): Navy's rune rain, the
+# two light themes' watercolor wash and ink, Matrix's phosphor rain and decode. The two short
+# sessions have answered by then; the long ones go on working through the theme changes.
+[[recording]]
+name = "themes"
+wait = { blog = "waiting", budget = "waiting" }
+themes = ["navy-runic", "lavender-light", "peach-light", "matrix"]
+hold_secs = 4
+
+# Both effects at a Retina Mac's density on the runner's one pixel a point (see the hacker).
+[[effect]]
+name = "runic"
+scale = 1.0
+
+[[effect]]
+name = "watercolor"
+scale = 1.0
