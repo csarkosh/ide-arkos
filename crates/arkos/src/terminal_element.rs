@@ -89,8 +89,9 @@ pub type Ghosts = Vec<Vec<(char, f32)>>;
 /// The visible rows' glyph stamps under an effect that paints the terminal (`effects::paint`),
 /// the ghosts of the characters changed cells replaced (each with its stamp, empty for a row with
 /// none), and the instant the newest ink dries. The decode state (made here when it is missing) takes
-/// in the rows as it does for the decode, and a row with no wet ink gets no stamps at all, so it
-/// is drawn as ever. `x` is a column's left edge in points from the window's left.
+/// in the rows as it does for the decode. Only the `PAINT_ROWS` rows changed most recently are
+/// stamped; any other row, and a row with no wet ink, gets no stamps at all, so it is drawn as
+/// ever. `x` is a column's left edge in points from the window's left.
 pub fn painted_rows(
     decode: &mut Option<Decode>,
     rows: &RowsForPaint,
@@ -104,13 +105,18 @@ pub fn painted_rows(
     state.observe(&rows.visible, rows.display_offset, now, quiet, std::time::Duration::ZERO);
     let mut dry = None;
     let mut order = std::collections::HashMap::new();
+    let changes: Vec<Vec<Option<Instant>>> = rows.visible.iter().enumerate().map(|(row, line)| (0..line.len()).map(|col| state.changed_at(col, row)).collect()).collect();
+    // The newest rows: by their latest change, the lowest on screen first at one instant.
+    let mut newest: Vec<(Instant, usize)> = changes.iter().enumerate().filter_map(|(row, c)| c.iter().flatten().max().map(|&at| (at, row))).collect();
+    newest.sort_unstable_by(|a, b| b.cmp(a));
+    let writing: std::collections::HashSet<usize> = newest.iter().take(paint::PAINT_ROWS).map(|&(_, row)| row).collect();
     let (stamps, ghosts) = rows
         .visible
         .iter()
+        .zip(changes)
         .enumerate()
-        .map(|(row, line)| {
-            let changed: Vec<Option<Instant>> = (0..line.len()).map(|col| state.changed_at(col, row)).collect();
-            if changed.iter().all(Option::is_none) {
+        .map(|(row, (line, changed))| {
+            if !writing.contains(&row) {
                 return (Vec::new(), Vec::new());
             }
             let chars: Vec<char> = line.iter().map(|(c, _, _)| *c).collect();
@@ -547,6 +553,35 @@ mod tests {
         assert!(stamps[0][2] != 0.0 && stamps[0][0] == 0.0, "{stamps:?}");
         assert_eq!(ghosts[0].iter().map(|g| g.0).collect::<String>(), "  1", "the replaced 1 fades out under the 2");
         assert!(ghosts[0][2].1 != 0.0 && ghosts[0][0].1 == 0.0, "{ghosts:?}");
+    }
+
+    #[test]
+    fn only_the_newest_rows_are_written_by_the_pen_and_older_ones_show_as_written() {
+        use super::painted_rows;
+        use crate::effects::paint::PAINT_ROWS;
+        use crate::layout::{CellKind, CellStyle};
+        use crate::terminal::RowsForPaint;
+        use std::time::Duration;
+        let style = CellStyle { fg: crate::palette::Rgb { r: 46, g: 43, b: 58 }, bg: crate::palette::Rgb { r: 0, g: 0, b: 0 }, bold: false, italic: false, dim: false, underline: false, inverse: false };
+        let grid = |lines: &[&str]| RowsForPaint { display_offset: 0, above: None, visible: lines.iter().map(|r| r.chars().map(|c| (c, style, CellKind::Normal)).collect()).collect(), links: vec![] };
+        let x = |col: usize| col as f32 * 10.0;
+        let t0 = Instant::now();
+        let mut state = None;
+        let blank = ["  "; 8];
+        painted_rows(&mut state, &grid(&blank), false, 2, x, 5.0, t0);
+        // A burst writes all eight rows at once: only the lowest few are written by the pen.
+        let burst = ["a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8"];
+        let (stamps, _, dry) = painted_rows(&mut state, &grid(&burst), false, 2, x, 5.02, t0 + Duration::from_millis(20));
+        let written: Vec<usize> = (0..8).filter(|&r| !stamps[r].is_empty()).collect();
+        assert_eq!(written, (8 - PAINT_ROWS..8).collect::<Vec<_>>());
+        assert!(dry.is_some());
+        // Then one row changes on its own, and it takes a place from the oldest of those.
+        let mut next = burst;
+        next[0] = "z9";
+        let (stamps, _, _) = painted_rows(&mut state, &grid(&next), false, 2, x, 5.1, t0 + Duration::from_millis(100));
+        assert!(!stamps[0].is_empty(), "the newest change is written");
+        assert_eq!((0..8).filter(|&r| !stamps[r].is_empty()).count(), PAINT_ROWS);
+        assert!(stamps[8 - PAINT_ROWS].is_empty(), "the oldest of the burst's rows shows as written");
     }
 
     #[test]

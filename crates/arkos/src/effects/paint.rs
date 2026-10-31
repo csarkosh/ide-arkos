@@ -14,6 +14,11 @@ pub const PAINT_DRY: f32 = 0.8;
 /// How much later each cell to the right starts, in seconds a point, for a hand of pace 1: 22 ms
 /// a cell of the default terminal's 9.6 point wide cells.
 pub const PAINT_STAGGER_PER_PT: f32 = 0.022 / 9.6;
+/// How many rows the pen writes at a time, as the decode scrambles only its newest few
+/// (`decode::DECODE_ROWS`): the rows changed most recently, the lowest on screen first among rows
+/// changed at one instant. Older text shows as written, so a screenful of output does not all
+/// move at once.
+pub const PAINT_ROWS: usize = 4;
 /// How long past its drying the scene is still presented, so the last frame shows the ink dry.
 pub const PAINT_MARGIN: Duration = Duration::from_millis(50);
 /// Stamps sit on a grid of 1/`PAINT_GRID` seconds, and the `PAINT_VARIANTS` steps inside one of
