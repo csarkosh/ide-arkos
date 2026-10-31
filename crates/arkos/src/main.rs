@@ -244,6 +244,10 @@ pub struct Root {
     pub preview_panes: HashMap<Option<SessionId>, PaneId>,
     /// The file tree's right-click menu while it is open, and while it fades out.
     pub context_menu: Transient<sidebar::ContextMenu>,
+    /// The tree's New File prompt while it is open (a row of the tree), and while it fades out;
+    /// it holds the keys while `sidebar_focused`.
+    pub new_file: Transient<sidebar::NewFile>,
+    pub new_file_focus: FocusHandle,
     /// A terminal link's right-click menu while it is open, and while it fades out.
     pub link_menu: Transient<link_menu::LinkMenu>,
     /// A markdown document's right-click menu while it is open, and while it fades out.
@@ -665,6 +669,8 @@ impl Root {
             preview_tab: None,
             preview_panes: HashMap::new(),
             context_menu: Transient::Hidden,
+            new_file: Transient::Hidden,
+            new_file_focus: cx.focus_handle(),
             link_menu: Transient::Hidden,
             md_menu: Transient::Hidden,
             outline_hover: None,
@@ -1227,6 +1233,7 @@ impl Root {
     pub fn any_motion(&self, now: Instant) -> bool {
         self.tab_menu.animating(now)
             || self.context_menu.animating(now)
+            || self.new_file.animating(now)
             || self.link_menu.animating(now)
             || self.md_menu.animating(now)
             || self.popover.animating(now)
@@ -1260,6 +1267,7 @@ impl Root {
         self.find_bars.settle(now, last_frame);
         self.tab_menu.settle(now);
         self.context_menu.settle(now);
+        self.new_file.settle(now);
         self.link_menu.settle(now);
         self.md_menu.settle(now);
         self.popover.settle(now);
@@ -4232,6 +4240,8 @@ impl Render for Root {
             Some(self.wt_prompt_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
+        } else if self.sidebar_focused && self.new_file.value().is_some() {
+            Some(self.new_file_focus.clone())
         } else if self.sidebar_focused {
             Some(self.sidebar.focus.clone())
         } else {
@@ -4369,7 +4379,7 @@ impl Render for Root {
             .on_any_mouse_down(cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
                 let now = Instant::now();
                 root.last_input = now;
-                if root.context_menu.hide(now) | root.wt_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.close_popovers(now) {
+                if root.context_menu.hide(now) | root.new_file.hide(now) | root.wt_menu.hide(now) | root.link_menu.hide(now) | root.md_menu.hide(now) | root.close_popovers(now) {
                     cx.notify();
                 }
             }))
