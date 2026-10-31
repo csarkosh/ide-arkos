@@ -389,7 +389,7 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
             Some(terminal) => {
                 let family = root.family();
                 let now = root.frame_now;
-                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion(), root.effects_paused).map(|t| t.toward(theme.chrome.focus_ring));
+                let decode = decode_timing(style.terminal_decode, root.sessions.states.get(session).copied(), motion::reduce_motion(), root.effects_paused).map(|t| t.toward(theme.chrome.focus_ring).on_ground(theme.is_light()));
                 render_terminal(terminal, pane, family, &theme, style, decode, &mut root.find_bars, now, cx)
             }
             None => render_busy(root, pane, p.ids.get(p.active).copied(), cx),

@@ -51,6 +51,13 @@ impl Timing {
         let turn = |c| crate::effects::accent::toward_accent(c, accent);
         Timing { white: turn(FRESH_WHITE), deep: turn(FRESH_DEEP), ..self }
     }
+
+    /// This timing on a theme's ground: on a dark one, text under `DARK_TEXT` is a dimmer colour
+    /// the glyph shader leaves plain, not dark text, so it freshens toward the white as the
+    /// rest does rather than darkening.
+    pub fn on_ground(self, light: bool) -> Timing {
+        if light { self } else { Timing { deep: self.white, ..self } }
+    }
 }
 
 /// The timing for the agent's state; with Reduce Motion both are zero, so a cell settles at once.
@@ -280,6 +287,16 @@ mod tests {
         assert_eq!(timing(true, false), Timing { decode: Duration::from_millis(400), fresh: Duration::from_millis(1500), white, deep });
         assert_eq!(timing(false, false).decode, Duration::from_millis(120));
         assert_eq!(timing(true, true), Timing { decode: Duration::ZERO, fresh: Duration::ZERO, white, deep });
+    }
+
+    #[test]
+    fn on_a_dark_ground_dim_text_freshens_toward_the_white_and_on_a_light_one_toward_the_deep() {
+        let t = timing(true, false);
+        assert_eq!(t.on_ground(true), t);
+        assert_eq!(t.on_ground(false).deep, t.white);
+        let grey = Rgb { r: 0x5a, g: 0x5a, b: 0x5a };
+        assert!(luminance(grey) < DARK_TEXT, "a dim grey counts as dark by luminance alone");
+        assert!(luminance(freshened(grey, 0.5, t.on_ground(false))) > luminance(grey), "it brightens as it freshens");
     }
 
     #[test]

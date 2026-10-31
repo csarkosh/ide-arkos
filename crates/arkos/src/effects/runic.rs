@@ -398,7 +398,7 @@ mod tests {
         ] {
             assert!(g.contains(line), "glyphs.metal lacks {line}");
         }
-        assert!(crate::effects::active::glyph_source(g, 2.0, crate::effects::accent::HOME).contains("constant float ARKOS_CALM_ALPHA = 0.995;"));
+        assert!(crate::effects::active::glyph_source(g, 2.0, crate::effects::accent::HOME, false).contains("constant float ARKOS_CALM_ALPHA = 0.995;"));
         // The vertex stage gives calm text no glitch: no mirror and no flash.
         let vertex = &g[g.find("vertex RunicVertexOutput arkos_glyph_vertex(").unwrap()..g.find("float runic_tx(").unwrap()];
         assert!(vertex.contains("float3 g = calm_text(color.a) ? float3(1.0) : glitch(glitch_origin(sprite.bounds), slot);"), "{vertex}");

@@ -208,7 +208,7 @@ fn compile(effect: &Effect) -> Result<(), String> {
 fn compile_glyphs(device: &DeviceRef, source: &str, file: &str) -> Result<(), String> {
     // A window puts its scale's, the calm alpha's and its theme's accent's lines first; a Retina
     // one under the matrix theme stands in for every window here.
-    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::glyph_header(2.0, crate::effects::accent::HOME));
+    let base = format!("{}\n{}", gpui::GLYPH_SHADER_BASE, active::glyph_header(2.0, crate::effects::accent::HOME, false));
     let library = device.new_library_with_source(&format!("{base}\n{source}"), &CompileOptions::new()).map_err(|e| layer::point_into(&e, &base, "gpui", file))?;
     let function = |name: &str| library.get_function(name, None).map_err(|_| format!("{file}: the glyph shader has no function named {name}"));
     let build = |vertex: &str, fragment: &str| -> Result<(), String> {
