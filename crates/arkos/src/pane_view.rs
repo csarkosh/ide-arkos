@@ -1072,16 +1072,18 @@ enum Kind {
 }
 
 /// A viewer tab: the file's lines through `ViewerElement`, or a notice when there are none to show.
-/// A markdown document takes the editing keys (`Viewer::key`) and nothing else scrolls on a key;
-/// in any other file the arrows, Page Up and Down, Space, Home and End scroll. The wheel scrolls
-/// smoothly. An editable markdown document shows rendered (`md_view`, a list that scrolls itself)
-/// or raw, with a pill at the top right that switches between the two.
+/// A document (markdown, or any text file the user may write) takes the editing keys
+/// (`Viewer::key`) and nothing else scrolls on a key; in a read-only file the arrows, Page Up and
+/// Down, Space, Home and End scroll. The wheel scrolls smoothly. A markdown document shows
+/// rendered (`md_view`, a list that scrolls itself) or raw, with a pill at the top right that
+/// switches between the two; a code document shows raw with its syntax colours.
 fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
     let style = root.effect_style();
     let viewer = root.viewer_for(tab, path, cx);
     let theme = root.theme.clone();
     let family = root.family();
     let presenting = viewer.read(cx).presenting;
+    let markdown = viewer::is_markdown(path);
     let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
@@ -1091,11 +1093,13 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             Content::Binary => Kind::Binary,
             Content::Unreadable(e) => Kind::Unreadable(e.clone()),
         };
-        // A markdown file shown read-only (`read_only` set) has no document: no pill, raw text.
-        let editable = viewer::is_markdown(path) && v.doc.is_some() && v.read_only.is_none();
+        // A file shown read-only (`read_only` set) has no document: raw text, no caret.
+        let editable = v.doc.is_some() && v.read_only.is_none();
         (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only)
     };
-    let rendered = editable && mode == ViewMode::Rendered;
+    // The pill, Rendered mode and presentation are markdown's.
+    let pill_shown = editable && markdown;
+    let rendered = pill_shown && mode == ViewMode::Rendered;
     let dim = theme.chrome.text_dim.hsla();
     let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
     let kind_is_text = matches!(kind, Kind::Text { .. });
@@ -1141,7 +1145,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .child(label)
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
-    let right_pad = banner_right_pad(editable, has_changes);
+    let right_pad = banner_right_pad(pill_shown, has_changes);
     let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(style.ui(12.0)));
     let mut banners: Vec<Div> = Vec::new();
     if kind_is_text {
@@ -1172,7 +1176,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     // a markdown document, left of the mode pill at its top.
     let chip = has_changes.then(|| {
         let v_chip = viewer.clone();
-        let (top, right) = if editable { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
+        let (top, right) = if pill_shown { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
         div()
             .id(("viewer-inline-diff", viewer.entity_id()))
             .absolute()
@@ -1203,7 +1207,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_chip.update(cx, |v, cx| v.toggle_inline_diff(cx))))
     });
     // The mode pill, drawn like the terminal's "jump to bottom" pill.
-    let pill = editable.then(|| {
+    let pill = pill_shown.then(|| {
         div()
             .id(("viewer-mode-pill", viewer.entity_id()))
             .absolute()
@@ -1235,7 +1239,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     });
     // Presentation mode's switch, under the mode pill in the rendered view: it names what a click
     // turns to.
-    let present = (editable && mode == ViewMode::Rendered).then(|| {
+    let present = rendered.then(|| {
         div()
             .id(("viewer-present-pill", viewer.entity_id()))
             .absolute()
@@ -1267,8 +1271,9 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     div()
         .size_full()
         .relative()
-        // A markdown document adds `Markdown`, where Cmd+B and Cmd+I format text.
-        .key_context(if viewer.read(cx).doc.is_some() { "Viewer Markdown" } else { "Viewer" })
+        // A markdown document adds `Markdown`, where Cmd+B and Cmd+I format text; in a code
+        // document Cmd+B toggles the sidebar as everywhere else.
+        .key_context(if has_doc && markdown { "Viewer Markdown" } else { "Viewer" })
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
@@ -1344,7 +1349,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.close_popovers(now);
                 let selection = v.read(cx).has_selection();
                 let table = { let v = v.read(cx); v.table_cell().is_some() && !v.table_edit };
-                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, at: ev.position }, now);
+                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, formats: markdown, at: ev.position }, now);
                 cx.notify();
             }),
         )

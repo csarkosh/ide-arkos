@@ -19,6 +19,9 @@ pub struct MdMenu {
     pub selection: bool,
     /// A table cell was selected when it opened: the table's rows replace the formats.
     pub table: bool,
+    /// A markdown document: the formats and Link follow the clipboard rows. A code document has
+    /// the clipboard rows alone.
+    pub formats: bool,
     pub at: Point<Pixels>,
 }
 
@@ -33,8 +36,9 @@ pub enum MdRow {
 }
 
 /// The rows in order, each with whether it can run: Cut and Copy need a selection (a selected
-/// table cell is one). `None` is a line between groups.
-pub fn menu_rows(selection: bool, table: bool) -> Vec<Option<(&'static str, MdRow, bool)>> {
+/// table cell is one). `None` is a line between groups. Without `formats` (a code document) the
+/// clipboard rows stand alone.
+pub fn menu_rows(selection: bool, table: bool, formats: bool) -> Vec<Option<(&'static str, MdRow, bool)>> {
     if table {
         let t = |label, a| Some((label, MdRow::Table(a), true));
         return vec![
@@ -55,6 +59,9 @@ pub fn menu_rows(selection: bool, table: bool) -> Vec<Option<(&'static str, MdRo
             t("Align Center", TableAction::Align(Align::Center)),
             t("Align Right", TableAction::Align(Align::Right)),
         ];
+    }
+    if !formats {
+        return vec![Some(("Cut", MdRow::Cut, selection)), Some(("Copy", MdRow::Copy, selection)), Some(("Paste", MdRow::Paste, true))];
     }
     vec![
         Some(("Cut", MdRow::Cut, selection)),
@@ -109,7 +116,7 @@ pub fn render_md_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x12, opacity, cx));
     }
-    for (i, row) in menu_rows(menu.selection, menu.table).into_iter().enumerate() {
+    for (i, row) in menu_rows(menu.selection, menu.table, menu.formats).into_iter().enumerate() {
         let Some((label, action, enabled)) = row else {
             m = m.child(div().my(px(4.0)).h(px(1.0)).mx(px(8.0)).bg(line));
             continue;
@@ -139,16 +146,24 @@ mod tests {
 
     #[test]
     fn the_menu_lists_the_clipboard_then_the_formats_and_dims_cut_and_copy_without_a_selection() {
-        let labels: Vec<Option<&str>> = menu_rows(true, false).iter().map(|r| r.map(|(l, _, _)| l)).collect();
+        let labels: Vec<Option<&str>> = menu_rows(true, false, true).iter().map(|r| r.map(|(l, _, _)| l)).collect();
         assert_eq!(labels, vec![Some("Cut"), Some("Copy"), Some("Paste"), None, Some("Bold"), Some("Italic"), Some("Strikethrough"), Some("Code"), Some("Link")]);
-        let enabled = |sel: bool| menu_rows(sel, false).iter().flatten().filter(|(_, _, on)| *on).map(|(l, _, _)| *l).collect::<Vec<_>>();
+        let enabled = |sel: bool| menu_rows(sel, false, true).iter().flatten().filter(|(_, _, on)| *on).map(|(l, _, _)| *l).collect::<Vec<_>>();
         assert_eq!(enabled(false), vec!["Paste", "Bold", "Italic", "Strikethrough", "Code", "Link"], "Cut and Copy need a selection");
         assert_eq!(enabled(true).len(), 8);
     }
 
     #[test]
+    fn a_code_document_has_the_clipboard_rows_alone() {
+        let rows = menu_rows(false, false, false);
+        let labels: Vec<Option<&str>> = rows.iter().map(|r| r.map(|(l, _, _)| l)).collect();
+        assert_eq!(labels, vec![Some("Cut"), Some("Copy"), Some("Paste")]);
+        assert_eq!(rows.iter().flatten().filter(|(_, _, on)| *on).count(), 1, "Paste alone without a selection");
+    }
+
+    #[test]
     fn on_a_table_cell_the_menu_lists_the_clipboard_then_rows_columns_deletes_and_alignments() {
-        let rows = menu_rows(false, true);
+        let rows = menu_rows(false, true, true);
         let labels: Vec<Option<&str>> = rows.iter().map(|r| r.map(|(l, _, _)| l)).collect();
         assert_eq!(labels[..4], [Some("Cut"), Some("Copy"), Some("Paste"), None], "a selected cell can be cut and copied");
         assert!(rows.iter().flatten().all(|(_, _, on)| *on));
