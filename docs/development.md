@@ -67,9 +67,9 @@ new one) and ends every session, so do it when nothing important is running.
 ### gpui fork
 
 Arkos builds against gpui from its fork, https://github.com/csarkosh/gpui, pinned in the
-workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.6`). The fork is the
-crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with six commits on top, the hooks the effects
-use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
+workspace `Cargo.toml`'s `[patch.crates-io]` by tag (now `v0.2.2-arkos.7`). The fork is the
+crates.io tarball of gpui 0.2.2 (tag `v0.2.2`) with seven commits on top, six of them the hooks
+the effects use: the per-window glyph shader (`Window::set_glyph_shader`, `GlyphShader`,
 `GLYPH_SHADER_PRELUDE`, `GLYPH_SHADER_BASE`; tag `v0.2.2-arkos.1`), its clock
 (`Window::set_glyph_shader_time`, one `float` at Metal buffer index 5 in both glyph stages; tag
 `v0.2.2-arkos.2`) and its emoji stages (`GlyphShader.emoji`, `EmojiStages`,
@@ -79,7 +79,9 @@ by the app's stages, pictures keeping gpui's; tag `v0.2.2-arkos.3`), BGRA surfac
 `Window::with_glyph_stamp`, and `Window::present_glyphs_until`, which presents the last scene
 again with the glyph clock moved on while ink is wet; tag `v0.2.2-arkos.5`), and SVG stamps
 (`Window::paint_svg` carries the glyph stamp too, so watercolor's washed cell backgrounds reach the
-glyph stages with one; tag `v0.2.2-arkos.6`). An upgrade goes as the fork's `ARKOS.md` says:
+glyph stages with one; tag `v0.2.2-arkos.6`). The seventh is a fix: every pipeline composites
+alpha "over" rather than adding it up, so a translucent sprite over the terminal's half-clear
+paper keeps its colour instead of reading grey (tag `v0.2.2-arkos.7`). An upgrade goes as the fork's `ARKOS.md` says:
 commit the next tarball as `v<version>`, rebase the patch commits onto it, tag
 `v<version>-arkos.1`, push, point `[patch.crates-io]` at the new tag and run
 `cargo update -p gpui`.
@@ -97,6 +99,31 @@ fetches it from the npm registry's tarball and checks it against the SHA-256 rec
 move to a new release, change the version in that script and in `crates/arkos/src/mermaid.rs`
 (`VERSION`), record the new hash, run the script and commit the file. The recorded SHA-256 for 11.17.2 is
 `581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8`.
+
+## Disk
+
+Every worktree builds into one shared target folder (the local `.cargo/config.toml`'s
+`target-dir`), so the warm build is reused, and cargo never removes what it built. Unchecked it
+filled the development MacBook Air's disk: 89 GB on 2026-11-01, nearly all of it object files a
+debug build kept beside its binaries (on macOS a build with debug info keeps them, and an
+incremental build names them anew each time) and old builds of other branches. So:
+
+- Dev and test builds carry no debug info (`[profile.dev] debug = false`). A panic and a failed
+  assertion still name their file and line. To use a debugger, build that session with
+  `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and run the trim after.
+- `scripts/trim-target.py` trims the folder: each crate keeps its six most recent builds and
+  incremental folders, object files nothing links go, build-script output and fingerprints
+  untouched for two weeks go, and past a 40 GB budget a profile folder goes whole (never while a
+  cargo runs). Run it by hand any time; `--auto` acts only when due, every six hours or under
+  20 GB free. The shoot runs it before it builds, and the repository's Claude Code hook
+  (`.claude/settings.json`) runs it before any cargo command an agent gives.
+- A worktree never gets a target folder of its own: no `CARGO_TARGET_DIR`, no `target-dir` in a
+  worktree's config. A new worktree goes under `.worktrees/`, where the shared config reaches it.
+- Throwaway output (a shoot's `OUT`, a sandbox's copied binaries, captures) goes in the session's
+  scratch folder and is deleted when its check is done; `docs/images/progress` keeps only the
+  latest run of each scene.
+- Release builds are for releasing; the release workflow makes them on a runner.
+- Before a long build or a shoot, `df -h ~` should show at least 20 GB free; if not, trim first.
 
 ## Motion
 

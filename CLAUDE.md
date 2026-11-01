@@ -26,3 +26,8 @@ workspace's crates live in `crates/`; the app is `crates/arkos`.
   `cargo check --workspace --all-targets` showing no warnings.
 - Builds on the development MacBook Air are run with `nice -n 15`, never `--release`, and one
   cargo at a time; a worktree keeps the shared `target-dir` in its `.cargo/config.toml`.
+- Disk: the shared target folder is trimmed by `scripts/trim-target.py` (the shoot and the
+  repository's Claude Code hook run it when due; run it by hand after a big build). Never give a
+  worktree its own target folder or turn debug info back on for good. Throwaway output (shoot
+  captures, sandbox binaries) goes in the session's scratch folder and is deleted when done. See
+  `docs/development.md`, Disk.

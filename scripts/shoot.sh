@@ -72,6 +72,8 @@ if [ "${1:-}" = recut ]; then
 fi
 
 if [ "$SCENES" != compose ]; then
+  # Builds pile up in the shared target folder; trim it first when it is due (scripts/trim-target.py).
+  python3 -I "$ROOT/scripts/trim-target.py" --auto || true
   nice -n 10 "$CARGO" build -q $FLAGS -p arkos -p arkosd -p arkos-shoot
   TARGET=$("$CARGO" metadata -q --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
   BIN="$TARGET/$PROFILE"

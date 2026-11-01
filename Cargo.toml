@@ -32,6 +32,14 @@ toml_edit = "0.22"
 # binaries are then stripped of their debug map (rustc runs dsymutil first, so the dSYMs keep the
 # DWARF), which held the build machine's paths to its object files and toolchain; the symbol
 # table and LC_UUID stay.
+# Dev and test builds carry no debug info. On macOS a build with debug info keeps every object
+# file beside its binary for it (split-debuginfo "unpacked"), and incremental builds name them
+# anew each time, so the shared target folder grew past 100 GB. A panic or a failed assertion
+# still names its file and line; for a session at a debugger, build with
+# CARGO_PROFILE_DEV_DEBUG=line-tables-only (or full) and run scripts/trim-target.py after.
+[profile.dev]
+debug = false
+
 [profile.release]
 debug = 1
 split-debuginfo = "packed"
