@@ -1,19 +1,28 @@
 //! The terminal's paint-in, watercolor's counterpart to the decode: a cell the program writes
-//! is written in, as by a pen. The CPU only stamps: each row's cells changed at one instant share a
-//! stamp, the instant on the glyph clock less the stagger to the row's first changed cell, which
-//! also names the hand the run is written in, and the glyph shader paints from it
-//! (`watercolor/glyphs.metal`). Pure rules, no drawing.
+//! is written in, as by a pen. The CPU only stamps: each changed cell gets its own start on the
+//! glyph clock, the cells changed at one instant in a row starting left to right in one hand, which
+//! the stamp also names, and the glyph shader paints from it (`watercolor/glyphs.metal`). Pure
+//! rules, no drawing.
 use super::hash::hash01;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// How long the pen takes to write one cell's glyph, in seconds, for a hand of glyph time 1.
-pub const PAINT_DUR: f32 = 0.08;
+pub const PAINT_DUR: f32 = 0.04;
 /// How long freshly written ink takes to dry, in seconds.
 pub const PAINT_DRY: f32 = 0.8;
-/// How much later each cell to the right starts, in seconds a point, for a hand of pace 1: 22 ms
-/// a cell of the default terminal's 9.6 point wide cells.
-pub const PAINT_STAGGER_PER_PT: f32 = 0.022 / 9.6;
+/// How much later each cell to the right starts, in seconds a point, for a hand of pace 1: 11 ms
+/// a cell of the default terminal's 9.6 point wide cells, on average along a line short enough
+/// to be written within `PAINT_LINE`.
+pub const PAINT_STAGGER_PER_PT: f32 = 0.011 / 9.6;
+/// How long a run of new text takes to be written however long it is, in seconds, as Material's
+/// motion keeps a large transition near 400 ms: a longer one starts its cells closer together, so
+/// its last starts `PAINT_DUR` before this.
+pub const PAINT_LINE: f32 = 0.4;
+/// How strongly the pen eases, along a line and across each glyph: it starts at 1 + `PAINT_EASE`
+/// times its average speed and settles to 1 - `PAINT_EASE` times it by the end (`ease`), so text
+/// shows at once and comes to rest rather than stopping.
+pub const PAINT_EASE: f32 = 0.6;
 /// How many rows the pen writes at a time, as the decode scrambles only its newest few
 /// (`decode::DECODE_ROWS`): the rows changed most recently, the lowest on screen first among rows
 /// changed at one instant. Older text shows as written, so a screenful of output does not all
@@ -93,7 +102,8 @@ pub const PAINT_JITTER: f32 = 0.1;
 /// bead]`. Pace scales the stagger (0.7 to 1.3), glyph time scales `PAINT_DUR` (0.8 to 1.25),
 /// across is how much of the pen's path runs across a glyph rather than down it (0.5 to 0.75),
 /// and bead how strong its wet bead is (0.6 to 1.2). The soak and the fade, and the spare
-/// variants past them, have no stagger and last `PAINT_INLINE`. The shader reads the same table.
+/// variants past them, have no stagger and last `PAINT_INLINE`. The shader reads the same table,
+/// for every column but the pace.
 pub fn hand(variant: u32) -> [f32; 4] {
     if (PAINT_WASH..PAINT_WASH + 4).contains(&variant) {
         return [0.0, WASH_TIME / PAINT_DUR, 0.92, 0.6];
@@ -108,8 +118,22 @@ pub fn hand(variant: u32) -> [f32; 4] {
 /// The longest glyph time any hand has, which the dry instant allows for.
 const GLYPH_TIME_MAX: f32 = 1.25;
 
+/// How far along the pen is (0 to 1) at `t` of its time (0 to 1): ahead of an even pace, quick at
+/// first and settling at the end. The shader eases each glyph's stroke with the same curve, and
+/// the terminal paces a line with its inverse, `unease`, so only the tests call it.
+#[cfg(test)]
+fn ease(t: f32) -> f32 {
+    t + PAINT_EASE * t * (1.0 - t)
+}
+
+/// When (0 to 1 of its time) the pen reaches `u` (0 to 1) of its way: the inverse of `ease`.
+pub fn unease(u: f32) -> f32 {
+    let b = 1.0 + PAINT_EASE;
+    ((b - (b * b - 4.0 * PAINT_EASE * u).max(0.0).sqrt()) / (2.0 * PAINT_EASE)).clamp(0.0, 1.0)
+}
+
 /// The lines that tell a glyph shader the paint's timing: `ARKOS_PAINT_DUR`, `ARKOS_PAINT_DRY`,
-/// `ARKOS_PAINT_STAGGER` (seconds a point), the steps a second a stamp is counted in, the soak's,
+/// `ARKOS_PAINT_EASE`, the steps a second a stamp is counted in, the soak's,
 /// the fade's, the doodle's and the hidden variants, the doodle's timing and the table of hands,
 /// `ARKOS_PAINT_HAND`.
 pub fn paint_lines() -> String {
@@ -120,7 +144,7 @@ pub fn paint_lines() -> String {
         })
         .collect();
     format!(
-        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STAGGER = {PAINT_STAGGER_PER_PT:.8};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
+        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_EASE = {PAINT_EASE};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
         hands.join(", ")
     )
 }
@@ -138,17 +162,17 @@ pub fn variant_of(stamp: f32) -> u32 {
     ((stamp * STEPS).round() as i32 & (PAINT_VARIANTS as i32 - 1)) as u32
 }
 
-/// The stamp a cell background under a run stamped `stamp` is washed in with, its left edge `x`
-/// points from the window's left and the glyph clock at `clock`: the wash starts where the run's
-/// text starts there. A band under no stamp (or a doodled or hidden one) still names the wash, so
-/// the shader draws it as one, but long dried. `joined` is `WASH_UP` and `WASH_DOWN` as they hold.
-pub fn wash_stamp(stamp: f32, x: f32, clock: f32, joined: u32) -> f32 {
+/// The stamp a cell background is washed in with, `stamp` being that of the first stamped cell
+/// over it and the glyph clock at `clock`: the wash starts with the text over its left end. A band
+/// under no stamp (or a doodled or hidden one) still names the wash, so the shader draws it as
+/// one, but long dried. `joined` is `WASH_UP` and `WASH_DOWN` as they hold.
+pub fn wash_stamp(stamp: f32, clock: f32, joined: u32) -> f32 {
     let variant = variant_of(stamp);
     let wash = PAINT_WASH + (joined & (WASH_UP | WASH_DOWN));
     if stamp == 0.0 || variant == PAINT_DOODLE || variant == PAINT_HIDE {
         return encode(clock - WASH_DRIED, wash);
     }
-    encode(stamp + x * PAINT_STAGGER_PER_PT * hand(variant)[0], wash)
+    encode(stamp, wash)
 }
 
 /// How long ago a band that is not washing in was washed, as its stamp says: past any wetness.
@@ -164,11 +188,11 @@ fn run_key(chars: impl Iterator<Item = char>) -> u32 {
 /// a cell that never changed or settled at once), `chars` its characters, `was` the characters
 /// they replaced, `x` a column's left edge
 /// in points from the window's left, `clock` the glyph clock at `now`, and `order` how many runs
-/// of each instant the rows above have had. Cells changed at one instant share a stamp, in a hand
-/// picked by their characters: the instant on the glyph clock, plus the run's place in the
-/// cascade, less the hand's stagger up to the first of them, so the shader, which adds each
-/// glyph's own x times that stagger, starts the first cell then and each one after it a little
-/// later. A run that replaced text in place (any of its cells was not a space, and the cells
+/// of each instant the rows above have had. Cells changed at one instant are a run, written in a
+/// hand picked by their characters: the first starts at the instant on the glyph clock plus the
+/// run's place in the cascade, and each after it a little later, at the hand's pace along the
+/// line but eased (`unease`), and within `PAINT_LINE` however long the run is. Each cell's stamp
+/// is its own start. A run that replaced text in place (any of its cells was not a space, and the cells
 /// changed at its instant are at most `PAINT_INLINE_SHARE` of the row's characters or at least
 /// `PAINT_OVERWRITE_SHARE` of the run's cells were not spaces) is no pen:
 /// it soaks in at its instant, all at once, and the text it replaced fades out under it. A cell whose
@@ -200,9 +224,10 @@ pub fn row_stamps(
         let written = chars.iter().filter(|&&c| c != ' ').count().max(1) as f32;
         let over = same.iter().filter(|&&c| was_at(c) != ' ').count() as f32;
         let inline = over > 0.0 && (touched <= written * PAINT_INLINE_SHARE || over >= same.len() as f32 * PAINT_OVERWRITE_SHARE);
-        let (stamp, ghost, wet) = if inline {
+        // Each of the run's cells' stamps, in order.
+        let (starts, ghost, wet) = if inline {
             let t = clock - since;
-            (encode(t, PAINT_SOAK), encode(t, PAINT_FADE), PAINT_INLINE + PAINT_DRY)
+            (vec![encode(t, PAINT_SOAK); same.len()], encode(t, PAINT_FADE), PAINT_INLINE + PAINT_DRY)
         } else {
             let key = run_key(same.iter().map(|&c| chars.get(c).copied().unwrap_or(' ')));
             let variant = (hash01(key) * PAINT_HANDS as f32) as u32 % PAINT_HANDS;
@@ -210,15 +235,25 @@ pub fn row_stamps(
             let nth = order.entry(at).or_insert(0);
             let delay = if *nth == 0 { 0.0 } else { (*nth as f32 * PAINT_CASCADE).min(PAINT_CASCADE_MAX) + hash01(key ^ 0x5bd1_e995) * PAINT_JITTER };
             *nth += 1;
-            let stagger = PAINT_STAGGER_PER_PT * pace;
-            let wet = delay + PAINT_DUR * GLYPH_TIME_MAX + PAINT_DRY + (x(last) - x(first)) * stagger;
-            (encode(clock - since + delay - x(first) * stagger, variant), 0.0, wet)
+            // How long the starts would spread at the hand's even pace, and how long they do.
+            let even = (x(last) - x(first)) * PAINT_STAGGER_PER_PT * pace;
+            let spread = even.min(PAINT_LINE - PAINT_DUR);
+            let (x0, xn, t) = (x(first), x(last), clock - since + delay);
+            let wet = delay + spread + PAINT_DUR * GLYPH_TIME_MAX + PAINT_DRY;
+            let starts = same
+                .iter()
+                .map(|&c| {
+                    let along = if xn > x0 { (x(c) - x0) / (xn - x0) } else { 0.0 };
+                    encode(t + spread * unease(along), variant)
+                })
+                .collect();
+            (starts, 0.0, wet)
         };
         let ends = at + Duration::from_secs_f32(wet);
-        for c in same {
+        for (&c, &start) in same.iter().zip(&starts) {
             done[c] = true;
             if ends > now {
-                stamps[c] = stamp;
+                stamps[c] = start;
                 if was_at(c) != ' ' {
                     ghosts[c] = ghost;
                 }
@@ -254,21 +289,63 @@ mod tests {
     }
 
     #[test]
-    fn cells_changed_together_share_a_stamp_that_starts_the_first_at_its_instant() {
+    fn cells_changed_together_start_one_after_another_from_the_first_at_its_instant() {
         let t0 = Instant::now();
         let now = t0 + Duration::from_millis(100);
         let changed = [None, Some(t0), Some(t0), Some(now), None];
         let (s, dry) = stamps(&changed, 50.0, now);
         assert_eq!((s[0], s[4]), (0.0, 0.0));
-        assert_eq!(s[1], s[2]);
-        // The shader starts a glyph at its stamp plus its x times its hand's stagger.
-        let start = |c: usize| s[c] + x(c) * PAINT_STAGGER_PER_PT * hand(variant_of(s[c]))[0];
+        assert_eq!(variant_of(s[1]), variant_of(s[2]), "one run, one hand");
+        // A stamp is the glyph's own start.
         let grid = 1.5 / PAINT_GRID;
-        assert!((start(1) - 49.9).abs() <= grid, "{}", start(1));
-        let gap = start(2) - start(1);
-        assert!((0.7 * 0.022 - 1e-4..=1.3 * 0.022 + 1e-4).contains(&gap), "{gap}");
-        assert!((start(3) - 50.0).abs() <= grid, "a cell changed now starts now, wherever it is");
+        assert!((s[1] - 49.9).abs() <= grid, "{}", s[1]);
+        let gap = s[2] - s[1];
+        assert!((0.7 * 0.011 - 2.0 * grid..=1.3 * 0.011 + 2.0 * grid).contains(&gap), "{gap}");
+        assert!((s[3] - 50.0).abs() <= grid, "a cell changed now starts now, wherever it is");
         assert!(dry.is_some_and(|d| d > now + Duration::from_secs_f32(PAINT_DRY)));
+    }
+
+    /// The starts of a line `len` cells long written at one instant, from its first.
+    fn starts(len: usize) -> Vec<f32> {
+        let t0 = Instant::now();
+        let chars: Vec<char> = (0..len).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        let (s, _, _) = row_stamps(&vec![Some(t0); len], &chars, &[], x, 10.0, t0, &mut HashMap::new());
+        s.iter().map(|&v| v - s[0]).collect()
+    }
+
+    #[test]
+    fn a_long_line_is_written_within_the_line_time_however_long() {
+        let grid = 1.5 / PAINT_GRID;
+        for len in [60, 120, 400] {
+            let s = starts(len);
+            assert!(s.windows(2).all(|w| w[1] >= w[0]), "left to right: {s:?}");
+            let last = s[len - 1];
+            assert!(last <= PAINT_LINE - PAINT_DUR + grid, "{len}: {last}");
+            assert!(last >= PAINT_LINE - PAINT_DUR - grid, "a long line takes all of it: {len}: {last}");
+        }
+    }
+
+    #[test]
+    fn a_short_line_keeps_the_pen_s_own_pace() {
+        let s = starts(8);
+        let last = s[7];
+        let linear = 7.0 * 9.6 * PAINT_STAGGER_PER_PT;
+        assert!((0.7 * linear - 2.0 / PAINT_GRID..=1.3 * linear + 2.0 / PAINT_GRID).contains(&last), "{last}");
+    }
+
+    #[test]
+    fn a_line_starts_quickly_and_settles_toward_its_end() {
+        let s = starts(200);
+        assert!(s[100] < 0.45 * s[199], "half the letters start well inside the first half: {} of {}", s[100], s[199]);
+    }
+
+    #[test]
+    fn the_ease_runs_from_0_to_1_and_its_inverse_undoes_it() {
+        assert_eq!((ease(0.0), ease(1.0)), (0.0, 1.0));
+        for u in [0.0, 0.1, 0.37, 0.5, 0.9, 1.0] {
+            assert!((ease(unease(u)) - u).abs() < 1e-5, "{u}");
+        }
+        assert!(ease(0.25) > 0.25 && ease(0.75) > 0.75, "ahead of linear all the way");
     }
 
     #[test]
@@ -313,6 +390,7 @@ mod tests {
         }
         let lines = paint_lines();
         assert!(lines.contains("constant float ARKOS_PAINT_STEPS = 4096.0;"), "{lines}");
+        assert!(lines.contains("constant float ARKOS_PAINT_EASE = 0.6;") && !lines.contains("STAGGER"), "the shader eases each glyph and adds no stagger: {lines}");
         assert_eq!(lines.matches("float4(").count(), PAINT_VARIANTS as usize);
     }
 
@@ -378,16 +456,15 @@ mod tests {
     #[test]
     fn a_background_washes_in_from_where_its_text_starts_and_a_still_one_does_not() {
         let pen = encode(10.0, 3);
-        let wash = wash_stamp(pen, 96.0, 12.0, 0);
+        let wash = wash_stamp(pen, 12.0, 0);
         assert_eq!(variant_of(wash), PAINT_WASH);
-        let start = 10.0 + 96.0 * PAINT_STAGGER_PER_PT * hand(3)[0];
-        assert!((wash - start).abs() <= 1.5 / PAINT_GRID, "{wash} {start}");
+        assert!((wash - 10.0).abs() <= 1.5 / PAINT_GRID, "it starts with the text over its left end: {wash}");
         assert_eq!(hand(PAINT_WASH)[0], 0.0, "the whole band sweeps at once, not cell by cell");
-        let dried = wash_stamp(0.0, 96.0, 50.0, 0);
+        let dried = wash_stamp(0.0, 50.0, 0);
         assert_eq!(variant_of(dried), PAINT_WASH, "a still band is still a wash");
         assert!(dried < 50.0 - 10.0, "and long dry: {dried}");
-        assert_eq!(variant_of(wash_stamp(encode(10.0, PAINT_HIDE), 96.0, 50.0, 0)), PAINT_WASH);
-        assert_eq!(variant_of(wash_stamp(pen, 96.0, 12.0, WASH_UP | WASH_DOWN)), PAINT_WASH + 3, "the variant carries which edges join");
+        assert_eq!(variant_of(wash_stamp(encode(10.0, PAINT_HIDE), 50.0, 0)), PAINT_WASH);
+        assert_eq!(variant_of(wash_stamp(pen, 12.0, WASH_UP | WASH_DOWN)), PAINT_WASH + 3, "the variant carries which edges join");
         assert_eq!(hand(PAINT_WASH + 3), hand(PAINT_WASH));
     }
 
