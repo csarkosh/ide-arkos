@@ -54,6 +54,23 @@ The file is scaled to at most `width` pixels across (2000 by default: the store 
 to 1000 CSS pixels wide, so two pixels each), encoded H.264 High at CRF 19 with the slow preset,
 tagged sRGB and BT.709 like Apple's, with its first frame as the poster.
 
+## The opening clip (added the same evening)
+
+Cyrus, on the sweeps loop: "I'm not happy with the video. I want it to be more cinematic. It
+should also be a background video similar to the one that plays here at the top of the page:
+https://store.google.com/product/pixel_11_pro". That hero is a 6 s, 2880 by 1600, 24 fps clip
+that opens macro on the phone's camera bar, pulls back and straightens into the key art, holds,
+and plays once (full bleed, `object-fit: cover`, the pill bar over its foot).
+
+The Arkos version is `scripts/shoot/cinema.py`, driven by a `[[recording]]` with `cinema`: the
+window recorded in its one theme (the raw, at two pixels a point, is the front window's live
+texture), the camera starting tight on the tab bar and its working and waiting marks, seen from
+the side with a rack of focus, pulling back on a cubic in-and-out into the three-window key art
+(the two backs the scenes' stills, drifting less, sharpening as they come), on a dark lit ground
+with the window mirrored under it, then holding. The store page plays it once behind the title
+and keeps its last frame, which is also its poster and the share card. The themes loop stays
+under "Who it's for".
+
 ## Not done
 
 - The page still loops the clip rather than playing it once and holding, as Apple's pages do;

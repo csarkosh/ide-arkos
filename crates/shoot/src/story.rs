@@ -71,6 +71,31 @@ pub struct Recording {
     /// store page shows it at.
     #[serde(default = "default_width")]
     pub width: u32,
+    /// Set, the recording is the page's opening clip instead of a loop: the window recorded in
+    /// its one theme for `hold_secs`, then `cinema.py` moves a camera over it and the two
+    /// scenes' stills behind it, into the key art.
+    pub cinema: Option<Cinema>,
+}
+
+/// `cinema`: the hero clip's parts (`scripts/shoot/cinema.py`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cinema {
+    /// The two scenes whose `<scene>-dark.png` stand behind the window, left then right.
+    pub backs: Vec<String>,
+    /// How long the camera moves, and how long it then holds on the key art, in seconds.
+    #[serde(default = "default_move")]
+    pub move_secs: f64,
+    #[serde(default = "default_rest")]
+    pub rest_secs: f64,
+}
+
+fn default_move() -> f64 {
+    4.6
+}
+
+fn default_rest() -> f64 {
+    0.9
 }
 
 /// `loop.py`'s transitions: a soft-edged sweep from left to right, the new theme washing over
@@ -505,8 +530,23 @@ impl Story {
             if r.name.is_empty() || r.name.contains('/') {
                 bail!("a recording's name must be a plain name");
             }
-            if r.themes.len() < 2 {
-                bail!("recording {:?}: themes must name at least two themes", r.name);
+            match &r.cinema {
+                None if r.themes.len() < 2 => bail!("recording {:?}: themes must name at least two themes", r.name),
+                Some(c) => {
+                    if r.themes.len() != 1 {
+                        bail!("recording {:?}: a cinema recording shows one theme", r.name);
+                    }
+                    if c.backs.len() != 2 {
+                        bail!("recording {:?}: cinema.backs names the two scenes behind the window, left then right", r.name);
+                    }
+                    if !(1.0..=10.0).contains(&c.move_secs) || !(0.0..=5.0).contains(&c.rest_secs) {
+                        bail!("recording {:?}: cinema.move_secs must be 1 to 10 and rest_secs 0 to 5", r.name);
+                    }
+                    if r.hold_secs < c.move_secs + c.rest_secs + 0.5 {
+                        bail!("recording {:?}: hold_secs must cover the move and the rest with half a second over (at least {:.1})", r.name, c.move_secs + c.rest_secs + 0.5);
+                    }
+                }
+                None => {}
             }
             if !(1.0..=15.0).contains(&r.hold_secs) {
                 bail!("recording {:?}: hold_secs must be 1 to 15", r.name);
@@ -517,7 +557,7 @@ impl Story {
             if !(0.3..=3.0).contains(&r.fade_secs) {
                 bail!("recording {:?}: fade_secs must be 0.3 to 3", r.name);
             }
-            if r.steady_secs() < r.fade_secs + 1.0 {
+            if r.cinema.is_none() && r.steady_secs() < r.fade_secs + 1.0 {
                 bail!("recording {:?}: hold_secs must leave a second of rest beyond the fade (at least {:.1})", r.name, r.fade_secs + SETTLE_SECS + GUARD_SECS + 1.0);
             }
             if !(320..=3840).contains(&r.width) {
@@ -910,6 +950,24 @@ theme = "light"
         refused("hold_secs = 4", "hold_secs = 4\nwidth = 100", "width must be 320 to 3840");
         refused("wait = { tests = \"waiting\" }\nchanged", "wait = { nobody = \"waiting\" }\nchanged", "recording \"themes\" waits on pane \"nobody\"");
         refused("changed = { work = 1 }", "changed = { site = 1 }", "recording \"themes\": changed names \"site\"");
+    }
+
+    #[test]
+    fn a_cinema_recording_shows_one_theme_over_two_backs_and_its_hold_covers_the_clip() {
+        let cinema = "\n[[recording]]\nname = \"hero\"\nwait = { tests = \"waiting\" }\nthemes = [\"navy\"]\nhold_secs = 8\ncinema = { backs = [\"web-developer\", \"blogger\"] }\n";
+        let s = Story::parse(&format!("{STORY}{cinema}")).unwrap();
+        let r = &s.recordings[0];
+        let c = r.cinema.as_ref().unwrap();
+        assert_eq!((c.backs.clone(), c.move_secs, c.rest_secs, r.hold_secs), (vec!["web-developer".to_string(), "blogger".to_string()], 4.6, 0.9, 8.0));
+        let refused = |from: &str, to: &str, says: &str| {
+            let err = format!("{:#}", Story::parse(&format!("{STORY}{}", cinema.replace(from, to))).unwrap_err());
+            assert!(err.contains(says), "{from} -> {to}: {err}");
+        };
+        refused("themes = [\"navy\"]", "themes = [\"navy\", \"matrix\"]", "a cinema recording shows one theme");
+        refused("[\"web-developer\", \"blogger\"]", "[\"web-developer\"]", "names the two scenes behind the window");
+        refused("hold_secs = 8", "hold_secs = 5", "hold_secs must cover the move and the rest with half a second over (at least 6.0)");
+        refused("cinema = { backs", "cinema = { move_secs = 12, backs", "cinema.move_secs must be 1 to 10");
+        assert!(Story::parse(&format!("{STORY}{}", cinema.replace("themes = [\"navy\"]\nhold_secs = 8\ncinema = { backs = [\"web-developer\", \"blogger\"] }", "themes = [\"navy\"]"))).unwrap_err().to_string().contains("at least two themes"), "without cinema a recording still needs two themes");
     }
 
     #[test]

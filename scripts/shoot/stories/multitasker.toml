@@ -83,6 +83,16 @@ wait = { blog = "waiting", budget = "waiting" }
 themes = ["navy-runic", "lavender-light", "peach-light", "matrix"]
 hold_secs = 6
 
+# The page's opening clip (cinema.py): the window held in Navy for eight seconds while the
+# camera pulls back from its tab bar into the key art, the web developer's and the blogger's
+# stills fanned behind it. Those stills must exist in docs/images (shoot their scenes first).
+[[recording]]
+name = "hero"
+wait = { blog = "waiting", budget = "waiting" }
+themes = ["navy-runic"]
+hold_secs = 8
+cinema = { backs = ["web-developer", "blogger"] }
+
 # Both effects at a Retina Mac's density should the display draw one pixel a point (see the
 # hacker); on a display at two, the shoot's virtual one included, the built-in scales stand.
 [[effect]]
