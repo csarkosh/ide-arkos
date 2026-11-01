@@ -788,8 +788,9 @@ Things only a person at the screen can check, in order of value:
   editor
 - About: Version, Build and Protocol match `arkos --version`; the Config, Themes, App Support,
   Window log and Daemon log paths exist; "Copy details" then paste gives "Arkos IDE {version}"
-  and one `label: value` line per row; the "Buy me more tokens" line is hidden while
-  `DONATE_URL` is empty
+  and one `label: value` line per row; under "Made by Cyrus Sarkosh", the "Buy me tokens" line's
+  pixel heart is sharp, as tall as the words and level with them, and a click opens
+  donate.csarko.sh/arkos
 - Settings: Dark theme or Mode switches the window and `config.toml` keeps its comments;
   "Add theme…" with a broken file shows the error and copies nothing, and with a file named
   like an installed theme asks "Replace the existing ..." first

@@ -617,8 +617,8 @@ these rows: Version, Build (hash and date), Last updated, First installed, Daemo
 macOS, Config, Themes, App Support, Window log and Daemon log. Daemon reads "{version} (hash), pid
 N", or "not connected". Dates read "today HH:MM" for the current day, else YYYY-MM-DD. Asking for
 About again refreshes the rows. "Copy details" puts "Arkos IDE {version}" and one `label: value`
-line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub); a "Buy
-me more tokens" line shows only once a donation URL is set in the build.
+line per row on the clipboard. Below are "Made by Cyrus Sarkosh" (a link to his GitHub) and "Buy me
+tokens" after a small pixel heart, which opens Arkos IDE's tip page, donate.csarko.sh/arkos.
 
 Settings (menu or Cmd+,) has the shared title bar and six sections.
 

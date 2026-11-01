@@ -4,16 +4,18 @@ use crate::chrome::{self, TITLE_BAR_H, UI_FONT};
 use crate::theme::Theme;
 use crate::{aux, client, keymap, paths, update};
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, TitlebarOptions, Window,
+    canvas, div, fill, point, prelude::*, px, rgb, size, App, Bounds, ClipboardItem, Context, FocusHandle, KeyDownEvent, SharedString, TitlebarOptions, Window,
     WindowBounds, WindowHandle, WindowOptions,
 };
 use objc2_foundation::NSProcessInfo;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Where "Buy me more tokens" goes. Empty until Cyrus sets it, and the line is not drawn while it
-/// is empty.
-pub const DONATE_URL: &str = "";
+/// Where the donation line goes: Arkos IDE's door on donate.csarko.sh. The line is not drawn
+/// while this is empty.
+pub const DONATE_URL: &str = "https://donate.csarko.sh/arkos";
+/// The donation line's words, after the tokens icon, as every project's line reads.
+pub const DONATE_WORDS: &str = "Buy me tokens";
 /// The name in the attribution line.
 pub const AUTHOR: &str = "Cyrus Sarkosh";
 /// Where the author's name links to.
@@ -27,9 +29,95 @@ const WIDTH: f32 = 420.0;
 const HEIGHT: f32 = 520.0 + TITLE_BAR_H;
 /// The width of the table's label column.
 const LABEL_W: f32 = 112.0;
-/// The colours of the donation line's two glyphs: Claude's orange spark and a red heart.
-const SPARK: u32 = 0xd97757;
-const HEART: u32 = 0xe5484d;
+/// The footer's text size, which the tokens icon is as tall as.
+const FOOTER_TEXT: f32 = 12.0;
+
+/// The tokens icon's ten colours: a shaded red heart and the gold token at its lower right, the
+/// palette of `donate/icon.mjs` in the csarko.sh repository, which draws the same icon for the
+/// web.
+pub const TOKENS_PALETTE: [(char, u32); 10] = [
+    ('O', 0x6b1113), // heart outline
+    ('m', 0xe5484d), // heart mid-tone
+    ('s', 0xb32d33), // heart shadow
+    ('h', 0xff7a80), // heart highlight
+    ('H', 0xffd6d8), // heart top highlight
+    ('g', 0x7a5600), // token outline
+    ('G', 0xf0c040), // token mid-tone
+    ('c', 0xc8962a), // token shadow
+    ('l', 0xffe08a), // token highlight
+    ('L', 0xfff7d6), // token top highlight
+];
+
+/// The tokens icon on its 32 by 22 grid, one letter a pixel in `TOKENS_PALETTE`'s colour and a
+/// dot transparent: the same pixel map as `donate/icon.mjs`.
+#[rustfmt::skip]
+pub const TOKENS_PIXELS: [&str; 22] = [
+    "................................",
+    "........OOOO........OOOO........",
+    ".......OmmmsO......OmmmsO.......",
+    "......OhhmmmsO....OhhmmmsO......",
+    ".....OhHHhmmmsO..OhHHhmmmsO.....",
+    ".....OmhhmmmmmsOOmhhmmmmmsO.....",
+    "....OmmmmmmmmmmmmmmmmmmmmssO....",
+    "....OmmmmmmmmmmmmmmmmmmmmssO....",
+    ".....OmmmmmmmmmmmmmmmmmmssO.....",
+    ".....OmmmmmmmmmmmmmmmmmmssO.....",
+    ".....Ommmmmmmmmmmmmmmmgggggg....",
+    "......OmmmmmmmmmmmmmmgLlllllg...",
+    ".......OmmmmmmmmmmmmgLGccccGGg..",
+    "........OmmmmmmmmmmglGcGGGGlGcg.",
+    ".........OmmmmmmmmsglcGGGGGGlcg.",
+    "..........OmmmmmmssglcGGGGGGlcg.",
+    "...........OmmmmsssglcGGGGGGlcg.",
+    "............OmmssssglGcGGGGlGcg.",
+    ".............OmsssO.gGGllllGcg..",
+    "..............OssO...gccccccg...",
+    "...............OO.....gggggg....",
+    "................................",
+];
+
+/// The tokens icon as runs to paint, in reading order: (x, y, width, colour), each a 1-pixel-tall
+/// stretch of one colour on the grid.
+pub fn tokens_runs() -> Vec<(usize, usize, usize, u32)> {
+    let colour = |letter: char| TOKENS_PALETTE.iter().find(|(l, _)| *l == letter).map(|(_, c)| *c);
+    let mut runs = Vec::new();
+    for (y, row) in TOKENS_PIXELS.iter().enumerate() {
+        let row = row.as_bytes();
+        let mut x = 0;
+        while x < row.len() {
+            let start = x;
+            while x < row.len() && row[x] == row[start] {
+                x += 1;
+            }
+            if let Some(c) = colour(row[start] as char) {
+                runs.push((start, y, x - start, c));
+            }
+        }
+    }
+    runs
+}
+
+/// The tokens icon, as tall as the footer's text: each grid pixel a whole number of device
+/// pixels (one on a Retina display, where the icon is 16 by 11 points), so the edges stay sharp.
+fn tokens_icon(scale: f32) -> impl IntoElement {
+    let unit = (FOOTER_TEXT * scale / TOKENS_PIXELS.len() as f32).round().max(1.0) / scale;
+    let (w, h) = (unit * 32.0, unit * TOKENS_PIXELS.len() as f32);
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let snap = |v: f32| (v * scale).round() / scale;
+            let x0 = snap(f32::from(bounds.origin.x));
+            let y0 = snap(f32::from(bounds.origin.y) + (f32::from(bounds.size.height) - h) / 2.0);
+            for (x, y, run, c) in tokens_runs() {
+                let at = point(px(x0 + x as f32 * unit), px(y0 + y as f32 * unit));
+                window.paint_quad(fill(Bounds { origin: at, size: size(px(run as f32 * unit), px(unit)) }, rgb(c)));
+            }
+        },
+    )
+    .flex_none()
+    .w(px(w))
+    .h(px(FOOTER_TEXT))
+}
 
 /// Whether the donation line is drawn: only when there is somewhere for it to go.
 pub fn donation_visible(url: &str) -> bool {
@@ -241,7 +329,7 @@ pub fn open(cx: &mut App, details: Details, theme: Theme) -> Option<WindowHandle
 }
 
 impl Render for AboutWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = &self.theme.chrome;
         let (bg, text, dim, border, link, pill) = (c.window_bg.hsla(), c.text.hsla(), c.text_dim.hsla(), c.border.hsla(), c.focus_ring.hsla(), c.banner.hsla());
         let mut table = div().id("about-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(5.0)).text_size(px(13.0));
@@ -294,18 +382,24 @@ impl Render for AboutWindow {
             .gap(px(4.0))
             .child("Made by")
             .child(div().id("about-author").text_color(link).cursor_pointer().hover(|s| s.underline()).on_click(|_, _, cx| cx.open_url(AUTHOR_URL)).child(AUTHOR));
+        // The icon, a gap of 0.35 em, then the words in the footer's own size and colour.
+        let scale = window.scale_factor();
         let donate = donation_visible(DONATE_URL).then(|| {
             div()
-                .id("about-donate")
                 .flex()
                 .justify_center()
-                .gap(px(4.0))
-                .cursor_pointer()
-                .hover(|s| s.underline())
-                .on_click(|_, _, cx| cx.open_url(DONATE_URL))
-                .child("Buy me more tokens")
-                .child(div().text_color(rgb(SPARK)).child("✦"))
-                .child(div().text_color(rgb(HEART)).child("❤"))
+                .child(
+                    div()
+                        .id("about-donate")
+                        .flex()
+                        .items_center()
+                        .gap(px(FOOTER_TEXT * 0.35))
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .on_click(|_, _, cx| cx.open_url(DONATE_URL))
+                        .child(tokens_icon(scale))
+                        .child(DONATE_WORDS),
+                )
         });
         div()
             .id("about")
@@ -353,7 +447,7 @@ impl Render for AboutWindow {
                             .flex()
                             .flex_col()
                             .gap(px(4.0))
-                            .text_size(px(12.0))
+                            .text_size(px(FOOTER_TEXT))
                             .text_color(dim)
                             .child(author)
                             .children(donate),
@@ -406,7 +500,38 @@ mod tests {
         assert!(s.len() == 10 && s.as_bytes()[4] == b'-');
         assert!(!donation_visible(""));
         assert!(donation_visible("https://example.org/tip"));
-        assert!(DONATE_URL.is_empty(), "ships hidden until Cyrus sets it");
+    }
+
+    #[test]
+    fn the_donation_line_opens_the_arkos_door() {
+        assert_eq!(DONATE_URL, "https://donate.csarko.sh/arkos");
+        assert!(donation_visible(DONATE_URL));
+        assert_eq!(DONATE_WORDS, "Buy me tokens");
+    }
+
+    #[test]
+    fn the_tokens_icon_is_the_shared_32_by_22_pixel_map_in_its_ten_colours() {
+        assert_eq!(TOKENS_PIXELS.len(), 22);
+        assert!(TOKENS_PIXELS.iter().all(|row| row.len() == 32), "every row is 32 pixels");
+        assert_eq!(TOKENS_PALETTE.len(), 10);
+        for row in TOKENS_PIXELS {
+            for letter in row.chars().filter(|&c| c != '.') {
+                assert!(TOKENS_PALETTE.iter().any(|(l, _)| *l == letter), "{letter} has a colour");
+            }
+        }
+        // The heart's outline and the token's mid-tone, as donate.csarko.sh/icon.svg draws them.
+        assert!(TOKENS_PALETTE.contains(&('O', 0x6b1113)));
+        assert!(TOKENS_PALETTE.contains(&('G', 0xf0c040)));
+    }
+
+    #[test]
+    fn the_tokens_icon_paints_one_quad_for_each_run_of_a_colour() {
+        let runs = tokens_runs();
+        let painted: usize = runs.iter().map(|r| r.2).sum();
+        let pixels = TOKENS_PIXELS.iter().flat_map(|row| row.chars()).filter(|&c| c != '.').count();
+        assert_eq!(painted, pixels, "every pixel is painted once");
+        assert_eq!(runs[0], (8, 1, 4, 0x6b1113), "the left lobe's outline opens the second row");
+        assert!(runs.windows(2).all(|w| w[0].1 < w[1].1 || w[0].0 + w[0].2 <= w[1].0), "runs do not overlap");
     }
 
     #[test]
