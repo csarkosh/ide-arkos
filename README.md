@@ -99,6 +99,8 @@ identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every ke
   document and how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.
 
+[<img src="https://donate.csarko.sh/icon.svg" alt="" height="16"> Buy me tokens](https://donate.csarko.sh/arkos)
+
 ## License
 
 GPL-3.0. Modified versions must be released under the same license. See [LICENSE](LICENSE).
