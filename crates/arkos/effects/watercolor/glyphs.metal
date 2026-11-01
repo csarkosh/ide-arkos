@@ -9,10 +9,11 @@
 //
 // New terminal text is written in: a glyph whose sprite carries a stamp (the terminal's paint-in,
 // effects/paint.rs) is written in the hand the stamp names (its steps of 1/ARKOS_PAINT_STEPS,
-// an entry of ARKOS_PAINT_HAND), so the lines of one output differ. It starts at the stamp plus
-// its x in points times ARKOS_PAINT_STAGGER times the hand's pace, and a pen crosses it over
-// ARKOS_PAINT_DUR times the hand's glyph time, left to right and down each stroke as a hand
-// writes (how much across is the hand's too), with a crisp edge and a wet bead just behind it.
+// an entry of ARKOS_PAINT_HAND), so the lines of one output differ. It starts at the stamp, which
+// the terminal works out for each glyph, and a pen crosses it over ARKOS_PAINT_DUR times the
+// hand's glyph time, quick at first and settling at the end (ARKOS_PAINT_EASE, the same curve
+// the terminal paces a line with), left to right and down each stroke as a hand writes (how much
+// across is the hand's too), with a crisp edge and a wet bead just behind it.
 // Text that replaced text in place (a counter ticking) is no pen: it soaks in over its glyph time,
 // thickest strokes first and softly, while a ghost of the text it replaced (ARKOS_PAINT_FADE,
 // drawn under it by the terminal) lifts off the paper, so the change is one smooth crossfade.
@@ -96,11 +97,11 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
   float2 tile_position = (tile_origin + local * per_px) / atlas;
   float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
   float4 color = hsla_to_rgba(sprite.color);
-  // The paint-in: the hand the stamp names, and the start, a cell further right a little later.
-  // The paint carries the start, the glyph time (0 for no stamp), across and the bead.
+  // The paint-in: the hand the stamp names. The paint carries the start (the stamp), the glyph
+  // time (0 for no stamp), across and the bead.
   int variant = int(round(sprite.stamp * ARKOS_PAINT_STEPS)) & (ARKOS_PAINT_VARIANTS - 1);
   float4 hand = ARKOS_PAINT_HAND[variant];
-  float start = sprite.stamp + float(sprite.bounds.origin.x) / ARKOS_SCALE * ARKOS_PAINT_STAGGER * hand.x;
+  float start = sprite.stamp;
   // A wash carries which of its top and bottom join the next row's band in place of the bead.
   bool wash = variant >= ARKOS_PAINT_WASH && variant < ARKOS_PAINT_WASH + 4;
   hand.w = wash ? float(variant - ARKOS_PAINT_WASH) : hand.w;
@@ -295,7 +296,8 @@ fragment float4 arkos_glyph_fragment(
     bleed = max(near, far * 0.9) * (1.0 - core) * (0.6 + 0.4 * feather) * 0.4 * wet * seep;
   } else if (progress < 1.0 || wet > 0.0) {
     float path = dot(saturate(input.box), float2(input.paint.z, 1.0 - input.paint.z)) + (feather - 0.5) * 0.06;
-    float behind = progress * (1.0 + PEN_EDGE + PEN_BEAD) - path;
+    float eased = progress + ARKOS_PAINT_EASE * progress * (1.0 - progress);
+    float behind = eased * (1.0 + PEN_EDGE + PEN_BEAD) - path;
     soak = progress >= 1.0 ? 1.0 : saturate(behind / PEN_EDGE);
     bead = progress >= 1.0 ? 0.0 : saturate(soak * saturate(1.0 - (behind - PEN_EDGE) / PEN_BEAD) * input.paint.w);
     // Wet ink bleeds wide around the stroke behind the pen, and draws back as it dries.

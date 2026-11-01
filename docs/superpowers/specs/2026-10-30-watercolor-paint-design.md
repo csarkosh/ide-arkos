@@ -7,7 +7,8 @@ the soak became a pen. Trying it, he asked for it faster and for the lines of on
 differ (2026-10-31): each run is written in a hand of its own, and lines cascade. He found a
 counter ticking in place (`Step N`) jarring (2026-10-31): a change in place now crossfades. Liking
 how smooth it is but finding it a little long, he asked for the pen twice as fast, still left to
-right (2026-10-31): each glyph and each cell's start halved. Watercolor's counterpart
+right (2026-10-31): each glyph and each cell's start halved. Asked whether Material Design has a
+timing rule, he had a line capped at 400 ms and its pace eased (2026-10-31). Watercolor's counterpart
 to runic's decode. It works GPU first: the CPU stamps a changed cell once, the glyph shader
 paints it, and the frames while ink is wet re-present the last scene instead of redrawing views.
 
@@ -36,25 +37,37 @@ The atlas holds only coverage, not strokes, so the path is the same slant for ev
 than each letter's own stroke order.
 While it is wet the ink reads deeper and bluer and the bleed is strong; over `PAINT_DRY` (0.8 s)
 it dries to watercolor's ink as it is today. A run of cells written at once paints left to
-right, each cell `PAINT_STAGGER` (11 ms, times the hand's pace) after the one before, counted from the first changed
-cell of its row, so appended text paints at once and a new line writes itself out.
+right from the first changed cell of its row, so appended text paints at once and a new line
+writes itself out. Following Material's motion rules (a large transition near 400 ms, entering
+motion on a decelerate curve), the run is written within `PAINT_LINE` (0.4 s) however long it
+is, and its pace is eased:
+- At the hand's pace a cell starts `PAINT_STAGGER` (11 ms, times the hand's pace) after the one
+  before, on average. A run long enough to take longer than `PAINT_LINE` less `PAINT_DUR` at that
+  pace (about 30 cells) has its starts drawn closer together to fit, so its last glyph starts
+  0.36 s in.
+- Along the run the starts follow the inverse of `ease(t) = t + PAINT_EASE t (1 - t)`
+  (`PAINT_EASE` 0.6): the pen sets off at 1.6 times its average pace and settles to 0.4 times it
+  by the end. Each glyph's stroke is eased with the same curve in the shader.
 
 What does not paint, as with runic's decode: the echo of the user's own typing, paste or scroll
 (`USER_QUIET_MS`), a cell that became a space, the row above the screen, a resize or scroll that
 resets the remembered grid, and anything while the effect fades in or out, is paused, or Reduce
 Motion is on. Emoji are not stamped and appear as they do today.
 
-## 2. The CPU's part: one stamp per changed run
+## 2. The CPU's part: a stamp per changed cell
 
 - The manifest's new `terminal_paint = true` (watercolor) turns it on; `Style.terminal_paint`,
   like `terminal_decode`, only once the effect is fully in. An effect has one or the other.
 - The terminal reuses `effects::decode::Decode` for what changed: its `observe` already marks a
   changed cell with the instant, keeps moved rows' marks and settles the user's own echo.
-- Each row's cells marked at the same instant share one stamp: that instant on the glyph clock,
-  less the stagger up to the row's first changed cell measured in points from the window's left
-  edge (`PAINT_STAGGER_PER_PT`, the same constant the shader reads). Runs split where the stamp
-  changes, so a row still shapes as a few runs, and each run is painted inside
-  `Window::with_glyph_stamp`.
+- Each row's cells marked at the same instant are a run in one hand, and each cell's stamp is its
+  own start: that instant on the glyph clock plus the run's place in the cascade, plus its eased
+  share of the run's spread (section 1), placed by its x in points from the run's first cell.
+  An eased, capped pace is no straight line in x, so the shader cannot work it out from a shared
+  stamp. Runs split where the stamp changes, so a wet row shapes as about one run a cell (cells
+  whose starts round to one grid step share one) until it dries, and each run is painted inside
+  `Window::with_glyph_stamp`. Rounding a start to the 1/128 s grid never puts a cell before the one
+  on its left, since rounding keeps the order.
 - A stamp of exactly 0 means dry (every other glyph in the window carries 0); a real one that
   lands on 0 is nudged off it.
 - While any stamp is wet the terminal asks gpui to keep presenting the scene until the newest
@@ -64,9 +77,9 @@ Motion is on. Emoji are not stamped and appear as they do today.
 
 ## 3. The GPU's part
 
-`watercolor/glyphs.metal` reads `sprite.stamp`: zero draws as today. Otherwise the glyph's start
-is the stamp plus its device x in points times `ARKOS_PAINT_STAGGER`; from the glyph clock it
-works out the progress (0 to 1 over the stroke) and the wetness (1 to 0 over the drying), and
+`watercolor/glyphs.metal` reads `sprite.stamp`: zero draws as today. Otherwise the stamp is the
+glyph's start; from the glyph clock it works out the progress (0 to 1 over the stroke, eased by
+`ARKOS_PAINT_EASE`) and the wetness (1 to 0 over the drying), and
 from the stroke's own samples (the core and its two rings, which the shader already takes) how
 thick the ink is at this pixel, so thick parts show first. A stamp older than a minute, the
 clock's wrap among them, is dry.

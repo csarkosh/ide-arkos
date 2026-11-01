@@ -655,7 +655,7 @@ mod tests {
         let navy = Rgb { r: 0x3a, g: 0x7b, b: 0xd5 };
         let accent = "constant float3 ARKOS_ACCENT = float3(0.227451, 0.482353, 0.835294);";
         let paint = crate::effects::paint::paint_lines();
-        assert!(paint.starts_with("constant float ARKOS_PAINT_DUR = 0.04;\nconstant float ARKOS_PAINT_DRY = 0.8;\nconstant float ARKOS_PAINT_STAGGER = 0.00114583;\n"), "{paint}");
+        assert!(paint.starts_with("constant float ARKOS_PAINT_DUR = 0.04;\nconstant float ARKOS_PAINT_DRY = 0.8;\nconstant float ARKOS_PAINT_EASE = 0.6;\n"), "{paint}");
         let header = format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{accent}\nconstant bool ARKOS_LIGHT_GROUND = false;\n{paint}");
         let retina = glyph_shader_for(WindowKind::Project, Some(&e), 2.0, navy, false).unwrap();
         assert_eq!(retina.source, format!("{header}\n{glyphs}"));

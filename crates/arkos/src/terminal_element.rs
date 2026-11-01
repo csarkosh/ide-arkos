@@ -403,7 +403,7 @@ impl Element for TerminalElement {
                         // Which of its top and bottom meet a band of its colour, so the rows join.
                         let meets = |row: Option<&Vec<(char, CellStyle, CellKind)>>| row.is_some_and(|r| r.iter().skip(band.col).take(band.len).any(|c| c.1.bg == band.color));
                         let joined = if meets(near[0]) { paint::WASH_UP } else { 0 } | if meets(near[1]) { paint::WASH_DOWN } else { 0 };
-                        let stamp = paint::wash_stamp(stamp, f32::from(x), clock, joined);
+                        let stamp = paint::wash_stamp(stamp, clock, joined);
                         let path = crate::icons::wash_path(w.round().max(1.0) as u32, f32::from(lh).round().max(1.0) as u32);
                         let bounds = Bounds { origin: point(x, y), size: size(px(w), lh) };
                         let _ = window.with_glyph_stamp(stamp, |window| window.paint_svg(bounds, path, gpui::TransformationMatrix::unit(), hsla(band.color), cx));
@@ -639,7 +639,8 @@ mod tests {
         let t1 = t0 + Duration::from_millis(20);
         let (stamps, ghosts, dry) = painted_rows(&mut state, &rows("ok ", "   "), false, 3, x, 5.02, t1);
         assert_eq!(ghosts, vec![vec![], vec![]], "new text replaced nothing");
-        assert!(stamps[0][0] != 0.0 && stamps[0][0] == stamps[0][1] && stamps[0][2] == 0.0, "{stamps:?}");
+        assert!(stamps[0][0] != 0.0 && stamps[0][1] >= stamps[0][0] && stamps[0][2] == 0.0, "{stamps:?}");
+        assert_eq!(crate::effects::paint::variant_of(stamps[0][0]), crate::effects::paint::variant_of(stamps[0][1]), "one hand");
         assert!(stamps[1].is_empty(), "an unchanged row is drawn as ever");
         assert!(dry.is_some_and(|d| d > t1));
         let t2 = t1 + Duration::from_secs(2);
