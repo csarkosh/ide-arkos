@@ -555,12 +555,14 @@ fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_sec
 }
 
 /// Asks the recorder to stop (SIGINT), which encodes what it captured, and waits for it: the
-/// encoding runs after the capture, at whatever pace the machine's ffmpeg manages.
+/// encoding runs after the capture, at whatever pace the machine's ffmpeg manages (a runner
+/// took more than five minutes over a Retina window's frames at x264's veryfast; it now uses
+/// ultrafast, and gets twenty).
 fn stop_recorder(mut child: Child) -> Result<()> {
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGINT);
     }
-    let deadline = Instant::now() + Duration::from_secs(300);
+    let deadline = Instant::now() + Duration::from_secs(20 * 60);
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
@@ -570,7 +572,7 @@ fn stop_recorder(mut child: Child) -> Result<()> {
         }
         if Instant::now() > deadline {
             let _ = child.kill();
-            bail!("the recorder did not finish its file within 5 minutes");
+            bail!("the recorder did not finish its file within 20 minutes");
         }
         std::thread::sleep(Duration::from_millis(200));
     }

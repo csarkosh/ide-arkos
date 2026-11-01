@@ -10,7 +10,9 @@
 // own and its software encoder cannot keep up with live frames: while it records, each frame
 // ScreenCaptureKit delivers (one only when the window changes) is LZ4-compressed and appended
 // to a scratch file beside the output with its time; afterwards the frames are replayed at a
-// constant `fps` (the latest frame at each tick) into ffmpeg, which encodes them in software.
+// constant `fps` (the latest frame at each tick) into ffmpeg, which encodes them in software:
+// x264's ultrafast preset at a low CRF, a near-transparent intermediate that a runner's cores
+// manage at a Retina window's size (loop.py encodes the loop properly from it).
 // The capture is at the window's display's density: two pixels a point on a Retina Mac or on
 // the shoot's virtual display, one on a bare runner.
 import AppKit
@@ -122,7 +124,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
                        "-f", "rawvideo", "-pix_fmt", "bgra", "-s", "\(width)x\(height)", "-r", "\(fps)", "-i", "-",
-                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", outPath]
+                       "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14", "-pix_fmt", "yuv420p", outPath]
         let pipe = Pipe()
         p.standardInput = pipe
         p.standardOutput = FileHandle.standardError
@@ -134,7 +136,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         var loaded = -1
         var frame = Data()
         let ticks = Int((length * Double(fps)).rounded(.down))
+        let encodeStart = Date()
         for tick in 0..<max(ticks, 1) {
+            if tick > 0 && tick % 300 == 0 {
+                FileHandle.standardError.write("record: encoded \(tick) of \(ticks) frames in \(Int(Date().timeIntervalSince(encodeStart))) s\n".data(using: .utf8)!)
+            }
             let t = Double(tick) / Double(fps)
             while at + 1 < index.count && index[at + 1].time <= t { at += 1 }
             if at != loaded {
