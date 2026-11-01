@@ -283,10 +283,17 @@ checks the runner without Claude Code), then `gh run download <run id> -D <dir>`
 stills it changed into `docs/images/`; the hero is recomposed on the runner with them. Only the
 dark stills are taken (each storyboard has one `dark` shot) and the README shows those alone.
 
-A runner's display draws one pixel a point, half a Retina Mac's, so an effect's wash (drawn at
-its manifest's `scale` of the window's pixels) has half the detail it has on your screen. A
-storyboard's `[effect]` (`name`, `scale`) draws the theme's built-in effect at another scale for
-the picture; the hacker's runic rain takes 1.0, a Retina Mac's density. A shot's `burst = N`
+A runner's own display draws one pixel a point and has no HiDPI mode, so the shoot gives it a
+display: `scripts/shoot/vdisplay.m` (CoreGraphics' private `CGVirtualDisplay`, the API DeskPad
+and BetterDisplay use; built with `clang` once a run) makes a 1512 by 982 point display at two
+pixels a point and keeps it main until the scene ends, so the window, the stills and the
+recording come out at a Retina Mac's density (spec
+`docs/superpowers/specs/2026-10-31-shoot-hidpi-sweeps-design.md`). It is started only where
+the main display draws one pixel a point: a Retina Mac keeps its own. Should a display still
+draw one pixel a point, an effect's wash (drawn at its manifest's `scale` of the window's
+pixels) would have half the detail it has on a Retina screen; a storyboard's `[effect]` (`name`,
+`scale`) draws the theme's built-in effect at another scale for that case (the hacker's runic
+rain takes 1.0), and is left alone on a display at two. A shot's `burst = N`
 takes N captures a tenth of a second apart, with the window brought to the front, instead of waiting for a still frame, keeps the one that
 changed most from the one before (the frame most likely caught mid-motion, such as the runic
 decode), and frames every one into `docs/images/progress/<scene>/` so another can be chosen.
@@ -295,15 +302,30 @@ decode), and frames every one into `docs/images/progress/<scene>/` so another ca
 A storyboard's `[[recording]]` (spec `docs/superpowers/specs/2026-10-31-shoot-recording-design.md`)
 records the window after the shots: it waits as a shot does (`wait`, `changed`, `after_secs`,
 `timeout_secs`), then shows each of `themes` (built-in theme names, two or more) for `hold_secs`
-(4) and the first again, the switches made through the config so the window cross-fades them
-itself and a light theme draws as light. `scripts/shoot/record.swift` (ScreenCaptureKit, macOS 14
-and later, its frames encoded by ffmpeg, since a runner has no video encoder of its own; built with `swiftc` once a run) records the window by its
-id, without its shadow or the pointer, and `scripts/shoot/loop.py` (ffmpeg) cuts the loop: one
-period long (the holds together), the return to the first theme cross-faded into the opening
-`seam_secs` (1), at `fps` (30) and at most `width` (1320) pixels across, written as
+(6) and the first again, the switches made through the config so a light theme draws as light.
+`scripts/shoot/record.swift` (ScreenCaptureKit, macOS 14 and later, its frames encoded by
+ffmpeg, since a runner has no video encoder of its own; built with `swiftc` once a run) records
+the window by its id at its display's density, without its shadow or the pointer, and
+`scripts/shoot/loop.py` (ffmpeg) cuts the loop the way Apple's product clips move (Cyrus,
+2026-10-31): each theme's steady stretch, from a second after its switch (past the config poll
+and the IDE's own fade) to a tenth before the next, joined by `fade_secs` (1.2) of `transition`,
+a soft-edged `sweep` from left to right (the default) or a `dissolve`, the seam from the last
+theme back into the first the same, cut so the last frame leads into the first; at `fps` (30),
+at most `width` (2000) pixels across, H.264 at CRF 19 tagged sRGB, written as
 `docs/images/<scene>-<name>.mp4` with its first frame as `<scene>-<name>.jpg`. The multi tasker
 records `themes` for the app's page on apps.csarko.sh, which plays it under "Who it's for"; the
 README stays stills, since GitHub plays no video from a repository.
+
+**Redoing one shot or one recording.** A scene's sessions have to run either way, but the
+captures can be picked: `scripts/shoot.sh --only themes multitasker` (or the workflow's `only`
+input, `gh workflow run shoot -f scenes=multitasker -f only=themes`) takes only the shots and
+recordings named, comma-separated, and skips the rest with their waits; a name that is neither
+is refused up front. A loop can also be cut again without any window: a run leaves the raw
+recording in `docs/images/progress/<scene>/<scene>-<name>.raw.mp4` (the workflow's artifact
+has it), and `scripts/shoot.sh recut multitasker <that file> [themes]` cuts it again with the
+storyboard's `fade_secs`, `transition` and `width` as they now stand, so a change of taste in
+the transitions costs ffmpeg a minute, not Claude Code ten. The holds must be the ones the
+recording was made with, since the cut finds each theme by them.
 
 ## Status
 

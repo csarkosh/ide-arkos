@@ -6,6 +6,12 @@
 #
 #   scripts/shoot.sh                       # every scene, then the hero
 #   scripts/shoot.sh multitasker           # one scene, then the hero
+#   scripts/shoot.sh --only themes multitasker   # one scene, but only the shots and recordings
+#                                                # named (comma-separated); the rest are skipped
+#   scripts/shoot.sh recut multitasker <raw.mp4> [themes]   # the loop again from a recording a
+#                                          # run left in docs/images/progress/<scene>/ (the
+#                                          # workflow's artifact has it), with the storyboard's
+#                                          # settings as they now stand; no window, no Claude Code
 #   scripts/shoot.sh compose               # only the hero, from the stills in docs/images
 #   scripts/shoot.sh --release blogger     # from the release build
 #
@@ -15,6 +21,8 @@
 # first time). The window need not stay in front: captures go by window id. Progress captures and the panes'
 # states land in docs/images/progress/<scene>/ every 20 s. A scene with a [[recording]] also
 # needs swiftc (Xcode's command line tools) and ffmpeg, and writes <scene>-<name>.mp4 and .jpg.
+# On a display that draws one pixel a point (a runner) the tool makes a virtual 2x display for
+# the scene (scripts/shoot/vdisplay.m, built with clang) and takes it down after.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -22,7 +30,14 @@ ROOT=$(pwd)
 CARGO="${CARGO:-$(command -v cargo || echo "$HOME/.cargo/bin/cargo")}"
 PROFILE=debug
 FLAGS=""
-if [ "${1:-}" = "--release" ]; then PROFILE=release; FLAGS="--release"; shift; fi
+ONLY="${SHOOT_ONLY:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --release) PROFILE=release; FLAGS="--release"; shift ;;
+    --only) ONLY="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
 OUT="${OUT:-$ROOT/docs/images}"
 STORIES="$ROOT/scripts/shoot/stories"
 SCENES="$*"
@@ -47,6 +62,14 @@ sys.exit(0 if v and cf.CFBooleanGetValue(v) else 1)
   exit 1
 fi
 [ -n "$SCENES" ] || SCENES=$(ls "$STORIES" | sed 's/\.toml$//')
+
+# recut <scene> <raw.mp4> [name]: the loop again, from the tool alone.
+if [ "${1:-}" = recut ]; then
+  [ $# -ge 3 ] || { echo "usage: scripts/shoot.sh recut <scene> <raw.mp4> [recording name]" >&2; exit 2; }
+  nice -n 10 "$CARGO" build -q $FLAGS -p arkos-shoot
+  TARGET=$("$CARGO" metadata -q --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+  exec "$TARGET/$PROFILE/arkos-shoot" recut --story "$STORIES/$2.toml" --raw "$3" --out "$OUT" ${4:+--name "$4"}
+fi
 
 if [ "$SCENES" != compose ]; then
   nice -n 10 "$CARGO" build -q $FLAGS -p arkos -p arkosd -p arkos-shoot
@@ -92,10 +115,10 @@ PLIST
     # -W waits; the environment this shell has (PATH for python3 with Pillow, git, swift; SHELL for
     # the demo's shells) goes along, since a Launch Services start has only launchd's.
     if [ "${SHOOT_DIRECT:-}" = 1 ]; then
-      "$BIN/arkos-shoot" run --story "$STORY" --out "$OUT" --bin "$BIN" > "$LOG" 2>&1 || true
+      "$BIN/arkos-shoot" run --story "$STORY" --out "$OUT" --bin "$BIN" ${ONLY:+--only "$ONLY"} > "$LOG" 2>&1 || true
     else
       open -W -n -a "$TOOL" --env "PATH=$PATH" --env "SHELL=${SHELL:-/bin/zsh}" --stdout "$LOG" --stderr "$LOG" \
-        --args run --story "$STORY" --out "$OUT" --bin "$BIN"
+        --args run --story "$STORY" --out "$OUT" --bin "$BIN" ${ONLY:+--only "$ONLY"}
     fi
     cat "$LOG" | grep -v '^/Users' || true
     RESULT=$(cat "$OUT/progress/$SCENE/result.txt" 2>/dev/null || echo "failed: no result written")

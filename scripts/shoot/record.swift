@@ -8,10 +8,15 @@
 //
 // Capture and encoding are kept apart, since a GitHub macOS runner has no video encoder of its
 // own and its software encoder cannot keep up with live frames: while it records, each frame
-// ScreenCaptureKit delivers (one only when the window changes) is LZ4-compressed and appended
-// to a scratch file beside the output with its time; afterwards the frames are replayed at a
-// constant `fps` (the latest frame at each tick) into ffmpeg, which encodes them in software.
-// The capture is one pixel a point, which is the runner's density and what the page shows.
+// ScreenCaptureKit delivers (one only when the window changes), taken as 4:2:0 BT.709 (NV12,
+// what the H.264 holds in the end, at 1.5 bytes a pixel rather than BGRA's 4: a Retina window
+// at 30 fps otherwise outgrows a runner's disk), is LZ4-compressed and appended
+// to a scratch file in the temporary folder with its time; afterwards the frames are replayed at a
+// constant `fps` (the latest frame at each tick) into ffmpeg, which encodes them in software:
+// x264's ultrafast preset at a low CRF, a near-transparent intermediate that a runner's cores
+// manage at a Retina window's size (loop.py encodes the loop properly from it).
+// The capture is at the window's display's density: two pixels a point on a Retina Mac or on
+// the shoot's virtual display, one on a bare runner.
 import AppKit
 import CoreMedia
 import CoreVideo
@@ -44,7 +49,10 @@ guard positional.count == 2, let windowId = UInt32(positional[0]) else {
     fail("usage: record <window id> <out.mp4> [--fps 30] [--max-secs 120]")
 }
 let outPath = positional[1]
-let scratchPath = outPath + ".frames"
+// The scratch file goes in the temporary folder, not beside the output: a recording ended
+// before it encoded would otherwise leave gigabytes of frames among the pictures (and in the
+// workflow's artifact).
+let scratchPath = NSTemporaryDirectory() + "arkos-shoot-record-\(getpid()).frames"
 try? FileManager.default.removeItem(atPath: outPath)
 try? FileManager.default.removeItem(atPath: scratchPath)
 
@@ -67,12 +75,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
               let pixels = CMSampleBufferGetImageBuffer(sampleBuffer), let scratch else { return }
         CVPixelBufferLockBaseAddress(pixels, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(pixels) else { return }
-        let stride = CVPixelBufferGetBytesPerRow(pixels)
-        let rowBytes = width * 4
-        var frame = Data(capacity: rowBytes * height)
+        // NV12: the luma plane, then the interleaved chroma plane at half the height.
+        guard CVPixelBufferGetPlaneCount(pixels) == 2, let luma = CVPixelBufferGetBaseAddressOfPlane(pixels, 0), let chroma = CVPixelBufferGetBaseAddressOfPlane(pixels, 1) else { return }
+        var frame = Data(capacity: width * height * 3 / 2)
+        let lumaStride = CVPixelBufferGetBytesPerRowOfPlane(pixels, 0)
         for y in 0..<height {
-            frame.append(base.advanced(by: y * stride).assumingMemoryBound(to: UInt8.self), count: rowBytes)
+            frame.append(luma.advanced(by: y * lumaStride).assumingMemoryBound(to: UInt8.self), count: width)
+        }
+        let chromaStride = CVPixelBufferGetBytesPerRowOfPlane(pixels, 1)
+        for y in 0..<(height / 2) {
+            frame.append(chroma.advanced(by: y * chromaStride).assumingMemoryBound(to: UInt8.self), count: width)
         }
         guard let packed = try? (frame as NSData).compressed(using: .lz4) as Data else { return }
         let now = Date()
@@ -86,7 +98,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             try scratch.write(contentsOf: packed)
             index.append((now.timeIntervalSince(started!), offset, packed.count))
         } catch {
-            fail("could not write a frame: \(error.localizedDescription)")
+            // A full disk ends the capture; what was taken is still encoded, and the loop's cut
+            // says plainly if that is too short.
+            FileHandle.standardError.write("record: could not write a frame after \(String(format: "%.1f", now.timeIntervalSince(started!))) s (\(error.localizedDescription)); stopping here\n".data(using: .utf8)!)
+            stop()
         }
     }
 
@@ -120,8 +135,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
-                       "-f", "rawvideo", "-pix_fmt", "bgra", "-s", "\(width)x\(height)", "-r", "\(fps)", "-i", "-",
-                       "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", outPath]
+                       "-f", "rawvideo", "-pix_fmt", "nv12", "-s", "\(width)x\(height)", "-r", "\(fps)", "-i", "-",
+                       "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "iec61966-2-1", "-color_range", "tv",
+                       "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14", "-pix_fmt", "yuv420p", outPath]
         let pipe = Pipe()
         p.standardInput = pipe
         p.standardOutput = FileHandle.standardError
@@ -133,7 +149,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         var loaded = -1
         var frame = Data()
         let ticks = Int((length * Double(fps)).rounded(.down))
+        let encodeStart = Date()
         for tick in 0..<max(ticks, 1) {
+            if tick > 0 && tick % 300 == 0 {
+                FileHandle.standardError.write("record: encoded \(tick) of \(ticks) frames in \(Int(Date().timeIntervalSince(encodeStart))) s\n".data(using: .utf8)!)
+            }
             let t = Double(tick) / Double(fps)
             while at + 1 < index.count && index[at + 1].time <= t { at += 1 }
             if at != loaded {
@@ -173,17 +193,35 @@ Task {
         guard let window = content.windows.first(where: { $0.windowID == windowId }) else {
             fail("the window server lists no window \(windowId)")
         }
-        // Even sides: the encoder's 4:2:0 wants them.
-        recorder.width = Int(window.frame.width) & ~1
-        recorder.height = Int(window.frame.height) & ~1
+        // The display the window is on says how many pixels a point it draws; even sides, since
+        // the encoder's 4:2:0 wants them.
+        let centre = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        let display = content.displays.first { $0.frame.contains(centre) } ?? content.displays.first
+        var scale = 1.0
+        if let display, let mode = CGDisplayCopyDisplayMode(display.displayID), mode.width > 0 {
+            scale = Double(mode.pixelWidth) / Double(mode.width)
+        }
+        recorder.width = Int((window.frame.width * scale).rounded()) & ~1
+        recorder.height = Int((window.frame.height * scale).rounded()) & ~1
+        FileHandle.standardError.write("record: window \(Int(window.frame.width))x\(Int(window.frame.height)) points at \(scale)x, \(recorder.width)x\(recorder.height) pixels\n".data(using: .utf8)!)
         guard FileManager.default.createFile(atPath: scratchPath, contents: nil), let scratch = FileHandle(forWritingAtPath: scratchPath) else {
             fail("could not make \(scratchPath)")
         }
         recorder.scratch = scratch
+        // What a 4:2:0 frame costs on disk, against what the temporary folder has: a note up
+        // front beats a capture that stops short.
+        let perFrame = Double(recorder.width * recorder.height * 3 / 2)
+        let expected = perFrame * Double(fps) * maxSecs * 0.6
+        if let free = (try? FileManager.default.attributesOfFileSystem(forPath: NSTemporaryDirectory()))?[.systemFreeSize] as? Double {
+            FileHandle.standardError.write("record: \(Int(free / 1e9)) GB free for up to \(Int(expected / 1e9)) GB of frames\n".data(using: .utf8)!)
+            if free < expected { FileHandle.standardError.write("record: that may not be enough for the whole recording\n".data(using: .utf8)!) }
+        }
         let config = SCStreamConfiguration()
         config.width = recorder.width
         config.height = recorder.height
-        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+        config.colorSpaceName = CGColorSpace.sRGB
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.showsCursor = false
         config.ignoreShadowsSingleWindow = true

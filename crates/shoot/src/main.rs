@@ -16,9 +16,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use story::{Recording, Shot, Story, ThemePair, Waits};
+use story::{Recording, Shot, Story, ThemePair, Waits, SETTLE_SECS};
 
-const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>]
+const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>] [--only <shot or recording names, comma-separated>]
+       arkos-shoot recut --raw <scene>-<name>.raw.mp4 [--story ...] [--out docs/images] [--name <recording>]   (the loop again from a recording already made, no window)
        arkos-shoot bundle [--story ...] [--bin target/debug]   (only makes and signs the bundle, to grant it Accessibility)
        arkos-shoot clean";
 
@@ -53,10 +54,15 @@ struct Opts {
     /// The app bundle to start through Launch Services (`open -a`, which is what lets the
     /// window come to the front) instead of the one made from the binaries in `bin`.
     app: Option<PathBuf>,
+    /// `--only`: the shots and recordings to take, the rest of the story skipped.
+    only: Option<Vec<String>>,
+    /// `recut`: the raw recording to cut again, and which recording's settings to cut it with.
+    raw: Option<PathBuf>,
+    name: Option<String>,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts> {
-    let mut opts = Opts { story: "scripts/shoot/story.toml".into(), out: "docs/images".into(), bin: "target/debug".into(), app: None };
+    let mut opts = Opts { story: "scripts/shoot/story.toml".into(), out: "docs/images".into(), bin: "target/debug".into(), app: None, only: None, raw: None, name: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let value = || it.clone().next().cloned().with_context(|| format!("{a} needs a value"));
@@ -65,6 +71,9 @@ fn parse_opts(args: &[String]) -> Result<Opts> {
             "--out" => opts.out = value()?.into(),
             "--bin" => opts.bin = value()?.into(),
             "--app" => opts.app = Some(value()?.into()),
+            "--only" => opts.only = Some(value()?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+            "--raw" => opts.raw = Some(value()?.into()),
+            "--name" => opts.name = Some(value()?),
             other => bail!("unknown argument {other}\n{USAGE}"),
         }
         it.next();
@@ -76,6 +85,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("run") => parse_opts(&args[1..]).and_then(run),
+        Some("recut") => parse_opts(&args[1..]).and_then(recut),
         Some("bundle") => parse_opts(&args[1..]).and_then(bundle_only),
         Some("clean") => Dirs::new().and_then(|d| clean(&d)),
         _ => {
@@ -87,6 +97,23 @@ fn main() {
         eprintln!("arkos-shoot: {e:#}");
         std::process::exit(1);
     }
+}
+
+/// The loop cut again from a recording already made (`<scene>-<name>.raw.mp4`, which a run
+/// leaves in docs/images/progress/<scene>/ and the workflow keeps in its artifact), with the
+/// storyboard's recording settings as they now stand: a new fade, transition or width needs
+/// no window and no Claude Code, only ffmpeg. The holds must be the ones the recording was
+/// made with, since the cut finds each theme by them.
+fn recut(opts: Opts) -> Result<()> {
+    let raw = opts.raw.context("recut needs --raw <scene>-<name>.raw.mp4")?.canonicalize().context("the raw recording")?;
+    let story_path = opts.story.canonicalize().with_context(|| format!("story {}", opts.story.display()))?;
+    let story = Story::parse(&std::fs::read_to_string(&story_path)?)?;
+    let repo = repo_of(&story_path)?;
+    let rec = story.recording(opts.name.as_deref())?;
+    std::fs::create_dir_all(&opts.out)?;
+    let mp4 = cut_loop(&repo, rec, &raw, &opts.out.canonicalize()?, &format!("{}-{}", story.scene.name, rec.name))?;
+    println!("{}", mp4.display());
+    Ok(())
 }
 
 /// Makes (and signs, when the identity exists) the bundle a run would, and names it, so it
@@ -143,6 +170,9 @@ struct Running {
     daemon: Option<Child>,
     window_pid: Option<u32>,
     site: Option<Child>,
+    /// The virtual 2x display (`scripts/shoot/vdisplay.m`) on a machine whose own draws one
+    /// pixel a point; ended last, after the window has gone.
+    vdisplay: Option<Child>,
     client: Option<Daemon>,
     sessions: Vec<SessionId>,
     /// The demo's folder once it exists: processes still working in it are ended at the end.
@@ -179,9 +209,12 @@ fn run(opts: Opts) -> Result<()> {
         Some(a) => a.canonicalize().with_context(|| format!("app bundle {}", a.display()))?,
         None => make_bundle(&repo, &bin, &dirs.cache.join("app"))?,
     };
+    if let Some(only) = &opts.only {
+        story.check_only(only)?;
+    }
     install_signal_handlers();
     let mut running = Running::default();
-    let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, &mut running);
+    let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, opts.only.as_deref(), &mut running);
     stop(&mut running, &dirs);
     // The verdict as a file too: started through Launch Services (scripts/shoot.sh), the
     // process has no exit code anyone sees.
@@ -194,7 +227,11 @@ fn run(opts: Opts) -> Result<()> {
     result
 }
 
-fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs, out: &Path, running: &mut Running) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs, out: &Path, only: Option<&[String]>, running: &mut Running) -> Result<()> {
+    if let Some(names) = only {
+        say(&format!("only: {}", names.join(", ")));
+    }
     // 1. The demo project, fresh.
     let demo = match &story.demo.dir {
         Some(d) => PathBuf::from(expand_home(d)),
@@ -221,10 +258,24 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
         std::fs::write(dirs.state.join("site.pid"), running.site.as_ref().map(|s| s.id()).unwrap_or(0).to_string())?;
     }
 
+    // 2b. The display. A machine whose main display draws one pixel a point (a GitHub runner,
+    //     whose 1024 by 768 has no HiDPI mode) gets a virtual display at two, made main for the
+    //     run, so the window, the stills and the recording come out at a Retina Mac's density.
+    //     A Retina Mac keeps its own display, which must not be rearranged under its user.
+    let own_density = display_density();
+    let mut vscreen = None;
+    if own_density < 2.0 {
+        let (child, screen) = start_vdisplay(repo, &dirs.cache, VDISPLAY_POINTS.0, VDISPLAY_POINTS.1)?;
+        say(&format!("display draws {own_density}x; a virtual {}x{} display at 2x is main for this run (visible {:?})", VDISPLAY_POINTS.0, VDISPLAY_POINTS.1, (screen.left, screen.top, screen.right, screen.bottom)));
+        running.vdisplay = Some(child);
+        vscreen = Some(screen);
+    }
+    let density = if vscreen.is_some() { 2.0 } else { own_density };
+
     // 3. The window's config: the first shot's theme, the storyboard's text size and sidebar,
     //    no login item and no update checks.
     write_config(&dirs.config_file(), story, &story.shots[0].theme, &story.window.theme)?;
-    install_effects(repo, dirs, story)?;
+    install_effects(repo, dirs, story, density)?;
     // The recorder, before anything slow: a Mac without swiftc fails here, not after a scene.
     let recorder = if story.recordings.is_empty() { None } else { Some(build_recorder(repo, &dirs.cache)?) };
 
@@ -271,7 +322,9 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     // 6. The workspace file the window opens with. The window centres itself on the display
     //    (the file names no display it knows); a frame that would run under the Dock or the menu
     //    bar is narrowed or shortened first, since the Dock draws over any window.
-    let screen = Screen::main().unwrap_or(Screen { w: 1470.0, h: 956.0, left: 0.0, top: 38.0, right: 1470.0, bottom: 956.0 });
+    // The virtual display's area comes from the process that made it: AppKit here learnt the
+    // displays before it existed.
+    let screen = vscreen.unwrap_or_else(|| Screen::main().unwrap_or(Screen { w: 1470.0, h: 956.0, left: 0.0, top: 38.0, right: 1470.0, bottom: 956.0 }));
     let (w, h) = screen.fit_centred(story.window.width, story.window.height);
     if (w, h) != (story.window.width, story.window.height) {
         say(&format!("window {}x{} would run under the Dock or the menu bar; using {w}x{h}", story.window.width, story.window.height));
@@ -356,7 +409,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     // 9. The shots.
     let mut theme = story.shots[0].theme.clone();
     let mut failures = Vec::new();
-    for shot in &story.shots {
+    for shot in story.shots.iter().filter(|s| Story::wants(only, &s.name)) {
         if shot.theme != theme {
             write_config(&dirs.config_file(), story, &shot.theme, &story.window.theme)?;
             theme = shot.theme.clone();
@@ -400,7 +453,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     }
 
     // 10. The recordings: the window through its themes, after the stills, each a loop.
-    for rec in &story.recordings {
+    for rec in story.recordings.iter().filter(|r| Story::wants(only, &r.name)) {
         let unmet = wait_for(&rec.waits(), story, &sessions, client, &progress, &demo)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", rec.name, rec.timeout_secs, unmet.join(", ")));
@@ -419,10 +472,10 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
 }
 
 /// A `[[recording]]`: the window brought to the front and shown in the first theme, the
-/// recorder started on it, then each theme in turn for `hold_secs`, and the first again, so
-/// the clip's end returns to its start; `loop.py` then cuts the loop. The theme changes go
-/// through the config, which the window reloads and cross-fades, so the transitions are the
-/// IDE's own, and a theme's appearance (light or dark) goes with it.
+/// recorder started on it, then each theme in turn for `hold_secs`, and the first again;
+/// `loop.py` then cuts the loop from each theme's steady stretch, joined by the storyboard's
+/// transition. The theme changes go through the config, which the window reloads (its own
+/// fade falls in the second the cut skips), so a theme's appearance (light or dark) goes with it.
 #[allow(clippy::too_many_arguments)]
 fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &Dirs, window_id: u32, window_pid: u32, progress: &Progress, out: &Path) -> Result<()> {
     let picture = format!("{}-{}", story.scene.name, rec.name);
@@ -436,7 +489,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     show(&rec.themes[0])?;
     pause(Duration::from_millis(1500))?;
     let raw = progress.dir.join(format!("{picture}.raw.mp4"));
-    let max_secs = rec.hold_secs * (rec.themes.len() as f64 + 1.0) + rec.seam_secs + 15.0;
+    let max_secs = rec.hold_secs * rec.themes.len() as f64 + 20.0;
     let child = start_recorder(recorder, window_id, &raw, rec.fps, max_secs)?;
     let started = Instant::now();
     say(&format!("{}: recording {} themes, {:.1} s each", rec.name, rec.themes.len(), rec.hold_secs));
@@ -449,13 +502,21 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
             show(name)?;
         }
         until(started + hold * rec.themes.len() as u32)?;
+        // Back to the first theme, past the config poll and the fade, so the window is left as
+        // it was; the cut needs nothing after the last hold.
         show(&rec.themes[0])?;
-        // The return's fade and the seam's blend, with room for the config poll.
-        pause(Duration::from_secs_f64(rec.seam_secs) + Duration::from_millis(900))
+        pause(Duration::from_secs_f64(SETTLE_SECS) + Duration::from_millis(500))
     })();
     let stopped = stop_recorder(child);
     switched?;
     stopped?;
+    cut_loop(repo, rec, &raw, out, &picture)?;
+    Ok(())
+}
+
+/// `scripts/shoot/loop.py` on a raw recording: the loop as `<out>/<picture>.mp4`, its first
+/// frame as `<picture>.jpg`.
+fn cut_loop(repo: &Path, rec: &Recording, raw: &Path, out: &Path, picture: &str) -> Result<PathBuf> {
     let mp4 = out.join(format!("{picture}.mp4"));
     let poster = out.join(format!("{picture}.jpg"));
     let status = Command::new("python3")
@@ -463,7 +524,8 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
         .arg(repo.join("scripts/shoot/loop.py"))
         .arg(&raw)
         .arg(&mp4)
-        .args(["--period", &format!("{}", rec.period_secs()), "--seam", &rec.seam_secs.to_string(), "--fps", &rec.fps.to_string(), "--width", &rec.width.to_string()])
+        .args(["--hold", &rec.hold_secs.to_string(), "--themes", &rec.themes.len().to_string(), "--settle", &SETTLE_SECS.to_string()])
+        .args(["--fade", &rec.fade_secs.to_string(), "--transition", rec.transition.name(), "--fps", &rec.fps.to_string(), "--width", &rec.width.to_string()])
         .arg("--poster")
         .arg(&poster)
         .status()
@@ -472,7 +534,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
         bail!("loop.py failed for {}", raw.display());
     }
     say(&format!("{}: {}", rec.name, mp4.display()));
-    Ok(())
+    Ok(mp4)
 }
 
 /// A built-in theme's `appearance` (`crates/arkos/themes/<name>.toml`): `light` or `dark`, the
@@ -534,12 +596,14 @@ fn start_recorder(recorder: &Path, window_id: u32, out: &Path, fps: u32, max_sec
 }
 
 /// Asks the recorder to stop (SIGINT), which encodes what it captured, and waits for it: the
-/// encoding runs after the capture, at whatever pace the machine's ffmpeg manages.
+/// encoding runs after the capture, at whatever pace the machine's ffmpeg manages (a runner
+/// took more than five minutes over a Retina window's frames at x264's veryfast; it now uses
+/// ultrafast, and gets twenty).
 fn stop_recorder(mut child: Child) -> Result<()> {
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGINT);
     }
-    let deadline = Instant::now() + Duration::from_secs(300);
+    let deadline = Instant::now() + Duration::from_secs(20 * 60);
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
@@ -549,7 +613,7 @@ fn stop_recorder(mut child: Child) -> Result<()> {
         }
         if Instant::now() > deadline {
             let _ = child.kill();
-            bail!("the recorder did not finish its file within 5 minutes");
+            bail!("the recorder did not finish its file within 20 minutes");
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -738,10 +802,10 @@ fn capture_window(id: u32, out: &Path) -> Result<()> {
     bail!("screencapture failed for {}", out.display())
 }
 
-/// A capture of a frame that holds still: two captures 400 ms apart, kept when under 0.4% of
-/// the pixels differ (a spinner and a clock tick pass; a pane mid-repaint, which Claude Code
-/// does whole lines at a time, does not), tried up to eight times before the last one is kept
-/// with a note.
+/// A capture of a frame that holds still: two captures 400 ms apart, kept when under 1% of
+/// the pixels differ (a spinner, a clock tick and a theme's rain behind the panes, about half a
+/// percent at two pixels a point, pass; a pane mid-repaint, which Claude Code does whole lines
+/// at a time, does not), tried up to eight times before the last one is kept with a note.
 fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
     let other = out.with_extension("b.png");
     for attempt in 1..=8 {
@@ -750,7 +814,7 @@ fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
         capture_window(id, &other)?;
         let diff = Command::new("python3").arg("-I").arg(repo.join("scripts/shoot/diff.py")).arg(out).arg(&other).output().context("diff.py")?;
         let fraction: f64 = String::from_utf8_lossy(&diff.stdout).trim().parse().unwrap_or(1.0);
-        if fraction < 0.004 {
+        if fraction < 0.01 {
             let _ = std::fs::rename(&other, out);
             return Ok(());
         }
@@ -793,9 +857,15 @@ fn capture_burst(repo: &Path, id: u32, out: &Path, n: usize, shot: &Shot) -> Res
 
 /// The storyboard's `[effect]`s: each built-in effect's folder copied into the shoot's own
 /// config, where it shadows the built-in, with the storyboard's wash scale in its manifest.
-fn install_effects(repo: &Path, dirs: &Dirs, story: &Story) -> Result<()> {
+/// The scale exists to give a display that draws one pixel a point a Retina Mac's wash density,
+/// so on a display at two pixels a point the built-in manifests are left to draw as they are.
+fn install_effects(repo: &Path, dirs: &Dirs, story: &Story, density: f64) -> Result<()> {
     let effects = dirs.config_home.join("arkos/effects");
     let _ = std::fs::remove_dir_all(&effects);
+    if density >= 2.0 && !story.effects.is_empty() {
+        say(&format!("display at {density}x: the storyboard's effect scales are not applied"));
+        return Ok(());
+    }
     for effect in &story.effects {
         let from = repo.join("crates/arkos/effects").join(&effect.name);
         let to = effects.join(&effect.name);
@@ -1224,6 +1294,79 @@ fn stop(running: &mut Running, dirs: &Dirs) {
     for f in ["daemon.pid", "window.pid", "site.pid"] {
         let _ = std::fs::remove_file(dirs.state.join(f));
     }
+    // The virtual display last: the window has gone from it by now.
+    if let Some(mut v) = running.vdisplay.take() {
+        unsafe { libc::kill(v.id() as libc::pid_t, libc::SIGTERM) };
+        let gone = Instant::now() + Duration::from_secs(5);
+        while v.try_wait().ok().flatten().is_none() && Instant::now() < gone {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if v.try_wait().ok().flatten().is_none() {
+            let _ = v.kill();
+            let _ = v.wait();
+        }
+    }
+}
+
+/// The virtual display's size in points: a 14-inch MacBook Pro's, room for every storyboard's
+/// window below the menu bar.
+const VDISPLAY_POINTS: (u32, u32) = (1512, 982);
+
+/// How many pixels a point the main display draws: 2 on a Retina Mac, 1 on a GitHub runner.
+/// Unknown counts as 2, so a display is never made where none is needed.
+fn display_density() -> f64 {
+    use core_graphics::display::CGDisplay;
+    match CGDisplay::main().display_mode() {
+        Some(mode) if mode.width() > 0 => mode.pixel_width() as f64 / mode.width() as f64,
+        _ => 2.0,
+    }
+}
+
+/// `scripts/shoot/vdisplay.m` built once a run into the cache (clang, the Xcode command line
+/// tools) and started: a `w` by `h` point display at two pixels a point, made main until the
+/// child is ended. Returns once it says `ready`, with the display's visible area as it reports it.
+fn start_vdisplay(repo: &Path, cache: &Path, w: u32, h: u32) -> Result<(Child, Screen)> {
+    let src = repo.join("scripts/shoot/vdisplay.m");
+    let bin = cache.join("vdisplay");
+    std::fs::create_dir_all(cache)?;
+    let out = Command::new("clang").args(["-fobjc-arc", "-framework", "Cocoa", "-o"]).arg(&bin).arg(&src).output().context("clang (the Xcode command line tools)")?;
+    if !out.status.success() {
+        bail!("clang could not build {}: {}", src.display(), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let mut child = Command::new(&bin)
+        .args([w.to_string(), h.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("start {}", bin.display()))?;
+    let stdout = child.stdout.take().expect("piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        let _ = tx.send(lines.next().and_then(|l| l.ok()));
+        for line in lines.map_while(Result::ok) {
+            say(&format!("vdisplay: {line}"));
+        }
+    });
+    let line = match rx.recv_timeout(Duration::from_secs(45)) {
+        Ok(Some(line)) => line,
+        Ok(None) => {
+            let _ = child.wait();
+            bail!("the virtual display could not be made; its words are above");
+        }
+        Err(_) => {
+            let _ = child.kill();
+            bail!("the virtual display said nothing for 45 s");
+        }
+    };
+    let f: Vec<f64> = line.split_whitespace().skip(1).filter_map(|s| s.parse().ok()).collect();
+    if !line.starts_with("ready ") || f.len() != 7 {
+        let _ = child.kill();
+        bail!("the virtual display said {line:?}, not ready");
+    }
+    Ok((child, Screen { w: f[1], h: f[2], left: f[3], top: f[4], right: f[5], bottom: f[6] }))
 }
 
 /// Starts the window on `demo` and returns its pid. Through Launch Services when there is an

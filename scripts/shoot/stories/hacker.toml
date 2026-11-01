@@ -60,8 +60,9 @@ timeout_secs = 420
 # while the audit writes.
 burst = 40
 
-# The rain's runes are a couple of points across: at the manifest's 0.5 on the runner's one
-# pixel a point they blur away, so the wash draws at 1.0 there, a Retina Mac's density.
+# The rain's runes are a couple of points across: at the manifest's 0.5 on a display that draws
+# one pixel a point they blur away, so the wash draws at 1.0 there, a Retina Mac's density. On
+# a display at two (the shoot's virtual one included) the built-in scale stands.
 [effect]
 name = "runic"
 scale = 1.0
