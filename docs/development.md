@@ -100,11 +100,50 @@ move to a new release, change the version in that script and in `crates/arkos/sr
 
 ## Motion
 
+Every transition and animation follows Google's Material 3 motion guidance
+(m3.material.io, Styles, Motion, Easing and duration). Material's timing is what makes a UI feel
+fast and responsive: motion starts at once, settles gently, and is over before anyone waits on it.
+
+- **Durations are Material tokens.** short1 to short4 are 50, 100, 150 and 200 ms; medium1 to
+  medium4 are 250, 300, 350 and 400 ms; long1 to long4 are 450, 500, 550 and 600 ms; extra-long1 to
+  extra-long4 are 700, 800, 900 and 1000 ms. Small, local changes (a highlight, a menu, a toggle)
+  take a short token, larger ones (a panel, a slide, a cross-fade of the window) a medium one, and
+  only something that crosses the whole window takes a long one. Extra-long is for rare, emphasized
+  moments, never for something the user does often.
+- **Curves are Material tokens.** Standard `(0.2, 0, 0, 1)` for something that changes or moves
+  and stays on screen; standard decelerate `(0, 0, 0, 1)` for something entering; standard
+  accelerate `(0.3, 0, 1, 1)` for something leaving; the emphasized set (emphasized decelerate
+  `(0.05, 0.7, 0.1, 1)`, emphasized accelerate `(0.3, 0, 0.8, 0.15)`) for an expressive or large
+  transition; linear only for colour or opacity changes that do not move, and for a loop. The
+  curves live in `motion.rs` as constants and are drawn through `motion::cubic_bezier`, in Rust and,
+  with the same numbers, in a shader.
+- **Leaving is quicker than entering.** An exit takes the next shorter token, or less, than the
+  matching entrance, and asks for less attention.
+- **Long things are capped, not stretched.** Motion whose length grows with its content (text
+  written in, a list cascading in) keeps its whole run within a medium token, however long the
+  content, spacing its parts closer together rather than taking longer. A cascade staggers each
+  part a few tens of milliseconds after the one before. The watercolor pen is the model: a line
+  of any length is written within 400 ms (medium4).
+- **Motion starts at once.** Nothing waits before it moves in answer to the user, beyond a
+  cascade's own stagger.
+- **Ambient loops are out of scope.** An effect's continuous background (a wash drifting, stars,
+  rain, a breathing dot, a doodle going round) is decoration, not a transition, and keeps its own
+  period, but it still goes through Reduce Motion and still enters and leaves with a token.
+- **Reduce Motion means instant.** Under macOS's Reduce Motion every curve is at its end at once
+  and nothing animates.
+
+A change that adds or alters motion names the token for each duration and curve in its doc
+comment, as `HIGHLIGHT_ENTER` and `HIGHLIGHT_EXIT` do. Motion that predates this rule and is not
+yet on a token: the durations `ENTER` (120 ms) and `EXIT` (90 ms); the quadratic curves of
+`motion::enter_progress`, `motion::exit_progress` and the sidebar's `ease_in`; the smoothstep of
+`motion::fade_progress`; and the watercolor pen's own quadratic ease (`paint::PAINT_EASE`). Bring
+each onto a token when it is next touched.
+
 Every transition in the window goes through `crates/arkos/src/motion.rs`, on `Instant`, with
 one duration per kind: `ENTER` (120 ms, chrome appearing), `EXIT` (90 ms, chrome going),
-`SIDEBAR_SLIDE` (150 ms, Cmd+B) and `THEME_FADE` (200 ms, a theme switch). Under macOS's Reduce
-Motion every curve is at its end at once; nothing animates. The rules that keep this working as
-features are added:
+`SIDEBAR_SLIDE` (150 ms, Cmd+B, short3), `THEME_FADE` (200 ms, a theme switch, short4) and the
+highlights' `HIGHLIGHT_ENTER` (250 ms, medium1) and `HIGHLIGHT_EXIT` (200 ms, short4). The rules
+that keep this working as features are added:
 
 - A colour is read from `root.theme` at paint time and never cached in a view or an element
   built earlier. For 200 ms after a theme switch `root.theme` is a `theme::blend` of the old and

@@ -12,9 +12,12 @@ workspace's crates live in `crates/`; the app is `crates/arkos`.
 
 - Designs live in `docs/superpowers/specs`, implementation plans in `docs/superpowers/plans`.
   A feature starts from a spec there; a plan names its tasks.
-- Motion rule: every transition uses `crates/arkos/src/motion.rs` (ENTER 120 ms, EXIT 90 ms,
-  SIDEBAR_SLIDE 150 ms, THEME_FADE 200 ms; Reduce Motion means instant), and a new animated thing
-  adds itself to `Root::any_motion`. Every colour is read from `root.theme` at paint time and
+- Motion rule: every transition and animation is Google Material 3 compliant: its duration is
+  one of Material's duration tokens and its curve one of Material's easing tokens, entering on a
+  decelerate curve, leaving on an accelerate one and a little quicker than it came (the tokens
+  and the full rule are in `docs/development.md`, Motion). It goes through
+  `crates/arkos/src/motion.rs` (Reduce Motion means instant), and a new animated thing adds itself
+  to `Root::any_motion`. Every colour is read from `root.theme` at paint time and
   never cached, because for 200 ms after a theme switch the theme is a blend remade each frame;
   anything derived from the theme once (highlighter spans, a program's theme push) is done from
   the final theme in `Root::finish_theme`, never per frame.
