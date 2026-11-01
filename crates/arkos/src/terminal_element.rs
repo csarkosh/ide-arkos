@@ -189,6 +189,39 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
+/// The contrast every terminal glyph keeps with the background it is drawn on, whatever colour
+/// the program asked for. A program can send colours meant for another ground, as RGB the
+/// palette never sees: Claude Code under its stock dark theme draws a diff's context lines near
+/// white, which vanish on a light theme's paper.
+const TEXT_MIN_CONTRAST: f64 = 4.5;
+/// The contrast a colour under `TEXT_MIN_CONTRAST` is moved to. It is wider than the floor
+/// because under an effect a band is a wash that shows lighter than its colour, and text that
+/// only just cleared the band's colour would not clear the wash.
+const TEXT_MOVED_CONTRAST: f64 = 7.0;
+
+/// `fg` as it is drawn on `bg`: itself when it has `TEXT_MIN_CONTRAST` with `bg` already, else
+/// blended toward black or white, whichever reads better on `bg`, just far enough to reach
+/// `TEXT_MOVED_CONTRAST`, or all the way when that is out of reach. The blend keeps its hue.
+fn legible(fg: Rgb, bg: Rgb) -> Rgb {
+    use crate::palette::contrast;
+    if contrast(fg, bg) >= TEXT_MIN_CONTRAST {
+        return fg;
+    }
+    let min = TEXT_MOVED_CONTRAST;
+    let (black, white) = (Rgb { r: 0, g: 0, b: 0 }, Rgb { r: 255, g: 255, b: 255 });
+    let ink = if contrast(black, bg) >= contrast(white, bg) { black } else { white };
+    let at = |t: f32| {
+        let mix = |f: u8, i: u8| (f32::from(f) + (f32::from(i) - f32::from(f)) * t).round() as u8;
+        Rgb { r: mix(fg.r, ink.r), g: mix(fg.g, ink.g), b: mix(fg.b, ink.b) }
+    };
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..12 {
+        let mid = (lo + hi) / 2.0;
+        if contrast(at(mid), bg) >= min { hi = mid } else { lo = mid }
+    }
+    at(hi)
+}
+
 /// How far faint text (SGR 2) fades toward its background.
 const DIM_FADE: f32 = 0.4;
 /// The contrast with its background faint text keeps however far it would fade, so a theme's
@@ -221,9 +254,10 @@ fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
     if style.italic {
         f.style = gpui::FontStyle::Italic;
     }
-    let mut color = hsla(style.fg);
+    let fg = legible(style.fg, style.bg);
+    let mut color = hsla(fg);
     if style.dim {
-        color.a = dim_alpha(style.fg, style.bg);
+        color.a = dim_alpha(fg, style.bg);
     }
     TextRun { len: text.len(), font: f, color, background_color: None, underline: None, strikethrough: None }
 }
@@ -428,7 +462,7 @@ impl Element for TerminalElement {
                     let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(x, y), lh, window, cx));
                     if run.style.underline {
                         let uy = y + lh - px(2.0);
-                        window.paint_quad(fill(Bounds { origin: point(x, uy), size: size(w, px(1.0)) }, hsla(run.style.fg)));
+                        window.paint_quad(fill(Bounds { origin: point(x, uy), size: size(w, px(1.0)) }, hsla(legible(run.style.fg, run.style.bg))));
                     }
                 }
             };
@@ -518,7 +552,7 @@ pub fn hovered_link(spans: &[Span], bounds: Bounds<Pixels>, mouse: gpui::Point<P
 
 #[cfg(test)]
 mod tests {
-    use super::{bands, dim_alpha, frame_dt, hovered_link, shown_again, split_offset, Band, DIM_FADE, DIM_MIN_CONTRAST};
+    use super::{bands, dim_alpha, frame_dt, hovered_link, legible, shown_again, split_offset, Band, DIM_FADE, DIM_MIN_CONTRAST, TEXT_MOVED_CONTRAST};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
 
@@ -540,6 +574,46 @@ mod tests {
         assert!(!shown_again(6, 7), "drawn in the last draw: still on screen");
         assert!(!shown_again(7, 7), "painted twice in one draw");
         assert!(shown_again(5, 7), "the window drew once without it: its tab was hidden");
+    }
+
+    #[test]
+    fn text_a_program_draws_too_close_to_its_background_is_moved_toward_ink_until_it_reads() {
+        use crate::palette::{contrast, Rgb};
+        // Claude Code's stock dark diff draws its context lines in a near white, sent as RGB, so
+        // on a light theme's paper they all but vanish.
+        let paper = Rgb { r: 0xf9, g: 0xf7, b: 0xfb };
+        let near_white = Rgb { r: 248, g: 248, b: 242 };
+        let shown = legible(near_white, paper);
+        assert!(contrast(shown, paper) >= TEXT_MOVED_CONTRAST - 0.05, "{shown:?}");
+        assert!(contrast(shown, paper) < TEXT_MOVED_CONTRAST + 0.5, "moved no further than it must: {shown:?}");
+        // Its message band is a dark grey sent as RGB, under a light theme's dark text.
+        let band = Rgb { r: 55, g: 55, b: 55 };
+        let ink = Rgb { r: 0x2d, g: 0x23, b: 0x40 };
+        let shown = legible(ink, band);
+        assert!(contrast(shown, band) >= TEXT_MOVED_CONTRAST - 0.05, "{shown:?}");
+        assert!(shown.r > ink.r && shown.g > ink.g && shown.b > ink.b, "lightened toward white on a dark band: {shown:?}");
+    }
+
+    #[test]
+    fn text_that_reads_already_keeps_its_colour_and_moved_text_keeps_its_hue() {
+        use crate::palette::Rgb;
+        let paper = Rgb { r: 0xf9, g: 0xf7, b: 0xfb };
+        let red = Rgb { r: 0xc2, g: 0x3c, b: 0x4e };
+        assert_eq!(legible(red, paper), red, "a theme colour that clears 4.5:1");
+        let pale_red = Rgb { r: 255, g: 168, b: 180 };
+        let shown = legible(pale_red, paper);
+        assert!(shown.r > shown.g && shown.r > shown.b, "still a red: {shown:?}");
+    }
+
+    #[test]
+    fn a_faint_line_in_a_colour_meant_for_another_ground_still_reads_at_three_to_one() {
+        use crate::palette::{contrast, Rgb};
+        let paper = Rgb { r: 0xf9, g: 0xf7, b: 0xfb };
+        let fg = legible(Rgb { r: 248, g: 248, b: 242 }, paper);
+        let a = dim_alpha(fg, paper);
+        let faded = |c: u8, b: u8| (f32::from(c) * a + f32::from(b) * (1.0 - a)).round() as u8;
+        let shown = Rgb { r: faded(fg.r, paper.r), g: faded(fg.g, paper.g), b: faded(fg.b, paper.b) };
+        assert!(contrast(shown, paper) >= DIM_MIN_CONTRAST - 0.05, "{shown:?}");
     }
 
     #[test]
