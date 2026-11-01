@@ -5,13 +5,15 @@ only, and a gpui sprite field for each glyph's start time (2026-10-30). On seein
 he asked for each letter's lines to be stroked in rather than faded in, and slower (2026-10-31):
 the soak became a pen. Trying it, he asked for it faster and for the lines of one output to
 differ (2026-10-31): each run is written in a hand of its own, and lines cascade. He found a
-counter ticking in place (`Step N`) jarring (2026-10-31): a change in place now crossfades. Watercolor's counterpart
+counter ticking in place (`Step N`) jarring (2026-10-31): a change in place now crossfades. Liking
+how smooth it is but finding it a little long, he asked for the pen twice as fast, still left to
+right (2026-10-31): each glyph and each cell's start halved. Watercolor's counterpart
 to runic's decode. It works GPU first: the CPU stamps a changed cell once, the glyph shader
 paints it, and the frames while ink is wet re-present the last scene instead of redrawing views.
 
 ## 1. The look
 
-A cell the program writes is written in: a pen crosses its glyph over `PAINT_DUR` (0.08 s), left
+A cell the program writes is written in: a pen crosses its glyph over `PAINT_DUR` (0.04 s), left
 to right and down each stroke, so a stem draws from its top as the pen reaches it. Each run is
 written in one of 16 hands (`paint::hand`, picked by a hash of the run's characters, so a line
 keeps its hand as it scrolls): pace 0.7 to 1.3 times the stagger, glyph time 0.8 to 1.25 times
@@ -34,7 +36,7 @@ The atlas holds only coverage, not strokes, so the path is the same slant for ev
 than each letter's own stroke order.
 While it is wet the ink reads deeper and bluer and the bleed is strong; over `PAINT_DRY` (0.8 s)
 it dries to watercolor's ink as it is today. A run of cells written at once paints left to
-right, each cell `PAINT_STAGGER` (22 ms, times the hand's pace) after the one before, counted from the first changed
+right, each cell `PAINT_STAGGER` (11 ms, times the hand's pace) after the one before, counted from the first changed
 cell of its row, so appended text paints at once and a new line writes itself out.
 
 What does not paint, as with runic's decode: the echo of the user's own typing, paste or scroll

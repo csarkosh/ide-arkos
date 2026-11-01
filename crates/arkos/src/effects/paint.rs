@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// How long the pen takes to write one cell's glyph, in seconds, for a hand of glyph time 1.
-pub const PAINT_DUR: f32 = 0.08;
+pub const PAINT_DUR: f32 = 0.04;
 /// How long freshly written ink takes to dry, in seconds.
 pub const PAINT_DRY: f32 = 0.8;
-/// How much later each cell to the right starts, in seconds a point, for a hand of pace 1: 22 ms
+/// How much later each cell to the right starts, in seconds a point, for a hand of pace 1: 11 ms
 /// a cell of the default terminal's 9.6 point wide cells.
-pub const PAINT_STAGGER_PER_PT: f32 = 0.022 / 9.6;
+pub const PAINT_STAGGER_PER_PT: f32 = 0.011 / 9.6;
 /// How many rows the pen writes at a time, as the decode scrambles only its newest few
 /// (`decode::DECODE_ROWS`): the rows changed most recently, the lowest on screen first among rows
 /// changed at one instant. Older text shows as written, so a screenful of output does not all
@@ -266,7 +266,7 @@ mod tests {
         let grid = 1.5 / PAINT_GRID;
         assert!((start(1) - 49.9).abs() <= grid, "{}", start(1));
         let gap = start(2) - start(1);
-        assert!((0.7 * 0.022 - 1e-4..=1.3 * 0.022 + 1e-4).contains(&gap), "{gap}");
+        assert!((0.7 * 0.011 - 1e-4..=1.3 * 0.011 + 1e-4).contains(&gap), "{gap}");
         assert!((start(3) - 50.0).abs() <= grid, "a cell changed now starts now, wherever it is");
         assert!(dry.is_some_and(|d| d > now + Duration::from_secs_f32(PAINT_DRY)));
     }
