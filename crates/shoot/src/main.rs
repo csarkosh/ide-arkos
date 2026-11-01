@@ -404,6 +404,23 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             client.input(id, "\r")?;
             say(&format!("{}: prompt sent", pane.name));
         }
+        // Claude Code says it is working within seconds of a prompt (its UserPromptSubmit
+        // hook). A pane still idle after that kept the prompt in its box without sending it
+        // (Claude Code 2.1.316 on the runner drew its start-up tip under the typed prompt and
+        // lost the Enter: every pane sat with its prompt unsent for a minute), so Enter goes
+        // again, up to three times, before anyone waits on it.
+        for round in 1..=3 {
+            pause(Duration::from_secs(8))?;
+            let states = client.states()?;
+            let idle: Vec<&&story::Pane> = claude.iter().filter(|p| matches!(states.get(&sessions[&p.name]), None | Some(ClaudeState::Idle))).collect();
+            if idle.is_empty() {
+                break;
+            }
+            for pane in idle {
+                say(&format!("{}: still idle {} s after its prompt; Enter again (try {round})", pane.name, 8 * round));
+                client.input(SessionId(sessions[&pane.name]), "\r")?;
+            }
+        }
     }
 
     // 9. The shots.
