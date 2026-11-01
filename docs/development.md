@@ -414,6 +414,8 @@ Things only a person at the screen can check, in order of value:
 - colours: in a light theme, a picture drawn with half blocks (`chafa` or `timg` on a photo), a
   powerline prompt (with a font that has its glyphs) and Claude Code's mascot keep their own
   colours: no darkened pixels and no seam between a prompt's segments.
+- telemetry: under `telemetry.usage = "local"`, a Claude Code session on its stock `dark` theme in
+  a light Arkos theme puts `text_moved` with `ground: light` in `arkos telemetry view`, once.
 - colours: a first start of this Arkos on a Claude Code theme of `dark`, `light`, `auto` or unset
   switches it to `custom:arkos`, writes `~/.claude/themes/arkos.json`, and the bell says "Claude
   Code now takes the Arkos colours; restart running sessions to see them"; a `dark-daltonized`

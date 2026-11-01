@@ -61,6 +61,7 @@ The channel is `release` for a bundle the release workflow built (a `channel` fi
 | `notice` | `kind`: `update_ready`, `updated`, `daemon`, `config_error`, `theme_error` | the bell got a notice |
 | `error` | `kind`: `daemon_unreachable`, `daemon_restarted`, `session_lost`, `chrome_missing`, `mermaid_failed`, `save_failed` | something the person would have seen |
 | `help` | `what`: `keybindings`, `documentation`, `about`, `telemetry` | a Help surface opened |
+| `text_moved` | `ground`: `light`, `dark`; `on`: `paper`, `band` | a terminal moved a program's colour to keep its text readable, once a session for each pair (added 2026-11-01, contrast matrix spec) |
 
 `focus` accumulates foreground seconds per tab kind (`terminal`, `viewer`, `browser`) and `settings`, flushed by `Journal::mark` once a minute and at quit. The journey Cyrus asked for is the ordered events with their `t`; iteration on granularity comes after dogfooding, as a change to `events.toml` and one release note line.
 

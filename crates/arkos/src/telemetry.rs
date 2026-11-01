@@ -142,6 +142,14 @@ values! {
     }
 }
 values! {
+    /// Whether a theme's ground is light or dark, for a colour the terminal moved.
+    Ground { Light => "light", Dark => "dark" }
+}
+values! {
+    /// What a moved colour was drawn on: the terminal's own background or a band of colour.
+    MovedOn { Paper => "paper", Band => "band" }
+}
+values! {
     /// What foreground time is counted against.
     Surface { Terminal => "terminal", Viewer => "viewer", Browser => "browser", Video => "video", Settings => "settings" }
 }
@@ -184,6 +192,8 @@ pub struct Recorder {
     focus: Focus,
     /// The markdown features recorded in this session.
     md: BTreeSet<MdFeature>,
+    /// The grounds and surfaces a moved colour was recorded on in this session.
+    moved: BTreeSet<(Ground, MovedOn)>,
     /// The terminals known to run an agent, whether its launch was recorded or came before this
     /// window; kept across a new journal, since the agent is still the one it was.
     agents: HashSet<u64>,
@@ -225,7 +235,7 @@ impl Recorder {
     /// A recorder for this process, with a journal opened under a fresh id unless usage is `Off`.
     pub fn new(dir: &Path, env: Envelope, allow: Allowlist, usage: Usage, now: Now) -> Recorder {
         let focus = Focus { project: None, settings: false, since: now.at, carry: BTreeMap::new() };
-        let mut r = Recorder { dir: dir.to_path_buf(), env, allow, usage, sid: None, journal: None, focus, md: BTreeSet::new(), agents: HashSet::new(), waiting: HashSet::new(), opened: false, closed: false, pinned_off: false };
+        let mut r = Recorder { dir: dir.to_path_buf(), env, allow, usage, sid: None, journal: None, focus, md: BTreeSet::new(), moved: BTreeSet::new(), agents: HashSet::new(), waiting: HashSet::new(), opened: false, closed: false, pinned_off: false };
         if usage != Usage::Off {
             r.start(now);
         }
@@ -257,6 +267,7 @@ impl Recorder {
         self.journal = None;
         self.sid = None;
         self.md.clear();
+        self.moved.clear();
         self.waiting.clear();
         self.closed = false;
         // Nothing counted before the new journal belongs to it.
@@ -508,6 +519,14 @@ impl Recorder {
     pub fn help(&mut self, what: Help, now: Now) {
         self.record(events::help(what), now);
     }
+
+    /// A terminal moved a program's colour to keep its text readable; once a session for each
+    /// ground and surface, later ones write nothing.
+    pub fn text_moved(&mut self, ground: Ground, on: MovedOn, now: Now) {
+        if self.journal.is_some() && self.moved.insert((ground, on)) {
+            self.record(events::text_moved(ground, on), now);
+        }
+    }
 }
 
 /// The events each helper writes, built apart from the journal so a test can walk every value.
@@ -590,6 +609,10 @@ mod events {
 
     pub fn help(what: Help) -> Event {
         ev("help", &[("what", what.as_str())])
+    }
+
+    pub fn text_moved(ground: Ground, on: MovedOn) -> Event {
+        ev("text_moved", &[("ground", ground.as_str()), ("on", on.as_str())])
     }
 }
 
@@ -1005,6 +1028,11 @@ pub fn md(feature: MdFeature) {
     with(|r, now| r.md(feature, now));
 }
 
+/// A terminal paint moved a program's colour so its text stays readable (`contrast::draw`).
+pub fn text_moved(ground: Ground, on: MovedOn) {
+    with(|r, now| r.text_moved(ground, on, now));
+}
+
 /// A session in the daemon's list runs an agent: a resumed one was started again by the
 /// daemon's recovery; any other ran before this window knew of it.
 pub fn agent_listed(terminal: u64, kind: &str, recovered: bool) {
@@ -1295,6 +1323,11 @@ mod tests {
                 admitted(&events::web_load(outcome, scheme));
             }
         }
+        for &ground in Ground::ALL {
+            for &on in MovedOn::ALL {
+                admitted(&events::text_moved(ground, on));
+            }
+        }
         for &surface in Surface::ALL {
             assert!(::telemetry::allowlist().allows_surface(surface.as_str()), "{surface:?}");
         }
@@ -1347,10 +1380,11 @@ mod tests {
         r.notice(Notice::ThemeError, now);
         r.error(Failure::SaveFailed, now);
         r.help(Help::Keybindings, now);
+        r.text_moved(Ground::Light, MovedOn::Paper, now);
         r.window_close(now);
         r.mark(at(base, 2));
         let names: Vec<String> = events_in(dir.path(), &sid).into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["launch", "window_open", "pane_open", "pane_close", "view", "md", "agent_launch", "agent_state", "palette", "theme", "update", "notice", "error", "help", "window_close"]);
+        assert_eq!(names, ["launch", "window_open", "pane_open", "pane_close", "view", "md", "agent_launch", "agent_state", "palette", "theme", "update", "notice", "error", "help", "text_moved", "window_close"]);
         let mark = last_mark(dir.path(), &sid);
         assert_eq!((mark["rejected"].as_u64(), mark["dropped"].as_u64()), (Some(0), Some(0)), "{mark}");
         let events = events_in(dir.path(), &sid);
@@ -1419,6 +1453,20 @@ mod tests {
         }
         let features: Vec<serde_json::Value> = events_in(dir.path(), &sid).into_iter().filter(|(n, _)| n == "md").map(|(_, d)| d["feature"].clone()).collect();
         assert_eq!(features, [serde_json::json!("mermaid"), serde_json::json!("checklist")]);
+    }
+
+    #[test]
+    fn a_moved_colour_is_recorded_once_a_session_for_each_ground_and_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Instant::now();
+        let mut r = recorder(dir.path(), Usage::Local, at(base, 0));
+        let sid = r.sid().unwrap().to_string();
+        for i in 0..3 {
+            r.text_moved(Ground::Light, MovedOn::Paper, at(base, i));
+            r.text_moved(Ground::Light, MovedOn::Band, at(base, i));
+        }
+        let moved: Vec<serde_json::Value> = events_in(dir.path(), &sid).into_iter().filter(|(n, _)| n == "text_moved").map(|(_, d)| d).collect();
+        assert_eq!(moved, [serde_json::json!({ "ground": "light", "on": "paper" }), serde_json::json!({ "ground": "light", "on": "band" })]);
     }
 
     #[test]

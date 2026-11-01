@@ -369,6 +369,9 @@ impl Element for TerminalElement {
                 Some(Ink::Paint(clock)) => Some(clock),
                 _ => None,
             };
+            // Whether this paint moved a program's colour on the paper and on a band, for the
+            // `text_moved` event.
+            let moved = std::cell::Cell::new((false, false));
             let paint_row = |cells: &Vec<(char, CellStyle, CellKind)>, stamps: &[f32], near: [Option<&Vec<(char, CellStyle, CellKind)>>; 2], y: Pixels, window: &mut Window, cx: &mut App| {
                 // Under watercolor a cell background is a wash: each stretch of one colour is
                 // painted as a band the glyph shader inks, washed in as its row's text starts.
@@ -401,7 +404,11 @@ impl Element for TerminalElement {
                         continue;
                     }
                     let text: SharedString = run.text.clone().into();
-                    let (shown, _) = text_run(&run.text, &run.style, self.family.clone());
+                    let (shown, was_moved) = text_run(&run.text, &run.style, self.family.clone());
+                    if was_moved {
+                        let (paper, band) = moved.get();
+                        moved.set(if run.style.bg == bg { (true, band) } else { (paper, true) });
+                    }
                     let line = window.text_system().shape_line(text, px(self.font_size), &[shown], None);
                     let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(x, y), lh, window, cx));
                     if run.style.underline {
@@ -431,6 +438,17 @@ impl Element for TerminalElement {
                 let shown = visible.as_ref().unwrap_or(&rows.visible);
                 let near = [i.checked_sub(1).and_then(|j| shown.get(j)), shown.get(i + 1)];
                 paint_row(row, stamps.get(i).map_or(&[][..], Vec::as_slice), near, y, window, cx);
+            }
+            let (paper, band) = moved.get();
+            if paper || band {
+                use crate::telemetry::{Ground, MovedOn};
+                let black = Rgb { r: 0, g: 0, b: 0 };
+                let ground = if crate::palette::contrast(black, bg) >= crate::palette::contrast(Rgb { r: 255, g: 255, b: 255 }, bg) { Ground::Light } else { Ground::Dark };
+                for (on, was) in [(MovedOn::Paper, paper), (MovedOn::Band, band)] {
+                    if was {
+                        crate::telemetry::text_moved(ground, on);
+                    }
+                }
             }
             if let Some((col, line)) = cursor {
                 if frac == 0.0 {
