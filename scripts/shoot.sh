@@ -15,6 +15,8 @@
 # first time). The window need not stay in front: captures go by window id. Progress captures and the panes'
 # states land in docs/images/progress/<scene>/ every 20 s. A scene with a [[recording]] also
 # needs swiftc (Xcode's command line tools) and ffmpeg, and writes <scene>-<name>.mp4 and .jpg.
+# On a display that draws one pixel a point (a runner) the tool makes a virtual 2x display for
+# the scene (scripts/shoot/vdisplay.m, built with clang) and takes it down after.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)

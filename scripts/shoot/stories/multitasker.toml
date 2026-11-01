@@ -79,9 +79,10 @@ rect = [0.0, 0.0, 1.0, 0.075]
 name = "themes"
 wait = { blog = "waiting", budget = "waiting" }
 themes = ["navy-runic", "lavender-light", "peach-light", "matrix"]
-hold_secs = 4
+hold_secs = 6
 
-# Both effects at a Retina Mac's density on the runner's one pixel a point (see the hacker).
+# Both effects at a Retina Mac's density should the display draw one pixel a point (see the
+# hacker); on a display at two, the shoot's virtual one included, the built-in scales stand.
 [[effect]]
 name = "runic"
 scale = 1.0

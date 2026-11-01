@@ -1,6 +1,7 @@
 name: shoot
 # Takes the README's pictures on a macOS runner (scripts/shoot.sh): a real Arkos window per scene,
-# its Claude Code sessions running for real, captured in the dark theme, then the hero composed,
+# its Claude Code sessions running for real, captured in the dark theme on a virtual display at
+# two pixels a point (the runner's own has one and no HiDPI mode), then the hero composed,
 # and a scene's recording through the themes (the multi tasker's, for apps.csarko.sh). The
 # stills and recordings come back as an artifact; nothing is committed here. `probe` needs no Claude Code and
 # checks that the runner can draw, capture and click. The other scenes sign Claude Code in with
@@ -52,6 +53,7 @@ jobs:
           command -v ffmpeg >/dev/null || brew install --quiet ffmpeg
           ffmpeg -version | head -1
           swiftc --version | head -1
+          clang --version | head -1
           git config --global user.name "shoot workflow"
           git config --global user.email "shoot@csarko.sh"
           git config --global init.defaultBranch main

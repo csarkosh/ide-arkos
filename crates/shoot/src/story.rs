@@ -55,34 +55,62 @@ pub struct Recording {
     #[serde(default)]
     pub changed: BTreeMap<String, usize>,
     pub themes: Vec<String>,
-    /// How long each theme shows, in seconds; the loop is this times the number of themes.
+    /// How long each theme is held, in seconds. The loop shows each for this less the second
+    /// after its switch (the config poll and the IDE's fade) and a tenth before the next.
     #[serde(default = "default_hold")]
     pub hold_secs: f64,
     #[serde(default = "default_fps")]
     pub fps: u32,
-    /// The cross-fade from the loop's end into its start, in seconds: the return to the first
-    /// theme as the window drew it, blended into the opening.
-    #[serde(default = "default_seam")]
-    pub seam_secs: f64,
-    /// The widest the picture is scaled to, in pixels.
+    /// How one theme becomes the next in the cut, and from the last back into the first.
+    #[serde(default)]
+    pub transition: Transition,
+    /// How long a transition takes, in seconds.
+    #[serde(default = "default_fade")]
+    pub fade_secs: f64,
+    /// The widest the picture is scaled to, in pixels: two for each of the 1000 CSS pixels the
+    /// store page shows it at.
     #[serde(default = "default_width")]
     pub width: u32,
 }
 
+/// `loop.py`'s transitions: a soft-edged sweep from left to right, the new theme washing over
+/// the window the way light moves over a product in Apple's videos, or a plain cross-fade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transition {
+    #[default]
+    Sweep,
+    Dissolve,
+}
+
+impl Transition {
+    pub fn name(self) -> &'static str {
+        match self {
+            Transition::Sweep => "sweep",
+            Transition::Dissolve => "dissolve",
+        }
+    }
+}
+
+/// What `loop.py` skips after each switch (the config poll and the IDE's fade) and before the
+/// next, so a theme's stretch shows it steady.
+pub const SETTLE_SECS: f64 = 1.0;
+const GUARD_SECS: f64 = 0.1;
+
 fn default_hold() -> f64 {
-    4.0
+    6.0
 }
 
 fn default_fps() -> u32 {
     30
 }
 
-fn default_seam() -> f64 {
-    1.0
+fn default_fade() -> f64 {
+    1.2
 }
 
 fn default_width() -> u32 {
-    1320
+    2000
 }
 
 /// What a shot or a recording waits for before it happens.
@@ -106,8 +134,9 @@ impl Recording {
     }
 
     /// The loop's length: every theme's hold together.
-    pub fn period_secs(&self) -> f64 {
-        self.hold_secs * self.themes.len() as f64
+    /// How long each theme shows steady in the loop, before its transition out.
+    pub fn steady_secs(&self) -> f64 {
+        self.hold_secs - SETTLE_SECS - GUARD_SECS
     }
 }
 
@@ -455,8 +484,11 @@ impl Story {
             if !(1..=60).contains(&r.fps) {
                 bail!("recording {:?}: fps must be 1 to 60", r.name);
             }
-            if !(0.2..=r.hold_secs).contains(&r.seam_secs) {
-                bail!("recording {:?}: seam_secs must be 0.2 to hold_secs", r.name);
+            if !(0.3..=3.0).contains(&r.fade_secs) {
+                bail!("recording {:?}: fade_secs must be 0.3 to 3", r.name);
+            }
+            if r.steady_secs() < r.fade_secs + 1.0 {
+                bail!("recording {:?}: hold_secs must leave a second of rest beyond the fade (at least {:.1})", r.name, r.fade_secs + SETTLE_SECS + GUARD_SECS + 1.0);
             }
             if !(320..=3840).contains(&r.width) {
                 bail!("recording {:?}: width must be 320 to 3840 pixels", r.name);
@@ -815,16 +847,18 @@ theme = "light"
         assert!(Story::parse(STORY).unwrap().effects.is_empty(), "no [effect] is an empty list");
     }
 
-    const RECORDING: &str = "\n[[recording]]\nname = \"themes\"\nwait = { tests = \"waiting\" }\nchanged = { work = 1 }\nthemes = [\"navy\", \"peach-light\", \"matrix\"]\nhold_secs = 3\n";
+    const RECORDING: &str = "\n[[recording]]\nname = \"themes\"\nwait = { tests = \"waiting\" }\nchanged = { work = 1 }\nthemes = [\"navy\", \"peach-light\", \"matrix\"]\nhold_secs = 4\n";
 
     #[test]
     fn a_recording_parses_with_its_defaults_and_waits_as_a_shot_does() {
         let s = Story::parse(&format!("{STORY}{RECORDING}")).unwrap();
         assert_eq!(s.recordings.len(), 1);
         let r = &s.recordings[0];
-        assert_eq!((r.name.as_str(), r.hold_secs, r.fps, r.seam_secs, r.width), ("themes", 3.0, 30, 1.0, 1320));
+        assert_eq!((r.name.as_str(), r.hold_secs, r.fps, r.fade_secs, r.transition, r.width), ("themes", 4.0, 30, 1.2, Transition::Sweep, 2000));
         assert_eq!(r.themes, ["navy", "peach-light", "matrix"]);
-        assert_eq!(r.period_secs(), 9.0, "the loop is every hold together");
+        assert!((r.steady_secs() - 2.9).abs() < 1e-9, "a theme shows steady for its hold less the settle and the guard");
+        let dissolve = Story::parse(&format!("{STORY}{RECORDING}transition = \"dissolve\"\nfade_secs = 0.8\n")).unwrap();
+        assert_eq!((dissolve.recordings[0].transition, dissolve.recordings[0].transition.name(), dissolve.recordings[0].fade_secs), (Transition::Dissolve, "dissolve", 0.8));
         let w = r.waits();
         assert_eq!((w.name, w.wait.get("tests").map(String::as_str), w.changed.get("work"), w.after_secs, w.timeout_secs), ("themes", Some("waiting"), Some(&1), 0, 300));
         assert!(Story::parse(STORY).unwrap().recordings.is_empty());
@@ -834,14 +868,16 @@ theme = "light"
     fn a_recording_that_cannot_loop_or_waits_on_nothing_real_is_refused() {
         let text = format!("{STORY}{RECORDING}");
         let refused = |from: &str, to: &str, says: &str| {
-            let err = Story::parse(&text.replace(from, to)).unwrap_err().to_string();
+            let err = format!("{:#}", Story::parse(&text.replace(from, to)).unwrap_err());
             assert!(err.contains(says), "{from} -> {to}: {err}");
         };
         refused("themes = [\"navy\", \"peach-light\", \"matrix\"]", "themes = [\"navy\"]", "at least two themes");
-        refused("hold_secs = 3", "hold_secs = 0.5", "hold_secs must be 1 to 15");
-        refused("hold_secs = 3", "hold_secs = 3\nseam_secs = 4", "seam_secs must be 0.2 to hold_secs");
-        refused("hold_secs = 3", "hold_secs = 3\nfps = 0", "fps must be 1 to 60");
-        refused("hold_secs = 3", "hold_secs = 3\nwidth = 100", "width must be 320 to 3840");
+        refused("hold_secs = 4", "hold_secs = 0.5", "hold_secs must be 1 to 15");
+        refused("hold_secs = 4", "hold_secs = 4\nfade_secs = 2", "hold_secs must leave a second of rest beyond the fade (at least 4.1)");
+        refused("hold_secs = 4", "hold_secs = 4\nfade_secs = 0.1", "fade_secs must be 0.3 to 3");
+        refused("hold_secs = 4", "hold_secs = 4\ntransition = \"wipe\"", "expected `sweep` or `dissolve`");
+        refused("hold_secs = 4", "hold_secs = 4\nfps = 0", "fps must be 1 to 60");
+        refused("hold_secs = 4", "hold_secs = 4\nwidth = 100", "width must be 320 to 3840");
         refused("wait = { tests = \"waiting\" }\nchanged", "wait = { nobody = \"waiting\" }\nchanged", "recording \"themes\" waits on pane \"nobody\"");
         refused("changed = { work = 1 }", "changed = { site = 1 }", "recording \"themes\": changed names \"site\"");
     }

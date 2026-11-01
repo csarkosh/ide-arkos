@@ -11,7 +11,8 @@
 // ScreenCaptureKit delivers (one only when the window changes) is LZ4-compressed and appended
 // to a scratch file beside the output with its time; afterwards the frames are replayed at a
 // constant `fps` (the latest frame at each tick) into ffmpeg, which encodes them in software.
-// The capture is one pixel a point, which is the runner's density and what the page shows.
+// The capture is at the window's display's density: two pixels a point on a Retina Mac or on
+// the shoot's virtual display, one on a bare runner.
 import AppKit
 import CoreMedia
 import CoreVideo
@@ -173,9 +174,17 @@ Task {
         guard let window = content.windows.first(where: { $0.windowID == windowId }) else {
             fail("the window server lists no window \(windowId)")
         }
-        // Even sides: the encoder's 4:2:0 wants them.
-        recorder.width = Int(window.frame.width) & ~1
-        recorder.height = Int(window.frame.height) & ~1
+        // The display the window is on says how many pixels a point it draws; even sides, since
+        // the encoder's 4:2:0 wants them.
+        let centre = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        let display = content.displays.first { $0.frame.contains(centre) } ?? content.displays.first
+        var scale = 1.0
+        if let display, let mode = CGDisplayCopyDisplayMode(display.displayID), mode.width > 0 {
+            scale = Double(mode.pixelWidth) / Double(mode.width)
+        }
+        recorder.width = Int((window.frame.width * scale).rounded()) & ~1
+        recorder.height = Int((window.frame.height * scale).rounded()) & ~1
+        FileHandle.standardError.write("record: window \(Int(window.frame.width))x\(Int(window.frame.height)) points at \(scale)x, \(recorder.width)x\(recorder.height) pixels\n".data(using: .utf8)!)
         guard FileManager.default.createFile(atPath: scratchPath, contents: nil), let scratch = FileHandle(forWritingAtPath: scratchPath) else {
             fail("could not make \(scratchPath)")
         }
