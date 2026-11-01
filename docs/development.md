@@ -398,6 +398,9 @@ Things only a person at the screen can check, in order of value:
 - colours: Claude Code (theme `custom:arkos`) in Navy, then Peach Light, then back: the lines
   drawn before each switch take the current theme along with the new ones, diffs show faint green
   and red bands in both, and the user message band is a faint tint of the background.
+- colours: Claude Code on its stock `dark` theme in Lavender Light with watercolor: a diff's
+  context lines and line numbers read as grey ink on the paper, not near white, and the text in
+  the dark message band reads light on it.
 - colours: a first start of this Arkos on a Claude Code theme of `dark`, `light`, `auto` or unset
   switches it to `custom:arkos`, writes `~/.claude/themes/arkos.json`, and the bell says "Claude
   Code now takes the Arkos colours; restart running sessions to see them"; a `dark-daltonized`

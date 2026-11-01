@@ -718,7 +718,11 @@ keeps readable on its background; bands and fills (your message, diff lines, the
 the 256-colour cube and grey ramp, which Arkos derives from the theme as faint tints of its
 background (on a light theme soft washes of their hue that stay light rather than greying, and
 unchanged by an effect deepening the text); main text keeps 4.5:1 against every band, and dim text (inactive and subtle labels,
-borders) keeps 3:1 on the bands it is drawn on. At start, Arkos rewrites the file when it differs from this build's (so an update can
+borders) keeps 3:1 on the bands it is drawn on. Whatever colours a program sends, Arkos draws
+its text at 4.5:1 or better against the background under it, and faint text at 3:1: a colour too
+close is moved toward black or white until it clears 7:1 (an effect's washes show lighter than
+their colour), so a Claude Code session still on another
+theme (its stock dark one on a light Arkos theme) stays readable. At start, Arkos rewrites the file when it differs from this build's (so an update can
 change it) and selects it when Claude Code's theme is unset, `dark`, `light` or `auto` (what Arkos
 set before); any other choice (a colourblind-friendly or ANSI theme, a custom theme of your own)
 stays, and the doctor's "Claude Code: follows the Arkos theme" row offers the switch. Claude Code
