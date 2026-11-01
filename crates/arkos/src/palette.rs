@@ -111,6 +111,27 @@ fn from_oklab(lab: [f32; 3]) -> Rgb {
     }
 }
 
+/// An Oklab colour as sRGB, its chroma lowered (lightness and hue kept) as far as it must be to
+/// fit, rather than each channel clipped, which would grey it and turn its hue.
+fn from_oklab_fitted(lab: [f32; 3]) -> Rgb {
+    let linear = |[ll, a, b]: [f32; 3]| {
+        let l = (ll + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+        let m = (ll - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+        let s = (ll - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+        [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s]
+    };
+    let fits = |k: f32| linear([lab[0], lab[1] * k, lab[2] * k]).iter().all(|&v| (-0.0005..=1.0005).contains(&v));
+    if fits(1.0) {
+        return from_oklab(lab);
+    }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..20 {
+        let mid = (lo + hi) / 2.0;
+        if fits(mid) { lo = mid } else { hi = mid }
+    }
+    from_oklab([lab[0], lab[1] * lo, lab[2] * lo])
+}
+
 #[cfg(test)]
 fn oklab_dist(a: Rgb, b: Rgb) -> f32 {
     let (a, b) = (to_oklab(a), to_oklab(b));
@@ -118,10 +139,16 @@ fn oklab_dist(a: Rgb, b: Rgb) -> f32 {
 }
 
 /// Blends two colours in Oklab, so the blend keeps even lightness. `t` of 0 gives `a`, 1 gives `b`.
-pub fn oklab_mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+#[cfg(test)]
+fn oklab_mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let (a, b) = (to_oklab(a), to_oklab(b));
     from_oklab([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t])
 }
+
+/// On a light ground, how late a derived tint takes its lightness and how early its colour, as
+/// powers of its step toward its corner (`Palette::derive_256`).
+const SOFT_LIGHTNESS: f32 = 1.5;
+const SOFT_COLOUR: f32 = 0.7;
 
 /// Colours 16 to 255 derived from a palette's background, foreground and six hues. Filled on
 /// first use and left out of equality; a clone starts empty so it derives from its own colours.
@@ -194,10 +221,21 @@ impl Palette {
     }
 
     /// The 6x6x6 cube as a trilinear blend in Oklab of eight corners (the background, the
-    /// foreground and the theme's six hues), then a 24-step grey ramp strictly between them.
+    /// foreground and the theme's six hues), then a 24-step grey ramp strictly between them. On a
+    /// light ground the hues and the foreground are dark ink, and a straight blend toward them
+    /// greys a tint as it darkens it, so there the blend is eased: lightness comes in late
+    /// (`t^SOFT_LIGHTNESS`) and colour early (`t^SOFT_COLOUR`). The bands Claude Code draws on
+    /// the low steps (its diff lines, the message box) read as soft washes of their hue, lighter
+    /// than before, and the corners stay the theme's own colours. And there the ramp runs toward
+    /// black, which on a light theme is ink like the text, rather than toward the foreground: an
+    /// effect's `text_contrast` deepens the foreground toward pure black, and a ramp toward that
+    /// would turn Claude Code's message bands grey.
     fn derive_256(&self) -> [Rgb; 240] {
         let hue = |i: usize| to_oklab(self.ansi[i]);
         let (k, w) = (to_oklab(self.bg), to_oklab(self.fg));
+        let light = k[0] > w[0];
+        let (pl, pc) = if light { (SOFT_LIGHTNESS, SOFT_COLOUR) } else { (1.0, 1.0) };
+        let end = if light { hue(0) } else { w };
         // Corner at (r, g, b) in {0,1}: black, blue, green, cyan, red, magenta, yellow, white.
         let corner = |r: usize, g: usize, b: usize| match (r, g, b) {
             (0, 0, 0) => k,
@@ -215,16 +253,20 @@ impl Palette {
             let mut lab = [0.0f32; 3];
             for c in 0..8usize {
                 let (r, g, b) = (c >> 2, (c >> 1) & 1, c & 1);
-                let wt = [r, g, b].iter().zip(t).map(|(&bit, t)| if bit == 1 { t } else { 1.0 - t }).product::<f32>();
+                // The corner's weight, one for lightness and one for colour.
+                let wt = |p: f32| [r, g, b].iter().zip(t).map(|(&bit, t)| if bit == 1 { t.powf(p) } else { 1.0 - t.powf(p) }).product::<f32>();
+                let (wl, wc) = (wt(pl), wt(pc));
                 let v = corner(r, g, b);
-                for ch in 0..3 {
-                    lab[ch] += wt * v[ch];
-                }
+                lab[0] += wl * v[0];
+                lab[1] += wc * v[1];
+                lab[2] += wc * v[2];
             }
-            out[i] = from_oklab(lab);
+            out[i] = from_oklab_fitted(lab);
         }
         for step in 0..24usize {
-            out[216 + step] = oklab_mix(self.bg, self.fg, (step + 1) as f32 / 25.0);
+            let t = (step + 1) as f32 / 25.0;
+            let (tl, tc) = (t.powf(pl), t.powf(pc));
+            out[216 + step] = from_oklab_fitted([k[0] + (end[0] - k[0]) * tl, k[1] + (end[1] - k[1]) * tc, k[2] + (end[2] - k[2]) * tc]);
         }
         out
     }
@@ -319,7 +361,45 @@ mod tests {
     }
 
     #[test]
-    fn the_grey_ramp_runs_evenly_from_just_off_the_background_to_just_short_of_the_foreground() {
+    fn a_light_theme_s_bands_are_soft_tints_lighter_and_more_colourful_than_a_straight_blend() {
+        // How much hue a pale tint shows for how light it is: its chroma against its distance
+        // from white, so a grey reads 0 however light, and a lighter tint needs less chroma.
+        let colour = |c: Rgb| {
+            let [l, a, b] = to_oklab(c);
+            a.hypot(b) / (1.0 - l).max(1e-3)
+        };
+        for name in ["peach-light", "lavender-light"] {
+            let p = crate::theme::builtin(name).unwrap().palette();
+            // The diff bands (22, 52) and their changed words (28, 88), the selection (17) and
+            // the message band (234), against what a straight blend in Oklab would give.
+            for (i, toward, t) in [(22u8, p.ansi[2], 0.2), (28, p.ansi[2], 0.4), (52, p.ansi[1], 0.2), (88, p.ansi[1], 0.4), (17, p.ansi[4], 0.2), (234, p.ansi[0], 3.0 / 25.0)] {
+                let (soft, straight) = (p.indexed(i), oklab_mix(p.bg, toward, t));
+                assert!(l_of(soft) > l_of(straight) + 0.02, "{name}: {i} is lighter ({:.3} against {:.3})", l_of(soft), l_of(straight));
+                assert!(colour(soft) > colour(straight) * 1.2, "{name}: {i} is less grey ({:.2} against {:.2})", colour(soft), colour(straight));
+            }
+        }
+        // A dark theme's are as they were.
+        let navy = crate::theme::builtin("navy").unwrap().palette();
+        assert_eq!(navy.indexed(22), oklab_mix(navy.bg, navy.ansi[2], 0.2));
+        assert_eq!(navy.indexed(234), oklab_mix(navy.bg, navy.fg, 3.0 / 25.0));
+    }
+
+    #[test]
+    fn a_light_theme_s_message_band_keeps_its_tint_under_an_effect_s_deepened_text() {
+        // Watercolor deepens the terminal's text toward black; the bands Claude Code draws on the
+        // grey ramp (its messages, a hovered one) must not go grey with it.
+        for name in ["peach-light", "lavender-light"] {
+            let own = crate::theme::builtin(name).unwrap();
+            let shown = crate::effects::active::contrasted(&own, 0.6);
+            assert_ne!(shown.palette().fg, own.palette().fg, "the text is deepened");
+            for i in [233u8, 234, 235] {
+                assert_eq!(shown.palette().indexed(i), own.palette().indexed(i), "{name}: {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_grey_ramp_runs_from_just_off_the_background_to_just_short_of_the_foreground_evenly_on_a_dark_ground() {
         for p in themes() {
             assert_ne!(p.indexed(232), p.bg);
             assert_ne!(p.indexed(255), p.fg);
@@ -331,6 +411,9 @@ mod tests {
                 prev = l;
             }
             assert!((l_of(p.fg) - prev) * dir > 0.0);
+            if dir < 0.0 {
+                continue; // a light ground's ramp eases in (see the soft tints' test)
+            }
             let d: Vec<f32> = (232..255u8).map(|i| oklab_dist(p.indexed(i), p.indexed(i + 1))).collect();
             let mean = d.iter().sum::<f32>() / d.len() as f32;
             for (n, x) in d.iter().enumerate() {
