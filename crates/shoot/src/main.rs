@@ -404,6 +404,23 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
             client.input(id, "\r")?;
             say(&format!("{}: prompt sent", pane.name));
         }
+        // Claude Code says it is working within seconds of a prompt (its UserPromptSubmit
+        // hook). A pane still idle after that kept the prompt in its box without sending it
+        // (Claude Code 2.1.316 on the runner drew its start-up tip under the typed prompt and
+        // lost the Enter: every pane sat with its prompt unsent for a minute), so Enter goes
+        // again, up to three times, before anyone waits on it.
+        for round in 1..=3 {
+            pause(Duration::from_secs(8))?;
+            let states = client.states()?;
+            let idle: Vec<&&story::Pane> = claude.iter().filter(|p| matches!(states.get(&sessions[&p.name]), None | Some(ClaudeState::Idle))).collect();
+            if idle.is_empty() {
+                break;
+            }
+            for pane in idle {
+                say(&format!("{}: still idle {} s after its prompt; Enter again (try {round})", pane.name, 8 * round));
+                client.input(SessionId(sessions[&pane.name]), "\r")?;
+            }
+        }
     }
 
     // 9. The shots.
@@ -492,6 +509,16 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     let max_secs = rec.hold_secs * rec.themes.len() as f64 + 20.0;
     let child = start_recorder(recorder, window_id, &raw, rec.fps, max_secs)?;
     let started = Instant::now();
+    if rec.cinema.is_some() {
+        // The opening clip: the one theme, held for the whole take; the camera move is made after.
+        say(&format!("{}: recording {:.1} s in {}", rec.name, rec.hold_secs, rec.themes[0]));
+        let held = pause(Duration::from_secs_f64(rec.hold_secs));
+        let stopped = stop_recorder(child);
+        held?;
+        stopped?;
+        cut_loop(repo, rec, &raw, out, &picture)?;
+        return Ok(());
+    }
     say(&format!("{}: recording {} themes, {:.1} s each", rec.name, rec.themes.len(), rec.hold_secs));
     // Each switch at its own moment from the start, so the time a switch takes (the config
     // write and the window's poll of it) never pushes the ones after it later.
@@ -515,8 +542,34 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
 }
 
 /// `scripts/shoot/loop.py` on a raw recording: the loop as `<out>/<picture>.mp4`, its first
-/// frame as `<picture>.jpg`.
+/// frame as `<picture>.jpg`. A cinema recording goes to `scripts/shoot/cinema.py` instead: the
+/// camera move over the window and the two backs' stills, as `<out>/<name>.mp4` (no scene in
+/// the name: like the hero still, it is made of several scenes) with its last frame as the poster.
 fn cut_loop(repo: &Path, rec: &Recording, raw: &Path, out: &Path, picture: &str) -> Result<PathBuf> {
+    if let Some(cinema) = &rec.cinema {
+        let mp4 = out.join(format!("{}.mp4", rec.name));
+        let poster = out.join(format!("{}.jpg", rec.name));
+        let mut cmd = Command::new("python3");
+        cmd.arg("-I").arg(repo.join("scripts/shoot/cinema.py")).arg(&mp4).arg("--front").arg(raw);
+        for back in &cinema.backs {
+            let still = out.join(format!("{back}-dark.png"));
+            if !still.is_file() {
+                bail!("{}: no still {} to stand behind the window (shoot the {back} scene first)", rec.name, still.display());
+            }
+            cmd.arg("--back").arg(still);
+        }
+        let status = cmd
+            .args(["--fps", &rec.fps.to_string(), "--move", &cinema.move_secs.to_string(), "--hold", &cinema.rest_secs.to_string()])
+            .arg("--poster")
+            .arg(&poster)
+            .status()
+            .context("cinema.py")?;
+        if !status.success() {
+            bail!("cinema.py failed for {}", raw.display());
+        }
+        say(&format!("{}: {}", rec.name, mp4.display()));
+        return Ok(mp4);
+    }
     let mp4 = out.join(format!("{picture}.mp4"));
     let poster = out.join(format!("{picture}.jpg"));
     let status = Command::new("python3")

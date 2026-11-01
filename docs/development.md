@@ -316,6 +316,17 @@ at most `width` (2000) pixels across, H.264 at CRF 19 tagged sRGB, written as
 records `themes` for the app's page on apps.csarko.sh, which plays it under "Who it's for"; the
 README stays stills, since GitHub plays no video from a repository.
 
+A recording with `cinema = { backs = ["web-developer", "blogger"] }` is the page's opening
+clip instead of a loop (Cyrus, 2026-10-31: "more cinematic", "a background video similar to the
+one at the top of" the Pixel 11 Pro store page): the window is recorded in its one theme for
+`hold_secs`, then `scripts/shoot/cinema.py` (Pillow and numpy) moves a camera over it and the two
+scenes' stills behind it, the way such a page's hero video moves: macro on the tab bar, seen a
+little from the side with the backs out of focus, pulling back and straightening over `move_secs`
+(4.6) into the key art, the front window alive and mirrored on a lit ground, then holding
+`rest_secs` (0.9). It is written as `docs/images/<name>.mp4` (no scene in the name, like the hero
+still) at 2880 by 1600 and 24 fps with its last frame as `<name>.jpg`; the multi tasker's is
+`hero`. `cinema.py --preview` renders a quarter of the size in seconds, to look before a run.
+
 **Redoing one shot or one recording.** A scene's sessions have to run either way, but the
 captures can be picked: `scripts/shoot.sh --only themes multitasker` (or the workflow's `only`
 input, `gh workflow run shoot -f scenes=multitasker -f only=themes`) takes only the shots and
