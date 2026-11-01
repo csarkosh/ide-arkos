@@ -102,7 +102,6 @@ pub const KEYS: &[(&str, Role, &str)] = &[
 ];
 
 /// The sixteen ANSI names Claude Code accepts after `ansi:`, in slot order.
-#[cfg(test)]
 pub const ANSI_NAMES: [&str; 16] = [
     "black",
     "red",
@@ -123,12 +122,43 @@ pub const ANSI_NAMES: [&str; 16] = [
 ];
 
 /// The palette index a colour value of `KEYS` names: `ansi:<name>` is its slot, `ansi256(n)` is n.
-#[cfg(test)]
 pub fn palette_index(value: &str) -> Option<u8> {
     if let Some(name) = value.strip_prefix("ansi:") {
         return ANSI_NAMES.iter().position(|n| *n == name).map(|i| i as u8);
     }
     value.strip_prefix("ansi256(")?.strip_suffix(')')?.parse().ok()
+}
+
+/// Every pair Claude Code draws in the Arkos theme on `theme`, as `theme::Pair`s for `arkos theme
+/// contrast`: each text token on the terminal background and, as inverse text, under
+/// `inverseText`; the message text on every band; the dim tokens (`inactive`, `subtle`) on every
+/// band but the changed-word highlights, which carry code text, not dim labels. Text needs 4.5:1,
+/// dim text the 3:1 WCAG allows for secondary text.
+pub fn contrast_pairs(theme: &crate::theme::Theme) -> Vec<crate::theme::Pair> {
+    let p = theme.palette();
+    let at = |value: &str| p.indexed(palette_index(value).expect("every KEYS value names a palette index"));
+    let value_of = |key: &str| KEYS.iter().find(|(k, _, _)| *k == key).map(|(_, _, v)| *v).expect("a documented key");
+    let mut out = Vec::new();
+    let mut add = |what: String, fg: &str, bg: crate::palette::Rgb, needs: f64| out.push(crate::theme::Pair { what: format!("claude code: {what}"), fg: at(fg), bg, needs });
+    let (text, inverse) = (value_of("text"), value_of("inverseText"));
+    let dim = value_of("inactive");
+    debug_assert_eq!(dim, value_of("subtle"));
+    for (key, role, value) in KEYS {
+        match role {
+            Role::Text => {
+                add(format!("{key} ({value}) on terminal.background"), value, theme.terminal.background, 4.5);
+                add(format!("inverseText ({inverse}) on {key} ({value})"), inverse, at(value), 4.5);
+            }
+            Role::Band => {
+                add(format!("text ({text}) on {key} ({value})"), text, at(value), 4.5);
+                if !key.ends_with("Word") {
+                    add(format!("inactive, subtle ({dim}) on {key} ({value})"), dim, at(value), 3.0);
+                }
+            }
+            Role::Inverse => {}
+        }
+    }
+    out
 }
 
 /// The theme file's content: `name` Arkos, `base` dark-ansi, and every documented key set.
@@ -215,42 +245,44 @@ mod tests {
     }
 
     #[test]
-    fn every_slot_the_text_like_keys_name_reaches_4_5_to_1_on_each_built_in_theme() {
-        for (name, t) in builtins() {
-            let p = t.palette();
-            for (key, role, value) in KEYS {
-                if *role == Role::Text {
-                    let c = p.indexed(palette_index(value).unwrap());
-                    let r = contrast(c, t.terminal.background);
-                    assert!(r >= 4.5, "{name}: {key} = {value} is {r:.2}:1 on the background");
-                }
-            }
-        }
-    }
-
-    /// Main text must reach 4.5:1 on every band. Dim text is secondary, so it is held to the 3:1
-    /// WCAG allows for secondary and large text, on the bands where Claude Code draws it; the
-    /// changed-word highlights (28, 88) carry code text, not dim labels.
-    #[test]
-    fn main_text_keeps_4_5_to_1_on_every_band_and_dim_text_3_to_1_on_the_bands_it_is_drawn_on() {
+    fn every_claude_code_pair_holds_on_each_built_in_theme() {
         let mut low = Vec::new();
         for (name, t) in builtins() {
-            let p = t.palette();
-            let ratio = |slot: &str, band: u8| contrast(p.indexed(palette_index(slot).unwrap()), p.indexed(band));
-            for band in [22u8, 52, 234, 235, 28, 88, 17] {
-                let r = ratio("ansi:whiteBright", band);
-                if r < 4.5 {
-                    low.push(format!("{name}: main text on {band} is {r:.2}:1"));
-                }
-            }
-            for band in [22u8, 52, 234, 235, 17] {
-                let r = ratio("ansi:blackBright", band);
-                if r < 3.0 {
-                    low.push(format!("{name}: dim text on {band} is {r:.2}:1"));
+            for p in contrast_pairs(&t) {
+                let r = contrast(p.fg, p.bg);
+                if r < p.needs {
+                    low.push(format!("{name}: {} is {r:.2}:1, needs {}", p.what, p.needs));
                 }
             }
         }
         assert!(low.is_empty(), "{low:#?}");
+    }
+
+    /// Main text must reach 4.5:1 on every band. Dim text is secondary, so it is held to the 3:1
+    /// WCAG allows for secondary and large text, on the bands where Claude Code draws it; the
+    /// changed-word highlights carry code text, not dim labels.
+    #[test]
+    fn the_claude_code_pairs_hold_every_text_key_on_the_background_the_message_text_and_dim_text_on_the_bands_and_inverse_text_on_every_fill() {
+        let t = theme::builtin("navy").unwrap();
+        let pairs = contrast_pairs(&t);
+        let has = |what: &str| pairs.iter().any(|p| p.what.contains(what));
+        for (key, role, value) in KEYS {
+            match role {
+                Role::Text => {
+                    assert!(has(&format!("{key} ({value}) on terminal.background")), "{key}");
+                    assert!(has(&format!("inverseText (ansi256(16)) on {key}")), "inverse on {key}");
+                }
+                Role::Band => {
+                    assert!(has(&format!("text (ansi:whiteBright) on {key} ({value})")), "text on {key}");
+                    let word = key.ends_with("Word");
+                    assert_eq!(has(&format!("inactive, subtle (ansi:blackBright) on {key} ({value})")), !word, "dim on {key}");
+                }
+                Role::Inverse => {}
+            }
+        }
+        let dim = pairs.iter().find(|p| p.what.starts_with("claude code: inactive, subtle")).unwrap();
+        assert_eq!(dim.needs, 3.0);
+        assert!(pairs.iter().filter(|p| !p.what.starts_with("claude code: inactive, subtle")).all(|p| p.needs == 4.5));
     }
 
     #[test]
@@ -261,39 +293,6 @@ mod tests {
         let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names, vec!["arkos.json".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_message_text_keeps_4_5_to_1_on_every_band_in_each_built_in_theme() {
-        let text = palette_index(KEYS.iter().find(|(k, _, _)| *k == "text").unwrap().2).unwrap();
-        let mut low = Vec::new();
-        for (name, t) in builtins() {
-            let p = t.palette();
-            for (key, role, value) in KEYS {
-                if *role == Role::Band {
-                    assert!(value.starts_with("ansi256("), "{key} = {value} is a derived index");
-                    let r = contrast(p.indexed(text), p.indexed(palette_index(value).unwrap()));
-                    if r < 4.5 {
-                        low.push(format!("{name}: text on {key} = {value} is {r:.2}:1"));
-                    }
-                }
-            }
-        }
-        assert!(low.is_empty(), "{low:#?}");
-    }
-
-    #[test]
-    fn inverse_text_reads_on_every_text_colour_used_as_a_fill() {
-        let inverse = palette_index(KEYS.iter().find(|(_, r, _)| *r == Role::Inverse).unwrap().2).unwrap();
-        for (name, t) in builtins() {
-            let p = t.palette();
-            for (key, role, value) in KEYS {
-                if *role == Role::Text {
-                    let r = contrast(p.indexed(inverse), p.indexed(palette_index(value).unwrap()));
-                    assert!(r >= 4.5, "{name}: inverse text on {key} = {value} is {r:.2}:1");
-                }
-            }
-        }
     }
 
     #[test]

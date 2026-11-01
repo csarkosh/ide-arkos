@@ -721,7 +721,8 @@ unchanged by an effect deepening the text); main text keeps 4.5:1 against every 
 borders) keeps 3:1 on the bands it is drawn on. Whatever colours a program sends, Arkos draws
 its text at 4.5:1 or better against the background under it, and faint text at 3:1: a colour too
 close is moved toward black or white until it clears 7:1 (an effect's washes show lighter than
-their colour), so a Claude Code session still on another
+their colour). Graphics characters (block elements, Braille, powerline separators) keep the
+colours sent, since a picture or a prompt's segments are drawn with them. So a Claude Code session still on another
 theme (its stock dark one on a light Arkos theme) stays readable. At start, Arkos rewrites the file when it differs from this build's (so an update can
 change it) and selects it when Claude Code's theme is unset, `dark`, `light` or `auto` (what Arkos
 set before); any other choice (a colourblind-friendly or ANSI theme, a custom theme of your own)
@@ -857,7 +858,7 @@ contrast pair, a window that reported an error or none that answered, an old dae
 | `arkos theme list` | every theme, marking a broken file | 0 |
 | `arkos theme validate <file>` | checks a file: `ok: {name}` or the error | 0, 1 |
 | `arkos theme template [<built-in>]` | a built-in's TOML to start from; `--json` gives the key schema | 0, 1 |
-| `arkos theme contrast <file-or-name>` | one line per colour pair, `ok` or `LOW (needs 4.5)` | 0, 1 when any pair is low |
+| `arkos theme contrast <file-or-name>` | one line per colour pair, `ok` or `LOW (needs 4.5)`, then Claude Code's pairs and every colour a program can send drawn in the terminal, plain and under the theme's effect (`--effect <name|none>` for another) | 0, 1 when any pair is low |
 | `arkos theme add <file>` | copies a file into the themes folder; `--replace` overwrites | 0, 1 |
 | `arkos theme use <name-or-file>` | writes `[theme] dark` or `light` (`--dark`, `--light`) and reloads every window | 0, 1 |
 | `arkos theme preview <name-or-file>` | shows a draft in every window without writing; `--end` restores | 0, 1, 3 |

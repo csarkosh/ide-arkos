@@ -11,6 +11,7 @@ mod client;
 mod closed_stack;
 mod command_palette;
 mod config;
+mod contrast;
 mod config_watch;
 mod connection;
 mod crash_dialog;

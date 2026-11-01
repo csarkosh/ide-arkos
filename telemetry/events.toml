@@ -170,5 +170,11 @@ scheme = ["http", "https", "file"]
 [events.help]
 what = ["keybindings", "documentation", "about", "telemetry"]
 
+# A terminal moved the colour a program sent so its text stays readable: on a light or a dark
+# theme, on the terminal's paper or on a band. Never the program, the colour or the text.
+[events.text_moved]
+ground = ["light", "dark"]
+on = ["paper", "band"]
+
 [focus]
 surfaces = ["terminal", "viewer", "browser", "video", "settings"]

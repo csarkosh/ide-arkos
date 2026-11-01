@@ -177,6 +177,7 @@ pub const EVENT_WHEN: &[(&str, &str)] = &[
     ("agent_pane", "An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded."),
     ("web_load", "A web tab's page loaded, or failed to: the scheme of its address (`http`, `https` or `file`), never the address, the page or its title."),
     ("help", "A Help surface opened."),
+    ("text_moved", "A program drew text too close to the colour under it, and the terminal moved it to stay readable: on a light or a dark theme, on the terminal's own background (`paper`) or on a band of colour (`band`). Once a report for each pair; never the program, the colour or the text."),
 ];
 
 /// The tables the page shows between its markers, as Markdown: the envelope, the check, the

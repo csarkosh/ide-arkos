@@ -357,6 +357,21 @@ The contrast rules, which `arkos theme contrast` checks pair by pair:
   `window_bg`, `status_bar`, `tab_bar`, `banner`, `sidebar` and `tab_inactive`; the ANSI colours
   and the semantic marks on `terminal.background`; the tree and viewer colours on `window_bg`.
 - `terminal.black` is checked only on a light theme, where it is a text colour.
+- Claude Code draws in the Arkos theme (the user guide, Config), so the theme is held to
+  its pairs too, in rows that begin `claude code:`. Each text token, an ANSI colour, needs 4.5:1
+  on `terminal.background`; the message text (`ansi:whiteBright`) needs 4.5:1 on every band (the
+  256-colour indexes Claude Code fills its diff lines, messages and selection with); the dim text
+  (`ansi:blackBright`) needs 3:1 on the bands it is drawn on; and the inverse text (palette 16,
+  the background's own colour) needs 4.5:1 on every text colour. A band is derived from the
+  background, the foreground and the ANSI colour of its hue, so a low band row is fixed there.
+- The terminal: whatever colours a program sends, Arkos draws its text at 4.5:1 or better on the
+  colour under it (faint text at 3:1), moving a colour that falls short toward black or white.
+  Graphics characters (block elements, Braille, powerline separators) keep the colours sent. The
+  check draws every colour a program can send on every background it can send: the theme's
+  terminal colours, its 256 palette colours and Claude Code's stock colours, plain and faint,
+  plain and under the effect. Most of those pairs are moved, since the check draws every palette
+  colour on every other, near twins among them; the JSON counts them in `moved`. A LOW line
+  there is an Arkos bug, not the theme's: report it.
 
 The live reload: every window watches `config.toml` and the file of the theme the config names. A
 saved edit applies within a second. A file that stops validating keeps the last good theme and the
@@ -379,10 +394,19 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 - `arkos theme template [<built-in>] [--json]`: a built-in's TOML (default `navy`); an unknown
   built-in exits 1. `--json` gives the schema instead:
   `{ "tables": [{ "name", "keys": [{ "key", "meaning", "contrast_with"?, "needs"? }] }] }`.
-- `arkos theme contrast <file-or-name> [--json]`: one line per pair, `{what} {ratio}:1 ok` with
-  the ratio to one decimal, or `{what} {ratio}:1 LOW (needs {needs})` with the ratio cut down to two
-  decimals, as in `tree.ignored on window_bg 4.46:1 LOW (needs 4.5)`; exit 1 when any pair is low. An argument ending in
-  `.toml` is a file. JSON `{ "name", "ok", "pairs": [{ "what", "fg", "bg", "ratio", "needs", "ok" }] }`.
+- `arkos theme contrast <file-or-name> [--effect <name|folder|none>] [--json]`: one line per
+  theme pair, `{what} {ratio}:1 ok` with the ratio to one decimal, or `{what} {ratio}:1 LOW (needs {needs})`
+  with the ratio cut down to two decimals, as in `tree.ignored on window_bg 4.46:1 LOW (needs 4.5)`.
+  Then the Claude Code pairs (section 4): `claude code: {n} pairs ok`, or a LOW line for each low
+  one. Then the terminal, plain and under the effect:
+  `terminal: {pairs} pairs drawn, all clear` (or `{n} LOW`) and
+  `terminal under {effect}: ...`, each with a LOW line for any pair drawn under its floor. The
+  effect is `--effect`'s (a name, a folder path with a `/` for one being written, or `none`),
+  else the theme's own. Exit 1 when any pair is low; an effect that does not load prints its
+  error and exits 1. An argument ending in `.toml` is a file. JSON
+  `{ "name", "ok", "pairs": [{ "what", "fg", "bg", "ratio", "needs", "ok" }], "terminal": [{ "effect": name | null, "pairs", "moved", "low": [{ "what", "fg", "bg", "faint", "ratio", "needs" }], "claude_code" }] }`,
+  the Claude Code pairs in `pairs` with a `what` beginning `claude code: `, and `claude_code` the
+  version whose stock colours were drawn.
 - `arkos theme add <file> [--replace] [--json]`: copies the file into the themes folder:
   `added {name}` or `replaced {name}`; a name taken by a file or a built-in prints
   `exists: {name}; pass --replace` and exits 1. JSON `{ "name", "replaced" }`.
@@ -445,7 +469,8 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 1. `arkos theme template > draft.toml` (or `arkos theme template peach-light` for a light start).
 2. Set `name` to a new bare name and edit the colours.
 3. `arkos theme validate draft.toml`, then `arkos theme contrast draft.toml`; fix every LOW pair
-   and run it again until it exits 0.
+   and run it again until it exits 0. It checks the theme's own pairs, Claude Code's in it, and
+   the terminal under the theme's effect; add `--effect <name>` for another one the user uses.
 4. `arkos theme preview draft.toml`, so the user sees it; then `arkos theme preview --end` if they
    do not want it. To show it in a window of its own while theirs stays as it is, use the
    sandbox instead: `arkos sandbox theme use draft.toml` (section 7).
@@ -699,7 +724,10 @@ and at least 80% of their coverage.
 3. `arkos effect check <folder>` until it prints `ok: <name>`; a compile error names your file
    and line. Read its `highlights:` line: with `app` the wash gets no highlight blocks.
 4. `arkos effect bench <name>` until it says `within budget`.
-5. `arkos effect use <name>`, then `arkos effect current` to see what each window draws and what
+5. `arkos theme contrast peach-light --effect <folder>` and `arkos theme contrast navy --effect <folder>`
+   (and the user's own themes) until each exits 0: the effect's `text_contrast` moves the text,
+   and the check draws every colour a program can send under it.
+6. `arkos effect use <name>`, then `arkos effect current` to see what each window draws and what
    it costs. To look at it in a window of its own first, run these steps in the sandbox
    (section 7), ending with `arkos sandbox effect use <name>`.
 

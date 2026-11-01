@@ -97,6 +97,7 @@ An event is one of these names, with only these keys, each taking only the value
 | `agent_pane` | `command`: `open`, `open_web`, `status`, `play`, `pause`, `seek`, `step`, `loop`, `reload`, `close`, `mute`, `panes`; `ok`: `true`, `false` | An agent's `arkos open`, `arkos video` or `arkos panes` command ran, which one and whether it succeeded. |
 | `web_load` | `outcome`: `ready`, `failed`; `scheme`: `http`, `https`, `file` | A web tab's page loaded, or failed to: the scheme of its address (`http`, `https` or `file`), never the address, the page or its title. |
 | `help` | `what`: `keybindings`, `documentation`, `about`, `telemetry` | A Help surface opened. |
+| `text_moved` | `ground`: `light`, `dark`; `on`: `paper`, `band` | A program drew text too close to the colour under it, and the terminal moved it to stay readable: on a light or a dark theme, on the terminal's own background (`paper`) or on a band of colour (`band`). Once a report for each pair; never the program, the colour or the text. |
 
 The keys of `focus` are these surfaces only: `terminal`, `viewer`, `browser`, `video`, `settings`.
 
