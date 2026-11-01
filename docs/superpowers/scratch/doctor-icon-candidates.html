@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<title>Doctor Icon Candidates</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* Layout: a mock Arkos title bar per candidate (the icon at its real 16 px next to the bell), then a grid of cards with the glyph at three sizes on both chrome tones. */
+:root {
+  --bg: #f6f5f2;
+  --fg: #1f2328;
+  --dim: #6b7280;
+  --card: #ffffff;
+  --line: #d9d6cf;
+  --chrome: #2b2d31;
+  --chrome-light: #ececea;
+  --icon: #a9adb4;
+  --icon-light: #4b5059;
+  --accent: #5fb0ff;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171a; --fg: #e6e7ea; --dim: #9aa0a8; --card: #1d2024; --line: #2d3137; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15171a; --fg: #e6e7ea; --dim: #9aa0a8; --card: #1d2024; --line: #2d3137; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 48px; }
+main { max-width: 1040px; margin: 0 auto; display: grid; gap: 28px; }
+h1 { font-size: 22px; margin: 0; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+p.lead { margin: 6px 0 0; color: var(--dim); max-width: 64ch; line-height: 1.45; }
+section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin: 0 0 12px; font-weight: 600; }
+.bars { display: grid; gap: 8px; }
+.bar { display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 12px 0 10px; border-radius: 6px; background: var(--chrome); color: #d7d9dd; font-size: 13px; }
+.bar .lights { display: flex; gap: 6px; margin-right: 4px; }
+.bar .lights span { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.bar .lights span:nth-child(1) { background: #ff5f57; } .bar .lights span:nth-child(2) { background: #febc2e; } .bar .lights span:nth-child(3) { background: #28c840; }
+.bar .name { font-weight: 600; }
+.bar .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; font-weight: 300; color: #9a9ea6; }
+.bar .code { font-family: var(--mono); font-size: 11px; color: #9a9ea6; margin-right: 8px; }
+.bar .icons { display: flex; gap: 8px; }
+.bar .icons .t { width: 24px; height: 24px; display: grid; place-items: center; position: relative; }
+.bar svg { width: 16px; height: 16px; display: block; }
+.bar .t .dot { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 12px 10px; display: grid; gap: 10px; min-width: 0; }
+.card header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.card header b { font-family: var(--mono); font-size: 13px; }
+.card header span { font-size: 13px; color: var(--fg); }
+.card .note { font-size: 12px; color: var(--dim); line-height: 1.4; margin: 0; }
+.swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sw { border-radius: 6px; display: flex; align-items: flex-end; gap: 10px; padding: 10px; height: 92px; box-sizing: border-box; }
+.sw.dark { background: var(--chrome); } .sw.dark svg { color: var(--icon); }
+.sw.light { background: var(--chrome-light); } .sw.light svg { color: var(--icon-light); }
+.sw svg { display: block; }
+.sw .s16 { width: 16px; height: 16px; } .sw .s32 { width: 32px; height: 32px; } .sw .s64 { width: 64px; height: 64px; }
+svg.g { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.bar svg.g { color: var(--icon); }
+footer p { color: var(--dim); font-size: 13px; margin: 0; max-width: 70ch; line-height: 1.45; }
+</style>
+
+</head>
+<body>
+<main>
+  <div>
+    <h1>Doctor Icon Candidates</h1>
+    <p class="lead">Each row below is the Arkos title bar at its real size, with the bell and one candidate for the doctor. Every glyph is a 16 px box, 1.5 px stroke, the same as the bar draws. Reply with the letter you want; the cards underneath show the same glyph larger on both chrome tones.</p>
+  </div>
+
+  <section>
+    <h2>In the bar, actual size</h2>
+    <div class="bars" id="bars"></div>
+  </section>
+
+  <section>
+    <h2>Closer look</h2>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <footer>
+    <p>A, B and C are stethoscopes drawn three ways. D to H are cross and heart shapes. I to N are other medical instruments. O and P are non-medical "fix it" shapes, in case the doctor should not read as medical at all. All are strokes only, so the bar can draw the chosen one with the same path code it uses today.</p>
+  </footer>
+</main>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- A: stethoscope as shipped in 0.2.17 -->
+    <g id="g-A"><path d="M3 1.2 L4 2 C4 6 5 9 7 9 M11 1.2 L10 2 C10 6 9 9 7 9 M7 9 C7 10.8 9 11.4 10.6 11.1"/><circle cx="12" cy="12.5" r="2"/></g>
+    <!-- B: stethoscope, wide U with the tube hanging to a chest piece -->
+    <g id="g-B"><path d="M4.5 1.5 V6.5 A3.5 3.5 0 0 0 11.5 6.5 V1.5"/><path d="M8 10 V11.5 A3 3 0 0 0 14 11.5 V10.5"/><circle cx="14" cy="8.5" r="1.8"/><path d="M3.3 1.5 H5.7 M10.3 1.5 H12.7"/></g>
+    <!-- C: stethoscope, horseshoe with chest piece at the bottom -->
+    <g id="g-C"><path d="M3 2 V7 A5 5 0 0 0 13 7 V2"/><path d="M2.2 2 H3.8 M12.2 2 H13.8"/><path d="M8 12 V12.8"/><circle cx="8" cy="14.3" r="1.5"/></g>
+    <!-- D: cross in a rounded square (first aid kit) -->
+    <g id="g-D"><rect x="2" y="2" width="12" height="12" rx="2.5"/><path d="M8 5 V11 M5 8 H11"/></g>
+    <!-- E: medical bag -->
+    <g id="g-E"><rect x="2" y="5" width="12" height="9" rx="2"/><path d="M5.5 5 V3.5 A1 1 0 0 1 6.5 2.5 H9.5 A1 1 0 0 1 10.5 3.5 V5"/><path d="M8 7.5 V11.5 M6 9.5 H10"/></g>
+    <!-- F: heart with a pulse line -->
+    <g id="g-F"><path d="M8 13.5 L2.9 8.6 A3 3 0 0 1 8 4.6 A3 3 0 0 1 13.1 8.6 Z"/><path d="M4.2 9.2 H6.2 L7.2 7.4 L8.6 10.6 L9.6 9.2 H11.8"/></g>
+    <!-- G: plain heart -->
+    <g id="g-G"><path d="M8 13.5 L2.9 8.6 A3 3 0 0 1 8 4.6 A3 3 0 0 1 13.1 8.6 Z"/></g>
+    <!-- H: shield with a plus -->
+    <g id="g-H"><path d="M8 1.8 L13.2 3.8 V8 C13.2 11 11 13.3 8 14.4 C5 13.3 2.8 11 2.8 8 V3.8 Z"/><path d="M8 5.6 V10.4 M5.6 8 H10.4"/></g>
+    <!-- I: ECG pulse -->
+    <g id="g-I"><path d="M1.5 8.5 H4.2 L5.6 4.2 L7.6 12 L9.6 6 L10.8 8.5 H14.5"/></g>
+    <!-- J: pill capsule -->
+    <g id="g-J"><path d="M4.3 11.7 L11.7 4.3 A2.6 2.6 0 0 0 8 0.6 L0.6 8 A2.6 2.6 0 0 0 4.3 11.7 Z" transform="translate(1.8 1.8)"/><path d="M6 10 L10 6" transform="translate(1.8 1.8)"/></g>
+    <!-- K: syringe -->
+    <g id="g-K"><path d="M2.5 13.5 L5 11 M4 12 L10.5 5.5 M9 4 L12 7 M12.5 3.5 L14 2 M11 5 L13.5 2.5 M6.5 9.5 L8 11 M8 8 L9.5 9.5"/></g>
+    <!-- L: thermometer -->
+    <g id="g-L"><path d="M6.5 9.6 V3.2 A1.5 1.5 0 0 1 9.5 3.2 V9.6 A2.6 2.6 0 1 1 6.5 9.6 Z"/><path d="M8 6.5 V11"/></g>
+    <!-- M: bandage -->
+    <g id="g-M"><rect x="1.3" y="5.3" width="13.4" height="5.4" rx="2.7" transform="rotate(-45 8 8)"/><path d="M5.6 8 L8 10.4 M8 5.6 L10.4 8" /></g>
+    <!-- N: clipboard with check -->
+    <g id="g-N"><rect x="3" y="3" width="10" height="11.5" rx="1.5"/><path d="M6 3 V2 H10 V3"/><path d="M5.5 9 L7.3 10.8 L10.8 7.3"/></g>
+    <!-- O: wrench -->
+    <g id="g-O"><path d="M13.4 4.1 A3.5 3.5 0 0 1 9 8.4 L4.2 13.2 A1.3 1.3 0 0 1 2.4 11.4 L7.2 6.6 A3.5 3.5 0 0 1 11.6 2.2 L9.8 4 L10.6 5.4 L12 6.2 Z"/></g>
+    <!-- P: life ring -->
+    <g id="g-P"><circle cx="8" cy="8" r="6.2"/><circle cx="8" cy="8" r="2.6"/><path d="M3.6 3.6 L6.2 6.2 M12.4 3.6 L9.8 6.2 M3.6 12.4 L6.2 9.8 M12.4 12.4 L9.8 9.8"/></g>
+    <!-- bell, as shipped -->
+    <g id="g-bell"><path d="M4 5.33 C4 3.12 5.79 1.33 8 1.33 C10.21 1.33 12 3.12 12 5.33 C12 10 14 11.33 14 11.33 L2 11.33 C2 11.33 4 10 4 5.33 Z"/><path d="M6.87 14 C7.2 14.8 8.8 14.8 9.13 14"/></g>
+  </defs>
+</svg>
+
+<script>
+(function () {
+  var items = [
+    ["A", "Stethoscope, shipped in 0.2.17", "Two ear tubes meeting in a U, one tube to a chest piece at the lower right. Reads as a fork at 16 px."],
+    ["B", "Stethoscope, wide U", "The ear tubes form a wide U; the long tube hangs from its bottom to a chest piece at the right. The common app glyph."],
+    ["C", "Stethoscope, horseshoe", "A horseshoe of tubing with the chest piece hanging straight down. Simplest outline, most symmetric."],
+    ["D", "First aid kit", "A cross in a rounded square. Unmistakably medical; the cross alone was the Add-button problem."],
+    ["E", "Medical bag", "A doctor's bag with a cross. More shape than D, still a cross inside."],
+    ["F", "Heart with pulse", "A heart outline with an ECG trace across it. Reads as health or vitals."],
+    ["G", "Heart", "A plain heart outline. Health, but also a favourite button in many apps."],
+    ["H", "Shield with plus", "Protection and care. Could read as security."],
+    ["I", "ECG pulse", "A heartbeat line alone. Clean at 16 px; often means activity or monitoring."],
+    ["J", "Pill", "A capsule, split. Medical and distinctive, a touch playful."],
+    ["K", "Syringe", "A syringe on the diagonal. Distinctive, a bit sharp as a metaphor."],
+    ["L", "Thermometer", "A thermometer. Reads as check-up or temperature."],
+    ["M", "Bandage", "A plaster on the diagonal. Reads as fix or patch."],
+    ["N", "Clipboard with check", "A check-up chart. Reads as a checklist, which is what the doctor's popover is."],
+    ["O", "Wrench", "Not medical: a fix-it tool. Fits the popover's job if the doctor name goes."],
+    ["P", "Life ring", "Not medical: help and rescue. Common help icon."]
+  ];
+  var bars = document.getElementById("bars");
+  var grid = document.getElementById("grid");
+  function use(id, cls) { return '<svg class="g ' + (cls || "") + '" viewBox="0 0 16 16"><use href="#g-' + id + '"/></svg>'; }
+  items.forEach(function (it) {
+    var code = it[0], name = it[1], note = it[2];
+    var bar = document.createElement("div");
+    bar.className = "bar";
+    bar.innerHTML = '<div class="lights"><span></span><span></span><span></span></div><span class="name">Arkos IDE</span><span class="path">/Users/csarko/Projects/ide-arkos</span><span class="code">' + code + '</span><div class="icons"><div class="t">' + use("bell") + '</div><div class="t">' + use(code) + '<span class="dot"></span></div></div>';
+    bars.appendChild(bar);
+    var card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = '<header><b>' + code + '</b><span>' + name + '</span></header>' +
+      '<div class="swatches"><div class="sw dark">' + use(code, "s16") + use(code, "s32") + use(code, "s64") + '</div><div class="sw light">' + use(code, "s16") + use(code, "s32") + use(code, "s64") + '</div></div>' +
+      '<p class="note">' + note + '</p>';
+    grid.appendChild(card);
+  });
+})();
+</script>
+
+</body>
+</html>

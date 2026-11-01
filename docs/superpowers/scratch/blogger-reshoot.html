@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blogger reshoot</title>
+<style>
+  :root { --bg: #fbf7f2; --fg: #2b211c; --dim: #7a675d; --line: #e6d8cc; color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1b1714; --fg: #f1e9e2; --dim: #b3a399; --line: #3a302a; color-scheme: dark; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, "Helvetica Neue", sans-serif; padding: 28px max(16px, 4vw) 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--dim); margin: 0 0 22px; max-width: 70ch; }
+  .frames { display: grid; grid-template-columns: 1fr; gap: 28px; }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 10px; }
+  figcaption { color: var(--dim); font-size: 13px; margin-top: 8px; }
+  ul { max-width: 70ch; color: var(--fg); }
+</style>
+</head>
+<body>
+<h1>The Blogger, reshot on the Tier B build</h1>
+<p class="sub">Both frames come from scripts/shoot.sh (main at 924b5b9): the launch plan rendered in the editor, Claude Code updating it from the review note in the other pane. Click a frame to open it full size.</p>
+<div class="frames">
+  <figure><a href="../../images/blogger-light.png"><img src="../../images/blogger-light.png" alt="The light frame: the launch plan with the status table as a grid, the Mermaid flow, the checklist and the open questions section, with Claude Code's summary of its edits on the right"></a><figcaption>blogger-light.png: the shot taken once the session is waiting, its edit summary on the right.</figcaption></figure>
+  <figure><a href="../../images/blogger-dark.png"><img src="../../images/blogger-dark.png" alt="The dark frame: the same plan while Claude Code writes the new open question into the details block"></a><figcaption>blogger-dark.png: the shot taken while the session works, the details block being edited.</figcaption></figure>
+</div>
+<ul>
+  <li>Visible in frame: the grid (five columns, no broken words), the diagram, the checklist, the collapsed Open questions section, the chart's heading.</li>
+  <li>Below the fold: the chart image and the code snippet.</li>
+  <li>Worked around: the floating pills over a long heading; the title is "Launch plan" for now.</li>
+</ul>
+</body>
+</html>

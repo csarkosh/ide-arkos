@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shoot variants</title>
+<style>
+  :root { --bg: #fbf7f2; --fg: #2b211c; --dim: #7a675d; --line: #e6d8cc; color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1b1714; --fg: #f1e9e2; --dim: #b3a399; --line: #3a302a; color-scheme: dark; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, "Helvetica Neue", sans-serif; padding: 28px max(16px, 4vw) 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--dim); margin: 0 0 22px; max-width: 70ch; }
+  .frames { display: grid; grid-template-columns: 1fr; gap: 28px; }
+  figure { margin: 0; max-width: 1100px; }
+  figure img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 10px; }
+  figcaption { color: var(--dim); font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Two new shots: the Blogger stacked, the multitasker with tabs</h1>
+<p class="sub">The same launch plan and session, one above the other: the file on top with the caret in it (the heading under the caret shows its markdown source, the rest stays rendered), Claude Code below. Click a frame to open it full size.</p>
+<div class="frames">
+  <figure><a href="../../images/blogger-stacked-light.png"><img src="../../images/blogger-stacked-light.png" alt="The light frame, stacked"></a><figcaption>blogger-stacked-light.png</figcaption></figure>
+  <figure><a href="../../images/blogger-stacked-dark.png"><img src="../../images/blogger-stacked-dark.png" alt="The dark frame, stacked"></a><figcaption>blogger-stacked-dark.png</figcaption></figure>
+</div>
+<h1 style="margin-top:40px">The multitasker, two tabs per pane</h1>
+<p class="sub">Each of the two big panes carries a second, short session on an unrelated workstream (a blog, a household budget) behind the long one: it has finished and waits on you (the orange mark on the inactive tab) while the front session works (the blue mark).</p>
+<div class="frames">
+  <figure><a href="../../images/multitasker-dark.png"><img src="../../images/multitasker-dark.png" alt="The multitasker dark frame, two tabs per pane"></a><figcaption>multitasker-dark.png (the hero)</figcaption></figure>
+  <figure><a href="../../images/multitasker-light.png"><img src="../../images/multitasker-light.png" alt="The multitasker light frame"></a><figcaption>multitasker-light.png</figcaption></figure>
+</div>
+</body>
+</html>
