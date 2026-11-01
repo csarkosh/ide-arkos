@@ -14,7 +14,7 @@ pub const TEXT: &str = include_str!("../../../docs/agent-guide.md");
 /// The skill's folder name and its front matter `name`.
 pub const SKILL_NAME: &str = "arkos-ide";
 /// The skill's front matter `description`, which is how an agent decides to load it.
-pub const SKILL_DESCRIPTION: &str = "Show a video, a markdown file or a web page in an Arkos IDE pane, control a video's playback, or customize Arkos: themes, effects, fonts and settings. Use when the user asks to see, preview, play or watch a video, a document or a page (a local HTML file or a dev server), or to change how Arkos looks or behaves.";
+pub const SKILL_DESCRIPTION: &str = "Show a video, a markdown file or a web page in an Arkos IDE pane, control a video's playback, or customize Arkos: themes, effects, fonts and settings, and check a theme's or an effect's contrast. Use when the user asks to see, preview, play or watch a video, a document or a page (a local HTML file or a dev server), or to change how Arkos looks or behaves, including writing or editing a theme file or an effect's shaders.";
 /// The line `arkos guide --install` offers for `AGENTS.md` or `CLAUDE.md`.
 pub const AGENTS_MD_LINE: &str = "Arkos IDE: run `arkos guide` before showing the user a file or a web page in a pane or changing its theme or settings.";
 
@@ -280,6 +280,18 @@ mod tests {
         }
         assert!(SKILL_DESCRIPTION.contains("video"), "{SKILL_DESCRIPTION}");
         assert!(SKILL_DESCRIPTION.contains(": "), "it stays quoted in the front matter");
+    }
+
+    /// An agent changing a theme or an effect finds the contrast check from the skill's
+    /// description alone, and the guide gives the command as it is used.
+    #[test]
+    fn an_agent_making_a_theme_or_an_effect_is_sent_to_the_contrast_check() {
+        for word in ["contrast", "theme file", "shaders"] {
+            assert!(SKILL_DESCRIPTION.contains(word), "{word}: {SKILL_DESCRIPTION}");
+        }
+        assert!(TEXT.contains("arkos theme contrast <file-or-name> [--effect <name|folder|none>] [--json]"));
+        assert!(TEXT.contains("arkos theme contrast peach-light --effect <folder>"), "the effect steps run it");
+        assert!(TEXT.contains("claude code: {n} pairs ok") && TEXT.contains("terminal under {effect}:"), "the lines it prints");
     }
 
     #[test]

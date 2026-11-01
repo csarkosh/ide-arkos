@@ -93,6 +93,16 @@ cargo test
 sh packaging/test.sh   # a dev build bundled, a manifest signed with a throwaway key, verified
 ```
 
+The contrast matrix (`crates/arkos/src/contrast.rs`) draws every colour a program can send on
+every background, on each built-in theme, plain and under each built-in effect, through the
+terminal's own `draw`, and fails on a pair drawn under 4.5:1 (3:1 faint). Its program colours
+include Claude Code's stock ones, read from its binary into
+`crates/arkos/data/claude-code-colours.json` by `scripts/claude-code-colours.py`. After a Claude
+Code update, `cargo test -p arkos -- --ignored stock_colours` says whether its colours changed;
+when they did, run the script, then `cargo test`, and commit the file. `arkos theme contrast`
+runs the same checks on any theme, so a change to the palette, the renderer, a theme or an
+effect is checked with it as well as with the tests.
+
 The rendered view's Mermaid diagrams use mermaid 11.17.2, vendored as
 `crates/arkos/assets/mermaid.min.js` and bundled into the binary. `scripts/vendor-mermaid.sh`
 fetches it from the npm registry's tarball and checks it against the SHA-256 recorded there; to
@@ -401,6 +411,9 @@ Things only a person at the screen can check, in order of value:
 - colours: Claude Code on its stock `dark` theme in Lavender Light with watercolor: a diff's
   context lines and line numbers read as grey ink on the paper, not near white, and the text in
   the dark message band reads light on it.
+- colours: in a light theme, a picture drawn with half blocks (`chafa` or `timg` on a photo), a
+  powerline prompt (with a font that has its glyphs) and Claude Code's mascot keep their own
+  colours: no darkened pixels and no seam between a prompt's segments.
 - colours: a first start of this Arkos on a Claude Code theme of `dark`, `light`, `auto` or unset
   switches it to `custom:arkos`, writes `~/.claude/themes/arkos.json`, and the bell says "Claude
   Code now takes the Arkos colours; restart running sessions to see them"; a `dark-daltonized`

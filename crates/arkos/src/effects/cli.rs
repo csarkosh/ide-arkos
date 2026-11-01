@@ -57,7 +57,7 @@ pub fn effect_cli_to(args: &[String], env: &Env, out: &mut dyn Write, err: &mut 
 
 /// Takes `flag` and the value after it out of `args`: `Ok((None, args))` when the flag is
 /// absent, `Err` when it has no value.
-fn take_value(args: &[String], flag: &str) -> Result<(Option<String>, Vec<String>), ()> {
+pub(crate) fn take_value(args: &[String], flag: &str) -> Result<(Option<String>, Vec<String>), ()> {
     let Some(i) = args.iter().position(|a| a == flag) else { return Ok((None, args.to_vec())) };
     let value = args.get(i + 1).filter(|v| !v.starts_with("--")).ok_or(())?;
     let rest = args.iter().enumerate().filter(|(j, _)| *j != i && *j != i + 1).map(|(_, a)| a.clone()).collect();

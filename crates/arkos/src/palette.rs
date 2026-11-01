@@ -5,7 +5,7 @@
 //! clear 4.5:1 luminance contrast on the background.
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -61,10 +61,15 @@ impl<'de> serde::Deserialize<'de> for Rgb {
 
 /// WCAG relative luminance, 0 (black) to 1 (white).
 pub fn luminance(c: Rgb) -> f64 {
-    fn ch(v: u8) -> f64 {
-        let v = v as f64 / 255.0;
-        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    }
+    // Each channel's linear value, worked out once: the contrast matrix asks hundreds of
+    // thousands of times a theme.
+    static LINEAR: std::sync::LazyLock<[f64; 256]> = std::sync::LazyLock::new(|| {
+        std::array::from_fn(|i| {
+            let v = i as f64 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        })
+    });
+    let ch = |v: u8| LINEAR[v as usize];
     0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
 }
 

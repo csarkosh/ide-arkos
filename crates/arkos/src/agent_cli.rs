@@ -39,7 +39,7 @@ const THEME_USAGE: &str = "\
 usage: arkos theme list [--json]
        arkos theme validate <file> [--json]
        arkos theme template [<built-in>] [--json]
-       arkos theme contrast <file-or-name> [--json]
+       arkos theme contrast <file-or-name> [--effect <name|folder|none>] [--json]
        arkos theme add <file> [--replace] [--json]
        arkos theme use <name-or-file> [--dark|--light] [--replace] [--json]
        arkos theme preview <name-or-file> [--json]
@@ -338,25 +338,82 @@ fn load_target(target: &str, themes: &Path) -> Result<theme::Theme, String> {
     theme::parse(&text).map_err(|e| format!("{target}: {e}"))
 }
 
+/// The text deepening `contrast` draws the terminal under, beside plain: `--effect`'s (a name, a
+/// folder with a `/`, or `none`), else the theme's own recommendation, with its `text_contrast`.
+/// None for no effect; Err names an effect that does not load.
+fn contrast_effect(flag: Option<&str>, t: &theme::Theme, env: &Env) -> Result<Option<(String, f32)>, String> {
+    let name = match flag {
+        Some("none") => return Ok(None),
+        Some(n) => n.to_string(),
+        None => match t.recommended_effect() {
+            Some(n) => crate::effects::current_name(n).to_string(),
+            None => return Ok(None),
+        },
+    };
+    let effect = if name.contains('/') { crate::effects::manifest::load_folder(Path::new(&name)) } else { crate::effects::manifest::load(&name, &env.effects_dir()) }?;
+    let c = effect.manifest.text_contrast;
+    Ok(Some((effect.manifest.name.clone(), c)))
+}
+
 fn contrast(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let Some(a) = split(args, &[]) else { return usage(err, THEME_USAGE) };
+    let Ok((effect, args)) = crate::effects::cli::take_value(args, "--effect") else { return usage(err, THEME_USAGE) };
+    let Some(a) = split(&args, &[]) else { return usage(err, THEME_USAGE) };
     let [target] = a.words.as_slice() else { return usage(err, THEME_USAGE) };
     let t = match load_target(target, env.themes) {
         Ok(t) => t,
         Err(e) => return fail(err, &e),
     };
-    let (ok, rows) = theme::contrast_report(&t);
+    let effect = match contrast_effect(effect.as_deref(), &t, env) {
+        Ok(e) => e,
+        Err(e) => return fail(err, &e),
+    };
+    let (theme_ok, mut rows) = theme::contrast_report(&t);
+    let theme_rows = rows.len();
+    rows.extend(crate::claude_theme::contrast_pairs(&t).into_iter().map(|p| {
+        let r = crate::palette::contrast(p.fg, p.bg);
+        (p, r)
+    }));
+    let claude_ok = rows[theme_rows..].iter().all(|(p, r)| *r >= p.needs);
+    // The terminal as every program draws on it: plain, and as the effect deepens its text.
+    let mut terminals = vec![(None, crate::contrast::terminal_report(&t))];
+    if let Some((name, c)) = &effect {
+        terminals.push((Some(name.clone()), crate::contrast::terminal_report(&crate::effects::active::contrasted(&t, *c))));
+    }
+    let ok = theme_ok && claude_ok && terminals.iter().all(|(_, r)| r.low.is_empty());
+    // A low ratio is cut down, not rounded, to two decimals, so one just under the threshold
+    // never reads as reaching it.
+    let low_line = |what: &str, r: f64, needs: f64| format!("{what} {:.2}:1 LOW (needs {needs})", (r * 100.0).floor() / 100.0);
     if a.has("--json") {
         let pairs: Vec<Json> = rows
             .iter()
             .map(|(p, r)| json!({ "what": p.what, "fg": p.fg.hex(), "bg": p.bg.hex(), "ratio": r, "needs": p.needs, "ok": *r >= p.needs }))
             .collect();
-        let _ = writeln!(out, "{}", json!({ "name": t.name, "ok": ok, "pairs": pairs }));
+        let terminal: Vec<Json> = terminals
+            .iter()
+            .map(|(effect, r)| {
+                let low: Vec<Json> = r.low.iter().map(|l| json!({ "what": l.what, "fg": l.fg.hex(), "bg": l.bg.hex(), "faint": l.faint, "ratio": l.ratio, "needs": l.needs })).collect();
+                json!({ "effect": effect, "pairs": r.pairs, "moved": r.moved, "low": low, "claude_code": crate::contrast::stock().version })
+            })
+            .collect();
+        let _ = writeln!(out, "{}", json!({ "name": t.name, "ok": ok, "pairs": pairs, "terminal": terminal }));
     } else {
-        for (p, r) in &rows {
-            // A low ratio is cut down, not rounded, to two decimals, so one just under the
-            // threshold never reads as reaching it.
-            let _ = if *r >= p.needs { writeln!(out, "{} {r:.1}:1 ok", p.what) } else { writeln!(out, "{} {:.2}:1 LOW (needs {})", p.what, (r * 100.0).floor() / 100.0, p.needs) };
+        for (p, r) in &rows[..theme_rows] {
+            let _ = if *r >= p.needs { writeln!(out, "{} {r:.1}:1 ok", p.what) } else { writeln!(out, "{}", low_line(&p.what, *r, p.needs)) };
+        }
+        // The Claude Code pairs are many: a line for the lot, or one for each that is low.
+        if claude_ok {
+            let _ = writeln!(out, "claude code: {} pairs ok", rows.len() - theme_rows);
+        }
+        for (p, r) in rows[theme_rows..].iter().filter(|(p, r)| *r < p.needs) {
+            let _ = writeln!(out, "{}", low_line(&p.what, *r, p.needs));
+        }
+        for (effect, r) in &terminals {
+            let under = effect.as_ref().map(|e| format!(" under {e}")).unwrap_or_default();
+            let verdict = if r.low.is_empty() { "all clear".to_string() } else { format!("{} LOW", r.low.len()) };
+            let _ = writeln!(out, "terminal{under}: {} pairs drawn, {verdict}", r.pairs);
+            for l in &r.low {
+                let _ = writeln!(out, "{}", low_line(&format!("terminal{under}: {}", l.what), l.ratio, l.needs));
+            }
         }
     }
     if ok {
@@ -995,6 +1052,61 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!((v["name"].as_str(), v["ok"].as_bool()), (Some("navy"), Some(true)));
         assert!(v["pairs"].as_array().unwrap().len() > 20);
+    }
+
+    fn contrast_run(args: &[&str], themes: &Path) -> (i32, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env { socket: &dir.path().join("none.sock"), config: &dir.path().join("config.toml"), themes, wait: Duration::from_millis(10) };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut all = vec!["contrast".to_string()];
+        all.extend(args.iter().map(|a| a.to_string()));
+        let code = theme_cli_to(&all, &env, &mut out, &mut err);
+        (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+    }
+
+    #[test]
+    fn contrast_holds_the_theme_to_the_claude_code_pairs_and_draws_every_program_colour_under_its_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let (code, out, _) = contrast_run(&["navy"], dir.path());
+        assert_eq!(code, 0, "{out}");
+        let n = crate::claude_theme::contrast_pairs(&theme::builtin("navy").unwrap()).len();
+        assert!(out.lines().any(|l| l == format!("claude code: {n} pairs ok")), "{out}");
+        let terminal: Vec<&str> = out.lines().filter(|l| l.starts_with("terminal: ") || l.starts_with("terminal under ")).collect();
+        assert_eq!(terminal.len(), 1, "navy draws plain: {out}");
+        assert!(terminal[0].starts_with("terminal: ") && terminal[0].ends_with(" pairs drawn, all clear"), "{out}");
+        let (code, out, _) = contrast_run(&["peach-light"], dir.path());
+        assert_eq!(code, 0);
+        assert!(out.lines().any(|l| l.starts_with("terminal under watercolor: ")), "the theme's own effect: {out}");
+        let (_, out, _) = contrast_run(&["peach-light", "--effect", "none"], dir.path());
+        assert!(!out.contains("terminal under"), "{out}");
+        let (_, out, _) = contrast_run(&["navy", "--effect", "runic"], dir.path());
+        assert!(out.lines().any(|l| l.starts_with("terminal under runic: ")), "{out}");
+        let (code, _, err) = contrast_run(&["navy", "--effect", "nosuch"], dir.path());
+        assert_eq!(code, 1);
+        assert!(err.contains("nosuch"), "{err}");
+        assert_eq!(contrast_run(&["navy", "--effect"], dir.path()).0, 2);
+    }
+
+    #[test]
+    fn a_theme_whose_bands_lose_the_message_text_fails_contrast_on_the_claude_code_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let navy = theme::builtin("navy").unwrap();
+        // The message band (ansi256(234)) is derived a step from the background toward the
+        // foreground: a foreground that is the background's twin leaves the text unreadable on it.
+        let text = theme::BUILTIN[0].1.replace(&format!("bright_white = \"{}\"", navy.terminal.bright_white.hex()), &format!("bright_white = \"{}\"", navy.terminal.background.hex()));
+        let f = dir.path().join("murk.toml");
+        std::fs::write(&f, text.replace("name = \"navy\"", "name = \"murk\"")).unwrap();
+        let (code, out, _) = contrast_run(&[&f.display().to_string()], dir.path());
+        assert_eq!(code, 1);
+        assert!(out.lines().any(|l| l.starts_with("claude code: text (ansi:whiteBright) on userMessageBackground (ansi256(234)) ") && l.contains(" LOW (needs 4.5)")), "{out}");
+        let (_, out, _) = contrast_run(&[&f.display().to_string(), "--json"], dir.path());
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["pairs"].as_array().unwrap().iter().any(|p| p["what"].as_str().unwrap().starts_with("claude code: ") && p["ok"] == false));
+        let t = &v["terminal"][0];
+        assert_eq!((t["effect"].is_null(), t["low"].as_array().map(Vec::len)), (true, Some(0)));
+        assert!(t["pairs"].as_u64().unwrap() > 60_000 && t["moved"].as_u64().is_some());
+        assert_eq!(t["claude_code"].as_str(), Some(crate::contrast::stock().version.as_str()), "the Claude Code whose stock colours were drawn");
     }
 
     #[test]

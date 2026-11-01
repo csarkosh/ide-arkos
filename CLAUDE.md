@@ -21,6 +21,9 @@ workspace's crates live in `crates/`; the app is `crates/arkos`.
   never cached, because for 200 ms after a theme switch the theme is a blend remade each frame;
   anything derived from the theme once (highlighter spans, a program's theme push) is done from
   the final theme in `Root::finish_theme`, never per frame.
+- Colour: a change to a theme, the palette, the terminal's drawing or an effect is checked by the
+  contrast matrix in the tests and by `arkos theme contrast <theme> [--effect <name>]` on the
+  themes it touches (`docs/development.md`, Tests). Never loosen a contrast floor to pass.
 - Tests are headless (`cargo test --workspace`), named as sentences, and written before the code
   they check. Doc comments are plain prose; no em-dashes. Finish with
   `cargo check --workspace --all-targets` showing no warnings.

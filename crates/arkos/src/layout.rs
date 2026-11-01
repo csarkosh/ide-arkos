@@ -33,7 +33,8 @@ pub fn build_runs(cells: impl Iterator<Item = (char, CellStyle, CellKind)>) -> V
 }
 
 /// `build_runs` for cells that each carry a glyph stamp (`effects::paint`): a run also ends where
-/// the stamp changes, and each run comes with its cells' stamp.
+/// the stamp changes, and each run comes with its cells' stamp. A run is all text or all graphics
+/// characters (`contrast::is_graphic`), which are drawn in the colour sent.
 pub fn build_stamped_runs(cells: impl Iterator<Item = ((char, CellStyle, CellKind), f32)>) -> Vec<(Run, f32)> {
     let mut runs: Vec<(Run, f32)> = Vec::new();
     for (col, ((c, mut style, kind), stamp)) in cells.enumerate() {
@@ -46,7 +47,9 @@ pub fn build_stamped_runs(cells: impl Iterator<Item = ((char, CellStyle, CellKin
         }
         let wide = kind == CellKind::Wide;
         let extend = match runs.last() {
-            Some((last, at)) => !wide && !last.wide && last.style == style && *at == stamp && last.col + last.text.chars().count() == col,
+            Some((last, at)) => {
+                !wide && !last.wide && last.style == style && *at == stamp && last.col + last.text.chars().count() == col && last.text.chars().last().map(crate::contrast::is_graphic) == Some(crate::contrast::is_graphic(c))
+            }
             None => false,
         };
         if extend {
@@ -100,6 +103,14 @@ mod tests {
         assert_eq!(runs[1], Run { col: 1, text: "語".into(), style: a, wide: true });
         assert_eq!(runs[2].col, 3);
         assert_eq!(runs[2].text, "y");
+    }
+
+    #[test]
+    fn a_run_ends_where_text_meets_a_graphics_character() {
+        let a = st(0xffffff, 0x000000);
+        let runs = build_runs("ab\u{2580}\u{2588}c".chars().map(|c| (c, a, CellKind::Normal)));
+        let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, ["ab", "\u{2580}\u{2588}", "c"]);
     }
 
     #[test]

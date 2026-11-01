@@ -189,64 +189,8 @@ fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
 }
 
-/// The contrast every terminal glyph keeps with the background it is drawn on, whatever colour
-/// the program asked for. A program can send colours meant for another ground, as RGB the
-/// palette never sees: Claude Code under its stock dark theme draws a diff's context lines near
-/// white, which vanish on a light theme's paper.
-const TEXT_MIN_CONTRAST: f64 = 4.5;
-/// The contrast a colour under `TEXT_MIN_CONTRAST` is moved to. It is wider than the floor
-/// because under an effect a band is a wash that shows lighter than its colour, and text that
-/// only just cleared the band's colour would not clear the wash.
-const TEXT_MOVED_CONTRAST: f64 = 7.0;
-
-/// `fg` as it is drawn on `bg`: itself when it has `TEXT_MIN_CONTRAST` with `bg` already, else
-/// blended toward black or white, whichever reads better on `bg`, just far enough to reach
-/// `TEXT_MOVED_CONTRAST`, or all the way when that is out of reach. The blend keeps its hue.
-fn legible(fg: Rgb, bg: Rgb) -> Rgb {
-    use crate::palette::contrast;
-    if contrast(fg, bg) >= TEXT_MIN_CONTRAST {
-        return fg;
-    }
-    let min = TEXT_MOVED_CONTRAST;
-    let (black, white) = (Rgb { r: 0, g: 0, b: 0 }, Rgb { r: 255, g: 255, b: 255 });
-    let ink = if contrast(black, bg) >= contrast(white, bg) { black } else { white };
-    let at = |t: f32| {
-        let mix = |f: u8, i: u8| (f32::from(f) + (f32::from(i) - f32::from(f)) * t).round() as u8;
-        Rgb { r: mix(fg.r, ink.r), g: mix(fg.g, ink.g), b: mix(fg.b, ink.b) }
-    };
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..12 {
-        let mid = (lo + hi) / 2.0;
-        if contrast(at(mid), bg) >= min { hi = mid } else { lo = mid }
-    }
-    at(hi)
-}
-
-/// How far faint text (SGR 2) fades toward its background.
-const DIM_FADE: f32 = 0.4;
-/// The contrast with its background faint text keeps however far it would fade, so a theme's
-/// grey that is dim already (a hint, Claude Code's status lines) stays readable.
-const DIM_MIN_CONTRAST: f64 = 3.0;
-
-/// The alpha faint text of `fg` is drawn at over `bg`: `DIM_FADE` of the way to the background,
-/// or as far as keeps `DIM_MIN_CONTRAST`; full for a colour under that contrast already.
-fn dim_alpha(fg: Rgb, bg: Rgb) -> f32 {
-    let at = |fade: f32| {
-        let mix = |f: u8, b: u8| (f32::from(f) + (f32::from(b) - f32::from(f)) * fade).round() as u8;
-        crate::palette::contrast(Rgb { r: mix(fg.r, bg.r), g: mix(fg.g, bg.g), b: mix(fg.b, bg.b) }, bg)
-    };
-    if at(DIM_FADE) >= DIM_MIN_CONTRAST {
-        return 1.0 - DIM_FADE;
-    }
-    let (mut lo, mut hi) = (0.0, DIM_FADE);
-    for _ in 0..10 {
-        let mid = (lo + hi) / 2.0;
-        if at(mid) >= DIM_MIN_CONTRAST { lo = mid } else { hi = mid }
-    }
-    1.0 - lo
-}
-
-fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
+/// The run's text as drawn, and whether the floor moved the colour the program sent.
+fn text_run(text: &str, style: &CellStyle, family: SharedString) -> (TextRun, bool) {
     let mut f = font(family);
     if style.bold {
         f.weight = FontWeight::BOLD;
@@ -254,12 +198,11 @@ fn text_run(text: &str, style: &CellStyle, family: SharedString) -> TextRun {
     if style.italic {
         f.style = gpui::FontStyle::Italic;
     }
-    let fg = legible(style.fg, style.bg);
-    let mut color = hsla(fg);
-    if style.dim {
-        color.a = dim_alpha(fg, style.bg);
-    }
-    TextRun { len: text.len(), font: f, color, background_color: None, underline: None, strikethrough: None }
+    // A run is all text or all graphics characters (`layout::build_stamped_runs`).
+    let drawn = crate::contrast::draw_char(text.chars().next().unwrap_or(' '), style.fg, style.bg, style.dim);
+    let mut color = hsla(drawn.color);
+    color.a = drawn.alpha;
+    (TextRun { len: text.len(), font: f, color, background_color: None, underline: None, strikethrough: None }, drawn.moved)
 }
 
 /// Measures the cell grid once per window scale. `W` is the widest ASCII glyph in a monospace font.
@@ -458,11 +401,12 @@ impl Element for TerminalElement {
                         continue;
                     }
                     let text: SharedString = run.text.clone().into();
-                    let line = window.text_system().shape_line(text, px(self.font_size), &[text_run(&run.text, &run.style, self.family.clone())], None);
+                    let (shown, _) = text_run(&run.text, &run.style, self.family.clone());
+                    let line = window.text_system().shape_line(text, px(self.font_size), &[shown], None);
                     let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(x, y), lh, window, cx));
                     if run.style.underline {
                         let uy = y + lh - px(2.0);
-                        window.paint_quad(fill(Bounds { origin: point(x, uy), size: size(w, px(1.0)) }, hsla(legible(run.style.fg, run.style.bg))));
+                        window.paint_quad(fill(Bounds { origin: point(x, uy), size: size(w, px(1.0)) }, hsla(crate::contrast::draw_char(run.text.chars().next().unwrap_or(' '), run.style.fg, run.style.bg, false).color)));
                     }
                 }
             };
@@ -552,7 +496,7 @@ pub fn hovered_link(spans: &[Span], bounds: Bounds<Pixels>, mouse: gpui::Point<P
 
 #[cfg(test)]
 mod tests {
-    use super::{bands, dim_alpha, frame_dt, hovered_link, legible, shown_again, split_offset, Band, DIM_FADE, DIM_MIN_CONTRAST, TEXT_MOVED_CONTRAST};
+    use super::{bands, frame_dt, hovered_link, shown_again, split_offset, Band};
     use crate::terminal::CellMetrics;
     use gpui::{point, px, size, Bounds};
 
@@ -576,61 +520,6 @@ mod tests {
         assert!(shown_again(5, 7), "the window drew once without it: its tab was hidden");
     }
 
-    #[test]
-    fn text_a_program_draws_too_close_to_its_background_is_moved_toward_ink_until_it_reads() {
-        use crate::palette::{contrast, Rgb};
-        // Claude Code's stock dark diff draws its context lines in a near white, sent as RGB, so
-        // on a light theme's paper they all but vanish.
-        let paper = Rgb { r: 0xf9, g: 0xf7, b: 0xfb };
-        let near_white = Rgb { r: 248, g: 248, b: 242 };
-        let shown = legible(near_white, paper);
-        assert!(contrast(shown, paper) >= TEXT_MOVED_CONTRAST - 0.05, "{shown:?}");
-        assert!(contrast(shown, paper) < TEXT_MOVED_CONTRAST + 0.5, "moved no further than it must: {shown:?}");
-        // Its message band is a dark grey sent as RGB, under a light theme's dark text.
-        let band = Rgb { r: 55, g: 55, b: 55 };
-        let ink = Rgb { r: 0x2d, g: 0x23, b: 0x40 };
-        let shown = legible(ink, band);
-        assert!(contrast(shown, band) >= TEXT_MOVED_CONTRAST - 0.05, "{shown:?}");
-        assert!(shown.r > ink.r && shown.g > ink.g && shown.b > ink.b, "lightened toward white on a dark band: {shown:?}");
-    }
-
-    #[test]
-    fn text_that_reads_already_keeps_its_colour_and_moved_text_keeps_its_hue() {
-        use crate::palette::Rgb;
-        let paper = Rgb { r: 0xf9, g: 0xf7, b: 0xfb };
-        let red = Rgb { r: 0xc2, g: 0x3c, b: 0x4e };
-        assert_eq!(legible(red, paper), red, "a theme colour that clears 4.5:1");
-        let pale_red = Rgb { r: 255, g: 168, b: 180 };
-        let shown = legible(pale_red, paper);
-        assert!(shown.r > shown.g && shown.r > shown.b, "still a red: {shown:?}");
-    }
-
-    #[test]
-    fn a_faint_line_in_a_colour_meant_for_another_ground_still_reads_at_three_to_one() {
-        use crate::palette::{contrast, Rgb};
-        let paper = Rgb { r: 0xf9, g: 0xf7, b: 0xfb };
-        let fg = legible(Rgb { r: 248, g: 248, b: 242 }, paper);
-        let a = dim_alpha(fg, paper);
-        let faded = |c: u8, b: u8| (f32::from(c) * a + f32::from(b) * (1.0 - a)).round() as u8;
-        let shown = Rgb { r: faded(fg.r, paper.r), g: faded(fg.g, paper.g), b: faded(fg.b, paper.b) };
-        assert!(contrast(shown, paper) >= DIM_MIN_CONTRAST - 0.05, "{shown:?}");
-    }
-
-    #[test]
-    fn faint_text_fades_toward_its_background_but_keeps_three_to_one_contrast_with_it() {
-        use crate::palette::Rgb;
-        let navy = Rgb { r: 0x0e, g: 0x17, b: 0x23 };
-        let white = Rgb { r: 0xc8, g: 0xcc, b: 0xd4 };
-        assert_eq!(dim_alpha(white, navy), 1.0 - DIM_FADE, "bright text fades the whole way");
-        let grey = Rgb { r: 0x7c, g: 0x87, b: 0x98 };
-        let a = dim_alpha(grey, navy);
-        assert!(a > 1.0 - DIM_FADE && a < 1.0, "{a}");
-        let faded = |c: u8, b: u8| (f32::from(c) * a + f32::from(b) * (1.0 - a)).round() as u8;
-        let shown = Rgb { r: faded(grey.r, navy.r), g: faded(grey.g, navy.g), b: faded(grey.b, navy.b) };
-        assert!(crate::palette::contrast(shown, navy) >= DIM_MIN_CONTRAST - 0.05, "{shown:?}");
-        let murk = Rgb { r: 0x30, g: 0x38, b: 0x44 };
-        assert_eq!(dim_alpha(murk, navy), 1.0, "a colour already under 3:1 does not fade further");
-    }
     #[test]
     fn the_hovered_link_follows_the_pointer_cell_and_the_fraction() {
         let rows: Vec<Vec<char>> = ["plain", "see https://csarko.sh now"].iter().map(|r| r.chars().collect()).collect();
