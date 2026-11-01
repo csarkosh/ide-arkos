@@ -140,7 +140,8 @@ one duration per kind: `ENTER` (150 ms, short3, standard decelerate: chrome appe
 (100 ms, short2, standard accelerate: chrome going), `SIDEBAR_SLIDE` (150 ms, short3, standard:
 Cmd+B), `THEME_FADE` (200 ms, short4, standard: a theme switch) and the highlights'
 `HIGHLIGHT_ENTER` (250 ms, medium1, standard decelerate) and `HIGHLIGHT_EXIT` (200 ms, short4,
-standard accelerate). The watercolor pen writes a line within medium4 on standard decelerate. The rules
+standard accelerate). The watercolor pen writes a line within medium4 on standard decelerate, a change in place
+crossfades over medium4, and Claude Code's spinner crossfades each frame over short1. The rules
 that keep this working as features are added:
 
 - A colour is read from `root.theme` at paint time and never cached in a view or an element

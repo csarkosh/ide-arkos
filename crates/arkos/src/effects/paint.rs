@@ -45,11 +45,12 @@ pub const PAINT_INLINE: f32 = 0.4;
 /// its timer grew a digit): more is new writing, written by the pen with nothing faded out.
 pub const PAINT_INLINE_SHARE: f32 = 0.4;
 pub const PAINT_OVERWRITE_SHARE: f32 = 0.6;
-/// The variant a working mark is doodled in (Claude Code's spinner, or a tool's blinking dot):
-/// one steady mark a pen keeps going round, instead of the frames the program flips through. The
-/// cell itself is drawn in `PAINT_HIDE`, which shows nothing, and the terminal paints the steady
-/// mark under it. A mark is doodled until `DOODLE_HOLD` seconds after it last changed, easing back
-/// to plain ink over the last part, so a dot blinking off is held and a spinner that stops settles.
+/// The variant a working mark is doodled in (a tool's blinking dot): one steady mark a pen keeps
+/// going round, instead of the dot blinking on and off. The cell itself is drawn in `PAINT_HIDE`,
+/// which shows nothing, and the terminal paints the steady mark under it. A mark is doodled until
+/// `DOODLE_HOLD` seconds after it last changed, easing back to plain ink over the last part, so a
+/// dot blinking off is held. Claude Code's spinner is no doodle: its frames are a change in place,
+/// each soaking in over the one it replaced.
 pub const PAINT_DOODLE: u32 = 18;
 pub const PAINT_HIDE: u32 = 19;
 /// The variant a cell background is washed in with: a brush sweeping across the band, left to
@@ -60,32 +61,36 @@ pub const PAINT_WASH: u32 = 20;
 pub const WASH_UP: u32 = 1;
 pub const WASH_DOWN: u32 = 2;
 pub const WASH_TIME: f32 = 0.3;
+/// The variants a spinner's frame soaks in with over the frame it replaced, and that frame fades
+/// out with: the change in place's crossfade, but over `PAINT_FLIP` (Material 3's short1), so it
+/// is done before Claude Code draws the next frame, and in the frame's own colour, never wet, as
+/// ink a frame later would only ever be wet.
+pub const PAINT_FLIP_SOAK: u32 = 24;
+pub const PAINT_FLIP_FADE: u32 = 25;
+pub const PAINT_FLIP: f32 = 0.05;
 pub const DOODLE_HOLD: f32 = 1.0;
 /// How many times a second the pen goes round a doodled mark.
 pub const DOODLE_TURNS: f32 = 0.9;
 
-/// Claude Code's spinner frames, which a doodle draws as one steady star.
+/// Claude Code's spinner frames, which crossfade one to the next (`PAINT_FLIP_SOAK`).
 const SPINNER: &[char] = &['·', '✢', '✳', '✶', '✻', '✽'];
 /// The dots a running tool blinks, which a doodle draws as one steady dot.
 const DOTS: &[char] = &['⏺', '●'];
 
-/// The steady mark a change from `was` to `now` is doodled as, if it is a working mark's: one
-/// spinner frame to another (a star), or a dot blinking on or off (a dot). Anything else, a middle
-/// dot written as text among them, is no working mark.
+/// The steady mark a change from `was` to `now` is doodled as, if it is a working mark's: a dot
+/// blinking on or off. Anything else, a spinner's frame among them, is no working mark.
 pub fn doodle_mark(was: char, now: char) -> Option<char> {
     let dot = |c: char| DOTS.contains(&c);
-    if was != now && SPINNER.contains(&was) && SPINNER.contains(&now) {
-        Some('✻')
-    } else if (dot(was) || dot(now)) && (was == ' ' || dot(was)) && (now == ' ' || dot(now)) {
+    if (dot(was) || dot(now)) && (was == ' ' || dot(was)) && (now == ' ' || dot(now)) {
         Some('⏺')
     } else {
         None
     }
 }
 
-/// Whether a cell showing `c` can carry a doodle: a working mark, or a space (a dot blinked off).
+/// Whether a cell showing `c` can carry a doodle: a blinking dot, or a space (a dot blinked off).
 pub fn holds_doodle(c: char) -> bool {
-    c == ' ' || SPINNER.contains(&c) || DOTS.contains(&c)
+    c == ' ' || DOTS.contains(&c)
 }
 /// The steps a second a stamp is counted in.
 const STEPS: f32 = PAINT_GRID * PAINT_VARIANTS as f32;
@@ -99,11 +104,15 @@ pub const PAINT_JITTER: f32 = 0.1;
 /// bead]`. Pace scales the stagger (0.7 to 1.3), glyph time scales `PAINT_DUR` (0.8 to 1.25),
 /// across is how much of the pen's path runs across a glyph rather than down it (0.5 to 0.75),
 /// and bead how strong its wet bead is (0.6 to 1.2). The soak and the fade, and the spare
-/// variants past them, have no stagger and last `PAINT_INLINE`. The shader reads the same table,
+/// variants past them, have no stagger and last `PAINT_INLINE`, and their bead says how wet they
+/// read; a spinner's frames last `PAINT_FLIP` and never read wet. The shader reads the same table,
 /// for every column but the pace.
 pub fn hand(variant: u32) -> [f32; 4] {
     if (PAINT_WASH..PAINT_WASH + 4).contains(&variant) {
         return [0.0, WASH_TIME / PAINT_DUR, 0.92, 0.6];
+    }
+    if variant == PAINT_FLIP_SOAK || variant == PAINT_FLIP_FADE {
+        return [0.0, PAINT_FLIP / PAINT_DUR, 0.62, 0.0];
     }
     if variant >= PAINT_HANDS {
         return [0.0, PAINT_INLINE / PAINT_DUR, 0.62, 1.0];
@@ -125,7 +134,7 @@ pub fn unease(u: f32) -> f32 {
 
 /// The lines that tell a glyph shader the paint's timing: `ARKOS_PAINT_DUR`, `ARKOS_PAINT_DRY`,
 /// the steps a second a stamp is counted in, the soak's,
-/// the fade's, the doodle's and the hidden variants, the doodle's timing and the table of hands,
+/// the fade's, the doodle's, the hidden, the wash's and a spinner frame's variants, the doodle's timing and the table of hands,
 /// `ARKOS_PAINT_HAND`.
 pub fn paint_lines() -> String {
     let hands: Vec<String> = (0..PAINT_VARIANTS)
@@ -135,7 +144,7 @@ pub fn paint_lines() -> String {
         })
         .collect();
     format!(
-        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
+        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant int ARKOS_PAINT_FLIP_SOAK = {PAINT_FLIP_SOAK};\nconstant int ARKOS_PAINT_FLIP_FADE = {PAINT_FLIP_FADE};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
         hands.join(", ")
     )
 }
@@ -187,7 +196,8 @@ fn run_key(chars: impl Iterator<Item = char>) -> u32 {
 /// is its own start. A run that replaced text in place (any of its cells was not a space, and the cells
 /// changed at its instant are at most `PAINT_INLINE_SHARE` of the row's characters or at least
 /// `PAINT_OVERWRITE_SHARE` of the run's cells were not spaces) is no pen:
-/// it soaks in at its instant, all at once, and the text it replaced fades out under it. A cell whose
+/// it soaks in at its instant, all at once, and the text it replaced fades out under it, over
+/// `PAINT_FLIP` if it is only a spinner turning from one frame to the next. A cell whose
 /// ink is already dry gets 0, which the shader draws as ever, as does an unchanged one. The dry
 /// instant is that of the latest-drying cell still wet, None when none is.
 pub fn row_stamps(
@@ -217,7 +227,11 @@ pub fn row_stamps(
         let over = same.iter().filter(|&&c| was_at(c) != ' ').count() as f32;
         let inline = over > 0.0 && (touched <= written * PAINT_INLINE_SHARE || over >= same.len() as f32 * PAINT_OVERWRITE_SHARE);
         // Each of the run's cells' stamps, in order.
-        let (starts, ghost, wet) = if inline {
+        let turned = same.iter().all(|&c| SPINNER.contains(&was_at(c)) && chars.get(c).is_some_and(|ch| SPINNER.contains(ch)));
+        let (starts, ghost, wet) = if inline && turned {
+            let t = clock - since;
+            (vec![encode(t, PAINT_FLIP_SOAK); same.len()], encode(t, PAINT_FLIP_FADE), PAINT_FLIP)
+        } else if inline {
             let t = clock - since;
             (vec![encode(t, PAINT_SOAK); same.len()], encode(t, PAINT_FADE), PAINT_INLINE + PAINT_DRY)
         } else {
@@ -381,6 +395,7 @@ mod tests {
         }
         let lines = paint_lines();
         assert!(lines.contains("constant float ARKOS_PAINT_STEPS = 4096.0;"), "{lines}");
+        assert!(lines.contains("constant int ARKOS_PAINT_FLIP_SOAK = 24;\nconstant int ARKOS_PAINT_FLIP_FADE = 25;"), "{lines}");
         assert!(!lines.contains("STAGGER"), "the shader adds no stagger: {lines}");
         assert_eq!(lines.matches("float4(").count(), PAINT_VARIANTS as usize);
     }
@@ -403,6 +418,29 @@ mod tests {
         assert_eq!(dry, Some(t0 + Duration::from_secs_f32(PAINT_INLINE + PAINT_DRY)));
         let later = t0 + Duration::from_secs(2);
         assert_eq!(row_stamps(&changed, &chars, &was, x, 22.0, later, &mut HashMap::new()), (vec![0.0; 7], vec![0.0; 7], None), "once dry, neither is drawn");
+    }
+
+    #[test]
+    fn a_spinner_s_frame_crossfades_over_the_one_it_replaced_within_material_s_short1_in_dry_ink() {
+        let t0 = Instant::now();
+        // Claude Code's spinner turned from one frame to the next beside its status.
+        let chars: Vec<char> = "✳ Generating".chars().collect();
+        let was: Vec<char> = "✢".chars().chain(std::iter::repeat(' ').take(11)).collect();
+        let mut changed = vec![None; 12];
+        changed[0] = Some(t0);
+        let (s, ghosts, dry) = row_stamps(&changed, &chars, &was, x, 20.0, t0, &mut HashMap::new());
+        assert_eq!((variant_of(s[0]), variant_of(ghosts[0])), (PAINT_FLIP_SOAK, PAINT_FLIP_FADE));
+        assert_eq!(PAINT_FLIP, 0.05, "Material 3's short1, done well before the next frame");
+        assert!((hand(PAINT_FLIP_SOAK)[1] * PAINT_DUR - PAINT_FLIP).abs() < 1e-6 && (hand(PAINT_FLIP_FADE)[1] * PAINT_DUR - PAINT_FLIP).abs() < 1e-6);
+        assert_eq!((hand(PAINT_FLIP_SOAK)[3], hand(PAINT_SOAK)[3]), (0.0, 1.0), "the frame reads in its own colour, never wet");
+        assert_eq!(dry, Some(t0 + Duration::from_secs_f32(PAINT_FLIP)));
+        // Text that is no spinner's still soaks in over the longer crossfade.
+        let chars: Vec<char> = "✳ Step 5".chars().collect();
+        let was: Vec<char> = "       4".chars().collect();
+        let mut changed = vec![None; 8];
+        changed[7] = Some(t0);
+        let (s, _, _) = row_stamps(&changed, &chars, &was, x, 20.0, t0, &mut HashMap::new());
+        assert_eq!(variant_of(s[7]), PAINT_SOAK);
     }
 
     #[test]
@@ -433,15 +471,15 @@ mod tests {
     }
 
     #[test]
-    fn only_a_spinner_s_frames_and_a_blinking_dot_are_doodled() {
-        assert_eq!(doodle_mark('✢', '✳'), Some('✻'), "the spinner turns");
-        assert_eq!(doodle_mark('·', '✢'), Some('✻'));
+    fn only_a_blinking_dot_is_doodled_and_a_spinner_s_frames_are_left_to_crossfade() {
+        assert_eq!(doodle_mark('✢', '✳'), None, "the spinner turns as Claude Code draws it");
+        assert_eq!(doodle_mark('·', '✢'), None);
         assert_eq!(doodle_mark('⏺', ' '), Some('⏺'), "a dot blinks off");
         assert_eq!(doodle_mark(' ', '⏺'), Some('⏺'), "and on");
         assert_eq!(doodle_mark(' ', '·'), None, "a middle dot written as text");
         assert_eq!(doodle_mark('a', '⏺'), None);
         assert_eq!(doodle_mark('✻', 'W'), None);
-        assert!(holds_doodle(' ') && holds_doodle('✽') && holds_doodle('●') && !holds_doodle('x'));
+        assert!(holds_doodle(' ') && holds_doodle('●') && !holds_doodle('✽') && !holds_doodle('x'));
     }
 
     #[test]

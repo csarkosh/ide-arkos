@@ -17,7 +17,9 @@
 // Text that replaced text in place (a counter ticking) is no pen: it soaks in over its glyph time,
 // thickest strokes first and softly, while a ghost of the text it replaced (ARKOS_PAINT_FADE,
 // drawn under it by the terminal) lifts off the paper, so the change is one smooth crossfade.
-// A working mark (Claude Code's spinner, a tool's blinking dot) is hidden (ARKOS_PAINT_HIDE) and
+// Claude Code's spinner turning a frame is the same crossfade, quicker and in dry ink
+// (ARKOS_PAINT_FLIP_SOAK and ARKOS_PAINT_FLIP_FADE).
+// A working mark (a tool's blinking dot) is hidden (ARKOS_PAINT_HIDE) and
 // one steady mark doodled under it instead (ARKOS_PAINT_DOODLE): a pen keeps going round it
 // ARKOS_DOODLE_TURNS times a second, the ink heavier where it has just been and lighter behind,
 // the mark swaying a little with the hand, easing back to plain ink as ARKOS_DOODLE_HOLD runs out.
@@ -120,8 +122,8 @@ vertex MonochromeInkVertexOutput arkos_glyph_vertex(
         : (variant >= ARKOS_PAINT_WASH && variant < ARKOS_PAINT_WASH + 4) ? 5.0
         : variant == ARKOS_PAINT_HIDE ? 4.0
         : variant == ARKOS_PAINT_DOODLE ? 3.0
-        : variant == ARKOS_PAINT_FADE ? 2.0
-        : variant == ARKOS_PAINT_SOAK ? 1.0 : 0.0,
+        : (variant == ARKOS_PAINT_FADE || variant == ARKOS_PAINT_FLIP_FADE) ? 2.0
+        : (variant == ARKOS_PAINT_SOAK || variant == ARKOS_PAINT_FLIP_SOAK) ? 1.0 : 0.0,
       // The pixel's place in the glyph's box, 0 to 1 across and down, past it in the reach.
       local / max(glyph_size, float2(1.0))};
 }
@@ -290,7 +292,9 @@ fragment float4 arkos_glyph_fragment(
     soak = progress >= 1.0 ? 0.0 : saturate((thick + 0.35 - lift * 1.35) * 3.0);
     wet = 0.0;
   } else if (input.mode > 0.5 && (progress < 1.0 || wet > 0.0)) {
-    // A change in place soaks in, thickest strokes first, with a soft edge so it eases in.
+    // A change in place soaks in, thickest strokes first, with a soft edge so it eases in. Its
+    // bead says how wet it reads: a spinner's frame, a moment old at most, never does.
+    wet *= input.paint.w;
     float seep = smoothstep(0.0, 1.0, progress);
     soak = progress >= 1.0 ? 1.0 : saturate((thick - (1.0 - seep * 1.35)) * 3.0);
     bleed = max(near, far * 0.9) * (1.0 - core) * (0.6 + 0.4 * feather) * 0.4 * wet * seep;

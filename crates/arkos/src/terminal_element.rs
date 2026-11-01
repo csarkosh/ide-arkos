@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spinner_and_a_blinking_dot_are_hidden_and_doodled_as_one_steady_mark_under_them() {
+    fn a_spinner_s_frames_crossfade_in_place_and_a_blinking_dot_is_doodled_as_one_steady_mark() {
         use super::painted_rows;
         use crate::effects::paint::{self, DOODLE_HOLD};
         use crate::layout::{CellKind, CellStyle};
@@ -709,11 +709,12 @@ mod tests {
         let t1 = t0 + Duration::from_millis(120);
         let (stamps, ghosts, dry) = painted_rows(&mut state, &grid("✳ Working", "  Read", style), false, 9, x, 5.12, t1);
         let variant = |s: f32| ((s * 4096.0).round() as i32 & 31) as u32;
-        assert_eq!(variant(stamps[0][0]), paint::PAINT_HIDE, "the frame itself is hidden");
-        assert_eq!((ghosts[0][0].0, variant(ghosts[0][0].1)), ('✻', paint::PAINT_DOODLE), "a steady star is doodled under it");
+        assert_eq!(variant(stamps[0][0]), paint::PAINT_FLIP_SOAK, "the new frame soaks in as Claude Code draws it");
+        assert_eq!((ghosts[0][0].0, variant(ghosts[0][0].1)), ('✢', paint::PAINT_FLIP_FADE), "the frame it replaced fades out under it");
+        assert!(ghosts[0][1..].iter().all(|g| g.1 == 0.0), "the rest of the row is left alone");
         assert_eq!((ghosts[1][0].0, ghosts[1][0].2), ('⏺', Some(green)), "the dot blinked off is held, in its own colour");
         assert!(dry.is_some_and(|d| d >= t1 + Duration::from_secs_f32(DOODLE_HOLD) - Duration::from_millis(1)));
-        // Once the spinner has stood still past the hold, it is drawn as it is.
+        // Once both have stood still past the crossfade and the hold, they are drawn as they are.
         let t2 = t1 + Duration::from_secs(2);
         let (stamps, ghosts, _) = painted_rows(&mut state, &grid("✳ Working", "  Read", style), false, 9, x, 7.12, t2);
         assert!(stamps.iter().all(Vec::is_empty) && ghosts.iter().all(Vec::is_empty), "{stamps:?}");

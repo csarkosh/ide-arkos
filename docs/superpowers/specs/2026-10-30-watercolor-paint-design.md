@@ -105,7 +105,7 @@ Cyrus asked for four more things, built on the branch `paint-rows`:
   the lowest on screen first among rows changed at one instant, as the decode scrambles only its
   newest few. Older text shows as written.
 - **Working marks are doodled.** Claude Code's spinner frames (`· ✢ ✳ ✶ ✻ ✽`) and a tool's
-  blinking dot (`⏺`, `●`) flip in place. The decode remembers a cell that flipped as one
+  blinking dot (`⏺`, `●`) flip in place (the spinner no longer: see below). The decode remembers a cell that flipped as one
   (`paint::doodle_mark`, with its style and when), and for `DOODLE_HOLD` (1 s) after the last flip
   the cell is drawn as nothing (`PAINT_HIDE`) while a steady mark is doodled under it
   (`PAINT_DOODLE`): a pen goes round it `DOODLE_TURNS` (0.9) times a second, the ink heavier where
@@ -122,3 +122,15 @@ Cyrus asked for four more things, built on the branch `paint-rows`:
   row is written, sweeps it in behind a ragged brush front over `WASH_TIME` (0.3 s), drying a shade
   lighter. A run that mostly overwrote text (`PAINT_OVERWRITE_SHARE`) now crossfades too.
 
+## After 0.8.6 (2026-11-01)
+
+Cyrus did not like the doodled spinner (one steady star with a pen going round it) and asked for
+Claude Code's own frames with the change in place's crossfade, and then for it faster. The spinner
+is no working mark any more (`paint::doodle_mark` knows only the blinking dots): each frame is a
+change in place, soaking in while the frame it replaced lifts off under it. Claude Code draws a
+frame about every 120 ms, so `PAINT_INLINE`'s 400 ms would always show two frames at once and drop
+the older one with a jump. A run that is only a spinner turning crossfades in its own two variants
+(`PAINT_FLIP_SOAK`, `PAINT_FLIP_FADE`) over `PAINT_FLIP` (50 ms, Material 3's short1), and in the
+frame's own colour: the shader reads a change in place's wetness from its hand's bead column, 0
+for these, since a spinner re-wetted every frame would never read as Claude Code's colour. A
+tool's blinking dot is still held and doodled.
