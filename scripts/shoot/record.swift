@@ -9,7 +9,7 @@
 // Capture and encoding are kept apart, since a GitHub macOS runner has no video encoder of its
 // own and its software encoder cannot keep up with live frames: while it records, each frame
 // ScreenCaptureKit delivers (one only when the window changes) is LZ4-compressed and appended
-// to a scratch file beside the output with its time; afterwards the frames are replayed at a
+// to a scratch file in the temporary folder with its time; afterwards the frames are replayed at a
 // constant `fps` (the latest frame at each tick) into ffmpeg, which encodes them in software:
 // x264's ultrafast preset at a low CRF, a near-transparent intermediate that a runner's cores
 // manage at a Retina window's size (loop.py encodes the loop properly from it).
@@ -47,7 +47,10 @@ guard positional.count == 2, let windowId = UInt32(positional[0]) else {
     fail("usage: record <window id> <out.mp4> [--fps 30] [--max-secs 120]")
 }
 let outPath = positional[1]
-let scratchPath = outPath + ".frames"
+// The scratch file goes in the temporary folder, not beside the output: a recording ended
+// before it encoded would otherwise leave gigabytes of frames among the pictures (and in the
+// workflow's artifact).
+let scratchPath = NSTemporaryDirectory() + "arkos-shoot-record-\(getpid()).frames"
 try? FileManager.default.removeItem(atPath: outPath)
 try? FileManager.default.removeItem(atPath: scratchPath)
 

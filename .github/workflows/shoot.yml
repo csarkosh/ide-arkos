@@ -89,4 +89,5 @@ jobs:
             docs/images/*.mp4
             docs/images/*.jpg
             docs/images/progress/**
+            !docs/images/progress/**/*.frames
           if-no-files-found: warn
