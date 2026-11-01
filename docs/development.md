@@ -133,16 +133,14 @@ fast and responsive: motion starts at once, settles gently, and is over before a
   and nothing animates.
 
 A change that adds or alters motion names the token for each duration and curve in its doc
-comment, as `HIGHLIGHT_ENTER` and `HIGHLIGHT_EXIT` do. Motion that predates this rule and is not
-yet on a token: the durations `ENTER` (120 ms) and `EXIT` (90 ms); the quadratic curves of
-`motion::enter_progress`, `motion::exit_progress` and the sidebar's `ease_in`; the smoothstep of
-`motion::fade_progress`; and the watercolor pen's own quadratic ease (`paint::PAINT_EASE`). Bring
-each onto a token when it is next touched.
+comment, as `motion.rs` does for each of its own.
 
 Every transition in the window goes through `crates/arkos/src/motion.rs`, on `Instant`, with
-one duration per kind: `ENTER` (120 ms, chrome appearing), `EXIT` (90 ms, chrome going),
-`SIDEBAR_SLIDE` (150 ms, Cmd+B, short3), `THEME_FADE` (200 ms, a theme switch, short4) and the
-highlights' `HIGHLIGHT_ENTER` (250 ms, medium1) and `HIGHLIGHT_EXIT` (200 ms, short4). The rules
+one duration per kind: `ENTER` (150 ms, short3, standard decelerate: chrome appearing), `EXIT`
+(100 ms, short2, standard accelerate: chrome going), `SIDEBAR_SLIDE` (150 ms, short3, standard:
+Cmd+B), `THEME_FADE` (200 ms, short4, standard: a theme switch) and the highlights'
+`HIGHLIGHT_ENTER` (250 ms, medium1, standard decelerate) and `HIGHLIGHT_EXIT` (200 ms, short4,
+standard accelerate). The watercolor pen writes a line within medium4 on standard decelerate. The rules
 that keep this working as features are added:
 
 - A colour is read from `root.theme` at paint time and never cached in a view or an element

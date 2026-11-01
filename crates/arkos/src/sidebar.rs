@@ -796,6 +796,7 @@ pub fn keeps_tree_focus(cmd: &keymap::Command) -> bool {
 }
 
 pub const SHIMMER_PERIOD: Duration = Duration::from_millis(1500);
+/// How long a changed row takes to fade in: Material 3's short3.
 pub const EASE_IN: Duration = Duration::from_millis(150);
 
 /// Where the shimmer's band is, 0 to 1 across the row, sweeping once per period.
@@ -803,10 +804,11 @@ pub fn shimmer_phase(elapsed: Duration) -> f32 {
     (elapsed.as_secs_f32() % SHIMMER_PERIOD.as_secs_f32()) / SHIMMER_PERIOD.as_secs_f32()
 }
 
-/// Opacity of a changed row `elapsed` after its worktree's changes landed: ease-out to 1.
+/// Opacity of a changed row `elapsed` after its worktree's changes landed: to 1 on Material 3's
+/// standard decelerate curve, as it enters.
 pub fn ease_in(elapsed: Duration) -> f32 {
     let t = (elapsed.as_secs_f32() / EASE_IN.as_secs_f32()).clamp(0.0, 1.0);
-    1.0 - (1.0 - t) * (1.0 - t)
+    if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { crate::motion::cubic_bezier(crate::motion::STANDARD_DECELERATE, t) }
 }
 
 /// The keyboard's row after the rows changed: still on a row, or none when there are none.
@@ -1896,7 +1898,7 @@ mod tests {
         assert_eq!(ease_in(EASE_IN), 1.0);
         assert_eq!(ease_in(EASE_IN * 3), 1.0, "settled");
         let mid = ease_in(EASE_IN / 2);
-        assert!(mid > 0.5 && mid < 1.0, "ease-out: past half way at half time");
+        assert!((mid - crate::motion::cubic_bezier(crate::motion::STANDARD_DECELERATE, 0.5)).abs() < 1e-6, "Material's standard decelerate: {mid}");
     }
 
     #[test]

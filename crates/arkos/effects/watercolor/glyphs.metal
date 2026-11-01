@@ -11,8 +11,8 @@
 // effects/paint.rs) is written in the hand the stamp names (its steps of 1/ARKOS_PAINT_STEPS,
 // an entry of ARKOS_PAINT_HAND), so the lines of one output differ. It starts at the stamp, which
 // the terminal works out for each glyph, and a pen crosses it over ARKOS_PAINT_DUR times the
-// hand's glyph time, quick at first and settling at the end (ARKOS_PAINT_EASE, the same curve
-// the terminal paces a line with), left to right and down each stroke as a hand writes (how much
+// hand's glyph time, quick at first and settling at the end (Material 3's standard decelerate
+// curve, the one the terminal paces a line with), left to right and down each stroke as a hand writes (how much
 // across is the hand's too), with a crisp edge and a wet bead just behind it.
 // Text that replaced text in place (a counter ticking) is no pen: it soaks in over its glyph time,
 // thickest strokes first and softly, while a ghost of the text it replaced (ARKOS_PAINT_FADE,
@@ -296,7 +296,9 @@ fragment float4 arkos_glyph_fragment(
     bleed = max(near, far * 0.9) * (1.0 - core) * (0.6 + 0.4 * feather) * 0.4 * wet * seep;
   } else if (progress < 1.0 || wet > 0.0) {
     float path = dot(saturate(input.box), float2(input.paint.z, 1.0 - input.paint.z)) + (feather - 0.5) * 0.06;
-    float eased = progress + ARKOS_PAINT_EASE * progress * (1.0 - progress);
+    // Material 3's standard decelerate curve (0, 0, 0, 1): x = s^3 and y the smoothstep of s.
+    float s = pow(progress, 1.0 / 3.0);
+    float eased = s * s * (3.0 - 2.0 * s);
     float behind = eased * (1.0 + PEN_EDGE + PEN_BEAD) - path;
     soak = progress >= 1.0 ? 1.0 : saturate(behind / PEN_EDGE);
     bead = progress >= 1.0 ? 0.0 : saturate(soak * saturate(1.0 - (behind - PEN_EDGE) / PEN_BEAD) * input.paint.w);

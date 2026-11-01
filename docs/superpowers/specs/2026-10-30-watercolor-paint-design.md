@@ -8,7 +8,9 @@ differ (2026-10-31): each run is written in a hand of its own, and lines cascade
 counter ticking in place (`Step N`) jarring (2026-10-31): a change in place now crossfades. Liking
 how smooth it is but finding it a little long, he asked for the pen twice as fast, still left to
 right (2026-10-31): each glyph and each cell's start halved. Asked whether Material Design has a
-timing rule, he had a line capped at 400 ms and its pace eased (2026-10-31). Watercolor's counterpart
+timing rule, he had a line capped at 400 ms and its pace eased (2026-10-31), and then every
+animation in Arkos brought onto Material's tokens, the pen's ease becoming Material's standard
+decelerate curve (2026-10-31). Watercolor's counterpart
 to runic's decode. It works GPU first: the CPU stamps a changed cell once, the glyph shader
 paints it, and the frames while ink is wet re-present the last scene instead of redrawing views.
 
@@ -45,9 +47,10 @@ is, and its pace is eased:
   before, on average. A run long enough to take longer than `PAINT_LINE` less `PAINT_DUR` at that
   pace (about 30 cells) has its starts drawn closer together to fit, so its last glyph starts
   0.36 s in.
-- Along the run the starts follow the inverse of `ease(t) = t + PAINT_EASE t (1 - t)`
-  (`PAINT_EASE` 0.6): the pen sets off at 1.6 times its average pace and settles to 0.4 times it
-  by the end. Each glyph's stroke is eased with the same curve in the shader.
+- Along the run the starts follow Material 3's standard decelerate curve `(0, 0, 0, 1)`
+  (`paint::unease`, its inverse in closed form, since the curve is x = s^3 and y the smoothstep
+  of s): half the letters have started an eighth of the way in, and the end of the line settles.
+  Each glyph's stroke is eased with the same curve in the shader.
 
 What does not paint, as with runic's decode: the echo of the user's own typing, paste or scroll
 (`USER_QUIET_MS`), a cell that became a space, the row above the screen, a resize or scroll that
@@ -78,8 +81,8 @@ Motion is on. Emoji are not stamped and appear as they do today.
 ## 3. The GPU's part
 
 `watercolor/glyphs.metal` reads `sprite.stamp`: zero draws as today. Otherwise the stamp is the
-glyph's start; from the glyph clock it works out the progress (0 to 1 over the stroke, eased by
-`ARKOS_PAINT_EASE`) and the wetness (1 to 0 over the drying), and
+glyph's start; from the glyph clock it works out the progress (0 to 1 over the stroke, eased on
+Material's standard decelerate curve) and the wetness (1 to 0 over the drying), and
 from the stroke's own samples (the core and its two rings, which the shader already takes) how
 thick the ink is at this pixel, so thick parts show first. A stamp older than a minute, the
 clock's wrap among them, is dry.

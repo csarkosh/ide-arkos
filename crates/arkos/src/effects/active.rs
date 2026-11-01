@@ -453,17 +453,9 @@ pub fn start<I: Installer>(effect: Effect, installer: &mut I, now: Instant, cut:
 /// When a fade towards `amount` (0 to 1 along its way) must have started for it to be there at
 /// `now`, so a fade reversed midway continues from what is on screen.
 fn since_for(now: Instant, amount: f32) -> Instant {
-    // The fade's curve is smoothstep: find where it reaches `amount` by halving.
-    let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    for _ in 0..24 {
-        let mid = (lo + hi) / 2.0;
-        if mid * mid * (3.0 - 2.0 * mid) < amount {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    now.checked_sub(motion::THEME_FADE.mul_f32(lo)).unwrap_or(now)
+    // The fade's curve is Material's standard one (`motion::fade_progress`).
+    let t = motion::cubic_bezier_inverse(motion::STANDARD, amount);
+    now.checked_sub(motion::THEME_FADE.mul_f32(t)).unwrap_or(now)
 }
 
 impl<L> ActiveEffect<L> {
@@ -655,7 +647,7 @@ mod tests {
         let navy = Rgb { r: 0x3a, g: 0x7b, b: 0xd5 };
         let accent = "constant float3 ARKOS_ACCENT = float3(0.227451, 0.482353, 0.835294);";
         let paint = crate::effects::paint::paint_lines();
-        assert!(paint.starts_with("constant float ARKOS_PAINT_DUR = 0.04;\nconstant float ARKOS_PAINT_DRY = 0.8;\nconstant float ARKOS_PAINT_EASE = 0.6;\n"), "{paint}");
+        assert!(paint.starts_with("constant float ARKOS_PAINT_DUR = 0.04;\nconstant float ARKOS_PAINT_DRY = 0.8;\nconstant float ARKOS_PAINT_STEPS = 4096.0;\n"), "{paint}");
         let header = format!("constant float ARKOS_SCALE = 2.00;\nconstant float ARKOS_CALM_ALPHA = 0.995;\n{accent}\nconstant bool ARKOS_LIGHT_GROUND = false;\n{paint}");
         let retina = glyph_shader_for(WindowKind::Project, Some(&e), 2.0, navy, false).unwrap();
         assert_eq!(retina.source, format!("{header}\n{glyphs}"));
@@ -780,7 +772,7 @@ mod tests {
         e.fade = Some((t0, Direction::In));
         let mid = t0 + THEME_FADE / 4;
         let before = e.amount(mid);
-        assert!(before > 0.0 && before < 0.5, "{before}");
+        assert!(before > 0.0 && before < 1.0, "{before}");
         e.leave(mid);
         assert!((e.amount(mid) - before).abs() < 0.01, "{} then {before}", e.amount(mid));
         e.come_back(mid);

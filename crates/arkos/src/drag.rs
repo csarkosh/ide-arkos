@@ -214,7 +214,7 @@ impl Tint {
         let to = zone_rect(*zone, w, h);
         let rect = match (self.fade.value(), self.glide) {
             (None, _) => self.last.unwrap_or(to),
-            (Some(_), Some((from, since))) => lerp_rect(from, to, motion::enter_progress(since, now, motion::ENTER)),
+            (Some(_), Some((from, since))) => lerp_rect(from, to, motion::move_progress(since, now, motion::ENTER)),
             (Some(_), None) => to,
         };
         self.last = Some(rect);
@@ -222,7 +222,7 @@ impl Tint {
     }
 
     pub fn animating(&self, now: Instant) -> bool {
-        self.fade.animating(now) || (self.fade.value().is_some() && self.glide.is_some_and(|(_, since)| motion::enter_progress(since, now, motion::ENTER) < 1.0))
+        self.fade.animating(now) || (self.fade.value().is_some() && self.glide.is_some_and(|(_, since)| motion::move_progress(since, now, motion::ENTER) < 1.0))
     }
 }
 
@@ -281,13 +281,14 @@ mod tests {
         let t1 = t0 + motion::ENTER;
         assert_eq!(t.paint(w, h, t1), Some(((0.0, 0.0, 400.0, 200.0), 1.0)));
         assert!(!t.animating(t1));
-        // To the right half: from the painted rectangle, three quarters there at half time.
+        // To the right half: from the painted rectangle, on Material's standard curve, most of the
+        // way there at half time.
         t.aim(Some(Zone::Right), t1);
         assert!(t.animating(t1));
         assert_eq!(t.paint(w, h, t1).unwrap().0, (0.0, 0.0, 400.0, 200.0));
         let (r, o) = t.paint(w, h, t1 + motion::ENTER / 2).unwrap();
         assert_eq!(o, 1.0, "the opacity stays up while it glides");
-        assert!((r.0 - 150.0).abs() < 0.5 && (r.2 - 250.0).abs() < 0.5, "{r:?}");
+        assert!((r.0 - 175.57).abs() < 0.5 && (r.2 - 224.43).abs() < 0.5, "{r:?}");
         let t2 = t1 + motion::ENTER;
         assert_eq!(t.paint(w, h, t2).unwrap().0, (200.0, 0.0, 200.0, 200.0));
         // A drop: it fades where it was, even though the pane under it changed size.

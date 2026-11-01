@@ -15,14 +15,11 @@ pub const PAINT_DRY: f32 = 0.8;
 /// a cell of the default terminal's 9.6 point wide cells, on average along a line short enough
 /// to be written within `PAINT_LINE`.
 pub const PAINT_STAGGER_PER_PT: f32 = 0.011 / 9.6;
-/// How long a run of new text takes to be written however long it is, in seconds, as Material's
-/// motion keeps a large transition near 400 ms: a longer one starts its cells closer together, so
-/// its last starts `PAINT_DUR` before this.
+/// How long a run of new text takes to be written however long it is, in seconds: Material 3's
+/// medium4. A longer one starts its cells closer together, so its last starts `PAINT_DUR` before
+/// this. Along the line the pen follows Material 3's standard decelerate curve, as text enters
+/// (`unease`), and so does each glyph's stroke in the shader, so text shows at once and settles.
 pub const PAINT_LINE: f32 = 0.4;
-/// How strongly the pen eases, along a line and across each glyph: it starts at 1 + `PAINT_EASE`
-/// times its average speed and settles to 1 - `PAINT_EASE` times it by the end (`ease`), so text
-/// shows at once and comes to rest rather than stopping.
-pub const PAINT_EASE: f32 = 0.6;
 /// How many rows the pen writes at a time, as the decode scrambles only its newest few
 /// (`decode::DECODE_ROWS`): the rows changed most recently, the lowest on screen first among rows
 /// changed at one instant. Older text shows as written, so a screenful of output does not all
@@ -118,22 +115,16 @@ pub fn hand(variant: u32) -> [f32; 4] {
 /// The longest glyph time any hand has, which the dry instant allows for.
 const GLYPH_TIME_MAX: f32 = 1.25;
 
-/// How far along the pen is (0 to 1) at `t` of its time (0 to 1): ahead of an even pace, quick at
-/// first and settling at the end. The shader eases each glyph's stroke with the same curve, and
-/// the terminal paces a line with its inverse, `unease`, so only the tests call it.
-#[cfg(test)]
-fn ease(t: f32) -> f32 {
-    t + PAINT_EASE * t * (1.0 - t)
-}
-
-/// When (0 to 1 of its time) the pen reaches `u` (0 to 1) of its way: the inverse of `ease`.
+/// When (0 to 1 of its time) the pen reaches `u` (0 to 1) of its way along a line, on Material 3's
+/// standard decelerate curve `(0, 0, 0, 1)`. That curve is x = s^3, y = 3s^2 - 2s^3 for s from 0
+/// to 1, so y is the smoothstep of s, whose inverse has a closed form.
 pub fn unease(u: f32) -> f32 {
-    let b = 1.0 + PAINT_EASE;
-    ((b - (b * b - 4.0 * PAINT_EASE * u).max(0.0).sqrt()) / (2.0 * PAINT_EASE)).clamp(0.0, 1.0)
+    let s = 0.5 - ((1.0 - 2.0 * u.clamp(0.0, 1.0)).asin() / 3.0).sin();
+    (s * s * s).clamp(0.0, 1.0)
 }
 
 /// The lines that tell a glyph shader the paint's timing: `ARKOS_PAINT_DUR`, `ARKOS_PAINT_DRY`,
-/// `ARKOS_PAINT_EASE`, the steps a second a stamp is counted in, the soak's,
+/// the steps a second a stamp is counted in, the soak's,
 /// the fade's, the doodle's and the hidden variants, the doodle's timing and the table of hands,
 /// `ARKOS_PAINT_HAND`.
 pub fn paint_lines() -> String {
@@ -144,7 +135,7 @@ pub fn paint_lines() -> String {
         })
         .collect();
     format!(
-        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_EASE = {PAINT_EASE};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
+        "constant float ARKOS_PAINT_DUR = {PAINT_DUR};\nconstant float ARKOS_PAINT_DRY = {PAINT_DRY};\nconstant float ARKOS_PAINT_STEPS = {STEPS:.1};\nconstant int ARKOS_PAINT_VARIANTS = {PAINT_VARIANTS};\nconstant int ARKOS_PAINT_SOAK = {PAINT_SOAK};\nconstant int ARKOS_PAINT_FADE = {PAINT_FADE};\nconstant int ARKOS_PAINT_DOODLE = {PAINT_DOODLE};\nconstant int ARKOS_PAINT_HIDE = {PAINT_HIDE};\nconstant int ARKOS_PAINT_WASH = {PAINT_WASH};\nconstant float ARKOS_DOODLE_HOLD = {DOODLE_HOLD:.2};\nconstant float ARKOS_DOODLE_TURNS = {DOODLE_TURNS:.2};\nconstant float4 ARKOS_PAINT_HAND[{PAINT_VARIANTS}] = {{{}}};",
         hands.join(", ")
     )
 }
@@ -191,7 +182,8 @@ fn run_key(chars: impl Iterator<Item = char>) -> u32 {
 /// of each instant the rows above have had. Cells changed at one instant are a run, written in a
 /// hand picked by their characters: the first starts at the instant on the glyph clock plus the
 /// run's place in the cascade, and each after it a little later, at the hand's pace along the
-/// line but eased (`unease`), and within `PAINT_LINE` however long the run is. Each cell's stamp
+/// line but on Material's standard decelerate curve (`unease`), and within `PAINT_LINE` however
+/// long the run is. Each cell's stamp
 /// is its own start. A run that replaced text in place (any of its cells was not a space, and the cells
 /// changed at its instant are at most `PAINT_INLINE_SHARE` of the row's characters or at least
 /// `PAINT_OVERWRITE_SHARE` of the run's cells were not spaces) is no pen:
@@ -340,12 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn the_ease_runs_from_0_to_1_and_its_inverse_undoes_it() {
-        assert_eq!((ease(0.0), ease(1.0)), (0.0, 1.0));
+    fn the_pen_paces_a_line_on_material_s_standard_decelerate_curve() {
+        use crate::motion::{cubic_bezier, STANDARD_DECELERATE};
         for u in [0.0, 0.1, 0.37, 0.5, 0.9, 1.0] {
-            assert!((ease(unease(u)) - u).abs() < 1e-5, "{u}");
+            assert!((cubic_bezier(STANDARD_DECELERATE, unease(u)) - u).abs() < 1e-4, "{u}");
         }
-        assert!(ease(0.25) > 0.25 && ease(0.75) > 0.75, "ahead of linear all the way");
     }
 
     #[test]
@@ -390,7 +381,7 @@ mod tests {
         }
         let lines = paint_lines();
         assert!(lines.contains("constant float ARKOS_PAINT_STEPS = 4096.0;"), "{lines}");
-        assert!(lines.contains("constant float ARKOS_PAINT_EASE = 0.6;") && !lines.contains("STAGGER"), "the shader eases each glyph and adds no stagger: {lines}");
+        assert!(!lines.contains("STAGGER"), "the shader adds no stagger: {lines}");
         assert_eq!(lines.matches("float4(").count(), PAINT_VARIANTS as usize);
     }
 

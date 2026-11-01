@@ -31,13 +31,17 @@ pub fn parse_reduce_motion(stdout: &str) -> bool {
     stdout.trim() == "1"
 }
 
-/// How long chrome takes to appear (menus, the palette, notices, find bars, the drop preview).
-pub const ENTER: Duration = Duration::from_millis(120);
-/// How long it takes to go: a little quicker than it came.
-pub const EXIT: Duration = Duration::from_millis(90);
-/// How long Cmd+B takes to slide the sidebar in or out.
+/// How long chrome takes to appear (menus, the palette, notices, find bars, the drop preview):
+/// Material 3's short3, eased with `STANDARD_DECELERATE`.
+pub const ENTER: Duration = Duration::from_millis(150);
+/// How long it takes to go: Material 3's short2, a step quicker than it came, eased with
+/// `STANDARD_ACCELERATE`.
+pub const EXIT: Duration = Duration::from_millis(100);
+/// How long Cmd+B takes to slide the sidebar in or out: Material 3's short3, eased with `STANDARD`,
+/// as the pane edge it moves stays on screen.
 pub const SIDEBAR_SLIDE: Duration = Duration::from_millis(150);
-/// How long a theme switch takes to cross-fade the window from the old colours to the new.
+/// How long a theme switch takes to cross-fade the window from the old colours to the new:
+/// Material 3's short4, eased with `STANDARD`.
 pub const THEME_FADE: Duration = Duration::from_millis(200);
 
 /// How long a highlight (a row or a tab under the pointer, a selection) takes to appear: Material
@@ -47,6 +51,8 @@ pub const HIGHLIGHT_ENTER: Duration = Duration::from_millis(250);
 /// eased with `STANDARD_ACCELERATE`. Shorter than the entrance, as leaving asks less attention.
 pub const HIGHLIGHT_EXIT: Duration = Duration::from_millis(200);
 
+/// Material 3's standard curve, for something that changes or moves and stays on screen.
+pub const STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 /// Material 3's standard decelerate curve (fast, then settling), for things entering.
 pub const STANDARD_DECELERATE: (f32, f32, f32, f32) = (0.0, 0.0, 0.0, 1.0);
 /// Material 3's standard accelerate curve (slow, then gone), for things leaving.
@@ -67,6 +73,27 @@ pub fn cubic_bezier((x1, y1, x2, y2): (f32, f32, f32, f32), t: f32) -> f32 {
         }
     }
     at(y1, y2, (lo + hi) * 0.5)
+}
+
+/// When (0 to 1) the easing `curve` reaches `y` (0 to 1): the inverse of `cubic_bezier`, found by
+/// bisection, as the curve always rises. For resuming a transition from what is on screen.
+pub fn cubic_bezier_inverse(curve: (f32, f32, f32, f32), y: f32) -> f32 {
+    let y = y.clamp(0.0, 1.0);
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..30 {
+        let mid = (lo + hi) * 0.5;
+        if cubic_bezier(curve, mid) < y {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) * 0.5
+}
+
+/// `curve` at `t`, exactly 0 before the start and 1 at the end.
+fn eased(curve: (f32, f32, f32, f32), t: f32) -> f32 {
+    if t >= 1.0 { 1.0 } else if t <= 0.0 { 0.0 } else { cubic_bezier(curve, t) }
 }
 
 /// A highlight appearing: 0 to 1 over `HIGHLIGHT_ENTER` from `since`. 1 at once under Reduce
@@ -96,33 +123,37 @@ fn fraction(since: Instant, now: Instant, dur: Duration) -> f32 {
     (now.saturating_duration_since(since).as_secs_f32() / dur.as_secs_f32()).clamp(0.0, 1.0)
 }
 
-/// 0 to 1 over `dur` from `since`, easing out (fast, then settling). 1 at once under Reduce Motion.
+/// 0 to 1 over `dur` from `since` on `STANDARD_DECELERATE` (fast, then settling). 1 at once under
+/// Reduce Motion.
 pub fn enter_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
     if reduce_motion() {
         return 1.0;
     }
-    let t = fraction(since, now, dur);
-    1.0 - (1.0 - t) * (1.0 - t)
+    eased(STANDARD_DECELERATE, fraction(since, now, dur))
 }
 
-/// 1 to 0 over `dur` from `since`, easing in (slow, then gone). 0 at once under Reduce Motion.
+/// 1 to 0 over `dur` from `since` on `STANDARD_ACCELERATE` (slow, then gone). 0 at once under
+/// Reduce Motion.
 pub fn exit_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
     if reduce_motion() {
         return 0.0;
     }
-    let t = fraction(since, now, dur);
-    (1.0 - t) * (1.0 - t)
+    1.0 - eased(STANDARD_ACCELERATE, fraction(since, now, dur))
 }
 
-/// 0 to 1 over `dur` from `since`, easing in and out (the smoothstep curve: slow to start and to
-/// settle), for a cross-fade between two states that are both at rest. 1 at once under Reduce
-/// Motion.
+/// 0 to 1 over `dur` from `since` on `STANDARD`, for a cross-fade between two states that are both
+/// on screen. 1 at once under Reduce Motion.
 pub fn fade_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
+    move_progress(since, now, dur)
+}
+
+/// 0 to 1 over `dur` from `since` on `STANDARD`, for something moving from one place on screen to
+/// another. 1 at once under Reduce Motion.
+pub fn move_progress(since: Instant, now: Instant, dur: Duration) -> f32 {
     if reduce_motion() {
         return 1.0;
     }
-    let t = fraction(since, now, dur);
-    t * t * (3.0 - 2.0 * t)
+    eased(STANDARD, fraction(since, now, dur))
 }
 
 /// How far above its resting place a menu starts as it enters, and a panel (the palette, a find
@@ -173,14 +204,14 @@ impl<T> Transient<T> {
             (Transient::Showing { since, .. }, Some(value)) => Transient::Showing { value, since },
             (Transient::Hiding { since, .. }, Some(value)) => {
                 let o = exit_progress(since, now, EXIT);
-                // The enter's progress p = 1 - (1 - t)^2 equals the opacity at t = 1 - sqrt(1 - o).
-                let t = 1.0 - (1.0 - o).max(0.0).sqrt();
+                // The enter's progress equals the opacity on screen where its curve reaches it.
+                let t = cubic_bezier_inverse(STANDARD_DECELERATE, o);
                 Transient::Showing { value, since: back(now, ENTER.mul_f32(t)) }
             }
             (Transient::Showing { value, since }, None) => {
                 let p = enter_progress(since, now, ENTER);
-                // The exit's opacity (1 - t)^2 equals p at t = 1 - sqrt(p).
-                let t = 1.0 - p.max(0.0).sqrt();
+                // The exit's opacity, 1 less its curve, equals p where the curve reaches 1 - p.
+                let t = cubic_bezier_inverse(STANDARD_ACCELERATE, 1.0 - p);
                 Transient::Hiding { value, since: back(now, EXIT.mul_f32(t)) }
             }
             (state, None) => state,
@@ -316,9 +347,9 @@ impl Slide {
         Slide { from, to, since }
     }
 
-    /// Where the slide is at `now`; `to` at once under Reduce Motion.
+    /// Where the slide is at `now`, on `STANDARD`; `to` at once under Reduce Motion.
     pub fn at(&self, now: Instant) -> f32 {
-        let p = enter_progress(self.since, now, SIDEBAR_SLIDE);
+        let p = if reduce_motion() { 1.0 } else { eased(STANDARD, fraction(self.since, now, SIDEBAR_SLIDE)) };
         if p >= 1.0 {
             return self.to;
         }
@@ -367,24 +398,25 @@ mod tests {
         let _g = test_lock(false);
         let t0 = Instant::now();
         assert_eq!(enter_progress(t0, t0, ENTER), 0.0);
-        assert!(close(enter_progress(t0, t0 + ENTER / 2, ENTER), 0.75), "ease-out: three quarters at half time");
+        assert!(close(enter_progress(t0, t0 + ENTER / 2, ENTER), 0.88988), "standard decelerate: nearly there at half time");
         assert_eq!(enter_progress(t0, t0 + ENTER, ENTER), 1.0);
         assert_eq!(enter_progress(t0, t0 + ENTER * 4, ENTER), 1.0, "settled");
         assert_eq!(exit_progress(t0, t0, EXIT), 1.0);
-        assert!(close(exit_progress(t0, t0 + EXIT / 2, EXIT), 0.25), "ease-in: a quarter left at half time");
+        assert!(close(exit_progress(t0, t0 + EXIT / 2, EXIT), 0.62797), "standard accelerate: most still there at half time");
         assert_eq!(exit_progress(t0, t0 + EXIT, EXIT), 0.0);
         assert_eq!(exit_progress(t0, t0 + EXIT * 4, EXIT), 0.0);
         assert_eq!(enter_progress(t0 + MS(5), t0, ENTER), 0.0, "an instant from the future never panics");
+        assert_eq!((ENTER, EXIT), (MS(150), MS(100)), "Material's short3 and short2");
     }
 
     #[test]
-    fn the_theme_fade_eases_in_and_out() {
+    fn the_theme_fade_follows_material_s_standard_curve() {
         let _g = test_lock(false);
         let t0 = Instant::now();
         assert_eq!(fade_progress(t0, t0, THEME_FADE), 0.0);
-        assert!(close(fade_progress(t0, t0 + THEME_FADE / 4, THEME_FADE), 0.15625), "slow to start");
-        assert!(close(fade_progress(t0, t0 + THEME_FADE / 2, THEME_FADE), 0.5), "half way at half time");
-        assert!(close(fade_progress(t0, t0 + THEME_FADE * 3 / 4, THEME_FADE), 0.84375), "slow to settle");
+        assert!(close(fade_progress(t0, t0 + THEME_FADE / 4, THEME_FADE), 0.60722), "quick to start");
+        assert!(close(fade_progress(t0, t0 + THEME_FADE / 2, THEME_FADE), 0.87783));
+        assert!(close(fade_progress(t0, t0 + THEME_FADE * 3 / 4, THEME_FADE), 0.97548), "gentle to settle");
         assert_eq!(fade_progress(t0, t0 + THEME_FADE, THEME_FADE), 1.0);
         assert_eq!(fade_progress(t0, t0 + THEME_FADE * 4, THEME_FADE), 1.0, "settled");
         assert_eq!(fade_progress(t0 + MS(5), t0, THEME_FADE), 0.0, "an instant from the future never panics");
@@ -412,7 +444,7 @@ mod tests {
         assert_eq!(h.current(t1), Some((&8, 1.0)), "the last value stays mounted while it fades");
         assert!(h.animating(t1 + EXIT / 2));
         assert!(!h.hide(t1 + MS(1)), "a fading value is not hidden twice");
-        assert!(close(h.current(t1 + EXIT / 2).unwrap().1, 0.25));
+        assert!(close(h.current(t1 + EXIT / 2).unwrap().1, 0.62797));
         assert!(h.current(t1 + EXIT).is_none(), "gone once the exit finished");
         assert!(!h.animating(t1 + EXIT));
         h.settle(t1 + EXIT);
@@ -439,7 +471,7 @@ mod tests {
         let mut g = Transient::default();
         g.set(Some(1), t0);
         g.set(Some(1), t0 + ENTER / 2);
-        assert!(close(g.current(t0 + ENTER / 2).unwrap().1, 0.75));
+        assert!(close(g.current(t0 + ENTER / 2).unwrap().1, 0.88988));
         // An exit that already finished enters afresh.
         let mut f = Transient::default();
         f.set(Some(1), t0);
@@ -526,20 +558,20 @@ mod tests {
         let t0 = Instant::now();
         let s = Slide::new(300.0, 0.0, t0);
         assert_eq!(s.at(t0), 300.0);
-        assert!(close(s.at(t0 + SIDEBAR_SLIDE / 2), 75.0), "ease-out: three quarters of the way at half time");
+        assert!((s.at(t0 + SIDEBAR_SLIDE / 2) - 36.65).abs() < 0.01, "standard: most of the way at half time");
         assert_eq!(s.at(t0 + SIDEBAR_SLIDE), 0.0);
         assert!(s.animating(t0 + SIDEBAR_SLIDE / 2));
         assert!(!s.animating(t0 + SIDEBAR_SLIDE));
         // Turned around mid-way, a slide starts from where the last one was.
         let mid = t0 + SIDEBAR_SLIDE / 2;
         let back = Slide::new(s.at(mid), 300.0, mid);
-        assert!(close(back.at(mid), 75.0));
+        assert!((back.at(mid) - 36.65).abs() < 0.01);
         assert_eq!(back.at(mid + SIDEBAR_SLIDE), 300.0);
     }
 
     #[test]
     fn the_material_curves_run_from_rest_to_rest() {
-        for (x1, y1, x2, y2) in [STANDARD_DECELERATE, STANDARD_ACCELERATE] {
+        for (x1, y1, x2, y2) in [STANDARD, STANDARD_DECELERATE, STANDARD_ACCELERATE] {
             assert!(cubic_bezier((x1, y1, x2, y2), 0.0).abs() < 1e-4);
             assert!((cubic_bezier((x1, y1, x2, y2), 1.0) - 1.0).abs() < 1e-4);
             let mut last = 0.0;
@@ -547,6 +579,15 @@ mod tests {
                 let v = cubic_bezier((x1, y1, x2, y2), i as f32 / 20.0);
                 assert!(v >= last - 1e-4, "the curve never goes back");
                 last = v;
+            }
+        }
+    }
+
+    #[test]
+    fn a_curve_s_inverse_finds_when_it_reaches_a_value() {
+        for curve in [STANDARD, STANDARD_DECELERATE, STANDARD_ACCELERATE] {
+            for y in [0.0, 0.1, 0.5, 0.9, 1.0] {
+                assert!((cubic_bezier(curve, cubic_bezier_inverse(curve, y)) - y).abs() < 1e-4, "{curve:?} {y}");
             }
         }
     }
