@@ -15,6 +15,11 @@ on:
         required: true
         default: probe
         type: string
+      only:
+        description: "Only these shots or recordings of each scene, comma-separated (for example themes); empty takes every one"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ jobs:
     timeout-minutes: 90
     env:
       SCENES: ${{ inputs.scenes }}
+      SHOOT_ONLY: ${{ inputs.only }}
       SHOOT_DIRECT: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)

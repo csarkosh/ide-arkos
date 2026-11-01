@@ -18,7 +18,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use story::{Recording, Shot, Story, ThemePair, Waits, SETTLE_SECS};
 
-const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>]
+const USAGE: &str = "usage: arkos-shoot run [--story scripts/shoot/story.toml] [--out docs/images] [--bin target/debug] [--app <an Arkos IDE.app to start instead of one made from --bin>] [--only <shot or recording names, comma-separated>]
+       arkos-shoot recut --raw <scene>-<name>.raw.mp4 [--story ...] [--out docs/images] [--name <recording>]   (the loop again from a recording already made, no window)
        arkos-shoot bundle [--story ...] [--bin target/debug]   (only makes and signs the bundle, to grant it Accessibility)
        arkos-shoot clean";
 
@@ -53,10 +54,15 @@ struct Opts {
     /// The app bundle to start through Launch Services (`open -a`, which is what lets the
     /// window come to the front) instead of the one made from the binaries in `bin`.
     app: Option<PathBuf>,
+    /// `--only`: the shots and recordings to take, the rest of the story skipped.
+    only: Option<Vec<String>>,
+    /// `recut`: the raw recording to cut again, and which recording's settings to cut it with.
+    raw: Option<PathBuf>,
+    name: Option<String>,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts> {
-    let mut opts = Opts { story: "scripts/shoot/story.toml".into(), out: "docs/images".into(), bin: "target/debug".into(), app: None };
+    let mut opts = Opts { story: "scripts/shoot/story.toml".into(), out: "docs/images".into(), bin: "target/debug".into(), app: None, only: None, raw: None, name: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let value = || it.clone().next().cloned().with_context(|| format!("{a} needs a value"));
@@ -65,6 +71,9 @@ fn parse_opts(args: &[String]) -> Result<Opts> {
             "--out" => opts.out = value()?.into(),
             "--bin" => opts.bin = value()?.into(),
             "--app" => opts.app = Some(value()?.into()),
+            "--only" => opts.only = Some(value()?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+            "--raw" => opts.raw = Some(value()?.into()),
+            "--name" => opts.name = Some(value()?),
             other => bail!("unknown argument {other}\n{USAGE}"),
         }
         it.next();
@@ -76,6 +85,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("run") => parse_opts(&args[1..]).and_then(run),
+        Some("recut") => parse_opts(&args[1..]).and_then(recut),
         Some("bundle") => parse_opts(&args[1..]).and_then(bundle_only),
         Some("clean") => Dirs::new().and_then(|d| clean(&d)),
         _ => {
@@ -87,6 +97,23 @@ fn main() {
         eprintln!("arkos-shoot: {e:#}");
         std::process::exit(1);
     }
+}
+
+/// The loop cut again from a recording already made (`<scene>-<name>.raw.mp4`, which a run
+/// leaves in docs/images/progress/<scene>/ and the workflow keeps in its artifact), with the
+/// storyboard's recording settings as they now stand: a new fade, transition or width needs
+/// no window and no Claude Code, only ffmpeg. The holds must be the ones the recording was
+/// made with, since the cut finds each theme by them.
+fn recut(opts: Opts) -> Result<()> {
+    let raw = opts.raw.context("recut needs --raw <scene>-<name>.raw.mp4")?.canonicalize().context("the raw recording")?;
+    let story_path = opts.story.canonicalize().with_context(|| format!("story {}", opts.story.display()))?;
+    let story = Story::parse(&std::fs::read_to_string(&story_path)?)?;
+    let repo = repo_of(&story_path)?;
+    let rec = story.recording(opts.name.as_deref())?;
+    std::fs::create_dir_all(&opts.out)?;
+    let mp4 = cut_loop(&repo, rec, &raw, &opts.out.canonicalize()?, &format!("{}-{}", story.scene.name, rec.name))?;
+    println!("{}", mp4.display());
+    Ok(())
 }
 
 /// Makes (and signs, when the identity exists) the bundle a run would, and names it, so it
@@ -182,9 +209,12 @@ fn run(opts: Opts) -> Result<()> {
         Some(a) => a.canonicalize().with_context(|| format!("app bundle {}", a.display()))?,
         None => make_bundle(&repo, &bin, &dirs.cache.join("app"))?,
     };
+    if let Some(only) = &opts.only {
+        story.check_only(only)?;
+    }
     install_signal_handlers();
     let mut running = Running::default();
-    let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, &mut running);
+    let result = shoot(&story, &repo, &bin, Some(&app), &dirs, &out, opts.only.as_deref(), &mut running);
     stop(&mut running, &dirs);
     // The verdict as a file too: started through Launch Services (scripts/shoot.sh), the
     // process has no exit code anyone sees.
@@ -197,7 +227,11 @@ fn run(opts: Opts) -> Result<()> {
     result
 }
 
-fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs, out: &Path, running: &mut Running) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs, out: &Path, only: Option<&[String]>, running: &mut Running) -> Result<()> {
+    if let Some(names) = only {
+        say(&format!("only: {}", names.join(", ")));
+    }
     // 1. The demo project, fresh.
     let demo = match &story.demo.dir {
         Some(d) => PathBuf::from(expand_home(d)),
@@ -375,7 +409,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     // 9. The shots.
     let mut theme = story.shots[0].theme.clone();
     let mut failures = Vec::new();
-    for shot in &story.shots {
+    for shot in story.shots.iter().filter(|s| Story::wants(only, &s.name)) {
         if shot.theme != theme {
             write_config(&dirs.config_file(), story, &shot.theme, &story.window.theme)?;
             theme = shot.theme.clone();
@@ -419,7 +453,7 @@ fn shoot(story: &Story, repo: &Path, bin: &Path, app: Option<&Path>, dirs: &Dirs
     }
 
     // 10. The recordings: the window through its themes, after the stills, each a loop.
-    for rec in &story.recordings {
+    for rec in story.recordings.iter().filter(|r| Story::wants(only, &r.name)) {
         let unmet = wait_for(&rec.waits(), story, &sessions, client, &progress, &demo)?;
         if !unmet.is_empty() {
             say(&format!("{}: after {} s these were not as asked: {}", rec.name, rec.timeout_secs, unmet.join(", ")));
@@ -476,6 +510,13 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     let stopped = stop_recorder(child);
     switched?;
     stopped?;
+    cut_loop(repo, rec, &raw, out, &picture)?;
+    Ok(())
+}
+
+/// `scripts/shoot/loop.py` on a raw recording: the loop as `<out>/<picture>.mp4`, its first
+/// frame as `<picture>.jpg`.
+fn cut_loop(repo: &Path, rec: &Recording, raw: &Path, out: &Path, picture: &str) -> Result<PathBuf> {
     let mp4 = out.join(format!("{picture}.mp4"));
     let poster = out.join(format!("{picture}.jpg"));
     let status = Command::new("python3")
@@ -493,7 +534,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
         bail!("loop.py failed for {}", raw.display());
     }
     say(&format!("{}: {}", rec.name, mp4.display()));
-    Ok(())
+    Ok(mp4)
 }
 
 /// A built-in theme's `appearance` (`crates/arkos/themes/<name>.toml`): `light` or `dark`, the
@@ -761,10 +802,10 @@ fn capture_window(id: u32, out: &Path) -> Result<()> {
     bail!("screencapture failed for {}", out.display())
 }
 
-/// A capture of a frame that holds still: two captures 400 ms apart, kept when under 0.4% of
-/// the pixels differ (a spinner and a clock tick pass; a pane mid-repaint, which Claude Code
-/// does whole lines at a time, does not), tried up to eight times before the last one is kept
-/// with a note.
+/// A capture of a frame that holds still: two captures 400 ms apart, kept when under 1% of
+/// the pixels differ (a spinner, a clock tick and a theme's rain behind the panes, about half a
+/// percent at two pixels a point, pass; a pane mid-repaint, which Claude Code does whole lines
+/// at a time, does not), tried up to eight times before the last one is kept with a note.
 fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
     let other = out.with_extension("b.png");
     for attempt in 1..=8 {
@@ -773,7 +814,7 @@ fn capture_steady(repo: &Path, id: u32, out: &Path) -> Result<()> {
         capture_window(id, &other)?;
         let diff = Command::new("python3").arg("-I").arg(repo.join("scripts/shoot/diff.py")).arg(out).arg(&other).output().context("diff.py")?;
         let fraction: f64 = String::from_utf8_lossy(&diff.stdout).trim().parse().unwrap_or(1.0);
-        if fraction < 0.004 {
+        if fraction < 0.01 {
             let _ = std::fs::rename(&other, out);
             return Ok(());
         }

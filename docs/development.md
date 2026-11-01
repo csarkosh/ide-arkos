@@ -279,6 +279,17 @@ at most `width` (2000) pixels across, H.264 at CRF 19 tagged sRGB, written as
 records `themes` for the app's page on apps.csarko.sh, which plays it under "Who it's for"; the
 README stays stills, since GitHub plays no video from a repository.
 
+**Redoing one shot or one recording.** A scene's sessions have to run either way, but the
+captures can be picked: `scripts/shoot.sh --only themes multitasker` (or the workflow's `only`
+input, `gh workflow run shoot -f scenes=multitasker -f only=themes`) takes only the shots and
+recordings named, comma-separated, and skips the rest with their waits; a name that is neither
+is refused up front. A loop can also be cut again without any window: a run leaves the raw
+recording in `docs/images/progress/<scene>/<scene>-<name>.raw.mp4` (the workflow's artifact
+has it), and `scripts/shoot.sh recut multitasker <that file> [themes]` cuts it again with the
+storyboard's `fade_secs`, `transition` and `width` as they now stand, so a change of taste in
+the transitions costs ffmpeg a minute, not Claude Code ten. The holds must be the ones the
+recording was made with, since the cut finds each theme by them.
+
 ## Status
 
 Session awareness and recovery after a restart: each tab shows what its Claude Code session is

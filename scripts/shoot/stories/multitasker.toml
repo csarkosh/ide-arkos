@@ -57,14 +57,16 @@ second = { split = "vertical", ratio = 0.5, first = { tabs = ["inbox", "budget"]
 # The moment: the sessions have fanned out their subagents and the first files are in, and
 # the two short sessions behind them have answered and wait on you (the waiting mark on an
 # inactive tab). A session waiting on its own background agents reports "waiting" too (its
-# prompt is idle), so the working state asked for is the inbox's alone; the work shows
-# through the changed files.
+# prompt is idle), and the inbox's own turn is over within about a minute, before its files
+# and the lantern's are all in, so no working state is asked for (four runs in a row went
+# unmet on it); the work shows through the changed files, and the tabs' marks through the
+# two short sessions.
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { inbox = "working", blog = "waiting", budget = "waiting" }
+wait = { blog = "waiting", budget = "waiting" }
 changed = { inbox = 2, lantern = 3 }
-after_secs = 60
+after_secs = 45
 timeout_secs = 420
 
 [[shot.crop]]

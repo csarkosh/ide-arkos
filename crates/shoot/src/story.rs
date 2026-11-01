@@ -128,6 +128,36 @@ impl Shot {
     }
 }
 
+impl Story {
+    /// `--only`: the shots and recordings named are taken, the rest skipped (their waits too).
+    /// A name that is neither is refused, so a typo does not quietly shoot nothing.
+    pub fn check_only(&self, only: &[String]) -> Result<()> {
+        for name in only {
+            if !self.shots.iter().any(|s| &s.name == name) && !self.recordings.iter().any(|r| &r.name == name) {
+                bail!("--only names {name:?}, which is neither a shot nor a recording of this story (shots: {}; recordings: {})",
+                    self.shots.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+                    self.recordings.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a shot or recording is taken on this run: every one without `--only`.
+    pub fn wants(only: Option<&[String]>, name: &str) -> bool {
+        only.is_none_or(|names| names.iter().any(|n| n == name))
+    }
+
+    /// The recording to re-cut: the one named, or the only one.
+    pub fn recording(&self, name: Option<&str>) -> Result<&Recording> {
+        match name {
+            Some(n) => self.recordings.iter().find(|r| r.name == n).with_context(|| format!("no recording {n:?} in this story")),
+            None if self.recordings.len() == 1 => Ok(&self.recordings[0]),
+            None if self.recordings.is_empty() => bail!("this story has no recording"),
+            None => bail!("this story has {} recordings; name one with --name", self.recordings.len()),
+        }
+    }
+}
+
 impl Recording {
     pub fn waits(&self) -> Waits<'_> {
         Waits { name: &self.name, wait: &self.wait, changed: &self.changed, after_secs: self.after_secs, timeout_secs: self.timeout_secs }
@@ -880,6 +910,20 @@ theme = "light"
         refused("hold_secs = 4", "hold_secs = 4\nwidth = 100", "width must be 320 to 3840");
         refused("wait = { tests = \"waiting\" }\nchanged", "wait = { nobody = \"waiting\" }\nchanged", "recording \"themes\" waits on pane \"nobody\"");
         refused("changed = { work = 1 }", "changed = { site = 1 }", "recording \"themes\": changed names \"site\"");
+    }
+
+    #[test]
+    fn a_shot_or_a_recording_is_picked_by_name_and_an_unknown_name_is_refused() {
+        let s = Story::parse(&format!("{STORY}{RECORDING}")).unwrap();
+        let only = vec!["themes".to_string()];
+        s.check_only(&only).unwrap();
+        assert!(Story::wants(Some(&only), "themes") && !Story::wants(Some(&only), "dark") && Story::wants(None, "dark"));
+        let err = s.check_only(&["darkk".to_string()]).unwrap_err().to_string();
+        assert!(err.contains("\"darkk\", which is neither a shot nor a recording") && err.contains("recordings: themes"), "{err}");
+        assert_eq!(s.recording(None).unwrap().name, "themes");
+        assert_eq!(s.recording(Some("themes")).unwrap().name, "themes");
+        assert!(s.recording(Some("other")).unwrap_err().to_string().contains("no recording \"other\""));
+        assert!(Story::parse(STORY).unwrap().recording(None).unwrap_err().to_string().contains("no recording"));
     }
 
     #[test]
