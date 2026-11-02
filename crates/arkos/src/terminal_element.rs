@@ -28,6 +28,8 @@ pub struct TerminalElement {
     family: SharedString,
     /// The alpha of the terminal's paper: 1 without an effect, the effect's `paper_alpha` under one.
     paper_alpha: f32,
+    /// The radius of the paper's bottom corners (`pane_view::paper_radius`).
+    paper_radius: f32,
     /// What an effect does to the cells the program writes; None without one.
     ink: Option<Ink>,
     /// The window draw this paint is part of (`Root::draws`).
@@ -47,7 +49,13 @@ pub enum Ink {
 
 impl TerminalElement {
     pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, ink: Option<Ink>, draw: u64, root: Option<WeakEntity<crate::Root>>) -> Self {
-        Self { terminal, font_size, line_height, family, paper_alpha, ink, draw, root }
+        Self { terminal, font_size, line_height, family, paper_alpha, paper_radius: 0.0, ink, draw, root }
+    }
+
+    /// Rounds the paper's bottom corners by `radius` points.
+    pub fn paper_radius(mut self, radius: f32) -> Self {
+        self.paper_radius = radius;
+        self
     }
 }
 
@@ -370,7 +378,8 @@ impl Element for TerminalElement {
         // Under an effect the wash shows faintly through the paper.
         let mut paper = hsla(bg);
         paper.a = self.paper_alpha;
-        window.paint_quad(fill(bounds, paper));
+        let r = px(self.paper_radius);
+        window.paint_quad(fill(bounds, paper).corner_radii(gpui::Corners { top_left: px(0.0), top_right: px(0.0), bottom_right: r, bottom_left: r }));
         // Every link in the visible rows, a URL wrapped across rows among them: underlined below,
         // and the one under the pointer opened by Cmd+click in the pane's mouse handler, which
         // reads it back from the terminal.

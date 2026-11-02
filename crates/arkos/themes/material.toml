@@ -1,0 +1,85 @@
+# The schema of every key is in docs/themes.md.
+# Material: Material 3 as a web workspace wears it. A cool pale grey frame for the title bar, the
+# sidebar and the status bar; white cards for the panes, their tab strips and the documents; a
+# deep blue for the accent, with its light containers for the selection and the banner; a near
+# black for the text and a warm grey for the dim text; the hues at tone 40 (red, green, a dark
+# amber, the blue, a violet, a teal) for the ANSI colours, each clearing 4.5:1 on the cards.
+# Set in DM Sans and Roboto Mono (brew's font-dm-sans and font-roboto-mono); without them the
+# system fonts stand in. With its `material` effect the panes float as rounded cards on the
+# frame, the tabs carry an underline and the selected row a pill.
+name = "material"
+appearance = "light"
+
+[effect]
+name = "material"
+
+[font]
+prose = "DM Sans"
+ui = "DM Sans"
+terminal = "Roboto Mono"
+
+[chrome]
+window_bg = "#ffffff"
+title_bar = "#f0f4f9"
+status_bar = "#f0f4f9"
+sidebar = "#f0f4f9"
+tab_bar = "#ffffff"
+tab_active = "#ffffff"
+tab_inactive = "#ffffff"
+border = "#dde3ea"
+split_handle = "#dde3ea"
+split_handle_hover = "#747775"
+focus_ring = "#0b57d0"
+text = "#1f1f1f"
+text_dim = "#444746"
+banner = "#e9eef6"
+
+[terminal]
+background = "#ffffff"
+foreground = "#1f1f1f"
+cursor = "#0b57d0"
+selection = "#c2e7ff"
+black = "#1f1f1f"
+red = "#b3261e"
+green = "#146c2e"
+yellow = "#7c5800"
+blue = "#0b57d0"
+magenta = "#8430ce"
+cyan = "#00677d"
+white = "#5e5e5e"
+bright_black = "#6b6f72"
+bright_red = "#c5221f"
+bright_green = "#137333"
+bright_yellow = "#8a6100"
+bright_blue = "#185abc"
+bright_magenta = "#9334e6"
+bright_cyan = "#007585"
+# The terminal foreground: Claude Code's Arkos theme draws its text in bright white over faint
+# tinted bands, which need the darkest ink to keep 4.5:1.
+bright_white = "#1f1f1f"
+
+[semantic]
+working = "#0b57d0"
+waiting = "#9a4d00"
+bell = "#7c5800"
+error_banner = "#f9dedc"
+find_match = "#c4eed0"
+find_current = "#ffdf99"
+
+[tree]
+added = "#146c2e"
+modified = "#9a4d00"
+deleted = "#b3261e"
+untracked = "#0b57d0"
+ignored = "#6b6f72"
+
+[viewer]
+keyword = "#8430ce"
+string = "#146c2e"
+comment = "#6b6f72"
+number = "#9a4d00"
+function = "#0b57d0"
+type_name = "#00677d"
+constant = "#b3261e"
+operator = "#444746"
+punctuation = "#5e5e5e"

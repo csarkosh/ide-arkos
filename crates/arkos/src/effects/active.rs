@@ -56,6 +56,10 @@ pub struct Style {
     pub title_pad: f32,
     /// The gutter between the sidebar and the panes, in points.
     pub binder: f32,
+    /// Points kept clear round each pane.
+    pub gap: f32,
+    /// The corner radius of the panes as the wash draws them.
+    pub pane_radius: f32,
     /// How the menus and popovers look (`chrome::menu_colors`).
     pub menus: MenuLook,
     /// The effect draws the menus' and popovers' edges from above (its wash's `arkos_overlay`),
@@ -70,7 +74,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -100,6 +104,8 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         ui_text_bump: if full { manifest.ui_text_bump } else { 0.0 },
         title_pad: if full { manifest.title_pad } else { 0.0 },
         binder: if full { manifest.binder } else { 0.0 },
+        gap: if full { manifest.gap } else { 0.0 },
+        pane_radius: if full { manifest.pane_radius } else { 0.0 },
         menus: if full { manifest.menus } else { MenuLook::App },
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
@@ -489,7 +495,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -599,6 +605,22 @@ mod tests {
         assert_eq!(leaving.style(now).binder, m.binder);
         leaving.leave(now);
         assert_eq!((leaving.style(now).title_pad, leaving.style(now).binder), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_gap_and_the_pane_radius_come_in_once_the_effect_has_faded_in_and_goes_as_it_leaves() {
+        let material = || manifest::load("material", Path::new("/nonexistent/effects")).unwrap();
+        let m = material().manifest;
+        assert!(m.gap > 0.0);
+        assert_eq!((style_at(&m, 0.5).gap, style_at(&m, 0.5).pane_radius), (0.0, 0.0));
+        assert_eq!((style_at(&m, 1.0).gap, style_at(&m, 1.0).pane_radius), (m.gap, m.pane_radius));
+        assert_eq!(Style::plain().pane_radius, 0.0);
+        assert_eq!(Style::plain().gap, 0.0);
+        let now = Instant::now();
+        let mut leaving = on(material(), now);
+        assert_eq!(leaving.style(now).gap, m.gap);
+        leaving.leave(now);
+        assert_eq!((leaving.style(now).gap, leaving.style(now).pane_radius), (0.0, 0.0));
     }
 
     #[test]
@@ -726,7 +748,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));

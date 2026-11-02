@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nspace (built in)\nrunic (built in)\nnotebook (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nspace (built in)\nrunic (built in)\nmaterial (built in)\nnotebook (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
@@ -501,10 +501,11 @@ mod tests {
         assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in" }));
         assert_eq!(v[1], serde_json::json!({ "name": "space", "source": "built-in" }));
         assert_eq!(v[2], serde_json::json!({ "name": "runic", "source": "built-in" }));
-        assert_eq!(v[3], serde_json::json!({ "name": "notebook", "source": "built-in" }));
-        assert_eq!((v[4]["name"].as_str(), v[4]["source"].as_str()), (Some("broken"), Some("invalid")));
-        assert!(v[4]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
-        assert_eq!(v[5], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
+        assert_eq!(v[3], serde_json::json!({ "name": "material", "source": "built-in" }));
+        assert_eq!(v[4], serde_json::json!({ "name": "notebook", "source": "built-in" }));
+        assert_eq!((v[5]["name"].as_str(), v[5]["source"].as_str()), (Some("broken"), Some("invalid")));
+        assert!(v[5]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
+        assert_eq!(v[6], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
         assert_eq!(run(&["list", "extra"], &env).0, 2);
     }
 

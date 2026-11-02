@@ -59,6 +59,12 @@ pub const BUILTIN: &[BuiltIn] = &[
         glyphs: Some(include_str!("../../effects/runic/glyphs.metal")),
     },
     BuiltIn {
+        name: "material",
+        manifest: include_str!("../../effects/material/effect.toml"),
+        wash: include_str!("../../effects/material/wash.metal"),
+        glyphs: None,
+    },
+    BuiltIn {
         name: "notebook",
         manifest: include_str!("../../effects/notebook/effect.toml"),
         wash: include_str!("../../effects/notebook/wash.metal"),

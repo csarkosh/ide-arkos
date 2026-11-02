@@ -29,6 +29,15 @@ pub const TAB_BAR_H: f32 = 28.0;
 pub const GLOW_W: f32 = 4.0;
 /// The glow's opacity at the edge, at the peak of its breath; it fades to nothing by its reach.
 pub const GLOW_ALPHA: f32 = 0.45;
+/// The width in points of the focused pane's ring, under an effect that rounds the panes.
+pub const FOCUS_RING_W: f32 = 2.0;
+
+/// The radius of the bottom corners of a pane's paper (a terminal's, a document's) under `style`:
+/// the card's, less the pane's one point border, so the paper's corners lie inside the card the
+/// wash draws instead of showing square on the ground round it.
+pub fn paper_radius(style: crate::effects::active::Style) -> f32 {
+    (style.pane_radius - 1.0).max(0.0)
+}
 /// The breath (`pulse::glow`): at rest the glow keeps this share of its opacity, and at the peak
 /// it gains this much lightness and this share of its reach, so it reads as light at the edge.
 const GLOW_BREATH_FLOOR: f32 = 0.7;
@@ -527,7 +536,14 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         // The angle is CSS's: the direction the colour fades towards (180 is downwards).
         let strip = |angle: f32| div().absolute().opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)));
         let z = px(0.0);
-        [
+        // A pane the effect draws as a rounded card wears a ring of the same rounding instead,
+        // as its focus: straight strips would run past the card's corners onto the ground.
+        if style.pane_radius > 0.0 {
+            let mut ring = from;
+            ring.a = (ring.a * 2.0).min(1.0);
+            return vec![div().absolute().inset_0().opacity(opacity).rounded(px(style.pane_radius)).border(px(FOCUS_RING_W)).border_color(ring)];
+        }
+        vec![
             strip(180.0).top(z).left(z).right(z).h(px(g)),
             strip(0.0).bottom(z).left(z).right(z).h(px(g)),
             strip(90.0).left(z).top(z).bottom(z).w(px(g)),
@@ -736,6 +752,13 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                             let rect = Rect { x: f32::from(bounds.origin.x), y: f32::from(bounds.origin.y), w: f32::from(bounds.size.width), h: f32::from(bounds.size.height) };
                             let _ = weak.update(cx, |root, _| {
                                 root.effect_marks.push(blocks::Mark { key, rect, kind: blocks::Kind::TabHighlight, state: blocks::HighlightState::Hovered });
+                            });
+                        }
+                        // The active tab reports where it is, so the wash can mark it.
+                        if let Some(id) = tab_id_for_width.filter(|_| highlights && is_active) {
+                            let rect = Rect { x: f32::from(bounds.origin.x), y: f32::from(bounds.origin.y), w: f32::from(bounds.size.width), h: f32::from(bounds.size.height) };
+                            let _ = weak.update(cx, |root, _| {
+                                root.effect_shapes.push(blocks::Shape { key: blocks::tab_key(id), rect, kind: blocks::Kind::ActiveTab, pitch: 0.0 });
                             });
                         }
                         // Not while collapsed: the width on record is the tab's own.
@@ -980,7 +1003,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .id(("term-hover", pane))
                 .size_full()
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
-                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw, (style.paper_alpha < 1.0).then(|| cx.weak_entity()))),
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw, (style.paper_alpha < 1.0).then(|| cx.weak_entity())).paper_radius(paper_radius(style))),
         )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
@@ -1106,7 +1129,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let body = match kind {
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
-            div().size_full().bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
+            div().size_full().rounded_b(px(paper_radius(style))).bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
         }
         Kind::Text { plain } => {
             let element = ViewerElement::new(
@@ -1120,7 +1143,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 MarkColors { added: theme.tree.added, modified: theme.tree.modified, deleted: theme.tree.deleted },
                 RawColors::opaque(theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring),
             )
-            .paper_alpha(style.document_paper_alpha);
+            .paper_alpha(style.document_paper_alpha)
+            .paper_radius(paper_radius(style));
             div()
                 .size_full()
                 .flex()
@@ -1471,6 +1495,16 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_s_paper_rounds_its_bottom_corners_with_the_card_inside_the_pane_s_border() {
+        let mut style = Style::plain();
+        assert_eq!(paper_radius(style), 0.0, "square without an effect that rounds the panes");
+        style.pane_radius = 14.0;
+        assert_eq!(paper_radius(style), 13.0);
+        style.pane_radius = 0.5;
+        assert_eq!(paper_radius(style), 0.0);
+    }
 
     #[test]
     fn the_terminal_decodes_under_a_decoding_effect_longer_while_its_session_works() {

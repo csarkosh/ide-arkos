@@ -1631,8 +1631,12 @@ impl Root {
         true
     }
 
+    /// The panes and handles as drawn: the tree's layout in the content area, the panes drawn
+    /// apart by the effect's `gap`.
     pub fn layout(&self) -> tree::Layout {
-        self.tree.layout(self.content)
+        let mut layout = self.tree.layout(self.content);
+        layout.panes = split_view::spaced(&layout.panes, self.content, self.effect_style().gap);
+        layout
     }
 
     /// Remembers where the window is, whenever that changes, so a relaunch opens it there. A
@@ -4210,7 +4214,7 @@ impl Render for Root {
         // While Cmd+B's slide runs, the panes follow the width on screen frame by frame (each
         // frame relays them out, as dragging the edge does; no terminal is made again).
         let side = self.sidebar.shown_width(now);
-        let (content, binder) = split_view::content_area(side, self.effect_style().binder, top + banner_h, f32::from(size.width), f32::from(size.height));
+        let (content, binder) = split_view::content_area(side, self.effect_style().binder, self.effect_style().gap, top + banner_h, f32::from(size.width), f32::from(size.height));
         self.binder = binder;
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.
@@ -4421,8 +4425,10 @@ impl Render for Root {
                     .flex()
                     .flex_row()
                     .children(side_col)
-                    .child(div().flex_none().w(px(self.binder)))
-                    .child(div().flex_1().min_w_0().min_h_0().child(body)),
+                    // The panes' container starts where the content area does: past the sidebar's
+                    // gutter (or the gap off the window's edge) and the gap under the bars.
+                    .child(div().flex_none().w(px((self.content.x - side).max(0.0))))
+                    .child(div().flex_1().min_w_0().min_h_0().pt(px((self.content.y - top - banner_h).max(0.0))).child(body)),
             )
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))

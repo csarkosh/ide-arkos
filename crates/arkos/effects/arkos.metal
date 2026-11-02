@@ -23,7 +23,9 @@ constant int ARKOS_PANE_BODY_BLOCK = 5;  constant int ARKOS_ROW_HIGHLIGHT_BLOCK 
 constant int ARKOS_TAB_HIGHLIGHT_BLOCK = 7; constant int ARKOS_MEDIA_BLOCK = 8;
 constant int ARKOS_TABLE_BLOCK = 9;      constant int ARKOS_TABLE_HEADER_BLOCK = 10;
 constant int ARKOS_MENU_BLOCK = 11;    constant int ARKOS_ROWS_BLOCK = 12;
-constant int ARKOS_BINDER_BLOCK = 13;
+constant int ARKOS_BINDER_BLOCK = 13;    constant int ARKOS_ACTIVE_TAB_BLOCK = 14;
+// An active tab block is each pane's active tab where its tab bar lays it out, reported while
+// the effect paints the highlights, with no edges.
 // A binder block is the gutter between the sidebar and the panes, there only when the effect's
 // manifest asks for one (`binder`); nothing of the app's is drawn in it.
 // A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.

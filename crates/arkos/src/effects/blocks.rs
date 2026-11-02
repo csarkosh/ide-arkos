@@ -28,6 +28,8 @@ pub enum Kind {
     Rows = 12,
     /// The gutter between the sidebar and the panes an effect asked for (its `binder`).
     Binder = 13,
+    /// A pane's active tab, as laid out in its tab bar.
+    ActiveTab = 14,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -254,8 +256,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             Kind::Media => (Rect { x: r.x - MEDIA_OUTSET, y: r.y - MEDIA_OUTSET, w: r.w + 2.0 * MEDIA_OUTSET, h: r.h + 2.0 * MEDIA_OUTSET }, all),
             // A header is set off by the line under it; the table's outline draws the rest.
             Kind::TableHeader => (r, EDGE_BOTTOM),
-            // A terminal's rows are ruled, never outlined.
-            Kind::Rows => (r, 0),
+            // A terminal's rows are ruled and an active tab marked, never outlined.
+            Kind::Rows | Kind::ActiveTab => (r, 0),
             _ => (r, all),
         };
         out.push(Block {
@@ -321,6 +323,15 @@ mod tests {
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
         Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y, panes, busy: &[], shapes: &[], strokes }
+    }
+
+    #[test]
+    fn a_pane_s_active_tab_is_a_block_of_its_own_with_no_edges() {
+        let panes = [(5, rect(0.0, 38.0, 800.0, 562.0))];
+        let shapes = [Shape { key: 9, rect: rect(40.0, 38.0, 90.0, 30.0), kind: Kind::ActiveTab, pitch: 0.0 }];
+        let out = blocks(&Scene { shapes: &shapes, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        let tab = out.iter().find(|b| b.kind == Kind::ActiveTab).expect("reported");
+        assert_eq!((tab.rect, tab.edges), (rect(40.0, 38.0, 90.0, 30.0), 0));
     }
 
     #[test]

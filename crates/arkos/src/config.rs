@@ -737,7 +737,7 @@ watchdog_secs = 30
 replay_bytes = 16777216
 
 [theme]
-# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-light", "lavender-light", "matrix", "navy-runic" and "composition-notebook" are built in;
+# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-light", "lavender-light", "matrix", "navy-runic", "composition-notebook" and "material" are built in;
 # "Extract built-in themes" in the command palette writes them there to copy from.
 dark = "navy"
 light = "peach-light"
