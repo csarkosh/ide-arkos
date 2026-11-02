@@ -164,6 +164,15 @@ Android default; Google's own web workspaces wear a different Material. This pas
   bottom of its strip. No lines between cards.
 - **Hover.** A quiet state layer of the text, 5%, with no ripple: Cyrus found Material's 8% with
   a ripple too loud. The ripple is kept for a row being selected, a press, as Material has it.
+- **The pane number and the terminal's block bars.** On Cyrus's screen the chip sat three points
+  from the card's edge, under the focus ring, and Claude Code's context bar (`█░░░░░░░░░ 6%`)
+  was unreadable: Roboto Mono has no block elements, and the fallback font's were wider than a
+  cell, so the run drifted over its own percentage. On a rounded card the number now sits in an
+  18 point slot 10 points in (`pane_view::number_slot`), the chip filling it. The terminal draws
+  the block elements (U+2580 to U+259F) itself as rectangles of their cells, snapped to the
+  pixel grid so a bar has no seams, the shades as the colour at a quarter, a half and three
+  quarters; and a run whose shaped width strays from its cells (another glyph from a fallback
+  font) is painted a character to each cell. This holds for every theme and font.
 
 ## For Cyrus to decide
 

@@ -1,6 +1,6 @@
 //! Paints a `Terminal`'s visible rows at a fractional line offset (spec 3). Only the rows in the
 //! viewport plus one above are shaped and painted, which is the virtualization.
-use crate::layout::{build_runs, build_stamped_runs, CellKind, CellStyle};
+use crate::layout::{block_pieces, build_runs, build_stamped_runs, strays, CellKind, CellStyle};
 use crate::palette::Rgb;
 use crate::effects::decode::{Decode, Timing};
 use crate::effects::paint;
@@ -437,8 +437,36 @@ impl Element for TerminalElement {
                         let (paper, band) = moved.get();
                         moved.set(if run.style.bg == bg { (true, band) } else { (paper, true) });
                     }
-                    let line = window.text_system().shape_line(text, px(self.font_size), &[shown], None);
-                    let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(x, y), lh, window, cx));
+                    // A block element is drawn as rectangles of its cell, and a run whose shaped
+                    // width strays from its cells (a fallback font drew some of it) is placed a
+                    // character to each cell, so neither drifts over the text after it.
+                    let blocks = !run.wide && run.text.chars().any(|c| block_pieces(c).is_some());
+                    let line = (!blocks).then(|| window.text_system().shape_line(text, px(self.font_size), &[shown.clone()], None));
+                    match line {
+                        Some(line) if run.wide || !strays(f32::from(line.width), run.text.chars().count(), cw) => {
+                            let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(x, y), lh, window, cx));
+                        }
+                        _ => {
+                            let scale = window.scale_factor();
+                            let snap = |v: f32| px((v * scale).round() / scale);
+                            for (i, c) in run.text.chars().enumerate() {
+                                let cell_x = f32::from(x) + i as f32 * cw;
+                                if let Some(pieces) = block_pieces(c) {
+                                    for piece in pieces {
+                                        let (l, r) = (snap(cell_x + piece.x0 * cw), snap(cell_x + piece.x1 * cw));
+                                        let (t, b) = (snap(f32::from(y) + piece.y0 * f32::from(lh)), snap(f32::from(y) + piece.y1 * f32::from(lh)));
+                                        let mut color = shown.color;
+                                        color.a *= piece.alpha;
+                                        window.paint_quad(fill(Bounds { origin: point(l, t), size: size(r - l, b - t) }, color));
+                                    }
+                                } else if c != ' ' {
+                                    let glyph = TextRun { len: c.len_utf8(), ..shown.clone() };
+                                    let line = window.text_system().shape_line(c.to_string().into(), px(self.font_size), &[glyph], None);
+                                    let _ = window.with_glyph_stamp(*stamp, |window| line.paint(point(px(cell_x), y), lh, window, cx));
+                                }
+                            }
+                        }
+                    }
                     if run.style.underline {
                         let uy = y + lh - px(2.0);
                         window.paint_quad(fill(Bounds { origin: point(x, uy), size: size(w, px(1.0)) }, hsla(crate::contrast::draw_char(run.text.chars().next().unwrap_or(' '), run.style.fg, run.style.bg, false).color)));

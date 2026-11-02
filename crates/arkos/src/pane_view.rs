@@ -38,6 +38,17 @@ pub const FOCUS_RING_W: f32 = 2.0;
 pub fn paper_radius(style: crate::effects::active::Style) -> f32 {
     (style.pane_radius - 1.0).max(0.0)
 }
+/// On a rounded card the pane number is centred in a slot this many points in from the card's
+/// left edge and this wide, so an effect can draw a chip of that width behind it (Material's
+/// sits exactly on the slot) clear of the card's corner and its focus ring.
+pub const NUMBER_SLOT_INSET: f32 = 10.0;
+pub const NUMBER_SLOT_W: f32 = 18.0;
+
+/// Where the pane number sits under `style`: Some((inset, width)) on a rounded card, None for
+/// the plain eight points of padding.
+pub fn number_slot(style: crate::effects::active::Style) -> Option<(f32, f32)> {
+    (style.pane_radius > 0.0).then_some((NUMBER_SLOT_INSET, NUMBER_SLOT_W))
+}
 /// The breath (`pulse::glow`): at rest the glow keeps this share of its opacity, and at the peak
 /// it gains this much lightness and this share of its reach, so it reads as light at the edge.
 const GLOW_BREATH_FLOOR: f32 = 0.7;
@@ -629,7 +640,10 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .text_color(fg.hsla())
         .font_family(root.ui_family())
         .text_size(px(style.ui(12.0)))
-        .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
+        .child(match number_slot(style) {
+            Some((inset, width)) => div().flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).flex().justify_center().text_color(dim.hsla()).child(format!("{number}")),
+            None => div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")),
+        })
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
@@ -1495,6 +1509,16 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_a_rounded_card_the_pane_number_is_centred_in_a_slot_well_inside_the_card_s_edge() {
+        let mut style = Style::plain();
+        assert_eq!(number_slot(style), None, "the number keeps its plain padding on a square pane");
+        style.pane_radius = 14.0;
+        let (inset, width) = number_slot(style).unwrap();
+        assert!(inset - FOCUS_RING_W >= 8.0, "clear of the focus ring by at least 8 points");
+        assert_eq!((inset, width), (NUMBER_SLOT_INSET, NUMBER_SLOT_W));
+    }
 
     #[test]
     fn a_pane_s_paper_rounds_its_bottom_corners_with_the_card_inside_the_pane_s_border() {

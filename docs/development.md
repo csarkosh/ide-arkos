@@ -503,6 +503,9 @@ Things only a person at the screen can check, in order of value:
   indent) with a ripple as it is clicked, a hovered row or tab as a quiet grey pill with no
   ripple, and, while a pane's Claude session works, a thin progress
   bar sweeping along the bottom of its tab strip; the text is plain DM Sans and Roboto Mono
+- terminal, block elements: a status line's context bar (`█░░░ 6%`) is a seamless bar of
+  cells with its percentage clear after it, under Roboto Mono (Material) as under Menlo; a
+  prompt's `❯` and `─` rules sit in their cells
 - effects, notebook: Composition Notebook (`effect.name = "theme"`) shows the title bar as the
   black-and-white marbled cover with the title's words and the bell and doctor icons on its white
   label (readable, the traffic lights on the marble, the words and icons well inside the label's

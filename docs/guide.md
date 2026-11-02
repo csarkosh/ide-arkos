@@ -736,7 +736,10 @@ borders) keeps 3:1 on the bands it is drawn on. Whatever colours a program sends
 its text at 4.5:1 or better against the background under it, and faint text at 3:1: a colour too
 close is moved toward black or white until it clears 7:1 (an effect's washes show lighter than
 their colour). Graphics characters (block elements, Braille, powerline separators) keep the
-colours sent, since a picture or a prompt's segments are drawn with them. So a Claude Code session still on another
+colours sent, since a picture or a prompt's segments are drawn with them. Arkos draws the block
+elements (halves, eighths, quadrants and the three shades) itself as exact cells, so a bar of
+them (a status line's context meter) is seamless in any font, Roboto Mono included, which has
+none; any other character the font lacks is drawn from a fallback font and kept to its own cell. So a Claude Code session still on another
 theme (its stock dark one on a light Arkos theme) stays readable. At start, Arkos rewrites the file when it differs from this build's (so an update can
 change it) and selects it when Claude Code's theme is unset, `dark`, `light` or `auto` (what Arkos
 set before); any other choice (a colourblind-friendly or ANSI theme, a custom theme of your own)

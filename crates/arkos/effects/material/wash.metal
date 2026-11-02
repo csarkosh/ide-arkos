@@ -23,8 +23,10 @@ constant float RIPPLE_LAYER = 0.12;
 constant float CARD_RADIUS = 14.0;
 // The drawer's pill, in from the sidebar's edges.
 constant float PILL_INSET = 8.0;
-// The pane number's chip: its centre from the strip's left, its radius, and its container.
-constant float CHIP_X = 12.0;
+// The pane number's chip: its centre from the strip's left, its radius, and its container. On a
+// rounded card the app centres the number in an 18 point slot 10 points in
+// (`pane_view::number_slot`), and the chip fills that slot.
+constant float CHIP_X = 19.0;
 constant float CHIP_R = 9.0;
 constant float CHIP_TONE = 0.28;
 // The tab indicator: its height, and its inset from the tab's ends (the tab's own padding, so it
