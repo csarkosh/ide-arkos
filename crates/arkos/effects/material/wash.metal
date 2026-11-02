@@ -6,16 +6,17 @@
 // hairline in the border colour under the strip, the pane's number on a round chip of its own hue
 // (the theme's blue, green, yellow and red in turn, as tonal containers), and each active tab
 // underlined in the accent, Material's tab indicator. The selected Explorer row is the
-// navigation drawer's pill in the theme's selection colour, inset from the sidebar's edges; a
-// hovered row or tab is a state layer of the text at 8%, with a ripple spreading from its centre
-// as the hover comes. A pane whose Claude session works carries Material's indeterminate linear
+// navigation drawer's pill in the theme's selection colour, spanning the sidebar inset from its
+// edges whatever the row's indent; a hovered row or tab is a quiet state layer of the text, and a
+// ripple spreads from a row's centre as it is selected. A pane whose Claude session works carries Material's indeterminate linear
 // progress indicator along the bottom of its strip. Every container keeps the theme's dim text at
 // 4.5:1 or better, and every colour is the theme's. The preamble (arkos.metal) is prepended
 // before this is compiled, and declares ArkosInputs, ArkosBlock, ArkosVertex and the ARKOS_*
 // indices used here.
 
-// Material's state layer opacities: hover 8%, the ripple 12%.
-constant float HOVER_LAYER = 0.08;
+// The state layers: a hover is a quiet 5% of the text, under Material's 8% so a row only
+// brightens a little; the ripple, 12%, plays only as a row is selected, a press, never on hover.
+constant float HOVER_LAYER = 0.05;
 constant float RIPPLE_LAYER = 0.12;
 // A card's corner radius, in points: the manifest's `pane_radius`, so the app's focus ring
 // follows it.
@@ -130,6 +131,13 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float3 col = frame;
     float lined = 0.0;
     int nb = min(int(u.block_count), 48);
+    // The sidebar's span, so every row's pill runs the same width whatever its indent.
+    float2 side = float2(0.0, 0.0);
+    for (int i = 0; i < nb; i++) {
+        if (int(u.blocks[i].kind) == ARKOS_SIDEBAR_BLOCK) {
+            side = float2(u.blocks[i].rect.x, u.blocks[i].rect.x + u.blocks[i].rect.z);
+        }
+    }
     for (int i = 0; i < nb; i++) {
         ArkosBlock blk = u.blocks[i];
         int kind = int(blk.kind);
@@ -137,9 +145,12 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         bool inside = p.x >= r.x && p.x <= r.x + r.z && p.y >= r.y && p.y <= r.y + r.w;
         if (kind == ARKOS_ROW_HIGHLIGHT_BLOCK || kind == ARKOS_TAB_HIGHLIGHT_BLOCK) {
             bool row = kind == ARKOS_ROW_HIGHLIGHT_BLOCK;
-            // A row's pill is inset from the sidebar's edges; a tab's from the strip's top and
-            // bottom. Both are full pills.
-            float4 pr = row ? float4(r.x + PILL_INSET, r.y, r.z - 2.0 * PILL_INSET, r.w) : float4(r.x + 2.0, r.y + 4.0, r.z - 4.0, r.w - 8.0);
+            // A row in the sidebar has a pill spanning it, inset from its edges (any other row, a
+            // menu's, keeps its own span); a tab's is inset from the strip's top and bottom. Both
+            // are full pills.
+            bool in_side = row && side.y > side.x && r.x >= side.x && r.x < side.y;
+            float2 span = in_side ? side : float2(r.x, r.x + r.z);
+            float4 pr = row ? float4(span.x + PILL_INSET, r.y, span.y - span.x - 2.0 * PILL_INSET, r.w) : float4(r.x + 2.0, r.y + 4.0, r.z - 4.0, r.w - 8.0);
             float shape = round_box(p, pr, 1e4);
             if (shape <= 0.0) {
                 continue;
@@ -152,8 +163,11 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             if (state == 0 || state == 2) {
                 col = mix(col, ink, shape * v * HOVER_LAYER);
             }
-            // The ripple: from the centre, reaching the ends as the fade completes, and thinning
-            // out as it goes (nothing at either end of the fade).
+            // The ripple, as a row is selected: from the centre, reaching the ends as the fade
+            // completes, and thinning out as it goes (nothing at either end of the fade).
+            if (!row || state != 1) {
+                continue;
+            }
             float2 c = pr.xy + pr.zw * 0.5;
             float reach = length(pr.zw * 0.5) * saturate(blk.value);
             float ring = 1.0 - smoothstep(reach - 1.0, reach + 1.0, length(p - c));

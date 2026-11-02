@@ -134,6 +134,37 @@ in once the effect has faded in, as `ui_text_bump` does:
 - The status bar as a block of its own.
 - Doodles in the margins, or a glyph shader that reshapes letters: the font is the handwriting.
 
+## Material, fourth pass: a Google-style workspace
+
+Cyrus found Material not "Googley" and asked for the look of a Google IDE without any of its
+branding: no logos, no product names, no proprietary fonts. Material 3's baseline purple is the
+Android default; Google's own web workspaces wear a different Material. This pass follows those:
+
+- **Palette.** A cool pale grey frame (`#f0f4f9`) for the title bar, the sidebar and the status
+  bar; white for the cards and the documents; a deep blue accent (`#0b57d0`); a light blue
+  selection (`#c2e7ff`) that is also the drawer's pill; near black text (`#1f1f1f`) and a warm
+  grey dim (`#444746`); ANSI hues at tone 40.
+- **Type.** DM Sans for the chrome and the prose, an open geometric sans in the same spirit as
+  the proprietary face Google uses; Roboto Mono for the terminal.
+- **Cards.** A new manifest key, `gap` (0 to 16 points), keeps that much frame round every pane:
+  between panes (`split_view::spaced` moves each pane's inner sides in, leaving the handles and
+  the tree's layout alone), under the bars and at the window's edges (`content_area`), and beside
+  the sidebar unless a `binder` is that gutter. Material asks for 8. `pane_radius` (0 to 24)
+  tells the app the cards' corner radius: the focused pane's glow becomes a two point ring
+  rounded to match, and a terminal's or document's paper rounds its bottom corners, so neither
+  shows square on the frame. Material asks for 14, the wash's `CARD_RADIUS`.
+- **Tabs.** A new block, `ARKOS_ACTIVE_TAB_BLOCK` (14), is each pane's active tab where its tab
+  bar lays it out, reported while the effect paints the highlights. Material underlines it in the
+  accent under the label (Material's tab indicator) and draws no active tab fill
+  (`active_tab_alpha = 0`).
+- **The rest of the wash.** A search-bar pill round the title's words (`title_pad = 10`); the
+  pane's number on a round chip of its own hue (the ANSI blue, green, yellow and red as tonal
+  containers); a hairline under each tab strip; the selected row a full pill across the sidebar,
+  inset from its edges and the same width at any indent; the busy pane's progress bar along the
+  bottom of its strip. No lines between cards.
+- **Hover.** A quiet state layer of the text, 5%, with no ripple: Cyrus found Material's 8% with
+  a ripple too loud. The ripple is kept for a row being selected, a press, as Material has it.
+
 ## For Cyrus to decide
 
 - The terminal font for the notebook: Monaspace Radon (A) or Comic Mono (B).

@@ -422,8 +422,8 @@ text starts brighter and cools over a second and a half. Material comes with `ma
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a white card with rounded corners floating on it, the pane's number sits on a coloured round
 chip (blue, green, yellow, red in turn), each active tab is underlined in blue, the selected
-Explorer row is a light blue pill, a hovered row or tab a faint grey layer with a ripple as it
-comes, and a pane whose Claude session works carries an indeterminate progress bar along the
+Explorer row is a light blue pill across the sidebar with a ripple as it is chosen, a hovered row
+or tab a faint grey pill, and a pane whose Claude session works carries an indeterminate progress bar along the
 bottom of its tab strip; the text stays as DM Sans draws it.
 Composition Notebook comes with `notebook`: the title bar is the marbled black-and-white cover
 with its white label round the title's words and icons, the status bar the cover faded, the
