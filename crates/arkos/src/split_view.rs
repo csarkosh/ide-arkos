@@ -22,6 +22,16 @@ pub fn ratio_from_pointer(area: Rect, orientation: Orientation, x: f32, y: f32) 
     (pos / len).clamp(0.0, 1.0)
 }
 
+/// The area the panes are laid out in, and the binder's width left of it: right of a sidebar
+/// `side` points wide and the effect's `binder` gutter (only while the sidebar shows), below the
+/// window's bars (`top`), in a window `width` by `height`. A window smaller than its chrome lays
+/// out at zero.
+pub fn content_area(side: f32, binder: f32, top: f32, width: f32, height: f32) -> (Rect, f32) {
+    let binder = if side > 1.0 { binder } else { 0.0 };
+    let x = side + binder;
+    (Rect { x, y: top, w: (width - x).max(0.0), h: (height - top).max(0.0) }, binder)
+}
+
 /// The panes and handles for the current tree, positioned absolutely inside `root.content`.
 /// Layout rects are in window pixels; the container starts at `content`'s origin, so each child
 /// is placed relative to it.
@@ -118,6 +128,19 @@ fn render_handle(root: &mut Root, split: SplitId, orientation: Orientation, rect
 mod tests {
     use super::*;
     use crate::tree::Orientation;
+
+    #[test]
+    fn the_panes_start_past_the_binder_only_while_the_sidebar_shows() {
+        let (area, binder) = content_area(240.0, 20.0, 28.0, 1200.0, 800.0);
+        assert_eq!(area, Rect { x: 260.0, y: 28.0, w: 940.0, h: 772.0 });
+        assert_eq!(binder, 20.0);
+        let (area, binder) = content_area(0.0, 20.0, 28.0, 1200.0, 800.0);
+        assert_eq!((area.x, area.w, binder), (0.0, 1200.0, 0.0), "no sidebar, no binder");
+        let (area, binder) = content_area(240.0, 0.0, 28.0, 1200.0, 800.0);
+        assert_eq!((area.x, binder), (240.0, 0.0));
+        let (area, _) = content_area(240.0, 20.0, 900.0, 200.0, 800.0);
+        assert_eq!((area.w, area.h), (0.0, 0.0), "a window smaller than its chrome lays out at zero");
+    }
 
     #[test]
     fn ratio_follows_the_pointer_inside_the_split() {

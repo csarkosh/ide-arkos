@@ -22,6 +22,12 @@ pub struct Manifest {
     pub scale: f32,
     /// Points added to the project window's UI text.
     pub ui_text_bump: f32,
+    /// Points added inside the title bar at both ends, so its words and icons sit clear of a
+    /// shape the wash draws round them.
+    pub title_pad: f32,
+    /// The width in points of a gutter between the sidebar and the panes, for the wash to draw
+    /// in (reported as a binder block); 0, none.
+    pub binder: f32,
     /// The app hides its own 1 px borders and the wash draws the edges.
     pub ink_borders: bool,
     pub highlights: Highlights,
@@ -77,6 +83,8 @@ impl Default for Manifest {
             frame_rate: 30,
             scale: 0.5,
             ui_text_bump: 0.0,
+            title_pad: 0.0,
+            binder: 0.0,
             ink_borders: false,
             highlights: Highlights::App,
             menus: MenuLook::App,
@@ -145,6 +153,8 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("frame_rate", m.frame_rate, 1, 60)?;
     in_range("scale", m.scale, 0.1, 1.0)?;
     in_range("ui_text_bump", m.ui_text_bump, 0.0, 4.0)?;
+    in_range("title_pad", m.title_pad, 0.0, 24.0)?;
+    in_range("binder", m.binder, 0.0, 32.0)?;
     in_range("paper_alpha", m.paper_alpha, 0.5, 1.0)?;
     if let Some(a) = m.document_paper_alpha {
         in_range("document_paper_alpha", a, 0.5, 1.0)?;
@@ -291,7 +301,21 @@ mod tests {
     }
 
     #[test]
+    fn the_title_padding_and_the_binder_default_to_none_and_the_notebook_asks_for_both() {
+        let m = parse(MINIMAL).unwrap();
+        assert_eq!((m.title_pad, m.binder), (0.0, 0.0));
+        let b = BUILTIN.iter().find(|b| b.name == "notebook").unwrap();
+        let m = parse(b.manifest).unwrap();
+        assert!(m.title_pad > 0.0, "room around the title's words inside the cover's label");
+        assert!(m.binder > 0.0, "a gutter for the spiral between the sidebar and the panes");
+    }
+
+    #[test]
     fn a_value_out_of_range_is_refused_with_its_key_and_range() {
+        let e = parse(&with("title_pad = 30")).unwrap_err();
+        assert!(e.contains("title_pad must be 0.0 to 24.0 (was 30.0)"), "{e}");
+        let e = parse(&with("binder = -1")).unwrap_err();
+        assert!(e.contains("binder must be 0.0 to 32.0 (was -1.0)"), "{e}");
         let e = parse(&with("frame_rate = 90")).unwrap_err();
         assert!(e.contains("frame_rate must be 1 to 60 (was 90)"), "{e}");
         let e = parse(&with("scale = 0.05")).unwrap_err();
@@ -363,14 +387,14 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_may_ask_the_terminal_to_paint_changed_cells_in_only_with_a_glyphs_file_and_watercolor_does() {
+    fn a_manifest_may_ask_the_terminal_to_paint_changed_cells_in_only_with_a_glyphs_file_and_watercolor_and_notebook_do() {
         assert!(!parse(MINIMAL).unwrap().terminal_paint);
         assert!(parse(&with("glyphs = \"g.metal\"\nterminal_paint = true")).unwrap().terminal_paint);
         assert_eq!(parse(&with("terminal_paint = true")).unwrap_err(), "terminal_paint = true requires a glyphs file");
         let both = with("glyphs = \"g.metal\"\nglyph_motion = true\nterminal_decode = true\nterminal_paint = true");
         assert_eq!(parse(&both).unwrap_err(), "terminal_paint and terminal_decode cannot both be true");
         for b in BUILTIN.iter() {
-            assert_eq!(parse(b.manifest).unwrap().terminal_paint, b.name == "watercolor", "{}", b.name);
+            assert_eq!(parse(b.manifest).unwrap().terminal_paint, b.name == "watercolor" || b.name == "notebook", "{}", b.name);
         }
     }
 
@@ -488,7 +512,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
         );
     }
 

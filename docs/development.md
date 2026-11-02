@@ -493,6 +493,20 @@ Things only a person at the screen can check, in order of value:
   a line under the header from the wash, and inner lines in ink; scrolled half out of the pane,
   its outline stops at the pane's edge; with `effect.name none` the cream fills and grey lines
   come back
+- effects, notebook: Composition Notebook (`effect.name = "theme"`) shows the title bar as the
+  black-and-white marbled cover with the title's words and the bell and doctor icons on its white
+  label (readable, the traffic lights on the marble, the words and icons well inside the label's
+  ends), the status bar as the cover faded under readable text, the sidebar as plain inside
+  cover, a wire spiral in a gutter between the sidebar and the panes (each turn out of a punched
+  hole on one side and into one on the other; the gutter goes when the sidebar is hidden with
+  Cmd+B and when the effect is turned off, the panes widening into it), each pane as a cream page with a red margin
+  line at its left, and a terminal's rows each sitting on a blue rule that stays under its row
+  through a scroll and a resize (a markdown tab has the margin only); edges are pencil lines,
+  the selected Explorer row a yellow highlighter stroke with ragged ends and the hovered row a
+  lighter one; the text is hand-set in Chalkboard SE and Monaspace Radon (each glyph a little off
+  its line, grainy, no bleed) and new terminal output is written in by the pen, a shade darker
+  while wet; under Navy with `effect.name = "notebook"` the cover's label and the rules read in
+  Navy's colours
 - effects: Navy (`effect.name = "theme"`, the default) draws plain, with no effect
 - effects, space: Navy with `effect.name = "space"` shows the night sky; over ten minutes a
   shooting star crosses every 8 to 16 seconds (one at a time, in under a second, no bright

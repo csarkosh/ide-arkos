@@ -1,0 +1,429 @@
+// Glyphs as if written by hand on a notebook page. This is appended to gpui's own shader source
+// (its sprite declarations come first), and stands in for its monochrome sprite stages. It is
+// watercolor's glyph shader with a different pen: a ballpoint rather than a brush. Each glyph
+// sits a little off its line, by its character and its column (so a row keeps its jitter as it
+// scrolls), the stroke takes a graphite grain and the paper's tooth, and there is no bleed and
+// no halo: the line is the line. A stroke's core keeps at least 55% of its coverage, so thin
+// text stays legible.
+//
+// New terminal text is written in exactly as watercolor writes it (effects/paint.rs: the stamp
+// names the hand, the pen crosses the glyph over ARKOS_PAINT_DUR on Material's standard
+// decelerate curve, a change in place soaks in while its ghost lifts off, a spinner's frame
+// crossfades, a tool's blinking dot is doodled): only the ink differs. Wet ink reads a shade
+// darker (lighter, on a dark ground) and dries to the theme's colour over ARKOS_PAINT_DRY. A
+// cell background is a highlighter stroke rather than a wash: flat, with the marker's streaks,
+// ragged only at its ends.
+//
+// gpui hands a glyph shader device pixels. Every distance and size below is measured in half
+// points through PER_PX (ARKOS_SCALE, the window's pixels per point, is declared by the window).
+constant float PER_PX = ARKOS_SCALE / 2.0;
+constant float INK_REACH = 2.0 * PER_PX;
+// How far a glyph may sit off its line, in pixels: half a point.
+constant float JITTER = 1.0 * PER_PX;
+// The width of the pen's edge, in path units (the glyph's box is 0 to 1): narrow, so the ink is
+// drawn on rather than faded in.
+constant float PEN_EDGE = 0.05;
+// How far behind the pen its wet bead reaches, in path units.
+constant float PEN_BEAD = 0.16;
+
+struct MonochromeInkVertexOutput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 color [[flat]];
+  float4 clip_distance;
+  float4 tile_rect [[flat]];
+  float glyph_h [[flat]];
+  float glyph_w [[flat]];
+  float4 paint [[flat]];
+  float mode [[flat]];
+  float2 box;
+};
+
+struct MonochromeInkFragmentInput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 color [[flat]];
+  float4 clip_distance;
+  float4 tile_rect [[flat]];
+  float glyph_h [[flat]];
+  float glyph_w [[flat]];
+  float4 paint [[flat]];
+  float mode [[flat]];
+  float2 box;
+};
+
+vertex MonochromeInkVertexOutput arkos_glyph_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(SpriteInputIndex_ViewportSize)]],
+    constant Size_DevicePixels *atlas_size
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  MonochromeSprite sprite = sprites[sprite_id];
+  Bounds_ScaledPixels wide = sprite.bounds;
+  // The hand: the glyph sits up to JITTER off its line, by its character (its tile) and its
+  // column, never its row, so a line keeps its jitter as it scrolls.
+  float jit = fract(sin(dot(float2(sprite.tile.bounds.origin.x + sprite.tile.bounds.origin.y * 0.37, sprite.bounds.origin.x), float2(12.9898, 78.233))) * 43758.5453);
+  wide.origin.y += (jit - 0.5) * 2.0 * JITTER;
+  wide.origin.x -= INK_REACH;
+  wide.origin.y -= INK_REACH;
+  wide.size.width += 2.0 * INK_REACH;
+  wide.size.height += 2.0 * INK_REACH;
+  float4 device_position =
+      to_device_position_transformed(unit_vertex, wide, sprite.transformation, viewport_size);
+  float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, wide,
+                                                 sprite.content_mask.bounds, sprite.transformation);
+  float2 atlas = float2((float)atlas_size->width, (float)atlas_size->height);
+  float2 tile_origin = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_size = float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 glyph_size = float2(sprite.bounds.size.width, sprite.bounds.size.height);
+  // Texels per device pixel (1 unless the glyph is scaled), so the reach maps into the atlas.
+  float2 per_px = tile_size / max(glyph_size, float2(1.0));
+  float2 local = unit_vertex * float2(wide.size.width, wide.size.height) - INK_REACH;
+  float2 tile_position = (tile_origin + local * per_px) / atlas;
+  float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
+  float4 color = hsla_to_rgba(sprite.color);
+  // The paint-in: the hand the stamp names. The paint carries the start (the stamp), the glyph
+  // time (0 for no stamp), across and the bead.
+  int variant = int(round(sprite.stamp * ARKOS_PAINT_STEPS)) & (ARKOS_PAINT_VARIANTS - 1);
+  float4 hand = ARKOS_PAINT_HAND[variant];
+  float start = sprite.stamp;
+  // A wash carries which of its top and bottom join the next row's band in place of the bead.
+  bool wash = variant >= ARKOS_PAINT_WASH && variant < ARKOS_PAINT_WASH + 4;
+  hand.w = wash ? float(variant - ARKOS_PAINT_WASH) : hand.w;
+  return MonochromeInkVertexOutput{
+      device_position,
+      tile_position,
+      color,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      tile_rect,
+      float(sprite.bounds.size.height) / PER_PX,
+      float(sprite.bounds.size.width) / PER_PX,
+      float4(start, sprite.stamp != 0.0 ? hand.y : 0.0, hand.z, hand.w),
+      // 0 for the pen, 1 for a change in place soaking in, 2 for the text it replaced fading out,
+      // 3 for a doodled mark, 4 for a cell drawn as nothing and 5 for a background's wash.
+      sprite.stamp == 0.0 ? 0.0
+        : (variant >= ARKOS_PAINT_WASH && variant < ARKOS_PAINT_WASH + 4) ? 5.0
+        : variant == ARKOS_PAINT_HIDE ? 4.0
+        : variant == ARKOS_PAINT_DOODLE ? 3.0
+        : (variant == ARKOS_PAINT_FADE || variant == ARKOS_PAINT_FLIP_FADE) ? 2.0
+        : (variant == ARKOS_PAINT_SOAK || variant == ARKOS_PAINT_FLIP_SOAK) ? 1.0 : 0.0,
+      // The pixel's place in the glyph's box, 0 to 1 across and down, past it in the reach.
+      local / max(glyph_size, float2(1.0))};
+}
+
+float arkos_hash(float2 p) {
+  return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float arkos_noise(float2 p) {
+  float2 i = floor(p);
+  float2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(arkos_hash(i), arkos_hash(i + float2(1.0, 0.0)), f.x),
+             mix(arkos_hash(i + float2(0.0, 1.0)), arkos_hash(i + float2(1.0, 1.0)), f.x), f.y);
+}
+
+// The glyph's coverage at uv, nothing outside its own tile.
+float ink_at(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
+  if (any(uv < rect.xy) || any(uv > rect.zw)) {
+    return 0.0;
+  }
+  return atlas.sample(s, uv).a;
+}
+
+// A background band's wash (see the top of this file). Sizes are in half points, as px is.
+float4 arkos_wash(MonochromeInkFragmentInput input, float2 px, float now) {
+  float2 size = float2(input.glyph_w, input.glyph_h);
+  float2 b = input.box;
+  float bloom = arkos_noise(px * 0.025);
+  float grain = arkos_noise(px * 0.12 + 3.0);
+  // Which edges are open: both ends always; the top and bottom unless the next row's band joins.
+  int joined = int(input.paint.w + 0.5);
+  bool open_top = (joined & 1) == 0;
+  bool open_bottom = (joined & 2) == 0;
+  // Past an open edge, a ragged bleed; past a joined one, nothing, the next row's band takes over.
+  float beyond_x = max(-b.x, b.x - 1.0) * size.x;
+  float beyond_y = b.y < 0.0 ? (open_top ? -b.y * size.y : 1e4) : (b.y > 1.0 ? (open_bottom ? (b.y - 1.0) * size.y : 1e4) : 0.0);
+  float beyond = max(beyond_x, beyond_y);
+  float body;
+  float pooled = 0.0;
+  if (beyond > 0.0) {
+    body = saturate(1.0 - (beyond - (grain - 0.35) * 2.0) / 1.5) * 0.7;
+  } else {
+    // A marker's flat body, streaked along the stroke.
+    body = 0.86 + 0.14 * arkos_noise(float2(px.x * 0.04, px.y * 0.5) + 3.0) - 0.04 * grain;
+    // How far inside the nearest open edge, in half points: the body fades in raggedly over the
+    // last few and pools a little darker just inside.
+    float inside = min(b.x, 1.0 - b.x) * size.x;
+    if (open_top) { inside = min(inside, b.y * size.y); }
+    if (open_bottom) { inside = min(inside, (1.0 - b.y) * size.y); }
+    body *= smoothstep(0.0, 4.0, inside + (grain - 0.5) * 3.0 + 1.0);
+    pooled = (1.0 - smoothstep(0.0, 5.0, inside)) * (0.5 + 0.5 * grain);
+  }
+  float alpha = saturate(body + pooled * 0.12);
+  float3 rgb = input.color.rgb * (1.0 - 0.12 * pooled);
+  // Washing in: a ragged brush front crosses the band, and the wash dries a shade lighter.
+  float age = now - input.paint.x;
+  float dur = ARKOS_PAINT_DUR * input.paint.y;
+  if (age > -60.0 && age < dur + ARKOS_PAINT_DRY) {
+    float progress = saturate(age / dur);
+    float path = saturate(b.x) * 0.82 + bloom * 0.12 + grain * 0.06;
+    alpha *= progress >= 1.0 ? 1.0 : saturate((progress * 1.15 - path) / 0.1);
+    float wet = age > dur ? saturate(1.0 - (age - dur) / ARKOS_PAINT_DRY) : 1.0;
+    rgb *= 1.0 - 0.14 * wet;
+  }
+  return float4(rgb, alpha * input.color.a);
+}
+
+fragment float4 arkos_glyph_fragment(
+    MonochromeInkFragmentInput input [[stage_in]],
+    constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],
+    constant float *time [[buffer(5)]]) {
+  if (any(input.clip_distance < float4(0.0))) {
+    return float4(0.0);
+  }
+  constexpr sampler smp(mag_filter::linear, min_filter::linear);
+  // The pixel's place in half points, so the noise below has the same grain on any screen.
+  float2 px = input.position.xy / PER_PX;
+  float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float4 rect = input.tile_rect;
+
+  // Small text (the UI's labels, a tab's title) would see the slow variations below span a whole
+  // word and look plain. `small` grows from 1 for a glyph as tall as code text to 2.2 for the
+  // smallest labels: the variations come that much finer and the bleed that much stronger,
+  // so a label reads as painted as a page does. A period or a comma is clamped, not blown up.
+  float small = clamp(22.0 / max(input.glyph_h, 1.0), 1.0, 2.2);
+
+  // A working mark's doodle: how strongly (1 while the mark flips, easing to 0 as the hold runs
+  // out) and where the pen is round it (0 to 1).
+  if (input.mode > 4.5) {
+    return arkos_wash(input, px, *time);
+  }
+  if (input.mode > 3.5) {
+    return float4(0.0);
+  }
+  float doodle = 0.0;
+  float turn = fract(*time * ARKOS_DOODLE_TURNS);
+  if (input.mode > 2.5) {
+    float since = *time - input.paint.x;
+    doodle = since > -60.0 ? 1.0 - smoothstep(ARKOS_DOODLE_HOLD * 0.6, ARKOS_DOODLE_HOLD, since) : 0.0;
+  }
+
+  // The hand: the stroke drifts by up to a pixel along smooth noise, and a doodled mark sways
+  // round with the pen.
+  float2 wob = (float2(arkos_noise(px * 0.07 * small), arkos_noise(px * 0.07 * small + 17.0)) - 0.5) * 1.8;
+  wob += float2(cos(turn * 6.2831853), sin(turn * 6.2831853)) * 0.8 * doodle;
+  float2 uv = input.tile_position + wob * PER_PX * texel;
+
+  float core = ink_at(atlas_texture, smp, uv, rect);
+  // Two rings of samples: a near one for the stroke's own edge, a far one for the bleed.
+  float near = 0.0;
+  float far = 0.0;
+  for (int k = 0; k < 8; k++) {
+    float ang = float(k) * 0.785398 + 0.3;
+    float2 d = float2(cos(ang), sin(ang));
+    near += ink_at(atlas_texture, smp, uv + d * 1.2 * PER_PX * texel, rect);
+    far += ink_at(atlas_texture, smp, uv + d * 2.7 * PER_PX * texel, rect);
+  }
+  near *= 0.125;
+  far *= 0.125;
+
+  // Pigment pools at the inside of a stroke's edge, as wet ink dries darker at its rim. A thin
+  // stroke is nearly all edge, so it pools a little less or it would only go darker.
+  // A ballpoint neither pools nor bleeds.
+  float pool = 0.0;
+  // The bleed: ink feathers out into the paper, unevenly, more around a small glyph.
+  float feather = arkos_noise(px * 0.18 * small + 5.0);
+  float halo = 0.0;
+  // The brush pen loads and runs dry: density varies across a word, or across a letter of a
+  // label, and swings further on small text.
+  // Graphite: the line's weight varies a little along it, and a little more on small text.
+  float density = mix(0.8, 0.72, (small - 1.0) / 1.2) + mix(0.2, 0.28, (small - 1.0) / 1.2) * arkos_noise(px * 0.05 * small * small + 9.0);
+  // The paper's tooth.
+  float tooth = 0.86 + 0.14 * arkos_hash(floor(px * 0.7));
+
+  // The paint-in: how far the stroke has soaked in (0 to 1) and how wet it still is (1 to 0).
+  // A stamp older than a minute, the clock's wrap among them, has long dried.
+  float progress = 1.0;
+  float wet = 0.0;
+  if (input.paint.y > 0.0) {
+    float age = *time - input.paint.x;
+    float dur = ARKOS_PAINT_DUR * input.paint.y;
+    if (age > -60.0) {
+      progress = saturate(age / dur);
+      wet = age > dur ? saturate(1.0 - (age - dur) / ARKOS_PAINT_DRY) : 1.0;
+    }
+  }
+  // The pen: ink shows where it has passed, the edge a little uneven as a nib's is, and the stretch
+  // just behind it is its wet bead. Once across, all of the glyph shows.
+  float soak = 1.0;
+  float bead = 0.0;
+  float bleed = 0.0;
+  float thick = saturate(core * 0.45 + near * 0.35 + far * 0.2) + (feather - 0.5) * 0.15;
+  if (input.mode > 2.5) {
+    // The doodle: the pen's tip goes round the mark; the ink just behind it is full and wet, and
+    // it thins out to a little under half by the time the tip comes round again.
+    float2 d = saturate(input.box) - 0.5;
+    float angle = atan2(d.y, d.x) / 6.2831853 + 0.5;
+    float trail = fract(turn - angle + (feather - 0.5) * 0.08);
+    soak = mix(1.0, mix(0.45, 1.0, exp(-trail * 3.0)), doodle);
+    bead = doodle * exp(-trail * 8.0);
+    wet = doodle * 0.6;
+    progress = 1.0;
+  } else if (input.mode > 1.5 && input.paint.y > 0.0) {
+    // The ghost of replaced text lifts off, its thin edges first, and is gone once the new text
+    // has soaked in; it never reads wet.
+    float lift = smoothstep(0.0, 1.0, progress);
+    soak = progress >= 1.0 ? 0.0 : saturate((thick + 0.35 - lift * 1.35) * 3.0);
+    wet = 0.0;
+  } else if (input.mode > 0.5 && (progress < 1.0 || wet > 0.0)) {
+    // A change in place soaks in, thickest strokes first, with a soft edge so it eases in. Its
+    // bead says how wet it reads: a spinner's frame, a moment old at most, never does.
+    wet *= input.paint.w;
+    float seep = smoothstep(0.0, 1.0, progress);
+    soak = progress >= 1.0 ? 1.0 : saturate((thick - (1.0 - seep * 1.35)) * 3.0);
+    bleed = 0.0;
+  } else if (progress < 1.0 || wet > 0.0) {
+    float path = dot(saturate(input.box), float2(input.paint.z, 1.0 - input.paint.z)) + (feather - 0.5) * 0.06;
+    // Material 3's standard decelerate curve (0, 0, 0, 1): x = s^3 and y the smoothstep of s.
+    float s = pow(progress, 1.0 / 3.0);
+    float eased = s * s * (3.0 - 2.0 * s);
+    float behind = eased * (1.0 + PEN_EDGE + PEN_BEAD) - path;
+    soak = progress >= 1.0 ? 1.0 : saturate(behind / PEN_EDGE);
+    bead = progress >= 1.0 ? 0.0 : saturate(soak * saturate(1.0 - (behind - PEN_EDGE) / PEN_BEAD) * input.paint.w);
+    // Wet ink bleeds wide around the stroke behind the pen, and draws back as it dries.
+    bleed = 0.0;
+  }
+
+  float alpha = saturate(max(core * density * tooth, core * 0.55) + halo + pool * 0.3);
+  // The bead is fuller ink: the pen's stroke at full coverage where it has just been.
+  alpha = saturate(mix(alpha, max(alpha, core), bead) * soak + bleed);
+  float3 rgb = input.color.rgb;
+  // Darker where it pooled, paler and warmer where it bled.
+  rgb *= 1.0 - 0.4 * pool;
+  float bled = saturate((halo * soak + bleed) / max(alpha, 1e-4));
+  rgb = mix(rgb, rgb * float3(1.25, 1.1, 0.95) + 0.08, bled * 0.6);
+  // Wet ballpoint reads a shade heavier: dark text darker, light text lighter.
+  if (wet > 0.0) {
+    bool dark = dot(input.color.rgb, float3(0.2126, 0.7152, 0.0722)) < 0.45;
+    float3 wet_rgb = dark ? input.color.rgb * 0.6 : mix(input.color.rgb, float3(1.0), 0.25);
+    rgb = mix(rgb, wet_rgb, saturate(wet * 0.6 + bead * 0.3));
+  }
+  return float4(rgb, alpha * input.color.a);
+}
+
+// Emoji, in the same ink. gpui draws emoji as colour sprites; these stand in for its colour
+// sprite stages for emoji only.
+struct EmojiInkVertexOutput {
+  float4 position [[position]];
+  float2 tile_position;
+  float clip_distance [[clip_distance]][4];
+  float4 tile_rect [[flat]];
+  float opacity [[flat]];
+  float glyph_h [[flat]];
+};
+
+struct EmojiInkFragmentInput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 tile_rect [[flat]];
+  float opacity [[flat]];
+  float glyph_h [[flat]];
+};
+
+vertex EmojiInkVertexOutput arkos_emoji_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(SpriteInputIndex_ViewportSize)]],
+    constant Size_DevicePixels *atlas_size
+    [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  PolychromeSprite sprite = sprites[sprite_id];
+  // Widened as a glyph's quad is, so the bleed has room past the emoji's edge.
+  Bounds_ScaledPixels wide = sprite.bounds;
+  wide.origin.x -= INK_REACH;
+  wide.origin.y -= INK_REACH;
+  wide.size.width += 2.0 * INK_REACH;
+  wide.size.height += 2.0 * INK_REACH;
+  float4 device_position = to_device_position(unit_vertex, wide, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, wide, sprite.content_mask.bounds);
+  float2 atlas = float2((float)atlas_size->width, (float)atlas_size->height);
+  float2 tile_origin = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_size = float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 emoji_size = float2(sprite.bounds.size.width, sprite.bounds.size.height);
+  float2 per_px = tile_size / max(emoji_size, float2(1.0));
+  float2 local = unit_vertex * float2(wide.size.width, wide.size.height) - INK_REACH;
+  float2 tile_position = (tile_origin + local * per_px) / atlas;
+  float4 tile_rect = float4(tile_origin / atlas, (tile_origin + tile_size) / atlas);
+  return EmojiInkVertexOutput{
+      device_position,
+      tile_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      tile_rect,
+      sprite.opacity,
+      float(sprite.bounds.size.height) / PER_PX};
+}
+
+// The emoji's colour at uv, nothing outside its own tile.
+float4 emoji_at(texture2d<float> atlas, sampler s, float2 uv, float4 rect) {
+  if (any(uv < rect.xy) || any(uv > rect.zw)) {
+    return float4(0.0);
+  }
+  return atlas.sample(s, uv);
+}
+
+fragment float4 arkos_emoji_fragment(
+    EmojiInkFragmentInput input [[stage_in]],
+    constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
+  constexpr sampler smp(mag_filter::linear, min_filter::linear);
+  float2 px = input.position.xy / PER_PX;
+  float2 texel = 1.0 / float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float4 rect = input.tile_rect;
+  float small = clamp(22.0 / max(input.glyph_h, 1.0), 1.0, 2.2);
+
+  // The hand: a little less drift than a letter's, so the picture stays clear.
+  float2 wob = (float2(arkos_noise(px * 0.07 * small), arkos_noise(px * 0.07 * small + 17.0)) - 0.5) * 1.4;
+  float2 uv = input.tile_position + wob * PER_PX * texel;
+
+  float4 core = emoji_at(atlas_texture, smp, uv, rect);
+  // The same two rings as a letter's: the near one finds the rim, the far one feeds the bleed,
+  // whose colour is the emoji's own nearby.
+  float near = 0.0;
+  float far = 0.0;
+  float3 bleed_rgb = float3(0.0);
+  for (int k = 0; k < 8; k++) {
+    float ang = float(k) * 0.785398 + 0.3;
+    float2 d = float2(cos(ang), sin(ang));
+    float4 n = emoji_at(atlas_texture, smp, uv + d * 1.2 * PER_PX * texel, rect);
+    float4 f = emoji_at(atlas_texture, smp, uv + d * 2.7 * PER_PX * texel, rect);
+    near += n.a;
+    far += f.a;
+    bleed_rgb += n.rgb * n.a + f.rgb * f.a;
+  }
+  bleed_rgb /= max(near + far, 1e-4);
+  near *= 0.125;
+  far *= 0.125;
+
+  // Pigment pools at the rim; ink feathers out unevenly; the pen's load varies a little (an
+  // emoji keeps at least 80% of itself); the paper's tooth.
+  float pool = saturate((core.a - near) * 2.2) * core.a * 0.8;
+  float feather = arkos_noise(px * 0.18 * small + 5.0);
+  float halo = 0.0;
+  float density = 0.85 + 0.15 * arkos_noise(px * 0.035 * small * small + 9.0);
+  float tooth = 0.9 + 0.1 * arkos_hash(floor(px * 0.7));
+
+  float body = core.a * max(density * tooth, 0.8);
+  float alpha = saturate(body + halo);
+  float3 inked = core.rgb * (1.0 - 0.3 * pool);
+  // The bleed paler and warmer than the colour it came from, as a letter's is.
+  float3 bled = mix(bleed_rgb, bleed_rgb * float3(1.25, 1.1, 0.95) + 0.08, 0.6);
+  float3 rgb = mix(bled, inked, saturate(body / max(alpha, 1e-4)));
+  return float4(rgb, alpha * input.opacity);
+}

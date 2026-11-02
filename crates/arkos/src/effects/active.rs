@@ -52,6 +52,10 @@ pub struct Style {
     pub highlights: bool,
     /// Points added to the project window's UI text.
     pub ui_text_bump: f32,
+    /// Points added inside the title bar at both ends.
+    pub title_pad: f32,
+    /// The gutter between the sidebar and the panes, in points.
+    pub binder: f32,
     /// How the menus and popovers look (`chrome::menu_colors`).
     pub menus: MenuLook,
     /// The effect draws the menus' and popovers' edges from above (its wash's `arkos_overlay`),
@@ -66,7 +70,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -94,6 +98,8 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         ink_borders: full && manifest.ink_borders,
         highlights: full && manifest.highlights == Highlights::Effect,
         ui_text_bump: if full { manifest.ui_text_bump } else { 0.0 },
+        title_pad: if full { manifest.title_pad } else { 0.0 },
+        binder: if full { manifest.binder } else { 0.0 },
         menus: if full { manifest.menus } else { MenuLook::App },
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
@@ -169,11 +175,11 @@ pub fn latest_scroll(instants: impl IntoIterator<Item = Option<Instant>>) -> Opt
     instants.into_iter().flatten().max()
 }
 
-/// What a frame's blocks are made from in the project window: the panes' content area, the
-/// window's bars, the sidebar's divider when laid out, the panes and those whose Claude session
+/// What a frame's blocks are made from in the project window: the panes' content area and the
+/// binder's width left of it, the window's bars, the sidebar's divider when laid out, the panes and those whose Claude session
 /// works, the shapes laid out inside them and the highlights' strokes.
-pub fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, divider_y, panes, busy, shapes, strokes }
+pub fn scene<'a>(content: Rect, binder: f32, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], busy: &'a [PaneId], shapes: &'a [Shape], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
+    Scene { content, title_bar_h: crate::chrome::TITLE_BAR_H, tab_bar_h: crate::pane_view::TAB_BAR_H, binder, divider_y, panes, busy, shapes, strokes }
 }
 
 /// Whether the GPU's time per frame is worth a line in the window log: the first reading, then
@@ -483,7 +489,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -577,6 +583,22 @@ mod tests {
         let mut leaving = on(watercolor(), now);
         leaving.leave(now);
         assert!(!leaving.style(now).terminal_paint);
+    }
+
+    #[test]
+    fn the_title_padding_and_the_binder_come_in_once_the_effect_has_faded_in_and_go_as_it_leaves() {
+        let notebook = || manifest::load("notebook", Path::new("/nonexistent/effects")).unwrap();
+        let m = notebook().manifest;
+        let half = style_at(&m, 0.5);
+        assert_eq!((half.title_pad, half.binder), (0.0, 0.0));
+        let full = style_at(&m, 1.0);
+        assert_eq!((full.title_pad, full.binder), (m.title_pad, m.binder));
+        assert_eq!((Style::plain().title_pad, Style::plain().binder), (0.0, 0.0));
+        let now = Instant::now();
+        let mut leaving = on(notebook(), now);
+        assert_eq!(leaving.style(now).binder, m.binder);
+        leaving.leave(now);
+        assert_eq!((leaving.style(now).title_pad, leaving.style(now).binder), (0.0, 0.0));
     }
 
     #[test]
@@ -704,7 +726,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
@@ -863,7 +885,7 @@ mod tests {
         tree.split(first, Side::Right, Tab::Terminal { session: protocol::SessionId(2), cwd: None }).unwrap();
         for content in [Rect { x: 240.0, y: 28.0, w: 960.0, h: 772.0 }, Rect { x: 240.0, y: 28.0, w: 660.0, h: 572.0 }] {
             let layout = tree.layout(content);
-            let out = blocks::blocks(&scene(content, None, &layout.panes, &[], &[], &[]), true);
+            let out = blocks::blocks(&scene(content, 0.0, None, &layout.panes, &[], &[], &[]), true);
             assert_eq!(out[0].rect.w, content.x + content.w, "the title bar spans the window");
             let bars: Vec<Rect> = out.iter().filter(|b| b.kind == Kind::TabBar).map(|b| b.rect).collect();
             let want: Vec<Rect> = layout.panes.iter().map(|(_, r)| Rect { h: crate::pane_view::TAB_BAR_H, ..*r }).collect();

@@ -115,7 +115,7 @@ fn sample_blocks(size: (f32, f32), effect: &Effect) -> Vec<Block> {
         let row = Rect { x: 0.0, y: top + 60.0, w: SIDEBAR_W, h: 22.0 };
         strokes.push((Mark { key: 11, rect: row, kind: Kind::RowHighlight, state: HighlightState::Selected }, 1.0));
     }
-    let scene = active::scene(content, Some(top + content.h * 0.6), &panes, &[], &[], &strokes);
+    let scene = active::scene(content, 0.0, Some(top + content.h * 0.6), &panes, &[], &[], &strokes);
     blocks::blocks(&scene, effect.manifest.ink_borders)
 }
 
@@ -164,7 +164,7 @@ mod tests {
     /// A small window: the title bar, two panes (tab bar and body each) and a selected and
     /// hovered row in the first, with no edges, so every pixel is wash a text sits on.
     fn small_window() -> Vec<Block> {
-        let b = |x: f32, y: f32, w: f32, h: f32, kind: Kind, ordinal: f32| Block { rect: Rect { x, y, w, h }, kind, edges: 0, seed: x + y, value: 1.0, ordinal, busy: 0.0 };
+        let b = |x: f32, y: f32, w: f32, h: f32, kind: Kind, ordinal: f32| Block { rect: Rect { x, y, w, h }, kind, edges: 0, seed: x + y, value: 1.0, ordinal, busy: 0.0, pitch: 0.0 };
         vec![
             b(0.0, 0.0, 240.0, 30.0, Kind::TitleBar, 0.0),
             b(0.0, 30.0, 120.0, 24.0, Kind::TabBar, 0.0),
@@ -316,7 +316,7 @@ mod tests {
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
         // Two panes apart, each inked on all four sides: their outlines' bands never meet.
-        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::PaneBody, edges, seed, value: 1.0, ordinal: 0.0, busy };
+        let pane = |x: f32, seed: f32, busy: f32, edges: u32| Block { rect: Rect { x, y: 16.0, w: 88.0, h: 128.0 }, kind: Kind::PaneBody, edges, seed, value: 1.0, ordinal: 0.0, busy, pitch: 0.0 };
         // The light an outline adds, in green summed over the band within 8 points of it: the
         // frame with the edges less the same frame without, so the rain under them cancels.
         let band = |with: &[Rgb], without: &[Rgb], x: u32| -> f32 {
@@ -361,7 +361,7 @@ mod tests {
         let theme = crate::theme::builtin("matrix").unwrap();
         let all = blocks::EDGE_TOP | blocks::EDGE_RIGHT | blocks::EDGE_BOTTOM | blocks::EDGE_LEFT;
         // A pane whose right and bottom edges are the window's right and bottom.
-        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::PaneBody, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0 }];
+        let pane = |edges: u32| [Block { rect: Rect { x: 16.0, y: 16.0, w: W as f32 - 16.0, h: H as f32 - 16.0 }, kind: Kind::PaneBody, edges, seed: 20.0, value: 1.0, ordinal: 0.0, busy: 1.0, pitch: 0.0 }];
         let added = |with: &[Rgb], without: &[Rgb], x0: u32, x1: u32, y0: u32, y1: u32| -> i32 {
             pixels(with, x0, y0, x1, y1).iter().zip(pixels(without, x0, y0, x1, y1)).map(|(a, b)| (a.g as i32 - b.g as i32).abs()).sum()
         };

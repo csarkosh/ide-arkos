@@ -303,6 +303,8 @@ pub struct Root {
     pub text_preset: String,
     /// The area the tree is laid out in, in window pixels, from the last render.
     pub content: Rect,
+    /// The effect's binder between the sidebar and `content`, in points, from the last render.
+    pub binder: f32,
     /// Pane ids in reading order (the tab bar numbers), computed once per render.
     pub pane_order: Vec<PaneId>,
     /// Closed tabs Cmd+Shift+T brings back: terminals whose detached sessions wait out the
@@ -697,6 +699,7 @@ impl Root {
             line_height: preset.line_height,
             text_preset,
             content: Rect { x: 0.0, y: 0.0, w: 1200.0, h: 800.0 },
+            binder: 0.0,
             pane_order: Vec::new(),
             closed: ClosedStack::default(),
             drop_target: None,
@@ -4036,7 +4039,7 @@ impl Root {
         let busy = self.sessions.working_panes(&self.tree);
         let e = self.effect.as_mut()?;
         let style = e.style(now);
-        let scene = effects::active::scene(self.content, self.effect_divider, &layout.panes, &busy, &self.effect_shapes, &strokes);
+        let scene = effects::active::scene(self.content, self.binder, self.effect_divider, &layout.panes, &busy, &self.effect_shapes, &strokes);
         self.effect_strokes_now = strokes.clone();
         let blocks = effects::blocks::blocks(&scene, style.ink_borders);
         let (size, scale) = e.layer.metrics();
@@ -4202,17 +4205,13 @@ impl Render for Root {
             .collect();
         let banner_h = BANNER_H * banners.len() as f32;
         let top = chrome::TITLE_BAR_H;
-        // The panes start right of the sidebar. A window shorter than its chrome would give a
-        // negative height; lay out at zero instead.
+        // The panes start right of the sidebar and the effect's binder, if it asks for one. A
+        // window shorter than its chrome lays out at zero.
         // While Cmd+B's slide runs, the panes follow the width on screen frame by frame (each
         // frame relays them out, as dragging the edge does; no terminal is made again).
         let side = self.sidebar.shown_width(now);
-        let content = Rect {
-            x: side,
-            y: top + banner_h,
-            w: (f32::from(size.width) - side).max(0.0),
-            h: (f32::from(size.height) - top - banner_h).max(0.0),
-        };
+        let (content, binder) = split_view::content_area(side, self.effect_style().binder, top + banner_h, f32::from(size.width), f32::from(size.height));
+        self.binder = binder;
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.
             self.grids.clear();
@@ -4422,6 +4421,7 @@ impl Render for Root {
                     .flex()
                     .flex_row()
                     .children(side_col)
+                    .child(div().flex_none().w(px(self.binder)))
                     .child(div().flex_1().min_w_0().min_h_0().child(body)),
             )
             .children(command_palette::render(self, cx))

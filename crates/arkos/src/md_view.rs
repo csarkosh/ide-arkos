@@ -874,7 +874,7 @@ fn shape_reporter(root: WeakEntity<crate::Root>, key: u64, kind: crate::effects:
     canvas(
         move |bounds, window, cx| {
             if let Some(rect) = seen(bounds, window.content_mask().bounds) {
-                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind }));
+                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind, pitch: 0.0 }));
             }
         },
         |_, _, _, _| (),

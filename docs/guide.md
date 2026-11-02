@@ -418,12 +418,20 @@ with `runic`: faint columns of runes falling at different speeds behind everythi
 thin lines of the theme's accent (green under Matrix, blue under Navy Runic), and the text as glowing type; now and then a letter flickers, mirrored
 and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
 random characters for a moment before it settles (longer while Claude is working), and fresh
-text starts brighter and cools over a second and a half. Under an effect a web tab's address
+text starts brighter and cools over a second and a half. 
+Composition Notebook comes with `notebook`: the title bar is the marbled black-and-white cover
+with its white label round the title's words and icons, the status bar the cover faded, the
+sidebar the inside cover bound to the panes by a wire spiral in a gutter between them, and each pane
+a cream page with paper fibre, a red margin line and blue rules under each of a terminal's rows;
+edges are pencil lines, the selected and hovered rows and the hovered tab a yellow highlighter
+stroke, menus pencil-edged cards, and the text is hand-set (each glyph a little off its line, a
+graphite grain, no bleed), with new terminal text written in by a ballpoint as watercolor's pen
+writes it. Under an effect a web tab's address
 bar is clear over the wash and the page is outlined; on a light theme a page that sets no
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Peach Light and Lavender Light, `runic` for Matrix and Navy Runic, and none for Navy (the default) and Timo
+for Peach Light and Lavender Light, `runic` for Matrix and Navy Runic, `notebook` for Composition Notebook, and none for Navy (the default) and Timo
 Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
@@ -804,7 +812,7 @@ theme sets every key Claude Code documents, on the `dark-ansi` base:
 | `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
-`timo-purple`, `peach-light` (warm cream and peach), `lavender-light` (a VS Code lavender look) `matrix` (black and phosphor green) and `navy-runic` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
+`timo-purple`, `peach-light` (warm cream and peach), `lavender-light` (a VS Code lavender look), `matrix` (black and phosphor green), `navy-runic` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect and `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen
