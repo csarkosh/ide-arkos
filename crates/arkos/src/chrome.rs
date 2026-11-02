@@ -237,6 +237,13 @@ pub fn aux_title_bar(title: &str, theme: &Theme) -> Div {
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
 }
 
+/// The title bar's padding at its left and right ends: past the traffic lights (12 points from
+/// the edge in full screen, where they are gone) and in from the right, each with the effect's
+/// `title_pad` added.
+pub fn bar_padding(fullscreen: bool, title_pad: f32) -> (f32, f32) {
+    (if fullscreen { 12.0 } else { TRAFFIC_LIGHTS_W } + title_pad, BAR_RIGHT_PAD + title_pad)
+}
+
 /// The words the project window's bar shows around the project's name: the app's, then in a
 /// sandbox instance the word `sandbox`, so the bar tells it from the real IDE.
 pub fn title_words(sandbox: bool) -> Vec<&'static str> {
@@ -250,14 +257,15 @@ pub fn title_words(sandbox: bool) -> Vec<&'static str> {
 pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
     let c = &theme.chrome;
     let words = title_words(sandbox);
+    let (left, right_pad) = bar_padding(fullscreen, style.title_pad);
     drag_to_move(div())
         .h(px(TITLE_BAR_H))
         .w_full()
         .flex_none()
         .flex()
         .items_center()
-        .pl(px(if fullscreen { 12.0 } else { TRAFFIC_LIGHTS_W }))
-        .pr(px(BAR_RIGHT_PAD))
+        .pl(px(left))
+        .pr(px(right_pad))
         .gap(px(10.0))
         .bg(c.title_bar.alpha(style.chrome_alpha))
         .text_color(c.text.hsla())
@@ -446,6 +454,14 @@ pub fn popover_card(which: Popover, window_w: f32, opacity: f32, live: bool, the
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_title_bar_s_padding_grows_by_the_effect_s_title_pad_on_both_sides() {
+        assert_eq!(bar_padding(false, 0.0), (TRAFFIC_LIGHTS_W, BAR_RIGHT_PAD));
+        assert_eq!(bar_padding(false, 14.0), (TRAFFIC_LIGHTS_W + 14.0, BAR_RIGHT_PAD + 14.0));
+        assert_eq!(bar_padding(true, 0.0), (12.0, BAR_RIGHT_PAD), "no traffic lights in full screen");
+        assert_eq!(bar_padding(true, 14.0), (26.0, BAR_RIGHT_PAD + 14.0));
+    }
 
     #[test]
     fn the_title_bar_adds_the_word_sandbox_only_in_a_sandbox() {

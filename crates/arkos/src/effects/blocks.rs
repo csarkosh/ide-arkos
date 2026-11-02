@@ -23,6 +23,11 @@ pub enum Kind {
     TableHeader = 10,
     /// An open menu or popover, drawn above the panes by the effect's menu stage.
     Menu = 11,
+    /// A terminal's grid of rows: the block's `pitch` is a row's height in points, so a wash can
+    /// rule the paper under each row.
+    Rows = 12,
+    /// The gutter between the sidebar and the panes an effect asked for (its `binder`).
+    Binder = 13,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -47,6 +52,8 @@ pub struct Block {
     /// 1 for a pane's tab bar and body while the pane's active tab is a terminal whose Claude
     /// session works, else 0.
     pub busy: f32,
+    /// A rows block's row height in points; 0 for every other kind.
+    pub pitch: f32,
 }
 
 /// Whether a highlight is under the pointer, selected, or both.
@@ -99,12 +106,15 @@ pub fn hover_after(hover: Option<u64>, key: u64, over: bool) -> Option<u64> {
 
 /// Something inside a pane that reports itself to the wash as it is laid out: a video's picture
 /// (`Kind::Media`), a markdown table (`Kind::Table`) or its header row (`Kind::TableHeader`),
-/// keyed by what draws it so its grain stays put as it moves.
+/// or a terminal's grid of rows (`Kind::Rows`, with its row `pitch`), keyed by what draws it so
+/// its grain stays put as it moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape {
     pub key: u64,
     pub rect: Rect,
     pub kind: Kind,
+    /// The row height in points of a rows shape; 0 for any other kind.
+    pub pitch: f32,
 }
 
 /// An open menu or popover as it reported itself this frame: what draws it, where, and how far
@@ -129,6 +139,7 @@ pub fn menu_blocks(menus: &[MenuShape]) -> Vec<Block> {
             value: m.opacity,
             ordinal: 0.0,
             busy: 0.0,
+            pitch: 0.0,
         })
         .collect()
 }
@@ -137,13 +148,15 @@ pub fn menu_blocks(menus: &[MenuShape]) -> Vec<Block> {
 /// the line is seen whole beside the picture rather than half under it.
 const MEDIA_OUTSET: f32 = 1.5;
 
-/// What the blocks are made from: the content area right of the sidebar and below the title bar,
-/// the bars' heights, the sidebar's divider when laid out, the panes from the layout, the panes
+/// What the blocks are made from: the content area right of the sidebar (and the binder) and
+/// below the title bar, the bars' heights, the binder's width, the sidebar's divider when laid out, the panes from the layout, the panes
 /// whose Claude session works, the shapes laid out inside them, and the highlights with their fades.
 pub struct Scene<'a> {
     pub content: Rect,
     pub title_bar_h: f32,
     pub tab_bar_h: f32,
+    /// The gutter's width between the sidebar and `content`; 0, none.
+    pub binder: f32,
     pub divider_y: Option<f32>,
     pub panes: &'a [(PaneId, Rect)],
     /// The panes whose active tab is a terminal whose Claude session works: their tab bar and
@@ -168,27 +181,43 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
         value: 1.0,
         ordinal: 0.0,
         busy: 0.0,
+        pitch: 0.0,
     }];
-    if c.x > 1.0 {
+    let side = (c.x - scene.binder).max(0.0);
+    if side > 1.0 {
         out.push(Block {
-            rect: Rect { x: 0.0, y: bar, w: c.x, h: (bottom - bar).max(0.0) },
+            rect: Rect { x: 0.0, y: bar, w: side, h: (bottom - bar).max(0.0) },
             kind: Kind::Sidebar,
             edges: edges(EDGE_RIGHT),
             seed: 2.0,
             value: 1.0,
             ordinal: 0.0,
             busy: 0.0,
+            pitch: 0.0,
         });
         // The line between Explorer and Worktrees: a block with no height.
         if let Some(y) = scene.divider_y.filter(|y| *y > bar && *y < bottom) {
             out.push(Block {
-                rect: Rect { x: 0.0, y, w: c.x, h: 0.0 },
+                rect: Rect { x: 0.0, y, w: side, h: 0.0 },
                 kind: Kind::Divider,
                 edges: edges(EDGE_TOP),
                 seed: 3.0,
                 value: 1.0,
                 ordinal: 0.0,
                 busy: 0.0,
+                pitch: 0.0,
+            });
+        }
+        if scene.binder > 0.0 {
+            out.push(Block {
+                rect: Rect { x: side, y: bar, w: scene.binder, h: (bottom - bar).max(0.0) },
+                kind: Kind::Binder,
+                edges: 0,
+                seed: 4.0,
+                value: 1.0,
+                ordinal: 0.0,
+                busy: 0.0,
+                pitch: 0.0,
             });
         }
     }
@@ -205,6 +234,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             value: 1.0,
             ordinal: i as f32,
             busy,
+            pitch: 0.0,
         });
         out.push(Block {
             rect: Rect { x: r.x, y: r.y + tab, w: r.w, h: (r.h - tab).max(0.0) },
@@ -214,6 +244,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             value: 1.0,
             ordinal: i as f32,
             busy,
+            pitch: 0.0,
         });
     }
     for shape in scene.shapes {
@@ -223,6 +254,8 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             Kind::Media => (Rect { x: r.x - MEDIA_OUTSET, y: r.y - MEDIA_OUTSET, w: r.w + 2.0 * MEDIA_OUTSET, h: r.h + 2.0 * MEDIA_OUTSET }, all),
             // A header is set off by the line under it; the table's outline draws the rest.
             Kind::TableHeader => (r, EDGE_BOTTOM),
+            // A terminal's rows are ruled, never outlined.
+            Kind::Rows => (r, 0),
             _ => (r, all),
         };
         out.push(Block {
@@ -233,6 +266,7 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             value: 1.0,
             ordinal: 0.0,
             busy: 0.0,
+            pitch: shape.pitch,
         });
     }
     // The highlights last: past the cap, a transient stroke goes before a pane does.
@@ -254,6 +288,7 @@ fn stroke_block(mark: &Mark, value: f32) -> Block {
         value,
         ordinal: mark.state as u32 as f32,
         busy: 0.0,
+        pitch: 0.0,
     }
 }
 
@@ -266,7 +301,7 @@ pub fn backdrop_blocks(menu: &MenuShape, strokes: &[(Mark, f32)]) -> Vec<Block> 
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h
     };
-    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0, busy: 0.0 };
+    let own = Block { rect: m, kind: Kind::Menu, edges: 0, seed: 50.0 + (menu.key % 997) as f32 * 0.61, value: 1.0, ordinal: 0.0, busy: 0.0, pitch: 0.0 };
     std::iter::once(own).chain(strokes.iter().filter(|(mark, _)| inside(mark.rect)).map(|(mark, v)| stroke_block(mark, *v))).collect()
 }
 
@@ -285,13 +320,28 @@ mod tests {
     }
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
-        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, divider_y, panes, busy: &[], shapes: &[], strokes }
+        Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y, panes, busy: &[], shapes: &[], strokes }
+    }
+
+    #[test]
+    fn a_binder_is_its_own_block_between_the_sidebar_and_the_panes_and_the_sidebar_ends_where_it_starts() {
+        let panes = [(5, rect(260.0, 38.0, 940.0, 562.0))];
+        let s = Scene { binder: 20.0, ..scene(rect(260.0, 38.0, 940.0, 562.0), Some(400.0), &panes, &[]) };
+        let out = blocks(&s, true);
+        assert_eq!(kinds(&out), vec![Kind::TitleBar, Kind::Sidebar, Kind::Divider, Kind::Binder, Kind::TabBar, Kind::PaneBody]);
+        assert_eq!(out[1].rect, rect(0.0, 38.0, 240.0, 562.0), "the sidebar stops at the binder");
+        assert_eq!(out[2].rect.w, 240.0, "and so does its divider");
+        assert_eq!(out[3].rect, rect(240.0, 38.0, 20.0, 562.0));
+        assert_eq!(out[3].edges, 0, "the binder's spiral is its own; no pencil round it");
+        assert_eq!(out[0].rect.w, 1200.0, "the title bar still spans the window");
+        let none = blocks(&scene(rect(260.0, 38.0, 940.0, 562.0), None, &panes, &[]), true);
+        assert!(!kinds(&none).contains(&Kind::Binder), "no binder asked for, none reported");
     }
 
     #[test]
     fn a_busy_pane_s_tab_bar_and_body_carry_the_busy_flag_and_nothing_else_does() {
         let panes = [(5, rect(240.0, 38.0, 480.0, 562.0)), (9, rect(720.0, 38.0, 480.0, 562.0))];
-        let shapes = [Shape { key: 7, rect: rect(260.0, 200.0, 300.0, 100.0), kind: Kind::Table }];
+        let shapes = [Shape { key: 7, rect: rect(260.0, 200.0, 300.0, 100.0), kind: Kind::Table, pitch: 0.0 }];
         let row = Mark { key: 1, rect: rect(0.0, 100.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
         let strokes = [(row, 1.0)];
         let busy = [9];
@@ -323,7 +373,7 @@ mod tests {
         assert_eq!((out[1].value, out[1].ordinal), (0.6, HighlightState::Hovered as u32 as f32));
         // The same stroke gives the same block in the wash and in the backdrop.
         let panes = [];
-        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, divider_y: None, panes: &panes, busy: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
+        let in_wash = blocks(&Scene { content: rect(0.0, 0.0, 800.0, 600.0), title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y: None, panes: &panes, busy: &[], shapes: &[], strokes: &[(inside, 0.6)] }, true);
         assert_eq!(in_wash.last(), out.last());
     }
 
@@ -455,7 +505,7 @@ mod tests {
     #[test]
     fn a_video_s_picture_is_a_media_block_inked_on_all_four_sides_just_outside_the_picture() {
         let panes = [(1, rect(0.0, 38.0, 800.0, 562.0))];
-        let frames = [Shape { key: 42, rect: rect(200.0, 68.0, 400.0, 500.0), kind: Kind::Media }];
+        let frames = [Shape { key: 42, rect: rect(200.0, 68.0, 400.0, 500.0), kind: Kind::Media, pitch: 0.0 }];
         let row = Mark { key: 1, rect: rect(0.0, 100.0, 240.0, 22.0), kind: Kind::RowHighlight, state: HighlightState::Hovered };
         let strokes = [(row, 1.0)];
         let inked = blocks(&Scene { shapes: &frames, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &strokes) }, true);
@@ -476,11 +526,22 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_s_rows_are_a_rows_block_with_its_pitch_and_no_edges_and_every_other_block_has_none() {
+        let panes = [(1u64, rect(0.0, 38.0, 800.0, 562.0))];
+        let grid = [Shape { key: 9, rect: rect(8.0, 72.0, 784.0, 520.0), kind: Kind::Rows, pitch: 20.0 }];
+        let out = blocks(&Scene { shapes: &grid, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        let rows = out.iter().find(|b| b.kind == Kind::Rows).expect("the grid is a block");
+        assert_eq!((rows.rect, rows.pitch, rows.edges), (rect(8.0, 72.0, 784.0, 520.0), 20.0, 0), "ruled, never outlined");
+        assert!(out.iter().filter(|b| b.kind != Kind::Rows).all(|b| b.pitch == 0.0), "only a rows block carries a pitch");
+        assert_eq!(kinds(&out), vec![Kind::TitleBar, Kind::TabBar, Kind::PaneBody, Kind::Rows]);
+    }
+
+    #[test]
     fn a_table_is_inked_round_its_outline_and_its_header_under_its_last_line() {
         let panes = [(1, rect(0.0, 38.0, 800.0, 562.0))];
         let shapes = [
-            Shape { key: 7, rect: rect(20.0, 200.0, 576.0, 200.0), kind: Kind::Table },
-            Shape { key: 7, rect: rect(20.0, 200.0, 576.0, 40.0), kind: Kind::TableHeader },
+            Shape { key: 7, rect: rect(20.0, 200.0, 576.0, 200.0), kind: Kind::Table, pitch: 0.0 },
+            Shape { key: 7, rect: rect(20.0, 200.0, 576.0, 40.0), kind: Kind::TableHeader, pitch: 0.0 },
         ];
         let inked = blocks(&Scene { shapes: &shapes, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
         assert_eq!(kinds(&inked), vec![Kind::TitleBar, Kind::TabBar, Kind::PaneBody, Kind::Table, Kind::TableHeader]);

@@ -1,0 +1,83 @@
+# The schema of every key is in docs/themes.md.
+# Composition Notebook: cream ruled pages written in blue-black ballpoint, with a pencil case
+# of pens for the ANSI colours (red, green, blue, purple and teal pens, an ochre where a yellow
+# pen could not clear 4.5:1, pencil greys), highlighters for the selection and the find marks, a
+# sticky note for the banner and the margin's red for the accent. Set in Chalkboard SE and, for
+# the terminal, Monaspace Radon, GitHub's handwritten monospace (brew's font-monaspace); without
+# it the configured terminal font stands in.
+name = "composition-notebook"
+appearance = "light"
+
+[effect]
+name = "notebook"
+
+[font]
+prose = "Chalkboard SE"
+ui = "Chalkboard SE"
+terminal = "Monaspace Radon"
+
+[chrome]
+window_bg = "#f8f6f0"
+title_bar = "#dfded7"
+status_bar = "#dfded7"
+sidebar = "#f0eee7"
+tab_bar = "#eae8e1"
+tab_active = "#f8f6f0"
+tab_inactive = "#eae8e1"
+border = "#bab8b0"
+split_handle = "#bab8b0"
+split_handle_hover = "#8e8c84"
+focus_ring = "#b4302a"
+text = "#1e2a44"
+text_dim = "#4a5468"
+banner = "#f5ecce"
+
+[terminal]
+background = "#f8f6f0"
+foreground = "#1e2a44"
+cursor = "#b4302a"
+selection = "#cfe3f5"
+black = "#1e2a44"
+red = "#b4302a"
+green = "#2a7230"
+yellow = "#7f6400"
+blue = "#1f4fbf"
+magenta = "#9a2f86"
+cyan = "#0e7490"
+white = "#5c6370"
+bright_black = "#656c7a"
+bright_red = "#c23a33"
+bright_green = "#2f7d36"
+bright_yellow = "#866a00"
+bright_blue = "#2b5bc9"
+bright_magenta = "#a63a92"
+bright_cyan = "#0f7389"
+# The terminal foreground: Claude Code's Arkos theme draws its text in bright white over faint
+# tinted bands, which need the darkest ink to keep 4.5:1.
+bright_white = "#1e2a44"
+
+[semantic]
+working = "#1f4fbf"
+waiting = "#b4302a"
+bell = "#7f6400"
+error_banner = "#f6d5cf"
+find_match = "#f6eab4"
+find_current = "#f7d6a4"
+
+[tree]
+added = "#2a7230"
+modified = "#7f6400"
+deleted = "#b4302a"
+untracked = "#1f4fbf"
+ignored = "#666b75"
+
+[viewer]
+keyword = "#1f4fbf"
+string = "#2a7230"
+comment = "#666b75"
+number = "#7f6400"
+function = "#9a2f86"
+type_name = "#0e7490"
+constant = "#b4302a"
+operator = "#1e2a44"
+punctuation = "#5c6370"

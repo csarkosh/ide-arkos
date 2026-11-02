@@ -1,6 +1,6 @@
 # Themes
 
-A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships six themes built in (`navy`, `timo-purple`, `peach-light`, `lavender-light`, `matrix`, `navy-runic`); the files in `crates/arkos/themes/` are complete examples to copy.
+A theme is one TOML file with a `name` and five tables: `chrome`, `terminal`, `semantic`, `tree` and `viewer`, plus an optional `font` table. Every colour key is required and every value is a `#rrggbb` colour; an unknown or missing key is an error. Arkos ships seven themes built in (`navy`, `timo-purple`, `peach-light`, `lavender-light`, `matrix`, `navy-runic`, `composition-notebook`); the files in `crates/arkos/themes/` are complete examples to copy.
 
 ## Contrast rules
 
@@ -104,9 +104,9 @@ Optional. The one table that is not colours.
 
 | Key | What it sets |
 | --- | --- |
-| `prose` | The family the rendered markdown's text is set in (headings, paragraphs, lists, quotes); code stays in the terminal font. Unset, the system UI font. `peach-light` sets Baskerville. |
+| `prose` | The family the rendered markdown's text is set in (headings, paragraphs, lists, quotes); code stays in the terminal font. Unset, the system UI font. `peach-light` sets Baskerville and `composition-notebook` Chalkboard SE. |
 | `ui` | The family of the window's chrome: the title bar, file tree, tabs, palette and banners. Unset, the title bar is in the system font and the rest in the terminal font. `peach-light` sets Optima, `lavender-light` Avenir Next. |
-| `terminal` | The family of the shells, the raw and code views and the terminal's cell measurements; it must be monospaced. Unset, `[font] family` from `config.toml`. `peach-light` sets PT Mono, `lavender-light` Cascadia Code (installed with `brew install --cask font-cascadia-code`). |
+| `terminal` | The family of the shells, the raw and code views and the terminal's cell measurements; it must be monospaced. Unset, `[font] family` from `config.toml`. `peach-light` sets PT Mono, `lavender-light` Cascadia Code (installed with `brew install --cask font-cascadia-code`) and `composition-notebook` Monaspace Radon (`font-monaspace`). |
 
 A family that is not installed on the Mac is left out: that slot shows what it would without the theme naming a font, and the window's log says which font was missing.
 
@@ -116,7 +116,7 @@ Optional. A shader effect drawn under the window's text.
 
 | Key | What it sets |
 | --- | --- |
-| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-light` and `lavender-light` set `watercolor` and `matrix` and `navy-runic` set `runic`; `navy`, the default, sets none and draws plain. |
+| `name` | The effect the theme was designed with; the user's `effect.name` in `config.toml` or Settings may choose another. `peach-light` and `lavender-light` set `watercolor`, `matrix` and `navy-runic` set `runic` and `composition-notebook` sets `notebook`; `navy`, the default, sets none and draws plain. |
 
 ## Adding a theme
 

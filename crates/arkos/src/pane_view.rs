@@ -980,7 +980,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 .id(("term-hover", pane))
                 .size_full()
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
-                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw)),
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw, (style.paper_alpha < 1.0).then(|| cx.weak_entity()))),
         )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();

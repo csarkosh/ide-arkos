@@ -288,7 +288,7 @@ pub fn render(view: &Entity<WebView>, pane: PaneId, tab: TabId, theme: &Theme, s
         canvas(
             move |b, _, cx| {
                 let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
-                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind: crate::effects::blocks::Kind::Media }));
+                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind: crate::effects::blocks::Kind::Media, pitch: 0.0 }));
             },
             |_, _, _, _| (),
         )

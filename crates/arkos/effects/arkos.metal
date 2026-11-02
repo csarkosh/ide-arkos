@@ -22,10 +22,15 @@ constant int ARKOS_DIVIDER_BLOCK = 3;    constant int ARKOS_TAB_BAR_BLOCK = 4;
 constant int ARKOS_PANE_BODY_BLOCK = 5;  constant int ARKOS_ROW_HIGHLIGHT_BLOCK = 6;
 constant int ARKOS_TAB_HIGHLIGHT_BLOCK = 7; constant int ARKOS_MEDIA_BLOCK = 8;
 constant int ARKOS_TABLE_BLOCK = 9;      constant int ARKOS_TABLE_HEADER_BLOCK = 10;
-constant int ARKOS_MENU_BLOCK = 11;
+constant int ARKOS_MENU_BLOCK = 11;    constant int ARKOS_ROWS_BLOCK = 12;
+constant int ARKOS_BINDER_BLOCK = 13;
+// A binder block is the gutter between the sidebar and the panes, there only when the effect's
+// manifest asks for one (`binder`); nothing of the app's is drawn in it.
 // A media block is a video's picture, opaque over the wash: only what is drawn outside it shows.
 // A table block is a markdown table, whose fills are clear; its header block is its first row.
-// A menu block is an open menu or popover. The menu stage (arkos_overlay) is given them with
+// A rows block is a terminal's grid of rows, inside its pane's body, with no edges: its `pitch`
+// is a row's height in points, so a wash can rule the paper under each row (the first row's
+// top is the block's top). A menu block is an open menu or popover. The menu stage (arkos_overlay) is given them with
 // their edges; and for a wash with a menu stage, arkos_wash is also rendered over each open
 // menu's place alone, as the menu's backdrop, with that menu's block (no edges) and the
 // highlight strokes inside it as its only blocks.
@@ -43,7 +48,8 @@ struct ArkosBlock {
     float ordinal;    // a pane's place (0, 1, ...); a highlight's state (0 hovered, 1 selected, 2 both), else 0
     float busy;       // 1 for a pane's tab bar and body while the pane's active tab is a terminal
                       // whose Claude session works, else 0
-    float3 pad;       // aligned to 16 bytes after busy: the block is 64 bytes
+    float pitch;      // a rows block's row height in points; 0 for every other kind
+    float3 pad;       // aligned to 16 bytes after pitch: the block is 64 bytes
 };
 
 struct ArkosInputs {

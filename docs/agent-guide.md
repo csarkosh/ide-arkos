@@ -565,11 +565,13 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
 ## 9. Effects
 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
-surface, and optionally the text itself. Three are built in: Peach Light recommends `watercolor`
+surface, and optionally the text itself. Four are built in: Peach Light recommends `watercolor`
 (still ink glyphs), `space` is recommended by no theme (a night sky with glowing edges and still holo
-text; Navy, the default, draws plain), and Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
+text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
 accent that glitches now and then, and a terminal that decodes its changed cells; it was called
-`matrix` before 0.7.20, and that name still draws it); the user may pick any
+`matrix` before 0.7.20, and that name still draws it) and Composition Notebook recommends `notebook` (the
+marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
+highlighter on the selected row, and terminal text written in by a ballpoint); the user may pick any
 effect for any theme, or none, in
 Settings or through `arkos effect use`. An effect reads the theme's colours on every frame, so
 write it to suit any theme rather than one.
@@ -579,13 +581,18 @@ What an effect can touch:
 - The wash under everything: one fragment shader drawn under the whole window, handed the
   theme's colours and the blocks of the UI (the title bar, the sidebar and its divider, each
   pane's tab bar and body, each video's picture as fitted in its tab, each markdown table and
-  its header row as far as they are seen, and, when the manifest asks for them, the Explorer's selected and hovered rows and the hovered tab with their fades).
+  its header row as far as they are seen, each terminal's grid of rows with its row pitch, and, when the manifest asks for them, the Explorer's selected and hovered rows and the hovered tab with their fades).
   A video's picture (`ARKOS_MEDIA_BLOCK`) is opaque over the wash, so only what the wash draws
   outside it shows; with `ink_borders` it comes with all four edges, its rectangle a point and a
   half outside the picture so the outline is seen whole. A table (`ARKOS_TABLE_BLOCK`) has
   clear fills under an effect and comes with all four edges; its header
   (`ARKOS_TABLE_HEADER_BLOCK`) with the edge under it. The app draws the table's inner lines
-  itself, in ink.
+  itself, in ink. A terminal's rows (`ARKOS_ROWS_BLOCK`, no edges) are the grid of cells it
+  draws, as far as they are seen, with `pitch` the height of a row in points from the block's
+  top, so a wash can rule the paper under each row as the built-in `notebook` does. A binder
+  (`ARKOS_BINDER_BLOCK`, no edges) is the gutter between the sidebar and the panes, there only
+  while the sidebar shows and the manifest asks for one with `binder`; nothing of the app's is
+  drawn in it (the built-in `notebook` draws its spiral there).
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars
@@ -617,6 +624,8 @@ key and the range.
 | `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
 | `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
+| `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's label). |
+| `binder` | 0 to 32 | 0 | A gutter this many points wide between the sidebar and the panes, reported as a binder block; 0, none. Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `ink_borders` | true, false | false | The app hides its own 1 px borders and the wash draws the edges. |
 | `highlights` | `"effect"`, `"app"` | `"app"` | `"effect"`: the wash paints the selected and hovered rows and the hovered tab from the highlight blocks, and the app stops filling them. `"app"`: the app keeps its own fills and the wash gets no highlight blocks. |
 | `menus` | `"ink"`, `"glow"`, `"app"` | `"app"` | How the menus and popovers look, since the wash, painted under the window, cannot reach a menu over the panes. `"ink"`: a card of the window's paper, a line in the text's colour, the hovered row in the thinned focus colour (watercolor's). `"glow"`: a card of the window's ground with a glowing line and the hovered row lit in the focus ring's colour (space's). `"app"`: the app's own. |
@@ -661,9 +670,9 @@ the effect has run; `u.intensity`, the user's slider from 0 to 1;
 theme's colours, opaque; and `u.blocks`, the first `u.block_count` of up to 48 blocks, each a
 rectangle in window points from the top left with its kind, the edges the app no longer draws, a
 `seed` fixed for the block's life, a `value` (a highlight's fade from 0 to 1, else 1), an
-`ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both) and a `busy` flag
+`ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both), a `busy` flag
 (1 on a pane's tab bar and body while the pane's active tab is a terminal whose Claude session
-is working, else 0; runic runs a busy pane's edges hotter). `in.uv` runs
+is working, else 0; runic runs a busy pane's edges hotter) and a `pitch` (a rows block's row height in points, 0 on every other block). `in.uv` runs
 from (0, 0) at the top left to (1, 1) at the bottom right. What the wash returns is the window's
 opaque ground; the app's surfaces are drawn over it with the manifest's alphas. Derive every
 shade from the theme's colours, so the effect reads right in a dark theme as in a light one.

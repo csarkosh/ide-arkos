@@ -9,7 +9,7 @@ use crate::links::{span_at, Span};
 use crate::terminal::HoveredLink;
 use gpui::{
     fill, font, point, px, size, App, Bounds, ContentMask, CursorStyle, Element, ElementId, Entity, FontWeight, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Rgba, SharedString, Style, TextRun, Window,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Rgba, SharedString, Style, TextRun, WeakEntity, Window,
 };
 use std::time::Instant;
 
@@ -32,6 +32,9 @@ pub struct TerminalElement {
     ink: Option<Ink>,
     /// The window draw this paint is part of (`Root::draws`).
     draw: u64,
+    /// Under an effect, the window to report the grid of rows to (`Root::effect_shapes`), so a
+    /// wash can rule the paper under each row; None without one.
+    root: Option<WeakEntity<crate::Root>>,
 }
 
 /// What an effect does to the cells the program writes: decodes them as runic does, with the
@@ -43,8 +46,8 @@ pub enum Ink {
 }
 
 impl TerminalElement {
-    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, ink: Option<Ink>, draw: u64) -> Self {
-        Self { terminal, font_size, line_height, family, paper_alpha, ink, draw }
+    pub fn new(terminal: Entity<Terminal>, font_size: f32, line_height: f32, family: SharedString, paper_alpha: f32, ink: Option<Ink>, draw: u64, root: Option<WeakEntity<crate::Root>>) -> Self {
+        Self { terminal, font_size, line_height, family, paper_alpha, ink, draw, root }
     }
 }
 
@@ -219,6 +222,15 @@ fn grid_in(bounds: Bounds<Pixels>, cell: CellMetrics) -> (usize, usize) {
     (cols, rows)
 }
 
+/// The rectangle of a terminal's `rows` of `cell`s from the top of `bounds`, cut to `clip`, or
+/// None when none of it is seen.
+pub fn rows_shape(bounds: Bounds<Pixels>, clip: Bounds<Pixels>, cell: CellMetrics, rows: usize) -> Option<crate::tree::Rect> {
+    let grid = Bounds { origin: bounds.origin, size: size(bounds.size.width, px(cell.height * rows as f32)) };
+    let b = grid.intersect(&clip);
+    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+    (w > 0.0 && h > 0.0).then(|| crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w, h })
+}
+
 /// The grid a terminal element in `bounds` would size itself to. The window measures with this
 /// before a terminal exists, so a replay can be parsed at the size it will be shown at.
 pub fn grid_for(bounds: Bounds<Pixels>, window: &mut Window, font_size: f32, line_height: f32, family: &str) -> (usize, usize) {
@@ -280,6 +292,13 @@ impl Element for TerminalElement {
             t.origin = Some((f32::from(bounds.origin.x), f32::from(bounds.origin.y)));
             t.ensure_size(cols, rows);
         });
+        // The grid of rows, as far as it is seen, for a wash that rules the paper under each row.
+        if let Some(root) = &self.root {
+            if let Some(rect) = rows_shape(bounds, window.content_mask().bounds, cell, rows) {
+                let key = self.terminal.entity_id().as_u64();
+                let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind: crate::effects::blocks::Kind::Rows, pitch: cell.height }));
+            }
+        }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         Prepaint { cell, hitbox }
     }
@@ -551,6 +570,20 @@ mod tests {
         assert_eq!(at(45.0, 5.0, 0.0), None, "row 0 has no link");
         assert_eq!(at(45.0, 45.0, 0.5), Some((1, 4, 21)), "a half-line scroll shifts the rows down");
         assert_eq!(hovered_link(&spans, bounds, point(px(10.0), px(10.0)), cell, 0.0), None, "outside the element");
+    }
+
+    #[test]
+    fn the_rows_shape_is_the_grid_s_rows_cut_to_the_clip_and_none_when_unseen() {
+        use super::rows_shape;
+        let cell = CellMetrics { width: 8.0, height: 20.0 };
+        let bounds = Bounds { origin: point(px(10.0), px(50.0)), size: size(px(400.0), px(315.0)) };
+        // Fifteen rows fill 300 points of the 315; the shape stops at the last row.
+        let whole = rows_shape(bounds, Bounds { origin: point(px(0.0), px(0.0)), size: size(px(1000.0), px(1000.0)) }, cell, 15).unwrap();
+        assert_eq!((whole.x, whole.y, whole.w, whole.h), (10.0, 50.0, 400.0, 300.0));
+        // Scrolled half out of its pane: only the seen part.
+        let clipped = rows_shape(bounds, Bounds { origin: point(px(0.0), px(150.0)), size: size(px(1000.0), px(1000.0)) }, cell, 15).unwrap();
+        assert_eq!((clipped.y, clipped.h), (150.0, 200.0));
+        assert_eq!(rows_shape(bounds, Bounds { origin: point(px(0.0), px(900.0)), size: size(px(10.0), px(10.0)) }, cell, 15), None);
     }
 
     #[test]

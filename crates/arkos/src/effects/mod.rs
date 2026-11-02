@@ -58,6 +58,12 @@ pub const BUILTIN: &[BuiltIn] = &[
         wash: include_str!("../../effects/runic/wash.metal"),
         glyphs: Some(include_str!("../../effects/runic/glyphs.metal")),
     },
+    BuiltIn {
+        name: "notebook",
+        manifest: include_str!("../../effects/notebook/effect.toml"),
+        wash: include_str!("../../effects/notebook/wash.metal"),
+        glyphs: Some(include_str!("../../effects/notebook/glyphs.metal")),
+    },
 ];
 
 /// The name of the effect to draw for the config's choice under `theme`: the theme's own
@@ -140,6 +146,7 @@ mod tests {
             2 => "Two",
             3 => "Three",
             4 => "Four",
+            5 => "Five",
             n => panic!("{n} built-ins: teach this test the word"),
         })));
         assert!(guide.contains("| `glyph_rate` |"), "the manifest table has a glyph_rate row");
