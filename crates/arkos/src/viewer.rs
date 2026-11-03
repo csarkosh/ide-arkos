@@ -185,6 +185,19 @@ pub fn grid_scroll_x_by(x: f32, dx: f32, layout: Option<&grid_view::Layout>) -> 
     layout.map_or(x, |l| x.min(l.max_scroll_x()))
 }
 
+/// The scroll after a press or drag on `hit` made `sel`, keeping its head in sight: a cell or a
+/// header cell scrolls both ways as `grid_reveal` does, a row number only down, and the corner
+/// or anywhere off the grid not at all.
+pub fn grid_follow(hit: grid_view::Hit, sel: Option<grid::Selection>, layout: &grid_view::Layout, scroll_rows: f32, scroll_x: f32) -> (f32, f32) {
+    use grid_view::Hit;
+    let Some(head) = sel.map(|s| s.head) else { return (scroll_rows, scroll_x) };
+    match hit {
+        Hit::Cell(_) | Hit::Header(_) => grid_reveal(head, layout, scroll_rows, scroll_x),
+        Hit::RowNumber(_) => (grid_reveal(head, layout, scroll_rows, scroll_x).0, scroll_x),
+        Hit::Corner | Hit::Outside => (scroll_rows, scroll_x),
+    }
+}
+
 /// The scroll, in rows down and points across, that shows cell `c` whole in the body by the
 /// least move from `scroll_rows` and `scroll_x`. The header row is always in sight, so a header
 /// cell moves only sideways; a cell wider than the body shows its left edge.
@@ -1715,13 +1728,11 @@ impl Viewer {
         }
     }
 
-    /// A left press in the grid (`grid_pressed`); a cell pressed is scrolled whole into view.
+    /// A left press in the grid (`grid_pressed`); the selection's head is scrolled into view.
     pub fn grid_press(&mut self, hit: grid_view::Hit, extend: bool, cx: &mut Context<Self>) {
         self.grid_sel = grid_pressed(self.grid_sel, hit, extend);
         self.grid_pressing = self.grid_sel.is_some();
-        if let grid_view::Hit::Cell(c) = hit {
-            self.reveal_grid_cell(c);
-        }
+        self.follow_grid_hit(hit);
         cx.notify();
     }
 
@@ -1733,11 +1744,17 @@ impl Viewer {
         let sel = grid_dragged(self.grid_sel, hit);
         if sel != self.grid_sel {
             self.grid_sel = sel;
-            if let grid_view::Hit::Cell(c) = hit {
-                self.reveal_grid_cell(c);
-            }
+            self.follow_grid_hit(hit);
             cx.notify();
         }
+    }
+
+    /// Keeps the head of a selection a press or drag on `hit` made in sight (`grid_follow`).
+    fn follow_grid_hit(&mut self, hit: grid_view::Hit) {
+        let Some(l) = self.grid_layout.as_ref() else { return };
+        let (rows, x) = grid_follow(hit, self.grid_sel, l, self.scroll.target, self.grid_scroll_x);
+        self.scroll.scroll_by(rows - self.scroll.target, self.max_scroll());
+        self.grid_scroll_x = x;
     }
 
     /// The press ended.
@@ -6880,6 +6897,24 @@ mod tests {
         assert_eq!(grid_scroll_x_by(0.0, 30.0, Some(&narrow)), 0.0, "columns that fit do not scroll");
         assert_eq!(grid_scroll_x_by(10.0, 30.0, None), 40.0, "before the first layout: only the left edge holds");
         assert_eq!(grid_scroll_x_by(10.0, -30.0, None), 0.0);
+    }
+
+    #[test]
+    fn a_press_on_a_header_or_row_number_past_the_view_scrolls_it_into_sight() {
+        use crate::grid::Cell;
+        use grid_view::Hit;
+        let l = grid_layout();
+        let sel = grid_pressed(None, Hit::Header(2), false);
+        assert_eq!(grid_follow(Hit::Header(2), sel, &l, 3.0, 0.0), (3.0, 100.0), "column 2 runs past the body's right edge: sideways only");
+        let sel = grid_pressed(None, Hit::RowNumber(9), false);
+        assert_eq!(grid_follow(Hit::RowNumber(9), sel, &l, 0.0, 60.0), (5.0, 60.0), "a row number scrolls down and leaves the sideways scroll");
+        let dragged = grid_dragged(grid_pressed(None, Hit::Header(0), false), Hit::Header(2));
+        assert_eq!(grid_follow(Hit::Header(2), dragged, &l, 0.0, 0.0), (0.0, 100.0), "a drag along the header follows its head");
+        let sel = grid_pressed(None, Hit::Cell(Cell { row: 9, col: 2 }), false);
+        assert_eq!(grid_follow(Hit::Cell(Cell { row: 9, col: 2 }), sel, &l, 0.0, 0.0), (5.0, 100.0));
+        let all = grid_pressed(None, Hit::Corner, false);
+        assert_eq!(grid_follow(Hit::Corner, all, &l, 4.0, 50.0), (4.0, 50.0), "the corner moves nothing");
+        assert_eq!(grid_follow(Hit::Outside, None, &l, 4.0, 50.0), (4.0, 50.0));
     }
 
     #[test]

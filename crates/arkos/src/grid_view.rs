@@ -63,12 +63,15 @@ pub fn column_widths(natural: &[f32], view_w: f32, floor: f32) -> Vec<f32> {
     natural.iter().map(|w| w.min(COLUMN_CAP * view_w).max(floor)).collect()
 }
 
-/// The body rows to paint: from the scroll's first row as many as fit in `view_h`, plus one for
-/// the fraction, within the sheet's `rows`.
+/// The body rows to paint: from the row at the scroll's top to the one at the body's bottom edge,
+/// plus one, within the sheet's `rows`.
 pub fn row_range(scroll_rows: f32, view_h: f32, row_h: f32, rows: usize) -> Range<usize> {
-    let first = (scroll_rows.floor().max(0.0) as usize).min(rows);
-    let fit = if row_h > 0.0 { (view_h / row_h).floor().max(0.0) as usize } else { 0 };
-    first..(first + fit + 1).min(rows)
+    let top = scroll_rows.max(0.0);
+    let first = (top.floor() as usize).min(rows);
+    // The last row in sight is the one under the body's bottom edge, `top + fit` rows down.
+    let fit = if row_h > 0.0 { (view_h / row_h).max(0.0) } else { 0.0 };
+    let last = (top + fit).floor() as usize;
+    first..(last + 1).min(rows).max(first)
 }
 
 /// What a cell shows: its first line, cut at `MAX_CELL_CHARS` chars, and whether anything was
@@ -696,6 +699,10 @@ mod tests {
         assert_eq!(row_range(0.0, 100.0, 20.0, 0), 0..0, "a sheet with only a header");
         assert_eq!(row_range(0.0, 0.0, 20.0, 10), 0..1, "a pane of no height still asks for one");
         assert_eq!(row_range(-3.0, 100.0, 20.0, 10), 0..6, "a scroll past the top starts at the first row");
+        // A fractional scroll and a fractional fit together reach one row further down.
+        assert_eq!(row_range(0.9, 90.0, 20.0, 1000), 0..6, "rows 0 to 5 are in sight from 0.9 to 5.4");
+        assert_eq!(row_range(2.0, 100.0, 20.0, 1000), 2..8, "an exact fit: five rows from row 2, plus one");
+        assert_eq!(row_range(0.9, 500.0, 32.0, 1000), 0..17, "a body 500 tall in rows of 32 at 0.9");
     }
 
     #[test]

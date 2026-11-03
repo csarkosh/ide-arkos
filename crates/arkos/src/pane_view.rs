@@ -1108,6 +1108,19 @@ pub const CHIP_W: f32 = 100.0;
 
 /// How far from the pane's right edge a markdown tab's banners keep their text, clear of the mode
 /// pill (`pill`) and the inline-diff chip (`chip`) drawn over the top right.
+/// The strip above a grid: the caps' banner at its left and the mode pill at its right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Strip {
+    pub banner: Option<String>,
+    pub pill: bool,
+}
+
+/// What the strip above a grid holds: a delimited file's always has the pill that switches it to
+/// its text, a workbook's only the banner, and a workbook with nothing dropped has no strip.
+pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
+    (delimited || banner.is_some()).then_some(Strip { banner, pill: delimited })
+}
+
 pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
     match (pill, chip) {
         (true, true) => 14.0 + PILL_W + 8.0 + CHIP_W + 8.0,
@@ -1252,7 +1265,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .child(label)
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
-    let right_pad = banner_right_pad(pill_shown, has_changes);
+    // While the grid shows, nothing floats over it: its pill sits in the strip above it.
+    let right_pad = banner_right_pad(pill_shown && !kind_is_grid, has_changes && !kind_is_grid);
     let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(style.ui(12.0)));
     let mut banners: Vec<Div> = Vec::new();
     // A delimited document's grid shows the conflict and a failed save as its text does.
@@ -1269,10 +1283,6 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             banners.push(banner_row().child(text).child(button("viewer-save-retry", "Retry", Box::new(|v, cx| v.save(cx)))));
         }
     }
-    // A sheet past the caps says what it left out.
-    if let Some(text) = grid_banner {
-        banners.push(banner_row().child(text));
-    }
     if kind_is_text {
         if let Some(why) = read_only {
             let text = match why {
@@ -1283,12 +1293,11 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             banners.push(banner_row().child(text));
         }
     }
-    let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
     // The mode pill's top: where the find bar opens, below it when open.
     let pill_top = if find_open { 44.0 } else { 10.0 };
     // The inline diff's switch, at the top right where the find bar opens, below it when open; on
     // a markdown document, left of the mode pill at its top.
-    let chip = has_changes.then(|| {
+    let chip = (has_changes && !kind_is_grid).then(|| {
         let v_chip = viewer.clone();
         let (top, right) = if pill_shown { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
         div()
@@ -1324,9 +1333,6 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let pill = pill_shown.then(|| {
         div()
             .id(("viewer-mode-pill", viewer.entity_id()))
-            .absolute()
-            .top(px(pill_top))
-            .right(px(14.0))
             .w(px(PILL_W))
             .flex()
             .justify_center()
@@ -1351,6 +1357,14 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             )
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
+    // Over a grid the pill goes in the strip above it, with the caps' banner at the strip's left
+    // cut with an ellipsis before the pill (`grid_strip`); elsewhere it floats at the top right.
+    let (pill, strip_pill) = if kind_is_grid { (None, pill) } else { (pill.map(|p| p.absolute().top(px(pill_top)).right(px(14.0))), None) };
+    if let Some(strip) = kind_is_grid.then(|| grid_strip(strip_pill.is_some(), grid_banner)).flatten() {
+        let text = div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().children(strip.banner);
+        banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.chrome_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
+    }
+    let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
     // Presentation mode's switch, under the mode pill in the rendered view: it names what a click
     // turns to.
     let present = rendered.then(|| {
@@ -1663,6 +1677,15 @@ mod tests {
         assert_eq!(pill_label_for(ViewMode::Rendered, false), "show raw");
         assert_eq!(pill_label_for(ViewMode::Raw, false), "show rendered");
         assert_eq!((present_label(false), present_label(true)), ("present", "edit"), "the presentation pill names what a click turns to");
+    }
+
+    #[test]
+    fn a_grid_s_strip_holds_the_pill_for_a_csv_and_the_banner_when_rows_were_dropped() {
+        let dropped = || Some("first 200,000 rows shown, 5 more in the file".to_string());
+        assert_eq!(grid_strip(true, None), Some(Strip { banner: None, pill: true }), "a csv always has its pill");
+        assert_eq!(grid_strip(true, dropped()), Some(Strip { banner: dropped(), pill: true }));
+        assert_eq!(grid_strip(false, dropped()), Some(Strip { banner: dropped(), pill: false }), "a workbook has no pill");
+        assert_eq!(grid_strip(false, None), None, "a workbook with nothing dropped has no strip");
     }
 
     #[test]
