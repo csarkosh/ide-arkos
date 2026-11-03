@@ -5647,8 +5647,6 @@ impl Root {
         cx.notify();
     }
 
-    /// Presentation mode on or off in a markdown tab, in the layout (saved with the tab) and in its
-    /// viewer: from Raw it shows Rendered too, since only the rendered view presents.
     /// The next sheet of the viewer tab's workbook (Cmd+Option+]).
     pub fn next_sheet_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         if let Some(v) = self.viewers.get(&tab).cloned() {
@@ -5663,6 +5661,8 @@ impl Root {
         }
     }
 
+    /// Presentation mode on or off in a markdown tab, in the layout (saved with the tab) and in its
+    /// viewer: from Raw it shows Rendered too, since only the rendered view presents.
     pub fn toggle_presentation_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
         let Some(Tab::Viewer { path, mode, presenting }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };

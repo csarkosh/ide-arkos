@@ -1115,8 +1115,6 @@ pub struct Strip {
     pub pill: bool,
 }
 
-/// What the strip above a grid holds: a delimited file's always has the pill that switches it to
-/// its text, a workbook's only the banner, and a workbook with nothing dropped has no strip.
 /// The key context of a viewer tab: `Markdown` adds the formatting keys for a markdown document,
 /// `Sheets` the sheet keys for a workbook of more than one sheet (which has no document, so the
 /// two never meet).
@@ -1164,6 +1162,8 @@ fn sheet_strip(viewer: &gpui::Entity<viewer::Viewer>, names: &[String], active: 
     strip
 }
 
+/// What the strip above a grid holds: a delimited file's always has the pill that switches it to
+/// its text, a workbook's only the banner, and a workbook with nothing dropped has no strip.
 pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
     (delimited || banner.is_some()).then_some(Strip { banner, pill: delimited })
 }
@@ -1271,7 +1271,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             // A workbook of several sheets has its tabs under the grid, which shrinks by their height.
             let sheets = { let v = viewer.read(cx); (v.sheet_count() > 1).then(|| (v.book.iter().flat_map(|b| b.sheets.iter().map(|s| s.name.clone())).collect::<Vec<_>>(), v.sheet)) };
             match sheets {
-                Some((names, active)) => div().size_full().flex().flex_col().child(div().flex_1().min_h_0().child(element)).child(sheet_strip(&viewer, &names, active, &theme, style, family.clone(), cx)),
+                Some((names, active)) => div().size_full().flex().flex_col().child(div().flex_1().min_h_0().child(element)).child(sheet_strip(&viewer, &names, active, &theme, style, root.ui_family(), cx)),
                 None => div().size_full().child(element),
             }
         }
