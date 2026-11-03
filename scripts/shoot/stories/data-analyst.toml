@@ -41,7 +41,7 @@ second = { split = "vertical", ratio = 0.6, first = { tabs = ["numbers"] }, seco
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { numbers = "working" }
+wait = { numbers = "waiting" }
 changed = { numbers = 1 }
 after_secs = 30
 timeout_secs = 300

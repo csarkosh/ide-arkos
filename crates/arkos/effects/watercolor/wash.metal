@@ -127,7 +127,7 @@ float strength_of(ArkosBlock b, thread int& tint) {
     tint = 0;
     if (kind == ARKOS_TITLE_BAR_BLOCK) { return 0.46; }
     // The sidebar a light wash, so the Explorer's names read on near-white paper.
-    if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.15; }
+    if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.12; }
     if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.56; }
     if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.14; }
     // A menu's backdrop: a pane body's light wash, in the first pigment.
@@ -242,12 +242,12 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float grain = 0.012 * speck + 0.008 * gran;
     float3 col = u.dark > 0.5 ? paper + (grain - 0.01) * k : paper * mix(1.0, 0.992 + grain, k);
 
-    // Bubbles behind everything, half as strong over the sidebar, which stays light.
+    // Bubbles behind everything, a fifth as strong over the sidebar, which stays light.
     float bubble_k = 1.0;
     for (int i = 0; i < min(int(u.block_count), 48); i++) {
         ArkosBlock sb = u.blocks[i];
         if (int(sb.kind) == ARKOS_SIDEBAR_BLOCK && p.x >= sb.rect.x && p.x <= sb.rect.x + sb.rect.z && p.y >= sb.rect.y && p.y <= sb.rect.y + sb.rect.w) {
-            bubble_k = 0.5;
+            bubble_k = 0.2;
         }
     }
     float aspect = u.size.x / max(u.size.y, 1.0);

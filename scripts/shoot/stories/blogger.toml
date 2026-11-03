@@ -44,7 +44,8 @@ second = { tabs = ["assistant"] }
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { assistant = "working" }
+# Both pictures once the session has answered, so the swap between them changes only the theme.
+wait = { assistant = "waiting" }
 changed = { assistant = 1 }
 after_secs = 20
 timeout_secs = 300
@@ -55,4 +56,5 @@ click = [0.42, 0.17]
 [[shot]]
 name = "lavender"
 theme = "light"
+wait = { assistant = "waiting" }
 timeout_secs = 60

@@ -17,7 +17,7 @@ Week of 2026-10-26: numbers not in yet.
 ## Signups by week
 
 ```mermaid
-%%{init: {"xyChart": {"height": 280}, "themeVariables": {"xyChart": {"plotColorPalette": "#0b57d0"}}}}%%
+%%{init: {"xyChart": {"height": 300, "showDataLabel": true, "xAxis": {"labelPadding": 8}, "yAxis": {"showLabel": false, "showTick": false, "showTitle": false, "showAxisLine": false}}, "themeVariables": {"xyChart": {"plotColorPalette": "#a8c7fa"}}}}%%
 xychart-beta
   title "Signups per week, all channels"
   x-axis [Sep 7, Sep 14, Sep 21, Sep 28, Oct 5, Oct 12, Oct 19]

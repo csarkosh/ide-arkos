@@ -42,7 +42,7 @@ second = { tabs = ["tutor"] }
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { tutor = "working" }
+wait = { tutor = "waiting" }
 changed = { tutor = 1 }
 after_secs = 30
 timeout_secs = 300
