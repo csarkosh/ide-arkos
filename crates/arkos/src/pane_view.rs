@@ -1257,7 +1257,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     // grid instead.
     let rendered = editable && markdown && mode == ViewMode::Rendered;
     let dim = theme.chrome.text_dim.hsla();
-    let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
+    // A notice wraps to the pane's width, centred, so a long reason reads whole in a narrow pane.
+    let notice = |text: String| div().size_full().flex().items_center().justify_center().px(px(16.0)).text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(div().max_w_full().text_center().child(text));
     let kind_is_text = matches!(kind, Kind::Text { .. });
     let (kind_is_grid, grid_banner) = match &kind {
         Kind::Grid { banner } => (true, banner.clone()),
