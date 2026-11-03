@@ -26,7 +26,7 @@ view = "report.md"
 
 [[pane]]
 name = "numbers"
-claude = "Bring report.md up to this week. Write scripts/weekly.py (Python standard library only) that reads data/signups.csv and prints, for the latest week, visits, signups and conversion (signups over visits) by channel, with the change in signups from the week before. Run it, then fill the This week table in report.md with its numbers, add the latest week to the bar chart, and write one sentence under the table on what moved most. Keep the file's shape and change nothing else."
+claude = "Bring report.md up to this week. Write scripts/weekly.py (Python standard library only) that reads data/signups.csv and prints, for the latest week, visits, signups and conversion (signups over visits) by channel, with the change in signups from the week before. Run it, then fill the This week table in report.md with its numbers, add the latest week to the bar chart (its date at the end of the x-axis and its total at the end of the bars), and write one sentence under the table on what moved most. Keep the file's shape and change nothing else."
 
 [[pane]]
 name = "data"
