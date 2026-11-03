@@ -210,8 +210,10 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
             continue;
         }
         if (kind == ARKOS_ACTIVE_TAB_BLOCK) {
-            // The tab indicator: under the label, its top corners rounded.
-            float bottom = r.y + r.w;
+            // The tab indicator: under the label, its top corners rounded. The tab is laid out
+            // inside the pane's border, so its block ends a border below the strip's; the
+            // indicator ends where the strip's hairline and progress track do, flush with them.
+            float bottom = r.y + r.w - PANE_BORDER;
             float4 ir = float4(r.x + INDICATOR_INSET, bottom - INDICATOR_H, r.z - 2.0 * INDICATOR_INSET, 2.0 * INDICATOR_H);
             float on = round_box(p, ir, INDICATOR_H) * step(p.y, bottom);
             col = mix(col, primary, on * k);
