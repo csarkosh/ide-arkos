@@ -1077,10 +1077,10 @@ mod tests {
         let terminal: Vec<&str> = out.lines().filter(|l| l.starts_with("terminal: ") || l.starts_with("terminal under ")).collect();
         assert_eq!(terminal.len(), 1, "navy draws plain: {out}");
         assert!(terminal[0].starts_with("terminal: ") && terminal[0].ends_with(" pairs drawn, all clear"), "{out}");
-        let (code, out, _) = contrast_run(&["peach-material"], dir.path());
+        let (code, out, _) = contrast_run(&["peach-watercolor"], dir.path());
         assert_eq!(code, 0);
-        assert!(out.lines().any(|l| l.starts_with("terminal under material: ")), "the theme's own effect: {out}");
-        let (_, out, _) = contrast_run(&["peach-material", "--effect", "none"], dir.path());
+        assert!(out.lines().any(|l| l.starts_with("terminal under watercolor: ")), "the theme's own effect: {out}");
+        let (_, out, _) = contrast_run(&["peach-watercolor", "--effect", "none"], dir.path());
         assert!(!out.contains("terminal under"), "{out}");
         let (_, out, _) = contrast_run(&["navy", "--effect", "runic"], dir.path());
         assert!(out.lines().any(|l| l.starts_with("terminal under runic: ")), "{out}");
@@ -1116,7 +1116,7 @@ mod tests {
     fn use_writes_the_right_key_refuses_an_unknown_name_and_says_so_without_a_window() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
-        std::fs::write(&cfg, "# mine\n[appearance]\nmode = \"light\"\n[theme]\ndark = \"navy\" # d\nlight = \"peach-material\"\n").unwrap();
+        std::fs::write(&cfg, "# mine\n[appearance]\nmode = \"light\"\n[theme]\ndark = \"navy\" # d\nlight = \"peach-watercolor\"\n").unwrap();
         let themes = dir.path().join("themes");
         let env = Env { socket: &dir.path().join("none.sock"), config: &cfg, themes: &themes, wait: Duration::from_millis(10) };
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -1372,7 +1372,7 @@ mod tests {
         assert_eq!(theme_cli_to(&["current".into()], &env, &mut out, &mut err), 0);
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "config: dark navy, light peach-material, mode system\n\
+            "config: dark navy, light peach-watercolor, mode system\n\
              window 7 (/p): draft (dark, system is light), preset comfortable, family Menlo, preview draft, theme error: theme: x\n\
              window 8: no answer\n\
              window 9: too old for this command\n"
@@ -1405,7 +1405,7 @@ mod tests {
         let sock = dir.path().join("d.sock");
         let cfg = dir.path().join("config.toml");
         std::fs::write(&cfg, config::DEFAULT_CONFIG).unwrap();
-        let light = Report { theme: "peach-material".into(), system_is_dark: false, ..Report::default() };
+        let light = Report { theme: "peach-watercolor".into(), system_is_dark: false, ..Report::default() };
         let silent = Response::Customized { outcomes: vec![], missing: vec![8], too_old: vec![9] };
         let server = fake_daemon(&sock, vec![one_window(light.clone(), vec![], vec![]), one_window(light, vec![], vec![]), silent]);
         let env = Env { socket: &sock, config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
@@ -1418,11 +1418,11 @@ mod tests {
             let code = theme_cli_to(&args, &env, &mut out, &mut err);
             (code, String::from_utf8(out).unwrap())
         };
-        assert_eq!(use_dark(false), (0, "window 7 (/p): saved for dark mode; shows peach-material in light mode\n".to_string()));
+        assert_eq!(use_dark(false), (0, "window 7 (/p): saved for dark mode; shows peach-watercolor in light mode\n".to_string()));
         let (code, out) = use_dark(true);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["windows"][0]["theme"].as_str(), Some("peach-material"));
+        assert_eq!(v["windows"][0]["theme"].as_str(), Some("peach-watercolor"));
         assert!(v["windows"][0].get("error").is_none(), "{v}");
         assert_eq!(use_dark(false), (0, "saved; no window answered\nwindow 8: no answer\nwindow 9: too old for this command\n".to_string()));
         assert_eq!(server.join().unwrap(), vec![CustomizeAction::ReloadConfig; 3]);
@@ -1438,7 +1438,7 @@ mod tests {
         let answers = vec![one_window(broken.clone(), vec![], vec![]); 4];
         let server = fake_daemon(&sock, answers);
         let env = Env { socket: &sock, config: &cfg, themes: &dir.path().join("themes"), wait: Duration::from_millis(10) };
-        for (key, value) in [("theme.dark", "navy"), ("theme.light", "peach-material"), ("appearance.mode", "dark")] {
+        for (key, value) in [("theme.dark", "navy"), ("theme.light", "peach-watercolor"), ("appearance.mode", "dark")] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             assert_eq!(settings_cli_to(&["set".into(), key.into(), value.into()], &env, &mut out, &mut err), 1, "{key}");
             assert_eq!(String::from_utf8(out).unwrap(), "window 7 (/p): draft.toml: missing key chrome.text\n", "{key}");

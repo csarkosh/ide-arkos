@@ -35,7 +35,7 @@ const GLYPH_SIGNATURES: &str = include_str!("../../effects/glyph-signatures.meta
 
 /// What `bench` draws without a window: a window of this many points, in this theme.
 const BENCH_SIZE: (f32, f32) = (1200.0, 800.0);
-const BENCH_THEME: &str = "peach-material";
+const BENCH_THEME: &str = "peach-watercolor";
 /// How long `bench` draws without `--seconds`, and the longest it may be asked to.
 const BENCH_SECONDS: f32 = 3.0;
 const BENCH_MAX_SECONDS: f32 = 60.0;
@@ -240,7 +240,7 @@ fn find(target: &str, env: &Env) -> Result<Effect, String> {
     }
 }
 
-/// The first answering window's size and theme, or 1200 by 800 points in Peach Material.
+/// The first answering window's size and theme, or 1200 by 800 points in Peach Watercolor.
 fn bench_window(env: &Env) -> ((f32, f32), String) {
     let found = agent_cli::customize_detailed(env.socket, CustomizeAction::ReportState, env.wait).ok().and_then(|answer| {
         answer.outcomes.into_iter().find_map(|(o, detail)| Some((detail.size?, o.result.ok()?.theme)))
@@ -262,10 +262,10 @@ fn bench_command(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
         Err(e) => return fail(err, &e),
     };
     let (size, theme_name) = bench_window(env);
-    // A window showing a theme that no longer loads (a preview's) is benched in Peach Material.
+    // A window showing a theme that no longer loads (a preview's) is benched in Peach Watercolor.
     let (theme_name, theme) = match agent_cli::load_name(&theme_name, env.themes) {
         Ok(t) => (theme_name, t),
-        Err(_) => (BENCH_THEME.to_string(), theme::builtin(BENCH_THEME).expect("Peach Material is built in")),
+        Err(_) => (BENCH_THEME.to_string(), theme::builtin(BENCH_THEME).expect("Peach Watercolor is built in")),
     };
     let ms = match bench::bench(&effect, &theme, size, seconds) {
         Ok(ms) => ms,
@@ -800,7 +800,7 @@ mod tests {
         if !metal() {
             return;
         }
-        // No window: 1200 by 800 points, Peach Material, the manifest's 30 frames a second.
+        // No window: 1200 by 800 points, Peach Watercolor, the manifest's 30 frames a second.
         let (code, out, err) = run(&["bench", "watercolor", "--seconds", "0.2"], &env);
         assert_eq!((code, err.as_str()), (0, ""));
         let line = out.strip_suffix('\n').unwrap();
@@ -814,7 +814,7 @@ mod tests {
         let (code, out, _) = run(&["bench", &s.effects().join("mywash").display().to_string(), "--seconds", "0.2", "--json"], &env);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!((v["name"].as_str(), v["theme"].as_str(), v["frame_rate"].as_u64()), (Some("mywash"), Some("peach-material"), Some(30)));
+        assert_eq!((v["name"].as_str(), v["theme"].as_str(), v["frame_rate"].as_u64()), (Some("mywash"), Some("peach-watercolor"), Some(30)));
         assert_eq!(v["size"], serde_json::json!([1200.0, 800.0]));
         let ms = v["ms"].as_f64().unwrap() as f32;
         assert!(ms > 0.0);

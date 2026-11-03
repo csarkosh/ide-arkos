@@ -52,7 +52,7 @@ float3 turn_hue(float3 c, float deg) {
 }
 
 // The four pigments are the theme's own (ARKOS_PIGMENT): its focus colour and accents of its own
-// family, which thin out over the paper (Peach Material's burnt orange, ochre, brick and plum into
+// family, which thin out over the paper (Peach Watercolor's burnt orange, ochre, brick and plum into
 // peach, apricot, dusty rose and mauve; Lavender Watercolor's purples, rose and blue into lilacs). A
 // theme with fewer of its own (u.pigment_count) gets the rest as its own turned a little either
 // way round the colour wheel, so neighbouring panes still differ.
@@ -126,7 +126,8 @@ float strength_of(ArkosBlock b, thread int& tint) {
     int ordinal = max(int(b.ordinal), 0);
     tint = 0;
     if (kind == ARKOS_TITLE_BAR_BLOCK) { return 0.46; }
-    if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.3; }
+    // The sidebar a light wash, so the Explorer's names read on near-white paper.
+    if (kind == ARKOS_SIDEBAR_BLOCK) { tint = 2; return 0.15; }
     if (kind == ARKOS_TAB_BAR_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.56; }
     if (kind == ARKOS_PANE_BODY_BLOCK) { tint = PANE_PIGMENTS[ordinal % 4]; return 0.14; }
     // A menu's backdrop: a pane body's light wash, in the first pigment.
@@ -241,7 +242,14 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
     float grain = 0.012 * speck + 0.008 * gran;
     float3 col = u.dark > 0.5 ? paper + (grain - 0.01) * k : paper * mix(1.0, 0.992 + grain, k);
 
-    // Bubbles behind everything.
+    // Bubbles behind everything, half as strong over the sidebar, which stays light.
+    float bubble_k = 1.0;
+    for (int i = 0; i < min(int(u.block_count), 48); i++) {
+        ArkosBlock sb = u.blocks[i];
+        if (int(sb.kind) == ARKOS_SIDEBAR_BLOCK && p.x >= sb.rect.x && p.x <= sb.rect.x + sb.rect.z && p.y >= sb.rect.y && p.y <= sb.rect.y + sb.rect.w) {
+            bubble_k = 0.5;
+        }
+    }
     float aspect = u.size.x / max(u.size.y, 1.0);
     float2 bp = p / max(u.size.y, 1.0);
     for (int i = 0; i < BUBBLES; i++) {
@@ -253,7 +261,7 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
         }
         float body = 1.0 - smoothstep(r * 0.5, r, dist);
         float rim = smoothstep(r * 0.75, r * 0.96, dist) * (1.0 - smoothstep(r * 0.96, r * 1.02, dist));
-        float a = (0.32 * body + 0.28 * rim) * (0.65 + 0.5 * gran) * k;
+        float a = (0.32 * body + 0.28 * rim) * (0.65 + 0.5 * gran) * k * bubble_k;
         col = wash_onto(u, col, pigment(u, i % 4), clamp(a, 0.0, 0.9));
     }
 

@@ -80,7 +80,7 @@ rect = [0.0, 0.0, 1.0, 0.075]
 [[recording]]
 name = "themes"
 wait = { blog = "waiting", budget = "waiting" }
-themes = ["navy-runic", "lavender-watercolor", "peach-material", "matrix"]
+themes = ["navy-runic", "lavender-watercolor", "peach-watercolor", "matrix"]
 hold_secs = 6
 
 # The page's opening clip (cinema.py): the window held in Navy for eight seconds while the

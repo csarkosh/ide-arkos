@@ -175,7 +175,7 @@ pub struct ThemeConfig {
 
 impl Default for ThemeConfig {
     fn default() -> Self {
-        Self { dark: "navy".into(), light: "peach-material".into() }
+        Self { dark: "navy".into(), light: "peach-watercolor".into() }
     }
 }
 
@@ -449,12 +449,12 @@ pub fn set_values(path: &Path, edits: &[(&[&str], toml_edit::Value)]) -> Result<
     })
 }
 
-/// The notice shown once when a config naming the removed Navy Light is moved to Peach Material.
-pub const NAVY_LIGHT_NOTICE: &str = "Navy Light was removed; your light theme is now Peach Material.";
+/// The notice shown once when a config naming the removed Navy Light is moved to Peach Watercolor.
+pub const NAVY_LIGHT_NOTICE: &str = "Navy Light was removed; your light theme is now Peach Watercolor.";
 
 /// Navy Light is no longer built in. When `text` names it as `theme.light` or `theme.dark` and the
 /// user has no `navy-light.toml` of their own in `themes_dir` (such a file keeps working as any
-/// user theme), returns the text with `theme.light` set to `peach-material` and `theme.dark` set to
+/// user theme), returns the text with `theme.light` set to `peach-watercolor` and `theme.dark` set to
 /// `navy` (a dark slot gets a dark theme), every comment kept. `None`
 /// when there is nothing to change or the text is not TOML.
 pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
@@ -469,7 +469,7 @@ pub fn retire_navy_light(text: &str, themes_dir: &Path) -> Option<String> {
         edits.push((&["theme", "dark"], toml_edit::Value::from("navy")));
     }
     if named("light") {
-        edits.push((&["theme", "light"], toml_edit::Value::from("peach-material")));
+        edits.push((&["theme", "light"], toml_edit::Value::from("peach-watercolor")));
     }
     if edits.is_empty() {
         return None;
@@ -504,7 +504,7 @@ pub fn rename_themes(text: &str, themes_dir: &Path) -> Option<String> {
 pub enum Retired {
     /// Nothing named Navy Light, or the file could not be rewritten.
     No,
-    /// `theme.light` was moved to Peach Material: the window says so once.
+    /// `theme.light` was moved to Peach Watercolor: the window says so once.
     Light,
     /// Only `theme.dark` was moved to Navy: rewritten without a notice.
     DarkOnly,
@@ -767,14 +767,14 @@ watchdog_secs = 30
 replay_bytes = 16777216
 
 [theme]
-# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-material", "lavender-watercolor", "lavender-material", "matrix", "navy-runic", "composition-notebook" and "material" are built in;
+# Theme files live in ~/.config/arkos/themes/<name>.toml. "navy", "timo-purple", "peach-watercolor", "lavender-watercolor", "lavender-material", "matrix", "navy-runic", "composition-notebook" and "material" are built in;
 # "Extract built-in themes" in the command palette writes them there to copy from.
 dark = "navy"
-light = "peach-material"
+light = "peach-watercolor"
 
 [effect]
 # A shader drawn under the window's text. "theme" draws the one the theme was designed with
-# (lavender-watercolor's watercolor, peach-material's material, matrix's runic, composition-notebook's notebook), "none" draws nothing, or name an
+# (peach-watercolor's and lavender-watercolor's watercolor, material's and lavender-material's material, matrix's runic, composition-notebook's notebook), "none" draws nothing, or name an
 # effect: a built-in, or a folder in ~/.config/arkos/effects/. intensity runs from 0.0
 # (invisible) to 1.0 (as designed).
 name = "theme"
@@ -920,7 +920,7 @@ pub(crate) mod tests {
         assert_eq!(cfg.daemon.watchdog_secs, 30);
         assert_eq!(cfg.daemon.replay_bytes, 16 * 1024 * 1024);
         assert_eq!(cfg.theme.dark, "navy");
-        assert_eq!(cfg.theme.light, "peach-material");
+        assert_eq!(cfg.theme.light, "peach-watercolor");
         assert_eq!(cfg.appearance.mode, AppearanceMode::System);
     }
 
@@ -1313,10 +1313,10 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = "# mine\n[theme]\ndark = \"navy\" # the night\nlight = \"navy-light\" # the day\n";
         let new = retire_navy_light(text, dir.path()).unwrap();
-        assert_eq!(new, "# mine\n[theme]\ndark = \"navy\" # the night\nlight = \"peach-material\" # the day\n");
+        assert_eq!(new, "# mine\n[theme]\ndark = \"navy\" # the night\nlight = \"peach-watercolor\" # the day\n");
         let both = retire_navy_light("[theme]\ndark = \"navy-light\"\nlight = \"navy-light\"\n", dir.path()).unwrap();
-        assert_eq!(parse(&both).unwrap().theme, ThemeConfig { dark: "navy".into(), light: "peach-material".into() }, "a dark slot gets a dark theme");
-        assert_eq!(NAVY_LIGHT_NOTICE, "Navy Light was removed; your light theme is now Peach Material.");
+        assert_eq!(parse(&both).unwrap().theme, ThemeConfig { dark: "navy".into(), light: "peach-watercolor".into() }, "a dark slot gets a dark theme");
+        assert_eq!(NAVY_LIGHT_NOTICE, "Navy Light was removed; your light theme is now Peach Watercolor.");
     }
 
     #[test]
@@ -1324,8 +1324,9 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = "[theme]\ndark = \"navy\" # night\nlight = \"lavender-light\" # day\n";
         assert_eq!(rename_themes(text, dir.path()).unwrap(), "[theme]\ndark = \"navy\" # night\nlight = \"lavender-watercolor\" # day\n");
-        assert_eq!(rename_themes("[theme]\nlight = \"peach-light\"\n", dir.path()).unwrap(), "[theme]\nlight = \"peach-material\"\n");
-        assert_eq!(rename_themes("[theme]\nlight = \"peach-material\"\n", dir.path()), None);
+        assert_eq!(rename_themes("[theme]\nlight = \"peach-light\"\n", dir.path()).unwrap(), "[theme]\nlight = \"peach-watercolor\"\n");
+        assert_eq!(rename_themes("[theme]\nlight = \"peach-material\"\n", dir.path()).unwrap(), "[theme]\nlight = \"peach-watercolor\"\n");
+        assert_eq!(rename_themes("[theme]\nlight = \"peach-watercolor\"\n", dir.path()), None);
         let file = dir.path().join("config.toml");
         std::fs::write(&file, text).unwrap();
         assert_eq!(retire_navy_light_file(&file, dir.path()), Retired::Renamed, "no notice: the theme is the same");
@@ -1340,7 +1341,7 @@ pub(crate) mod tests {
         let file = dir.path().join("config.toml");
         std::fs::write(&file, "[theme]\nlight = \"navy-light\" # day\n").unwrap();
         assert_eq!(retire_navy_light_file(&file, dir.path()), Retired::Light);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[theme]\nlight = \"peach-material\" # day\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[theme]\nlight = \"peach-watercolor\" # day\n");
         assert_eq!(retire_navy_light_file(&file, dir.path()), Retired::No, "rewritten once, it never shows again");
         assert_eq!(retire_navy_light_file(&dir.path().join("none.toml"), dir.path()), Retired::No);
         std::fs::write(&file, "[theme]\ndark = \"navy-light\" # night\n").unwrap();
@@ -1352,7 +1353,7 @@ pub(crate) mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         assert_eq!(retire_navy_light_file(&link, dir.path()), Retired::Light);
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
-        assert_eq!(std::fs::read_to_string(&real).unwrap(), "[theme]\nlight = \"peach-material\"\n");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "[theme]\nlight = \"peach-watercolor\"\n");
     }
 
     #[test]

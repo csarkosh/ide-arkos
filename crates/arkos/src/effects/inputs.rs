@@ -209,14 +209,14 @@ mod tests {
 
     #[test]
     fn the_four_pigments_follow_the_ansi_colours_and_are_the_theme_s_own() {
-        let peach = crate::theme::builtin("peach-material").unwrap();
+        let peach = crate::theme::builtin("peach-watercolor").unwrap();
         let c = colors(&peach);
         let (p, n) = pigments(&peach);
-        assert_eq!(n, 4, "Peach Material has four of its own");
+        assert_eq!(n, 4, "Peach Watercolor has four of its own");
         for k in 0..4 {
             assert_eq!(c[35 + k], float4(p[k]), "ARKOS_PIGMENT + {k}");
         }
-        // Peach Material's are its accents as watercolor has always used them: burnt orange, ochre,
+        // Peach Watercolor's are its accents as watercolor has always used them: burnt orange, ochre,
         // brick and plum.
         assert_eq!(p, [peach.chrome.focus_ring, peach.semantic.waiting, peach.terminal.red, peach.terminal.magenta]);
         // Lavender Watercolor's sit near its purple: no burnt orange.
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn the_shader_is_told_whether_the_theme_is_dark_and_how_many_pigments_it_has() {
         let navy = crate::theme::builtin("navy").unwrap();
-        let peach = crate::theme::builtin("peach-material").unwrap();
+        let peach = crate::theme::builtin("peach-watercolor").unwrap();
         let at = |t: &Theme| build(t, 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
         assert_eq!((at(&navy).dark, at(&peach).dark), (1.0, 0.0));
         assert_eq!(at(&peach).pigment_count, 4.0);
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn colours_are_indexed_as_the_preamble_says() {
-        let theme = crate::theme::builtin("peach-material").unwrap();
+        let theme = crate::theme::builtin("peach-watercolor").unwrap();
         let c = colors(&theme);
         assert_eq!(c[0], float4(theme.chrome.window_bg));
         assert_eq!(c[8], float4(theme.chrome.text));
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn more_than_forty_eight_blocks_are_dropped_not_overrun() {
-        let theme = crate::theme::builtin("peach-material").unwrap();
+        let theme = crate::theme::builtin("peach-watercolor").unwrap();
         let many: Vec<Block> = (0..60)
             .map(|i| Block { rect: Rect { x: i as f32, y: 0.0, w: 1.0, h: 1.0 }, kind: Kind::PaneBody, edges: 6, seed: i as f32, value: 1.0, ordinal: 0.0, busy: (i % 2) as f32, pitch: 0.0 })
             .collect();

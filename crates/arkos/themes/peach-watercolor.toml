@@ -1,14 +1,13 @@
 # The schema of every key is in docs/themes.md.
-# Peach Material: a warm light theme, cream and peach, for writing more than coding. Text is a soft
+# Peach Watercolor: a warm light theme, cream and peach, for writing more than coding. Text is a soft
 # dark brown (the terminal's a shade darker, for its 11:1), prose is set in Baskerville, and the
-# ANSI colours are deepened so each clears 4.5:1 on the cream. With its `material` effect the
-# panes are cream cards on a peach frame. It was `peach-light`, with watercolor, and
-# that name still loads it.
-name = "peach-material"
+# ANSI colours are deepened so each clears 4.5:1 on the cream. It was `peach-light`, and for
+# 0.8.11 `peach-material` (with the material effect); both names still load it.
+name = "peach-watercolor"
 appearance = "light"
 
 [effect]
-name = "material"
+name = "watercolor"
 
 [font]
 prose = "Baskerville"
