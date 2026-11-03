@@ -4,6 +4,8 @@
 
 [scene]
 name = "probe"
+# Not a persona: the README has no picture of it, and the hero clip leaves it out.
+persona = false
 caption = "The probe"
 
 [demo]

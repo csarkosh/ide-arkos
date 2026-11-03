@@ -81,13 +81,37 @@ pub struct Recording {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cinema {
-    /// The two scenes whose `<scene>-dark.png` stand behind the window, left then right.
+    /// The scenes whose `<scene>-dark.png` stand behind the window, in turn left and right from
+    /// the outermost; none named (the default), every persona's but the clip's own scene
+    /// (`personas`), so a persona added later is in the clip without a word here.
+    #[serde(default)]
     pub backs: Vec<String>,
     /// How long the camera moves, and how long it then holds on the key art, in seconds.
     #[serde(default = "default_move")]
     pub move_secs: f64,
     #[serde(default = "default_rest")]
     pub rest_secs: f64,
+}
+
+/// The most stills a hero clip stands behind its window (`scripts/shoot/cinema.py`'s slots).
+pub const MAX_BACKS: usize = 6;
+
+/// The persona scenes among the storyboards in `dir` (every story whose `[scene]` does not say
+/// `persona = false`), by name, without `except` (the clip's own scene).
+pub fn personas(dir: &Path, except: &str) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let story = Story::parse(&std::fs::read_to_string(&path)?).with_context(|| path.display().to_string())?;
+        if story.scene.persona && story.scene.name != except {
+            names.push(story.scene.name);
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 fn default_move() -> f64 {
@@ -235,6 +259,10 @@ pub fn scaled_manifest(manifest: &str, scale: f32) -> Result<String> {
 #[serde(deny_unknown_fields)]
 pub struct Scene {
     pub name: String,
+    /// Whether the scene is one of the README's personas (all but the probe): a hero clip that
+    /// names no backs stands every persona's still behind its window (`personas`).
+    #[serde(default = "yes")]
+    pub persona: bool,
     /// Read by scripts/shoot.sh when it composes the hero.
     #[allow(dead_code)]
     pub caption: String,
@@ -536,8 +564,8 @@ impl Story {
                     if r.themes.len() != 1 {
                         bail!("recording {:?}: a cinema recording shows one theme", r.name);
                     }
-                    if c.backs.len() != 2 {
-                        bail!("recording {:?}: cinema.backs names the two scenes behind the window, left then right", r.name);
+                    if c.backs.len() > MAX_BACKS {
+                        bail!("recording {:?}: cinema.backs names at most {MAX_BACKS} scenes to stand behind the window", r.name);
                     }
                     if !(1.0..=10.0).contains(&c.move_secs) || !(0.0..=5.0).contains(&c.rest_secs) {
                         bail!("recording {:?}: cinema.move_secs must be 1 to 10 and rest_secs 0 to 5", r.name);
@@ -880,6 +908,14 @@ theme = "light"
     }
 
     #[test]
+    fn a_clip_that_names_no_backs_stands_every_persona_but_its_own_behind_the_window_and_not_the_probe() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let names = personas(&root.join("scripts/shoot/stories"), "multitasker").unwrap();
+        assert_eq!(names, ["blogger", "data-analyst", "hacker", "student", "web-developer"]);
+        assert!(names.len() <= MAX_BACKS, "cinema.py has a slot for each");
+    }
+
+    #[test]
     fn a_story_s_effect_scale_replaces_the_manifest_s_and_keeps_its_comment() {
         let manifest = "name = \"runic\"\nscale = 0.5                   # 0.1 to 1.0; the wash's pixels\nframe_rate = 30\n";
         let out = scaled_manifest(manifest, 1.0).unwrap();
@@ -967,7 +1003,9 @@ theme = "light"
             assert!(err.contains(says), "{from} -> {to}: {err}");
         };
         refused("themes = [\"navy\"]", "themes = [\"navy\", \"matrix\"]", "a cinema recording shows one theme");
-        refused("[\"web-developer\", \"blogger\"]", "[\"web-developer\"]", "names the two scenes behind the window");
+        refused("[\"web-developer\", \"blogger\"]", "[\"a\", \"b\", \"c\", \"d\", \"e\", \"f\", \"g\"]", "names at most 6 scenes");
+        let every = Story::parse(&format!("{STORY}{}", cinema.replace("cinema = { backs = [\"web-developer\", \"blogger\"] }", "cinema = {}"))).unwrap();
+        assert!(every.recordings[0].cinema.as_ref().unwrap().backs.is_empty(), "no backs named: every persona's");
         refused("hold_secs = 8", "hold_secs = 5", "hold_secs must cover the move and the rest with half a second over (at least 6.0)");
         refused("cinema = { backs", "cinema = { move_secs = 12, backs", "cinema.move_secs must be 1 to 10");
         assert!(Story::parse(&format!("{STORY}{}", cinema.replace("themes = [\"navy\"]\nhold_secs = 8\ncinema = { backs = [\"web-developer\", \"blogger\"] }", "themes = [\"navy\"]"))).unwrap_err().to_string().contains("at least two themes"), "without cinema a recording still needs two themes");

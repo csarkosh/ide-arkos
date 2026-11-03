@@ -2,14 +2,15 @@
 """The hero clip: a camera move over the composed windows, the way a product page's opening
 video moves (store.google.com's Pixel pages, apple.com's), ending on the key art and holding.
 
-The scene is the hero's three windows on a dark ground: the front one alive (a recording of it,
-frame by frame), the two behind it stills, fanned a little higher like postcards. The camera
+The scene is the hero's windows on a dark ground: the front one alive (a recording of it, frame
+by frame), the others behind it stills (one to six), fanned a little higher like postcards, in
+turn left and right, each pair after the first tucked further in, higher and smaller. The camera
 starts tight on the front window's tab bar, seen a little from the side, the backs soft and out
 of focus, and pulls back and straightens over the move, the backs sharpening as it goes and
 drifting less than the front (they are further away), until the whole key art is in frame; then
 it holds. Cubic ease-out: fast to leave, slow to land.
 
-    python3 -I scripts/shoot/cinema.py <out.mp4> --front <recording.mp4> --back <still.png> --back <still.png>
+    python3 -I scripts/shoot/cinema.py <out.mp4> --front <recording.mp4> --back <still.png> [--back <still.png> ...]
         [--width 2880] [--height 1600] [--fps 24] [--move 4.6] [--hold 0.9] [--from 0]
         [--poster out.jpg] [--preview]
 
@@ -30,11 +31,28 @@ from PIL import Image, ImageDraw, ImageFilter
 # The key art, as fractions of the frame: where each window sits once the camera has landed.
 FRONT_W = 0.50          # the front window's width
 FRONT_TOP = 0.27        # its top edge; the ground above it is where the page lays its title
-BACK_W = 0.35
-BACKS = [              # (centre x, top y, tilt in degrees) for the two behind, left then right
-    (0.20, 0.19, -3.0),
-    (0.80, 0.21, 3.0),
-]
+BACK_W = 0.35          # the outermost backs' width; each pair further in is narrower
+MAX_BACKS = 6          # crates/shoot story::MAX_BACKS
+
+
+def back_slots(n):
+    """Where each of `n` backs sits once the camera has landed, in the order given, as (centre x,
+    top y, width, tilt in degrees, depth): in turn left and right of the front window, the first
+    pair outermost and largest, each pair after it tucked in, higher, smaller and less tilted, so
+    each shows past the front window's shoulders; an odd last one in the middle, furthest back,
+    over the front window's top edge. Two backs sit where the two-window key art had them. The
+    deeper ones are drawn first."""
+    pairs = n // 2
+    slots = []
+    for i in range(n):
+        if n % 2 == 1 and i == n - 1:
+            slots.append((0.5, 0.06, BACK_W - 0.04 * (pairs + 1), 0.0, pairs + 1))
+            continue
+        side, j = (-1 if i % 2 == 0 else 1), i // 2
+        cx = 0.5 + side * (0.30 - 0.07 * j)
+        top = (0.19 if side < 0 else 0.21) - 0.075 * j
+        slots.append((cx, top, BACK_W - 0.035 * j, side * (3.0 - 1.0 * j), j))
+    return slots
 GROUND = (9, 11, 16)
 GLOW = (46, 62, 108)
 HAZE = (22, 28, 44)
@@ -187,8 +205,8 @@ def main():
     p.add_argument("--poster", help="write the last frame here as a JPEG")
     p.add_argument("--preview", action="store_true", help="a quarter of the size at 15 fps")
     a = p.parse_args()
-    if len(a.back) != 2:
-        sys.exit("cinema.py: two --back stills, left then right")
+    if not 1 <= len(a.back) <= MAX_BACKS:
+        sys.exit(f"cinema.py: one to {MAX_BACKS} --back stills")
     W, H, fps = (a.width // 4, a.height // 4, 15) if a.preview else (a.width, a.height, a.fps)
     W, H = W & ~1, H & ~1
     rw, rh, dur = probe(a.front)
@@ -212,12 +230,14 @@ def main():
     mirror_quad = place((fw, depth), (front_box[0], front_box[1] + fh, fw, depth))
 
     backs = []
-    for path, (cx, top, tilt) in zip(a.back, BACKS):
+    for path, (cx, top, width, tilt, j) in zip(a.back, back_slots(len(a.back))):
         still = Image.open(path).convert("RGBA")
-        bw = round(W * BACK_W)
+        bw = round(W * width)
         bh = round(still.height * bw / still.width)
         still = still.resize((bw, bh), Image.Resampling.LANCZOS)
-        backs.append((still, place((bw, bh), (round(cx * W - bw / 2), round(top * H), bw, bh), tilt)))
+        backs.append((j, still, place((bw, bh), (round(cx * W - bw / 2), round(top * H), bw, bh), tilt)))
+    # The furthest in first, so the outer ones lie over them.
+    backs = [(still, quad) for _, still, quad in sorted(backs, key=lambda b: -b[0])]
 
     bg = ground(W, H)
     enc = subprocess.Popen([

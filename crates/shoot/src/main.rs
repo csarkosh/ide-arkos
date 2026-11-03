@@ -111,7 +111,7 @@ fn recut(opts: Opts) -> Result<()> {
     let repo = repo_of(&story_path)?;
     let rec = story.recording(opts.name.as_deref())?;
     std::fs::create_dir_all(&opts.out)?;
-    let mp4 = cut_loop(&repo, rec, &raw, &opts.out.canonicalize()?, &format!("{}-{}", story.scene.name, rec.name))?;
+    let mp4 = cut_loop(&repo, rec, &raw, &opts.out.canonicalize()?, &format!("{}-{}", story.scene.name, rec.name), &story.scene.name)?;
     println!("{}", mp4.display());
     Ok(())
 }
@@ -516,7 +516,7 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
         let stopped = stop_recorder(child);
         held?;
         stopped?;
-        cut_loop(repo, rec, &raw, out, &picture)?;
+        cut_loop(repo, rec, &raw, out, &picture, &story.scene.name)?;
         return Ok(());
     }
     say(&format!("{}: recording {} themes, {:.1} s each", rec.name, rec.themes.len(), rec.hold_secs));
@@ -537,21 +537,26 @@ fn record(rec: &Recording, story: &Story, repo: &Path, recorder: &Path, dirs: &D
     let stopped = stop_recorder(child);
     switched?;
     stopped?;
-    cut_loop(repo, rec, &raw, out, &picture)?;
+    cut_loop(repo, rec, &raw, out, &picture, &story.scene.name)?;
     Ok(())
 }
 
 /// `scripts/shoot/loop.py` on a raw recording: the loop as `<out>/<picture>.mp4`, its first
 /// frame as `<picture>.jpg`. A cinema recording goes to `scripts/shoot/cinema.py` instead: the
-/// camera move over the window and the two backs' stills, as `<out>/<name>.mp4` (no scene in
-/// the name: like the hero still, it is made of several scenes) with its last frame as the poster.
-fn cut_loop(repo: &Path, rec: &Recording, raw: &Path, out: &Path, picture: &str) -> Result<PathBuf> {
+/// camera move over the window and the backs' stills (those it names, or every persona's but
+/// `scene`'s), as `<out>/<name>.mp4` (no scene in the name: like the hero still, it is made of
+/// several scenes) with its last frame as the poster.
+fn cut_loop(repo: &Path, rec: &Recording, raw: &Path, out: &Path, picture: &str, scene: &str) -> Result<PathBuf> {
     if let Some(cinema) = &rec.cinema {
+        let backs = if cinema.backs.is_empty() { story::personas(&repo.join("scripts/shoot/stories"), scene)? } else { cinema.backs.clone() };
+        if backs.is_empty() || backs.len() > story::MAX_BACKS {
+            bail!("{}: {} scenes to stand behind the window; cinema.py takes 1 to {}", rec.name, backs.len(), story::MAX_BACKS);
+        }
         let mp4 = out.join(format!("{}.mp4", rec.name));
         let poster = out.join(format!("{}.jpg", rec.name));
         let mut cmd = Command::new("python3");
         cmd.arg("-I").arg(repo.join("scripts/shoot/cinema.py")).arg(&mp4).arg("--front").arg(raw);
-        for back in &cinema.backs {
+        for back in &backs {
             let still = out.join(format!("{back}-dark.png"));
             if !still.is_file() {
                 bail!("{}: no still {} to stand behind the window (shoot the {back} scene first)", rec.name, still.display());
