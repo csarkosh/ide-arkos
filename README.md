@@ -37,8 +37,8 @@ the command palette once, and the tabs follow what each session is doing.
 
 ## Who it's for
 
-Four ways people use it, each in one of the built-in themes (navy, lavender-light,
-peach-light, matrix); every picture is a real session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
+Four ways people use it, each in one of the built-in themes (navy, lavender-watercolor,
+peach-material, matrix); every picture is a real session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
 
 **The multi tasker** runs several Claude Code sessions on unrelated workstreams at once and
 orchestrates the agents that orchestrate the subagents: here a rate limiter for a web service,
@@ -52,10 +52,10 @@ which session is working and which is waiting on you.
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
 checkout, and the app's page in a web tab next to the code; the file tree and the worktree list
-show what changed. It is shot in Lavender Light, with its watercolor effect.
+show what changed. It is shot in Lavender Watercolor, with its watercolor effect.
 
 <picture>
-  <img alt="An Arkos IDE window in Lavender Light with its watercolor effect: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
+  <img alt="An Arkos IDE window in Lavender Watercolor with its watercolor effect: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
@@ -63,12 +63,12 @@ as a grid, a Mermaid diagram, a checklist and a folded open-questions section, a
 session beside it bringing the plan up to date from the review notes.
 
 The same work stacked, one pane above the other: the file on top with the caret in it, since
-the rendered view is also where you edit, and the session below. It is shot in Peach Light,
-whose watercolor effect washes the window in the theme's pigments, inks the outlines of the
+the rendered view is also where you edit, and the session below. It is shot in Peach Material's
+colours under the watercolor effect, which washes the window in the theme's pigments, inks the outlines of the
 panes and the table, and draws the text as if in ink.
 
 <picture>
-  <img alt="An Arkos IDE window in Peach Light with its watercolor effect, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with an apricot wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in peach and rose with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
+  <img alt="An Arkos IDE window in Peach Material's colours with the watercolor effect, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with an apricot wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in peach and rose with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
 </picture>
 
 **The hacker** works on security: Claude Code audits a small file-drop service and hardens its
@@ -94,7 +94,7 @@ identifies you or your Mac. [What Arkos sends](docs/telemetry.md) lists every ke
 
 - **[The guide](docs/guide.md)**: sessions and recovery, the sidebar, the markdown editor, the
   browser pane, the video pane, keys, settings and updates.
-- **[Themes](docs/themes.md)**: the eight built in, and how to make your own.
+- **[Themes](docs/themes.md)**: the nine built in, and how to make your own.
 - **Agents**: run `arkos guide` in an Arkos terminal for how to show the user a video or a
   document and how to change the theme and settings.
 - **[Developing](docs/development.md)**: building from source, tests, releases and status.

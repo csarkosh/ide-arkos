@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn claude_code_s_stock_dark_text_is_moved_on_a_light_theme_and_its_own_text_is_not() {
-        let t = crate::theme::builtin("lavender-light").unwrap();
+        let t = crate::theme::builtin("lavender-watercolor").unwrap();
         let paper = t.terminal.background;
         assert!(draw(Rgb { r: 248, g: 248, b: 242 }, paper, false).moved);
         assert!(!draw(t.terminal.foreground, paper, false).moved);
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn a_terminal_drawing_the_colours_it_was_sent_fails_the_matrix() {
-        let t = crate::theme::builtin("lavender-light").unwrap();
+        let t = crate::theme::builtin("lavender-watercolor").unwrap();
         let raw = |fg: Rgb, _bg: Rgb, _faint: bool| Drawn { color: fg, alpha: 1.0, moved: false };
         let r = report_with(&t, raw);
         assert!(r.low.iter().any(|l| l.what.starts_with("claude code dark: text") && l.what.ends_with("on terminal.background")), "{:#?}", &r.low[..r.low.len().min(5)]);

@@ -3748,7 +3748,7 @@ mod tests {
     #[test]
     fn every_colour_the_rendered_view_draws_text_in_carries_the_calm_alpha() {
         use crate::effects::active::CALM_ALPHA;
-        for name in ["matrix", "navy", "peach-light"] {
+        for name in ["matrix", "navy", "peach-material"] {
             let theme = crate::theme::builtin(name).unwrap();
             let c = md_colors(&theme);
             for (what, colour) in [("text", c.text), ("dim", c.dim), ("link", c.link), ("on_accent", c.on_accent), ("deleted", c.deleted)] {

@@ -18,8 +18,8 @@ height = 1000
 preset = "comfortable"
 sidebar_width = 240
 expanded = ["posts", "notes"]
-# A writer's look: the built-in peach-light theme, cream and peach, in the picture.
-theme = { dark = "peach-light", light = "peach-light" }
+# A writer's look: the built-in peach-material theme, cream and peach, in the picture.
+theme = { dark = "peach-material", light = "peach-material" }
 
 [[pane]]
 name = "launch plan"

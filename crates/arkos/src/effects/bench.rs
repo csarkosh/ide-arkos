@@ -213,7 +213,7 @@ mod tests {
         loud.chrome.focus_ring = Rgb { r: 255, g: 40, b: 200 };
         loud.terminal.magenta = Rgb { r: 255, g: 0, b: 255 };
         loud.terminal.red = Rgb { r: 255, g: 30, b: 60 };
-        let mut deep = crate::theme::builtin("peach-light").unwrap();
+        let mut deep = crate::theme::builtin("peach-material").unwrap();
         deep.name = "deep-light".into();
         deep.chrome.window_bg = Rgb { r: 250, g: 250, b: 252 };
         deep.chrome.focus_ring = Rgb { r: 10, g: 20, b: 140 };
@@ -227,11 +227,11 @@ mod tests {
         if Device::system_default().is_none() {
             return;
         }
-        let mut themes: Vec<Theme> = ["peach-light", "lavender-light", "navy", "timo-purple"].iter().map(|n| crate::theme::builtin(n).unwrap()).collect();
+        let mut themes: Vec<Theme> = ["peach-material", "lavender-watercolor", "navy", "timo-purple"].iter().map(|n| crate::theme::builtin(n).unwrap()).collect();
         themes.extend(loaded_themes());
         for theme in themes {
             let text = theme.chrome.text;
-            // 3:1, WCAG's floor for large text and controls (Peach Light's approved title bar sits
+            // 3:1, WCAG's floor for large text and controls (Peach Material's approved title bar sits
             // near 4:1, so a stricter floor would wash its look out); the theme's own contrast
             // when that is less, since no wash can do better than the bare paper.
             let floor = contrast(text, theme.chrome.window_bg).min(3.0) - 0.1;
@@ -264,7 +264,7 @@ mod tests {
         if Device::system_default().is_none() {
             return;
         }
-        let mut lonely = crate::theme::builtin("peach-light").unwrap();
+        let mut lonely = crate::theme::builtin("peach-material").unwrap();
         lonely.semantic.waiting = Rgb { r: 0, g: 140, b: 60 };
         lonely.terminal.red = Rgb { r: 30, g: 90, b: 200 };
         lonely.terminal.magenta = Rgb { r: 30, g: 90, b: 200 };

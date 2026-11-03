@@ -290,7 +290,7 @@ mod tests {
             assert!(SKILL_DESCRIPTION.contains(word), "{word}: {SKILL_DESCRIPTION}");
         }
         assert!(TEXT.contains("arkos theme contrast <file-or-name> [--effect <name|folder|none>] [--json]"));
-        assert!(TEXT.contains("arkos theme contrast peach-light --effect <folder>"), "the effect steps run it");
+        assert!(TEXT.contains("arkos theme contrast peach-material --effect <folder>"), "the effect steps run it");
         assert!(TEXT.contains("claude code: {n} pairs ok") && TEXT.contains("terminal under {effect}:"), "the lines it prints");
     }
 

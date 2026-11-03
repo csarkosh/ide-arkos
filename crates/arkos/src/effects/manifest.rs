@@ -245,7 +245,8 @@ pub fn load(name: &str, dir: &Path) -> Result<Effect, String> {
 }
 
 /// Every effect by name: the built-ins first, then the folder's others sorted. A folder that
-/// shadows a built-in is listed once, in the built-in's place, as a folder.
+/// shadows a built-in is listed once, in the built-in's place, as a folder. A hidden built-in
+/// (`BuiltIn::hidden`) is left out unless a folder shadows it.
 pub fn list(dir: &Path) -> Vec<(String, Source)> {
     let from_folder = |name: &str| -> Option<Source> {
         let folder = dir.join(name);
@@ -258,7 +259,10 @@ pub fn list(dir: &Path) -> Vec<(String, Source)> {
         })
     };
     let mut out: Vec<(String, Source)> =
-        BUILTIN.iter().map(|b| (b.name.to_string(), from_folder(b.name).unwrap_or(Source::BuiltIn))).collect();
+        BUILTIN.iter().filter_map(|b| match from_folder(b.name) {
+            Some(source) => Some((b.name.to_string(), source)),
+            None => (!b.hidden).then(|| (b.name.to_string(), Source::BuiltIn)),
+        }).collect();
     let mut others: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -290,6 +294,16 @@ mod tests {
             std::fs::write(f.join(file), format!("// {file} of {name}\n")).unwrap();
         }
         f
+    }
+
+    #[test]
+    fn the_space_effect_is_hidden_from_the_list_but_still_loads_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let listed: Vec<String> = list(dir.path()).into_iter().map(|(n, _)| n).collect();
+        assert!(!listed.iter().any(|n| n == "space"), "{listed:?}");
+        assert!(listed.iter().any(|n| n == "watercolor") && listed.iter().any(|n| n == "material"));
+        assert!(load("space", dir.path()).is_ok(), "a config naming space still draws it");
+        assert!(BUILTIN.iter().filter(|b| b.hidden).map(|b| b.name).eq(["space"]), "space alone is hidden");
     }
 
     #[test]
@@ -538,7 +552,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
         );
     }
 

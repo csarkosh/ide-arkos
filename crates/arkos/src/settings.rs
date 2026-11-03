@@ -1079,14 +1079,14 @@ mod tests {
         use theme::{Appearance::*, Source};
         let themes = vec![
             ("navy".to_string(), Source::BuiltIn, Some(Dark)),
-            ("peach-light".to_string(), Source::BuiltIn, Some(Light)),
+            ("peach-material".to_string(), Source::BuiltIn, Some(Light)),
             ("matrix".to_string(), Source::BuiltIn, Some(Dark)),
             ("broken".to_string(), Source::Invalid("bad".into()), None),
         ];
         let rows = |slot, current| slot_rows(&themes, slot, current);
         assert_eq!(rows(Dark, "navy"), vec![(0, "navy".to_string()), (2, "matrix".to_string()), (3, "broken (invalid)".to_string())]);
-        assert_eq!(rows(Light, "peach-light"), vec![(1, "peach-light".to_string()), (3, "broken (invalid)".to_string())]);
-        assert_eq!(rows(Light, "navy"), vec![(0, "navy (a dark theme)".to_string()), (1, "peach-light".to_string()), (3, "broken (invalid)".to_string())]);
+        assert_eq!(rows(Light, "peach-material"), vec![(1, "peach-material".to_string()), (3, "broken (invalid)".to_string())]);
+        assert_eq!(rows(Light, "navy"), vec![(0, "navy (a dark theme)".to_string()), (1, "peach-material".to_string()), (3, "broken (invalid)".to_string())]);
     }
 
     #[test]
@@ -1192,7 +1192,7 @@ mod tests {
     #[test]
     fn the_updates_line_names_the_version_and_a_missing_choice_is_listed_first() {
         assert_eq!(ready_line("0.2.0 (def5678)"), "0.2.0 (def5678) is ready");
-        let listed = ["navy".to_string(), "peach-light".to_string()];
+        let listed = ["navy".to_string(), "peach-material".to_string()];
         assert_eq!(not_installed("nvy", &listed), Some("nvy (not installed)".to_string()));
         assert_eq!(not_installed("navy", &listed), None);
     }

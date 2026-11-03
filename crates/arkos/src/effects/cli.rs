@@ -35,7 +35,7 @@ const GLYPH_SIGNATURES: &str = include_str!("../../effects/glyph-signatures.meta
 
 /// What `bench` draws without a window: a window of this many points, in this theme.
 const BENCH_SIZE: (f32, f32) = (1200.0, 800.0);
-const BENCH_THEME: &str = "peach-light";
+const BENCH_THEME: &str = "peach-material";
 /// How long `bench` draws without `--seconds`, and the longest it may be asked to.
 const BENCH_SECONDS: f32 = 3.0;
 const BENCH_MAX_SECONDS: f32 = 60.0;
@@ -240,7 +240,7 @@ fn find(target: &str, env: &Env) -> Result<Effect, String> {
     }
 }
 
-/// The first answering window's size and theme, or 1200 by 800 points in Peach Light.
+/// The first answering window's size and theme, or 1200 by 800 points in Peach Material.
 fn bench_window(env: &Env) -> ((f32, f32), String) {
     let found = agent_cli::customize_detailed(env.socket, CustomizeAction::ReportState, env.wait).ok().and_then(|answer| {
         answer.outcomes.into_iter().find_map(|(o, detail)| Some((detail.size?, o.result.ok()?.theme)))
@@ -262,10 +262,10 @@ fn bench_command(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
         Err(e) => return fail(err, &e),
     };
     let (size, theme_name) = bench_window(env);
-    // A window showing a theme that no longer loads (a preview's) is benched in Peach Light.
+    // A window showing a theme that no longer loads (a preview's) is benched in Peach Material.
     let (theme_name, theme) = match agent_cli::load_name(&theme_name, env.themes) {
         Ok(t) => (theme_name, t),
-        Err(_) => (BENCH_THEME.to_string(), theme::builtin(BENCH_THEME).expect("Peach Light is built in")),
+        Err(_) => (BENCH_THEME.to_string(), theme::builtin(BENCH_THEME).expect("Peach Material is built in")),
     };
     let ms = match bench::bench(&effect, &theme, size, seconds) {
         Ok(ms) => ms,
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "watercolor (built in)\nspace (built in)\nrunic (built in)\nmaterial (built in)\nnotebook (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
+                "watercolor (built in)\nrunic (built in)\nmaterial (built in)\nnotebook (built in)\nbroken (folder, invalid: {}: scale must be 0.1 to 1.0 (was 2.0))\nneon (folder)\n",
                 effects.join("broken").join("effect.toml").display()
             )
         );
@@ -499,13 +499,12 @@ mod tests {
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v[0], serde_json::json!({ "name": "watercolor", "source": "built-in" }));
-        assert_eq!(v[1], serde_json::json!({ "name": "space", "source": "built-in" }));
-        assert_eq!(v[2], serde_json::json!({ "name": "runic", "source": "built-in" }));
-        assert_eq!(v[3], serde_json::json!({ "name": "material", "source": "built-in" }));
-        assert_eq!(v[4], serde_json::json!({ "name": "notebook", "source": "built-in" }));
-        assert_eq!((v[5]["name"].as_str(), v[5]["source"].as_str()), (Some("broken"), Some("invalid")));
-        assert!(v[5]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
-        assert_eq!(v[6], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
+        assert_eq!(v[1], serde_json::json!({ "name": "runic", "source": "built-in" }));
+        assert_eq!(v[2], serde_json::json!({ "name": "material", "source": "built-in" }));
+        assert_eq!(v[3], serde_json::json!({ "name": "notebook", "source": "built-in" }));
+        assert_eq!((v[4]["name"].as_str(), v[4]["source"].as_str()), (Some("broken"), Some("invalid")));
+        assert!(v[4]["error"].as_str().unwrap().contains("scale must be 0.1 to 1.0"));
+        assert_eq!(v[5], serde_json::json!({ "name": "neon", "source": "folder", "path": effects.join("neon") }));
         assert_eq!(run(&["list", "extra"], &env).0, 2);
     }
 
@@ -801,7 +800,7 @@ mod tests {
         if !metal() {
             return;
         }
-        // No window: 1200 by 800 points, Peach Light, the manifest's 30 frames a second.
+        // No window: 1200 by 800 points, Peach Material, the manifest's 30 frames a second.
         let (code, out, err) = run(&["bench", "watercolor", "--seconds", "0.2"], &env);
         assert_eq!((code, err.as_str()), (0, ""));
         let line = out.strip_suffix('\n').unwrap();
@@ -815,7 +814,7 @@ mod tests {
         let (code, out, _) = run(&["bench", &s.effects().join("mywash").display().to_string(), "--seconds", "0.2", "--json"], &env);
         assert_eq!(code, 0);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!((v["name"].as_str(), v["theme"].as_str(), v["frame_rate"].as_u64()), (Some("mywash"), Some("peach-light"), Some(30)));
+        assert_eq!((v["name"].as_str(), v["theme"].as_str(), v["frame_rate"].as_u64()), (Some("mywash"), Some("peach-material"), Some(30)));
         assert_eq!(v["size"], serde_json::json!([1200.0, 800.0]));
         let ms = v["ms"].as_f64().unwrap() as f32;
         assert!(ms > 0.0);

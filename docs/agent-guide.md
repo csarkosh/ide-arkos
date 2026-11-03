@@ -466,7 +466,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 
 ## 6. The theme workflow
 
-1. `arkos theme template > draft.toml` (or `arkos theme template peach-light` for a light start).
+1. `arkos theme template > draft.toml` (or `arkos theme template peach-material` for a light start).
 2. Set `name` to a new bare name and edit the colours.
 3. `arkos theme validate draft.toml`, then `arkos theme contrast draft.toml`; fix every LOW pair
    and run it again until it exits 0. It checks the theme's own pairs, Claude Code's in it, and
@@ -477,7 +477,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 5. `arkos theme use draft.toml` (add `--dark` or `--light` to choose the slot).
 6. `arkos theme current` to confirm what every window shows.
 
-To revert, `arkos theme use navy` (or `arkos theme use peach-light --light`). The user can also
+To revert, `arkos theme use navy` (or `arkos theme use peach-material --light`). The user can also
 pick any theme by hand in the Settings window.
 
 ## 7. Trying a theme or effect without touching the user's setup
@@ -565,12 +565,13 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
 ## 9. Effects
 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
-surface, and optionally the text itself. Five are built in: Peach Light recommends `watercolor`
-(still ink glyphs), `space` is recommended by no theme (a night sky with glowing edges and still holo
-text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
+surface, and optionally the text itself. Five are built in: Lavender Watercolor recommends `watercolor`
+(still ink glyphs), `space` is hidden (recommended by no theme and left out of Settings and
+`arkos effect list`, though `arkos effect use space` and a config naming it still draw it: a night
+sky with glowing edges and still holo text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
 accent that glitches now and then, and a terminal that decodes its changed cells; it was called
-`matrix` before 0.7.20, and that name still draws it), Material recommends `material` (the
-panes as rounded white cards on a pale frame, underlined active tabs, a pill on the selected
+`matrix` before 0.7.20, and that name still draws it), Material, Peach Material and Lavender Material recommend `material` (the
+panes as rounded cards in the theme's page colour on a frame of its sidebar colour, underlined active tabs, a pill on the selected
 row, a search bar round the title, a progress bar on a busy pane, no glyph shader) and
 Composition Notebook recommends `notebook` (the
 marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
@@ -746,7 +747,7 @@ and at least 80% of their coverage.
 3. `arkos effect check <folder>` until it prints `ok: <name>`; a compile error names your file
    and line. Read its `highlights:` line: with `app` the wash gets no highlight blocks.
 4. `arkos effect bench <name>` until it says `within budget`.
-5. `arkos theme contrast peach-light --effect <folder>` and `arkos theme contrast navy --effect <folder>`
+5. `arkos theme contrast peach-material --effect <folder>` and `arkos theme contrast navy --effect <folder>`
    (and the user's own themes) until each exits 0: the effect's `text_contrast` moves the text,
    and the check draws every colour a program can send under it.
 6. `arkos effect use <name>`, then `arkos effect current` to see what each window draws and what
@@ -813,7 +814,7 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
   clock, and times every frame on the GPU. It draws a window as it opens: the
   title bar, the sidebar and one pane, with a selected Explorer row when the manifest says
   `highlights = "effect"`; every pane or highlight more adds its blocks' cost. The size and the theme are those of
-  the first window that answers; without one, 1200 by 800 points and Peach Light. Prints
+  the first window that answers; without one, 1200 by 800 points and Peach Material. Prints
   `{name}: {ms} ms per frame at {w}x{h} ({share}% of a frame at {rate} fps): {verdict}`, the
   verdict `within budget`, `heavy` or `too heavy`. Exit 1 when the effect does not load or
   compile. JSON `{ "name", "ms", "size": [w, h], "theme", "frame_rate", "share", "verdict" }`,

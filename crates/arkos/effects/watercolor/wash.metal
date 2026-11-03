@@ -52,8 +52,8 @@ float3 turn_hue(float3 c, float deg) {
 }
 
 // The four pigments are the theme's own (ARKOS_PIGMENT): its focus colour and accents of its own
-// family, which thin out over the paper (Peach Light's burnt orange, ochre, brick and plum into
-// peach, apricot, dusty rose and mauve; Lavender Light's purples, rose and blue into lilacs). A
+// family, which thin out over the paper (Peach Material's burnt orange, ochre, brick and plum into
+// peach, apricot, dusty rose and mauve; Lavender Watercolor's purples, rose and blue into lilacs). A
 // theme with fewer of its own (u.pigment_count) gets the rest as its own turned a little either
 // way round the colour wheel, so neighbouring panes still differ.
 float3 pigment(constant ArkosInputs& u, int i) {

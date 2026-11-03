@@ -193,6 +193,27 @@ points between them (`chrome::TITLE_GROUPS_GAP`), the path truncating first. The
 label behind each, reaching 14 points past the group's ends, with the marble between; with no
 group reported it falls back to the one label across the bar.
 
+## Themes named by colour and effect
+
+Cyrus asked to hide the `space` effect, rename `lavender-light` to `lavender-watercolor` and
+`peach-light` to `peach-material`, and add `lavender-material`: a built-in's name is its colours
+and the effect it recommends.
+
+- `space` stays built in but `BuiltIn::hidden`: Settings and `arkos effect list` leave it out
+  (unless a folder of that name shadows it), and a config, `arkos effect use space` or a theme
+  naming it still draw it.
+- `peach-material` is Peach's colours and fonts recommending `material` (my reading of the new
+  name; it recommended watercolor before). It stays the default light theme.
+- `lavender-watercolor` is the old `lavender-light` unchanged; `lavender-material` is its colours
+  and fonts recommending `material` (the wash reads the frame from `sidebar` and the cards from
+  `window_bg`, so no colour changes were needed; contrast clear).
+- The old names still work (`theme::RENAMED`, `theme::current_name`): a built-in lookup, `arkos
+  theme contrast` and `template` take them, `arkos theme use` saves the new name, and at launch a
+  config naming one is rewritten to the new name with its comments kept and no notice, unless the
+  user has a theme file of that old name, which stays theirs.
+- The README's blogger still shows the watercolor still, now captioned as Peach's colours under
+  watercolor; a reshoot of that story would draw Material.
+
 ## For Cyrus to decide
 
 - The terminal font for the notebook: Monaspace Radon (A) or Comic Mono (B).

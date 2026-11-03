@@ -4621,7 +4621,7 @@ fn main() {
     motion::refresh();
     app_nap::hold();
     let config_path = paths::config_file();
-    // Navy Light is no longer built in: a config naming it is moved to Peach Light (or Navy for
+    // Navy Light is no longer built in: a config naming it is moved to Peach Material (or Navy for
     // the dark slot) before it is parsed, and the window says so once when the light theme moved
     // (the file never names it again). Before the fingerprint, so the rewritten file is the one
     // fingerprinted.
@@ -5282,7 +5282,7 @@ mod tests {
         let mut plain = theme::builtin("navy").unwrap();
         plain.appearance = None;
         let navy = Arc::new(plain);
-        let mut edited = theme::builtin("lavender-light").unwrap();
+        let mut edited = theme::builtin("lavender-watercolor").unwrap();
         edited.name = "navy".into();
         edited.appearance = None;
         edited.font = theme::ThemeFont::default(); // the blend takes the target's fonts, and navy names none
@@ -5444,9 +5444,9 @@ mod tests {
         let good = customize_outcome(&CustomizeAction::PreviewTheme { toml: "...".into() }, Ok(theme::builtin("navy").unwrap()), after.clone());
         assert_eq!(good.unwrap().preview.as_deref(), Some("x"));
         assert!(customize_outcome(&CustomizeAction::ReportState, Err("unused".into()), after).is_ok(), "only a preview can fail");
-        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-light".into() };
+        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-watercolor".into() };
         assert_eq!(theme_file_for(config::AppearanceMode::System, true, &cfg, Path::new("/t")), PathBuf::from("/t/timo-purple.toml"));
-        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/lavender-light.toml"));
+        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/lavender-watercolor.toml"));
     }
 
     #[test]

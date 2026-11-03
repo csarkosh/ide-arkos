@@ -404,11 +404,11 @@ an effect in without touching the real setup.
 
 Things only a person at the screen can check, in order of value:
 
-- colours: vim or htop with a 256-colour scheme (`:set t_Co=256`, or htop's colour themes) shows the theme's colours (the cube blends the background, foreground and ANSI hues; the greys run from background to foreground), not the fixed xterm ones, in Navy and in Peach Light.
-- colours: Claude Code (theme `custom:arkos`) in Navy, then Peach Light, then back: the lines
+- colours: vim or htop with a 256-colour scheme (`:set t_Co=256`, or htop's colour themes) shows the theme's colours (the cube blends the background, foreground and ANSI hues; the greys run from background to foreground), not the fixed xterm ones, in Navy and in Peach Material.
+- colours: Claude Code (theme `custom:arkos`) in Navy, then Peach Material, then back: the lines
   drawn before each switch take the current theme along with the new ones, diffs show faint green
   and red bands in both, and the user message band is a faint tint of the background.
-- colours: Claude Code on its stock `dark` theme in Lavender Light with watercolor: a diff's
+- colours: Claude Code on its stock `dark` theme in Lavender Watercolor with watercolor: a diff's
   context lines and line numbers read as grey ink on the paper, not near white, and the text in
   the dark message band reads light on it.
 - colours: in a light theme, a picture drawn with half blocks (`chafa` or `timg` on a photo), a
@@ -421,13 +421,13 @@ Things only a person at the screen can check, in order of value:
   Code now takes the Arkos colours; restart running sessions to see them"; a `dark-daltonized`
   or other custom theme stays, and the doctor's "Claude Code: follows the Arkos theme" row
   offers Apply.
-- effects: Peach Light (`effect.name = "theme"`) shows the watercolor wash under the window,
+- effects: Lavender Watercolor (`effect.name = "theme"`) shows the watercolor wash under the window,
   the ink line between Explorer and Worktrees, and strokes that fade in and out on the
   selected and hovered Explorer rows and the hovered tab; the window log says `effect
   watercolor: … ms per frame`
-- effects: Lavender Light (`effect.name = "theme"`) shows watercolor too, every pane washed in
-  its own lilac, rose or blue and none in peach or apricot; Peach Light's panes keep their
-  peach, apricot, mauve and dusty rose
+- effects: Lavender Watercolor shows every pane washed in its own lilac, rose or blue and none in
+  peach or apricot; Peach Material with `effect.name = "watercolor"` keeps its panes' peach,
+  apricot, mauve and dusty rose
 - effects: watercolor on a dark theme (Navy with `effect.name = "watercolor"`) shows its panes
   washed in the theme's own colours as a glaze on the dark paper, each pane its own, with
   lighter grain; on a theme of your own (`arkos theme add`) with one strong accent the panes
@@ -450,28 +450,29 @@ Things only a person at the screen can check, in order of value:
   follows its new size at once, with no stretched or offset blocks
 - effects: a `wash.metal` in the effects folder that fails to compile shows a notice naming the
   file and its line, and the theme draws plain
-- effects: under Peach Light the project window's text is ink (feathered, uneven, and deeper
+- effects: under Lavender Watercolor the project window's text is ink (feathered, uneven, and deeper
   than the theme's own, cross-faded) from the fade in's end, and plain from a fade out's start;
   the About, Settings and Keybindings windows and the chooser keep gpui's plain glyphs
 - effects: a `glyphs.metal` in the effects folder that fails to compile shows a notice
   `effect <name>: glyphs.metal: …`, and the wash stays on with plain glyphs
 - effects: Settings, Appearance lists Effect under the themes ("Theme's choice (watercolor)"
-  under Peach Light, None, watercolor, an invalid folder dimmed as "(invalid)"); a click switches
+  under Lavender Watercolor, None, watercolor, an invalid folder dimmed as "(invalid)"; no `space`, which
+  is hidden); a click switches
   the window with a fade, the Intensity stepper moves the wash's strength by a tenth, and "Show
   effects folder" creates and reveals the folder
 - effects: with a window open, `arkos effect current` names its effect and a cost in
   milliseconds after a few seconds, and `arkos effect bench watercolor` benches at the window's
   size and theme
-- effects: under Peach Light a video tab shows the wash beside the picture (no cream bars at its
+- effects: under Lavender Watercolor a video tab shows the wash beside the picture (no cream bars at its
   sides or above and below), an ink outline just outside the picture that follows it through a
   resize and a split, and the control strip clear over the wash; with `effect.name none` the bars
   come back in the window's colour
-- effects: under Peach Light an emoji (in a terminal, a markdown tab, a tab's title) is drawn in
+- effects: under Lavender Watercolor an emoji (in a terminal, a markdown tab, a tab's title) is drawn in
   the same ink as the text around it: its own colours, a slight wobble, the paper's grain, a
   darker rim and a soft bleed in its colour, still clearly the emoji; an image in a markdown tab
   is untouched; under Navy (space) emoji are on the holo display with the text: their own
   colours tinted toward cyan, scanlined, a little dimmed and haloed, and still
-- effects: under Peach Light (watercolor) the link menu (right-click a URL), the file tree's
+- effects: under Lavender Watercolor (watercolor) the link menu (right-click a URL), the file tree's
   menu, a worktree's menu, the tab overflow menu and the title bar's popovers show the wash
   behind their text as a pane does (paper grain, a light pigment wash, the bubbles continuing
   from behind the menu, under the cream paper), square-cornered and outlined in the same
@@ -482,13 +483,13 @@ Things only a person at the screen can check, in order of value:
   covers its text, and a click on a row lands as before; with no menu open the menu layer draws
   nothing (Activity Monitor: no extra GPU at rest); with `effect.name none` the menus are as
   before
-- effects: under Peach Light a web tab's address bar is clear over the wash (no cream band, no
+- effects: under Lavender Watercolor a web tab's address bar is clear over the wash (no cream band, no
   grey hairline under it), the page has an ink outline that follows it through a resize and a
   split, and a page that paints no background of its own (a plain local `.html` file) sits on the
   cream paper with the wash faintly through it instead of white; a site with its own background
   looks as it always does; under Navy a page without a background stays white; with
   `effect.name none` all of it comes back as before
-- effects: under Peach Light a rendered markdown table shows the wash through its cells (an
+- effects: under Lavender Watercolor a rendered markdown table shows the wash through its cells (an
   apricot band over the header, a light wash over the body, the stripe kept), an ink outline and
   a line under the header from the wash, and inner lines in ink; scrolled half out of the pane,
   its outline stops at the pane's edge; with `effect.name none` the cream fills and grey lines
@@ -544,7 +545,7 @@ Things only a person at the screen can check, in order of value:
 - effects, space: a window wholly covered by another app's window, or minimised, draws no wash
   frames (the process idle in Activity Monitor), and the sky moves again within half a second of
   the window being seen, without any input
-- effects, space: a light theme (Peach Light) with `effect.name = "space"` keeps its text dark
+- effects, space: a light theme (Peach Material) with `effect.name = "space"` keeps its text dark
   and readable (a deep teal lean, no glow, not dimmed)
 - effects, space: in a release build with Navy and space on, the window idle in front, Activity
   Monitor's CPU for the process (write the figure here); the text is still, so it is redrawn
@@ -579,7 +580,8 @@ Things only a person at the screen can check, in order of value:
 - effects: Navy Runic: the rain, the pane edges and the glowing text in Navy's blue, the hints
   and comments plain; a config with `effect.name = "matrix"` still draws the runic effect
 - themes: Settings, Appearance: Dark theme lists navy, timo-purple, matrix and navy-runic, Light
-  theme lists peach-light and lavender-light; a dark theme set under `[theme] light` shows there
+  theme lists peach-material, lavender-watercolor, lavender-material, composition-notebook and
+  material; a dark theme set under `[theme] light` shows there
   marked "(a dark theme)"
 - sandbox: `arkos sandbox ~/Projects/x` opens a second window titled "Arkos IDE (sandbox)" with
   `sandbox` in its title bar; the first window is unchanged; `arkos sandbox status` lists it
@@ -815,13 +817,16 @@ Things only a person at the screen can check, in order of value:
 - editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
-- System Settings > Appearance: Light switches to Peach Light and back, history included
+- System Settings > Appearance: Light switches to Peach Material and back, history included
 - `mode = "dark"` pins Navy whatever the system says
 - Shift+Cmd+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
-- "Theme: peach-light" in the palette, then a config reload: the config's theme wins
-- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Light." once, the file now says `peach-light` with its comments intact, and the next launch shows nothing; a dark slot naming `navy-light` moves silently to `navy`; editing the file back to `navy-light` while the app runs and reloading migrates it again
+- "Theme: peach-material" in the palette, then a config reload: the config's theme wins
+- a config naming `peach-light` or `lavender-light` (with no file of that name of your own in the
+  themes folder), then a launch: the file now says `peach-material` or `lavender-watercolor`,
+  comments kept, with no notice, and the window shows that theme
+- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Material." once, the file now says `peach-material` with its comments intact, and the next launch shows nothing; a dark slot naming `navy-light` moves silently to `navy`; editing the file back to `navy-light` while the app runs and reloading migrates it again
 - "Extract built-in themes", then editing `~/.config/arkos/themes/navy.toml`'s `window_bg` and
   reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
 - `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
@@ -865,7 +870,7 @@ Things only a person at the screen can check, in order of value:
   `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
   session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
 - the same with the skill installed (`arkos guide --install`) and the hooks removed
-- `arkos theme list` shows `navy`, `timo-purple`, `peach-light`, `lavender-light`, `matrix` and `navy-runic` as built in, each dark or light; with Timo Purple
+- `arkos theme list` shows `navy`, `timo-purple`, `peach-material`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook` and `material` as built in, each dark or light; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window

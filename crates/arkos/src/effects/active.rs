@@ -681,7 +681,7 @@ mod tests {
     }
 
     fn inputs_at(time: f32) -> inputs::Inputs {
-        inputs::build(&crate::theme::builtin("peach-light").unwrap(), 1.0, (800.0, 600.0), 1.0, time, &[])
+        inputs::build(&crate::theme::builtin("peach-material").unwrap(), 1.0, (800.0, 600.0), 1.0, time, &[])
     }
 
     #[test]
@@ -713,7 +713,7 @@ mod tests {
         // a window out of focus holds it still: `paused`).
         let t0 = Instant::now();
         let e = on(watercolor(), t0);
-        let inputs = super::super::inputs::build(&theme::builtin("peach-light").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
+        let inputs = super::super::inputs::build(&theme::builtin("peach-material").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
         assert!(e.should_draw(&inputs, false, false, false));
         assert!(!e.should_draw(&inputs, true, false, false), "hidden");
     }
@@ -1061,7 +1061,7 @@ mod tests {
     #[test]
     fn a_light_theme_s_text_moves_towards_black_and_a_dark_one_s_towards_white() {
         use crate::palette::Rgb;
-        let peach = crate::theme::builtin("peach-light").unwrap();
+        let peach = crate::theme::builtin("peach-material").unwrap();
         assert!(peach.is_light());
         let deep = contrasted(&peach, 0.6);
         let towards = |from: Rgb, to: u8, by: f32| {
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     fn zero_contrast_leaves_the_theme_as_it_was() {
-        for name in ["peach-light", "navy"] {
+        for name in ["peach-material", "navy"] {
             let t = crate::theme::builtin(name).unwrap();
             assert_eq!(contrasted(&t, 0.0), t);
         }

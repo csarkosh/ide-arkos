@@ -246,7 +246,7 @@ mod tests {
         let cfg = Config::default();
         let dir = std::path::Path::new("/u/.config/arkos/themes");
         let settings = Path::new("/Users/me/.claude/settings.json");
-        let items = items(&cfg, &[("navy".into(), Some(crate::theme::Appearance::Dark)), ("peach-light".into(), Some(crate::theme::Appearance::Light))], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
+        let items = items(&cfg, &[("navy".into(), Some(crate::theme::Appearance::Dark)), ("peach-material".into(), Some(crate::theme::Appearance::Light))], "comfortable", "navy", dir, None, false, StartAtLogin::Ask, false, settings, false, 0, 0, false);
         // The palette and quit are not offered, nor "Retry update" with no update error.
         let n_actions = crate::keymap::ACTIONS.len() - 3;
         assert_eq!(items.len(), n_actions + 3 + 2 + 2);
@@ -268,9 +268,9 @@ mod tests {
         assert_eq!(preset.command, Command::TextPreset("comfortable".into()));
         let compact = items.iter().find(|i| i.label == "Text preset: compact").unwrap();
         assert_eq!(compact.detail, "14 px, line height 1.3, below the research's comfort floor");
-        let theme = items.iter().find(|i| i.label == "Theme: peach-light").unwrap();
+        let theme = items.iter().find(|i| i.label == "Theme: peach-material").unwrap();
         assert_eq!(theme.detail, "light theme, until the config reloads; set [theme] in config.toml to keep");
-        assert_eq!(theme.command, Command::SetTheme("peach-light".into()));
+        assert_eq!(theme.command, Command::SetTheme("peach-material".into()));
         assert_eq!(items.iter().find(|i| i.label == "Theme: navy").unwrap().detail, "dark theme, current");
         assert!(items.iter().any(|i| i.command == Command::ReloadConfig));
         let extract = items.iter().find(|i| i.command == Command::ExtractThemes).unwrap();

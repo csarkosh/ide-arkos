@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn the_app_s_menus_look_as_ever_and_an_effect_s_take_its_paper_ink_or_glow() {
         use crate::effects::manifest::MenuLook;
-        let peach = crate::theme::builtin("peach-light").unwrap();
+        let peach = crate::theme::builtin("peach-material").unwrap();
         let navy = crate::theme::builtin("navy").unwrap();
         let app = menu_colors(&peach, MenuLook::App);
         let c = &peach.chrome;

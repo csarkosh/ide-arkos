@@ -693,7 +693,7 @@ pub fn command_name(command: &Command) -> &'static str {
 
 /// Whether a theme of this name is one Arkos ships; a theme is never named in an event.
 fn is_builtin(name: &str) -> bool {
-    crate::theme::BUILTIN.iter().any(|(n, _)| *n == name)
+    crate::theme::builtin_text(name).is_some()
 }
 
 /// The config keys that differ between `old` and `new`, sorted, never their values: every
@@ -1541,7 +1541,7 @@ mod tests {
         new.theme.dark = "my-midnight".into();
         assert_eq!(r.config_changed(&old, &new, Usage::Local, at(base, 1)), None, "the usage did not change, nor the sid");
         let mut newer = new.clone();
-        newer.theme.light = "lavender-light".into();
+        newer.theme.light = "lavender-watercolor".into();
         r.config_changed(&new, &newer, Usage::Local, at(base, 2));
         let events = events_in(dir.path(), &sid);
         assert_eq!(
