@@ -481,6 +481,9 @@ fn letter_code(c: u8) -> Option<u16> {
         b'0'..=b'9' => DIGITS.get((c - b'0') as usize).copied(),
         b'=' => Some(24),
         b'-' => Some(27),
+        // The brackets, so a story can send Cmd+Option+] and [ (the sheet keys) and Cmd+Shift+].
+        b'[' => Some(33),
+        b']' => Some(30),
         _ => None,
     }
 }
@@ -1107,6 +1110,7 @@ theme = "light"
         assert_eq!(Key::parse("cmd+z").unwrap().code, Some(6), "a modified letter goes by its key, so Cmd+Z is not Cmd+A");
         assert_eq!(Key::parse("cmd+shift+z").unwrap().code, Some(6));
         assert_eq!(Key::parse("cmd+0").unwrap().code, Some(29), "a digit with a modifier too");
+        assert_eq!((Key::parse("alt+cmd+]").unwrap().code, Key::parse("cmd+shift+[").unwrap().code), (Some(30), Some(33)), "a modified bracket goes by its key");
         assert_eq!(Key::parse("**2").unwrap().text.as_deref(), Some("*"), "a star is typed as text");
         assert_eq!(Key::parse("f2").unwrap().code, Some(120), "F2 edits a table cell");
         assert_eq!((Key::parse("cmd+=").unwrap().code, Key::parse("cmd+-").unwrap().code), (Some(24), Some(27)), "the font size steps go by their keys");
