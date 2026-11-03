@@ -120,6 +120,55 @@ pub fn search_landing(jump: bool, current: usize, len: usize) -> usize {
     }
 }
 
+/// Which list a search fills: the cells while the grid shows, else the lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchTarget {
+    Grid,
+    Lines,
+}
+
+pub fn search_target(grid_shown: bool) -> SearchTarget {
+    if grid_shown {
+        SearchTarget::Grid
+    } else {
+        SearchTarget::Lines
+    }
+}
+
+/// A finished search's hits, of the kind its mode made.
+#[derive(Debug, Clone)]
+pub enum Found {
+    Lines(Vec<Hit>),
+    Cells(Vec<grid::Cell>),
+}
+
+/// Lands a search result numbered `seq` (the latest started is `latest`) if no newer search
+/// started and the mode it ran in still shows. A line result fills `lines` and empties the grid
+/// hits, a cell result the reverse; `current` follows `search_landing`. Whether it landed.
+#[allow(clippy::too_many_arguments)]
+pub fn land_search(seq: u64, latest: u64, grid_now: bool, found: Found, lines: &mut Vec<Hit>, cells: &mut Vec<grid::Cell>, current: &mut usize, jump: bool) -> bool {
+    let target = match found {
+        Found::Lines(_) => SearchTarget::Lines,
+        Found::Cells(_) => SearchTarget::Grid,
+    };
+    if !should_apply(seq, latest.saturating_sub(1)) || target != search_target(grid_now) {
+        return false;
+    }
+    match found {
+        Found::Lines(h) => {
+            *current = search_landing(jump, *current, h.len());
+            *lines = h;
+            cells.clear();
+        }
+        Found::Cells(c) => {
+            *current = search_landing(jump, *current, c.len());
+            *cells = c;
+            lines.clear();
+        }
+    }
+    true
+}
+
 /// The cell the find is on, `None` without hits.
 pub fn current_cell(hits: &[grid::Cell], current: usize) -> Option<grid::Cell> {
     hits.get(current).copied()
@@ -1971,12 +2020,11 @@ impl Viewer {
             let hits = cx.background_executor().spawn(async move { find_hits(&lines, &query) }).await;
             let _ = this.update(cx, |v, cx| {
                 // Every search before the latest one started is superseded.
-                if !should_apply(seq, v.find_seq.saturating_sub(1)) {
+                let (latest, grid_now) = (v.find_seq, v.grid_shown());
+                let Some(f) = &mut v.find else { return };
+                if !land_search(seq, latest, grid_now, Found::Lines(hits), &mut f.hits, &mut v.grid_hits, &mut f.current, jump) {
                     return;
                 }
-                let Some(f) = &mut v.find else { return };
-                f.current = search_landing(jump, f.current, hits.len());
-                f.hits = hits;
                 f.searching = false;
                 if jump {
                     v.show_current_hit();
@@ -2007,14 +2055,13 @@ impl Viewer {
         cx.spawn(async move |this, cx| {
             let hits = cx.background_executor().spawn(async move { grid::find(&sheet, &query) }).await;
             let _ = this.update(cx, |v, cx| {
-                if !should_apply(seq, v.find_seq.saturating_sub(1)) {
+                let (latest, grid_now) = (v.find_seq, v.grid_shown());
+                let Some(f) = &mut v.find else { return };
+                if !land_search(seq, latest, grid_now, Found::Cells(hits), &mut f.hits, &mut v.grid_hits, &mut f.current, jump) {
                     return;
                 }
-                let Some(f) = &mut v.find else { return };
-                f.current = search_landing(jump, f.current, hits.len());
                 f.searching = false;
-                let cell = current_cell(&hits, f.current);
-                v.grid_hits = hits;
+                let cell = current_cell(&v.grid_hits, f.current);
                 if let Some(c) = cell.filter(|_| jump) {
                     v.reveal_grid_cell(c);
                 }
@@ -7140,12 +7187,47 @@ mod tests {
         assert_eq!(search_landing(false, 3, 0), 0);
     }
 
+    fn line_hit(line: usize) -> Hit {
+        Hit { line, start: 0, end: 1 }
+    }
+
+    #[test]
+    fn a_grid_search_lands_in_grid_hits_and_leaves_the_line_hits_empty() {
+        use crate::grid::Cell;
+        let cells = vec![Cell { row: 1, col: 0 }, Cell { row: 2, col: 1 }];
+        let (mut lines, mut grid_hits, mut current) = (vec![line_hit(4)], Vec::new(), 5);
+        let landed = land_search(7, 7, true, Found::Cells(cells.clone()), &mut lines, &mut grid_hits, &mut current, true);
+        assert!(landed);
+        assert_eq!((grid_hits, lines, current), (cells, vec![], 0));
+    }
+
+    #[test]
+    fn a_line_search_lands_in_the_line_hits_and_clears_the_grid_hits() {
+        use crate::grid::Cell;
+        let (mut lines, mut grid_hits, mut current) = (Vec::new(), vec![Cell { row: 1, col: 0 }], 1);
+        let landed = land_search(7, 7, false, Found::Lines(vec![line_hit(2), line_hit(9)]), &mut lines, &mut grid_hits, &mut current, false);
+        assert!(landed);
+        assert_eq!((lines, grid_hits, current), (vec![line_hit(2), line_hit(9)], vec![], 1));
+    }
+
+    #[test]
+    fn a_search_result_from_before_a_mode_switch_is_dropped() {
+        use crate::grid::Cell;
+        // The grid search started as number 3; the switch to raw started number 4.
+        let (mut lines, mut grid_hits, mut current) = (vec![line_hit(1)], Vec::new(), 0);
+        let old = Found::Cells(vec![Cell { row: 1, col: 0 }]);
+        assert!(!land_search(3, 4, false, old.clone(), &mut lines, &mut grid_hits, &mut current, true), "superseded by number");
+        assert!(!land_search(4, 4, false, old, &mut lines, &mut grid_hits, &mut current, true), "cells never land in raw mode");
+        assert_eq!((lines, grid_hits), (vec![line_hit(1)], vec![]));
+    }
+
     #[test]
     fn a_search_in_raw_mode_is_the_line_search() {
-        assert_eq!(find_hit_count(false, 7, 2), 7, "the lines' hits count while the grid is hidden");
         let book = delimited_book("a\nb\n", Path::new("/p/x.csv"));
-        assert!(!grid_shows(Some(&book), ViewMode::Raw));
-        assert!(grid_shows(Some(&book), ViewMode::Rendered));
+        assert_eq!(search_target(grid_shows(Some(&book), ViewMode::Raw)), SearchTarget::Lines);
+        assert_eq!(search_target(grid_shows(Some(&book), ViewMode::Rendered)), SearchTarget::Grid);
+        assert_eq!(search_target(grid_shows(None, ViewMode::Raw)), SearchTarget::Lines, "no book, no grid");
+        assert_eq!(find_hit_count(false, 7, 2), 7);
     }
 
     #[test]
