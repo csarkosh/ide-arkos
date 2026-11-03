@@ -354,11 +354,14 @@ at most `width` (2000) pixels across, H.264 at CRF 19 tagged sRGB, written as
 records `themes` for the app's page on apps.csarko.sh, which plays it under "Who it's for"; the
 README stays stills, since GitHub plays no video from a repository.
 
-A recording with `cinema = { backs = ["web-developer", "blogger"] }` is the page's opening
+A recording with `cinema = {}` (or `cinema = { backs = [...] }`, naming one to six scenes) is the page's opening
 clip instead of a loop (Cyrus, 2026-10-31: "more cinematic", "a background video similar to the
 one at the top of" the Pixel 11 Pro store page): the window is recorded in its one theme for
-`hold_secs`, then `scripts/shoot/cinema.py` (Pillow and numpy) moves a camera over it and the two
-scenes' stills behind it, the way such a page's hero video moves: macro on the tab bar, seen a
+`hold_secs`, then `scripts/shoot/cinema.py` (Pillow and numpy) moves a camera over it and the
+backs' stills behind it (with none named, every persona's but its own scene's, so every persona
+added is in the clip, Cyrus 2026-11-03; a story is a persona unless its `[scene]` says
+`persona = false`, as the probe's does; the backs fan in turn left and right, each pair after the
+first tucked in and higher, an odd last one in the middle over the front window), the way such a page's hero video moves: macro on the tab bar, seen a
 little from the side with the backs out of focus, pulling back and straightening over `move_secs`
 (4.6) into the key art, the front window alive and mirrored on a lit ground, then holding
 `rest_secs` (0.9). It is written as `docs/images/<name>.mp4` (no scene in the name, like the hero
