@@ -175,7 +175,7 @@ Android default; Google's own web workspaces wear a different Material. This pas
   font) is painted a character to each cell. This holds for every theme and font.
 - **A margin inside the card.** A terminal's text ran to the card's edge (Claude Code's `●`
   touched it). On a rounded card the terminal now sits 2 points in from the card's left and right
-  sides (`pane_view::terminal_inset`), as Cyrus asked.
+  sides (`pane_view::terminal_inset`), as Cyrus asked; he then had it doubled to 4 points.
 
 - **The number in the chip's middle.** Cyrus saw the digit off the chip's centre. Two causes:
   the wash placed the chip from the tab bar block's corner, while the app lays the strip out

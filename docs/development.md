@@ -505,7 +505,7 @@ Things only a person at the screen can check, in order of value:
   selected Explorer row as a light blue pill inset from the sidebar's edges (the same width at any
   indent) with a ripple as it is clicked, a hovered row or tab as a quiet grey pill with no
   ripple, and, while a pane's Claude session works, a thin progress
-  bar sweeping along the bottom of its tab strip; a terminal's text two points in from its card's
+  bar sweeping along the bottom of its tab strip; a terminal's text four points in from its card's
   sides; the text is plain DM Sans and Roboto Mono
 - terminal, block elements: a status line's context bar (`█░░░ 6%`) is a seamless bar of
   cells with its percentage clear after it, under Roboto Mono (Material) as under Menlo; a

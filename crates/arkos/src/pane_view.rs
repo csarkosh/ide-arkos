@@ -40,7 +40,7 @@ pub fn paper_radius(style: crate::effects::active::Style) -> f32 {
 }
 /// The margin in points between a terminal's text and its card's left and right sides on a
 /// rounded card (`pane_radius`), so the text does not meet the card's edge.
-pub const CARD_TEXT_INSET: f32 = 2.0;
+pub const CARD_TEXT_INSET: f32 = 4.0;
 
 pub fn terminal_inset(style: crate::effects::active::Style) -> f32 {
     if style.pane_radius > 0.0 { CARD_TEXT_INSET } else { 0.0 }
@@ -1564,7 +1564,7 @@ mod tests {
         let mut style = Style::plain();
         assert_eq!(terminal_inset(style), 0.0, "a square pane's text runs to its edge as ever");
         style.pane_radius = 14.0;
-        assert_eq!(terminal_inset(style), 2.0);
+        assert_eq!(terminal_inset(style), 4.0);
     }
 
     #[test]

@@ -37,8 +37,9 @@ the command palette once, and the tabs follow what each session is doing.
 
 ## Who it's for
 
-Four ways people use it, each in one of the built-in themes (navy, lavender-watercolor,
-peach-watercolor, matrix); every picture is a real session, taken by [`scripts/shoot.sh`](docs/development.md#screenshots).
+Six ways people use it, each in one of the built-in themes (navy-runic, lavender-material,
+peach-watercolor, matrix, composition-notebook, material); every picture is a real session, taken
+by [`scripts/shoot.sh`](docs/development.md#screenshots).
 
 **The multi tasker** runs several Claude Code sessions on unrelated workstreams at once and
 orchestrates the agents that orchestrate the subagents: here a rate limiter for a web service,
@@ -52,10 +53,11 @@ which session is working and which is waiting on you.
 
 **The web developer** keeps a feature branch in a worktree, Claude Code on it and on the main
 checkout, and the app's page in a web tab next to the code; the file tree and the worktree list
-show what changed. It is shot in Lavender Watercolor, with its watercolor effect.
+show what changed. It is shot in Lavender Material: lavender's colours as near-white cards on a
+lavender frame, each pane's number on a chip of its own colour and its active tab underlined.
 
 <picture>
-  <img alt="An Arkos IDE window in Lavender Watercolor with its watercolor effect: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
+  <img alt="An Arkos IDE window in Lavender Material, its panes as rounded near-white cards on a lavender frame: the file tree and git worktrees on the left, two Claude Code tabs in the middle pane, one working and one waiting, and a web tab showing the app's page the whole height of the window on the right" src="docs/images/web-developer-dark.png" width="760">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
@@ -63,12 +65,12 @@ as a grid, a Mermaid diagram, a checklist and a folded open-questions section, a
 session beside it bringing the plan up to date from the review notes.
 
 The same work stacked, one pane above the other: the file on top with the caret in it, since
-the rendered view is also where you edit, and the session below. It is shot in Peach Watercolor's
-colours under the watercolor effect, which washes the window in the theme's pigments, inks the outlines of the
-panes and the table, and draws the text as if in ink.
+the rendered view is also where you edit, and the session below. It is shot in Peach Watercolor,
+whose watercolor effect washes the window in the theme's pigments, inks the outlines of the panes
+and the table, and draws the text as if in ink; Lavender Watercolor is the same effect in lilac.
 
 <picture>
-  <img alt="An Arkos IDE window in Peach Watercolor's colours with the watercolor effect, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with an apricot wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in peach and rose with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
+  <img alt="An Arkos IDE window in Peach Watercolor, two panes one above the other: a launch plan rendered in the markdown editor on top, its status table drawn as a grid with a wash over its header and an ink outline; below it a Claude Code session updating the plan from the notes, the window washed in the theme's pigments with ink lines round each pane" src="docs/images/blogger-dark.png" width="620">
 </picture>
 
 **The hacker** works on security: Claude Code audits a small file-drop service and hardens its
@@ -80,6 +82,26 @@ new line for a moment before it settles, as on the audit's status line here.
 
 <picture>
   <img alt="An Arkos IDE window in the Matrix theme, black with green text and rune rain falling behind the panes: the file tree on the left, Claude Code hardening a service's sign-in with its newest line still scrambling into place and a second tab fixing a path traversal, a session reading an ssh log for a break-in, and a shell showing the end of that log" src="docs/images/hacker-dark.png" width="760">
+</picture>
+
+**The student** keeps a course in one folder: the week's lecture notes rendered on the left,
+with a problem set's code in the next tab, and Claude Code on the right explaining, as a
+classmate would, why the problem set's tests fail, fixing it, and adding practice questions to
+the notes, which change on the left as it writes. It is shot in Composition Notebook: a marbled
+cover over the title bar, ruled cream pages bound to the file tree by a wire spiral, and terminal
+text written in by hand.
+
+<picture>
+  <img alt="An Arkos IDE window in Composition Notebook: a marbled black-and-white cover over the title bar, the file tree on a cream page bound by a wire spiral, the lecture notes on dynamic programming rendered on a ruled page with a table and a code block, and Claude Code on the right explaining a knapsack bug in handwritten type" src="docs/images/student-dark.png" width="760">
+</picture>
+
+**The data analyst** owns the weekly numbers: the signups report rendered on the left, its
+table being filled and its bar chart growing a week, Claude Code on the right writing the script
+that computes them, and the raw export below it. It is shot in Material: white cards on a cool
+frame, each pane's number on a chip of its own colour, the active tab underlined in blue.
+
+<picture>
+  <img alt="An Arkos IDE window in Material, its panes as white rounded cards on a pale frame: a weekly signups report rendered on the left with a table by channel and a blue bar chart, Claude Code on the right computing the week's numbers, and the CSV export of signups by week and channel below it" src="docs/images/data-analyst-dark.png" width="760">
 </picture>
 
 ## Privacy
