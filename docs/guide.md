@@ -97,6 +97,59 @@ in as it opens, and Cmd+B slides the sidebar
 over 150 ms with the panes following. Something on its way out is only drawn: it takes no
 keys, focus or clicks.
 
+### Tables and spreadsheets
+
+A `.csv` or `.tsv` opens as a grid. The file's first row is a bold header that stays put while the
+rows scroll, row numbers run down the left (the header is row 1 and the first data row 2, as in
+the raw view's line numbers), rows are striped, and a column of numbers is right-aligned while
+text stays left. A column counts as numbers when every non-empty cell is one: digits with an
+optional currency sign, thousands commas, a decimal point or a trailing percent. The delimiter is
+sniffed (comma, tab, semicolon or pipe; `.tsv` is always tab). Quoted fields with line breaks are
+read; a cell with a line break shows its first line and an ellipsis. A UTF-8 byte order mark is
+dropped and UTF-16 files with one are read; any other encoding is read as UTF-8 with replacement
+characters, and such a file's raw view is read-only.
+
+A spreadsheet (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`) opens as the same grid, read-only. Its
+header is the column letters (A, B, C) and its rows carry the spreadsheet's own numbers; the first
+row of the used range is an ordinary row. Formulas show their last computed value, dates show as
+`2026-10-26` or `2026-10-26 14:30`, durations as `h:mm:ss`, booleans as TRUE or FALSE, and an
+error cell shows its text (`#DIV/0!`). Hidden sheets are skipped. A workbook with more than one
+sheet shows a strip of sheet tabs under the grid: click one, or press Cmd+Option+] and
+Cmd+Option+[ for the next and previous sheet ("Next sheet" and "Previous sheet" in the
+viewer's section of Settings and the keymap). Each sheet keeps its own scroll and selection while
+the tab is open; after a relaunch the first sheet shows.
+
+A CSV has the same "show raw" / "show grid" pill as markdown, and Shift+Cmd+M toggles it. While
+the grid shows, the pill sits in a strip above the grid beside any notice. Raw is the code editor
+as before: editing is done there or by an agent, never in the grid. A spreadsheet has no raw mode
+and no pill. The grid follows the file, so an agent rewriting the CSV updates it, and switching
+from raw back to the grid rebuilds it from the edited text.
+
+Click a cell to select it; drag, or Shift+click, for a rectangle. Click a column's header for the
+column, a row's number for the row, the top-left corner for everything. Arrows move the selection,
+Shift+arrows extend it, Cmd+arrows jump to the sheet's edges, Home and End go to the row's first
+and last cell, and Page Up and Page Down move the selection a page (with nothing selected they
+scroll a page). Cmd+A selects all and Escape clears. Cmd+C copies the selection as tab-separated
+text, with the header when the selection includes it and a cell that holds a tab, a line break or
+a quote quoted, so it pastes into a terminal, a prompt, Numbers or Sheets. Right click a cell for
+Copy and Copy with header. Cmd+X and Cmd+V do nothing, since the grid is read-only. Hover a
+cut-off cell for a moment to see its full text.
+
+Cmd+F searches the cells, ignoring case. Every hit is tinted, Enter and Shift+Enter step to the
+next and previous with wrap, and the count reads "3 of 8"; closing the bar leaves the current hit
+selected.
+
+A wide sheet scrolls sideways (Shift+wheel or a horizontal swipe) with the header and row numbers
+pinned both ways. Columns are capped at 45% of the pane's width and never wrap, and `[viewer]
+wide_tables` does not apply to grids. A grid keeps the first 200,000 rows and 1,000 columns of a
+sheet and says so in the strip above it ("first 200,000 rows shown, 50,000 more in the file").
+Files over 64 MB show the too-large notice. A CSV over `[viewer] highlight_limit_bytes` still
+shows a grid; only its raw view is plain.
+
+`arkos open file.csv` (or `.tsv`, or a spreadsheet) opens the grid in a pane, as do the sidebar,
+the palette's "Open file in pane" and markdown links. `--raw` has no effect on a CSV: the grid
+opens, and the pill switches to the code editor.
+
 ## Editing markdown
 
 A `.md` file opens as a document you can edit. Two modes: Rendered shows headings, lists, task
@@ -504,7 +557,8 @@ The VS Code map, in a terminal-friendly form.
 | Shift+Cmd+E | focus the file tree |
 | Ctrl+Shift+G | focus the worktree list |
 | Shift+Cmd+D | inline diff in the viewer |
-| Shift+Cmd+M | toggle markdown view: rendered or raw |
+| Shift+Cmd+M | toggle markdown view: rendered or raw (a CSV: grid or raw) |
+| Cmd+Option+], Cmd+Option+[ | in a workbook: next sheet, previous sheet |
 | Cmd+S | save file (a document also saves itself a second after you stop typing) |
 | Arrows | in a document (a markdown or code file): move the caret; with Option by word, with Cmd to the line or document edge; with Shift they select; in a rendered paragraph Up, Down and Cmd+Left, Cmd+Right go by displayed row |
 | Delete, Option+Delete, Cmd+Delete, Fn+Delete | in a document: delete a character, a word, to the line start, or forward; Delete at the start of a rendered list item or quoted paragraph moves a nested item out a level, or takes the item out of its list (the paragraph out of its quote) |

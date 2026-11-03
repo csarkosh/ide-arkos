@@ -7,7 +7,7 @@
 
 use crate::agent_cli::{self, fail, reach_from_io, usage, Reach};
 use crate::video::{fmt_time, parse_range, parse_time};
-use crate::{hook_cli, media, remote_image, viewer};
+use crate::{hook_cli, media, remote_image, viewer, workbook};
 use protocol::{
     CustomizeAction, LoopChange, OpenKind, PaneAction, PaneOutcome, PanesReport, Placement, Request, Response, SessionId, SplitSide, VideoOp, VideoState,
     WindowTarget,
@@ -186,6 +186,10 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
         OpenKind::Web
     } else if viewer::is_markdown(&abs) {
         OpenKind::Markdown { raw }
+    } else if workbook::is_workbook(&abs) {
+        // A workbook is a zip or a compound file, so its first bytes hold NULs: it is never
+        // sniffed. It opens in a viewer tab, which shows the grid, as a text file's does.
+        OpenKind::Text
     } else {
         // The viewer's own rule: a NUL in the first bytes is not text.
         let mut head = Vec::new();
@@ -193,7 +197,7 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
             let _ = f.take(viewer::SNIFF as u64).read_to_end(&mut head);
         }
         if viewer::looks_binary(&head) {
-            return Err(format!("{shown} is not a text file; Arkos shows text, markdown and video"));
+            return Err(format!("{shown} is not a text file; Arkos shows text, markdown, spreadsheets and video"));
         }
         OpenKind::Text
     };
@@ -781,10 +785,24 @@ mod tests {
         let (_, kind) = classify_open(Path::new("notes.txt"), &d, false, false).unwrap();
         assert_eq!(kind, OpenKind::Text);
         let err = classify_open(Path::new("blob.bin"), &d, false, false).unwrap_err();
-        assert_eq!(err, format!("{} is not a text file; Arkos shows text, markdown and video", d.join("blob.bin").display()));
+        assert_eq!(err, format!("{} is not a text file; Arkos shows text, markdown, spreadsheets and video", d.join("blob.bin").display()));
         // Markdown is never sniffed, nor a video; a missing file under --wait is not read.
         assert!(classify_open(Path::new("raw.md"), &d, false, false).is_ok());
         assert!(classify_open(Path::new("later.bin"), &d, false, true).is_err());
+    }
+
+    #[test]
+    fn a_workbook_path_opens_as_a_viewer_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        // A workbook holds NUL bytes (it is a zip), and still opens: it is not sniffed.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid/sheets.xlsx");
+        std::fs::copy(&fixture, d.join("sheets.xlsx")).unwrap();
+        let (abs, kind) = classify_open(Path::new("sheets.xlsx"), &d, false, false).unwrap();
+        assert_eq!(abs, d.join("sheets.xlsx"));
+        assert_eq!(kind, OpenKind::Text, "a viewer tab, in Rendered mode, like any text file");
+        let tab = crate::direct::new_tab(&abs, kind, None, LoopChange::Keep);
+        assert!(matches!(tab, crate::tree::Tab::Viewer { mode: crate::tree::ViewMode::Rendered, .. }), "{tab:?}");
     }
 
     #[test]

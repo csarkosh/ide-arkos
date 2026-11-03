@@ -81,6 +81,8 @@ What opens depends on the file:
 
 - A video (`.mp4`, `.mov`, `.m4v`) opens as a video tab, paused at 0 unless you say otherwise.
 - A markdown file opens in the editor, rendered; `--raw` shows its raw text.
+- A `.csv`, `.tsv` or spreadsheet (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`) opens as a read-only grid;
+  `--raw` has no effect on a CSV.
 - Any other text file opens in the read-only viewer, highlighted.
 - A web address (`http://`, `https://`) or an `.html` file opens as a web tab: the page drawn in
   the pane with a bar above it. A local page may read the files beside it (everything under the

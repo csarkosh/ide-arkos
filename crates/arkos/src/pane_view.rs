@@ -17,6 +17,7 @@ use crate::terminal_element::{grid_for, Ink, TerminalElement};
 use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId, ViewMode};
 use crate::viewer::{self, Content};
+use crate::grid_view::{GridColors, GridElement};
 use crate::viewer_element::{MarkColors, RawColors, ViewerElement};
 use crate::Root;
 use gpui::{
@@ -1105,6 +1106,66 @@ pub const PILL_W: f32 = 104.0;
 /// The width of the inline-diff chip: fixed, so a markdown tab's banners can keep clear of it.
 pub const CHIP_W: f32 = 100.0;
 
+/// The strip above a grid: the caps' banner at its left and the mode pill at its right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Strip {
+    pub banner: Option<String>,
+    pub pill: bool,
+}
+
+/// The key context of a viewer tab: `Markdown` adds the formatting keys for a markdown document,
+/// `Sheets` the sheet keys for a workbook of more than one sheet (which has no document, so the
+/// two never meet).
+pub fn viewer_key_context(has_doc: bool, markdown: bool, sheets: usize) -> &'static str {
+    if has_doc && markdown {
+        "Viewer Markdown"
+    } else if sheets > 1 {
+        "Viewer Sheets"
+    } else {
+        "Viewer"
+    }
+}
+
+/// The strip of sheet tabs under a workbook's grid: the tab bar's family and ground, the active
+/// sheet underlined in the focus ring, a long strip scrolling sideways. A click shows the sheet.
+fn sheet_strip(viewer: &gpui::Entity<viewer::Viewer>, names: &[String], active: usize, theme: &Theme, style: Style, family: gpui::SharedString, cx: &mut Context<Root>) -> Stateful<Div> {
+    let c = &theme.chrome;
+    let mut strip = div()
+        .id(("sheet-strip", viewer.entity_id()))
+        .flex_none()
+        .w_full()
+        .flex()
+        .flex_row()
+        .overflow_x_scroll()
+        .bg(c.tab_bar.alpha(style.chrome_alpha))
+        .font_family(family)
+        .text_size(px(style.ui(12.0)));
+    for (i, name) in names.iter().enumerate() {
+        let v = viewer.clone();
+        let on = i == active;
+        strip = strip.child(
+            div()
+                .id(("sheet-tab", i))
+                .flex_none()
+                .px(px(10.0))
+                .py(px(5.0))
+                .border_b_2()
+                .border_color(if on { c.focus_ring.hsla() } else { gpui::transparent_black() })
+                .text_color(if on { c.text.hsla() } else { c.text_dim.hsla() })
+                .cursor_pointer()
+                .child(name.clone())
+                .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| v.set_sheet(i, cx)))),
+        );
+    }
+    strip
+}
+
+/// What the strip above a grid holds: a delimited file's always has the pill that switches it to
+/// its text, a workbook's only the banner, and a workbook with nothing dropped has no strip.
+pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
+    (delimited || banner.is_some()).then_some(Strip { banner, pill: delimited })
+}
+
 /// How far from the pane's right edge a markdown tab's banners keep their text, clear of the mode
 /// pill (`pill`) and the inline-diff chip (`chip`) drawn over the top right.
 pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
@@ -1131,10 +1192,11 @@ fn pill_border(theme: &Theme) -> gpui::Hsla {
     c
 }
 
-/// The mode pill's text: it names the mode a click switches to.
-pub fn pill_label(mode: ViewMode) -> &'static str {
+/// The mode pill's text: it names the mode a click switches to, the grid for a delimited file.
+pub fn pill_label_for(mode: ViewMode, delimited: bool) -> &'static str {
     match mode {
         ViewMode::Rendered => "show raw",
+        ViewMode::Raw if delimited => "show grid",
         ViewMode::Raw => "show rendered",
     }
 }
@@ -1152,6 +1214,8 @@ pub fn present_label(presenting: bool) -> &'static str {
 enum Kind {
     Loading,
     Text { plain: Option<crate::viewer::Plain> },
+    /// The grid of a book's active sheet, with the banner for what its caps dropped.
+    Grid { banner: Option<String> },
     TooLarge(u64),
     Binary,
     Unreadable(String),
@@ -1162,7 +1226,9 @@ enum Kind {
 /// (`Viewer::key`) and nothing else scrolls on a key; in a read-only file the arrows, Page Up and
 /// Down, Space, Home and End scroll. The wheel scrolls smoothly. A markdown document shows
 /// rendered (`md_view`, a list that scrolls itself) or raw, with a pill at the top right that
-/// switches between the two; a code document shows raw with its syntax colours.
+/// switches between the two; a code document shows raw with its syntax colours. A delimited file
+/// shows its grid in Rendered mode, with the same pill, and a workbook its grid always, with no
+/// pill; while a grid shows, the keys scroll it.
 fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Path, cx: &mut Context<Root>) -> Div {
     let style = root.effect_style();
     let viewer = root.viewer_for(tab, path, cx);
@@ -1170,10 +1236,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let family = root.family();
     let presenting = viewer.read(cx).presenting;
     let markdown = viewer::is_markdown(path);
-    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only) = {
+    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited, sheet_count) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
+            // A book shows its grid before its content: a workbook's is `Binary`.
+            _ if v.grid_shown() => Kind::Grid { banner: v.sheet().and_then(crate::grid::banner) },
             Content::Text { .. } => Kind::Text { plain: v.plain },
             Content::TooLarge(n) => Kind::TooLarge(*n),
             Content::Binary => Kind::Binary,
@@ -1181,15 +1249,32 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         };
         // A file shown read-only (`read_only` set) has no document: raw text, no caret.
         let editable = v.doc.is_some() && v.read_only.is_none();
-        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only)
+        let pill_shown = viewer::pill_shown(path, editable, v.book.as_ref());
+        let delimited = v.book.as_ref().is_some_and(|b| matches!(b.source, crate::grid::Source::Delimited(_)));
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited, v.sheet_count())
     };
-    // The pill, Rendered mode and presentation are markdown's.
-    let pill_shown = editable && markdown;
-    let rendered = pill_shown && mode == ViewMode::Rendered;
+    // The rendered page and presentation are markdown's; a delimited file's pill switches to its
+    // grid instead.
+    let rendered = editable && markdown && mode == ViewMode::Rendered;
     let dim = theme.chrome.text_dim.hsla();
     let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
     let kind_is_text = matches!(kind, Kind::Text { .. });
+    let (kind_is_grid, grid_banner) = match &kind {
+        Kind::Grid { banner } => (true, banner.clone()),
+        _ => (false, None),
+    };
     let body = match kind {
+        Kind::Grid { .. } => {
+            let element = GridElement::new(viewer.clone(), root.prose_family(), family.clone(), GridColors::new(&theme, style), style.ground_alpha, (style.ground_alpha < 1.0).then(|| cx.weak_entity()))
+                .paper_alpha(style.document_paper_alpha)
+                .paper_radius(paper_radius(style));
+            // A workbook of several sheets has its tabs under the grid, which shrinks by their height.
+            let sheets = { let v = viewer.read(cx); (v.sheet_count() > 1).then(|| (v.book.iter().flat_map(|b| b.sheets.iter().map(|s| s.name.clone())).collect::<Vec<_>>(), v.sheet)) };
+            match sheets {
+                Some((names, active)) => div().size_full().flex().flex_col().child(div().flex_1().min_h_0().child(element)).child(sheet_strip(&viewer, &names, active, &theme, style, root.ui_family(), cx)),
+                None => div().size_full().child(element),
+            }
+        }
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
             div().size_full().rounded_b(px(paper_radius(style))).bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
@@ -1232,10 +1317,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .child(label)
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| on_click(v, cx))))
     };
-    let right_pad = banner_right_pad(pill_shown, has_changes);
+    // While the grid shows, nothing floats over it: its pill sits in the strip above it.
+    let right_pad = banner_right_pad(pill_shown && !kind_is_grid, has_changes && !kind_is_grid);
     let banner_row = || div().flex_none().flex().flex_row().gap(px(10.0)).pl(px(12.0)).pr(px(right_pad)).py(px(4.0)).text_color(dim).font_family(family.clone()).text_size(px(style.ui(12.0)));
     let mut banners: Vec<Div> = Vec::new();
-    if kind_is_text {
+    // A delimited document's grid shows the conflict and a failed save as its text does.
+    if kind_is_text || kind_is_grid {
         if conflict {
             banners.push(
                 banner_row()
@@ -1247,6 +1334,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         if let Some(text) = save_error {
             banners.push(banner_row().child(text).child(button("viewer-save-retry", "Retry", Box::new(|v, cx| v.save(cx)))));
         }
+    }
+    if kind_is_text {
         if let Some(why) = read_only {
             let text = match why {
                 viewer::ReadOnlyWhy::NotUtf8 => "not UTF-8: shown read-only",
@@ -1256,12 +1345,11 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             banners.push(banner_row().child(text));
         }
     }
-    let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
     // The mode pill's top: where the find bar opens, below it when open.
     let pill_top = if find_open { 44.0 } else { 10.0 };
     // The inline diff's switch, at the top right where the find bar opens, below it when open; on
     // a markdown document, left of the mode pill at its top.
-    let chip = has_changes.then(|| {
+    let chip = (has_changes && !kind_is_grid).then(|| {
         let v_chip = viewer.clone();
         let (top, right) = if pill_shown { (pill_top, 14.0 + PILL_W + 8.0) } else { (if find_open { 44.0 } else { 6.0 }, 14.0) };
         div()
@@ -1297,9 +1385,6 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let pill = pill_shown.then(|| {
         div()
             .id(("viewer-mode-pill", viewer.entity_id()))
-            .absolute()
-            .top(px(pill_top))
-            .right(px(14.0))
             .w(px(PILL_W))
             .flex()
             .justify_center()
@@ -1312,7 +1397,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             .font_family(family.clone())
             .text_size(px(style.ui(12.0)))
             .cursor_pointer()
-            .child(pill_label(mode))
+            .child(pill_label_for(mode, delimited))
             // A press on the pill is not a click in the text below; stopping it also stops the
             // pane's, so the pill focuses the pane itself.
             .on_mouse_down(
@@ -1324,6 +1409,14 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             )
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
+    // Over a grid the pill goes in the strip above it, with the caps' banner at the strip's left
+    // cut with an ellipsis before the pill (`grid_strip`); elsewhere it floats at the top right.
+    let (pill, strip_pill) = if kind_is_grid { (None, pill) } else { (pill.map(|p| p.absolute().top(px(pill_top)).right(px(14.0))), None) };
+    if let Some(strip) = kind_is_grid.then(|| grid_strip(strip_pill.is_some(), grid_banner)).flatten() {
+        let text = div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().children(strip.banner);
+        banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.chrome_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
+    }
+    let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
     // Presentation mode's switch, under the mode pill in the rendered view: it names what a click
     // turns to.
     let present = rendered.then(|| {
@@ -1360,13 +1453,19 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .relative()
         // A markdown document adds `Markdown`, where Cmd+B and Cmd+I format text; in a code
         // document Cmd+B toggles the sidebar as everywhere else.
-        .key_context(if has_doc && markdown { "Viewer Markdown" } else { "Viewer" })
+        .key_context(viewer_key_context(has_doc, markdown, sheet_count))
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
             // A document's keys are the editor's; one it does not know goes on to the input
-            // method (a space is text), never to the scroll keys below.
-            if v_keys.read(cx).doc.is_some() {
+            // method (a space is text), never to the scroll keys below. While the grid shows, a
+            // delimited document's text is not on screen: the keys scroll the grid.
+            // While the grid shows, its keys come first; one it does not take goes on below.
+            if v_keys.read(cx).grid_shown() && v_keys.update(cx, |v, cx| v.grid_key(ks, cx)) {
+                cx.stop_propagation();
+                return;
+            }
+            if { let v = v_keys.read(cx); v.doc.is_some() && !v.grid_shown() } {
                 if v_keys.update(cx, |v, cx| v.key(ks, cx)) {
                     cx.stop_propagation();
                 }
@@ -1407,6 +1506,19 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             d.on_scroll_wheel(cx.listener(move |root, ev: &ScrollWheelEvent, _window, cx| {
                 root.last_scroll = Some(std::time::Instant::now());
                 v_wheel.update(cx, |v, cx| {
+                    // The grid scrolls both ways: the wheel's y down by rows, its x sideways by
+                    // points, swapped with Shift as a scrolled table's are.
+                    if v.grid_shown() {
+                        let row_h = v.grid_layout.as_ref().map_or(v.font_size * v.line_height, |l| l.row_h);
+                        let (x, y, lines) = match ev.delta {
+                            ScrollDelta::Lines(p) => (p.x, p.y, true),
+                            ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y), false),
+                        };
+                        let (x, y) = if ev.modifiers.shift { (y, x) } else { (x, y) };
+                        let (rows, dx) = if lines { (-y, -x * row_h) } else { (-y / row_h, -x) };
+                        v.grid_scroll_by(rows, dx, cx);
+                        return;
+                    }
                     let line_h = v.font_size * v.line_height;
                     // The wheel's y is positive when the content should move down: scroll up.
                     let lines = match ev.delta {
@@ -1424,7 +1536,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             MouseButton::Right,
             cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
                 // Presenting, the document has no menu: every row of it edits or needs a caret.
-                let Some(v) = v_menu.upgrade().filter(|v| v.read(cx).doc.is_some() && !v.read(cx).presenting) else { return };
+                // A shown grid has its own two-row menu: its text is not on screen.
+                let Some(v) = v_menu.upgrade().filter(|v| (v.read(cx).doc.is_some() && !v.read(cx).presenting) || v.read(cx).grid_shown()) else { return };
                 cx.stop_propagation();
                 root.focus_pane(pane, cx);
                 let now = std::time::Instant::now();
@@ -1434,9 +1547,10 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.tab_menu.hide(now);
                 root.link_menu.hide(now);
                 root.close_popovers(now);
-                let selection = v.read(cx).has_selection();
-                let table = { let v = v.read(cx); v.table_cell().is_some() && !v.table_edit };
-                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, formats: markdown, at: ev.position }, now);
+                let grid = v.read(cx).grid_shown();
+                let selection = if grid { v.read(cx).grid_sel.is_some() } else { v.read(cx).has_selection() };
+                let table = !grid && { let v = v.read(cx); v.table_cell().is_some() && !v.table_edit };
+                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, formats: markdown, grid, at: ev.position }, now);
                 cx.notify();
             }),
         )
@@ -1560,6 +1674,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_key_context_adds_sheets_only_for_a_workbook_with_more_than_one_sheet() {
+        assert_eq!(viewer_key_context(true, true, 0), "Viewer Markdown");
+        assert_eq!(viewer_key_context(true, false, 0), "Viewer");
+        assert_eq!(viewer_key_context(false, false, 1), "Viewer", "one sheet has nothing to switch to");
+        assert_eq!(viewer_key_context(false, false, 2), "Viewer Sheets");
+        assert_eq!(viewer_key_context(false, false, 0), "Viewer");
+    }
+
+    #[test]
     fn on_a_rounded_card_a_terminal_s_text_keeps_a_margin_from_the_card_s_sides() {
         let mut style = Style::plain();
         assert_eq!(terminal_inset(style), 0.0, "a square pane's text runs to its edge as ever");
@@ -1618,9 +1741,18 @@ mod tests {
 
     #[test]
     fn the_pill_names_the_other_mode() {
-        assert_eq!(pill_label(ViewMode::Rendered), "show raw");
-        assert_eq!(pill_label(ViewMode::Raw), "show rendered");
+        assert_eq!(pill_label_for(ViewMode::Rendered, false), "show raw");
+        assert_eq!(pill_label_for(ViewMode::Raw, false), "show rendered");
         assert_eq!((present_label(false), present_label(true)), ("present", "edit"), "the presentation pill names what a click turns to");
+    }
+
+    #[test]
+    fn a_grid_s_strip_holds_the_pill_for_a_csv_and_the_banner_when_rows_were_dropped() {
+        let dropped = || Some("first 200,000 rows shown, 5 more in the file".to_string());
+        assert_eq!(grid_strip(true, None), Some(Strip { banner: None, pill: true }), "a csv always has its pill");
+        assert_eq!(grid_strip(true, dropped()), Some(Strip { banner: dropped(), pill: true }));
+        assert_eq!(grid_strip(false, dropped()), Some(Strip { banner: dropped(), pill: false }), "a workbook has no pill");
+        assert_eq!(grid_strip(false, None), None, "a workbook with nothing dropped has no strip");
     }
 
     #[test]

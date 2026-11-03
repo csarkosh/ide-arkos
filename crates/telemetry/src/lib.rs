@@ -198,7 +198,7 @@ mod tests {
             ("pane_close", &[("kind", &["terminal", "viewer", "browser", "video"])]),
             (
                 "view",
-                &[("format", &["markdown", "code", "plain", "image", "video", "binary", "too_large"]), ("mode", &["rendered", "raw"])],
+                &[("format", &["markdown", "code", "plain", "image", "video", "binary", "too_large", "delimited", "workbook"]), ("mode", &["rendered", "raw"])],
             ),
             ("md", &[("feature", &["table_edit", "mermaid", "details", "checklist", "remote_image", "video", "inline_diff"])]),
             ("agent_launch", &[("agent", &["claude", "other"]), ("how", &["new", "resume"])]),

@@ -14,6 +14,8 @@ use crate::config_watch::fingerprint;
 use crate::diff::{self, DiffMarks};
 use crate::edit;
 use crate::find::{FindLook, BAR_TOP};
+use crate::grid;
+use crate::grid_view;
 use crate::highlight::{self, CodeHighlight, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
@@ -70,6 +72,294 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// `markdown` or `mdx`, in any case.
 pub fn is_markdown(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["md", "markdown", "mdx"].iter().any(|m| e.eq_ignore_ascii_case(m)))
+}
+
+/// Whether a viewer of `path` has a rendered view the mode pill and the toggle switch to: a
+/// markdown file's page, or a delimited file's grid. A workbook shows its grid in either mode and
+/// has no toggle.
+pub fn renders(path: &Path) -> bool {
+    is_markdown(path) || grid::is_delimited(path)
+}
+
+/// A delimited file's book from its text: one sheet, named after the file's stem, split on the
+/// delimiter the text sniffs to. A leading byte order mark (a document's text carries its own) is
+/// never part of the first header name.
+pub fn delimited_book(text: &str, path: &Path) -> grid::Book {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let delimiter = grid::sniff(text, path);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    grid::Book { sheets: vec![Arc::new(grid::parse(text, delimiter, &stem))], source: grid::Source::Delimited(delimiter) }
+}
+
+/// Whether the grid shows: a workbook's always, a delimited file's in Rendered mode.
+pub fn grid_shows(book: Option<&grid::Book>, mode: ViewMode) -> bool {
+    book.is_some_and(|b| b.source == grid::Source::Workbook || mode == ViewMode::Rendered)
+}
+
+/// The book's sheet at `sheet`, `None` without a book or past its sheets.
+pub fn sheet_of(book: Option<&grid::Book>, sheet: usize) -> Option<&grid::Sheet> {
+    book.and_then(|b| b.sheets.get(sheet)).map(|s| &**s)
+}
+
+/// How many hits the find bar counts: the cells' while the grid shows, else the lines'.
+pub fn find_hit_count(grid: bool, line_hits: usize, cell_hits: usize) -> usize {
+    if grid {
+        cell_hits
+    } else {
+        line_hits
+    }
+}
+
+/// Where a landed search points: the first hit for a new query, else the old position kept
+/// within the new hits (a reload).
+pub fn search_landing(jump: bool, current: usize, len: usize) -> usize {
+    if jump {
+        0
+    } else {
+        current.min(len.saturating_sub(1))
+    }
+}
+
+/// Which list a search fills: the cells while the grid shows, else the lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchTarget {
+    Grid,
+    Lines,
+}
+
+pub fn search_target(grid_shown: bool) -> SearchTarget {
+    if grid_shown {
+        SearchTarget::Grid
+    } else {
+        SearchTarget::Lines
+    }
+}
+
+/// A finished search's hits, of the kind its mode made.
+#[derive(Debug, Clone)]
+pub enum Found {
+    Lines(Vec<Hit>),
+    Cells(Vec<grid::Cell>),
+}
+
+/// Lands a search result numbered `seq` (the latest started is `latest`) if no newer search
+/// started and the mode it ran in still shows. A line result fills `lines` and empties the grid
+/// hits, a cell result the reverse; `current` follows `search_landing`. Whether it landed.
+#[allow(clippy::too_many_arguments)]
+pub fn land_search(seq: u64, latest: u64, grid_now: bool, found: Found, lines: &mut Vec<Hit>, cells: &mut Vec<grid::Cell>, current: &mut usize, jump: bool) -> bool {
+    let target = match found {
+        Found::Lines(_) => SearchTarget::Lines,
+        Found::Cells(_) => SearchTarget::Grid,
+    };
+    if !should_apply(seq, latest.saturating_sub(1)) || target != search_target(grid_now) {
+        return false;
+    }
+    match found {
+        Found::Lines(h) => {
+            *current = search_landing(jump, *current, h.len());
+            *lines = h;
+            cells.clear();
+        }
+        Found::Cells(c) => {
+            *current = search_landing(jump, *current, c.len());
+            *cells = c;
+            lines.clear();
+        }
+    }
+    true
+}
+
+/// The cell the find is on, `None` without hits.
+pub fn current_cell(hits: &[grid::Cell], current: usize) -> Option<grid::Cell> {
+    hits.get(current).copied()
+}
+
+/// The grid's selection once the bar closes: the current hit, else what it was.
+pub fn grid_close_selection(hits: &[grid::Cell], current: usize, sel: Option<grid::Selection>) -> Option<grid::Selection> {
+    current_cell(hits, current).map(grid::Selection::cell).or(sel)
+}
+
+/// The rows the grid paints while it shows: the active sheet's body rows and its header. `None`
+/// when the grid does not show, so the text's rows count.
+pub fn grid_row_count(book: Option<&grid::Book>, sheet: usize, mode: ViewMode) -> Option<usize> {
+    grid_shows(book, mode).then(|| sheet_of(book, sheet).map_or(0, |s| s.rows.len() + 1))
+}
+
+/// Where a sheet was left: its scroll down in rows and sideways in points, and its selection.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SheetPlace {
+    pub scroll: f32,
+    pub scroll_x: f32,
+    pub sel: Option<grid::Selection>,
+}
+
+/// The sheet `delta` steps from `cur` among `n`, wrapping at both ends; `None` without sheets.
+pub fn wrap_sheet(cur: usize, delta: isize, n: usize) -> Option<usize> {
+    (n > 0).then(|| (cur as isize + delta).rem_euclid(n as isize) as usize)
+}
+
+/// Leaves sheet `from` (keeping `live` as its place) for sheet `to`, and returns the place to
+/// restore, its selection brought within that sheet. `None`, and nothing kept, for a sheet the
+/// book does not have.
+pub fn swap_sheet_place(places: &mut Vec<SheetPlace>, book: Option<&grid::Book>, from: usize, live: SheetPlace, to: usize) -> Option<SheetPlace> {
+    let sheet = book?.sheets.get(to)?;
+    let n = book.map_or(0, |b| b.sheets.len());
+    if places.len() != n {
+        places.resize(n, SheetPlace::default());
+    }
+    if let Some(slot) = places.get_mut(from) {
+        *slot = live;
+    }
+    let mut next = places[to];
+    next.sel = next.sel.map(|s| s.clamp(sheet));
+    Some(next)
+}
+
+/// The places kept across a new book: those of the sheets still there stay, the rest are dropped,
+/// and a sheet that is new starts at the top.
+pub fn keep_sheet_places(places: &mut Vec<SheetPlace>, sheets: usize) {
+    places.resize(sheets, SheetPlace::default());
+}
+
+/// The active sheet and the selection kept across a new book: the sheet index brought within the
+/// book's sheets and the selection within that sheet. Without a book, the first sheet and no
+/// selection.
+pub fn grid_place(book: Option<&grid::Book>, sheet: usize, sel: Option<grid::Selection>) -> (usize, Option<grid::Selection>) {
+    let Some(book) = book else { return (0, None) };
+    let sheet = sheet.min(book.sheets.len().saturating_sub(1));
+    let sel = match book.sheets.get(sheet) {
+        Some(s) => sel.map(|sel| sel.clamp(s)),
+        None => None,
+    };
+    (sheet, sel)
+}
+
+/// Whether switching to `to` parses the book again from the document's text: a delimited
+/// document going to its grid, so edits made in raw mode show there.
+pub fn rebuilds_book(path: &Path, to: ViewMode, has_doc: bool) -> bool {
+    to == ViewMode::Rendered && has_doc && grid::is_delimited(path)
+}
+
+/// Whether a grid rebuild started when `applied_then` loads had landed and its sequence was
+/// `seq_then` lands now: no load applied since (one that started and was ignored leaves the
+/// text the rebuild parsed on screen) and no newer rebuild started.
+pub fn rebuild_lands(applied_then: u64, applied_now: u64, seq_then: u64, seq_now: u64) -> bool {
+    applied_then == applied_now && seq_then == seq_now
+}
+
+/// Whether the mode pill shows: on a markdown document, and on a delimited file with its book,
+/// editable or not (a read-only CSV still switches between its text and its grid). A workbook has
+/// none.
+pub fn pill_shown(path: &Path, editable: bool, book: Option<&grid::Book>) -> bool {
+    let delimited = book.is_some_and(|b| matches!(b.source, grid::Source::Delimited(_)));
+    (editable && is_markdown(path)) || (delimited && grid::is_delimited(path))
+}
+
+/// The grid's selection after a press on `hit` (spec 5): a cell selects it, a header its column,
+/// a row number its row, the corner everything, and anywhere else clears it. With `extend`
+/// (Shift) the anchor stays and the head moves to what was pressed.
+pub fn grid_pressed(sel: Option<grid::Selection>, hit: grid_view::Hit, extend: bool) -> Option<grid::Selection> {
+    use grid::{Cell, Scope, Selection};
+    use grid_view::Hit;
+    let (head, scope) = match hit {
+        Hit::Cell(c) => (c, Scope::Cells),
+        Hit::Header(col) => (Cell { row: 0, col }, Scope::Columns),
+        Hit::RowNumber(row) => (Cell { row, col: 0 }, Scope::Rows),
+        Hit::Corner => (Cell { row: 0, col: 0 }, Scope::All),
+        Hit::Outside => return None,
+    };
+    match sel.filter(|_| extend) {
+        // A cell extends as the selection is: `Selection::extend` keeps its scope.
+        Some(s) if scope == Scope::Cells => Some(s.extend(head)),
+        Some(s) => Some(Selection { anchor: s.anchor, head, scope }),
+        None => Some(Selection { anchor: head, head, scope }),
+    }
+}
+
+/// The grid's selection after a drag over `hit` while a press is held: the head moves there and
+/// the selection keeps its scope, so a drag from a header stays columns and one from a row
+/// number rows. Off the grid nothing changes.
+pub fn grid_dragged(sel: Option<grid::Selection>, hit: grid_view::Hit) -> Option<grid::Selection> {
+    use grid::Cell;
+    use grid_view::Hit;
+    let s = sel?;
+    let to = match hit {
+        Hit::Cell(c) => c,
+        Hit::Header(col) => Cell { row: 0, col },
+        Hit::RowNumber(row) => Cell { row, col: s.head.col },
+        Hit::Corner | Hit::Outside => return Some(s),
+    };
+    Some(s.extend(to))
+}
+
+/// The grid's selection after a right press on `hit`: one already inside the selection is kept
+/// (the menu is for it), anything else on the grid selects what was pressed as a left press
+/// does, and off the grid nothing changes.
+pub fn grid_right_pressed(sel: Option<grid::Selection>, hit: grid_view::Hit, sheet: &grid::Sheet) -> Option<grid::Selection> {
+    use grid::Cell;
+    use grid_view::Hit;
+    let under = match hit {
+        Hit::Cell(c) => c,
+        Hit::Header(col) => Cell { row: 0, col },
+        Hit::RowNumber(row) => Cell { row, col: 0 },
+        Hit::Corner => Cell { row: 0, col: 0 },
+        Hit::Outside => return sel,
+    };
+    match sel {
+        Some(s) if s.contains(under, sheet) => sel,
+        _ => grid_pressed(sel, hit, false),
+    }
+}
+
+/// What a grid copy puts on the clipboard: the selection as tab-separated text, with the header
+/// row added when asked, `None` without a selection.
+pub fn grid_copy_text(sheet: &grid::Sheet, sel: Option<&grid::Selection>, with_header: bool) -> Option<String> {
+    let sel = sel?.clamp(sheet);
+    Some(grid::copy_text(sheet, &sel, with_header))
+}
+
+/// The grid's sideways scroll moved by `dx` points, within the columns past the body's width.
+/// Before the first layout it is only kept from going left of the first column.
+pub fn grid_scroll_x_by(x: f32, dx: f32, layout: Option<&grid_view::Layout>) -> f32 {
+    let x = (x + dx).max(0.0);
+    layout.map_or(x, |l| x.min(l.max_scroll_x()))
+}
+
+/// The scroll after a press or drag on `hit` made `sel`, keeping its head in sight: a cell or a
+/// header cell scrolls both ways as `grid_reveal` does, a row number only down, and the corner
+/// or anywhere off the grid not at all.
+pub fn grid_follow(hit: grid_view::Hit, sel: Option<grid::Selection>, layout: &grid_view::Layout, scroll_rows: f32, scroll_x: f32) -> (f32, f32) {
+    use grid_view::Hit;
+    let Some(head) = sel.map(|s| s.head) else { return (scroll_rows, scroll_x) };
+    match hit {
+        Hit::Cell(_) | Hit::Header(_) => grid_reveal(head, layout, scroll_rows, scroll_x),
+        Hit::RowNumber(_) => (grid_reveal(head, layout, scroll_rows, scroll_x).0, scroll_x),
+        Hit::Corner | Hit::Outside => (scroll_rows, scroll_x),
+    }
+}
+
+/// The scroll, in rows down and points across, that shows cell `c` whole in the body by the
+/// least move from `scroll_rows` and `scroll_x`. The header row is always in sight, so a header
+/// cell moves only sideways; a cell wider than the body shows its left edge.
+pub fn grid_reveal(c: grid::Cell, layout: &grid_view::Layout, scroll_rows: f32, scroll_x: f32) -> (f32, f32) {
+    let rows = if c.row == 0 || layout.row_h <= 0.0 {
+        scroll_rows
+    } else {
+        let (top, fit) = ((c.row - 1) as f32, layout.body_h() / layout.row_h);
+        if top < scroll_rows {
+            top
+        } else if top + 1.0 > scroll_rows + fit {
+            (top + 1.0 - fit).max(0.0)
+        } else {
+            scroll_rows
+        }
+    };
+    let x = match (layout.cols.get(c.col), layout.cols.get(c.col + 1)) {
+        (Some(&x0), Some(_)) if x0 < scroll_x => x0,
+        (Some(&x0), Some(&x1)) if x1 > scroll_x + layout.body_w() => (x1 - layout.body_w()).min(x0),
+        _ => scroll_x,
+    };
+    (rows, x.clamp(0.0, layout.max_scroll_x().max(0.0)))
 }
 
 /// Why a markdown file is shown read-only instead of as a document.
@@ -556,6 +846,9 @@ pub struct Loaded {
     /// A code document's highlight, built with its spans; `None` for markdown, for a read-only
     /// file and while the grammars load.
     pub code: Option<CodeHighlight>,
+    /// The grid's sheets: a delimited file's, parsed from its bytes beside the text, or a
+    /// workbook's, whose content is `Content::Binary`. `None` for any other file.
+    pub book: Option<grid::Book>,
 }
 
 pub struct Viewer {
@@ -726,6 +1019,32 @@ pub struct Viewer {
     /// edit, load and fold.
     pub heads: Vec<md_fold::Head>,
     pub hidden: Vec<bool>,
+    /// The grid's sheets, from the last load or the last switch to the grid (`set_mode`).
+    pub book: Option<grid::Book>,
+    /// The active sheet's index in `book`.
+    pub sheet: usize,
+    /// Where each sheet was left, by index; the active sheet's is live in `scroll`, `grid_scroll_x`
+    /// and `grid_sel`, and is saved here when another sheet is shown.
+    pub sheet_places: Vec<SheetPlace>,
+    /// The grid's selection; `None` until a cell is picked.
+    pub grid_sel: Option<grid::Selection>,
+    /// How far the grid is scrolled to the right, in points; `scroll` is its rows down.
+    pub grid_scroll_x: f32,
+    /// The find's hits in the grid, as cells.
+    pub grid_hits: Vec<grid::Cell>,
+    /// Numbers every rebuild of the book from the document's text, so only the latest lands.
+    rebuilds: u64,
+    /// Counts every time `book` is replaced, by a load or a rebuild, so the grid measures its
+    /// columns again.
+    pub book_gen: u64,
+    /// The grid's natural column widths and what they were measured at.
+    pub grid_widths: Option<(grid_view::GridWidthsKey, Vec<f32>)>,
+    /// Where the grid was laid out at its last prepaint, for the mouse and the scroll limits.
+    pub grid_layout: Option<grid_view::Layout>,
+    /// The cell under the pointer and since when, for the tooltip of a cut cell.
+    pub grid_hover: Option<(grid::Cell, Instant)>,
+    /// A left press in the grid is held: a move drags the selection.
+    grid_pressing: bool,
 }
 
 /// A video playing in the rendered page: its player, and the size of the poster it took the place
@@ -884,6 +1203,18 @@ impl Viewer {
             folded: Default::default(),
             heads: Vec::new(),
             hidden: Vec::new(),
+            book: None,
+            sheet: 0,
+            sheet_places: Vec::new(),
+            grid_sel: None,
+            grid_scroll_x: 0.0,
+            grid_hits: Vec::new(),
+            rebuilds: 0,
+            book_gen: 0,
+            grid_widths: None,
+            grid_layout: None,
+            grid_hover: None,
+            grid_pressing: false,
         }
     }
 
@@ -988,14 +1319,57 @@ impl Viewer {
         }
     }
 
-    /// The rows the element paints: the lines, plus the deleted ones with the inline diff on.
+    /// The rows the element paints: the grid's sheet with its header while the grid shows, else
+    /// the lines, plus the deleted ones with the inline diff on.
     pub fn row_count(&self) -> usize {
-        diff::row_count(self.line_count(), self.diff.as_ref(), self.inline_diff)
+        grid_row_count(self.book.as_ref(), self.sheet, self.mode).unwrap_or_else(|| diff::row_count(self.line_count(), self.diff.as_ref(), self.inline_diff))
     }
 
-    /// The furthest the view can scroll: the last row at the top of the viewport.
+    /// Whether the grid shows: a workbook's always, a delimited file's in Rendered mode.
+    pub fn grid_shown(&self) -> bool {
+        grid_shows(self.book.as_ref(), self.mode)
+    }
+
+    /// How many sheets the book has; none without a book.
+    pub fn sheet_count(&self) -> usize {
+        self.book.as_ref().map_or(0, |b| b.sheets.len())
+    }
+
+    /// Shows sheet `ix`: the one being left keeps its scroll and selection, the new one gets its
+    /// own back, and an open find shows the new sheet's hits. An index past the book is ignored.
+    pub fn set_sheet(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix == self.sheet {
+            return;
+        }
+        let live = SheetPlace { scroll: self.scroll.current, scroll_x: self.grid_scroll_x, sel: self.grid_sel };
+        let Some(next) = swap_sheet_place(&mut self.sheet_places, self.book.as_ref(), self.sheet, live, ix) else { return };
+        self.sheet = ix;
+        self.grid_sel = next.sel;
+        self.grid_scroll_x = next.scroll_x;
+        self.scroll.jump_to(next.scroll);
+        self.scroll.clamp_max(self.max_scroll());
+        self.grid_hits.clear();
+        self.search(false, cx);
+        cx.notify();
+    }
+
+    /// Shows the sheet `delta` away, wrapping at the ends.
+    pub fn step_sheet(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(ix) = wrap_sheet(self.sheet, delta, self.sheet_count()) {
+            self.set_sheet(ix, cx);
+        }
+    }
+
+    /// The active sheet, `None` without a book.
+    pub fn sheet(&self) -> Option<&grid::Sheet> {
+        sheet_of(self.book.as_ref(), self.sheet)
+    }
+
+    /// The furthest the view can scroll: the last row at the top of the viewport. The grid's
+    /// header is pinned above its body, so there it is the last body row at the body's top.
     pub fn max_scroll(&self) -> f32 {
-        self.row_count().saturating_sub(1) as f32
+        let pinned = usize::from(self.grid_shown());
+        self.row_count().saturating_sub(1 + pinned) as f32
     }
 
     /// The display row `line` is painted on.
@@ -1034,8 +1408,17 @@ impl Viewer {
     }
 
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
-        crate::telemetry::viewed(&mut self.viewed, &loaded.content, loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
+        crate::telemetry::viewed(&mut self.viewed, &loaded.content, loaded.book.as_ref(), loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
         self.content = loaded.content;
+        // A new book replaces the old; the place in it is kept, within the new sheets. The
+        // sideways scroll stays a number the grid clamps against its widths.
+        self.book = loaded.book;
+        self.book_gen += 1;
+        (self.sheet, self.grid_sel) = grid_place(self.book.as_ref(), self.sheet, self.grid_sel);
+        let sheets = self.sheet_count();
+        keep_sheet_places(&mut self.sheet_places, sheets);
+        // The old hits point into the old cells.
+        self.grid_hits.clear();
         self.fingerprint = loaded.fingerprint;
         self.plain = loaded.plain;
         self.diff = loaded.diff;
@@ -1268,6 +1651,36 @@ impl Viewer {
             return;
         }
         self.mode = mode;
+        // The bar's hits are cells in one mode and lines in the other.
+        self.grid_hits.clear();
+        self.search(false, cx);
+        // Raw mode's edits reach the grid: the book is parsed again from the document's text off
+        // this thread, the old one shown until it lands. A load that applied meanwhile wins, and
+        // so does a newer rebuild (`rebuild_lands`).
+        if let Some(doc) = self.doc.as_ref().filter(|_| rebuilds_book(&self.path, mode, true)) {
+            self.rebuilds += 1;
+            let (text, path, applied, seq) = (doc.to_text(), self.path.clone(), self.applied, self.rebuilds);
+            cx.spawn(async move |this, cx| {
+                let book = cx.background_executor().spawn(async move { delimited_book(&text, &path) }).await;
+                let _ = this.update(cx, |v, cx| {
+                    if !rebuild_lands(applied, v.applied, seq, v.rebuilds) {
+                        return;
+                    }
+                    v.book = Some(book);
+                    v.book_gen += 1;
+                    (v.sheet, v.grid_sel) = grid_place(v.book.as_ref(), v.sheet, v.grid_sel);
+                    let sheets = v.sheet_count();
+                    keep_sheet_places(&mut v.sheet_places, sheets);
+                    v.grid_hits.clear();
+                    v.search(false, cx);
+                    v.scroll.clamp_max(v.max_scroll());
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        // The grid and the text count their rows apart.
+        self.scroll.clamp_max(self.max_scroll());
         // Only the rendered view presents.
         self.presenting = false;
         // The paragraph a click on the rendered view's tail promised belongs to that view: the
@@ -1489,6 +1902,137 @@ impl Viewer {
         cx.notify();
     }
 
+    /// What is under `at`, a point from the grid's top left, as it was last laid out.
+    pub fn grid_hit(&self, at: gpui::Point<f32>) -> grid_view::Hit {
+        match (self.grid_layout.as_ref(), self.sheet()) {
+            (Some(l), Some(s)) => grid_view::hit(at, l, self.scroll.current, self.grid_scroll_x, s),
+            _ => grid_view::Hit::Outside,
+        }
+    }
+
+    /// A left press in the grid (`grid_pressed`); the selection's head is scrolled into view.
+    pub fn grid_press(&mut self, hit: grid_view::Hit, extend: bool, cx: &mut Context<Self>) {
+        self.grid_sel = grid_pressed(self.grid_sel, hit, extend);
+        self.grid_pressing = self.grid_sel.is_some();
+        self.follow_grid_hit(hit);
+        cx.notify();
+    }
+
+    /// A right press on `hit`: selects what is under it unless it is in the selection already
+    /// (`grid_right_pressed`).
+    pub fn grid_right_press(&mut self, hit: grid_view::Hit, cx: &mut Context<Self>) {
+        let Some(sheet) = self.sheet() else { return };
+        let sel = grid_right_pressed(self.grid_sel, hit, sheet);
+        if sel != self.grid_sel {
+            self.grid_sel = sel;
+            self.follow_grid_hit(hit);
+            cx.notify();
+        }
+    }
+
+    /// A key in the grid (`grid_view::key_of`): moves or extends the selection and keeps its head
+    /// in sight, Cmd+A selects all, Cmd+C copies, Escape clears. Whether the grid took the key;
+    /// one it did not is for the scroll keys.
+    pub fn grid_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(key) = grid_view::key_of(ks) else { return grid_view::handles(ks) };
+        let Some(sheet) = self.sheet() else { return false };
+        match key {
+            grid_view::GridKey::Copy => {
+                self.grid_copy(false, cx);
+                return true;
+            }
+            grid_view::GridKey::Escape if self.grid_sel.is_none() => return false,
+            // With nothing selected a page key scrolls the pane.
+            grid_view::GridKey::PageUp | grid_view::GridKey::PageDown if self.grid_sel.is_none() => return false,
+            _ => {}
+        }
+        let page = self.rows_visible.max(1);
+        let sel = grid_view::apply_key(key, self.grid_sel.as_ref(), sheet, page);
+        let moved = sel.is_some() && sel != self.grid_sel;
+        self.grid_sel = sel;
+        if let Some(s) = sel.filter(|_| moved) {
+            self.reveal_grid_cell(s.head);
+        }
+        cx.notify();
+        true
+    }
+
+    /// Puts the selection on the clipboard as tab-separated text, with the header row when asked.
+    /// Nothing is written without a selection.
+    pub fn grid_copy(&mut self, with_header: bool, cx: &mut Context<Self>) {
+        let text = self.sheet().and_then(|s| grid_copy_text(s, self.grid_sel.as_ref(), with_header));
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// The pointer moved over `hit` with the press held (`grid_dragged`).
+    pub fn grid_drag(&mut self, hit: grid_view::Hit, cx: &mut Context<Self>) {
+        if !self.grid_pressing {
+            return;
+        }
+        let sel = grid_dragged(self.grid_sel, hit);
+        if sel != self.grid_sel {
+            self.grid_sel = sel;
+            self.follow_grid_hit(hit);
+            cx.notify();
+        }
+    }
+
+    /// Keeps the head of a selection a press or drag on `hit` made in sight (`grid_follow`).
+    fn follow_grid_hit(&mut self, hit: grid_view::Hit) {
+        let Some(l) = self.grid_layout.as_ref() else { return };
+        let (rows, x) = grid_follow(hit, self.grid_sel, l, self.scroll.target, self.grid_scroll_x);
+        self.scroll.scroll_by(rows - self.scroll.target, self.max_scroll());
+        self.grid_scroll_x = x;
+    }
+
+    /// The press ended.
+    pub fn grid_release(&mut self) {
+        self.grid_pressing = false;
+    }
+
+    /// The pointer is over `cell`, or off the cells: a new cell starts the tooltip's wait, and
+    /// the grid is drawn again when it is over so a cut cell can show its text.
+    pub fn grid_hover_at(&mut self, cell: Option<grid::Cell>, cx: &mut Context<Self>) {
+        if self.grid_hover.map(|(c, _)| c) == cell {
+            return;
+        }
+        let had_tip = self.grid_hover.is_some_and(|(_, at)| at.elapsed() >= grid_view::TIP_DELAY);
+        self.grid_hover = cell.map(|c| (c, Instant::now()));
+        if had_tip {
+            cx.notify();
+        }
+        if cell.is_some() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(grid_view::TIP_DELAY).await;
+                let _ = this.update(cx, |v, cx| {
+                    if v.grid_hover.is_some_and(|(_, at)| at.elapsed() >= grid_view::TIP_DELAY) {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Scrolls the grid `rows` down (eased, as the text scrolls) and `x` points to the right,
+    /// within its rows and the columns past the body's width.
+    pub fn grid_scroll_by(&mut self, rows: f32, x: f32, cx: &mut Context<Self>) {
+        self.scroll.scroll_by(rows, self.max_scroll());
+        self.grid_scroll_x = grid_scroll_x_by(self.grid_scroll_x, x, self.grid_layout.as_ref());
+        cx.notify();
+    }
+
+    /// Scrolls the grid the least that shows cell `c` whole (`grid_reveal`). Before the grid's
+    /// first layout nothing is known to move.
+    pub fn reveal_grid_cell(&mut self, c: grid::Cell) {
+        let Some(l) = self.grid_layout.as_ref() else { return };
+        let (rows, x) = grid_reveal(c, l, self.scroll.target, self.grid_scroll_x);
+        self.scroll.scroll_by(rows - self.scroll.target, self.max_scroll());
+        self.grid_scroll_x = x;
+    }
+
     pub fn open_find(&mut self, cx: &mut Context<Self>) {
         if self.find.is_none() {
             self.find = Some(ViewerFind { query: LineEdit::new(), hits: Vec::new(), current: 0, focus: cx.focus_handle(), searching: false });
@@ -1497,8 +2041,15 @@ impl Viewer {
     }
 
     pub fn close_find(&mut self, cx: &mut Context<Self>) {
-        self.select_current_hit(cx);
+        if self.grid_shown() {
+            // The current hit becomes the grid's selection.
+            let current = self.find.as_ref().map_or(0, |f| f.current);
+            self.grid_sel = grid_close_selection(&self.grid_hits, current, self.grid_sel);
+        } else {
+            self.select_current_hit(cx);
+        }
         self.find = None;
+        self.grid_hits.clear();
         // A search still running lands in no later bar.
         self.find_seq += 1;
         // The current hit's block was raw while the bar was open; the view goes back to the caret.
@@ -1518,6 +2069,13 @@ impl Viewer {
     /// newer search started; with `jump` it points at the first hit and scrolls to it, else the
     /// position is kept (a reload).
     fn search(&mut self, jump: bool, cx: &mut Context<Self>) {
+        if self.find.is_none() {
+            return;
+        }
+        if self.grid_shown() {
+            return self.search_grid(jump, cx);
+        }
+        self.grid_hits.clear();
         let Some(f) = &mut self.find else { return };
         self.find_seq += 1;
         let seq = self.find_seq;
@@ -1536,12 +2094,11 @@ impl Viewer {
             let hits = cx.background_executor().spawn(async move { find_hits(&lines, &query) }).await;
             let _ = this.update(cx, |v, cx| {
                 // Every search before the latest one started is superseded.
-                if !should_apply(seq, v.find_seq.saturating_sub(1)) {
+                let (latest, grid_now) = (v.find_seq, v.grid_shown());
+                let Some(f) = &mut v.find else { return };
+                if !land_search(seq, latest, grid_now, Found::Lines(hits), &mut f.hits, &mut v.grid_hits, &mut f.current, jump) {
                     return;
                 }
-                let Some(f) = &mut v.find else { return };
-                f.current = if jump { 0 } else { f.current.min(hits.len().saturating_sub(1)) };
-                f.hits = hits;
                 f.searching = false;
                 if jump {
                     v.show_current_hit();
@@ -1552,7 +2109,58 @@ impl Viewer {
         .detach();
     }
 
+    /// The grid's search: `grid::find` over the active sheet on the background executor, under
+    /// the same `find_seq` guard as the line search. The cells land in `grid_hits`; `find.hits`
+    /// stays empty while the grid shows.
+    fn search_grid(&mut self, jump: bool, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        self.find_seq += 1;
+        let seq = self.find_seq;
+        f.hits.clear();
+        let sheet = self.book.as_ref().and_then(|b| b.sheets.get(self.sheet)).cloned();
+        let Some(sheet) = sheet.filter(|_| !f.query.text.is_empty()) else {
+            f.current = 0;
+            f.searching = false;
+            self.grid_hits.clear();
+            return;
+        };
+        f.searching = true;
+        let query = f.query.text.clone();
+        cx.spawn(async move |this, cx| {
+            let hits = cx.background_executor().spawn(async move { grid::find(&sheet, &query) }).await;
+            let _ = this.update(cx, |v, cx| {
+                let (latest, grid_now) = (v.find_seq, v.grid_shown());
+                let Some(f) = &mut v.find else { return };
+                if !land_search(seq, latest, grid_now, Found::Cells(hits), &mut f.hits, &mut v.grid_hits, &mut f.current, jump) {
+                    return;
+                }
+                f.searching = false;
+                let cell = current_cell(&v.grid_hits, f.current);
+                if let Some(c) = cell.filter(|_| jump) {
+                    v.reveal_grid_cell(c);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// How many hits the bar counts, the cells' while the grid shows.
+    pub fn hit_count(&self) -> usize {
+        find_hit_count(self.grid_shown(), self.find.as_ref().map_or(0, |f| f.hits.len()), self.grid_hits.len())
+    }
+
     pub fn find_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.grid_shown() {
+            let len = self.grid_hits.len();
+            let Some(f) = &mut self.find else { return };
+            f.current = step(f.current, len, delta);
+            if let Some(c) = current_cell(&self.grid_hits, f.current) {
+                self.reveal_grid_cell(c);
+            }
+            cx.notify();
+            return;
+        }
         if let Some(f) = &mut self.find {
             f.current = step(f.current, f.hits.len(), delta);
         }
@@ -3485,11 +4093,50 @@ impl EntityInputHandler for Viewer {
 /// with one kind of line ending, in a file the user may write, becomes a document whose lines
 /// (tabs kept, the empty last line after a final break kept) are the content's, its blocks split
 /// here too; anything else is plain text, read-only, saying why.
+///
+/// A workbook is read into its book alone: binary content, no document and no diff, or the
+/// reader's message when it cannot be read. A delimited file's bytes are decoded for the grid
+/// (`grid::decode`) and parsed into its book beside the text the rest of this builds from the
+/// same bytes; one whose decoded text still holds a NUL is a binary. A UTF-16 file shows its
+/// decoded text read-only, since a save would write it back as UTF-8.
 pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize, with_diff: bool) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
         return None;
     }
+    if crate::workbook::is_workbook(path) {
+        let mut book = None;
+        let content = match std::fs::metadata(path) {
+            Ok(m) if m.len() > MAX_PLAIN_BYTES => Content::TooLarge(m.len()),
+            _ => match crate::workbook::read(path) {
+                Ok(b) => {
+                    book = Some(b);
+                    Content::Binary
+                }
+                Err(e) => Content::Unreadable(e),
+            },
+        };
+        return Some(Loaded { content, fingerprint, plain: None, diff: None, doc: None, read_only: None, blocks: Vec::new(), coloured: Some(false), code: None, book });
+    }
+    let delimited = grid::is_delimited(path);
+    let mut book = None;
+    // A UTF-16 file's decoded text: its bytes are no text the flow below reads.
+    let mut utf16 = None;
+    let read = match read_capped(path, !delimited) {
+        Ok(Capped::Bytes(bytes)) if delimited => {
+            let text = grid::decode(&bytes);
+            if text.contains('\0') {
+                Ok(Capped::Binary)
+            } else {
+                book = Some(delimited_book(&text, path));
+                if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+                    utf16 = Some(text.into_owned());
+                }
+                Ok(Capped::Bytes(bytes))
+            }
+        }
+        other => other,
+    };
     let plain = |lines: Vec<String>| {
         let spans = vec![Vec::new(); lines.len()];
         Content::Text { lines: Arc::new(lines), spans }
@@ -3498,10 +4145,14 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
     let mut code = None;
     let mut read_only = None;
     let mut coloured = Some(false);
-    let (content, why_plain) = match read_capped(path) {
+    let (content, why_plain) = match read {
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
         Ok(Capped::Binary) => (Content::Binary, None),
+        Ok(Capped::Bytes(_)) if utf16.is_some() => {
+            read_only = Some(ReadOnlyWhy::NotUtf8);
+            (plain(split_lines(utf16.as_deref().unwrap_or_default())), None)
+        }
         Ok(Capped::Bytes(bytes)) if is_markdown(path) => match text_document(&bytes).and_then(|d| if writable(path) { Ok(d) } else { Err(ReadOnlyWhy::NotWritable) }) {
             Ok(d) => {
                 let lines = d.shared_lines();
@@ -3561,11 +4212,12 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         // The base is split the same way, so the document's text is too (tabs expanded, no empty
         // last line).
         (_, Some(d)) if with_diff => diff_of(path, &split_lines(&d.to_text())),
-        (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
+        // HEAD's bytes are not decoded as UTF-16, so such a file has no marks.
+        (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) && utf16.is_none() => diff_of(path, lines),
         _ => None,
     };
     let blocks = doc.as_ref().filter(|_| is_markdown(path)).map_or_else(Vec::new, |d| md_blocks::split(d.lines()));
-    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured, code })
+    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured, code, book })
 }
 
 /// The file's changes against its worktree's HEAD (clean marks when there are none, so the mark
@@ -3582,9 +4234,10 @@ enum Capped {
     Bytes(Vec<u8>),
 }
 
-/// The file's bytes, unless it is over `MAX_PLAIN_BYTES` (not opened) or has a NUL in its first
-/// `SNIFF` bytes (nothing more read). A directory is refused before anything is opened.
-fn read_capped(path: &Path) -> std::io::Result<Capped> {
+/// The file's bytes, unless it is over `MAX_PLAIN_BYTES` (not opened) or, with `sniff`, has a NUL
+/// in its first `SNIFF` bytes (nothing more read). A directory is refused before anything is
+/// opened.
+fn read_capped(path: &Path, sniff: bool) -> std::io::Result<Capped> {
     let metadata = std::fs::metadata(path)?;
     if metadata.is_dir() {
         return Err(std::io::Error::other("is a directory"));
@@ -3596,7 +4249,7 @@ fn read_capped(path: &Path) -> std::io::Result<Capped> {
     let mut file = std::fs::File::open(path)?;
     let mut bytes = Vec::with_capacity(len as usize);
     (&mut file).take(SNIFF as u64).read_to_end(&mut bytes)?;
-    if bytes.contains(&0) {
+    if sniff && bytes.contains(&0) {
         return Ok(Capped::Binary);
     }
     // Capped again here: the file may have grown since the metadata was read.
@@ -3616,9 +4269,10 @@ pub fn count_text(current: usize, len: usize) -> String {
 /// go to `find_key`, Cmd+V pastes; a click focuses `pane`. It fades and slides like the
 /// terminal's; while closing it is only drawn.
 pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: SharedString, bars: &mut Fades<EntityId, FindLook>, now: Instant, cx: &mut Context<Root>) -> Option<Div> {
-    let (look, focus) = match viewer.read(cx).find.as_ref() {
+    let v = viewer.read(cx);
+    let (look, focus) = match v.find.as_ref() {
         Some(f) => {
-            let count = if f.searching { "searching".to_string() } else { count_text(f.current, f.hits.len()) };
+            let count = if f.searching { "searching".to_string() } else { count_text(f.current, v.hit_count()) };
             (Some(FindLook { query: f.query.clone(), count }), Some(f.focus.clone()))
         }
         None => (None, None),
@@ -4911,7 +5565,7 @@ impl Root {
                     return false;
                 }
                 let (code, spans) = built;
-                crate::telemetry::viewed(&mut v.viewed, &v.content, v.plain.is_some(), Some(code.coloured()), &v.path, v.mode);
+                crate::telemetry::viewed(&mut v.viewed, &v.content, v.book.as_ref(), v.plain.is_some(), Some(code.coloured()), &v.path, v.mode);
                 v.highlighter = Some(h);
                 v.highlight_limit = limit;
                 v.code = Some(code);
@@ -4977,12 +5631,13 @@ impl Root {
         written
     }
 
-    /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer. Raw
-    /// ends presentation mode (only the rendered view presents).
+    /// Flips a markdown or delimited tab between rendered (a delimited file's grid) and raw, in the
+    /// layout (saved) and in its viewer. Raw ends presentation mode (only the rendered view
+    /// presents). A workbook shows its grid either way and is left alone.
     pub fn toggle_markdown_view_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
         let Some(Tab::Viewer { path, mode, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
-        if !is_markdown(&path) {
+        if !renders(&path) {
             return;
         }
         let next = match mode {
@@ -4998,6 +5653,20 @@ impl Root {
         }
         self.save(cx);
         cx.notify();
+    }
+
+    /// The next sheet of the viewer tab's workbook (Cmd+Option+]).
+    pub fn next_sheet_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| v.step_sheet(1, cx));
+        }
+    }
+
+    /// The previous sheet (Cmd+Option+[).
+    pub fn previous_sheet_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| v.step_sheet(-1, cx));
+        }
     }
 
     /// Presentation mode on or off in a markdown tab, in the layout (saved with the tab) and in its
@@ -6215,5 +6884,530 @@ mod tests {
         assert_eq!(poster_press(true, None, None, false), PosterPress::Reveal, "a local webm is shown in Finder");
         assert_eq!(poster_press(true, Some(Media::Video), None, true), PosterPress::Link, "remote video is a web address");
         assert_eq!(poster_press(true, None, None, true), PosterPress::Link);
+    }
+
+    fn grid_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid").join(name)
+    }
+
+    fn book_of(l: &Loaded) -> &crate::grid::Book {
+        l.book.as_ref().expect("a book")
+    }
+
+    #[test]
+    fn a_csv_loads_as_a_document_with_a_book_and_its_highlight() {
+        let theme = crate::theme::builtin("navy").unwrap();
+        let h = Highlighter::new(&theme.viewer, theme.chrome.text);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nAda,36\nAlan,41\n").unwrap();
+        let l = read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
+        assert!(l.doc.is_some(), "raw mode is the code editor");
+        assert!(l.code.is_some(), "with its highlight");
+        assert!(l.read_only.is_none());
+        assert!(matches!(&l.content, Content::Text { lines, .. } if lines[0] == "name,age"));
+        let b = book_of(&l);
+        assert_eq!(b.source, crate::grid::Source::Delimited(crate::grid::Delimiter::Comma));
+        assert_eq!(b.sheets.len(), 1);
+        assert_eq!(b.sheets[0].name, "people", "named after the file");
+        assert_eq!(b.sheets[0].header, ["name", "age"]);
+        assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()], vec!["Alan".into(), "41".into()]]);
+        // Over the highlight limit the text shows plain and the grid is still there.
+        let big = read_file(&path, None, Some(&h), 4, false).unwrap();
+        assert_eq!(big.plain, Some(Plain::TooBig));
+        assert_eq!(book_of(&big).sheets[0].rows.len(), 2);
+        // Over the read limit nothing is read, so there is no book.
+        let huge = dir.path().join("huge.csv");
+        std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
+        let l = read_file(&huge, None, None, 100, false).unwrap();
+        assert_eq!(l.content, Content::TooLarge(MAX_PLAIN_BYTES + 1));
+        assert!(l.book.is_none());
+        // Any other text file has none.
+        let rs = dir.path().join("main.rs");
+        std::fs::write(&rs, "a,b\n1,2\n").unwrap();
+        assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().book.is_none());
+    }
+
+    #[test]
+    fn a_tsv_s_tabs_reach_the_cells() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.tsv");
+        std::fs::write(&path, "a\tb\n\"x\ty\"\tz\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        let b = book_of(&l);
+        assert_eq!(b.source, crate::grid::Source::Delimited(crate::grid::Delimiter::Tab));
+        assert_eq!(b.sheets[0].header, ["a", "b"]);
+        assert_eq!(b.sheets[0].rows, [vec!["x\ty".to_string(), "z".into()]], "parsed from the bytes, never the lines with tabs expanded");
+    }
+
+    #[test]
+    fn a_utf8_bom_is_not_in_the_first_header_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("excel.csv");
+        std::fs::write(&path, b"\xEF\xBB\xBFid,name\n1,Ada\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(book_of(&l).sheets[0].header, ["id", "name"]);
+        assert!(l.doc.as_ref().expect("a document").bom, "the document keeps its mark for the save");
+    }
+
+    #[test]
+    fn a_utf16_csv_with_a_bom_becomes_a_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("export.csv");
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "name,age\r\nAda,36\r\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        let b = book_of(&l);
+        assert_eq!(b.sheets[0].header, ["name", "age"]);
+        assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()]]);
+        // Raw mode shows the decoded text, read-only: a save would write UTF-8 over it.
+        assert!(matches!(&l.content, Content::Text { lines, .. } if lines.first().map(String::as_str) == Some("name,age")), "{:?}", l.content);
+        assert!(l.doc.is_none());
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotUtf8));
+    }
+
+    #[test]
+    fn a_windows_1252_csv_is_a_grid_with_replacement_characters_and_read_only_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.csv");
+        std::fs::write(&path, b"name,place\nZo\xe9,caf\xe9\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(book_of(&l).sheets[0].rows, [vec!["Zo\u{FFFD}".to_string(), "caf\u{FFFD}".into()]]);
+        assert!(l.doc.is_none());
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotUtf8));
+        assert!(matches!(l.content, Content::Text { .. }));
+    }
+
+    #[test]
+    fn a_csv_with_a_nul_and_no_bom_is_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("renamed.csv");
+        std::fs::write(&path, b"a,b\n1,\x002\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(l.content, Content::Binary);
+        assert!(l.book.is_none() && l.doc.is_none());
+        // UTF-16 without a mark is NULs all through: binary too, never a grid of NULs.
+        let mut bytes = Vec::new();
+        for u in "a,b\n1,2\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(l.content, Content::Binary);
+        assert!(l.book.is_none());
+    }
+
+    #[test]
+    fn a_workbook_loads_as_binary_content_with_a_book_and_no_document() {
+        let path = grid_fixture("sheets.xlsx");
+        let l = read_file(&path, None, None, 1 << 20, true).unwrap();
+        assert_eq!(l.content, Content::Binary);
+        assert!(l.doc.is_none() && l.diff.is_none() && l.read_only.is_none() && l.code.is_none());
+        assert!(l.fingerprint.is_some());
+        let b = book_of(&l);
+        assert_eq!(b.source, crate::grid::Source::Workbook);
+        assert_eq!(b.sheets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Signups", "Notes"]);
+        assert!(read_file(&path, l.fingerprint, None, 1 << 20, true).is_none(), "an unchanged workbook is not read again");
+        // Over the size limit: the too-large notice, unread.
+        let dir = tempfile::tempdir().unwrap();
+        let huge = dir.path().join("huge.xlsx");
+        std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
+        let l = read_file(&huge, None, None, 1 << 20, true).unwrap();
+        assert_eq!(l.content, Content::TooLarge(MAX_PLAIN_BYTES + 1));
+        assert!(l.book.is_none());
+    }
+
+    #[test]
+    fn a_broken_workbook_is_unreadable_with_its_message() {
+        let path = grid_fixture("not-a-workbook.xlsx");
+        let l = read_file(&path, None, None, 1 << 20, true).unwrap();
+        let want = crate::workbook::read(&path).unwrap_err();
+        assert_eq!(l.content, Content::Unreadable(want));
+        assert!(l.book.is_none() && l.doc.is_none());
+    }
+
+    #[test]
+    fn apply_keeps_and_clamps_the_sheet_selection_and_scroll() {
+        use crate::grid::{Cell, Scope, Selection};
+        let two = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
+        let csv = delimited_book("a,b,c\n1,2,3\n4,5,6\n7,8,9\n", Path::new("/p/x.csv"));
+        let sel = Selection { anchor: Cell { row: 1, col: 1 }, head: Cell { row: 3, col: 2 }, scope: Scope::Cells };
+        // The same shape: everything kept.
+        assert_eq!(grid_place(Some(&csv), 0, Some(sel)), (0, Some(sel)));
+        // A second sheet that is gone: the last one there is.
+        let (sheet, _) = grid_place(Some(&csv), 1, None);
+        assert_eq!(sheet, 0);
+        assert_eq!(grid_place(Some(&two), 1, None).0, 1, "a sheet still there is kept");
+        // A file rewritten shorter and narrower: the selection comes inside it.
+        let small = delimited_book("a,b\n1,2\n", Path::new("/p/x.csv"));
+        let (_, kept) = grid_place(Some(&small), 0, Some(sel));
+        assert_eq!(kept, Some(Selection { anchor: Cell { row: 1, col: 1 }, head: Cell { row: 1, col: 1 }, scope: Scope::Cells }));
+        // No book: no selection.
+        assert_eq!(grid_place(None, 3, Some(sel)), (0, None));
+        // The scroll is clamped to the new sheet's rows (and the header).
+        let mut scroll = ScrollAnimator::new();
+        scroll.jump_to(3.0);
+        scroll.clamp_max(grid_row_count(Some(&csv), 0, ViewMode::Rendered).unwrap().saturating_sub(1) as f32);
+        assert_eq!(scroll.current, 3.0, "four rows with the header: row 3 is still there");
+        scroll.clamp_max(grid_row_count(Some(&small), 0, ViewMode::Rendered).unwrap().saturating_sub(1) as f32);
+        assert_eq!(scroll.current, 1.0);
+    }
+
+    #[test]
+    fn switching_raw_to_grid_rebuilds_the_book_from_the_edited_text() {
+        let path = Path::new("/p/people.csv");
+        let mut doc = edit::Document::from_text("name,age\nAda,36\n");
+        let _ = doc.insert(edit::Caret::at(edit::Pos { line: 2, ch: 0 }), "Alan,41\n", Instant::now());
+        assert!(rebuilds_book(path, ViewMode::Rendered, true), "Raw to the grid with a document");
+        assert!(!rebuilds_book(path, ViewMode::Raw, true), "to Raw leaves the book alone");
+        assert!(!rebuilds_book(path, ViewMode::Rendered, false), "no document: the book from disk stays");
+        assert!(!rebuilds_book(Path::new("/p/a.md"), ViewMode::Rendered, true), "markdown has no book");
+        let b = delimited_book(&doc.to_text(), path);
+        assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()], vec!["Alan".into(), "41".into()]]);
+        assert_eq!(b.sheets[0].name, "people");
+        // An Excel "CSV UTF-8" document writes its mark back in its text: never in the header.
+        let mut excel = edit::Document::from_text("\"id\",name\n1,Ada\n");
+        excel.bom = true;
+        assert!(excel.to_text().starts_with('\u{feff}'), "the text carries the mark");
+        let b = delimited_book(&excel.to_text(), path);
+        assert_eq!(b.sheets[0].header, ["id", "name"], "no mark, and the quoted first field opened");
+    }
+
+    #[test]
+    fn a_grid_rebuild_lands_unless_a_load_applied_or_a_newer_rebuild_started() {
+        assert!(rebuild_lands(4, 4, 1, 1), "nothing happened meanwhile");
+        assert!(rebuild_lands(4, 4, 1, 1), "a load that started but never applied (unchanged, ignored, a conflict) keeps it");
+        assert!(!rebuild_lands(4, 5, 1, 1), "a load that applied has the newer book");
+        assert!(!rebuild_lands(4, 4, 1, 2), "an older rebuild once a newer one started");
+        assert!(rebuild_lands(4, 4, 2, 2), "the newer one lands");
+    }
+
+    #[test]
+    fn a_workbook_ignores_the_mode_toggle() {
+        let wb = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
+        let path = grid_fixture("sheets.xlsx");
+        assert!(!renders(&path), "the toggle asks renders and does nothing");
+        assert!(grid_shows(Some(&wb), ViewMode::Rendered) && grid_shows(Some(&wb), ViewMode::Raw), "the grid shows in either mode");
+        assert!(!pill_shown(&path, false, Some(&wb)), "no pill");
+        assert!(!rebuilds_book(&path, ViewMode::Rendered, false));
+        let csv = delimited_book("a\n1\n", Path::new("/p/x.csv"));
+        assert!(grid_shows(Some(&csv), ViewMode::Rendered) && !grid_shows(Some(&csv), ViewMode::Raw), "a csv follows the mode");
+        assert!(!grid_shows(None, ViewMode::Rendered));
+    }
+
+    #[test]
+    fn renders_says_yes_to_markdown_csv_and_tsv_and_no_to_xlsx_and_rs() {
+        for p in ["a.md", "b.csv", "c.TSV", "d.mdx"] {
+            assert!(renders(Path::new(p)), "{p}");
+        }
+        for p in ["a.xlsx", "b.rs", "c.ods", "d.txt"] {
+            assert!(!renders(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn the_pill_reads_show_raw_then_show_grid_for_a_csv() {
+        use crate::pane_view::pill_label_for;
+        assert_eq!(pill_label_for(ViewMode::Rendered, true), "show raw");
+        assert_eq!(pill_label_for(ViewMode::Raw, true), "show grid");
+        assert_eq!(pill_label_for(ViewMode::Raw, false), "show rendered", "markdown's stays");
+        let csv = delimited_book("a\n1\n", Path::new("/p/x.csv"));
+        assert!(pill_shown(Path::new("/p/x.csv"), true, Some(&csv)), "a csv document has the pill");
+        assert!(pill_shown(Path::new("/p/x.csv"), false, Some(&csv)), "a read-only csv still has it");
+        assert!(!pill_shown(Path::new("/p/x.csv"), true, None), "no book, no grid to show");
+        assert!(pill_shown(Path::new("/p/a.md"), true, None) && !pill_shown(Path::new("/p/a.md"), false, None), "markdown's rule stays");
+        assert!(!pill_shown(Path::new("/p/a.rs"), true, None));
+    }
+
+    #[test]
+    fn row_count_is_the_sheet_s_rows_plus_the_header_while_the_grid_shows() {
+        let csv = delimited_book("a,b\n1,2\n3,4\n5,6\n", Path::new("/p/x.csv"));
+        assert_eq!(grid_row_count(Some(&csv), 0, ViewMode::Rendered), Some(4));
+        assert_eq!(grid_row_count(Some(&csv), 0, ViewMode::Raw), None, "the text's rows in Raw");
+        assert_eq!(grid_row_count(None, 0, ViewMode::Rendered), None);
+        let wb = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
+        assert_eq!(grid_row_count(Some(&wb), 1, ViewMode::Raw), Some(wb.sheets[1].rows.len() + 1), "the active sheet's, in either mode");
+    }
+
+    fn two_sheets() -> crate::grid::Book {
+        crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap()
+    }
+
+    #[test]
+    fn step_sheet_wraps_and_keeps_each_sheet_s_scroll_and_selection() {
+        use crate::grid::{Cell, Selection};
+        let book = two_sheets();
+        let n = book.sheets.len();
+        assert!(n > 1);
+        assert_eq!(wrap_sheet(0, 1, n), Some(1));
+        assert_eq!(wrap_sheet(n - 1, 1, n), Some(0), "past the last wraps to the first");
+        assert_eq!(wrap_sheet(0, -1, n), Some(n - 1), "before the first wraps to the last");
+        assert_eq!(wrap_sheet(0, 1, 0), None);
+        let mut places = vec![SheetPlace::default(); n];
+        let sel = Selection::cell(Cell { row: 1, col: 0 });
+        let live = SheetPlace { scroll: 2.0, scroll_x: 30.0, sel: Some(sel) };
+        let next = swap_sheet_place(&mut places, Some(&book), 0, live, 1).expect("a place");
+        assert_eq!(next, SheetPlace::default(), "a sheet not visited starts at the top");
+        let back = swap_sheet_place(&mut places, Some(&book), 1, SheetPlace { scroll: 5.0, ..next }, 0).expect("a place");
+        assert_eq!((back.scroll, back.scroll_x, back.sel), (2.0, 30.0, Some(sel)), "the first sheet's place came back");
+        assert_eq!(places[1].scroll, 5.0, "and the second's was kept");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_other_sheets_places_and_drops_those_of_sheets_that_are_gone() {
+        let kept = SheetPlace { scroll: 7.0, scroll_x: 3.0, sel: None };
+        let mut places = vec![SheetPlace::default(), kept, kept];
+        keep_sheet_places(&mut places, 3);
+        assert_eq!(places, vec![SheetPlace::default(), kept, kept], "the same count keeps every place");
+        keep_sheet_places(&mut places, 2);
+        assert_eq!(places, vec![SheetPlace::default(), kept], "fewer sheets truncate");
+        keep_sheet_places(&mut places, 3);
+        assert_eq!(places, vec![SheetPlace::default(), kept, SheetPlace::default()], "a new sheet starts at the top");
+    }
+
+    #[test]
+    fn set_sheet_ignores_an_index_past_the_book() {
+        let book = two_sheets();
+        let mut places = vec![SheetPlace::default(); book.sheets.len()];
+        let before = places.clone();
+        let live = SheetPlace { scroll: 4.0, scroll_x: 1.0, sel: None };
+        assert_eq!(swap_sheet_place(&mut places, Some(&book), 0, live, book.sheets.len()), None);
+        assert_eq!(places, before, "nothing was saved");
+        assert_eq!(swap_sheet_place(&mut places, None, 0, live, 0), None, "no book, no sheets");
+    }
+
+    fn grid_layout() -> grid_view::Layout {
+        // A gutter of 40, a header and rows of 20, three columns 100 wide, in a view 240 by 100:
+        // the body is 200 wide and 80 tall, four rows.
+        grid_view::Layout { gutter_w: 40.0, header_h: 20.0, row_h: 20.0, cols: vec![0.0, 100.0, 200.0, 300.0], view_w: 240.0, view_h: 100.0 }
+    }
+
+    #[test]
+    fn cmd_c_copies_the_rectangle_as_tsv() {
+        use crate::grid::{Cell, Scope, Selection};
+        let sheet = crate::grid::Sheet::cap("s".into(), vec!["a".into(), "b".into(), "c".into()], vec![vec!["1".into(), "x\ty".into(), "3".into()], vec!["4".into(), "5".into(), "6".into()]]);
+        let c = |row, col| Cell { row, col };
+        let sel = Selection { anchor: c(1, 0), head: c(2, 1), scope: Scope::Cells };
+        assert_eq!(grid_copy_text(&sheet, Some(&sel), false).as_deref(), Some("1\t\"x\ty\"\n4\t5"));
+        assert_eq!(grid_copy_text(&sheet, Some(&sel), true).as_deref(), Some("a\tb\n1\t\"x\ty\"\n4\t5"), "with the header row");
+        assert_eq!(grid_copy_text(&sheet, None, false), None, "nothing selected, nothing copied");
+        let ks = gpui::Keystroke::parse("cmd-c").unwrap();
+        assert_eq!(grid_view::key_of(&ks), Some(grid_view::GridKey::Copy));
+    }
+
+    #[test]
+    fn cmd_x_and_cmd_v_do_nothing_in_a_grid() {
+        for k in ["cmd-x", "cmd-v"] {
+            let ks = gpui::Keystroke::parse(k).unwrap();
+            assert!(grid_view::key_of(&ks).is_none(), "{k} moves nothing");
+            assert!(grid_view::handles(&ks), "{k} is swallowed, not passed on");
+        }
+        assert!(!grid_view::handles(&gpui::Keystroke::parse("space").unwrap()), "a space falls through to the scroll keys");
+    }
+
+    #[test]
+    fn a_right_press_selects_the_cell_under_it_unless_it_is_in_the_selection() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let sheet = crate::grid::Sheet::cap("s".into(), vec!["a".into(), "b".into()], (0..5).map(|r| vec![format!("{r}"), format!("{r}")]).collect());
+        let c = |row, col| Cell { row, col };
+        let sel = Some(Selection { anchor: c(1, 0), head: c(3, 1), scope: Scope::Cells });
+        assert_eq!(grid_right_pressed(sel, Hit::Cell(c(2, 1)), &sheet), sel, "inside: kept");
+        assert_eq!(grid_right_pressed(sel, Hit::Cell(c(5, 0)), &sheet), Some(Selection::cell(c(5, 0))), "outside: selected");
+        assert_eq!(grid_right_pressed(None, Hit::Cell(c(1, 1)), &sheet), Some(Selection::cell(c(1, 1))));
+        assert_eq!(grid_right_pressed(sel, Hit::Outside, &sheet), sel, "off the grid nothing changes");
+    }
+
+    #[test]
+    fn a_press_on_a_cell_selects_it_and_a_drag_extends_it() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let c = |row, col| Cell { row, col };
+        let sel = grid_pressed(None, Hit::Cell(c(2, 1)), false);
+        assert_eq!(sel, Some(Selection::cell(c(2, 1))));
+        let dragged = grid_dragged(sel, Hit::Cell(c(5, 2)));
+        assert_eq!(dragged, Some(Selection { anchor: c(2, 1), head: c(5, 2), scope: Scope::Cells }));
+        assert_eq!(grid_dragged(dragged, Hit::Outside), dragged, "off the grid the drag holds");
+        assert_eq!(grid_dragged(dragged, Hit::Header(0)).map(|s| s.head), Some(c(0, 0)), "over the header it reaches row 0");
+        assert_eq!(grid_dragged(None, Hit::Cell(c(1, 1))), None, "no press, no drag");
+        // Shift+click keeps the anchor; a plain click starts again; a press off the grid clears.
+        let ext = grid_pressed(sel, Hit::Cell(c(4, 0)), true);
+        assert_eq!(ext, Some(Selection { anchor: c(2, 1), head: c(4, 0), scope: Scope::Cells }));
+        assert_eq!(grid_pressed(ext, Hit::Cell(c(1, 1)), false), Some(Selection::cell(c(1, 1))));
+        assert_eq!(grid_pressed(None, Hit::Cell(c(3, 3)), true), Some(Selection::cell(c(3, 3))), "Shift with nothing selected selects the cell");
+        assert_eq!(grid_pressed(ext, Hit::Outside, false), None);
+    }
+
+    #[test]
+    fn a_press_on_a_header_selects_the_column_and_shift_extends_across_columns() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let col = grid_pressed(None, Hit::Header(1), false);
+        assert_eq!(col, Some(Selection { anchor: Cell { row: 0, col: 1 }, head: Cell { row: 0, col: 1 }, scope: Scope::Columns }));
+        let wide = grid_pressed(col, Hit::Header(3), true);
+        assert_eq!(wide, Some(Selection { anchor: Cell { row: 0, col: 1 }, head: Cell { row: 0, col: 3 }, scope: Scope::Columns }), "Shift keeps the anchor column");
+        // A drag from the header stays columns, whichever row it is over.
+        let dragged = grid_dragged(col, Hit::Cell(Cell { row: 7, col: 2 }));
+        assert_eq!(dragged.map(|s| (s.anchor.col, s.head.col, s.scope)), Some((1, 2, Scope::Columns)));
+        let s = delimited_book("a,b,c,d\n1,2,3,4\n5,6,7,8\n", Path::new("/p/x.csv"));
+        let sheet = &s.sheets[0];
+        assert_eq!(wide.unwrap().rect(sheet), (0..=2, 1..=3), "every row of columns 1 to 3, the header included");
+        // Shift on a header from a cell selection keeps the cell's column as the anchor.
+        let from_cell = grid_pressed(Some(Selection::cell(Cell { row: 2, col: 0 })), Hit::Header(2), true).unwrap();
+        assert_eq!((from_cell.rect(sheet).1, from_cell.scope), (0..=2, Scope::Columns));
+    }
+
+    #[test]
+    fn a_press_on_a_row_number_selects_the_row_and_the_corner_selects_all() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let row = grid_pressed(None, Hit::RowNumber(3), false);
+        assert_eq!(row.map(|s| (s.anchor.row, s.head.row, s.scope)), Some((3, 3, Scope::Rows)));
+        let rows = grid_pressed(row, Hit::RowNumber(1), true);
+        assert_eq!(rows.map(|s| (s.anchor.row, s.head.row, s.scope)), Some((3, 1, Scope::Rows)), "Shift extends across rows");
+        let dragged = grid_dragged(row, Hit::Cell(Cell { row: 5, col: 2 }));
+        assert_eq!(dragged.map(|s| (s.anchor.row, s.head.row, s.scope)), Some((3, 5, Scope::Rows)), "a drag from a row number stays rows");
+        let all = grid_pressed(row, Hit::Corner, false).unwrap();
+        assert_eq!(all.scope, Scope::All);
+        let s = delimited_book("a,b\n1,2\n3,4\n", Path::new("/p/x.csv"));
+        let sheet = &s.sheets[0];
+        assert_eq!(all.rect(sheet), (0..=2, 0..=1));
+        assert_eq!(grid_dragged(Some(all), Hit::Cell(Cell { row: 1, col: 1 })).map(|a| a.rect(sheet)), Some((0..=2, 0..=1)), "everything stays everything");
+        assert_eq!(grid_pressed(Some(Selection::cell(Cell { row: 1, col: 1 })), Hit::Corner, true).map(|s| s.scope), Some(Scope::All));
+    }
+
+    #[test]
+    fn a_grid_search_lands_its_cells_and_the_count_reads_as_today() {
+        use crate::grid::Cell;
+        let s = delimited_book("name,city\nAda,Paris\nAlan,Parma\n", Path::new("/p/x.csv"));
+        let cells = grid::find(&s.sheets[0], "par");
+        assert_eq!(cells, [Cell { row: 1, col: 1 }, Cell { row: 2, col: 1 }]);
+        assert_eq!(find_hit_count(true, 7, cells.len()), 2, "the grid's cells count, not the lines'");
+        assert_eq!(count_text(0, find_hit_count(true, 7, cells.len())), "1 of 2");
+        assert_eq!(count_text(0, find_hit_count(true, 7, 0)), "no matches");
+        assert_eq!(search_landing(true, 5, cells.len()), 0, "a new query points at the first cell");
+    }
+
+    #[test]
+    fn find_step_wraps_through_the_grid_hits_and_reveals_each() {
+        use crate::grid::Cell;
+        let hits = [Cell { row: 1, col: 1 }, Cell { row: 2, col: 0 }, Cell { row: 9, col: 3 }];
+        let mut cur = 0;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            cur = step(cur, hits.len(), 1);
+            seen.push(current_cell(&hits, cur));
+        }
+        assert_eq!(seen, [Some(hits[1]), Some(hits[2]), Some(hits[0]), Some(hits[1])]);
+        assert_eq!(step(0, hits.len(), -1), 2, "Shift+Enter wraps back to the last");
+        assert_eq!(current_cell(&[], 0), None, "nothing to reveal without hits");
+    }
+
+    #[test]
+    fn closing_the_bar_leaves_the_current_hit_selected_in_the_grid() {
+        use crate::grid::{Cell, Selection};
+        let hits = [Cell { row: 1, col: 1 }, Cell { row: 4, col: 2 }];
+        assert_eq!(grid_close_selection(&hits, 1, None), Some(Selection::cell(hits[1])));
+        let old = Selection::cell(Cell { row: 3, col: 0 });
+        assert_eq!(grid_close_selection(&[], 0, Some(old)), Some(old), "without a hit the selection stays");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_grid_search_position() {
+        assert_eq!(search_landing(false, 3, 5), 3);
+        assert_eq!(search_landing(false, 3, 2), 1, "clamped when the file shrank");
+        assert_eq!(search_landing(false, 3, 0), 0);
+    }
+
+    fn line_hit(line: usize) -> Hit {
+        Hit { line, start: 0, end: 1 }
+    }
+
+    #[test]
+    fn a_grid_search_lands_in_grid_hits_and_leaves_the_line_hits_empty() {
+        use crate::grid::Cell;
+        let cells = vec![Cell { row: 1, col: 0 }, Cell { row: 2, col: 1 }];
+        let (mut lines, mut grid_hits, mut current) = (vec![line_hit(4)], Vec::new(), 5);
+        let landed = land_search(7, 7, true, Found::Cells(cells.clone()), &mut lines, &mut grid_hits, &mut current, true);
+        assert!(landed);
+        assert_eq!((grid_hits, lines, current), (cells, vec![], 0));
+    }
+
+    #[test]
+    fn a_line_search_lands_in_the_line_hits_and_clears_the_grid_hits() {
+        use crate::grid::Cell;
+        let (mut lines, mut grid_hits, mut current) = (Vec::new(), vec![Cell { row: 1, col: 0 }], 1);
+        let landed = land_search(7, 7, false, Found::Lines(vec![line_hit(2), line_hit(9)]), &mut lines, &mut grid_hits, &mut current, false);
+        assert!(landed);
+        assert_eq!((lines, grid_hits, current), (vec![line_hit(2), line_hit(9)], vec![], 1));
+    }
+
+    #[test]
+    fn a_search_result_from_before_a_mode_switch_is_dropped() {
+        use crate::grid::Cell;
+        // The grid search started as number 3; the switch to raw started number 4.
+        let (mut lines, mut grid_hits, mut current) = (vec![line_hit(1)], Vec::new(), 0);
+        let old = Found::Cells(vec![Cell { row: 1, col: 0 }]);
+        assert!(!land_search(3, 4, false, old.clone(), &mut lines, &mut grid_hits, &mut current, true), "superseded by number");
+        assert!(!land_search(4, 4, false, old, &mut lines, &mut grid_hits, &mut current, true), "cells never land in raw mode");
+        assert_eq!((lines, grid_hits), (vec![line_hit(1)], vec![]));
+    }
+
+    #[test]
+    fn a_search_in_raw_mode_is_the_line_search() {
+        let book = delimited_book("a\nb\n", Path::new("/p/x.csv"));
+        assert_eq!(search_target(grid_shows(Some(&book), ViewMode::Raw)), SearchTarget::Lines);
+        assert_eq!(search_target(grid_shows(Some(&book), ViewMode::Rendered)), SearchTarget::Grid);
+        assert_eq!(search_target(grid_shows(None, ViewMode::Raw)), SearchTarget::Lines, "no book, no grid");
+        assert_eq!(find_hit_count(false, 7, 2), 7);
+    }
+
+    #[test]
+    fn grid_scroll_by_clamps_x_to_the_columns_past_the_view() {
+        let l = grid_layout();
+        assert_eq!(grid_scroll_x_by(0.0, 50.0, Some(&l)), 50.0);
+        assert_eq!(grid_scroll_x_by(50.0, 500.0, Some(&l)), 100.0, "300 of columns in a body 200 wide");
+        assert_eq!(grid_scroll_x_by(50.0, -80.0, Some(&l)), 0.0, "never left of the first column");
+        let narrow = grid_view::Layout { cols: vec![0.0, 100.0], ..grid_layout() };
+        assert_eq!(grid_scroll_x_by(0.0, 30.0, Some(&narrow)), 0.0, "columns that fit do not scroll");
+        assert_eq!(grid_scroll_x_by(10.0, 30.0, None), 40.0, "before the first layout: only the left edge holds");
+        assert_eq!(grid_scroll_x_by(10.0, -30.0, None), 0.0);
+    }
+
+    #[test]
+    fn a_press_on_a_header_or_row_number_past_the_view_scrolls_it_into_sight() {
+        use crate::grid::Cell;
+        use grid_view::Hit;
+        let l = grid_layout();
+        let sel = grid_pressed(None, Hit::Header(2), false);
+        assert_eq!(grid_follow(Hit::Header(2), sel, &l, 3.0, 0.0), (3.0, 100.0), "column 2 runs past the body's right edge: sideways only");
+        let sel = grid_pressed(None, Hit::RowNumber(9), false);
+        assert_eq!(grid_follow(Hit::RowNumber(9), sel, &l, 0.0, 60.0), (5.0, 60.0), "a row number scrolls down and leaves the sideways scroll");
+        let dragged = grid_dragged(grid_pressed(None, Hit::Header(0), false), Hit::Header(2));
+        assert_eq!(grid_follow(Hit::Header(2), dragged, &l, 0.0, 0.0), (0.0, 100.0), "a drag along the header follows its head");
+        let sel = grid_pressed(None, Hit::Cell(Cell { row: 9, col: 2 }), false);
+        assert_eq!(grid_follow(Hit::Cell(Cell { row: 9, col: 2 }), sel, &l, 0.0, 0.0), (5.0, 100.0));
+        let all = grid_pressed(None, Hit::Corner, false);
+        assert_eq!(grid_follow(Hit::Corner, all, &l, 4.0, 50.0), (4.0, 50.0), "the corner moves nothing");
+        assert_eq!(grid_follow(Hit::Outside, None, &l, 4.0, 50.0), (4.0, 50.0));
+    }
+
+    #[test]
+    fn reveal_grid_cell_scrolls_both_ways() {
+        use crate::grid::Cell;
+        let l = grid_layout();
+        let c = |row, col| Cell { row, col };
+        assert_eq!(grid_reveal(c(2, 1), &l, 0.0, 0.0), (0.0, 0.0), "in view: nothing moves");
+        assert_eq!(grid_reveal(c(9, 0), &l, 0.0, 0.0), (5.0, 0.0), "body row 8 of four rows tall: the least move puts it at the bottom");
+        assert_eq!(grid_reveal(c(2, 0), &l, 6.5, 0.0), (1.0, 0.0), "above: to the top");
+        assert_eq!(grid_reveal(c(3, 0), &l, 1.5, 0.0), (1.5, 0.0), "half a row of scroll leaves row 3 whole");
+        assert_eq!(grid_reveal(c(1, 2), &l, 0.0, 0.0), (0.0, 100.0), "right of the body: its right edge to the body's");
+        assert_eq!(grid_reveal(c(1, 0), &l, 0.0, 100.0), (0.0, 0.0), "left of it: its left edge to the body's");
+        assert_eq!(grid_reveal(c(0, 2), &l, 4.0, 0.0), (4.0, 100.0), "a header cell moves only sideways");
+        let wide = grid_view::Layout { cols: vec![0.0, 500.0], ..grid_layout() };
+        assert_eq!(grid_reveal(c(1, 0), &wide, 0.0, 120.0), (0.0, 0.0), "wider than the body: its left edge shows");
     }
 }

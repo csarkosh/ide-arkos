@@ -22,7 +22,7 @@ how = ["palette", "key", "click", "explorer", "link", "restore", "agent", "poste
 kind = ["terminal", "viewer", "browser", "video"]
 
 [events.view]
-format = ["markdown", "code", "plain", "image", "video", "binary", "too_large"]
+format = ["markdown", "code", "plain", "image", "video", "binary", "too_large", "delimited", "workbook"]
 mode = ["rendered", "raw"]
 
 [events.md]
@@ -85,6 +85,8 @@ command = [
     "fold_all",
     "unfold_all",
     "toggle_presentation",
+    "next_sheet",
+    "previous_sheet",
     "open_folder",
     "new_window",
     "new_browser_tab",

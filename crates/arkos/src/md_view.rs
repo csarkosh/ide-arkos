@@ -94,16 +94,16 @@ const DROP_LINE: f32 = 3.0;
 /// an approximation of the UI font's average advance.
 const CH_EM: f32 = 0.6;
 /// A table cell's padding, across and down.
-const CELL_PAD_X: f32 = 10.0;
-const CELL_PAD_Y: f32 = 6.0;
+pub(crate) const CELL_PAD_X: f32 = 10.0;
+pub(crate) const CELL_PAD_Y: f32 = 6.0;
 /// The most of the view's width one table column takes.
-const COLUMN_CAP: f32 = 0.45;
+pub(crate) const COLUMN_CAP: f32 = 0.45;
 /// The play glyph over a poster: a disc of this diameter around a triangle in a box of this side,
 /// painted together.
 const PLAY_DISC: f32 = 40.0;
 const PLAY_TRIANGLE: f32 = 16.0;
 /// The rows a table's natural column widths are measured over; later rows take the widths found.
-const MEASURED_ROWS: usize = 200;
+pub(crate) const MEASURED_ROWS: usize = 200;
 /// A table with more body rows than this is drawn as its source, not as a grid.
 const GRID_MAX_ROWS: usize = 500;
 
@@ -863,7 +863,7 @@ pub fn row_fill(r: usize, header: Hsla, paper: Hsla, tint: Hsla, ground: f32) ->
 
 /// `bounds` as a window rectangle, cut to the part inside `clip`: a table scrolled half out of
 /// its pane is outlined only where it is seen. `None` when none of it is.
-fn seen(bounds: Bounds<Pixels>, clip: Bounds<Pixels>) -> Option<crate::tree::Rect> {
+pub(crate) fn seen(bounds: Bounds<Pixels>, clip: Bounds<Pixels>) -> Option<crate::tree::Rect> {
     let b = bounds.intersect(&clip);
     let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
     (w > 0.0 && h > 0.0).then(|| crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w, h })

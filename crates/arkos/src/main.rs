@@ -27,6 +27,8 @@ mod explorer;
 mod explorer_watch;
 mod find;
 mod gitstatus;
+mod grid;
+mod grid_view;
 mod guide;
 mod highlight;
 mod hook_cli;
@@ -97,6 +99,7 @@ mod web;
 mod web_element;
 mod web_view;
 mod wk_web_view;
+mod workbook;
 mod workspace;
 mod worktrees;
 
@@ -2837,6 +2840,11 @@ impl Root {
             TogglePresentation => {
                 if let Some(t) = self.active_viewer_tab() {
                     self.toggle_presentation_for(t, cx);
+                }
+            }
+            NextSheet | PreviousSheet => {
+                if let Some(t) = self.active_viewer_tab() {
+                    if matches!(cmd, NextSheet) { self.next_sheet_for(t, cx) } else { self.previous_sheet_for(t, cx) }
                 }
             }
             FoldAll | UnfoldAll => {
