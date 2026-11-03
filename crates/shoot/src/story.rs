@@ -304,7 +304,7 @@ pub struct ThemePair {
 
 impl Default for ThemePair {
     fn default() -> Self {
-        ThemePair { dark: "navy".into(), light: "peach-light".into() }
+        ThemePair { dark: "navy".into(), light: "peach-material".into() }
     }
 }
 
@@ -838,7 +838,7 @@ theme = "light"
         assert_eq!(s.panes.len(), 5);
         assert_eq!(s.scene.name, "web-developer");
         assert_eq!(s.window.sidebar, Sidebar::Open);
-        assert_eq!((s.window.theme.dark.as_str(), s.window.theme.light.as_str()), ("navy", "peach-light"));
+        assert_eq!((s.window.theme.dark.as_str(), s.window.theme.light.as_str()), ("navy", "peach-material"));
         assert_eq!(s.shots[0].crops[0].name, "tabs");
         assert_eq!(s.shots[1].theme, "light");
         assert_eq!(s.window.preset, "compact");
@@ -917,7 +917,7 @@ theme = "light"
         assert!(Story::parse(STORY).unwrap().effects.is_empty(), "no [effect] is an empty list");
     }
 
-    const RECORDING: &str = "\n[[recording]]\nname = \"themes\"\nwait = { tests = \"waiting\" }\nchanged = { work = 1 }\nthemes = [\"navy\", \"peach-light\", \"matrix\"]\nhold_secs = 4\n";
+    const RECORDING: &str = "\n[[recording]]\nname = \"themes\"\nwait = { tests = \"waiting\" }\nchanged = { work = 1 }\nthemes = [\"navy\", \"peach-material\", \"matrix\"]\nhold_secs = 4\n";
 
     #[test]
     fn a_recording_parses_with_its_defaults_and_waits_as_a_shot_does() {
@@ -925,7 +925,7 @@ theme = "light"
         assert_eq!(s.recordings.len(), 1);
         let r = &s.recordings[0];
         assert_eq!((r.name.as_str(), r.hold_secs, r.fps, r.fade_secs, r.transition, r.width), ("themes", 4.0, 30, 1.2, Transition::Sweep, 2000));
-        assert_eq!(r.themes, ["navy", "peach-light", "matrix"]);
+        assert_eq!(r.themes, ["navy", "peach-material", "matrix"]);
         assert!((r.steady_secs() - 2.9).abs() < 1e-9, "a theme shows steady for its hold less the settle and the guard");
         let dissolve = Story::parse(&format!("{STORY}{RECORDING}transition = \"dissolve\"\nfade_secs = 0.8\n")).unwrap();
         assert_eq!((dissolve.recordings[0].transition, dissolve.recordings[0].transition.name(), dissolve.recordings[0].fade_secs), (Transition::Dissolve, "dissolve", 0.8));
@@ -941,7 +941,7 @@ theme = "light"
             let err = format!("{:#}", Story::parse(&text.replace(from, to)).unwrap_err());
             assert!(err.contains(says), "{from} -> {to}: {err}");
         };
-        refused("themes = [\"navy\", \"peach-light\", \"matrix\"]", "themes = [\"navy\"]", "at least two themes");
+        refused("themes = [\"navy\", \"peach-material\", \"matrix\"]", "themes = [\"navy\"]", "at least two themes");
         refused("hold_secs = 4", "hold_secs = 0.5", "hold_secs must be 1 to 15");
         refused("hold_secs = 4", "hold_secs = 4\nfade_secs = 2", "hold_secs must leave a second of rest beyond the fade (at least 4.1)");
         refused("hold_secs = 4", "hold_secs = 4\nfade_secs = 0.1", "fade_secs must be 0.3 to 3");

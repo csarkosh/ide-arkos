@@ -36,6 +36,9 @@ pub struct BuiltIn {
     pub manifest: &'static str,
     pub wash: &'static str,
     pub glyphs: Option<&'static str>,
+    /// Left out of Settings and `arkos effect list`; a config or command that names it still
+    /// draws it.
+    pub hidden: bool,
 }
 
 /// The built-in effects, by folder name.
@@ -45,24 +48,35 @@ pub const BUILTIN: &[BuiltIn] = &[
         manifest: include_str!("../../effects/watercolor/effect.toml"),
         wash: include_str!("../../effects/watercolor/wash.metal"),
         glyphs: Some(include_str!("../../effects/watercolor/glyphs.metal")),
+        hidden: false,
     },
     BuiltIn {
         name: "space",
         manifest: include_str!("../../effects/space/effect.toml"),
         wash: include_str!("../../effects/space/wash.metal"),
         glyphs: Some(include_str!("../../effects/space/glyphs.metal")),
+        hidden: true,
     },
     BuiltIn {
         name: "runic",
         manifest: include_str!("../../effects/runic/effect.toml"),
         wash: include_str!("../../effects/runic/wash.metal"),
         glyphs: Some(include_str!("../../effects/runic/glyphs.metal")),
+        hidden: false,
+    },
+    BuiltIn {
+        name: "material",
+        manifest: include_str!("../../effects/material/effect.toml"),
+        wash: include_str!("../../effects/material/wash.metal"),
+        glyphs: None,
+        hidden: false,
     },
     BuiltIn {
         name: "notebook",
         manifest: include_str!("../../effects/notebook/effect.toml"),
         wash: include_str!("../../effects/notebook/wash.metal"),
         glyphs: Some(include_str!("../../effects/notebook/glyphs.metal")),
+        hidden: false,
     },
 ];
 
@@ -98,7 +112,7 @@ mod tests {
     #[test]
     fn resolve_follows_the_theme_s_choice_then_none_then_a_name() {
         use crate::config::EffectChoice;
-        let peach = crate::theme::builtin("peach-light").unwrap();
+        let peach = crate::theme::builtin("lavender-watercolor").unwrap();
         let navy = crate::theme::builtin("navy").unwrap();
         let purple = crate::theme::builtin("timo-purple").unwrap();
         assert_eq!(resolve(&EffectChoice::Theme, &peach), Some("watercolor".to_string()));
@@ -116,7 +130,7 @@ mod tests {
         assert_eq!(resolve(&EffectChoice::Named("matrix".into()), &navy), Some("runic".to_string()));
         assert_eq!(resolve(&EffectChoice::Named("space".into()), &navy), Some("space".to_string()));
         // A theme file from before the rename recommends "matrix".
-        let old = crate::theme::parse(&crate::theme::BUILTIN[4].1.replace("name = \"runic\"", "name = \"matrix\"")).unwrap();
+        let old = crate::theme::parse(&crate::theme::builtin_text("matrix").unwrap().replace("name = \"runic\"", "name = \"matrix\"")).unwrap();
         assert_eq!(old.recommended_effect(), Some("matrix"));
         assert_eq!(resolve(&EffectChoice::Theme, &old), Some("runic".to_string()));
         assert_eq!(current_name("matrix"), "runic");

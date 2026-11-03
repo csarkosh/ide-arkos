@@ -22,14 +22,37 @@ pub fn ratio_from_pointer(area: Rect, orientation: Orientation, x: f32, y: f32) 
     (pos / len).clamp(0.0, 1.0)
 }
 
-/// The area the panes are laid out in, and the binder's width left of it: right of a sidebar
-/// `side` points wide and the effect's `binder` gutter (only while the sidebar shows), below the
-/// window's bars (`top`), in a window `width` by `height`. A window smaller than its chrome lays
-/// out at zero.
-pub fn content_area(side: f32, binder: f32, top: f32, width: f32, height: f32) -> (Rect, f32) {
-    let binder = if side > 1.0 { binder } else { 0.0 };
-    let x = side + binder;
-    (Rect { x, y: top, w: (width - x).max(0.0), h: (height - top).max(0.0) }, binder)
+/// The area the panes are laid out in, and the gutter's width between it and the sidebar: right
+/// of a sidebar `side` points wide, below the window's bars (`top`), in a window `width` by
+/// `height`, kept the effect's `gap` off the bars and the window's edges. Beside a shown sidebar
+/// the gutter is the effect's `binder`, else its `gap`; with the sidebar hidden there is none and
+/// the gap keeps the panes off the window's left edge. A window smaller than its chrome lays out
+/// at zero.
+pub fn content_area(side: f32, binder: f32, gap: f32, top: f32, width: f32, height: f32) -> (Rect, f32) {
+    let shown = side > 1.0;
+    let gutter = if !shown { 0.0 } else if binder > 0.0 { binder } else { gap };
+    let x = if shown { side + gutter } else { side + gap };
+    let y = top + gap;
+    (Rect { x, y, w: (width - x - gap).max(0.0), h: (height - y - gap).max(0.0) }, gutter)
+}
+
+/// The panes as drawn with `gap` points between them: each side that faces another pane (not on
+/// `area`'s edge) moves in by half of what the gap adds to the layout's own handle, so the
+/// handles keep their places and the panes' order and neighbours stay the layout's.
+pub fn spaced(panes: &[(crate::tree::PaneId, Rect)], area: Rect, gap: f32) -> Vec<(crate::tree::PaneId, Rect)> {
+    let half = ((gap - HANDLE) / 2.0).max(0.0);
+    if half == 0.0 {
+        return panes.to_vec();
+    }
+    let inner = |at: f32, edge: f32| if (at - edge).abs() > 0.5 { half } else { 0.0 };
+    panes
+        .iter()
+        .map(|(id, r)| {
+            let (l, t) = (inner(r.x, area.x), inner(r.y, area.y));
+            let (rt, b) = (inner(r.x + r.w, area.x + area.w), inner(r.y + r.h, area.y + area.h));
+            (*id, Rect { x: r.x + l, y: r.y + t, w: (r.w - l - rt).max(0.0), h: (r.h - t - b).max(0.0) })
+        })
+        .collect()
 }
 
 /// The panes and handles for the current tree, positioned absolutely inside `root.content`.
@@ -131,15 +154,39 @@ mod tests {
 
     #[test]
     fn the_panes_start_past_the_binder_only_while_the_sidebar_shows() {
-        let (area, binder) = content_area(240.0, 20.0, 28.0, 1200.0, 800.0);
+        let (area, binder) = content_area(240.0, 20.0, 0.0, 28.0, 1200.0, 800.0);
         assert_eq!(area, Rect { x: 260.0, y: 28.0, w: 940.0, h: 772.0 });
         assert_eq!(binder, 20.0);
-        let (area, binder) = content_area(0.0, 20.0, 28.0, 1200.0, 800.0);
+        let (area, binder) = content_area(0.0, 20.0, 0.0, 28.0, 1200.0, 800.0);
         assert_eq!((area.x, area.w, binder), (0.0, 1200.0, 0.0), "no sidebar, no binder");
-        let (area, binder) = content_area(240.0, 0.0, 28.0, 1200.0, 800.0);
+        let (area, binder) = content_area(240.0, 0.0, 0.0, 28.0, 1200.0, 800.0);
         assert_eq!((area.x, binder), (240.0, 0.0));
-        let (area, _) = content_area(240.0, 20.0, 900.0, 200.0, 800.0);
+        let (area, _) = content_area(240.0, 20.0, 0.0, 900.0, 200.0, 800.0);
         assert_eq!((area.w, area.h), (0.0, 0.0), "a window smaller than its chrome lays out at zero");
+    }
+
+    #[test]
+    fn a_gap_keeps_the_panes_off_every_edge_and_is_the_gutter_beside_a_sidebar_without_a_binder() {
+        let (area, left) = content_area(240.0, 0.0, 8.0, 28.0, 1200.0, 800.0);
+        assert_eq!(area, Rect { x: 248.0, y: 36.0, w: 944.0, h: 756.0 });
+        assert_eq!(left, 8.0, "the gutter beside the sidebar");
+        let (area, left) = content_area(0.0, 0.0, 8.0, 28.0, 1200.0, 800.0);
+        assert_eq!((area.x, area.w, left), (8.0, 1184.0, 0.0), "no sidebar: off the window's edge");
+        let (_, left) = content_area(240.0, 20.0, 8.0, 28.0, 1200.0, 800.0);
+        assert_eq!(left, 20.0, "a binder is the gutter where there is one");
+    }
+
+    #[test]
+    fn a_gap_moves_each_pane_s_inner_sides_apart_and_leaves_its_outer_sides_alone() {
+        let area = Rect { x: 0.0, y: 0.0, w: 802.0, h: 600.0 };
+        let half = (8.0 - HANDLE) / 2.0;
+        let panes = [(1, Rect { x: 0.0, y: 0.0, w: 400.0, h: 600.0 }), (2, Rect { x: 402.0, y: 0.0, w: 400.0, h: 600.0 })];
+        let out = spaced(&panes, area, 8.0);
+        assert_eq!(out[0], (1, Rect { x: 0.0, y: 0.0, w: 400.0 - half, h: 600.0 }));
+        assert_eq!(out[1], (2, Rect { x: 402.0 + half, y: 0.0, w: 400.0 - half, h: 600.0 }));
+        assert_eq!(out[1].1.x - (out[0].1.x + out[0].1.w), 8.0, "the gap between them is the gap asked for");
+        assert_eq!(spaced(&panes, area, 0.0), panes.to_vec(), "no gap, the layout's own");
+        assert_eq!(spaced(&panes, area, HANDLE), panes.to_vec());
     }
 
     #[test]

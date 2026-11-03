@@ -28,6 +28,11 @@ pub enum Kind {
     Rows = 12,
     /// The gutter between the sidebar and the panes an effect asked for (its `binder`).
     Binder = 13,
+    /// A pane's active tab, as laid out in its tab bar.
+    ActiveTab = 14,
+    /// One group of the title bar's contents as laid out: its words (the app's name, the
+    /// project's path and in a sandbox the word `sandbox`), or its icons.
+    TitleGroup = 15,
 }
 
 /// The edges of a block the app no longer draws when the effect inks the borders, a bit each.
@@ -104,10 +109,15 @@ pub fn hover_after(hover: Option<u64>, key: u64, over: bool) -> Option<u64> {
     }
 }
 
-/// Something inside a pane that reports itself to the wash as it is laid out: a video's picture
+/// The keys the title bar's two groups report under (`Kind::TitleGroup`).
+pub const TITLE_WORDS_KEY: u64 = 1;
+pub const TITLE_ICONS_KEY: u64 = 2;
+
+/// Something that reports itself to the wash as it is laid out: a video's picture
 /// (`Kind::Media`), a markdown table (`Kind::Table`) or its header row (`Kind::TableHeader`),
-/// or a terminal's grid of rows (`Kind::Rows`, with its row `pitch`), keyed by what draws it so
-/// its grain stays put as it moves.
+/// a terminal's grid of rows (`Kind::Rows`, with its row `pitch`), a pane's active tab
+/// (`Kind::ActiveTab`) or a group of the title bar (`Kind::TitleGroup`), keyed by what draws it
+/// so its grain stays put as it moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape {
     pub key: u64,
@@ -254,8 +264,9 @@ pub fn blocks(scene: &Scene, ink_borders: bool) -> Vec<Block> {
             Kind::Media => (Rect { x: r.x - MEDIA_OUTSET, y: r.y - MEDIA_OUTSET, w: r.w + 2.0 * MEDIA_OUTSET, h: r.h + 2.0 * MEDIA_OUTSET }, all),
             // A header is set off by the line under it; the table's outline draws the rest.
             Kind::TableHeader => (r, EDGE_BOTTOM),
-            // A terminal's rows are ruled, never outlined.
-            Kind::Rows => (r, 0),
+            // A terminal's rows are ruled, an active tab marked and the title bar's groups
+            // labelled, never outlined.
+            Kind::Rows | Kind::ActiveTab | Kind::TitleGroup => (r, 0),
             _ => (r, all),
         };
         out.push(Block {
@@ -321,6 +332,28 @@ mod tests {
 
     fn scene<'a>(content: Rect, divider_y: Option<f32>, panes: &'a [(PaneId, Rect)], strokes: &'a [(Mark, f32)]) -> Scene<'a> {
         Scene { content, title_bar_h: 38.0, tab_bar_h: 30.0, binder: 0.0, divider_y, panes, busy: &[], shapes: &[], strokes }
+    }
+
+    #[test]
+    fn the_title_bar_s_words_and_icons_are_blocks_of_their_own_with_no_edges() {
+        let panes = [(5, rect(0.0, 38.0, 800.0, 562.0))];
+        let shapes = [
+            Shape { key: TITLE_WORDS_KEY, rect: rect(94.0, 10.0, 300.0, 18.0), kind: Kind::TitleGroup, pitch: 0.0 },
+            Shape { key: TITLE_ICONS_KEY, rect: rect(720.0, 7.0, 56.0, 24.0), kind: Kind::TitleGroup, pitch: 0.0 },
+        ];
+        let out = blocks(&Scene { shapes: &shapes, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        let groups: Vec<_> = out.iter().filter(|b| b.kind == Kind::TitleGroup).map(|b| (b.rect, b.edges)).collect();
+        assert_eq!(groups, vec![(rect(94.0, 10.0, 300.0, 18.0), 0), (rect(720.0, 7.0, 56.0, 24.0), 0)]);
+        assert_ne!(TITLE_WORDS_KEY, TITLE_ICONS_KEY);
+    }
+
+    #[test]
+    fn a_pane_s_active_tab_is_a_block_of_its_own_with_no_edges() {
+        let panes = [(5, rect(0.0, 38.0, 800.0, 562.0))];
+        let shapes = [Shape { key: 9, rect: rect(40.0, 38.0, 90.0, 30.0), kind: Kind::ActiveTab, pitch: 0.0 }];
+        let out = blocks(&Scene { shapes: &shapes, ..scene(rect(0.0, 38.0, 800.0, 562.0), None, &panes, &[]) }, true);
+        let tab = out.iter().find(|b| b.kind == Kind::ActiveTab).expect("reported");
+        assert_eq!((tab.rect, tab.edges), (rect(40.0, 38.0, 90.0, 30.0), 0));
     }
 
     #[test]

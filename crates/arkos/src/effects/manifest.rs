@@ -28,6 +28,12 @@ pub struct Manifest {
     /// The width in points of a gutter between the sidebar and the panes, for the wash to draw
     /// in (reported as a binder block); 0, none.
     pub binder: f32,
+    /// Points kept clear round each pane: between the panes, and between the panes and the
+    /// window's bars and edges, so the wash can draw them as cards on a ground; 0, none.
+    pub gap: f32,
+    /// The corner radius in points of the panes as the wash draws them; with one, the focused
+    /// pane's glow is a ring rounded to match instead of the four straight strips.
+    pub pane_radius: f32,
     /// The app hides its own 1 px borders and the wash draws the edges.
     pub ink_borders: bool,
     pub highlights: Highlights,
@@ -85,6 +91,8 @@ impl Default for Manifest {
             ui_text_bump: 0.0,
             title_pad: 0.0,
             binder: 0.0,
+            gap: 0.0,
+            pane_radius: 0.0,
             ink_borders: false,
             highlights: Highlights::App,
             menus: MenuLook::App,
@@ -155,6 +163,8 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     in_range("ui_text_bump", m.ui_text_bump, 0.0, 4.0)?;
     in_range("title_pad", m.title_pad, 0.0, 24.0)?;
     in_range("binder", m.binder, 0.0, 32.0)?;
+    in_range("gap", m.gap, 0.0, 16.0)?;
+    in_range("pane_radius", m.pane_radius, 0.0, 24.0)?;
     in_range("paper_alpha", m.paper_alpha, 0.5, 1.0)?;
     if let Some(a) = m.document_paper_alpha {
         in_range("document_paper_alpha", a, 0.5, 1.0)?;
@@ -235,7 +245,8 @@ pub fn load(name: &str, dir: &Path) -> Result<Effect, String> {
 }
 
 /// Every effect by name: the built-ins first, then the folder's others sorted. A folder that
-/// shadows a built-in is listed once, in the built-in's place, as a folder.
+/// shadows a built-in is listed once, in the built-in's place, as a folder. A hidden built-in
+/// (`BuiltIn::hidden`) is left out unless a folder shadows it.
 pub fn list(dir: &Path) -> Vec<(String, Source)> {
     let from_folder = |name: &str| -> Option<Source> {
         let folder = dir.join(name);
@@ -248,7 +259,10 @@ pub fn list(dir: &Path) -> Vec<(String, Source)> {
         })
     };
     let mut out: Vec<(String, Source)> =
-        BUILTIN.iter().map(|b| (b.name.to_string(), from_folder(b.name).unwrap_or(Source::BuiltIn))).collect();
+        BUILTIN.iter().filter_map(|b| match from_folder(b.name) {
+            Some(source) => Some((b.name.to_string(), source)),
+            None => (!b.hidden).then(|| (b.name.to_string(), Source::BuiltIn)),
+        }).collect();
     let mut others: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -283,6 +297,16 @@ mod tests {
     }
 
     #[test]
+    fn the_space_effect_is_hidden_from_the_list_but_still_loads_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let listed: Vec<String> = list(dir.path()).into_iter().map(|(n, _)| n).collect();
+        assert!(!listed.iter().any(|n| n == "space"), "{listed:?}");
+        assert!(listed.iter().any(|n| n == "watercolor") && listed.iter().any(|n| n == "material"));
+        assert!(load("space", dir.path()).is_ok(), "a config naming space still draws it");
+        assert!(BUILTIN.iter().filter(|b| b.hidden).map(|b| b.name).eq(["space"]), "space alone is hidden");
+    }
+
+    #[test]
     fn a_manifest_with_only_a_name_and_a_wash_takes_every_default() {
         let m = parse(MINIMAL).unwrap();
         assert_eq!(m.name, "plain");
@@ -308,6 +332,22 @@ mod tests {
         let m = parse(b.manifest).unwrap();
         assert!(m.title_pad > 0.0, "room around the title's words inside the cover's label");
         assert!(m.binder > 0.0, "a gutter for the spiral between the sidebar and the panes");
+    }
+
+    #[test]
+    fn the_gap_defaults_to_none_is_refused_out_of_range_and_material_asks_for_one() {
+        assert_eq!(parse(MINIMAL).unwrap().gap, 0.0);
+        let e = parse(&with("gap = 20")).unwrap_err();
+        assert!(e.contains("gap must be 0.0 to 16.0 (was 20.0)"), "{e}");
+        let b = BUILTIN.iter().find(|b| b.name == "material").expect("material is built in");
+        let m = parse(b.manifest).unwrap();
+        assert!(m.gap > 0.0, "the panes float as cards on the frame");
+        assert_eq!(m.pane_radius, 14.0, "the wash's CARD_RADIUS, so the focus ring follows the card");
+        assert_eq!(parse(MINIMAL).unwrap().pane_radius, 0.0);
+        let e = parse(&with("pane_radius = 30")).unwrap_err();
+        assert!(e.contains("pane_radius must be 0.0 to 24.0 (was 30.0)"), "{e}");
+        assert_eq!(m.binder, 0.0, "no binder: the gap is the gutter beside the sidebar");
+        assert!(b.glyphs.is_none(), "the text stays as the font draws it");
     }
 
     #[test]
@@ -512,7 +552,7 @@ mod tests {
         assert!(listed.iter().any(|(n, s)| n == "neon" && matches!(s, Source::Folder(_))), "{listed:?}");
         assert_eq!(
             list(Path::new("/nonexistent/effects")),
-            vec![("watercolor".to_string(), Source::BuiltIn), ("space".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
+            vec![("watercolor".to_string(), Source::BuiltIn), ("runic".to_string(), Source::BuiltIn), ("material".to_string(), Source::BuiltIn), ("notebook".to_string(), Source::BuiltIn)]
         );
     }
 

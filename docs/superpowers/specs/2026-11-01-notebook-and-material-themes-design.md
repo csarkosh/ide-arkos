@@ -134,6 +134,86 @@ in once the effect has faded in, as `ui_text_bump` does:
 - The status bar as a block of its own.
 - Doodles in the margins, or a glyph shader that reshapes letters: the font is the handwriting.
 
+## Material, fourth pass: a Google-style workspace
+
+Cyrus found Material not "Googley" and asked for the look of a Google IDE without any of its
+branding: no logos, no product names, no proprietary fonts. Material 3's baseline purple is the
+Android default; Google's own web workspaces wear a different Material. This pass follows those:
+
+- **Palette.** A cool pale grey frame (`#f0f4f9`) for the title bar, the sidebar and the status
+  bar; white for the cards and the documents; a deep blue accent (`#0b57d0`); a light blue
+  selection (`#c2e7ff`) that is also the drawer's pill; near black text (`#1f1f1f`) and a warm
+  grey dim (`#444746`); ANSI hues at tone 40.
+- **Type.** DM Sans for the chrome and the prose, an open geometric sans in the same spirit as
+  the proprietary face Google uses; Roboto Mono for the terminal.
+- **Cards.** A new manifest key, `gap` (0 to 16 points), keeps that much frame round every pane:
+  between panes (`split_view::spaced` moves each pane's inner sides in, leaving the handles and
+  the tree's layout alone), under the bars and at the window's edges (`content_area`), and beside
+  the sidebar unless a `binder` is that gutter. Material asks for 8. `pane_radius` (0 to 24)
+  tells the app the cards' corner radius: the focused pane's glow becomes a two point ring
+  rounded to match, and a terminal's or document's paper rounds its bottom corners, so neither
+  shows square on the frame. Material asks for 14, the wash's `CARD_RADIUS`.
+- **Tabs.** A new block, `ARKOS_ACTIVE_TAB_BLOCK` (14), is each pane's active tab where its tab
+  bar lays it out, reported while the effect paints the highlights. Material underlines it in the
+  accent under the label (Material's tab indicator) and draws no active tab fill
+  (`active_tab_alpha = 0`).
+- **The rest of the wash.** A search-bar pill round the title's words (`title_pad = 10`); the
+  pane's number on a round chip of its own hue (the ANSI blue, green, yellow and red as tonal
+  containers); a hairline under each tab strip; the selected row a full pill across the sidebar,
+  inset from its edges and the same width at any indent; the busy pane's progress bar along the
+  bottom of its strip. No lines between cards.
+- **Hover.** A quiet state layer of the text, 5%, with no ripple: Cyrus found Material's 8% with
+  a ripple too loud. The ripple is kept for a row being selected, a press, as Material has it.
+- **The pane number and the terminal's block bars.** On Cyrus's screen the chip sat three points
+  from the card's edge, under the focus ring, and Claude Code's context bar (`█░░░░░░░░░ 6%`)
+  was unreadable: Roboto Mono has no block elements, and the fallback font's were wider than a
+  cell, so the run drifted over its own percentage. On a rounded card the number now sits in an
+  18 point slot 10 points in (`pane_view::number_slot`), the chip filling it. The terminal draws
+  the block elements (U+2580 to U+259F) itself as rectangles of their cells, snapped to the
+  pixel grid so a bar has no seams, the shades as the colour at a quarter, a half and three
+  quarters; and a run whose shaped width strays from its cells (another glyph from a fallback
+  font) is painted a character to each cell. This holds for every theme and font.
+- **A margin inside the card.** A terminal's text ran to the card's edge (Claude Code's `●`
+  touched it). On a rounded card the terminal now sits 2 points in from the card's left and right
+  sides (`pane_view::terminal_inset`), as Cyrus asked.
+
+- **The number in the chip's middle.** Cyrus saw the digit off the chip's centre. Two causes:
+  the wash placed the chip from the tab bar block's corner, while the app lays the strip out
+  inside the pane's one point border (`PANE_BORDER` now moves the chip with it); and flexbox
+  centres a line box, not the digit's ink. The number is now painted with its ink centred on its
+  slot: across by its glyphs' own bounds, down by the font's cap height
+  (`pane_view::centred_origin`).
+
+## The notebook's app bar, in two
+
+Cyrus asked for the label behind the title bar's contents to be split in two, so more of the
+cover shows. The bar now reports its two groups as they are laid out (`ARKOS_TITLE_GROUP_BLOCK`,
+15, no edges): its words, which take only their own width, and its icons, with at least 40
+points between them (`chrome::TITLE_GROUPS_GAP`), the path truncating first. The notebook sets a
+label behind each, reaching 14 points past the group's ends, with the marble between; with no
+group reported it falls back to the one label across the bar.
+
+## Themes named by colour and effect
+
+Cyrus asked to hide the `space` effect, rename `lavender-light` to `lavender-watercolor` and
+`peach-light` to `peach-material`, and add `lavender-material`: a built-in's name is its colours
+and the effect it recommends.
+
+- `space` stays built in but `BuiltIn::hidden`: Settings and `arkos effect list` leave it out
+  (unless a folder of that name shadows it), and a config, `arkos effect use space` or a theme
+  naming it still draw it.
+- `peach-material` is Peach's colours and fonts recommending `material` (my reading of the new
+  name; it recommended watercolor before). It stays the default light theme.
+- `lavender-watercolor` is the old `lavender-light` unchanged; `lavender-material` is its colours
+  and fonts recommending `material` (the wash reads the frame from `sidebar` and the cards from
+  `window_bg`, so no colour changes were needed; contrast clear).
+- The old names still work (`theme::RENAMED`, `theme::current_name`): a built-in lookup, `arkos
+  theme contrast` and `template` take them, `arkos theme use` saves the new name, and at launch a
+  config naming one is rewritten to the new name with its comments kept and no notice, unless the
+  user has a theme file of that old name, which stays theirs.
+- The README's blogger still shows the watercolor still, now captioned as Peach's colours under
+  watercolor; a reshoot of that story would draw Material.
+
 ## For Cyrus to decide
 
 - The terminal font for the notebook: Monaspace Radon (A) or Comic Mono (B).

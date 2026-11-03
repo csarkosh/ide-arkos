@@ -466,7 +466,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 
 ## 6. The theme workflow
 
-1. `arkos theme template > draft.toml` (or `arkos theme template peach-light` for a light start).
+1. `arkos theme template > draft.toml` (or `arkos theme template peach-material` for a light start).
 2. Set `name` to a new bare name and edit the colours.
 3. `arkos theme validate draft.toml`, then `arkos theme contrast draft.toml`; fix every LOW pair
    and run it again until it exits 0. It checks the theme's own pairs, Claude Code's in it, and
@@ -477,7 +477,7 @@ stdout and nothing else. Errors are plain lines on stderr. Window lines read
 5. `arkos theme use draft.toml` (add `--dark` or `--light` to choose the slot).
 6. `arkos theme current` to confirm what every window shows.
 
-To revert, `arkos theme use navy` (or `arkos theme use peach-light --light`). The user can also
+To revert, `arkos theme use navy` (or `arkos theme use peach-material --light`). The user can also
 pick any theme by hand in the Settings window.
 
 ## 7. Trying a theme or effect without touching the user's setup
@@ -565,11 +565,15 @@ the result (`arkos theme template timo-purple` prints it). The choices, and why 
 ## 9. Effects
 
 An effect is a pair of Metal shaders that paint the project window: a wash drawn under every
-surface, and optionally the text itself. Four are built in: Peach Light recommends `watercolor`
-(still ink glyphs), `space` is recommended by no theme (a night sky with glowing edges and still holo
-text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
+surface, and optionally the text itself. Five are built in: Lavender Watercolor recommends `watercolor`
+(still ink glyphs), `space` is hidden (recommended by no theme and left out of Settings and
+`arkos effect list`, though `arkos effect use space` and a config naming it still draw it: a night
+sky with glowing edges and still holo text; Navy, the default, draws plain), Matrix and Navy Runic recommend `runic` (faint rune rain, emissive text in the theme's
 accent that glitches now and then, and a terminal that decodes its changed cells; it was called
-`matrix` before 0.7.20, and that name still draws it) and Composition Notebook recommends `notebook` (the
+`matrix` before 0.7.20, and that name still draws it), Material, Peach Material and Lavender Material recommend `material` (the
+panes as rounded cards in the theme's page colour on a frame of its sidebar colour, underlined active tabs, a pill on the selected
+row, a search bar round the title, a progress bar on a busy pane, no glyph shader) and
+Composition Notebook recommends `notebook` (the
 marbled cover over the title bar, cream pages ruled under the terminal's rows, pencil edges, a
 highlighter on the selected row, and terminal text written in by a ballpoint); the user may pick any
 effect for any theme, or none, in
@@ -592,7 +596,14 @@ What an effect can touch:
   top, so a wash can rule the paper under each row as the built-in `notebook` does. A binder
   (`ARKOS_BINDER_BLOCK`, no edges) is the gutter between the sidebar and the panes, there only
   while the sidebar shows and the manifest asks for one with `binder`; nothing of the app's is
-  drawn in it (the built-in `notebook` draws its spiral there).
+  drawn in it (the built-in `notebook` draws its spiral there). With a `gap` and no `binder`, the
+  gap beside the sidebar is reported as a binder block too. An active tab
+  (`ARKOS_ACTIVE_TAB_BLOCK`, no edges) is each pane's active tab where its tab bar lays it out,
+  reported while the effect paints the highlights (the built-in `material` underlines it). A
+  title group (`ARKOS_TITLE_GROUP_BLOCK`, no edges) is one group of the title bar's contents
+  where the bar lays it out: its words (the app's name, the project's path and in a sandbox
+  `sandbox`) and its icons, a block each, at least 40 points apart (the built-in `notebook` sets
+  a cover label behind each).
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars
@@ -624,7 +635,9 @@ key and the range.
 | `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
 | `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
-| `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's label). |
+| `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's labels). |
+| `gap` | 0 to 16 | 0 | Points kept clear round each pane: between the panes, and between them and the window's bars and edges (beside the sidebar too, unless a `binder` is that gutter), so the wash can draw the panes as cards on its ground. Like `ui_text_bump`, it comes in once the effect has faded in. |
+| `pane_radius` | 0 to 24 | 0 | The corner radius of the panes as the wash draws them: the focused pane's glow becomes a ring rounded to match, and a terminal's or document's paper rounds its bottom corners inside it, and the pane's number is centred by its ink (its glyphs' own bounds across, its cap height down) in an 18 point slot 10 points in from the inside of the pane's 1 point border (`pane_view::number_slot`), so a chip drawn on that slot's centre clears the corner and the ring and has the number in its middle. Like `gap`, it comes in once the effect has faded in. |
 | `binder` | 0 to 32 | 0 | A gutter this many points wide between the sidebar and the panes, reported as a binder block; 0, none. Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `ink_borders` | true, false | false | The app hides its own 1 px borders and the wash draws the edges. |
 | `highlights` | `"effect"`, `"app"` | `"app"` | `"effect"`: the wash paints the selected and hovered rows and the hovered tab from the highlight blocks, and the app stops filling them. `"app"`: the app keeps its own fills and the wash gets no highlight blocks. |
@@ -672,7 +685,8 @@ rectangle in window points from the top left with its kind, the edges the app no
 `seed` fixed for the block's life, a `value` (a highlight's fade from 0 to 1, else 1), an
 `ordinal` (a pane's place; a highlight's state, 0 hovered, 1 selected, 2 both), a `busy` flag
 (1 on a pane's tab bar and body while the pane's active tab is a terminal whose Claude session
-is working, else 0; runic runs a busy pane's edges hotter) and a `pitch` (a rows block's row height in points, 0 on every other block). `in.uv` runs
+is working, else 0; runic runs a busy pane's edges hotter, material draws a progress bar along
+its tab bar) and a `pitch` (a rows block's row height in points, 0 on every other block). `in.uv` runs
 from (0, 0) at the top left to (1, 1) at the bottom right. What the wash returns is the window's
 opaque ground; the app's surfaces are drawn over it with the manifest's alphas. Derive every
 shade from the theme's colours, so the effect reads right in a dark theme as in a light one.
@@ -733,7 +747,7 @@ and at least 80% of their coverage.
 3. `arkos effect check <folder>` until it prints `ok: <name>`; a compile error names your file
    and line. Read its `highlights:` line: with `app` the wash gets no highlight blocks.
 4. `arkos effect bench <name>` until it says `within budget`.
-5. `arkos theme contrast peach-light --effect <folder>` and `arkos theme contrast navy --effect <folder>`
+5. `arkos theme contrast peach-material --effect <folder>` and `arkos theme contrast navy --effect <folder>`
    (and the user's own themes) until each exits 0: the effect's `text_contrast` moves the text,
    and the check draws every colour a program can send under it.
 6. `arkos effect use <name>`, then `arkos effect current` to see what each window draws and what
@@ -800,7 +814,7 @@ window open; `bench` and `current` ask the running windows, and `use` asks them 
   clock, and times every frame on the GPU. It draws a window as it opens: the
   title bar, the sidebar and one pane, with a selected Explorer row when the manifest says
   `highlights = "effect"`; every pane or highlight more adds its blocks' cost. The size and the theme are those of
-  the first window that answers; without one, 1200 by 800 points and Peach Light. Prints
+  the first window that answers; without one, 1200 by 800 points and Peach Material. Prints
   `{name}: {ms} ms per frame at {w}x{h} ({share}% of a frame at {rate} fps): {verdict}`, the
   verdict `within budget`, `heavy` or `too heavy`. Exit 1 when the effect does not load or
   compile. JSON `{ "name", "ms", "size": [w, h], "theme", "frame_rate", "share", "verdict" }`,

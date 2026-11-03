@@ -70,11 +70,14 @@ float marble(float2 p) {
     return smoothstep(0.52, 0.6, m);
 }
 
-// Where the cover's label sits in the title bar: from just past the traffic lights to the bar's
-// own right padding, a little in from its top and bottom. The manifest's `title_pad` sets the
-// bar's words and icons that far inside both ends, so they have room inside the label.
+// Where the cover's labels sit in the title bar: one behind each of the bar's groups (its words
+// and its icons, the title group blocks), reaching LABEL_PAD past each group's ends, a little in
+// from the bar's top and bottom, the marbled cover showing between them. The manifest's
+// `title_pad` sets the words and icons that far inside the bar's ends. With no group reported,
+// one label runs from just past the traffic lights to the bar's own right padding.
 constant float LABEL_LEFT = 80.0;
 constant float LABEL_RIGHT = 12.0;
+constant float LABEL_PAD = 14.0;
 constant float LABEL_INSET = 3.0;
 constant float LABEL_RADIUS = 5.0;
 
@@ -90,9 +93,22 @@ float3 cover(constant ArkosInputs& u, float2 p, ArkosBlock b, float3 col, float 
     float3 black = float3(0.08, 0.08, 0.09);
     float3 white = float3(0.93, 0.93, 0.9);
     float3 cov = mix(black, white, marble(p));
-    float2 hb = float2((r.z - LABEL_LEFT - LABEL_RIGHT) * 0.5, (r.w - 2.0 * LABEL_INSET) * 0.5);
-    float2 c = float2(r.x + LABEL_LEFT + hb.x, r.y + LABEL_INSET + hb.y);
-    float d = sd_round_box(p - c, hb, LABEL_RADIUS);
+    float hy = (r.w - 2.0 * LABEL_INSET) * 0.5;
+    float cy = r.y + LABEL_INSET + hy;
+    float d = 1e5;
+    int nb = min(int(u.block_count), 48);
+    for (int i = 0; i < nb; i++) {
+        ArkosBlock g = u.blocks[i];
+        if (int(g.kind) != ARKOS_TITLE_GROUP_BLOCK) {
+            continue;
+        }
+        float hx = g.rect.z * 0.5 + LABEL_PAD;
+        d = min(d, sd_round_box(p - float2(g.rect.x + g.rect.z * 0.5, cy), float2(hx, hy), LABEL_RADIUS));
+    }
+    if (d >= 1e5) {
+        float hx = (r.z - LABEL_LEFT - LABEL_RIGHT) * 0.5;
+        d = sd_round_box(p - float2(r.x + LABEL_LEFT + hx, cy), float2(hx, hy), LABEL_RADIUS);
+    }
     float inside = 1.0 - smoothstep(-0.5, 0.5, d);
     float border = (1.0 - smoothstep(0.8, 1.6, abs(d))) ;
     float3 label = mix(col, u.colors[ARKOS_TEXT].rgb, border * 0.9);

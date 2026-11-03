@@ -17,7 +17,7 @@ height = 1000
 preset = "comfortable"
 sidebar_width = 240
 expanded = ["posts", "notes"]
-theme = { dark = "peach-light", light = "peach-light" }
+theme = { dark = "peach-material", light = "peach-material" }
 
 [[pane]]
 name = "launch plan"

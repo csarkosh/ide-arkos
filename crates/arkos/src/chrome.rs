@@ -23,6 +23,9 @@ pub const ICON_TARGET: f32 = 24.0;
 pub const ICON_GAP: f32 = 8.0;
 /// Space between the last icon and the window's right edge.
 pub const BAR_RIGHT_PAD: f32 = 12.0;
+/// The least room in points between the title's words and its icons, besides the bar's gaps, so
+/// a wash's labels behind the two groups (`Kind::TitleGroup`) stay apart.
+pub const TITLE_GROUPS_GAP: f32 = 40.0;
 /// The icon is drawn in a box this wide and high, centred in its target.
 const ICON_SIZE: f32 = 16.0;
 const ICON_STROKE: f32 = 1.5;
@@ -254,10 +257,30 @@ pub fn title_words(sandbox: bool) -> Vec<&'static str> {
 /// In full screen the traffic lights are gone, so the text starts at the edge.
 /// `bar_font` is the theme's ui font when it names one this Mac has, else the system's; `style`
 /// is the window's effect's.
-pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover)) -> Div {
+/// `report`, while an effect is on, is the window to report the bar's two groups to (its words
+/// and its icons, `Kind::TitleGroup`), so the wash can set a label behind each.
+#[allow(clippy::too_many_arguments)]
+pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, theme: &Theme, style: Style, bar_font: SharedString, on_bell: (IconClick, IconHover), on_doctor: (IconClick, IconHover), report: Option<gpui::WeakEntity<crate::Root>>) -> Div {
     let c = &theme.chrome;
     let words = title_words(sandbox);
     let (left, right_pad) = bar_padding(fullscreen, style.title_pad);
+    // A group reports where it is laid out from a canvas behind it.
+    let group = |d: Div, key: u64| -> Div {
+        let report = report.clone();
+        d.relative().child(
+            canvas(
+                move |b, _, cx| {
+                    if let Some(root) = &report {
+                        let rect = crate::tree::Rect { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height) };
+                        let _ = root.update(cx, |root, _| root.effect_shapes.push(crate::effects::blocks::Shape { key, rect, kind: crate::effects::blocks::Kind::TitleGroup, pitch: 0.0 }));
+                    }
+                },
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .inset_0(),
+        )
+    };
     drag_to_move(div())
         .h(px(TITLE_BAR_H))
         .w_full()
@@ -271,19 +294,22 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
         .text_color(c.text.hsla())
         .font_family(bar_font)
         .text_size(px(style.ui(13.0)))
-        .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(words[0]))
-        .child(
+        // The words take only their own width (the path truncating when the bar is short), and
+        // an empty stretch of at least `TITLE_GROUPS_GAP` keeps them apart from the icons.
+        .child(group(
             div()
-                .flex_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
                 .min_w_0()
-                .truncate()
-                .italic()
-                .font_weight(FontWeight::LIGHT)
-                .text_color(c.text_dim.hsla())
-                .child(project.display().to_string()),
-        )
-        .children(words.get(1).map(|word| div().flex_none().text_color(c.text_dim.hsla()).child(*word)))
-        .child(
+                .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(words[0]))
+                .child(div().min_w_0().truncate().italic().font_weight(FontWeight::LIGHT).text_color(c.text_dim.hsla()).child(project.display().to_string()))
+                .children(words.get(1).map(|word| div().flex_none().text_color(c.text_dim.hsla()).child(*word))),
+            crate::effects::blocks::TITLE_WORDS_KEY,
+        ))
+        .child(div().flex_1().min_w(px(TITLE_GROUPS_GAP)))
+        .child(group(
             div()
                 .flex_none()
                 .flex()
@@ -291,7 +317,8 @@ pub fn title_bar(project: &Path, sandbox: bool, right: Right, fullscreen: bool, 
                 .gap(px(ICON_GAP))
                 .child(icon_button("bell", Icon::Bell, right.bell_dot, right.breath, right.open == Popover::Bell || right.hover == Popover::Bell, c, on_bell))
                 .child(icon_button("doctor", Icon::Doctor, right.doctor_dot, right.breath, right.open == Popover::Doctor || right.hover == Popover::Doctor, c, on_doctor)),
-        )
+            crate::effects::blocks::TITLE_ICONS_KEY,
+        ))
 }
 
 /// The card a popover's rows go in, styled like the context menu and hung under its icon.
@@ -472,7 +499,7 @@ mod tests {
     #[test]
     fn the_app_s_menus_look_as_ever_and_an_effect_s_take_its_paper_ink_or_glow() {
         use crate::effects::manifest::MenuLook;
-        let peach = crate::theme::builtin("peach-light").unwrap();
+        let peach = crate::theme::builtin("peach-material").unwrap();
         let navy = crate::theme::builtin("navy").unwrap();
         let app = menu_colors(&peach, MenuLook::App);
         let c = &peach.chrome;

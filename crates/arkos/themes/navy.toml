@@ -4,7 +4,7 @@
 # background are sampled from docs/reference/ and lifted 12 per channel to the #11161f floor.
 name = "navy"
 appearance = "dark"
-# No [effect]: Navy is the default and draws plain; `space` is one Settings click away.
+# No [effect]: Navy is the default and draws plain.
 
 [chrome]
 window_bg = "#0e1723"

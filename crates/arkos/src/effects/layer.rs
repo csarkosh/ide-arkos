@@ -419,7 +419,7 @@ mod tests {
         let wash = crate::effects::BUILTIN.iter().find(|b| b.name == "watercolor").unwrap().wash;
         let mut backdrops = Backdrops::new(&device, crate::effects::PREAMBLE, wash).unwrap();
         let queue = device.new_command_queue();
-        let theme = crate::theme::builtin("peach-light").unwrap();
+        let theme = crate::theme::builtin("peach-material").unwrap();
         let area = crate::tree::Rect { x: 100.0, y: 80.0, w: 200.0, h: 120.0 };
         let menu = crate::effects::blocks::MenuShape { key: 0x11, rect: area, opacity: 1.0 };
         let inputs = crate::effects::inputs::build(&theme, 1.0, (800.0, 600.0), 1.0, 0.0, &crate::effects::blocks::backdrop_blocks(&menu, &[]));

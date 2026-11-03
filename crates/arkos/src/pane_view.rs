@@ -29,6 +29,70 @@ pub const TAB_BAR_H: f32 = 28.0;
 pub const GLOW_W: f32 = 4.0;
 /// The glow's opacity at the edge, at the peak of its breath; it fades to nothing by its reach.
 pub const GLOW_ALPHA: f32 = 0.45;
+/// The width in points of the focused pane's ring, under an effect that rounds the panes.
+pub const FOCUS_RING_W: f32 = 2.0;
+
+/// The radius of the bottom corners of a pane's paper (a terminal's, a document's) under `style`:
+/// the card's, less the pane's one point border, so the paper's corners lie inside the card the
+/// wash draws instead of showing square on the ground round it.
+pub fn paper_radius(style: crate::effects::active::Style) -> f32 {
+    (style.pane_radius - 1.0).max(0.0)
+}
+/// The margin in points between a terminal's text and its card's left and right sides on a
+/// rounded card (`pane_radius`), so the text does not meet the card's edge.
+pub const CARD_TEXT_INSET: f32 = 2.0;
+
+pub fn terminal_inset(style: crate::effects::active::Style) -> f32 {
+    if style.pane_radius > 0.0 { CARD_TEXT_INSET } else { 0.0 }
+}
+
+/// On a rounded card the pane number is centred in a slot this many points in from the card's
+/// left edge and this wide, so an effect can draw a chip of that width behind it (Material's
+/// sits exactly on the slot) clear of the card's corner and its focus ring.
+pub const NUMBER_SLOT_INSET: f32 = 10.0;
+pub const NUMBER_SLOT_W: f32 = 18.0;
+
+/// Where to paint a line whose ink runs from `ink.0` to `ink.1` points past its origin across,
+/// whose figures are `cap` points tall on the baseline and whose ascent is `ascent`, so its ink
+/// is centred on `centre`: the origin, painted with a line height of its ascent and descent.
+pub fn centred_origin(centre: (f32, f32), ink: (f32, f32), cap: f32, ascent: f32) -> (f32, f32) {
+    let x = centre.0 - (ink.0 + ink.1) / 2.0;
+    let baseline = centre.1 + cap / 2.0;
+    (x, baseline - ascent)
+}
+
+/// Paints `text` in `bounds` with its ink centred there, on its cap height down and its glyphs'
+/// own bounds across, so a number sits in the middle of a chip drawn on the same bounds rather
+/// than where its line box would put it.
+fn paint_centred(text: &gpui::SharedString, family: gpui::SharedString, size: f32, color: gpui::Hsla, bounds: gpui::Bounds<gpui::Pixels>, window: &mut gpui::Window, cx: &mut gpui::App) {
+    let f = gpui::font(family);
+    let run = gpui::TextRun { len: text.len(), font: f.clone(), color, background_color: None, underline: None, strikethrough: None };
+    let ts = window.text_system().clone();
+    let line = ts.shape_line(text.clone(), px(size), &[run], None);
+    let cap = f32::from(ts.cap_height(ts.resolve_font(&f), px(size)));
+    let mut ink = (f32::MAX, f32::MIN);
+    for run in &line.runs {
+        for g in &run.glyphs {
+            let ch = text.get(g.index..).and_then(|s| s.chars().next()).unwrap_or('0');
+            if let Ok(b) = ts.typographic_bounds(run.font_id, px(size), ch) {
+                let x0 = f32::from(g.position.x + b.origin.x);
+                ink = (ink.0.min(x0), ink.1.max(x0 + f32::from(b.size.width)));
+            }
+        }
+    }
+    if ink.0 > ink.1 {
+        ink = (0.0, f32::from(line.width));
+    }
+    let centre = (f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.0, f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.0);
+    let (x, y) = centred_origin(centre, ink, cap, f32::from(line.ascent));
+    let _ = line.paint(gpui::point(px(x), px(y)), line.ascent + line.descent, window, cx);
+}
+
+/// Where the pane number sits under `style`: Some((inset, width)) on a rounded card, None for
+/// the plain eight points of padding.
+pub fn number_slot(style: crate::effects::active::Style) -> Option<(f32, f32)> {
+    (style.pane_radius > 0.0).then_some((NUMBER_SLOT_INSET, NUMBER_SLOT_W))
+}
 /// The breath (`pulse::glow`): at rest the glow keeps this share of its opacity, and at the peak
 /// it gains this much lightness and this share of its reach, so it reads as light at the edge.
 const GLOW_BREATH_FLOOR: f32 = 0.7;
@@ -527,7 +591,14 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         // The angle is CSS's: the direction the colour fades towards (180 is downwards).
         let strip = |angle: f32| div().absolute().opacity(opacity).bg(linear_gradient(angle, linear_color_stop(from, 0.0), linear_color_stop(to, 1.0)));
         let z = px(0.0);
-        [
+        // A pane the effect draws as a rounded card wears a ring of the same rounding instead,
+        // as its focus: straight strips would run past the card's corners onto the ground.
+        if style.pane_radius > 0.0 {
+            let mut ring = from;
+            ring.a = (ring.a * 2.0).min(1.0);
+            return vec![div().absolute().inset_0().opacity(opacity).rounded(px(style.pane_radius)).border(px(FOCUS_RING_W)).border_color(ring)];
+        }
+        vec![
             strip(180.0).top(z).left(z).right(z).h(px(g)),
             strip(0.0).bottom(z).left(z).right(z).h(px(g)),
             strip(90.0).left(z).top(z).bottom(z).w(px(g)),
@@ -613,7 +684,14 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .text_color(fg.hsla())
         .font_family(root.ui_family())
         .text_size(px(style.ui(12.0)))
-        .child(div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")))
+        .child(match number_slot(style) {
+            // Painted with its ink centred on the slot, which is the chip's place.
+            Some((inset, width)) => {
+                let (label, family, size, color): (gpui::SharedString, _, _, _) = (format!("{number}").into(), root.ui_family(), style.ui(12.0), dim.hsla());
+                div().flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).h_full().child(gpui::canvas(|_, _, _| (), move |b, _, window, cx| paint_centred(&label, family.clone(), size, color, b, window, cx)).size_full())
+            }
+            None => div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")),
+        })
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
             // Off every tab, the bar appends. The bar's listener runs before its tabs', which
             // then claim the hover with an exact insertion point.
@@ -736,6 +814,13 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                             let rect = Rect { x: f32::from(bounds.origin.x), y: f32::from(bounds.origin.y), w: f32::from(bounds.size.width), h: f32::from(bounds.size.height) };
                             let _ = weak.update(cx, |root, _| {
                                 root.effect_marks.push(blocks::Mark { key, rect, kind: blocks::Kind::TabHighlight, state: blocks::HighlightState::Hovered });
+                            });
+                        }
+                        // The active tab reports where it is, so the wash can mark it.
+                        if let Some(id) = tab_id_for_width.filter(|_| highlights && is_active) {
+                            let rect = Rect { x: f32::from(bounds.origin.x), y: f32::from(bounds.origin.y), w: f32::from(bounds.size.width), h: f32::from(bounds.size.height) };
+                            let _ = weak.update(cx, |root, _| {
+                                root.effect_shapes.push(blocks::Shape { key: blocks::tab_key(id), rect, kind: blocks::Kind::ActiveTab, pitch: 0.0 });
                             });
                         }
                         // Not while collapsed: the width on record is the tab's own.
@@ -979,8 +1064,9 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             div()
                 .id(("term-hover", pane))
                 .size_full()
+                .px(px(terminal_inset(style)))
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
-                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw, (style.paper_alpha < 1.0).then(|| cx.weak_entity()))),
+                .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw, (style.paper_alpha < 1.0).then(|| cx.weak_entity())).paper_radius(paper_radius(style))),
         )
         .children(scrolled_up.then(|| {
             let t = terminal.clone();
@@ -1106,7 +1192,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let body = match kind {
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
-            div().size_full().bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
+            div().size_full().rounded_b(px(paper_radius(style))).bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
         }
         Kind::Text { plain } => {
             let element = ViewerElement::new(
@@ -1120,7 +1206,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 MarkColors { added: theme.tree.added, modified: theme.tree.modified, deleted: theme.tree.deleted },
                 RawColors::opaque(theme.chrome.text, theme.chrome.text_dim, theme.tree.modified, theme.chrome.focus_ring),
             )
-            .paper_alpha(style.document_paper_alpha);
+            .paper_alpha(style.document_paper_alpha)
+            .paper_radius(paper_radius(style));
             div()
                 .size_full()
                 .flex()
@@ -1471,6 +1558,44 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_a_rounded_card_a_terminal_s_text_keeps_a_margin_from_the_card_s_sides() {
+        let mut style = Style::plain();
+        assert_eq!(terminal_inset(style), 0.0, "a square pane's text runs to its edge as ever");
+        style.pane_radius = 14.0;
+        assert_eq!(terminal_inset(style), 2.0);
+    }
+
+    #[test]
+    fn the_pane_number_s_ink_is_centred_on_its_slot_by_its_cap_height_and_its_ink_width() {
+        // A digit whose ink runs from 1 to 6 points past its origin, 9 points tall on the
+        // baseline, in a line with a 12 point ascent, centred on (19, 15).
+        let (x, y) = centred_origin((19.0, 15.0), (1.0, 6.0), 9.0, 12.0);
+        assert_eq!(x + 1.0 + (6.0 - 1.0) / 2.0, 19.0, "the ink's middle on the centre across");
+        let baseline = y + 12.0;
+        assert_eq!(baseline - 9.0 / 2.0, 15.0, "the cap height's middle on the centre down");
+    }
+
+    #[test]
+    fn on_a_rounded_card_the_pane_number_is_centred_in_a_slot_well_inside_the_card_s_edge() {
+        let mut style = Style::plain();
+        assert_eq!(number_slot(style), None, "the number keeps its plain padding on a square pane");
+        style.pane_radius = 14.0;
+        let (inset, width) = number_slot(style).unwrap();
+        assert!(inset - FOCUS_RING_W >= 8.0, "clear of the focus ring by at least 8 points");
+        assert_eq!((inset, width), (NUMBER_SLOT_INSET, NUMBER_SLOT_W));
+    }
+
+    #[test]
+    fn a_pane_s_paper_rounds_its_bottom_corners_with_the_card_inside_the_pane_s_border() {
+        let mut style = Style::plain();
+        assert_eq!(paper_radius(style), 0.0, "square without an effect that rounds the panes");
+        style.pane_radius = 14.0;
+        assert_eq!(paper_radius(style), 13.0);
+        style.pane_radius = 0.5;
+        assert_eq!(paper_radius(style), 0.0);
+    }
 
     #[test]
     fn the_terminal_decodes_under_a_decoding_effect_longer_while_its_session_works() {

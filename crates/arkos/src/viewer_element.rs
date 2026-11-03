@@ -476,16 +476,24 @@ pub struct ViewerElement {
     raw: RawColors,
     /// The alpha of the paper under the text: 1, or an effect's `paper_alpha`.
     paper_alpha: f32,
+    /// The radius of the paper's bottom corners (`pane_view::paper_radius`).
+    paper_radius: f32,
 }
 
 impl ViewerElement {
     pub fn new(viewer: Entity<Viewer>, family: SharedString, bg: Rgb, gutter_fg: Rgb, text_fg: Rgb, find_match: Rgb, find_current: Rgb, marks: MarkColors, raw: RawColors) -> Self {
-        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw, paper_alpha: 1.0 }
+        Self { viewer, family, bg, gutter_fg, text_fg, find_match, find_current, marks, raw, paper_alpha: 1.0, paper_radius: 0.0 }
     }
 
     /// The paper painted with `alpha`, so an effect's wash shows faintly through it.
     pub fn paper_alpha(mut self, alpha: f32) -> Self {
         self.paper_alpha = alpha;
+        self
+    }
+
+    /// Rounds the paper's bottom corners by `radius` points.
+    pub fn paper_radius(mut self, radius: f32) -> Self {
+        self.paper_radius = radius;
         self
     }
 
@@ -595,7 +603,8 @@ impl Element for ViewerElement {
         let (cell_w, line_h) = (prepaint.cell_w, prepaint.line_h);
         let mut paper = hsla(self.bg);
         paper.a = self.paper_alpha;
-        window.paint_quad(fill(bounds, paper));
+        let r = px(self.paper_radius);
+        window.paint_quad(fill(bounds, paper).corner_radii(gpui::Corners { top_left: px(0.0), top_right: px(0.0), bottom_right: r, bottom_left: r }));
         let focused = self.viewer.read(cx).focus.is_focused(window);
         let frame = self.viewer.update(cx, |v, _| {
             let now = Instant::now();

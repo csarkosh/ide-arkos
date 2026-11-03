@@ -1631,8 +1631,12 @@ impl Root {
         true
     }
 
+    /// The panes and handles as drawn: the tree's layout in the content area, the panes drawn
+    /// apart by the effect's `gap`.
     pub fn layout(&self) -> tree::Layout {
-        self.tree.layout(self.content)
+        let mut layout = self.tree.layout(self.content);
+        layout.panes = split_view::spaced(&layout.panes, self.content, self.effect_style().gap);
+        layout
     }
 
     /// Remembers where the window is, whenever that changes, so a relaunch opens it there. A
@@ -4210,7 +4214,7 @@ impl Render for Root {
         // While Cmd+B's slide runs, the panes follow the width on screen frame by frame (each
         // frame relays them out, as dragging the edge does; no terminal is made again).
         let side = self.sidebar.shown_width(now);
-        let (content, binder) = split_view::content_area(side, self.effect_style().binder, top + banner_h, f32::from(size.width), f32::from(size.height));
+        let (content, binder) = split_view::content_area(side, self.effect_style().binder, self.effect_style().gap, top + banner_h, f32::from(size.width), f32::from(size.height));
         self.binder = binder;
         if content != self.content {
             // Measurements taken at the old size would parse a replay at the wrong grid.
@@ -4302,6 +4306,7 @@ impl Render for Root {
             self.fonts.ui.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
+            self.effect.is_some().then(|| cx.weak_entity()),
         );
         let family = self.ui_family();
         let root_div = div()
@@ -4421,8 +4426,10 @@ impl Render for Root {
                     .flex()
                     .flex_row()
                     .children(side_col)
-                    .child(div().flex_none().w(px(self.binder)))
-                    .child(div().flex_1().min_w_0().min_h_0().child(body)),
+                    // The panes' container starts where the content area does: past the sidebar's
+                    // gutter (or the gap off the window's edge) and the gap under the bars.
+                    .child(div().flex_none().w(px((self.content.x - side).max(0.0))))
+                    .child(div().flex_1().min_w_0().min_h_0().pt(px((self.content.y - top - banner_h).max(0.0))).child(body)),
             )
             .children(command_palette::render(self, cx))
             .children(sidebar::render_context_menu(self, cx))
@@ -4614,7 +4621,7 @@ fn main() {
     motion::refresh();
     app_nap::hold();
     let config_path = paths::config_file();
-    // Navy Light is no longer built in: a config naming it is moved to Peach Light (or Navy for
+    // Navy Light is no longer built in: a config naming it is moved to Peach Material (or Navy for
     // the dark slot) before it is parsed, and the window says so once when the light theme moved
     // (the file never names it again). Before the fingerprint, so the rewritten file is the one
     // fingerprinted.
@@ -5275,7 +5282,7 @@ mod tests {
         let mut plain = theme::builtin("navy").unwrap();
         plain.appearance = None;
         let navy = Arc::new(plain);
-        let mut edited = theme::builtin("lavender-light").unwrap();
+        let mut edited = theme::builtin("lavender-watercolor").unwrap();
         edited.name = "navy".into();
         edited.appearance = None;
         edited.font = theme::ThemeFont::default(); // the blend takes the target's fonts, and navy names none
@@ -5437,9 +5444,9 @@ mod tests {
         let good = customize_outcome(&CustomizeAction::PreviewTheme { toml: "...".into() }, Ok(theme::builtin("navy").unwrap()), after.clone());
         assert_eq!(good.unwrap().preview.as_deref(), Some("x"));
         assert!(customize_outcome(&CustomizeAction::ReportState, Err("unused".into()), after).is_ok(), "only a preview can fail");
-        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-light".into() };
+        let cfg = config::ThemeConfig { dark: "timo-purple".into(), light: "lavender-watercolor".into() };
         assert_eq!(theme_file_for(config::AppearanceMode::System, true, &cfg, Path::new("/t")), PathBuf::from("/t/timo-purple.toml"));
-        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/lavender-light.toml"));
+        assert_eq!(theme_file_for(config::AppearanceMode::Light, true, &cfg, Path::new("/t")), PathBuf::from("/t/lavender-watercolor.toml"));
     }
 
     #[test]

@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn fresh_dark_text_deepens_toward_the_deep_green_and_bright_text_whitens() {
-        // Peach Light's foreground, under the shader's dark-text threshold: whitened it would
+        // Peach Material's foreground, under the shader's dark-text threshold: whitened it would
         // fall to about 2:1 on its paper and take the emissive branch.
         let dark = CellStyle { fg: Rgb { r: 0x4a, g: 0x30, b: 0x28 }, bg: Rgb { r: 0xff, g: 0xf6, b: 0xef }, ..plain() };
         assert!(crate::theme::luminance(dark.fg) < DARK_TEXT);

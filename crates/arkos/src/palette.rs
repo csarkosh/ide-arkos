@@ -328,7 +328,7 @@ mod tests {
     }
 
     fn themes() -> Vec<Palette> {
-        vec![NAVY, crate::theme::builtin("navy").unwrap().palette(), crate::theme::builtin("peach-light").unwrap().palette()]
+        vec![NAVY, crate::theme::builtin("navy").unwrap().palette(), crate::theme::builtin("peach-material").unwrap().palette()]
     }
 
     fn l_of(c: Rgb) -> f32 {
@@ -373,7 +373,7 @@ mod tests {
             let [l, a, b] = to_oklab(c);
             a.hypot(b) / (1.0 - l).max(1e-3)
         };
-        for name in ["peach-light", "lavender-light"] {
+        for name in ["peach-material", "lavender-watercolor"] {
             let p = crate::theme::builtin(name).unwrap().palette();
             // The diff bands (22, 52) and their changed words (28, 88), the selection (17) and
             // the message band (234), against what a straight blend in Oklab would give.
@@ -393,7 +393,7 @@ mod tests {
     fn a_light_theme_s_message_band_keeps_its_tint_under_an_effect_s_deepened_text() {
         // Watercolor deepens the terminal's text toward black; the bands Claude Code draws on the
         // grey ramp (its messages, a hovered one) must not go grey with it.
-        for name in ["peach-light", "lavender-light"] {
+        for name in ["peach-material", "lavender-watercolor"] {
             let own = crate::theme::builtin(name).unwrap();
             let shown = crate::effects::active::contrasted(&own, 0.6);
             assert_ne!(shown.palette().fg, own.palette().fg, "the text is deepened");

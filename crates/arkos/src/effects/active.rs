@@ -56,6 +56,10 @@ pub struct Style {
     pub title_pad: f32,
     /// The gutter between the sidebar and the panes, in points.
     pub binder: f32,
+    /// Points kept clear round each pane.
+    pub gap: f32,
+    /// The corner radius of the panes as the wash draws them.
+    pub pane_radius: f32,
     /// How the menus and popovers look (`chrome::menu_colors`).
     pub menus: MenuLook,
     /// The effect draws the menus' and popovers' edges from above (its wash's `arkos_overlay`),
@@ -70,7 +74,7 @@ pub struct Style {
 impl Style {
     /// The app as it paints without an effect.
     pub fn plain() -> Style {
-        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
+        Style { paper_alpha: 1.0, document_paper_alpha: 1.0, chrome_alpha: 1.0, active_tab_alpha: 1.0, ground_alpha: 1.0, ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false }
     }
 
     /// A UI text size of `pt` points as this style draws it.
@@ -100,6 +104,8 @@ pub fn style_at(manifest: &Manifest, fade: f32) -> Style {
         ui_text_bump: if full { manifest.ui_text_bump } else { 0.0 },
         title_pad: if full { manifest.title_pad } else { 0.0 },
         binder: if full { manifest.binder } else { 0.0 },
+        gap: if full { manifest.gap } else { 0.0 },
+        pane_radius: if full { manifest.pane_radius } else { 0.0 },
         menus: if full { manifest.menus } else { MenuLook::App },
         // Only the effect's wash knows whether it has a menu stage: `ActiveEffect::style`.
         menu_edges: false,
@@ -489,7 +495,7 @@ impl<L> ActiveEffect<L> {
     pub fn style(&self, now: Instant) -> Style {
         let s = style_at(&self.effect.manifest, self.amount(now));
         if self.leaving() {
-            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
+            Style { ink_borders: false, highlights: false, ui_text_bump: 0.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::App, menu_edges: false, terminal_decode: false, terminal_paint: false, ..s }
         } else {
             // The menus' edges cut over with the rest once the effect is fully on.
             Style { menu_edges: self.amount(now) >= 1.0 && has_overlay(&self.effect.wash), ..s }
@@ -602,6 +608,22 @@ mod tests {
     }
 
     #[test]
+    fn the_gap_and_the_pane_radius_come_in_once_the_effect_has_faded_in_and_goes_as_it_leaves() {
+        let material = || manifest::load("material", Path::new("/nonexistent/effects")).unwrap();
+        let m = material().manifest;
+        assert!(m.gap > 0.0);
+        assert_eq!((style_at(&m, 0.5).gap, style_at(&m, 0.5).pane_radius), (0.0, 0.0));
+        assert_eq!((style_at(&m, 1.0).gap, style_at(&m, 1.0).pane_radius), (m.gap, m.pane_radius));
+        assert_eq!(Style::plain().pane_radius, 0.0);
+        assert_eq!(Style::plain().gap, 0.0);
+        let now = Instant::now();
+        let mut leaving = on(material(), now);
+        assert_eq!(leaving.style(now).gap, m.gap);
+        leaving.leave(now);
+        assert_eq!((leaving.style(now).gap, leaving.style(now).pane_radius), (0.0, 0.0));
+    }
+
+    #[test]
     fn the_text_redraws_only_while_a_moving_glyph_shader_is_on_and_seen() {
         assert_eq!(glyph_wait(20, false, true, true, false, false), None);
         assert_eq!(glyph_wait(20, true, false, true, false, false), None);
@@ -659,7 +681,7 @@ mod tests {
     }
 
     fn inputs_at(time: f32) -> inputs::Inputs {
-        inputs::build(&crate::theme::builtin("peach-light").unwrap(), 1.0, (800.0, 600.0), 1.0, time, &[])
+        inputs::build(&crate::theme::builtin("peach-material").unwrap(), 1.0, (800.0, 600.0), 1.0, time, &[])
     }
 
     #[test]
@@ -691,7 +713,7 @@ mod tests {
         // a window out of focus holds it still: `paused`).
         let t0 = Instant::now();
         let e = on(watercolor(), t0);
-        let inputs = super::super::inputs::build(&theme::builtin("peach-light").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
+        let inputs = super::super::inputs::build(&theme::builtin("peach-material").unwrap(), 1.0, (10.0, 10.0), 1.0, 0.0, &[]);
         assert!(e.should_draw(&inputs, false, false, false));
         assert!(!e.should_draw(&inputs, true, false, false), "hidden");
     }
@@ -726,7 +748,7 @@ mod tests {
         assert_eq!(style_at(&m, 0.0), Style::plain());
         assert_eq!(
             style_at(&m, 1.0),
-            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
+            Style { paper_alpha: 0.5, document_paper_alpha: 0.5, chrome_alpha: 0.0, active_tab_alpha: 0.55, ground_alpha: 0.0, ink_borders: true, highlights: true, ui_text_bump: 2.0, title_pad: 0.0, binder: 0.0, gap: 0.0, pane_radius: 0.0, menus: MenuLook::Ink, menu_edges: false, terminal_decode: false, terminal_paint: true }
         );
         let half = style_at(&m, 0.5);
         assert_eq!((half.paper_alpha, half.chrome_alpha, half.ground_alpha), (0.75, 0.5, 0.5));
@@ -1039,7 +1061,7 @@ mod tests {
     #[test]
     fn a_light_theme_s_text_moves_towards_black_and_a_dark_one_s_towards_white() {
         use crate::palette::Rgb;
-        let peach = crate::theme::builtin("peach-light").unwrap();
+        let peach = crate::theme::builtin("peach-material").unwrap();
         assert!(peach.is_light());
         let deep = contrasted(&peach, 0.6);
         let towards = |from: Rgb, to: u8, by: f32| {
@@ -1063,7 +1085,7 @@ mod tests {
 
     #[test]
     fn zero_contrast_leaves_the_theme_as_it_was() {
-        for name in ["peach-light", "navy"] {
+        for name in ["peach-material", "navy"] {
             let t = crate::theme::builtin(name).unwrap();
             assert_eq!(contrasted(&t, 0.0), t);
         }
