@@ -28,6 +28,7 @@ mod explorer_watch;
 mod find;
 mod gitstatus;
 mod grid;
+mod grid_view;
 mod guide;
 mod highlight;
 mod hook_cli;

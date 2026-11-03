@@ -391,7 +391,7 @@ impl Selection {
 /// The text a copy puts on the clipboard: the rectangle's cells tab-separated, a record a line,
 /// no trailing newline. A cell holding a tab, a line break or a double quote is wrapped in double
 /// quotes with its quotes doubled.
-// Task 4 (the grid view) calls this.
+// Task 5 (keys, clipboard and the menu) calls this.
 #[allow(dead_code)]
 pub fn copy_text(sheet: &Sheet, sel: &Selection) -> String {
     let (rows, cols) = sel.rect(sheet);
@@ -419,7 +419,7 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection) -> String {
 
 /// The selection's rectangle with the header row added. Column and all-sheet selections already
 /// have it.
-// Task 4 (the grid view) calls this.
+// Task 5 (keys, clipboard and the menu) calls this.
 #[allow(dead_code)]
 pub fn with_header(sel: &Selection) -> Selection {
     match sel.scope {
@@ -434,7 +434,7 @@ pub fn with_header(sel: &Selection) -> Selection {
 
 /// Every cell whose text contains the needle, case-insensitively, in reading order with the
 /// header first, at most `MAX_HITS`.
-// Task 4 (the grid view) calls this.
+// Task 6 (find over the cells) calls this.
 #[allow(dead_code)]
 pub fn find(sheet: &Sheet, needle: &str) -> Vec<Cell> {
     let needle = needle.to_lowercase();
@@ -457,8 +457,6 @@ pub fn find(sheet: &Sheet, needle: &str) -> Vec<Cell> {
 }
 
 /// The viewer banner for what the caps dropped, `None` when nothing was.
-// Task 4 (the grid view) calls this.
-#[allow(dead_code)]
 pub fn banner(sheet: &Sheet) -> Option<String> {
     let cols = (sheet.cols_dropped > 0).then(|| format!("{} columns past the {}th", thousands(sheet.cols_dropped), thousands(MAX_COLS)));
     match (sheet.truncated, cols) {
@@ -469,8 +467,6 @@ pub fn banner(sheet: &Sheet) -> Option<String> {
     }
 }
 
-// Only `banner` calls this, which Task 4 (the grid view) uses.
-#[allow(dead_code)]
 fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();

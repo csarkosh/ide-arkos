@@ -17,6 +17,7 @@ use crate::terminal_element::{grid_for, Ink, TerminalElement};
 use crate::theme::Theme;
 use crate::tree::{Pane, PaneId, Rect, Tab, TabId, ViewMode};
 use crate::viewer::{self, Content};
+use crate::grid_view::{GridColors, GridElement};
 use crate::viewer_element::{MarkColors, RawColors, ViewerElement};
 use crate::Root;
 use gpui::{
@@ -1153,8 +1154,8 @@ pub fn present_label(presenting: bool) -> &'static str {
 enum Kind {
     Loading,
     Text { plain: Option<crate::viewer::Plain> },
-    /// The grid of a book's active sheet: its name, body rows and columns.
-    Grid { name: String, rows: usize, cols: usize },
+    /// The grid of a book's active sheet, with the banner for what its caps dropped.
+    Grid { banner: Option<String> },
     TooLarge(u64),
     Binary,
     Unreadable(String),
@@ -1180,10 +1181,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
             // A book shows its grid before its content: a workbook's is `Binary`.
-            _ if v.grid_shown() => match v.sheet() {
-                Some(s) => Kind::Grid { name: s.name.clone(), rows: s.rows.len(), cols: s.cols() },
-                None => Kind::Grid { name: String::new(), rows: 0, cols: 0 },
-            },
+            _ if v.grid_shown() => Kind::Grid { banner: v.sheet().and_then(crate::grid::banner) },
             Content::Text { .. } => Kind::Text { plain: v.plain },
             Content::TooLarge(n) => Kind::TooLarge(*n),
             Content::Binary => Kind::Binary,
@@ -1201,10 +1199,17 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let dim = theme.chrome.text_dim.hsla();
     let notice = |text: String| div().size_full().flex().items_center().justify_center().text_color(dim).font_family(family.clone()).text_size(px(font_size)).child(text);
     let kind_is_text = matches!(kind, Kind::Text { .. });
-    let kind_is_grid = matches!(kind, Kind::Grid { .. });
+    let (kind_is_grid, grid_banner) = match &kind {
+        Kind::Grid { banner } => (true, banner.clone()),
+        _ => (false, None),
+    };
     let body = match kind {
-        // A placeholder until the grid's element draws the sheet.
-        Kind::Grid { name, rows, cols } => notice(format!("{name}: {rows} rows, {cols} columns")),
+        Kind::Grid { .. } => {
+            let element = GridElement::new(viewer.clone(), root.prose_family(), family.clone(), GridColors::new(&theme, style), style.ground_alpha, (style.ground_alpha < 1.0).then(|| cx.weak_entity()))
+                .paper_alpha(style.document_paper_alpha)
+                .paper_radius(paper_radius(style));
+            div().size_full().child(element)
+        }
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
             div().size_full().rounded_b(px(paper_radius(style))).bg(theme.chrome.window_bg.alpha(style.document_paper_alpha)).child(element)
@@ -1263,6 +1268,10 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         if let Some(text) = save_error {
             banners.push(banner_row().child(text).child(button("viewer-save-retry", "Retry", Box::new(|v, cx| v.save(cx)))));
         }
+    }
+    // A sheet past the caps says what it left out.
+    if let Some(text) = grid_banner {
+        banners.push(banner_row().child(text));
     }
     if kind_is_text {
         if let Some(why) = read_only {
@@ -1426,6 +1435,19 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             d.on_scroll_wheel(cx.listener(move |root, ev: &ScrollWheelEvent, _window, cx| {
                 root.last_scroll = Some(std::time::Instant::now());
                 v_wheel.update(cx, |v, cx| {
+                    // The grid scrolls both ways: the wheel's y down by rows, its x sideways by
+                    // points, swapped with Shift as a scrolled table's are.
+                    if v.grid_shown() {
+                        let row_h = v.grid_layout.as_ref().map_or(v.font_size * v.line_height, |l| l.row_h);
+                        let (x, y, lines) = match ev.delta {
+                            ScrollDelta::Lines(p) => (p.x, p.y, true),
+                            ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y), false),
+                        };
+                        let (x, y) = if ev.modifiers.shift { (y, x) } else { (x, y) };
+                        let (rows, dx) = if lines { (-y, -x * row_h) } else { (-y / row_h, -x) };
+                        v.grid_scroll_by(rows, dx, cx);
+                        return;
+                    }
                     let line_h = v.font_size * v.line_height;
                     // The wheel's y is positive when the content should move down: scroll up.
                     let lines = match ev.delta {

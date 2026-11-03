@@ -15,6 +15,7 @@ use crate::diff::{self, DiffMarks};
 use crate::edit;
 use crate::find::{FindLook, BAR_TOP};
 use crate::grid;
+use crate::grid_view;
 use crate::highlight::{self, CodeHighlight, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
@@ -138,6 +139,74 @@ pub fn rebuild_lands(applied_then: u64, applied_now: u64, seq_then: u64, seq_now
 pub fn pill_shown(path: &Path, editable: bool, book: Option<&grid::Book>) -> bool {
     let delimited = book.is_some_and(|b| matches!(b.source, grid::Source::Delimited(_)));
     (editable && is_markdown(path)) || (delimited && grid::is_delimited(path))
+}
+
+/// The grid's selection after a press on `hit` (spec 5): a cell selects it, a header its column,
+/// a row number its row, the corner everything, and anywhere else clears it. With `extend`
+/// (Shift) the anchor stays and the head moves to what was pressed.
+pub fn grid_pressed(sel: Option<grid::Selection>, hit: grid_view::Hit, extend: bool) -> Option<grid::Selection> {
+    use grid::{Cell, Scope, Selection};
+    use grid_view::Hit;
+    let (head, scope) = match hit {
+        Hit::Cell(c) => (c, Scope::Cells),
+        Hit::Header(col) => (Cell { row: 0, col }, Scope::Columns),
+        Hit::RowNumber(row) => (Cell { row, col: 0 }, Scope::Rows),
+        Hit::Corner => (Cell { row: 0, col: 0 }, Scope::All),
+        Hit::Outside => return None,
+    };
+    match sel.filter(|_| extend) {
+        // A cell extends as the selection is: `Selection::extend` keeps its scope.
+        Some(s) if scope == Scope::Cells => Some(s.extend(head)),
+        Some(s) => Some(Selection { anchor: s.anchor, head, scope }),
+        None => Some(Selection { anchor: head, head, scope }),
+    }
+}
+
+/// The grid's selection after a drag over `hit` while a press is held: the head moves there and
+/// the selection keeps its scope, so a drag from a header stays columns and one from a row
+/// number rows. Off the grid nothing changes.
+pub fn grid_dragged(sel: Option<grid::Selection>, hit: grid_view::Hit) -> Option<grid::Selection> {
+    use grid::Cell;
+    use grid_view::Hit;
+    let s = sel?;
+    let to = match hit {
+        Hit::Cell(c) => c,
+        Hit::Header(col) => Cell { row: 0, col },
+        Hit::RowNumber(row) => Cell { row, col: s.head.col },
+        Hit::Corner | Hit::Outside => return Some(s),
+    };
+    Some(s.extend(to))
+}
+
+/// The grid's sideways scroll moved by `dx` points, within the columns past the body's width.
+/// Before the first layout it is only kept from going left of the first column.
+pub fn grid_scroll_x_by(x: f32, dx: f32, layout: Option<&grid_view::Layout>) -> f32 {
+    let x = (x + dx).max(0.0);
+    layout.map_or(x, |l| x.min(l.max_scroll_x()))
+}
+
+/// The scroll, in rows down and points across, that shows cell `c` whole in the body by the
+/// least move from `scroll_rows` and `scroll_x`. The header row is always in sight, so a header
+/// cell moves only sideways; a cell wider than the body shows its left edge.
+pub fn grid_reveal(c: grid::Cell, layout: &grid_view::Layout, scroll_rows: f32, scroll_x: f32) -> (f32, f32) {
+    let rows = if c.row == 0 || layout.row_h <= 0.0 {
+        scroll_rows
+    } else {
+        let (top, fit) = ((c.row - 1) as f32, layout.body_h() / layout.row_h);
+        if top < scroll_rows {
+            top
+        } else if top + 1.0 > scroll_rows + fit {
+            (top + 1.0 - fit).max(0.0)
+        } else {
+            scroll_rows
+        }
+    };
+    let x = match (layout.cols.get(c.col), layout.cols.get(c.col + 1)) {
+        (Some(&x0), Some(_)) if x0 < scroll_x => x0,
+        (Some(&x0), Some(&x1)) if x1 > scroll_x + layout.body_w() => (x1 - layout.body_w()).min(x0),
+        _ => scroll_x,
+    };
+    (rows, x.clamp(0.0, layout.max_scroll_x().max(0.0)))
 }
 
 /// Why a markdown file is shown read-only instead of as a document.
@@ -809,6 +878,17 @@ pub struct Viewer {
     pub grid_hits: Vec<grid::Cell>,
     /// Numbers every rebuild of the book from the document's text, so only the latest lands.
     rebuilds: u64,
+    /// Counts every time `book` is replaced, by a load or a rebuild, so the grid measures its
+    /// columns again.
+    pub book_gen: u64,
+    /// The grid's natural column widths and what they were measured at.
+    pub grid_widths: Option<(grid_view::GridWidthsKey, Vec<f32>)>,
+    /// Where the grid was laid out at its last prepaint, for the mouse and the scroll limits.
+    pub grid_layout: Option<grid_view::Layout>,
+    /// The cell under the pointer and since when, for the tooltip of a cut cell.
+    pub grid_hover: Option<(grid::Cell, Instant)>,
+    /// A left press in the grid is held: a move drags the selection.
+    grid_pressing: bool,
 }
 
 /// A video playing in the rendered page: its player, and the size of the poster it took the place
@@ -973,6 +1053,11 @@ impl Viewer {
             grid_scroll_x: 0.0,
             grid_hits: Vec::new(),
             rebuilds: 0,
+            book_gen: 0,
+            grid_widths: None,
+            grid_layout: None,
+            grid_hover: None,
+            grid_pressing: false,
         }
     }
 
@@ -1093,9 +1178,11 @@ impl Viewer {
         sheet_of(self.book.as_ref(), self.sheet)
     }
 
-    /// The furthest the view can scroll: the last row at the top of the viewport.
+    /// The furthest the view can scroll: the last row at the top of the viewport. The grid's
+    /// header is pinned above its body, so there it is the last body row at the body's top.
     pub fn max_scroll(&self) -> f32 {
-        self.row_count().saturating_sub(1) as f32
+        let pinned = usize::from(self.grid_shown());
+        self.row_count().saturating_sub(1 + pinned) as f32
     }
 
     /// The display row `line` is painted on.
@@ -1139,6 +1226,7 @@ impl Viewer {
         // A new book replaces the old; the place in it is kept, within the new sheets. The
         // sideways scroll stays a number the grid clamps against its widths.
         self.book = loaded.book;
+        self.book_gen += 1;
         (self.sheet, self.grid_sel) = grid_place(self.book.as_ref(), self.sheet, self.grid_sel);
         // The old hits point into the old cells.
         self.grid_hits.clear();
@@ -1387,6 +1475,7 @@ impl Viewer {
                         return;
                     }
                     v.book = Some(book);
+                    v.book_gen += 1;
                     (v.sheet, v.grid_sel) = grid_place(v.book.as_ref(), v.sheet, v.grid_sel);
                     v.grid_hits.clear();
                     v.scroll.clamp_max(v.max_scroll());
@@ -1616,6 +1705,85 @@ impl Viewer {
     pub fn scroll_lines(&mut self, lines: f32, cx: &mut Context<Self>) {
         self.scroll.scroll_by(lines, self.max_scroll());
         cx.notify();
+    }
+
+    /// What is under `at`, a point from the grid's top left, as it was last laid out.
+    pub fn grid_hit(&self, at: gpui::Point<f32>) -> grid_view::Hit {
+        match (self.grid_layout.as_ref(), self.sheet()) {
+            (Some(l), Some(s)) => grid_view::hit(at, l, self.scroll.current, self.grid_scroll_x, s),
+            _ => grid_view::Hit::Outside,
+        }
+    }
+
+    /// A left press in the grid (`grid_pressed`); a cell pressed is scrolled whole into view.
+    pub fn grid_press(&mut self, hit: grid_view::Hit, extend: bool, cx: &mut Context<Self>) {
+        self.grid_sel = grid_pressed(self.grid_sel, hit, extend);
+        self.grid_pressing = self.grid_sel.is_some();
+        if let grid_view::Hit::Cell(c) = hit {
+            self.reveal_grid_cell(c);
+        }
+        cx.notify();
+    }
+
+    /// The pointer moved over `hit` with the press held (`grid_dragged`).
+    pub fn grid_drag(&mut self, hit: grid_view::Hit, cx: &mut Context<Self>) {
+        if !self.grid_pressing {
+            return;
+        }
+        let sel = grid_dragged(self.grid_sel, hit);
+        if sel != self.grid_sel {
+            self.grid_sel = sel;
+            if let grid_view::Hit::Cell(c) = hit {
+                self.reveal_grid_cell(c);
+            }
+            cx.notify();
+        }
+    }
+
+    /// The press ended.
+    pub fn grid_release(&mut self) {
+        self.grid_pressing = false;
+    }
+
+    /// The pointer is over `cell`, or off the cells: a new cell starts the tooltip's wait, and
+    /// the grid is drawn again when it is over so a cut cell can show its text.
+    pub fn grid_hover_at(&mut self, cell: Option<grid::Cell>, cx: &mut Context<Self>) {
+        if self.grid_hover.map(|(c, _)| c) == cell {
+            return;
+        }
+        let had_tip = self.grid_hover.is_some_and(|(_, at)| at.elapsed() >= grid_view::TIP_DELAY);
+        self.grid_hover = cell.map(|c| (c, Instant::now()));
+        if had_tip {
+            cx.notify();
+        }
+        if cell.is_some() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(grid_view::TIP_DELAY).await;
+                let _ = this.update(cx, |v, cx| {
+                    if v.grid_hover.is_some_and(|(_, at)| at.elapsed() >= grid_view::TIP_DELAY) {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Scrolls the grid `rows` down (eased, as the text scrolls) and `x` points to the right,
+    /// within its rows and the columns past the body's width.
+    pub fn grid_scroll_by(&mut self, rows: f32, x: f32, cx: &mut Context<Self>) {
+        self.scroll.scroll_by(rows, self.max_scroll());
+        self.grid_scroll_x = grid_scroll_x_by(self.grid_scroll_x, x, self.grid_layout.as_ref());
+        cx.notify();
+    }
+
+    /// Scrolls the grid the least that shows cell `c` whole (`grid_reveal`). Before the grid's
+    /// first layout nothing is known to move.
+    pub fn reveal_grid_cell(&mut self, c: grid::Cell) {
+        let Some(l) = self.grid_layout.as_ref() else { return };
+        let (rows, x) = grid_reveal(c, l, self.scroll.target, self.grid_scroll_x);
+        self.scroll.scroll_by(rows - self.scroll.target, self.max_scroll());
+        self.grid_scroll_x = x;
     }
 
     pub fn open_find(&mut self, cx: &mut Context<Self>) {
@@ -6636,5 +6804,97 @@ mod tests {
         assert_eq!(grid_row_count(None, 0, ViewMode::Rendered), None);
         let wb = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
         assert_eq!(grid_row_count(Some(&wb), 1, ViewMode::Raw), Some(wb.sheets[1].rows.len() + 1), "the active sheet's, in either mode");
+    }
+
+    fn grid_layout() -> grid_view::Layout {
+        // A gutter of 40, a header and rows of 20, three columns 100 wide, in a view 240 by 100:
+        // the body is 200 wide and 80 tall, four rows.
+        grid_view::Layout { gutter_w: 40.0, header_h: 20.0, row_h: 20.0, cols: vec![0.0, 100.0, 200.0, 300.0], view_w: 240.0, view_h: 100.0 }
+    }
+
+    #[test]
+    fn a_press_on_a_cell_selects_it_and_a_drag_extends_it() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let c = |row, col| Cell { row, col };
+        let sel = grid_pressed(None, Hit::Cell(c(2, 1)), false);
+        assert_eq!(sel, Some(Selection::cell(c(2, 1))));
+        let dragged = grid_dragged(sel, Hit::Cell(c(5, 2)));
+        assert_eq!(dragged, Some(Selection { anchor: c(2, 1), head: c(5, 2), scope: Scope::Cells }));
+        assert_eq!(grid_dragged(dragged, Hit::Outside), dragged, "off the grid the drag holds");
+        assert_eq!(grid_dragged(dragged, Hit::Header(0)).map(|s| s.head), Some(c(0, 0)), "over the header it reaches row 0");
+        assert_eq!(grid_dragged(None, Hit::Cell(c(1, 1))), None, "no press, no drag");
+        // Shift+click keeps the anchor; a plain click starts again; a press off the grid clears.
+        let ext = grid_pressed(sel, Hit::Cell(c(4, 0)), true);
+        assert_eq!(ext, Some(Selection { anchor: c(2, 1), head: c(4, 0), scope: Scope::Cells }));
+        assert_eq!(grid_pressed(ext, Hit::Cell(c(1, 1)), false), Some(Selection::cell(c(1, 1))));
+        assert_eq!(grid_pressed(None, Hit::Cell(c(3, 3)), true), Some(Selection::cell(c(3, 3))), "Shift with nothing selected selects the cell");
+        assert_eq!(grid_pressed(ext, Hit::Outside, false), None);
+    }
+
+    #[test]
+    fn a_press_on_a_header_selects_the_column_and_shift_extends_across_columns() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let col = grid_pressed(None, Hit::Header(1), false);
+        assert_eq!(col, Some(Selection { anchor: Cell { row: 0, col: 1 }, head: Cell { row: 0, col: 1 }, scope: Scope::Columns }));
+        let wide = grid_pressed(col, Hit::Header(3), true);
+        assert_eq!(wide, Some(Selection { anchor: Cell { row: 0, col: 1 }, head: Cell { row: 0, col: 3 }, scope: Scope::Columns }), "Shift keeps the anchor column");
+        // A drag from the header stays columns, whichever row it is over.
+        let dragged = grid_dragged(col, Hit::Cell(Cell { row: 7, col: 2 }));
+        assert_eq!(dragged.map(|s| (s.anchor.col, s.head.col, s.scope)), Some((1, 2, Scope::Columns)));
+        let s = delimited_book("a,b,c,d\n1,2,3,4\n5,6,7,8\n", Path::new("/p/x.csv"));
+        let sheet = &s.sheets[0];
+        assert_eq!(wide.unwrap().rect(sheet), (0..=2, 1..=3), "every row of columns 1 to 3, the header included");
+        // Shift on a header from a cell selection keeps the cell's column as the anchor.
+        let from_cell = grid_pressed(Some(Selection::cell(Cell { row: 2, col: 0 })), Hit::Header(2), true).unwrap();
+        assert_eq!((from_cell.rect(sheet).1, from_cell.scope), (0..=2, Scope::Columns));
+    }
+
+    #[test]
+    fn a_press_on_a_row_number_selects_the_row_and_the_corner_selects_all() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let row = grid_pressed(None, Hit::RowNumber(3), false);
+        assert_eq!(row.map(|s| (s.anchor.row, s.head.row, s.scope)), Some((3, 3, Scope::Rows)));
+        let rows = grid_pressed(row, Hit::RowNumber(1), true);
+        assert_eq!(rows.map(|s| (s.anchor.row, s.head.row, s.scope)), Some((3, 1, Scope::Rows)), "Shift extends across rows");
+        let dragged = grid_dragged(row, Hit::Cell(Cell { row: 5, col: 2 }));
+        assert_eq!(dragged.map(|s| (s.anchor.row, s.head.row, s.scope)), Some((3, 5, Scope::Rows)), "a drag from a row number stays rows");
+        let all = grid_pressed(row, Hit::Corner, false).unwrap();
+        assert_eq!(all.scope, Scope::All);
+        let s = delimited_book("a,b\n1,2\n3,4\n", Path::new("/p/x.csv"));
+        let sheet = &s.sheets[0];
+        assert_eq!(all.rect(sheet), (0..=2, 0..=1));
+        assert_eq!(grid_dragged(Some(all), Hit::Cell(Cell { row: 1, col: 1 })).map(|a| a.rect(sheet)), Some((0..=2, 0..=1)), "everything stays everything");
+        assert_eq!(grid_pressed(Some(Selection::cell(Cell { row: 1, col: 1 })), Hit::Corner, true).map(|s| s.scope), Some(Scope::All));
+    }
+
+    #[test]
+    fn grid_scroll_by_clamps_x_to_the_columns_past_the_view() {
+        let l = grid_layout();
+        assert_eq!(grid_scroll_x_by(0.0, 50.0, Some(&l)), 50.0);
+        assert_eq!(grid_scroll_x_by(50.0, 500.0, Some(&l)), 100.0, "300 of columns in a body 200 wide");
+        assert_eq!(grid_scroll_x_by(50.0, -80.0, Some(&l)), 0.0, "never left of the first column");
+        let narrow = grid_view::Layout { cols: vec![0.0, 100.0], ..grid_layout() };
+        assert_eq!(grid_scroll_x_by(0.0, 30.0, Some(&narrow)), 0.0, "columns that fit do not scroll");
+        assert_eq!(grid_scroll_x_by(10.0, 30.0, None), 40.0, "before the first layout: only the left edge holds");
+        assert_eq!(grid_scroll_x_by(10.0, -30.0, None), 0.0);
+    }
+
+    #[test]
+    fn reveal_grid_cell_scrolls_both_ways() {
+        use crate::grid::Cell;
+        let l = grid_layout();
+        let c = |row, col| Cell { row, col };
+        assert_eq!(grid_reveal(c(2, 1), &l, 0.0, 0.0), (0.0, 0.0), "in view: nothing moves");
+        assert_eq!(grid_reveal(c(9, 0), &l, 0.0, 0.0), (5.0, 0.0), "body row 8 of four rows tall: the least move puts it at the bottom");
+        assert_eq!(grid_reveal(c(2, 0), &l, 6.5, 0.0), (1.0, 0.0), "above: to the top");
+        assert_eq!(grid_reveal(c(3, 0), &l, 1.5, 0.0), (1.5, 0.0), "half a row of scroll leaves row 3 whole");
+        assert_eq!(grid_reveal(c(1, 2), &l, 0.0, 0.0), (0.0, 100.0), "right of the body: its right edge to the body's");
+        assert_eq!(grid_reveal(c(1, 0), &l, 0.0, 100.0), (0.0, 0.0), "left of it: its left edge to the body's");
+        assert_eq!(grid_reveal(c(0, 2), &l, 4.0, 0.0), (4.0, 100.0), "a header cell moves only sideways");
+        let wide = grid_view::Layout { cols: vec![0.0, 500.0], ..grid_layout() };
+        assert_eq!(grid_reveal(c(1, 0), &wide, 0.0, 120.0), (0.0, 0.0), "wider than the body: its left edge shows");
     }
 }
