@@ -185,6 +185,36 @@ pub fn grid_row_count(book: Option<&grid::Book>, sheet: usize, mode: ViewMode) -
     grid_shows(book, mode).then(|| sheet_of(book, sheet).map_or(0, |s| s.rows.len() + 1))
 }
 
+/// Where a sheet was left: its scroll down in rows and sideways in points, and its selection.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SheetPlace {
+    pub scroll: f32,
+    pub scroll_x: f32,
+    pub sel: Option<grid::Selection>,
+}
+
+/// The sheet `delta` steps from `cur` among `n`, wrapping at both ends; `None` without sheets.
+pub fn wrap_sheet(cur: usize, delta: isize, n: usize) -> Option<usize> {
+    (n > 0).then(|| (cur as isize + delta).rem_euclid(n as isize) as usize)
+}
+
+/// Leaves sheet `from` (keeping `live` as its place) for sheet `to`, and returns the place to
+/// restore, its selection brought within that sheet. `None`, and nothing kept, for a sheet the
+/// book does not have.
+pub fn swap_sheet_place(places: &mut Vec<SheetPlace>, book: Option<&grid::Book>, from: usize, live: SheetPlace, to: usize) -> Option<SheetPlace> {
+    let sheet = book?.sheets.get(to)?;
+    let n = book.map_or(0, |b| b.sheets.len());
+    if places.len() != n {
+        places.resize(n, SheetPlace::default());
+    }
+    if let Some(slot) = places.get_mut(from) {
+        *slot = live;
+    }
+    let mut next = places[to];
+    next.sel = next.sel.map(|s| s.clamp(sheet));
+    Some(next)
+}
+
 /// The active sheet and the selection kept across a new book: the sheet index brought within the
 /// book's sheets and the selection within that sheet. Without a book, the first sheet and no
 /// selection.
@@ -987,6 +1017,9 @@ pub struct Viewer {
     pub book: Option<grid::Book>,
     /// The active sheet's index in `book`.
     pub sheet: usize,
+    /// Where each sheet was left, by index; the active sheet's is live in `scroll`, `grid_scroll_x`
+    /// and `grid_sel`, and is saved here when another sheet is shown.
+    pub sheet_places: Vec<SheetPlace>,
     /// The grid's selection; `None` until a cell is picked.
     pub grid_sel: Option<grid::Selection>,
     /// How far the grid is scrolled to the right, in points; `scroll` is its rows down.
@@ -1166,6 +1199,7 @@ impl Viewer {
             hidden: Vec::new(),
             book: None,
             sheet: 0,
+            sheet_places: Vec::new(),
             grid_sel: None,
             grid_scroll_x: 0.0,
             grid_hits: Vec::new(),
@@ -1290,6 +1324,36 @@ impl Viewer {
         grid_shows(self.book.as_ref(), self.mode)
     }
 
+    /// How many sheets the book has; none without a book.
+    pub fn sheet_count(&self) -> usize {
+        self.book.as_ref().map_or(0, |b| b.sheets.len())
+    }
+
+    /// Shows sheet `ix`: the one being left keeps its scroll and selection, the new one gets its
+    /// own back, and an open find shows the new sheet's hits. An index past the book is ignored.
+    pub fn set_sheet(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix == self.sheet {
+            return;
+        }
+        let live = SheetPlace { scroll: self.scroll.current, scroll_x: self.grid_scroll_x, sel: self.grid_sel };
+        let Some(next) = swap_sheet_place(&mut self.sheet_places, self.book.as_ref(), self.sheet, live, ix) else { return };
+        self.sheet = ix;
+        self.grid_sel = next.sel;
+        self.grid_scroll_x = next.scroll_x;
+        self.scroll.jump_to(next.scroll);
+        self.scroll.clamp_max(self.max_scroll());
+        self.grid_hits.clear();
+        self.search(false, cx);
+        cx.notify();
+    }
+
+    /// Shows the sheet `delta` away, wrapping at the ends.
+    pub fn step_sheet(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(ix) = wrap_sheet(self.sheet, delta, self.sheet_count()) {
+            self.set_sheet(ix, cx);
+        }
+    }
+
     /// The active sheet, `None` without a book.
     pub fn sheet(&self) -> Option<&grid::Sheet> {
         sheet_of(self.book.as_ref(), self.sheet)
@@ -1345,6 +1409,7 @@ impl Viewer {
         self.book = loaded.book;
         self.book_gen += 1;
         (self.sheet, self.grid_sel) = grid_place(self.book.as_ref(), self.sheet, self.grid_sel);
+        self.sheet_places = vec![SheetPlace::default(); self.sheet_count()];
         // The old hits point into the old cells.
         self.grid_hits.clear();
         self.fingerprint = loaded.fingerprint;
@@ -1597,6 +1662,7 @@ impl Viewer {
                     v.book = Some(book);
                     v.book_gen += 1;
                     (v.sheet, v.grid_sel) = grid_place(v.book.as_ref(), v.sheet, v.grid_sel);
+                    v.sheet_places = vec![SheetPlace::default(); v.sheet_count()];
                     v.grid_hits.clear();
                     v.search(false, cx);
                     v.scroll.clamp_max(v.max_scroll());
@@ -5583,6 +5649,20 @@ impl Root {
 
     /// Presentation mode on or off in a markdown tab, in the layout (saved with the tab) and in its
     /// viewer: from Raw it shows Rendered too, since only the rendered view presents.
+    /// The next sheet of the viewer tab's workbook (Cmd+Option+]).
+    pub fn next_sheet_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| v.step_sheet(1, cx));
+        }
+    }
+
+    /// The previous sheet (Cmd+Option+[).
+    pub fn previous_sheet_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        if let Some(v) = self.viewers.get(&tab).cloned() {
+            v.update(cx, |v, cx| v.step_sheet(-1, cx));
+        }
+    }
+
     pub fn toggle_presentation_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
         let Some(Tab::Viewer { path, mode, presenting }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
@@ -7042,6 +7122,41 @@ mod tests {
         assert_eq!(grid_row_count(None, 0, ViewMode::Rendered), None);
         let wb = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
         assert_eq!(grid_row_count(Some(&wb), 1, ViewMode::Raw), Some(wb.sheets[1].rows.len() + 1), "the active sheet's, in either mode");
+    }
+
+    fn two_sheets() -> crate::grid::Book {
+        crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap()
+    }
+
+    #[test]
+    fn step_sheet_wraps_and_keeps_each_sheet_s_scroll_and_selection() {
+        use crate::grid::{Cell, Selection};
+        let book = two_sheets();
+        let n = book.sheets.len();
+        assert!(n > 1);
+        assert_eq!(wrap_sheet(0, 1, n), Some(1));
+        assert_eq!(wrap_sheet(n - 1, 1, n), Some(0), "past the last wraps to the first");
+        assert_eq!(wrap_sheet(0, -1, n), Some(n - 1), "before the first wraps to the last");
+        assert_eq!(wrap_sheet(0, 1, 0), None);
+        let mut places = vec![SheetPlace::default(); n];
+        let sel = Selection::cell(Cell { row: 1, col: 0 });
+        let live = SheetPlace { scroll: 2.0, scroll_x: 30.0, sel: Some(sel) };
+        let next = swap_sheet_place(&mut places, Some(&book), 0, live, 1).expect("a place");
+        assert_eq!(next, SheetPlace::default(), "a sheet not visited starts at the top");
+        let back = swap_sheet_place(&mut places, Some(&book), 1, SheetPlace { scroll: 5.0, ..next }, 0).expect("a place");
+        assert_eq!((back.scroll, back.scroll_x, back.sel), (2.0, 30.0, Some(sel)), "the first sheet's place came back");
+        assert_eq!(places[1].scroll, 5.0, "and the second's was kept");
+    }
+
+    #[test]
+    fn set_sheet_ignores_an_index_past_the_book() {
+        let book = two_sheets();
+        let mut places = vec![SheetPlace::default(); book.sheets.len()];
+        let before = places.clone();
+        let live = SheetPlace { scroll: 4.0, scroll_x: 1.0, sel: None };
+        assert_eq!(swap_sheet_place(&mut places, Some(&book), 0, live, book.sheets.len()), None);
+        assert_eq!(places, before, "nothing was saved");
+        assert_eq!(swap_sheet_place(&mut places, None, 0, live, 0), None, "no book, no sheets");
     }
 
     fn grid_layout() -> grid_view::Layout {

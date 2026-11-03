@@ -2842,6 +2842,11 @@ impl Root {
                     self.toggle_presentation_for(t, cx);
                 }
             }
+            NextSheet | PreviousSheet => {
+                if let Some(t) = self.active_viewer_tab() {
+                    if matches!(cmd, NextSheet) { self.next_sheet_for(t, cx) } else { self.previous_sheet_for(t, cx) }
+                }
+            }
             FoldAll | UnfoldAll => {
                 if let Some(v) = self.active_viewer() {
                     let all = matches!(cmd, FoldAll);

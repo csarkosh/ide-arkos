@@ -85,6 +85,8 @@ command = [
     "fold_all",
     "unfold_all",
     "toggle_presentation",
+    "next_sheet",
+    "previous_sheet",
     "open_folder",
     "new_window",
     "new_browser_tab",

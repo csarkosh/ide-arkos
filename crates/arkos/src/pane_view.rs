@@ -1117,6 +1117,53 @@ pub struct Strip {
 
 /// What the strip above a grid holds: a delimited file's always has the pill that switches it to
 /// its text, a workbook's only the banner, and a workbook with nothing dropped has no strip.
+/// The key context of a viewer tab: `Markdown` adds the formatting keys for a markdown document,
+/// `Sheets` the sheet keys for a workbook of more than one sheet (which has no document, so the
+/// two never meet).
+pub fn viewer_key_context(has_doc: bool, markdown: bool, sheets: usize) -> &'static str {
+    if has_doc && markdown {
+        "Viewer Markdown"
+    } else if sheets > 1 {
+        "Viewer Sheets"
+    } else {
+        "Viewer"
+    }
+}
+
+/// The strip of sheet tabs under a workbook's grid: the tab bar's family and ground, the active
+/// sheet underlined in the focus ring, a long strip scrolling sideways. A click shows the sheet.
+fn sheet_strip(viewer: &gpui::Entity<viewer::Viewer>, names: &[String], active: usize, theme: &Theme, style: Style, family: gpui::SharedString, cx: &mut Context<Root>) -> Stateful<Div> {
+    let c = &theme.chrome;
+    let mut strip = div()
+        .id(("sheet-strip", viewer.entity_id()))
+        .flex_none()
+        .w_full()
+        .flex()
+        .flex_row()
+        .overflow_x_scroll()
+        .bg(c.tab_bar.alpha(style.chrome_alpha))
+        .font_family(family)
+        .text_size(px(style.ui(12.0)));
+    for (i, name) in names.iter().enumerate() {
+        let v = viewer.clone();
+        let on = i == active;
+        strip = strip.child(
+            div()
+                .id(("sheet-tab", i))
+                .flex_none()
+                .px(px(10.0))
+                .py(px(5.0))
+                .border_b_2()
+                .border_color(if on { c.focus_ring.hsla() } else { gpui::transparent_black() })
+                .text_color(if on { c.text.hsla() } else { c.text_dim.hsla() })
+                .cursor_pointer()
+                .child(name.clone())
+                .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v.update(cx, |v, cx| v.set_sheet(i, cx)))),
+        );
+    }
+    strip
+}
+
 pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
     (delimited || banner.is_some()).then_some(Strip { banner, pill: delimited })
 }
@@ -1189,7 +1236,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
     let family = root.family();
     let presenting = viewer.read(cx).presenting;
     let markdown = viewer::is_markdown(path);
-    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited) = {
+    let (focus, kind, font_size, has_changes, inline, find_open, mode, editable, has_doc, conflict, save_error, read_only, pill_shown, delimited, sheet_count) = {
         let v = viewer.read(cx);
         let kind = match &v.content {
             _ if !v.loaded => Kind::Loading,
@@ -1204,7 +1251,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         let editable = v.doc.is_some() && v.read_only.is_none();
         let pill_shown = viewer::pill_shown(path, editable, v.book.as_ref());
         let delimited = v.book.as_ref().is_some_and(|b| matches!(b.source, crate::grid::Source::Delimited(_)));
-        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited)
+        (v.focus.clone(), kind, v.font_size, v.diff.as_ref().is_some_and(|d| d.has_changes()), v.inline_diff, v.find.is_some(), v.mode, editable, v.doc.is_some(), v.conflict, v.save_error.clone(), v.read_only, pill_shown, delimited, v.sheet_count())
     };
     // The rendered page and presentation are markdown's; a delimited file's pill switches to its
     // grid instead.
@@ -1221,7 +1268,12 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             let element = GridElement::new(viewer.clone(), root.prose_family(), family.clone(), GridColors::new(&theme, style), style.ground_alpha, (style.ground_alpha < 1.0).then(|| cx.weak_entity()))
                 .paper_alpha(style.document_paper_alpha)
                 .paper_radius(paper_radius(style));
-            div().size_full().child(element)
+            // A workbook of several sheets has its tabs under the grid, which shrinks by their height.
+            let sheets = { let v = viewer.read(cx); (v.sheet_count() > 1).then(|| (v.book.iter().flat_map(|b| b.sheets.iter().map(|s| s.name.clone())).collect::<Vec<_>>(), v.sheet)) };
+            match sheets {
+                Some((names, active)) => div().size_full().flex().flex_col().child(div().flex_1().min_h_0().child(element)).child(sheet_strip(&viewer, &names, active, &theme, style, family.clone(), cx)),
+                None => div().size_full().child(element),
+            }
         }
         Kind::Text { .. } if rendered => {
             let element = md_view::render(&viewer, &theme, root.prose_family(), family.clone(), font_size, root.highlighter.clone(), root.config.viewer.highlight_limit_bytes, root.config.viewer.wide_tables, root.config.viewer.page_width, style, cx.weak_entity(), cx);
@@ -1401,7 +1453,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         .relative()
         // A markdown document adds `Markdown`, where Cmd+B and Cmd+I format text; in a code
         // document Cmd+B toggles the sidebar as everywhere else.
-        .key_context(if has_doc && markdown { "Viewer Markdown" } else { "Viewer" })
+        .key_context(viewer_key_context(has_doc, markdown, sheet_count))
         .track_focus(&focus)
         .on_key_down(cx.listener(move |root, ev: &KeyDownEvent, _window, cx| {
             let ks = &ev.keystroke;
@@ -1620,6 +1672,15 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_key_context_adds_sheets_only_for_a_workbook_with_more_than_one_sheet() {
+        assert_eq!(viewer_key_context(true, true, 0), "Viewer Markdown");
+        assert_eq!(viewer_key_context(true, false, 0), "Viewer");
+        assert_eq!(viewer_key_context(false, false, 1), "Viewer", "one sheet has nothing to switch to");
+        assert_eq!(viewer_key_context(false, false, 2), "Viewer Sheets");
+        assert_eq!(viewer_key_context(false, false, 0), "Viewer");
+    }
 
     #[test]
     fn on_a_rounded_card_a_terminal_s_text_keeps_a_margin_from_the_card_s_sides() {
