@@ -510,6 +510,9 @@ Things only a person at the screen can check, in order of value:
   ripple, and, while a pane's Claude session works, a thin progress
   bar sweeping along the bottom of its tab strip; a terminal's text four points in from its card's
   sides; the text is plain DM Sans and Roboto Mono
+- markdown, diagrams: with System Settings > Appearance > Show scroll bars set to Always, a
+  Mermaid diagram (a bar chart's last bar and its label, a flowchart's right-most box) is drawn
+  to its right edge, with no strip missing where a scroll bar would sit
 - terminal, block elements: a status line's context bar (`█░░░ 6%`) is a seamless bar of
   cells with its percentage clear after it, under Roboto Mono (Material) as under Menlo; a
   prompt's `❯` and `─` rules sit in their cells

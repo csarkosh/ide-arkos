@@ -39,7 +39,12 @@ jobs:
           sw_vers
           swift scripts/shoot/display.swift
           swift scripts/shoot/display.swift best
-          for f in Baskerville Optima "PT Mono"; do
+          # The fonts the built-in themes name that macOS does not ship (docs/themes.md), so each
+          # theme's picture is in its own type: Material's DM Sans and Roboto Mono, Lavender's
+          # Cascadia Code, Composition Notebook's Monaspace Radon. Without them a theme falls back
+          # to the system's, as on a Mac without them.
+          brew install --quiet --cask font-dm-sans font-roboto-mono font-cascadia-code font-monaspace || echo "a theme font did not install"
+          for f in Baskerville Optima "PT Mono" "Avenir Next" "Chalkboard SE" "DM Sans" "Roboto Mono" "Cascadia Code" "Monaspace Radon"; do
             system_profiler SPFontsDataType 2>/dev/null | grep -q "Full Name: $f" && echo "font: $f" || echo "font missing: $f"
           done
           # Reduce Motion stills the effects (no rain falling, no decode on changed text), and the

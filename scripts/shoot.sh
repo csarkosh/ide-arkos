@@ -128,11 +128,13 @@ PLIST
   done
 fi
 
-# The hero, from the stills that exist: the multi tasker in front, the others behind. Only the
-# dark stills are kept, so only the dark hero is made.
+# The hero, from the stills that exist: the multi tasker in front, every other persona behind it
+# (every story but those that say persona = false, as the opening clip takes them, by name), so a
+# persona added later is in it too. Only the dark stills are kept, so only the dark hero is made.
+PERSONAS=$(for F in "$STORIES"/*.toml; do grep -q '^persona = false' "$F" || basename "$F" .toml; done | grep -vx multitasker | sort)
 for THEME in dark; do
   set --
-  for SCENE in multitasker web-developer blogger; do
+  for SCENE in multitasker $PERSONAS; do
     STILL="$OUT/$SCENE-$THEME.png"
     [ -f "$STILL" ] || continue
     CAPTION=$(sed -n 's/^caption = "\(.*\)"$/\1/p' "$STORIES/$SCENE.toml")

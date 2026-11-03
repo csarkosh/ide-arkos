@@ -3,7 +3,7 @@
 <p align="center">Run many Claude Code sessions side by side, and never lose one.</p>
 
 <picture>
-  <img alt="Three Arkos IDE windows fanned out like postcards. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the web developer with the app's page in a web tab, and the blogger with posts open in the markdown editor" src="docs/images/hero-dark.png" width="900">
+  <img alt="Six Arkos IDE windows fanned out like postcards, each in its own theme. In front, the multi tasker: three Claude Code sessions side by side, each running its own subagents on an unrelated project. Behind, the blogger with a launch plan in the markdown editor, the data analyst with a weekly report and its chart, the hacker hardening a service in Matrix green, the student with lecture notes on a ruled notebook page, and the web developer with the app's page in a web tab" src="docs/images/hero-dark.png" width="900">
 </picture>
 
 <p align="center">
