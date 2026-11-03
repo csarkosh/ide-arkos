@@ -27,6 +27,8 @@ constant float PILL_INSET = 8.0;
 // rounded card the app centres the number in an 18 point slot 10 points in
 // (`pane_view::number_slot`), and the chip fills that slot.
 constant float CHIP_X = 19.0;
+// The pane's own one point border, inside its tab bar and body blocks.
+constant float PANE_BORDER = 1.0;
 constant float CHIP_R = 9.0;
 constant float CHIP_TONE = 0.28;
 // The tab indicator: its height, and its inset from the tab's ends (the tab's own padding, so it
@@ -192,7 +194,9 @@ fragment float4 arkos_wash(ArkosVertex in [[stage_in]], constant ArkosInputs& u 
                     col = mix(col, u.colors[ARKOS_BORDER].rgb, hair * on * k);
                     // The pane's number on its chip.
                     float3 hue = u.colors[ARKOS_ANSI + PANE_HUES[max(int(blk.ordinal), 0) % 4]].rgb;
-                    float dc = length(p - float2(r.x + CHIP_X, r.y + r.w * 0.5)) - CHIP_R;
+                    // The app lays the strip out inside the pane's border, so its slot (and the
+                    // number centred on it) sits that far in from the block's corner.
+                    float dc = length(p - float2(r.x + PANE_BORDER + CHIP_X, r.y + PANE_BORDER + r.w * 0.5)) - CHIP_R;
                     col = mix(col, container(u, hue, CHIP_TONE, card), (1.0 - smoothstep(-0.5, 0.5, dc)) * k);
                     // A busy pane's indicator along the bottom of its strip.
                     if (blk.busy > 0.5 && p.y >= r.y + r.w - TRACK_H) {

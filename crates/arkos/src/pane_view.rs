@@ -52,6 +52,42 @@ pub fn terminal_inset(style: crate::effects::active::Style) -> f32 {
 pub const NUMBER_SLOT_INSET: f32 = 10.0;
 pub const NUMBER_SLOT_W: f32 = 18.0;
 
+/// Where to paint a line whose ink runs from `ink.0` to `ink.1` points past its origin across,
+/// whose figures are `cap` points tall on the baseline and whose ascent is `ascent`, so its ink
+/// is centred on `centre`: the origin, painted with a line height of its ascent and descent.
+pub fn centred_origin(centre: (f32, f32), ink: (f32, f32), cap: f32, ascent: f32) -> (f32, f32) {
+    let x = centre.0 - (ink.0 + ink.1) / 2.0;
+    let baseline = centre.1 + cap / 2.0;
+    (x, baseline - ascent)
+}
+
+/// Paints `text` in `bounds` with its ink centred there, on its cap height down and its glyphs'
+/// own bounds across, so a number sits in the middle of a chip drawn on the same bounds rather
+/// than where its line box would put it.
+fn paint_centred(text: &gpui::SharedString, family: gpui::SharedString, size: f32, color: gpui::Hsla, bounds: gpui::Bounds<gpui::Pixels>, window: &mut gpui::Window, cx: &mut gpui::App) {
+    let f = gpui::font(family);
+    let run = gpui::TextRun { len: text.len(), font: f.clone(), color, background_color: None, underline: None, strikethrough: None };
+    let ts = window.text_system().clone();
+    let line = ts.shape_line(text.clone(), px(size), &[run], None);
+    let cap = f32::from(ts.cap_height(ts.resolve_font(&f), px(size)));
+    let mut ink = (f32::MAX, f32::MIN);
+    for run in &line.runs {
+        for g in &run.glyphs {
+            let ch = text.get(g.index..).and_then(|s| s.chars().next()).unwrap_or('0');
+            if let Ok(b) = ts.typographic_bounds(run.font_id, px(size), ch) {
+                let x0 = f32::from(g.position.x + b.origin.x);
+                ink = (ink.0.min(x0), ink.1.max(x0 + f32::from(b.size.width)));
+            }
+        }
+    }
+    if ink.0 > ink.1 {
+        ink = (0.0, f32::from(line.width));
+    }
+    let centre = (f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.0, f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.0);
+    let (x, y) = centred_origin(centre, ink, cap, f32::from(line.ascent));
+    let _ = line.paint(gpui::point(px(x), px(y)), line.ascent + line.descent, window, cx);
+}
+
 /// Where the pane number sits under `style`: Some((inset, width)) on a rounded card, None for
 /// the plain eight points of padding.
 pub fn number_slot(style: crate::effects::active::Style) -> Option<(f32, f32)> {
@@ -649,7 +685,11 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
         .font_family(root.ui_family())
         .text_size(px(style.ui(12.0)))
         .child(match number_slot(style) {
-            Some((inset, width)) => div().flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).flex().justify_center().text_color(dim.hsla()).child(format!("{number}")),
+            // Painted with its ink centred on the slot, which is the chip's place.
+            Some((inset, width)) => {
+                let (label, family, size, color): (gpui::SharedString, _, _, _) = (format!("{number}").into(), root.ui_family(), style.ui(12.0), dim.hsla());
+                div().flex_none().ml(px(inset)).mr(px(6.0)).w(px(width)).h_full().child(gpui::canvas(|_, _, _| (), move |b, _, window, cx| paint_centred(&label, family.clone(), size, color, b, window, cx)).size_full())
+            }
             None => div().px(px(8.0)).text_color(dim.hsla()).child(format!("{number}")),
         })
         .on_drag_move(cx.listener(move |root, ev: &DragMoveEvent<drag::TabDrag>, _window, cx| {
@@ -1525,6 +1565,16 @@ mod tests {
         assert_eq!(terminal_inset(style), 0.0, "a square pane's text runs to its edge as ever");
         style.pane_radius = 14.0;
         assert_eq!(terminal_inset(style), 2.0);
+    }
+
+    #[test]
+    fn the_pane_number_s_ink_is_centred_on_its_slot_by_its_cap_height_and_its_ink_width() {
+        // A digit whose ink runs from 1 to 6 points past its origin, 9 points tall on the
+        // baseline, in a line with a 12 point ascent, centred on (19, 15).
+        let (x, y) = centred_origin((19.0, 15.0), (1.0, 6.0), 9.0, 12.0);
+        assert_eq!(x + 1.0 + (6.0 - 1.0) / 2.0, 19.0, "the ink's middle on the centre across");
+        let baseline = y + 12.0;
+        assert_eq!(baseline - 9.0 / 2.0, 15.0, "the cap height's middle on the centre down");
     }
 
     #[test]

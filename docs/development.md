@@ -497,7 +497,7 @@ Things only a person at the screen can check, in order of value:
   bar as one pale frame with a search-bar pill round the title's words, each pane as a white card
   with rounded corners and the frame showing eight points round it (between panes, under the
   bars and at the window's edges; the cards close up with `effect.name none`), a hairline under
-  each tab strip, the pane's number on a round chip (blue, green, yellow, red by pane), each
+  each tab strip, the pane's number on a round chip (blue, green, yellow, red by pane), the digit in the chip's middle, each
   pane's active tab underlined in blue under its label (moving with a click on another tab), the
   selected Explorer row as a light blue pill inset from the sidebar's edges (the same width at any
   indent) with a ripple as it is clicked, a hovered row or tab as a quiet grey pill with no

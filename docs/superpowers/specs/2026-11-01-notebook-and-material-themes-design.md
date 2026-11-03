@@ -177,6 +177,13 @@ Android default; Google's own web workspaces wear a different Material. This pas
   touched it). On a rounded card the terminal now sits 2 points in from the card's left and right
   sides (`pane_view::terminal_inset`), as Cyrus asked.
 
+- **The number in the chip's middle.** Cyrus saw the digit off the chip's centre. Two causes:
+  the wash placed the chip from the tab bar block's corner, while the app lays the strip out
+  inside the pane's one point border (`PANE_BORDER` now moves the chip with it); and flexbox
+  centres a line box, not the digit's ink. The number is now painted with its ink centred on its
+  slot: across by its glyphs' own bounds, down by the font's cap height
+  (`pane_view::centred_origin`).
+
 ## The notebook's app bar, in two
 
 Cyrus asked for the label behind the title bar's contents to be split in two, so more of the
