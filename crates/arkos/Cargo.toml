@@ -34,8 +34,9 @@ similar = "2"
 pulldown-cmark.workspace = true
 # Already in the tree through gpui and others: grapheme boundaries for the editing core.
 unicode-segmentation = "1"
-# Already in the tree through other crates: display widths for re-aligning markdown tables.
+# Already in the tree through gpui: decoding a UTF-16 CSV by its byte order mark (grid.rs).
 encoding_rs = "0.8"
+# Already in the tree through other crates: display widths for re-aligning markdown tables.
 unicode-width = "0.2"
 # The browser pane (spec 8): Chrome's pid, the mouse, the screens and arkos's own window. Default
 # features off: the full AppKit binding is a long compile, and only these modules are used.

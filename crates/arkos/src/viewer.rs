@@ -215,6 +215,12 @@ pub fn swap_sheet_place(places: &mut Vec<SheetPlace>, book: Option<&grid::Book>,
     Some(next)
 }
 
+/// The places kept across a new book: those of the sheets still there stay, the rest are dropped,
+/// and a sheet that is new starts at the top.
+pub fn keep_sheet_places(places: &mut Vec<SheetPlace>, sheets: usize) {
+    places.resize(sheets, SheetPlace::default());
+}
+
 /// The active sheet and the selection kept across a new book: the sheet index brought within the
 /// book's sheets and the selection within that sheet. Without a book, the first sheet and no
 /// selection.
@@ -309,7 +315,7 @@ pub fn grid_right_pressed(sel: Option<grid::Selection>, hit: grid_view::Hit, she
 /// row added when asked, `None` without a selection.
 pub fn grid_copy_text(sheet: &grid::Sheet, sel: Option<&grid::Selection>, with_header: bool) -> Option<String> {
     let sel = sel?.clamp(sheet);
-    Some(grid::copy_text(sheet, &if with_header { grid::with_header(&sel) } else { sel }))
+    Some(grid::copy_text(sheet, &sel, with_header))
 }
 
 /// The grid's sideways scroll moved by `dx` points, within the columns past the body's width.
@@ -1409,7 +1415,8 @@ impl Viewer {
         self.book = loaded.book;
         self.book_gen += 1;
         (self.sheet, self.grid_sel) = grid_place(self.book.as_ref(), self.sheet, self.grid_sel);
-        self.sheet_places = vec![SheetPlace::default(); self.sheet_count()];
+        let sheets = self.sheet_count();
+        keep_sheet_places(&mut self.sheet_places, sheets);
         // The old hits point into the old cells.
         self.grid_hits.clear();
         self.fingerprint = loaded.fingerprint;
@@ -1662,7 +1669,8 @@ impl Viewer {
                     v.book = Some(book);
                     v.book_gen += 1;
                     (v.sheet, v.grid_sel) = grid_place(v.book.as_ref(), v.sheet, v.grid_sel);
-                    v.sheet_places = vec![SheetPlace::default(); v.sheet_count()];
+                    let sheets = v.sheet_count();
+                    keep_sheet_places(&mut v.sheet_places, sheets);
                     v.grid_hits.clear();
                     v.search(false, cx);
                     v.scroll.clamp_max(v.max_scroll());
@@ -7146,6 +7154,18 @@ mod tests {
         let back = swap_sheet_place(&mut places, Some(&book), 1, SheetPlace { scroll: 5.0, ..next }, 0).expect("a place");
         assert_eq!((back.scroll, back.scroll_x, back.sel), (2.0, 30.0, Some(sel)), "the first sheet's place came back");
         assert_eq!(places[1].scroll, 5.0, "and the second's was kept");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_other_sheets_places_and_drops_those_of_sheets_that_are_gone() {
+        let kept = SheetPlace { scroll: 7.0, scroll_x: 3.0, sel: None };
+        let mut places = vec![SheetPlace::default(), kept, kept];
+        keep_sheet_places(&mut places, 3);
+        assert_eq!(places, vec![SheetPlace::default(), kept, kept], "the same count keeps every place");
+        keep_sheet_places(&mut places, 2);
+        assert_eq!(places, vec![SheetPlace::default(), kept], "fewer sheets truncate");
+        keep_sheet_places(&mut places, 3);
+        assert_eq!(places, vec![SheetPlace::default(), kept, SheetPlace::default()], "a new sheet starts at the top");
     }
 
     #[test]

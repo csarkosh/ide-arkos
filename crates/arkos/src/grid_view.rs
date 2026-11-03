@@ -77,12 +77,15 @@ pub fn row_range(scroll_rows: f32, view_h: f32, row_h: f32, rows: usize) -> Rang
 /// What a cell shows: its first line, cut at `MAX_CELL_CHARS` chars, and whether anything was
 /// left out.
 pub fn visible_prefix(text: &str) -> (&str, bool) {
-    let line = text.find(['\n', '\r']).map_or(text, |end| &text[..end]);
-    let broke = line.len() < text.len();
-    match line.char_indices().nth(MAX_CELL_CHARS) {
-        Some((end, _)) => (&line[..end], true),
-        None => (line, broke),
-    }
+    let cut = cap_chars(text);
+    let line = cut.find(['\n', '\r']).map_or(cut, |end| &cut[..end]);
+    (line, line.len() < text.len())
+}
+
+/// The first `MAX_CELL_CHARS` chars of a cell's text, cut on a char boundary without reading
+/// further.
+pub fn cap_chars(text: &str) -> &str {
+    text.char_indices().nth(MAX_CELL_CHARS).map_or(text, |(end, _)| &text[..end])
 }
 
 /// What is under a point of the grid.
@@ -153,7 +156,7 @@ const HIT_ALPHA: f32 = 0.45;
 /// wrapped at `TIP_WRAP` characters (at a space when there is one), at most `TIP_LINES` of them,
 /// the last ending in an ellipsis when more was left out.
 pub fn tip_lines(text: &str) -> Vec<String> {
-    let text = text.char_indices().nth(MAX_CELL_CHARS).map_or(text, |(end, _)| &text[..end]);
+    let text = cap_chars(text);
     let mut out: Vec<String> = Vec::new();
     for line in text.lines() {
         let mut rest: Vec<char> = line.trim_end_matches('\r').chars().collect();
@@ -417,7 +420,7 @@ fn frame_of(sheet: &Sheet, layout: Layout, scroll_rows: f32, scroll_x: f32, sel:
     let body = rows.clone().map(|r| cols.clone().map(|col| text(Cell { row: r + 1, col })).collect()).collect();
     let seen = |c: &Cell| (c.row == 0 || (rows.start < c.row && c.row <= rows.end)) && cols.contains(&c.col);
     let hits = hits.iter().filter(|c| seen(c)).map(|c| (*c, Some(*c) == current)).collect();
-    let tip = tip.filter(seen).map(|c| (c, sheet.text(c).to_string()));
+    let tip = tip.filter(seen).map(|c| (c, cap_chars(sheet.text(c)).to_string()));
     Frame { layout, scroll_rows, scroll_x, rows, cols, header, numeric, body, first_row: sheet.first_row, sel, sel_rect: sel.map(|s| s.rect(sheet)), hits, tip, font_size, animating }
 }
 
@@ -908,6 +911,18 @@ mod tests {
         assert_eq!(shown.chars().count(), MAX_CELL_CHARS, "cut by chars, on a char boundary");
         let exact = "a".repeat(MAX_CELL_CHARS);
         assert_eq!(visible_prefix(&exact), (exact.as_str(), false), "at the limit nothing is cut");
+    }
+
+    #[test]
+    fn a_ten_thousand_char_cell_is_cut_to_its_cap_for_the_cell_and_the_tooltip() {
+        let huge = "z".repeat(10_000);
+        let (shown, cut) = visible_prefix(&huge);
+        assert_eq!(shown.chars().count(), MAX_CELL_CHARS);
+        assert!(huge.starts_with(shown) && cut);
+        assert_eq!(cap_chars(&huge).len(), MAX_CELL_CHARS, "the tooltip keeps only the capped prefix");
+        let wide = "\u{e9}".repeat(10_000);
+        assert_eq!(cap_chars(&wide).chars().count(), MAX_CELL_CHARS);
+        assert_eq!(cap_chars("short"), "short");
     }
 
     #[test]

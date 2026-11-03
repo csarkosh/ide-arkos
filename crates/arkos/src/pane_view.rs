@@ -1106,8 +1106,6 @@ pub const PILL_W: f32 = 104.0;
 /// The width of the inline-diff chip: fixed, so a markdown tab's banners can keep clear of it.
 pub const CHIP_W: f32 = 100.0;
 
-/// How far from the pane's right edge a markdown tab's banners keep their text, clear of the mode
-/// pill (`pill`) and the inline-diff chip (`chip`) drawn over the top right.
 /// The strip above a grid: the caps' banner at its left and the mode pill at its right.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Strip {
@@ -1168,6 +1166,8 @@ pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
     (delimited || banner.is_some()).then_some(Strip { banner, pill: delimited })
 }
 
+/// How far from the pane's right edge a markdown tab's banners keep their text, clear of the mode
+/// pill (`pill`) and the inline-diff chip (`chip`) drawn over the top right.
 pub fn banner_right_pad(pill: bool, chip: bool) -> f32 {
     match (pill, chip) {
         (true, true) => 14.0 + PILL_W + 8.0 + CHIP_W + 8.0,

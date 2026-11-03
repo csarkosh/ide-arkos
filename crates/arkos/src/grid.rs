@@ -391,14 +391,17 @@ impl Selection {
 
 /// The text a copy puts on the clipboard: the rectangle's cells tab-separated, a record a line,
 /// no trailing newline. A cell holding a tab, a line break or a double quote is wrapped in double
-/// quotes with its quotes doubled.
-pub fn copy_text(sheet: &Sheet, sel: &Selection) -> String {
+/// quotes with its quotes doubled. With `header`, the header row for the rectangle's columns
+/// comes first unless the rectangle already starts at it.
+pub fn copy_text(sheet: &Sheet, sel: &Selection, header: bool) -> String {
     let (rows, cols) = sel.rect(sheet);
     let mut out = String::new();
-    for r in rows {
-        if r != *sel.rect(sheet).0.start() {
+    let mut first = true;
+    let mut record = |out: &mut String, r: usize| {
+        if !first {
             out.push('\n');
         }
+        first = false;
         for c in cols.clone() {
             if c != *cols.start() {
                 out.push('\t');
@@ -412,21 +415,14 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection) -> String {
                 out.push_str(text);
             }
         }
+    };
+    if header && *rows.start() > 0 {
+        record(&mut out, 0);
+    }
+    for r in rows {
+        record(&mut out, r);
     }
     out
-}
-
-/// The selection's rectangle with the header row added. Column and all-sheet selections already
-/// have it.
-pub fn with_header(sel: &Selection) -> Selection {
-    match sel.scope {
-        Scope::Columns | Scope::All => *sel,
-        Scope::Cells | Scope::Rows => Selection {
-            anchor: Cell { row: 0, col: sel.anchor.col },
-            head: Cell { row: sel.anchor.row.max(sel.head.row), col: sel.head.col },
-            scope: sel.scope,
-        },
-    }
 }
 
 /// Every cell whose text contains the needle, case-insensitively, in reading order with the
@@ -453,7 +449,7 @@ pub fn find(sheet: &Sheet, needle: &str) -> Vec<Cell> {
 
 /// The viewer banner for what the caps dropped, `None` when nothing was.
 pub fn banner(sheet: &Sheet) -> Option<String> {
-    let cols = (sheet.cols_dropped > 0).then(|| format!("{} columns past the {}th", thousands(sheet.cols_dropped), thousands(MAX_COLS)));
+    let cols = (sheet.cols_dropped > 0).then(|| format!("{} {} past the {}th", thousands(sheet.cols_dropped), if sheet.cols_dropped == 1 { "column" } else { "columns" }, thousands(MAX_COLS)));
     match (sheet.truncated, cols) {
         (Some(n), Some(c)) => Some(format!("first {} rows shown, {} more in the file, and {c}", thousands(MAX_ROWS), thousands(n))),
         (Some(n), None) => Some(format!("first {} rows shown, {} more in the file", thousands(MAX_ROWS), thousands(n))),
@@ -670,18 +666,38 @@ mod tests {
     #[test]
     fn copy_text_quotes_a_tab_a_line_break_and_a_quote_and_includes_the_header_from_row_0() {
         let s = sheet(&[&["h1", "h2"], &["a\tb", "say \"hi\""], &["x\ny", "plain"]]);
-        let all = copy_text(&s, &sel(c(0, 0), c(2, 1), Scope::Cells));
+        let all = copy_text(&s, &sel(c(0, 0), c(2, 1), Scope::Cells), false);
         assert_eq!(all, "h1\th2\n\"a\tb\"\t\"say \"\"hi\"\"\"\n\"x\ny\"\tplain");
-        assert_eq!(copy_text(&s, &Selection::cell(c(2, 1))), "plain");
-        assert_eq!(copy_text(&s, &sel(c(1, 0), c(2, 0), Scope::Cells)), "\"a\tb\"\n\"x\ny\"");
+        assert_eq!(copy_text(&s, &Selection::cell(c(2, 1)), false), "plain");
+        assert_eq!(copy_text(&s, &sel(c(1, 0), c(2, 0), Scope::Cells), false), "\"a\tb\"\n\"x\ny\"");
     }
 
     #[test]
     fn a_column_copied_from_its_header_carries_its_name() {
         let s = sheet(&[&["h1", "h2"], &["a", "b"], &["c", "d"]]);
-        assert_eq!(copy_text(&s, &sel(c(0, 1), c(0, 1), Scope::Columns)), "h2\nb\nd");
-        let w = with_header(&sel(c(2, 1), c(1, 1), Scope::Cells));
-        assert_eq!(copy_text(&s, &w), "h2\nb\nd");
+        assert_eq!(copy_text(&s, &sel(c(0, 1), c(0, 1), Scope::Columns), false), "h2\nb\nd");
+    }
+
+    #[test]
+    fn copy_with_header_on_a_rectangle_below_the_header_gives_the_header_then_the_rectangle() {
+        let s = sheet(&[&["h1", "h2", "h3"], &["a", "b", "c"], &["d", "e", "f"], &["g", "h", "i"], &["j", "k", "l"]]);
+        let text = copy_text(&s, &sel(c(3, 1), c(4, 2), Scope::Cells), true);
+        assert_eq!(text, "h2\th3\nh\ti\nk\tl");
+        assert_eq!(text.lines().count(), 3);
+    }
+
+    #[test]
+    fn copy_with_header_on_a_rows_selection_below_the_header_gives_the_header_then_those_rows() {
+        let s = sheet(&[&["h1", "h2"], &["a", "b"], &["c", "d"], &["e", "f"], &["g", "h"]]);
+        assert_eq!(copy_text(&s, &sel(c(3, 0), c(4, 0), Scope::Rows), true), "h1\th2\ne\tf\ng\th");
+    }
+
+    #[test]
+    fn copy_with_header_on_a_selection_that_already_includes_the_header_is_the_plain_copy() {
+        let s = sheet(&[&["h1", "h2"], &["a", "b"], &["c", "d"]]);
+        for sc in [sel(c(0, 0), c(2, 1), Scope::Cells), sel(c(0, 1), c(0, 1), Scope::Columns), sel(c(1, 1), c(1, 1), Scope::All)] {
+            assert_eq!(copy_text(&s, &sc, true), copy_text(&s, &sc, false));
+        }
     }
 
     #[test]
@@ -724,6 +740,8 @@ mod tests {
         assert_eq!(banner(&s).unwrap(), "first 200,000 rows shown, 31,214 more in the file, and 24 columns past the 1,000th");
         s.truncated = None;
         assert_eq!(banner(&s).unwrap(), "24 columns past the 1,000th are not shown");
+        s.cols_dropped = 1;
+        assert_eq!(banner(&s).unwrap(), "1 column past the 1,000th are not shown");
     }
 
     fn write_csv(grid: &[Vec<String>]) -> String {

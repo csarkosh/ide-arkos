@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use calamine::{open_workbook_auto, Data, Reader, SheetVisible, Sheets};
 
-use crate::grid::{Book, Sheet, Source};
+use crate::grid::{self, Book, Sheet, Source};
 use crate::viewer::MAX_PLAIN_BYTES;
 
 /// Whether the path names a spreadsheet the grid reads: `.xlsx`, `.xlsm`, `.xlsb`, `.xls` or
@@ -55,11 +55,17 @@ fn read_unguarded(path: &Path) -> Result<Book, String> {
     for name in visible {
         let range = workbook.worksheet_range(&name).map_err(|e| e.to_string())?;
         let Some((first_row, first_col)) = range.start() else { continue };
-        let rows: Vec<Vec<String>> =
-            range.rows().map(|row| row.iter().map(|c| cell_text(c, is_1904)).collect()).collect();
+        let (take, truncated, cols_dropped) = caps_for(range.height(), range.width());
+        let rows: Vec<Vec<String>> = range
+            .rows()
+            .take(take)
+            .map(|row| row.iter().take(grid::MAX_COLS).map(|c| cell_text(c, is_1904)).collect())
+            .collect();
         let header = (0..range.width()).map(|i| column_letters(first_col as usize + i)).collect();
         let mut sheet = Sheet::cap(name, header, rows);
         sheet.first_row = first_row as usize + 1;
+        sheet.truncated = truncated;
+        sheet.cols_dropped = cols_dropped;
         sheets.push(Arc::new(sheet));
     }
     if sheets.is_empty() {
@@ -69,6 +75,13 @@ fn read_unguarded(path: &Path) -> Result<Book, String> {
         sheets.push(Arc::new(sheet));
     }
     Ok(Book { sheets, source: Source::Workbook })
+}
+
+/// What the caps leave of a used range `height` rows by `width` columns: the rows to convert,
+/// the rows dropped past them and the columns dropped past `grid::MAX_COLS`.
+pub fn caps_for(height: usize, width: usize) -> (usize, Option<usize>, usize) {
+    let take = height.min(grid::MAX_ROWS);
+    (take, (height > take).then(|| height - take), width.saturating_sub(grid::MAX_COLS))
 }
 
 /// The spreadsheet column name for a zero-based index: 0 is `A`, 25 is `Z`, 26 is `AA`.
@@ -195,6 +208,15 @@ mod tests {
     use crate::grid::{self, Source};
     use calamine::{CellErrorType, Data, ExcelDateTime, ExcelDateTimeType};
     use std::path::PathBuf;
+
+    #[test]
+    fn the_caps_for_a_used_range_stop_the_read_at_the_row_and_column_limits() {
+        assert_eq!(caps_for(10, 5), (10, None, 0));
+        assert_eq!(caps_for(grid::MAX_ROWS, grid::MAX_COLS), (grid::MAX_ROWS, None, 0), "at both caps nothing is dropped");
+        assert_eq!(caps_for(grid::MAX_ROWS + 1, grid::MAX_COLS + 1), (grid::MAX_ROWS, Some(1), 1));
+        assert_eq!(caps_for(1_048_576, 16_384), (grid::MAX_ROWS, Some(1_048_576 - grid::MAX_ROWS), 16_384 - grid::MAX_COLS));
+        assert_eq!(caps_for(0, 0), (0, None, 0));
+    }
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid").join(name)
