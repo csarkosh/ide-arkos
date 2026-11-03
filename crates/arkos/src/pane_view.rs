@@ -38,6 +38,14 @@ pub const FOCUS_RING_W: f32 = 2.0;
 pub fn paper_radius(style: crate::effects::active::Style) -> f32 {
     (style.pane_radius - 1.0).max(0.0)
 }
+/// The margin in points between a terminal's text and its card's left and right sides on a
+/// rounded card (`pane_radius`), so the text does not meet the card's edge.
+pub const CARD_TEXT_INSET: f32 = 2.0;
+
+pub fn terminal_inset(style: crate::effects::active::Style) -> f32 {
+    if style.pane_radius > 0.0 { CARD_TEXT_INSET } else { 0.0 }
+}
+
 /// On a rounded card the pane number is centred in a slot this many points in from the card's
 /// left edge and this wide, so an effect can draw a chip of that width behind it (Material's
 /// sits exactly on the slot) clear of the card's corner and its focus ring.
@@ -1016,6 +1024,7 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
             div()
                 .id(("term-hover", pane))
                 .size_full()
+                .px(px(terminal_inset(style)))
                 .on_hover(cx.listener(|_root, _hovered: &bool, _window, cx| cx.notify()))
                 .child(TerminalElement::new(terminal.clone(), font_size, line_height, family.clone(), style.paper_alpha, ink, draw, (style.paper_alpha < 1.0).then(|| cx.weak_entity())).paper_radius(paper_radius(style))),
         )
@@ -1509,6 +1518,14 @@ fn pane_focus(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) -> FocusHan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_a_rounded_card_a_terminal_s_text_keeps_a_margin_from_the_card_s_sides() {
+        let mut style = Style::plain();
+        assert_eq!(terminal_inset(style), 0.0, "a square pane's text runs to its edge as ever");
+        style.pane_radius = 14.0;
+        assert_eq!(terminal_inset(style), 2.0);
+    }
 
     #[test]
     fn on_a_rounded_card_the_pane_number_is_centred_in_a_slot_well_inside_the_card_s_edge() {

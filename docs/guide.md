@@ -426,7 +426,7 @@ Explorer row is a light blue pill across the sidebar with a ripple as it is chos
 or tab a faint grey pill, and a pane whose Claude session works carries an indeterminate progress bar along the
 bottom of its tab strip; the text stays as DM Sans draws it.
 Composition Notebook comes with `notebook`: the title bar is the marbled black-and-white cover
-with its white label round the title's words and icons, the status bar the cover faded, the
+with a white label round the title's words and another round its icons, the status bar the cover faded, the
 sidebar the inside cover bound to the panes by a wire spiral in a gutter between them, and each pane
 a cream page with paper fibre, a red margin line and blue rules under each of a terminal's rows;
 edges are pencil lines, the selected and hovered rows and the hovered tab a yellow highlighter

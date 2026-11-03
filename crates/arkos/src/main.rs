@@ -4306,6 +4306,7 @@ impl Render for Root {
             self.fonts.ui.clone().map_or(gpui::SharedString::from(chrome::UI_FONT), Into::into),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_bell(cx))), hover(chrome::Popover::Bell)),
             (Box::new(cx.listener(|root, _, _, cx| root.toggle_doctor(cx))), hover(chrome::Popover::Doctor)),
+            self.effect.is_some().then(|| cx.weak_entity()),
         );
         let family = self.ui_family();
         let root_div = div()

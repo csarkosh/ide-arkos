@@ -598,7 +598,11 @@ What an effect can touch:
   drawn in it (the built-in `notebook` draws its spiral there). With a `gap` and no `binder`, the
   gap beside the sidebar is reported as a binder block too. An active tab
   (`ARKOS_ACTIVE_TAB_BLOCK`, no edges) is each pane's active tab where its tab bar lays it out,
-  reported while the effect paints the highlights (the built-in `material` underlines it).
+  reported while the effect paints the highlights (the built-in `material` underlines it). A
+  title group (`ARKOS_TITLE_GROUP_BLOCK`, no edges) is one group of the title bar's contents
+  where the bar lays it out: its words (the app's name, the project's path and in a sandbox
+  `sandbox`) and its icons, a block each, at least 40 points apart (the built-in `notebook` sets
+  a cover label behind each).
 - The text, through the glyph shader: it replaces gpui's own stages for the project window's
   glyphs.
 - The alphas of the app's surfaces over the wash: the paper of terminals and documents, the bars
@@ -630,7 +634,7 @@ key and the range.
 | `frame_rate` | 1 to 60 | 30 | The wash's frames per second while anything moves; sixty while a highlight fades. |
 | `scale` | 0.1 to 1.0 | 0.5 | The wash's pixels per window pixel, each side; the drawable is stretched to the window. |
 | `ui_text_bump` | 0 to 4 | 0 | Points added to the project window's UI text. |
-| `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's label). |
+| `title_pad` | 0 to 24 | 0 | Points added inside the title bar at both ends, so its words and icons sit clear of a shape the wash draws round them (the `notebook` cover's labels). |
 | `gap` | 0 to 16 | 0 | Points kept clear round each pane: between the panes, and between them and the window's bars and edges (beside the sidebar too, unless a `binder` is that gutter), so the wash can draw the panes as cards on its ground. Like `ui_text_bump`, it comes in once the effect has faded in. |
 | `pane_radius` | 0 to 24 | 0 | The corner radius of the panes as the wash draws them: the focused pane's glow becomes a ring rounded to match, and a terminal's or document's paper rounds its bottom corners inside it, and the pane's number is centred in an 18 point slot 10 points in from the card's edge (`pane_view::number_slot`), so a chip drawn on that slot clears the corner and the ring. Like `gap`, it comes in once the effect has faded in. |
 | `binder` | 0 to 32 | 0 | A gutter this many points wide between the sidebar and the panes, reported as a binder block; 0, none. Like `ui_text_bump`, it comes in once the effect has faded in. |

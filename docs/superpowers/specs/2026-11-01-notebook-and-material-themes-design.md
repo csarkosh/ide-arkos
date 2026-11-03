@@ -173,6 +173,18 @@ Android default; Google's own web workspaces wear a different Material. This pas
   pixel grid so a bar has no seams, the shades as the colour at a quarter, a half and three
   quarters; and a run whose shaped width strays from its cells (another glyph from a fallback
   font) is painted a character to each cell. This holds for every theme and font.
+- **A margin inside the card.** A terminal's text ran to the card's edge (Claude Code's `●`
+  touched it). On a rounded card the terminal now sits 2 points in from the card's left and right
+  sides (`pane_view::terminal_inset`), as Cyrus asked.
+
+## The notebook's app bar, in two
+
+Cyrus asked for the label behind the title bar's contents to be split in two, so more of the
+cover shows. The bar now reports its two groups as they are laid out (`ARKOS_TITLE_GROUP_BLOCK`,
+15, no edges): its words, which take only their own width, and its icons, with at least 40
+points between them (`chrome::TITLE_GROUPS_GAP`), the path truncating first. The notebook sets a
+label behind each, reaching 14 points past the group's ends, with the marble between; with no
+group reported it falls back to the one label across the bar.
 
 ## For Cyrus to decide
 
