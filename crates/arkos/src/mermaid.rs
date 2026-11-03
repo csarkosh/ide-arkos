@@ -137,7 +137,9 @@ fn colour(value: &str) -> String {
 /// escaped in a `<pre class="mermaid">`, and a script that awaits `mermaid.run()` and then puts
 /// the result in the title: `ok <w> <h>`, the diagram's size in CSS pixels (its natural width, at
 /// most `MAX_W`), with the diagram and the page sized to it, or `error <the first line of the
-/// message>`. The page and the diagram's background are transparent.
+/// message>`. The page and the diagram's background are transparent. The page never scrolls: on
+/// a Mac that shows scroll bars always (no trackpad), the baseline gap under the diagram made it
+/// overflow, and the scroll bar took the right edge off the snapshot.
 pub fn page(source: &str, theme: &MermaidTheme) -> String {
     let script = format!(
         r#"
@@ -173,7 +175,7 @@ mermaid.initialize({{ startOnLoad: false, theme: 'base', themeVariables: {{ back
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {hash} file:; style-src 'unsafe-inline'; img-src data:">
 <title></title>
-<style>html, body {{ margin: 0; padding: 0; background: transparent; }} pre.mermaid {{ margin: 0; padding: 0; display: inline-block; }}</style>
+<style>html, body {{ margin: 0; padding: 0; overflow: hidden; background: transparent; }} pre.mermaid {{ margin: 0; padding: 0; display: inline-block; vertical-align: top; }}</style>
 <script src="./{SCRIPT_NAME}"></script>
 </head>
 <body>
@@ -402,6 +404,15 @@ fn old_scripts(dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_never_scrolls_so_a_scroll_bar_cannot_take_the_diagram_s_right_edge_from_the_snapshot() {
+        let t = MermaidTheme { primary: "#2a0062".into(), text: "#f3edff".into(), line: "#f3edff".into(), secondary: "#3b1a86".into(), tertiary: "#330076".into() };
+        let html = page("graph TD; A-->B", &t);
+        let style = html.split("<style>").nth(1).and_then(|rest| rest.split("</style>").next()).expect("the style");
+        assert!(style.contains("html, body { margin: 0; padding: 0; overflow: hidden;"), "{style}");
+        assert!(style.contains("vertical-align: top"), "no baseline gap under the diagram: {style}");
+    }
 
     #[test]
     fn the_page_carries_the_theme_the_csp_and_the_escaped_source_and_the_title_says_how_it_went() {
