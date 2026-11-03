@@ -7,7 +7,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
-use calamine::{open_workbook_auto, Data, ExcelDateTime, Range, Reader, SheetVisible, Sheets};
+use calamine::{open_workbook_auto, Data, Reader, SheetVisible, Sheets};
 
 use crate::grid::{Book, Sheet, Source};
 use crate::viewer::MAX_PLAIN_BYTES;
@@ -39,13 +39,13 @@ pub fn read(path: &Path) -> Result<Book, String> {
 
 fn read_unguarded(path: &Path) -> Result<Book, String> {
     let mut workbook = open_workbook_auto(path).map_err(|e| e.to_string())?;
-    // calamine exposes the 1904 flag for xls and xlsb only. For xlsx it keeps the flag private
-    // inside each date cell, so `detect_1904` recovers it; ods dates arrive as ISO text.
-    let known_1904 = match &workbook {
-        Sheets::Xls(x) => Some(x.has_1904_epoch()),
-        Sheets::Xlsb(x) => Some(x.has_1904_epoch()),
-        Sheets::Ods(_) => Some(false),
-        Sheets::Xlsx(_) => None,
+    // The 1904 date system is a property of the workbook. Ods dates arrive as ISO text, so it
+    // does not apply there.
+    let is_1904 = match &workbook {
+        Sheets::Xls(x) => x.has_1904_epoch(),
+        Sheets::Xlsx(x) => x.has_1904_epoch(),
+        Sheets::Xlsb(x) => x.has_1904_epoch(),
+        Sheets::Ods(_) => false,
     };
     let visible: Vec<String> = workbook
         .sheets_metadata()
@@ -57,7 +57,6 @@ fn read_unguarded(path: &Path) -> Result<Book, String> {
     for name in visible {
         let range = workbook.worksheet_range(&name).map_err(|e| e.to_string())?;
         let Some((first_row, first_col)) = range.start() else { continue };
-        let is_1904 = known_1904.unwrap_or_else(|| detect_1904(&range));
         let rows: Vec<Vec<String>> =
             range.rows().map(|row| row.iter().map(|c| cell_text(c, is_1904)).collect()).collect();
         let header = (0..range.width()).map(|i| column_letters(first_col as usize + i)).collect();
@@ -72,21 +71,6 @@ fn read_unguarded(path: &Path) -> Result<Book, String> {
         sheets.push(sheet);
     }
     Ok(Book { sheets, source: Source::Workbook })
-}
-
-/// Whether an xlsx range uses the 1904 date system, found by asking calamine to convert a date
-/// cell itself and seeing whether that agrees with the 1900 conversion done here.
-fn detect_1904(range: &Range<Data>) -> bool {
-    range
-        .used_cells()
-        .find_map(|(_, _, c)| match c {
-            Data::DateTime(dt) if dt.is_datetime() && dt.as_f64() >= 61.0 => Some(dt),
-            _ => None,
-        })
-        .is_some_and(|dt: &ExcelDateTime| {
-            let (y, m, d, ..) = dt.to_ymd_hms_milli();
-            serial_to_civil(dt.as_f64().floor() as i64, false) != (i32::from(y), u32::from(m), u32::from(d))
-        })
 }
 
 /// The spreadsheet column name for a zero-based index: 0 is `A`, 25 is `Z`, 26 is `AA`.
@@ -413,6 +397,12 @@ mod tests {
         f.set_len(crate::viewer::MAX_PLAIN_BYTES + (1 << 20)).unwrap();
         let err = read(&path).unwrap_err();
         assert!(err.contains("65 MB"), "{err}");
+    }
+
+    #[test]
+    fn a_1904_workbook_s_dates_are_read_on_the_1904_epoch() {
+        let b = book("date1904.xlsx");
+        assert_eq!(b.sheets[0].rows[0][0], "1904-01-11");
     }
 
     #[test]

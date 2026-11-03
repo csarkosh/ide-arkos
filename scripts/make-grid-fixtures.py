@@ -5,7 +5,7 @@ a fixed timestamp, so a rerun gives the same bytes.
 
 Run it as: python3 -I scripts/make-grid-fixtures.py
 
-Writes sheets.xlsx, sheets.ods, empty.xlsx, not-a-workbook.xlsx and wide.xlsx.
+Writes sheets.xlsx, sheets.ods, empty.xlsx, not-a-workbook.xlsx, wide.xlsx and date1904.xlsx.
 
 legacy.xls is NOT written here. It was exported once from sheets.xlsx with LibreOffice
 (/Applications/LibreOffice.app/Contents/MacOS/soffice --headless --convert-to xls --outdir <dir>
@@ -59,7 +59,7 @@ def sheet_xml(rows, merges=()):
             f"<sheetData>{body}</sheetData>{merge}</worksheet>")
 
 
-def xlsx_parts(sheets):
+def xlsx_parts(sheets, date1904=False):
     """sheets: list of (name, hidden, xml)."""
     n_sheets = len(sheets)
     ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -76,7 +76,8 @@ def xlsx_parts(sheets):
             "</Relationships>")
     wb = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
           '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+          + ('<workbookPr date1904="1"/>' if date1904 else "") + "<sheets>"
           + "".join(f'<sheet name="{escape(name)}" sheetId="{i + 1}"{" state=" + chr(34) + "hidden" + chr(34) if hidden else ""} r:id="rId{i + 1}"/>' for i, (name, hidden, _) in enumerate(sheets))
           + "</sheets></workbook>")
     wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -123,6 +124,12 @@ def make_sheets_xlsx():
     write_zip("sheets.xlsx", xlsx_parts([("Signups", False, signups), ("Notes", False, notes), ("Hidden", True, hidden)]))
 
 
+def make_1904_xlsx():
+    # Serial 10 is 1904-01-11 in the 1904 system, and below 61 so no 1900 heuristic could see it.
+    sheet = sheet_xml([(1, [n("A1", 10, 1)])])
+    write_zip("date1904.xlsx", xlsx_parts([("Dates", False, sheet)], date1904=True))
+
+
 def make_wide_xlsx():
     width = MAX_COLS + 3
     r1 = [s(f"{letters(c)}1", f"h{c}") for c in range(width)]
@@ -167,6 +174,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     make_sheets_xlsx()
     make_wide_xlsx()
+    make_1904_xlsx()
     make_ods()
     open(os.path.join(OUT, "empty.xlsx"), "wb").close()
     with open(os.path.join(OUT, "not-a-workbook.xlsx"), "w", newline="") as f:
