@@ -7,7 +7,7 @@
 </picture>
 
 <p align="center">
-<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a web pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b> · <b>a video pane</b>
+<b>Panes and tabs</b> for your sessions · <b>a daemon</b> that keeps them alive · <b>a web pane</b> · <b>a file tree</b> with git worktrees · <b>a markdown editor</b> · <b>a CSV and spreadsheet grid</b> · <b>a video pane</b>
 </p>
 
 Arkos is a terminal layout manager built for Claude Code: a grid of terminal panes with tabs

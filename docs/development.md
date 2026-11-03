@@ -403,7 +403,11 @@ the markdown poster's Cmd+click and the palette's "Open file in pane…" open it
 `arkos open`, `arkos video` and `arkos panes` over a targeted channel to their own window
 (protocol 8), found through the SessionStart hook's line, the skill and `arkos guide`.
 `arkos sandbox` opens a second Arkos with its own config, daemon and sessions, to try a theme or
-an effect in without touching the real setup.
+an effect in without touching the real setup. The viewer also draws a `.csv` or `.tsv` and a
+spreadsheet (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`) as a read-only grid: a pinned header and row
+numbers, zebra rows, number columns right-aligned, sniffed delimiters, cell and range selection
+with Cmd+C as tab-separated text, find, and a tab strip for a workbook's sheets. A grid keeps the
+first 200,000 rows and 1,000 columns of a sheet, and files over 64 MB show the too-large notice.
 
 Things only a person at the screen can check, in order of value:
 
@@ -637,6 +641,12 @@ Things only a person at the screen can check, in order of value:
   over a poster
 - video pane: a paused seek shows its frame within half a second on a 4K HEVC file, and a
   trackpad tap on the scrubber does not leave it stuck paused
+
+- grid: a workbook's dates and times against Excel's, for a 1900-system file
+  (`crates/arkos/tests/fixtures/grid/sheets.xlsx`) and a 1904-system one (`date1904.xlsx` beside
+  it): every date and time cell reads the same in the grid as in Excel.
+- grid, effects: a CSV and a workbook under each built-in effect: the wash shows through the header
+  and the paper, the rules are inked, and the selection ring reads.
 
 - markdown, Rendered: a table draws as a grid and stays one with the caret in it; a click rings the
   cell and typing replaces it; F2 shows its markdown with the caret (a right-aligned column's
