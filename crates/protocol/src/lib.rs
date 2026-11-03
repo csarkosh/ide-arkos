@@ -179,7 +179,8 @@ pub enum SplitSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenKind {
     Video,
-    /// A markdown document, raw source when `raw` and rendered otherwise.
+    /// A document the viewer renders, markdown or a CSV or TSV (its grid): raw source when `raw`
+    /// and rendered otherwise.
     Markdown { raw: bool },
     Text,
     /// A web page (web pane spec, section 8): `path` is an absolute `.html` file, or an `http`

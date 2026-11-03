@@ -7,7 +7,7 @@
 
 use crate::agent_cli::{self, fail, reach_from_io, usage, Reach};
 use crate::video::{fmt_time, parse_range, parse_time};
-use crate::{hook_cli, media, remote_image, viewer, workbook};
+use crate::{grid, hook_cli, media, remote_image, viewer, workbook};
 use protocol::{
     CustomizeAction, LoopChange, OpenKind, PaneAction, PaneOutcome, PanesReport, Placement, Request, Response, SessionId, SplitSide, VideoOp, VideoState,
     WindowTarget,
@@ -189,6 +189,9 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
     } else if workbook::is_workbook(&abs) {
         // A workbook is a zip or a compound file, so its first bytes hold NULs: it is never
         // sniffed. It opens in a viewer tab, which shows the grid, as a text file's does.
+        if raw {
+            return Err("`--raw` is for a markdown file or a CSV; a spreadsheet has no raw view".to_string());
+        }
         OpenKind::Text
     } else {
         // The viewer's own rule: a NUL in the first bytes is not text.
@@ -199,7 +202,8 @@ pub fn classify_open(path: &Path, cwd: &Path, raw: bool, wait: bool) -> Result<(
         if viewer::looks_binary(&head) {
             return Err(format!("{shown} is not a text file; Arkos shows text, markdown, spreadsheets and video"));
         }
-        OpenKind::Text
+        // A CSV or TSV renders as markdown does, its grid for rendered, so `--raw` reaches it.
+        if grid::is_delimited(&abs) { OpenKind::Markdown { raw } } else { OpenKind::Text }
     };
     Ok((abs, kind))
 }
@@ -302,6 +306,7 @@ pub fn opened_line(o: &PaneOutcome, file_name: &str) -> String {
             None => format!(", {}", w.state),
         },
         (None, None, "markdown") => if *raw { ", raw" } else { ", rendered" }.into(),
+        (None, None, _) if grid::is_delimited(Path::new(file_name)) => if *raw { ", raw" } else { ", grid" }.into(),
         _ => String::new(),
     };
     format!("{prefix}{verb} {what} in pane {pane}{fresh}{tail}")
@@ -468,7 +473,7 @@ pub fn open_cli_to(args: &[String], env: &DirectEnv, out: &mut dyn Write, err: &
             return 2;
         }
         if raw {
-            let _ = writeln!(err, "`--raw` is for a markdown file; a web page takes --pane, --split, --new, --focus and --window\nsee: arkos guide");
+            let _ = writeln!(err, "`--raw` is for a markdown file or a CSV; a web page takes --pane, --split, --new, --focus and --window\nsee: arkos guide");
             return 2;
         }
     }
@@ -789,6 +794,40 @@ mod tests {
         // Markdown is never sniffed, nor a video; a missing file under --wait is not read.
         assert!(classify_open(Path::new("raw.md"), &d, false, false).is_ok());
         assert!(classify_open(Path::new("later.bin"), &d, false, true).is_err());
+    }
+
+    #[test]
+    fn raw_opens_a_csv_or_tsv_as_its_text_and_without_it_as_its_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        for name in ["data.csv", "data.TSV"] {
+            std::fs::write(d.join(name), b"a,b\n1,2\n").unwrap();
+            assert_eq!(classify_open(Path::new(name), &d, true, false).unwrap(), (d.join(name), OpenKind::Markdown { raw: true }));
+            assert_eq!(classify_open(Path::new(name), &d, false, false).unwrap(), (d.join(name), OpenKind::Markdown { raw: false }));
+        }
+        // A CSV is still sniffed: one holding NULs is no text file.
+        std::fs::write(d.join("blob.csv"), b"a\0b").unwrap();
+        assert!(classify_open(Path::new("blob.csv"), &d, true, false).is_err());
+    }
+
+    #[test]
+    fn raw_is_refused_for_a_spreadsheet_which_has_no_raw_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid/sheets.xlsx");
+        std::fs::copy(&fixture, d.join("sheets.xlsx")).unwrap();
+        assert_eq!(
+            classify_open(Path::new("sheets.xlsx"), &d, true, false).unwrap_err(),
+            "`--raw` is for a markdown file or a CSV; a spreadsheet has no raw view"
+        );
+    }
+
+    #[test]
+    fn the_opened_line_says_whether_a_csv_shows_its_text_or_its_grid() {
+        let o = |raw| PaneOutcome::Opened { pane: 2, tab: 1, kind: "text".into(), reused: false, reloaded: false, new_pane: false, raw, video: None, web: None };
+        assert_eq!(opened_line(&o(true), "data.csv"), "opened data.csv in pane 2, raw");
+        assert_eq!(opened_line(&o(false), "data.tsv"), "opened data.tsv in pane 2, grid");
+        assert_eq!(opened_line(&o(false), "main.rs"), "opened main.rs in pane 2", "other text says nothing more");
     }
 
     #[test]
