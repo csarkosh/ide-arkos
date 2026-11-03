@@ -82,7 +82,8 @@ What opens depends on the file:
 - A video (`.mp4`, `.mov`, `.m4v`) opens as a video tab, paused at 0 unless you say otherwise.
 - A markdown file opens in the editor, rendered; `--raw` shows its raw text.
 - A `.csv`, `.tsv` or spreadsheet (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`) opens as a read-only grid;
-  `--raw` has no effect on a CSV.
+  `--raw` shows a CSV or TSV as its text in the code editor instead, and is refused for a
+  spreadsheet (exit 1), which has no raw view.
 - Any other text file opens in the read-only viewer, highlighted.
 - A web address (`http://`, `https://`) or an `.html` file opens as a web tab: the page drawn in
   the pane with a bar above it. A local page may read the files beside it (everything under the
@@ -130,7 +131,7 @@ The one exception is your own pane, where showing it would cover you: a tab on t
 yours to the right, which becomes your preview pane; a video keeps its position and its play
 state through the move.
 `--new` forces another tab, placed by the rules above. On a video tab reused this way `--at`,
-`--paused`, `--playing` and `--loop` apply; a reused markdown tab switches to raw with `--raw`.
+`--paused`, `--playing` and `--loop` apply; a reused markdown or CSV tab switches to raw with `--raw`.
 
 Focus stays with you. An open makes its tab the active one in its pane but never moves the
 keyboard focus, not even when it splits a new pane: the user is typing to you, and a jump would
@@ -147,7 +148,8 @@ The flags:
   user decides when sound starts); a reused tab keeps its state. Not both.
 - `--loop A-B`: set the loop range and turn the loop on; `--loop off` clears it. A loop with
   `--playing` shows a scene on repeat.
-- `--raw`: a markdown file as raw text instead of rendered.
+- `--raw`: a markdown file as raw text instead of rendered, or a CSV or TSV as its text instead
+  of its grid.
 - `--new`: another tab even when one already shows the file.
 - `--wait`: let a video that does not exist yet open; the tab says "waiting for file" and loads it
   once it appears and stops changing. Only for a video; any other missing file is still refused.

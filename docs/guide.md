@@ -150,8 +150,8 @@ instead of slowing the Mac down. A CSV over `[viewer] highlight_limit_bytes` sti
 only its raw view is plain.
 
 `arkos open file.csv` (or `.tsv`, or a spreadsheet) opens the grid in a pane, as do the sidebar,
-the palette's "Open file in pane" and markdown links. `--raw` has no effect on a CSV: the grid
-opens, and the pill switches to the code editor.
+the palette's "Open file in pane" and markdown links. `arkos open --raw file.csv` opens
+its text in the code editor instead, as the pill does.
 
 ## Editing markdown
 
