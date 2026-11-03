@@ -22,6 +22,8 @@ pub struct MdMenu {
     /// A markdown document: the formats and Link follow the clipboard rows. A code document has
     /// the clipboard rows alone.
     pub formats: bool,
+    /// A grid: the menu is Copy and Copy with header alone.
+    pub grid: bool,
     pub at: Point<Pixels>,
 }
 
@@ -33,12 +35,20 @@ pub enum MdRow {
     Format(Format),
     Link,
     Table(TableAction),
+    /// The grid's selection as tab-separated text.
+    GridCopy,
+    /// The same with the header row added.
+    GridCopyHeader,
 }
 
 /// The rows in order, each with whether it can run: Cut and Copy need a selection (a selected
 /// table cell is one). `None` is a line between groups. Without `formats` (a code document) the
-/// clipboard rows stand alone.
-pub fn menu_rows(selection: bool, table: bool, formats: bool) -> Vec<Option<(&'static str, MdRow, bool)>> {
+/// clipboard rows stand alone. In a `grid` the rows are the two copies alone, each needing a
+/// selection.
+pub fn menu_rows(selection: bool, table: bool, formats: bool, grid: bool) -> Vec<Option<(&'static str, MdRow, bool)>> {
+    if grid {
+        return vec![Some(("Copy", MdRow::GridCopy, selection)), Some(("Copy with header", MdRow::GridCopyHeader, selection))];
+    }
     if table {
         let t = |label, a| Some((label, MdRow::Table(a), true));
         return vec![
@@ -85,6 +95,8 @@ fn run_row(row: MdRow, viewer: &WeakEntity<Viewer>, cx: &mut Context<Root>) {
         MdRow::Format(f) => v.format(f, cx),
         MdRow::Link => v.insert_link(cx),
         MdRow::Table(a) => v.table_menu(a, cx),
+        MdRow::GridCopy => v.grid_copy(false, cx),
+        MdRow::GridCopyHeader => v.grid_copy(true, cx),
     });
 }
 
@@ -116,7 +128,7 @@ pub fn render_md_menu(root: &mut Root, cx: &mut Context<Root>) -> Option<Div> {
     if style.menu_edges {
         m = m.child(crate::chrome::menu_report(0x12, opacity, cx));
     }
-    for (i, row) in menu_rows(menu.selection, menu.table, menu.formats).into_iter().enumerate() {
+    for (i, row) in menu_rows(menu.selection, menu.table, menu.formats, menu.grid).into_iter().enumerate() {
         let Some((label, action, enabled)) = row else {
             m = m.child(div().my(px(4.0)).h(px(1.0)).mx(px(8.0)).bg(line));
             continue;
@@ -146,16 +158,16 @@ mod tests {
 
     #[test]
     fn the_menu_lists_the_clipboard_then_the_formats_and_dims_cut_and_copy_without_a_selection() {
-        let labels: Vec<Option<&str>> = menu_rows(true, false, true).iter().map(|r| r.map(|(l, _, _)| l)).collect();
+        let labels: Vec<Option<&str>> = menu_rows(true, false, true, false).iter().map(|r| r.map(|(l, _, _)| l)).collect();
         assert_eq!(labels, vec![Some("Cut"), Some("Copy"), Some("Paste"), None, Some("Bold"), Some("Italic"), Some("Strikethrough"), Some("Code"), Some("Link")]);
-        let enabled = |sel: bool| menu_rows(sel, false, true).iter().flatten().filter(|(_, _, on)| *on).map(|(l, _, _)| *l).collect::<Vec<_>>();
+        let enabled = |sel: bool| menu_rows(sel, false, true, false).iter().flatten().filter(|(_, _, on)| *on).map(|(l, _, _)| *l).collect::<Vec<_>>();
         assert_eq!(enabled(false), vec!["Paste", "Bold", "Italic", "Strikethrough", "Code", "Link"], "Cut and Copy need a selection");
         assert_eq!(enabled(true).len(), 8);
     }
 
     #[test]
     fn a_code_document_has_the_clipboard_rows_alone() {
-        let rows = menu_rows(false, false, false);
+        let rows = menu_rows(false, false, false, false);
         let labels: Vec<Option<&str>> = rows.iter().map(|r| r.map(|(l, _, _)| l)).collect();
         assert_eq!(labels, vec![Some("Cut"), Some("Copy"), Some("Paste")]);
         assert_eq!(rows.iter().flatten().filter(|(_, _, on)| *on).count(), 1, "Paste alone without a selection");
@@ -163,12 +175,21 @@ mod tests {
 
     #[test]
     fn on_a_table_cell_the_menu_lists_the_clipboard_then_rows_columns_deletes_and_alignments() {
-        let rows = menu_rows(false, true, true);
+        let rows = menu_rows(false, true, true, false);
         let labels: Vec<Option<&str>> = rows.iter().map(|r| r.map(|(l, _, _)| l)).collect();
         assert_eq!(labels[..4], [Some("Cut"), Some("Copy"), Some("Paste"), None], "a selected cell can be cut and copied");
         assert!(rows.iter().flatten().all(|(_, _, on)| *on));
         assert_eq!(labels.iter().flatten().filter(|l| l.starts_with("Insert")).count(), 4);
         assert_eq!(labels.last(), Some(&Some("Align Right")));
         assert!(!labels.contains(&Some("Bold")));
+    }
+
+    #[test]
+    fn the_menu_in_a_grid_offers_copy_and_copy_with_header_only() {
+        let rows = menu_rows(true, false, true, true);
+        assert_eq!(rows, vec![Some(("Copy", MdRow::GridCopy, true)), Some(("Copy with header", MdRow::GridCopyHeader, true))]);
+        let rows = menu_rows(false, false, true, true);
+        assert!(rows.iter().flatten().all(|(_, _, on)| !on), "both need a selection");
+        assert_eq!(rows.len(), 2);
     }
 }

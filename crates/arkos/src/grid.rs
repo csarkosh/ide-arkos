@@ -391,8 +391,6 @@ impl Selection {
 /// The text a copy puts on the clipboard: the rectangle's cells tab-separated, a record a line,
 /// no trailing newline. A cell holding a tab, a line break or a double quote is wrapped in double
 /// quotes with its quotes doubled.
-// Task 5 (keys, clipboard and the menu) calls this.
-#[allow(dead_code)]
 pub fn copy_text(sheet: &Sheet, sel: &Selection) -> String {
     let (rows, cols) = sel.rect(sheet);
     let mut out = String::new();
@@ -419,8 +417,6 @@ pub fn copy_text(sheet: &Sheet, sel: &Selection) -> String {
 
 /// The selection's rectangle with the header row added. Column and all-sheet selections already
 /// have it.
-// Task 5 (keys, clipboard and the menu) calls this.
-#[allow(dead_code)]
 pub fn with_header(sel: &Selection) -> Selection {
     match sel.scope {
         Scope::Columns | Scope::All => *sel,

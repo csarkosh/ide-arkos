@@ -178,6 +178,32 @@ pub fn grid_dragged(sel: Option<grid::Selection>, hit: grid_view::Hit) -> Option
     Some(s.extend(to))
 }
 
+/// The grid's selection after a right press on `hit`: one already inside the selection is kept
+/// (the menu is for it), anything else on the grid selects what was pressed as a left press
+/// does, and off the grid nothing changes.
+pub fn grid_right_pressed(sel: Option<grid::Selection>, hit: grid_view::Hit, sheet: &grid::Sheet) -> Option<grid::Selection> {
+    use grid::Cell;
+    use grid_view::Hit;
+    let under = match hit {
+        Hit::Cell(c) => c,
+        Hit::Header(col) => Cell { row: 0, col },
+        Hit::RowNumber(row) => Cell { row, col: 0 },
+        Hit::Corner => Cell { row: 0, col: 0 },
+        Hit::Outside => return sel,
+    };
+    match sel {
+        Some(s) if s.contains(under, sheet) => sel,
+        _ => grid_pressed(sel, hit, false),
+    }
+}
+
+/// What a grid copy puts on the clipboard: the selection as tab-separated text, with the header
+/// row added when asked, `None` without a selection.
+pub fn grid_copy_text(sheet: &grid::Sheet, sel: Option<&grid::Selection>, with_header: bool) -> Option<String> {
+    let sel = sel?.clamp(sheet);
+    Some(grid::copy_text(sheet, &if with_header { grid::with_header(&sel) } else { sel }))
+}
+
 /// The grid's sideways scroll moved by `dx` points, within the columns past the body's width.
 /// Before the first layout it is only kept from going left of the first column.
 pub fn grid_scroll_x_by(x: f32, dx: f32, layout: Option<&grid_view::Layout>) -> f32 {
@@ -1734,6 +1760,52 @@ impl Viewer {
         self.grid_pressing = self.grid_sel.is_some();
         self.follow_grid_hit(hit);
         cx.notify();
+    }
+
+    /// A right press on `hit`: selects what is under it unless it is in the selection already
+    /// (`grid_right_pressed`).
+    pub fn grid_right_press(&mut self, hit: grid_view::Hit, cx: &mut Context<Self>) {
+        let Some(sheet) = self.sheet() else { return };
+        let sel = grid_right_pressed(self.grid_sel, hit, sheet);
+        if sel != self.grid_sel {
+            self.grid_sel = sel;
+            self.follow_grid_hit(hit);
+            cx.notify();
+        }
+    }
+
+    /// A key in the grid (`grid_view::key_of`): moves or extends the selection and keeps its head
+    /// in sight, Cmd+A selects all, Cmd+C copies, Escape clears. Whether the grid took the key;
+    /// one it did not is for the scroll keys.
+    pub fn grid_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(key) = grid_view::key_of(ks) else { return grid_view::handles(ks) };
+        let Some(sheet) = self.sheet() else { return false };
+        match key {
+            grid_view::GridKey::Copy => {
+                self.grid_copy(false, cx);
+                return true;
+            }
+            grid_view::GridKey::Escape if self.grid_sel.is_none() => return false,
+            _ => {}
+        }
+        let page = self.rows_visible.max(1);
+        let sel = grid_view::apply_key(key, self.grid_sel.as_ref(), sheet, page);
+        let moved = sel.is_some() && sel != self.grid_sel;
+        self.grid_sel = sel;
+        if let Some(s) = sel.filter(|_| moved) {
+            self.reveal_grid_cell(s.head);
+        }
+        cx.notify();
+        true
+    }
+
+    /// Puts the selection on the clipboard as tab-separated text, with the header row when asked.
+    /// Nothing is written without a selection.
+    pub fn grid_copy(&mut self, with_header: bool, cx: &mut Context<Self>) {
+        let text = self.sheet().and_then(|s| grid_copy_text(s, self.grid_sel.as_ref(), with_header));
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
     /// The pointer moved over `hit` with the press held (`grid_dragged`).
@@ -6827,6 +6899,42 @@ mod tests {
         // A gutter of 40, a header and rows of 20, three columns 100 wide, in a view 240 by 100:
         // the body is 200 wide and 80 tall, four rows.
         grid_view::Layout { gutter_w: 40.0, header_h: 20.0, row_h: 20.0, cols: vec![0.0, 100.0, 200.0, 300.0], view_w: 240.0, view_h: 100.0 }
+    }
+
+    #[test]
+    fn cmd_c_copies_the_rectangle_as_tsv() {
+        use crate::grid::{Cell, Scope, Selection};
+        let sheet = crate::grid::Sheet::cap("s".into(), vec!["a".into(), "b".into(), "c".into()], vec![vec!["1".into(), "x\ty".into(), "3".into()], vec!["4".into(), "5".into(), "6".into()]]);
+        let c = |row, col| Cell { row, col };
+        let sel = Selection { anchor: c(1, 0), head: c(2, 1), scope: Scope::Cells };
+        assert_eq!(grid_copy_text(&sheet, Some(&sel), false).as_deref(), Some("1\t\"x\ty\"\n4\t5"));
+        assert_eq!(grid_copy_text(&sheet, Some(&sel), true).as_deref(), Some("a\tb\n1\t\"x\ty\"\n4\t5"), "with the header row");
+        assert_eq!(grid_copy_text(&sheet, None, false), None, "nothing selected, nothing copied");
+        let ks = gpui::Keystroke::parse("cmd-c").unwrap();
+        assert_eq!(grid_view::key_of(&ks), Some(grid_view::GridKey::Copy));
+    }
+
+    #[test]
+    fn cmd_x_and_cmd_v_do_nothing_in_a_grid() {
+        for k in ["cmd-x", "cmd-v"] {
+            let ks = gpui::Keystroke::parse(k).unwrap();
+            assert!(grid_view::key_of(&ks).is_none(), "{k} moves nothing");
+            assert!(grid_view::handles(&ks), "{k} is swallowed, not passed on");
+        }
+        assert!(!grid_view::handles(&gpui::Keystroke::parse("space").unwrap()), "a space falls through to the scroll keys");
+    }
+
+    #[test]
+    fn a_right_press_selects_the_cell_under_it_unless_it_is_in_the_selection() {
+        use crate::grid::{Cell, Scope, Selection};
+        use grid_view::Hit;
+        let sheet = crate::grid::Sheet::cap("s".into(), vec!["a".into(), "b".into()], (0..5).map(|r| vec![format!("{r}"), format!("{r}")]).collect());
+        let c = |row, col| Cell { row, col };
+        let sel = Some(Selection { anchor: c(1, 0), head: c(3, 1), scope: Scope::Cells });
+        assert_eq!(grid_right_pressed(sel, Hit::Cell(c(2, 1)), &sheet), sel, "inside: kept");
+        assert_eq!(grid_right_pressed(sel, Hit::Cell(c(5, 0)), &sheet), Some(Selection::cell(c(5, 0))), "outside: selected");
+        assert_eq!(grid_right_pressed(None, Hit::Cell(c(1, 1)), &sheet), Some(Selection::cell(c(1, 1))));
+        assert_eq!(grid_right_pressed(sel, Hit::Outside, &sheet), sel, "off the grid nothing changes");
     }
 
     #[test]

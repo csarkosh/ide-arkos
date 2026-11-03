@@ -1408,6 +1408,11 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             // A document's keys are the editor's; one it does not know goes on to the input
             // method (a space is text), never to the scroll keys below. While the grid shows, a
             // delimited document's text is not on screen: the keys scroll the grid.
+            // While the grid shows, its keys come first; one it does not take goes on below.
+            if v_keys.read(cx).grid_shown() && v_keys.update(cx, |v, cx| v.grid_key(ks, cx)) {
+                cx.stop_propagation();
+                return;
+            }
             if { let v = v_keys.read(cx); v.doc.is_some() && !v.grid_shown() } {
                 if v_keys.update(cx, |v, cx| v.key(ks, cx)) {
                     cx.stop_propagation();
@@ -1479,8 +1484,8 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             MouseButton::Right,
             cx.listener(move |root, ev: &MouseDownEvent, _window, cx| {
                 // Presenting, the document has no menu: every row of it edits or needs a caret.
-                // The grid's text is not on screen, so it has no text menu.
-                let Some(v) = v_menu.upgrade().filter(|v| v.read(cx).doc.is_some() && !v.read(cx).presenting && !v.read(cx).grid_shown()) else { return };
+                // A shown grid has its own two-row menu: its text is not on screen.
+                let Some(v) = v_menu.upgrade().filter(|v| (v.read(cx).doc.is_some() && !v.read(cx).presenting) || v.read(cx).grid_shown()) else { return };
                 cx.stop_propagation();
                 root.focus_pane(pane, cx);
                 let now = std::time::Instant::now();
@@ -1490,9 +1495,10 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.tab_menu.hide(now);
                 root.link_menu.hide(now);
                 root.close_popovers(now);
-                let selection = v.read(cx).has_selection();
-                let table = { let v = v.read(cx); v.table_cell().is_some() && !v.table_edit };
-                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, formats: markdown, at: ev.position }, now);
+                let grid = v.read(cx).grid_shown();
+                let selection = if grid { v.read(cx).grid_sel.is_some() } else { v.read(cx).has_selection() };
+                let table = !grid && { let v = v.read(cx); v.table_cell().is_some() && !v.table_edit };
+                root.md_menu.show(crate::md_menu::MdMenu { viewer: v.downgrade(), selection, table, formats: markdown, grid, at: ev.position }, now);
                 cx.notify();
             }),
         )

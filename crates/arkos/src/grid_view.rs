@@ -12,7 +12,7 @@ use crate::viewer_element::GUTTER_PAD;
 use crate::Root;
 use gpui::{
     fill, font, point, px, quad, size, App, BorderStyle, Bounds, ContentMask, DispatchPhase, Element, ElementId, Entity, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, TextRun, WeakEntity, Window,
+    IntoElement, Keystroke, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ShapedLine, SharedString, TextRun, WeakEntity, Window,
 };
 use std::ops::{Range, RangeInclusive};
 use std::time::{Duration, Instant};
@@ -621,6 +621,18 @@ impl GridElement {
                 });
             }
         });
+        // A right press selects the cell under it, if it is outside the selection, before the
+        // pane opens its menu (a child's listener hears the press first on the way up).
+        let v = self.viewer.clone();
+        let hb = hitbox.clone();
+        window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && ev.button == MouseButton::Right && hb.is_hovered(window) {
+                v.update(cx, |v, cx| {
+                    let hit = v.grid_hit(local(ev.position));
+                    v.grid_right_press(hit, cx);
+                });
+            }
+        });
         let v = self.viewer.clone();
         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
@@ -659,6 +671,110 @@ impl IntoElement for GridElement {
     }
 }
 
+/// What a key does in the grid (spec 5, Selection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridKey {
+    /// An arrow: a one-cell selection a step from the head.
+    Move(isize, isize),
+    /// Shift and an arrow: the head moves, the anchor stays. With Cmd as well the step is
+    /// `isize::MAX` or `isize::MIN`, which is the sheet's edge.
+    Extend(isize, isize),
+    /// Cmd and an arrow: the head jumps to the edge the sign points at.
+    Edge(isize, isize),
+    RowStart,
+    RowEnd,
+    PageUp,
+    PageDown,
+    SelectAll,
+    Copy,
+    Escape,
+}
+
+/// The grid key a keystroke is, `None` for anything else (Cmd+X and Cmd+V among them).
+pub fn key_of(ks: &Keystroke) -> Option<GridKey> {
+    let m = ks.modifiers;
+    if m.control || m.alt {
+        return None;
+    }
+    let (dr, dc) = match ks.key.as_str() {
+        "up" => (-1, 0),
+        "down" => (1, 0),
+        "left" => (0, -1),
+        "right" => (0, 1),
+        _ => (0, 0),
+    };
+    if (dr, dc) != (0, 0) {
+        let far = |d: isize| match d.signum() {
+            -1 => isize::MIN,
+            1 => isize::MAX,
+            _ => 0,
+        };
+        return Some(match (m.platform, m.shift) {
+            (false, false) => GridKey::Move(dr, dc),
+            (false, true) => GridKey::Extend(dr, dc),
+            (true, false) => GridKey::Edge(dr, dc),
+            (true, true) => GridKey::Extend(far(dr), far(dc)),
+        });
+    }
+    match (ks.key.as_str(), m.platform) {
+        ("home", false) => Some(GridKey::RowStart),
+        ("end", false) => Some(GridKey::RowEnd),
+        ("pageup", false) => Some(GridKey::PageUp),
+        ("pagedown", false) => Some(GridKey::PageDown),
+        ("a", true) => Some(GridKey::SelectAll),
+        ("c", true) => Some(GridKey::Copy),
+        ("escape", false) => Some(GridKey::Escape),
+        _ => None,
+    }
+}
+
+/// Whether the grid takes the keystroke: its keys, and Cmd+X and Cmd+V, which do nothing in a
+/// read-only grid and must not reach anything else.
+pub fn handles(ks: &Keystroke) -> bool {
+    key_of(ks).is_some() || (ks.modifiers.platform && matches!(ks.key.as_str(), "x" | "v"))
+}
+
+/// The selection after `key`. With nothing selected the movement keys select the first body cell
+/// (the header is row 0 and is reached by the mouse or by Up). `page` is the rows a page moves.
+/// Escape gives `None`, Copy the selection as it was.
+pub fn apply_key(key: GridKey, sel: Option<&Selection>, sheet: &Sheet, page: usize) -> Option<Selection> {
+    let last = Cell { row: sheet.rows.len(), col: sheet.cols().saturating_sub(1) };
+    let step = |v: usize, d: isize, max: usize| match d {
+        isize::MAX => max,
+        isize::MIN => 0,
+        d => v.saturating_add_signed(d).min(max),
+    };
+    let edge = |v: usize, d: isize, max: usize| match d.signum() {
+        -1 => 0,
+        1 => max,
+        _ => v,
+    };
+    let page = isize::try_from(page.max(1)).unwrap_or(isize::MAX);
+    match key {
+        GridKey::Escape => None,
+        GridKey::Copy => sel.copied(),
+        GridKey::SelectAll => {
+            let origin = Cell { row: 0, col: 0 };
+            Some(Selection { anchor: origin, head: origin, scope: Scope::All })
+        }
+        _ => {
+            let Some(s) = sel else { return Some(Selection::cell(Cell { row: 1, col: 0 }).clamp(sheet)) };
+            let h = s.head;
+            let to = |row, col| Cell { row, col };
+            Some(match key {
+                GridKey::Move(dr, dc) => s.move_by(dr, dc, sheet),
+                GridKey::Extend(dr, dc) => s.extend(to(step(h.row, dr, last.row), step(h.col, dc, last.col))),
+                GridKey::Edge(dr, dc) => Selection::cell(to(edge(h.row, dr, last.row), edge(h.col, dc, last.col))),
+                GridKey::RowStart => Selection::cell(to(h.row, 0)),
+                GridKey::RowEnd => Selection::cell(to(h.row, last.col)),
+                GridKey::PageUp => s.move_by(-page, 0, sheet),
+                GridKey::PageDown => s.move_by(page, 0, sheet),
+                GridKey::Escape | GridKey::Copy | GridKey::SelectAll => unreachable!("handled above"),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +792,73 @@ mod tests {
         // A gutter of 40, a header and rows of 20, three columns 100 wide, in a view 240 by 100:
         // the body is 200 wide and 80 tall.
         Layout { gutter_w: 40.0, header_h: 20.0, row_h: 20.0, cols: vec![0.0, 100.0, 200.0, 300.0], view_w: 240.0, view_h: 100.0 }
+    }
+
+    fn key(s: &str) -> Option<GridKey> {
+        key_of(&gpui::Keystroke::parse(s).unwrap())
+    }
+
+    #[test]
+    fn each_key_maps_to_its_grid_move() {
+        assert_eq!(key("left"), Some(GridKey::Move(0, -1)));
+        assert_eq!(key("right"), Some(GridKey::Move(0, 1)));
+        assert_eq!(key("up"), Some(GridKey::Move(-1, 0)));
+        assert_eq!(key("down"), Some(GridKey::Move(1, 0)));
+        assert_eq!(key("shift-left"), Some(GridKey::Extend(0, -1)));
+        assert_eq!(key("shift-down"), Some(GridKey::Extend(1, 0)));
+        assert_eq!(key("cmd-up"), Some(GridKey::Edge(-1, 0)));
+        assert_eq!(key("cmd-right"), Some(GridKey::Edge(0, 1)));
+        assert_eq!(key("cmd-shift-down"), Some(GridKey::Extend(isize::MAX, 0)));
+        assert_eq!(key("cmd-shift-left"), Some(GridKey::Extend(0, isize::MIN)));
+        assert_eq!(key("home"), Some(GridKey::RowStart));
+        assert_eq!(key("end"), Some(GridKey::RowEnd));
+        assert_eq!(key("pageup"), Some(GridKey::PageUp));
+        assert_eq!(key("pagedown"), Some(GridKey::PageDown));
+        assert_eq!(key("cmd-a"), Some(GridKey::SelectAll));
+        assert_eq!(key("cmd-c"), Some(GridKey::Copy));
+        assert_eq!(key("escape"), Some(GridKey::Escape));
+        assert_eq!(key("a"), None);
+        assert_eq!(key("space"), None);
+        assert_eq!(key("cmd-x"), None);
+        assert_eq!(key("cmd-v"), None);
+    }
+
+    #[test]
+    fn apply_key_moves_extends_jumps_to_edges_and_pages_within_the_sheet() {
+        let s = sheet(3, 10);
+        let c = |row, col| Cell { row, col };
+        let at = |row, col| Some(Selection::cell(c(row, col)));
+        let from = at(5, 1);
+        assert_eq!(apply_key(GridKey::Move(1, 1), from.as_ref(), &s, 4), at(6, 2));
+        assert_eq!(apply_key(GridKey::Move(0, 5), from.as_ref(), &s, 4), at(5, 2), "clamped to the last column");
+        assert_eq!(apply_key(GridKey::Move(-9, 0), from.as_ref(), &s, 4), at(0, 1), "Up reaches the header");
+        assert_eq!(apply_key(GridKey::Extend(2, 0), from.as_ref(), &s, 4), Some(Selection { anchor: c(5, 1), head: c(7, 1), scope: Scope::Cells }));
+        assert_eq!(apply_key(GridKey::Edge(-1, 0), from.as_ref(), &s, 4), at(0, 1));
+        assert_eq!(apply_key(GridKey::Edge(1, 0), from.as_ref(), &s, 4), at(10, 1));
+        assert_eq!(apply_key(GridKey::Edge(0, -1), from.as_ref(), &s, 4), at(5, 0));
+        assert_eq!(apply_key(GridKey::Edge(0, 1), from.as_ref(), &s, 4), at(5, 2));
+        assert_eq!(apply_key(GridKey::Extend(isize::MAX, 0), from.as_ref(), &s, 4), Some(Selection { anchor: c(5, 1), head: c(10, 1), scope: Scope::Cells }));
+        assert_eq!(apply_key(GridKey::Extend(0, isize::MIN), from.as_ref(), &s, 4), Some(Selection { anchor: c(5, 1), head: c(5, 0), scope: Scope::Cells }));
+        assert_eq!(apply_key(GridKey::RowStart, from.as_ref(), &s, 4), at(5, 0));
+        assert_eq!(apply_key(GridKey::RowEnd, from.as_ref(), &s, 4), at(5, 2));
+        assert_eq!(apply_key(GridKey::PageDown, from.as_ref(), &s, 4), at(9, 1));
+        assert_eq!(apply_key(GridKey::PageDown, at(8, 1).as_ref(), &s, 4), at(10, 1), "clamped to the last row");
+        assert_eq!(apply_key(GridKey::PageUp, from.as_ref(), &s, 4), at(1, 1));
+        let all = apply_key(GridKey::SelectAll, from.as_ref(), &s, 4).unwrap();
+        assert_eq!((all.scope, all.anchor), (Scope::All, c(0, 0)));
+        assert_eq!(apply_key(GridKey::Copy, from.as_ref(), &s, 4), from);
+        assert_eq!(apply_key(GridKey::Escape, from.as_ref(), &s, 4), None);
+    }
+
+    #[test]
+    fn the_first_arrow_without_a_selection_selects_the_first_body_cell() {
+        let s = sheet(3, 10);
+        let first = Some(Selection::cell(Cell { row: 1, col: 0 }));
+        for k in [GridKey::Move(0, 1), GridKey::Extend(1, 0), GridKey::Edge(1, 0), GridKey::RowEnd, GridKey::RowStart, GridKey::PageUp, GridKey::PageDown] {
+            assert_eq!(apply_key(k, None, &s, 4), first, "{k:?}");
+        }
+        assert_eq!(apply_key(GridKey::Escape, None, &s, 4), None);
+        assert_eq!(apply_key(GridKey::Copy, None, &s, 4), None);
     }
 
     #[test]
