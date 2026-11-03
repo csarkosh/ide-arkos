@@ -1,0 +1,48 @@
+# The student: an algorithms course in one folder. The week's lecture notes rendered on the
+# left with a problem set's code in the next tab, and Claude Code on the right explaining why
+# the problem set's tests fail, fixing it, and adding practice questions to the notes, which
+# change on the left as it writes. Shot in Composition Notebook: a marbled cover, ruled pages,
+# the terminal written in by hand.
+
+[scene]
+name = "student"
+caption = "The student"
+
+[demo]
+name = "algorithms"
+dir = "~/Projects/algorithms"
+fixture = "scripts/shoot/demo/study"
+
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar_width = 230
+expanded = ["lectures", "psets", "psets/pset4"]
+theme = { dark = "composition-notebook", light = "composition-notebook" }
+
+[[pane]]
+name = "notes"
+view = "lectures/06-dynamic-programming.md"
+
+[[pane]]
+name = "pset"
+view = "psets/pset4/knapsack.py"
+
+[[pane]]
+name = "tutor"
+claude = "The tests in psets/pset4 fail. Read lectures/06-dynamic-programming.md first, then explain the bug to me in two or three plain sentences, as a classmate would. Fix psets/pset4/knapsack.py and run the tests with: cd psets/pset4 && python3 -m unittest. Then add a Practice section at the end of the lecture notes with three short questions on memoisation versus tabulation, and tick the knapsack item in its checklist. Change nothing else."
+
+[layout]
+split = "horizontal"
+ratio = 0.5
+first = { tabs = ["notes", "pset"] }
+second = { tabs = ["tutor"] }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { tutor = "working" }
+changed = { tutor = 1 }
+after_secs = 30
+timeout_secs = 300

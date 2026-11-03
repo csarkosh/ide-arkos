@@ -857,6 +857,9 @@ theme = "light"
             for folder in &story.window.expanded {
                 assert!(fixture.join(folder).is_dir(), "{}: the fixture has no folder {folder}", path.display());
             }
+            for theme in [&story.window.theme.dark, &story.window.theme.light] {
+                assert!(root.join("crates/arkos/themes").join(format!("{theme}.toml")).is_file(), "{}: the window names no built-in theme {theme}", path.display());
+            }
             for effect in &story.effects {
                 assert!(root.join("crates/arkos/effects").join(&effect.name).join("effect.toml").is_file(), "{}: no built-in effect {}", path.display(), effect.name);
             }
@@ -873,7 +876,7 @@ theme = "light"
             names.push(story.scene.name);
         }
         names.sort();
-        assert_eq!(names, ["blogger", "hacker", "multitasker", "probe", "web-developer"]);
+        assert_eq!(names, ["blogger", "data-analyst", "hacker", "multitasker", "probe", "student", "web-developer"]);
     }
 
     #[test]

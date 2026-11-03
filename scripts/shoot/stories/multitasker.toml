@@ -73,15 +73,16 @@ timeout_secs = 420
 name = "tabs"
 rect = [0.0, 0.0, 1.0, 0.075]
 
-# After the still, the same window through four of the built-in themes, four seconds each,
+# After the still, the same window through seven of the built-in themes, five seconds each,
 # and back to the first, as a loop for the app's page (apps.csarko.sh): Navy's rune rain, the
-# two light themes' watercolor wash and ink, Matrix's phosphor rain and decode. The two short
+# two watercolor themes' wash and ink, Matrix's phosphor rain and decode, Composition
+# Notebook's cover and ruled pages, and Material's and Lavender Material's cards. The two short
 # sessions have answered by then; the long ones go on working through the theme changes.
 [[recording]]
 name = "themes"
 wait = { blog = "waiting", budget = "waiting" }
-themes = ["navy-runic", "lavender-watercolor", "peach-watercolor", "matrix"]
-hold_secs = 6
+themes = ["navy-runic", "lavender-watercolor", "peach-watercolor", "matrix", "composition-notebook", "material", "lavender-material"]
+hold_secs = 5
 
 # The page's opening clip (cinema.py): the window held in Navy for eight seconds while the
 # camera pulls back from its tab bar into the key art, the web developer's and the blogger's
