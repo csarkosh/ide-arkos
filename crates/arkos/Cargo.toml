@@ -57,6 +57,9 @@ block2 = "0.6"
 # core-video's type, which does not re-export the trait.
 core-foundation = "0.10"
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+# Reads xlsx, xlsm, xlsb, xls and ods into the grid model (pure Rust, MIT). The `dates` feature stays
+# off: it would pull in chrono, and workbook.rs converts serial dates itself.
+calamine = { version = "0.38", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

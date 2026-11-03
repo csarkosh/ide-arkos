@@ -98,6 +98,7 @@ mod web;
 mod web_element;
 mod web_view;
 mod wk_web_view;
+mod workbook;
 mod workspace;
 mod worktrees;
 
