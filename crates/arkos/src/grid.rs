@@ -46,7 +46,7 @@ pub enum ColumnKind {
     Number,
 }
 
-/// One table: a header, body rows all as long as the header, a kind per column, the number the
+/// One table: a header, body rows that may be shorter than it (a missing cell reads as empty), a kind per column, the number the
 /// first body row shows, and what the caps dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sheet {
@@ -92,17 +92,19 @@ impl Sheet {
         row.and_then(|r| r.get(cell.col)).map(String::as_str).unwrap_or("")
     }
 
-    /// Builds a sheet from a header and rows: every row is padded to the widest (header
-    /// included), rows past `MAX_ROWS` and columns past `MAX_COLS` are dropped and counted, and
-    /// the column kinds are inferred from the rows kept.
+    /// Builds a sheet from a header and rows: rows past `MAX_ROWS` are dropped and counted, the
+    /// width is the widest kept row (header included) cut at `MAX_COLS` with the overflow counted,
+    /// the header is padded to the width, and the column kinds are inferred from the rows kept.
+    /// Body rows stay ragged: a row is as long as its record, and `text` reads a missing cell as
+    /// empty.
     pub fn cap(name: String, mut header: Vec<String>, mut rows: Vec<Vec<String>>) -> Sheet {
-        let widest = rows.iter().map(Vec::len).max().unwrap_or(0).max(header.len());
-        let width = widest.min(MAX_COLS);
         let truncated = (rows.len() > MAX_ROWS).then(|| rows.len() - MAX_ROWS);
         rows.truncate(MAX_ROWS);
+        let widest = rows.iter().map(Vec::len).max().unwrap_or(0).max(header.len());
+        let width = widest.min(MAX_COLS);
         header.resize(width, String::new());
         for row in &mut rows {
-            row.resize(width, String::new());
+            row.truncate(width);
         }
         let kinds = column_kinds(width, &rows);
         Sheet { name, header, rows, kinds, first_row: 2, truncated, cols_dropped: widest - width }
@@ -133,73 +135,94 @@ pub fn decode(bytes: &[u8]) -> Cow<'_, str> {
 }
 
 /// The delimiter a file uses. A `.tsv` is tab. Otherwise each candidate is counted outside quotes
-/// on the first 20 non-empty lines: one whose count is the same, and above zero, on every line is
-/// consistent, and the consistent one with the most per line wins. With none, comma.
+/// on the first 20 non-empty records, quoting as `parse` does (only a quote leading a field opens
+/// a quoted section): one whose count is the same, and above zero, on every record is consistent,
+/// and the consistent one with the most per record wins. With none, comma.
 pub fn sniff(text: &str, path: &Path) -> Delimiter {
     if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("tsv")) {
         return Delimiter::Tab;
     }
-    let mut lines: Vec<[usize; 4]> = Vec::new();
-    let mut counts = [0usize; 4];
-    let mut any = false;
-    let mut in_quotes = false;
-    for &b in text.as_bytes() {
-        if lines.len() >= 20 {
-            break;
-        }
-        match b {
-            b'"' => {
-                in_quotes = !in_quotes;
-                any = true;
-            }
-            b'\n' | b'\r' if !in_quotes => {
-                if any {
-                    lines.push(counts);
-                }
-                counts = [0; 4];
-                any = false;
-            }
-            _ => {
-                any = true;
-                if !in_quotes {
-                    if let Some(i) = CANDIDATES.iter().position(|d| d.byte() == b) {
-                        counts[i] += 1;
-                    }
-                }
-            }
-        }
-    }
-    if any && lines.len() < 20 {
-        lines.push(counts);
-    }
-    let Some(first) = lines.first() else { return Delimiter::Comma };
     let mut best: Option<(usize, Delimiter)> = None;
-    for (i, d) in CANDIDATES.iter().enumerate() {
-        let n = first[i];
-        if n > 0 && lines.iter().all(|l| l[i] == n) && best.is_none_or(|(m, _)| n > m) {
-            best = Some((n, *d));
+    for d in CANDIDATES {
+        let counts = record_counts(text.as_bytes(), d.byte());
+        let Some(&n) = counts.first() else { continue };
+        if n > 0 && counts.iter().all(|&c| c == n) && best.is_none_or(|(m, _)| n > m) {
+            best = Some((n, d));
         }
     }
     best.map_or(Delimiter::Comma, |(_, d)| d)
 }
 
+/// The delimiter count of each of the first 20 non-empty records, read as `parse` would.
+fn record_counts(bytes: &[u8], d: u8) -> Vec<usize> {
+    let mut out = Vec::new();
+    let (mut count, mut any) = (0, false);
+    let (mut in_quotes, mut field_start) = (false, true);
+    let mut i = 0;
+    while i < bytes.len() && out.len() < 20 {
+        let b = bytes[i];
+        if in_quotes {
+            if b == b'"' {
+                if bytes.get(i + 1) == Some(&b'"') {
+                    i += 1;
+                } else {
+                    in_quotes = false;
+                }
+            }
+        } else if b == b'"' && field_start {
+            in_quotes = true;
+            field_start = false;
+            any = true;
+        } else if b == b'\n' || b == b'\r' {
+            if any {
+                out.push(count);
+            }
+            (count, any, field_start) = (0, false, true);
+        } else {
+            any = true;
+            field_start = b == d;
+            if b == d {
+                count += 1;
+            }
+        }
+        i += 1;
+    }
+    if any && out.len() < 20 {
+        out.push(count);
+    }
+    out
+}
+
 /// Parses RFC 4180 text: fields split on the delimiter, a field opening with a double quote may
 /// hold the delimiter, doubled quotes and line breaks, and records end at `\n`, `\r\n` or a lone
 /// `\r`. A quote inside an unquoted field is literal and a final line break adds no record. The
-/// first record is the header.
+/// first record is the header. The caps apply as it reads: records past the header and
+/// `MAX_ROWS` rows, and fields past `MAX_COLS`, are counted and never stored.
 pub fn parse(text: &str, delimiter: Delimiter, name: &str) -> Sheet {
     let d = delimiter.byte();
     let bytes = text.as_bytes();
     let mut records: Vec<Vec<String>> = Vec::new();
     let mut record: Vec<String> = Vec::new();
     let mut field: Vec<u8> = Vec::new();
+    let mut fields = 0usize; // fields read in the current record, stored or not
+    let mut widest = 0usize; // the most fields in any stored record
+    let mut dropped = 0usize; // records past the cap
     let mut in_quotes = false;
     let mut at_start = true; // nothing read yet in the current record
     let mut field_start = true; // nothing read yet in the current field
     let mut i = 0;
-    let finish = |field: &mut Vec<u8>| String::from_utf8(std::mem::take(field)).unwrap_or_default();
+    // Ends a field: stored unless the record is past the row cap or the field past the column cap.
+    let end_field = |field: &mut Vec<u8>, record: &mut Vec<String>, fields: &mut usize, keep: bool| {
+        *fields += 1;
+        if keep && record.len() < MAX_COLS {
+            record.push(String::from_utf8(std::mem::take(field)).unwrap_or_default());
+        } else {
+            field.clear();
+        }
+    };
     while i < bytes.len() {
         let b = bytes[i];
+        let keep = records.len() <= MAX_ROWS;
         if in_quotes {
             if b == b'"' {
                 if bytes.get(i + 1) == Some(&b'"') {
@@ -216,15 +239,21 @@ pub fn parse(text: &str, delimiter: Delimiter, name: &str) -> Sheet {
             field_start = false;
             at_start = false;
         } else if b == d {
-            record.push(finish(&mut field));
+            end_field(&mut field, &mut record, &mut fields, keep);
             field_start = true;
             at_start = false;
         } else if b == b'\n' || b == b'\r' {
             if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
                 i += 1;
             }
-            record.push(finish(&mut field));
-            records.push(std::mem::take(&mut record));
+            end_field(&mut field, &mut record, &mut fields, keep);
+            if keep {
+                widest = widest.max(fields);
+                records.push(std::mem::take(&mut record));
+            } else {
+                dropped += 1;
+            }
+            fields = 0;
             field_start = true;
             at_start = true;
         } else {
@@ -235,12 +264,21 @@ pub fn parse(text: &str, delimiter: Delimiter, name: &str) -> Sheet {
         i += 1;
     }
     if !at_start {
-        record.push(finish(&mut field));
-        records.push(record);
+        let keep = records.len() <= MAX_ROWS;
+        end_field(&mut field, &mut record, &mut fields, keep);
+        if keep {
+            widest = widest.max(fields);
+            records.push(record);
+        } else {
+            dropped += 1;
+        }
     }
     let mut records = records.into_iter();
     let header = records.next().unwrap_or_default();
-    Sheet::cap(name.to_string(), header, records.collect())
+    let mut sheet = Sheet::cap(name.to_string(), header, records.collect());
+    sheet.truncated = (dropped > 0).then_some(dropped);
+    sheet.cols_dropped = widest.saturating_sub(MAX_COLS);
+    sheet
 }
 
 /// A kind for each of `header_len` columns: `Number` when the column has a non-empty body cell
@@ -494,7 +532,9 @@ mod tests {
         let s = csv("a,b\n1\n1,2,3\n");
         assert_eq!(s.cols(), 3);
         assert_eq!(s.header, vec!["a", "b", ""]);
-        assert_eq!(s.rows, vec![vec!["1", "", ""], vec!["1", "2", "3"]]);
+        assert_eq!(s.rows, vec![vec!["1"], vec!["1", "2", "3"]]);
+        assert_eq!(s.text(c(1, 2)), "");
+        assert_eq!(s.text(c(2, 2)), "3");
         assert_eq!(s.kinds.len(), 3);
     }
 
@@ -527,6 +567,33 @@ mod tests {
     #[test]
     fn semicolons_inside_quotes_do_not_sway_the_sniff() {
         assert_eq!(sniff("a,b\n\"x;y;z\",2\n\"q;r\",3\n", Path::new("x.csv")), Delimiter::Comma);
+    }
+
+    #[test]
+    fn a_quote_mid_field_does_not_sway_the_sniff() {
+        assert_eq!(sniff("a;b\n5\" nail;x\n3\" bolt;y\n", Path::new("x.csv")), Delimiter::Semicolon);
+        assert_eq!(sniff("a|b\n\"q|r\"|x\n6\" pipe|y\n", Path::new("x.csv")), Delimiter::Pipe);
+    }
+
+    #[test]
+    fn a_text_past_the_row_cap_parses_capped_and_counts_the_rest() {
+        let text = format!("h\n{}", "x\n".repeat(MAX_ROWS + 5));
+        let s = csv(&text);
+        assert_eq!(s.rows.len(), MAX_ROWS);
+        assert_eq!(s.truncated, Some(5));
+        let wide = format!("{}\n", ",".repeat(MAX_COLS + 2));
+        let s = csv(&wide);
+        assert_eq!(s.cols(), MAX_COLS);
+        assert_eq!(s.cols_dropped, 3);
+    }
+
+    #[test]
+    fn a_dropped_row_does_not_widen_the_kept_ones() {
+        let mut rows: Vec<Vec<String>> = (0..MAX_ROWS).map(|_| vec!["1".to_string()]).collect();
+        rows.push(vec!["1".to_string(); 5]);
+        let s = Sheet::cap("t".into(), vec!["h".into()], rows);
+        assert_eq!(s.cols(), 1);
+        assert_eq!(s.cols_dropped, 0);
     }
 
     #[test]
