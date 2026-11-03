@@ -3,6 +3,7 @@
 //! find, and the row and column caps. Everything here is pure; row 0 of a selection is the header.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
@@ -66,7 +67,7 @@ pub enum Source {
 /// The sheets of one file: a delimited file has one, a workbook one per visible sheet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Book {
-    pub sheets: Vec<Sheet>,
+    pub sheets: Vec<Arc<Sheet>>,
     pub source: Source,
 }
 
@@ -430,8 +431,6 @@ pub fn with_header(sel: &Selection) -> Selection {
 
 /// Every cell whose text contains the needle, case-insensitively, in reading order with the
 /// header first, at most `MAX_HITS`.
-// Task 6 (find over the cells) calls this.
-#[allow(dead_code)]
 pub fn find(sheet: &Sheet, needle: &str) -> Vec<Cell> {
     let needle = needle.to_lowercase();
     let mut hits = Vec::new();

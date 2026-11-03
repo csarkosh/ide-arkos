@@ -757,6 +757,8 @@ pub fn apply_key(key: GridKey, sel: Option<&Selection>, sheet: &Sheet, page: usi
             let origin = Cell { row: 0, col: 0 };
             Some(Selection { anchor: origin, head: origin, scope: Scope::All })
         }
+        // A page key with nothing selected is for the pane's scroll keys.
+        GridKey::PageUp | GridKey::PageDown if sel.is_none() => None,
         _ => {
             let Some(s) = sel else { return Some(Selection::cell(Cell { row: 1, col: 0 }).clamp(sheet)) };
             let h = s.head;
@@ -854,11 +856,17 @@ mod tests {
     fn the_first_arrow_without_a_selection_selects_the_first_body_cell() {
         let s = sheet(3, 10);
         let first = Some(Selection::cell(Cell { row: 1, col: 0 }));
-        for k in [GridKey::Move(0, 1), GridKey::Extend(1, 0), GridKey::Edge(1, 0), GridKey::RowEnd, GridKey::RowStart, GridKey::PageUp, GridKey::PageDown] {
+        for k in [GridKey::Move(0, 1), GridKey::Extend(1, 0), GridKey::Edge(1, 0), GridKey::RowEnd, GridKey::RowStart] {
             assert_eq!(apply_key(k, None, &s, 4), first, "{k:?}");
         }
         assert_eq!(apply_key(GridKey::Escape, None, &s, 4), None);
-        assert_eq!(apply_key(GridKey::Copy, None, &s, 4), None);
+        assert_eq!(apply_key(GridKey::Copy, None, &s, 4), None);    }
+
+    #[test]
+    fn a_page_key_without_a_selection_is_left_for_the_scroll_keys() {
+        let s = sheet(3, 10);
+        assert_eq!(apply_key(GridKey::PageDown, None, &s, 4), None);
+        assert_eq!(apply_key(GridKey::PageUp, None, &s, 4), None);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::Arc;
 
 use calamine::{open_workbook_auto, Data, Reader, SheetVisible, Sheets};
 
@@ -59,13 +60,13 @@ fn read_unguarded(path: &Path) -> Result<Book, String> {
         let header = (0..range.width()).map(|i| column_letters(first_col as usize + i)).collect();
         let mut sheet = Sheet::cap(name, header, rows);
         sheet.first_row = first_row as usize + 1;
-        sheets.push(sheet);
+        sheets.push(Arc::new(sheet));
     }
     if sheets.is_empty() {
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let mut sheet = Sheet::cap(stem, Vec::new(), Vec::new());
         sheet.first_row = 1;
-        sheets.push(sheet);
+        sheets.push(Arc::new(sheet));
     }
     Ok(Book { sheets, source: Source::Workbook })
 }

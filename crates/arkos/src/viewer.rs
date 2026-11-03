@@ -88,7 +88,7 @@ pub fn delimited_book(text: &str, path: &Path) -> grid::Book {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let delimiter = grid::sniff(text, path);
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    grid::Book { sheets: vec![grid::parse(text, delimiter, &stem)], source: grid::Source::Delimited(delimiter) }
+    grid::Book { sheets: vec![Arc::new(grid::parse(text, delimiter, &stem))], source: grid::Source::Delimited(delimiter) }
 }
 
 /// Whether the grid shows: a workbook's always, a delimited file's in Rendered mode.
@@ -98,7 +98,36 @@ pub fn grid_shows(book: Option<&grid::Book>, mode: ViewMode) -> bool {
 
 /// The book's sheet at `sheet`, `None` without a book or past its sheets.
 pub fn sheet_of(book: Option<&grid::Book>, sheet: usize) -> Option<&grid::Sheet> {
-    book.and_then(|b| b.sheets.get(sheet))
+    book.and_then(|b| b.sheets.get(sheet)).map(|s| &**s)
+}
+
+/// How many hits the find bar counts: the cells' while the grid shows, else the lines'.
+pub fn find_hit_count(grid: bool, line_hits: usize, cell_hits: usize) -> usize {
+    if grid {
+        cell_hits
+    } else {
+        line_hits
+    }
+}
+
+/// Where a landed search points: the first hit for a new query, else the old position kept
+/// within the new hits (a reload).
+pub fn search_landing(jump: bool, current: usize, len: usize) -> usize {
+    if jump {
+        0
+    } else {
+        current.min(len.saturating_sub(1))
+    }
+}
+
+/// The cell the find is on, `None` without hits.
+pub fn current_cell(hits: &[grid::Cell], current: usize) -> Option<grid::Cell> {
+    hits.get(current).copied()
+}
+
+/// The grid's selection once the bar closes: the current hit, else what it was.
+pub fn grid_close_selection(hits: &[grid::Cell], current: usize, sel: Option<grid::Selection>) -> Option<grid::Selection> {
+    current_cell(hits, current).map(grid::Selection::cell).or(sel)
 }
 
 /// The rows the grid paints while it shows: the active sheet's body rows and its header. `None`
@@ -1501,6 +1530,9 @@ impl Viewer {
             return;
         }
         self.mode = mode;
+        // The bar's hits are cells in one mode and lines in the other.
+        self.grid_hits.clear();
+        self.search(false, cx);
         // Raw mode's edits reach the grid: the book is parsed again from the document's text off
         // this thread, the old one shown until it lands. A load that applied meanwhile wins, and
         // so does a newer rebuild (`rebuild_lands`).
@@ -1517,6 +1549,7 @@ impl Viewer {
                     v.book_gen += 1;
                     (v.sheet, v.grid_sel) = grid_place(v.book.as_ref(), v.sheet, v.grid_sel);
                     v.grid_hits.clear();
+                    v.search(false, cx);
                     v.scroll.clamp_max(v.max_scroll());
                     cx.notify();
                 });
@@ -1786,6 +1819,8 @@ impl Viewer {
                 return true;
             }
             grid_view::GridKey::Escape if self.grid_sel.is_none() => return false,
+            // With nothing selected a page key scrolls the pane.
+            grid_view::GridKey::PageUp | grid_view::GridKey::PageDown if self.grid_sel.is_none() => return false,
             _ => {}
         }
         let page = self.rows_visible.max(1);
@@ -1883,8 +1918,15 @@ impl Viewer {
     }
 
     pub fn close_find(&mut self, cx: &mut Context<Self>) {
-        self.select_current_hit(cx);
+        if self.grid_shown() {
+            // The current hit becomes the grid's selection.
+            let current = self.find.as_ref().map_or(0, |f| f.current);
+            self.grid_sel = grid_close_selection(&self.grid_hits, current, self.grid_sel);
+        } else {
+            self.select_current_hit(cx);
+        }
         self.find = None;
+        self.grid_hits.clear();
         // A search still running lands in no later bar.
         self.find_seq += 1;
         // The current hit's block was raw while the bar was open; the view goes back to the caret.
@@ -1904,6 +1946,13 @@ impl Viewer {
     /// newer search started; with `jump` it points at the first hit and scrolls to it, else the
     /// position is kept (a reload).
     fn search(&mut self, jump: bool, cx: &mut Context<Self>) {
+        if self.find.is_none() {
+            return;
+        }
+        if self.grid_shown() {
+            return self.search_grid(jump, cx);
+        }
+        self.grid_hits.clear();
         let Some(f) = &mut self.find else { return };
         self.find_seq += 1;
         let seq = self.find_seq;
@@ -1926,7 +1975,7 @@ impl Viewer {
                     return;
                 }
                 let Some(f) = &mut v.find else { return };
-                f.current = if jump { 0 } else { f.current.min(hits.len().saturating_sub(1)) };
+                f.current = search_landing(jump, f.current, hits.len());
                 f.hits = hits;
                 f.searching = false;
                 if jump {
@@ -1938,7 +1987,59 @@ impl Viewer {
         .detach();
     }
 
+    /// The grid's search: `grid::find` over the active sheet on the background executor, under
+    /// the same `find_seq` guard as the line search. The cells land in `grid_hits`; `find.hits`
+    /// stays empty while the grid shows.
+    fn search_grid(&mut self, jump: bool, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        self.find_seq += 1;
+        let seq = self.find_seq;
+        f.hits.clear();
+        let sheet = self.book.as_ref().and_then(|b| b.sheets.get(self.sheet)).cloned();
+        let Some(sheet) = sheet.filter(|_| !f.query.text.is_empty()) else {
+            f.current = 0;
+            f.searching = false;
+            self.grid_hits.clear();
+            return;
+        };
+        f.searching = true;
+        let query = f.query.text.clone();
+        cx.spawn(async move |this, cx| {
+            let hits = cx.background_executor().spawn(async move { grid::find(&sheet, &query) }).await;
+            let _ = this.update(cx, |v, cx| {
+                if !should_apply(seq, v.find_seq.saturating_sub(1)) {
+                    return;
+                }
+                let Some(f) = &mut v.find else { return };
+                f.current = search_landing(jump, f.current, hits.len());
+                f.searching = false;
+                let cell = current_cell(&hits, f.current);
+                v.grid_hits = hits;
+                if let Some(c) = cell.filter(|_| jump) {
+                    v.reveal_grid_cell(c);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// How many hits the bar counts, the cells' while the grid shows.
+    pub fn hit_count(&self) -> usize {
+        find_hit_count(self.grid_shown(), self.find.as_ref().map_or(0, |f| f.hits.len()), self.grid_hits.len())
+    }
+
     pub fn find_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.grid_shown() {
+            let len = self.grid_hits.len();
+            let Some(f) = &mut self.find else { return };
+            f.current = step(f.current, len, delta);
+            if let Some(c) = current_cell(&self.grid_hits, f.current) {
+                self.reveal_grid_cell(c);
+            }
+            cx.notify();
+            return;
+        }
         if let Some(f) = &mut self.find {
             f.current = step(f.current, f.hits.len(), delta);
         }
@@ -4047,9 +4148,10 @@ pub fn count_text(current: usize, len: usize) -> String {
 /// go to `find_key`, Cmd+V pastes; a click focuses `pane`. It fades and slides like the
 /// terminal's; while closing it is only drawn.
 pub fn find_bar(viewer: &Entity<Viewer>, pane: PaneId, theme: &Theme, family: SharedString, bars: &mut Fades<EntityId, FindLook>, now: Instant, cx: &mut Context<Root>) -> Option<Div> {
-    let (look, focus) = match viewer.read(cx).find.as_ref() {
+    let v = viewer.read(cx);
+    let (look, focus) = match v.find.as_ref() {
         Some(f) => {
-            let count = if f.searching { "searching".to_string() } else { count_text(f.current, f.hits.len()) };
+            let count = if f.searching { "searching".to_string() } else { count_text(f.current, v.hit_count()) };
             (Some(FindLook { query: f.query.clone(), count }), Some(f.focus.clone()))
         }
         None => (None, None),
@@ -6993,6 +7095,57 @@ mod tests {
         assert_eq!(all.rect(sheet), (0..=2, 0..=1));
         assert_eq!(grid_dragged(Some(all), Hit::Cell(Cell { row: 1, col: 1 })).map(|a| a.rect(sheet)), Some((0..=2, 0..=1)), "everything stays everything");
         assert_eq!(grid_pressed(Some(Selection::cell(Cell { row: 1, col: 1 })), Hit::Corner, true).map(|s| s.scope), Some(Scope::All));
+    }
+
+    #[test]
+    fn a_grid_search_lands_its_cells_and_the_count_reads_as_today() {
+        use crate::grid::Cell;
+        let s = delimited_book("name,city\nAda,Paris\nAlan,Parma\n", Path::new("/p/x.csv"));
+        let cells = grid::find(&s.sheets[0], "par");
+        assert_eq!(cells, [Cell { row: 1, col: 1 }, Cell { row: 2, col: 1 }]);
+        assert_eq!(find_hit_count(true, 7, cells.len()), 2, "the grid's cells count, not the lines'");
+        assert_eq!(count_text(0, find_hit_count(true, 7, cells.len())), "1 of 2");
+        assert_eq!(count_text(0, find_hit_count(true, 7, 0)), "no matches");
+        assert_eq!(search_landing(true, 5, cells.len()), 0, "a new query points at the first cell");
+    }
+
+    #[test]
+    fn find_step_wraps_through_the_grid_hits_and_reveals_each() {
+        use crate::grid::Cell;
+        let hits = [Cell { row: 1, col: 1 }, Cell { row: 2, col: 0 }, Cell { row: 9, col: 3 }];
+        let mut cur = 0;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            cur = step(cur, hits.len(), 1);
+            seen.push(current_cell(&hits, cur));
+        }
+        assert_eq!(seen, [Some(hits[1]), Some(hits[2]), Some(hits[0]), Some(hits[1])]);
+        assert_eq!(step(0, hits.len(), -1), 2, "Shift+Enter wraps back to the last");
+        assert_eq!(current_cell(&[], 0), None, "nothing to reveal without hits");
+    }
+
+    #[test]
+    fn closing_the_bar_leaves_the_current_hit_selected_in_the_grid() {
+        use crate::grid::{Cell, Selection};
+        let hits = [Cell { row: 1, col: 1 }, Cell { row: 4, col: 2 }];
+        assert_eq!(grid_close_selection(&hits, 1, None), Some(Selection::cell(hits[1])));
+        let old = Selection::cell(Cell { row: 3, col: 0 });
+        assert_eq!(grid_close_selection(&[], 0, Some(old)), Some(old), "without a hit the selection stays");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_grid_search_position() {
+        assert_eq!(search_landing(false, 3, 5), 3);
+        assert_eq!(search_landing(false, 3, 2), 1, "clamped when the file shrank");
+        assert_eq!(search_landing(false, 3, 0), 0);
+    }
+
+    #[test]
+    fn a_search_in_raw_mode_is_the_line_search() {
+        assert_eq!(find_hit_count(false, 7, 2), 7, "the lines' hits count while the grid is hidden");
+        let book = delimited_book("a\nb\n", Path::new("/p/x.csv"));
+        assert!(!grid_shows(Some(&book), ViewMode::Raw));
+        assert!(grid_shows(Some(&book), ViewMode::Rendered));
     }
 
     #[test]
