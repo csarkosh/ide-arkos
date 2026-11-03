@@ -26,9 +26,11 @@ theme = { dark = "matrix", light = "matrix" }
 # lines decoding, once the other two have answered. Asked to prove each bug with a working
 # exploit instead, it ended its turn early: once to list its findings in chat, and once when
 # Claude Code's safety check stopped a command-injection proof and it asked how to go on.
+# Rewriting files through a shell heredoc also stopped it at Claude Code's safety prompt (run 31),
+# so it edits only with its edit tools.
 [[pane]]
 name = "audit"
-claude = "Harden src/auth.js and src/server.js (leave src/files.js alone: another session is fixing it). Read both yourself, no subagents, and write findings.md with one short section per security bug, most severe first: the file and line, the risk, and the fix. Then fix every one, each with a regression test in test/security.test.js showing the bad input is now refused, and run npm test until it passes. Work straight through to the end without stopping to summarise or ask me anything."
+claude = "Harden src/auth.js and src/server.js (leave src/files.js alone: another session is fixing it). Read both yourself, no subagents, and write findings.md with one short section per security bug, most severe first: the file and line, the risk, and the fix. Then fix every one, each with a regression test in test/security.test.js showing the bad input is now refused, and run npm test until it passes. Change files only with your edit tools, never through shell commands or scripts. Work straight through to the end without stopping to summarise or ask me anything."
 
 [[pane]]
 name = "traversal"

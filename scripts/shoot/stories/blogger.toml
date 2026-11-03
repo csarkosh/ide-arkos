@@ -18,8 +18,10 @@ height = 1000
 preset = "comfortable"
 sidebar_width = 240
 expanded = ["posts", "notes"]
-# A writer's look: the built-in peach-material theme, cream and peach, in the picture.
-theme = { dark = "peach-material", light = "peach-material" }
+# A writer's look in both watercolor themes: Peach Watercolor in the dark slot for the first
+# picture, Lavender Watercolor in the light slot for the second, the same moment of work in
+# each, so the page can swap between them.
+theme = { dark = "peach-watercolor", light = "lavender-watercolor" }
 
 [[pane]]
 name = "launch plan"
@@ -42,8 +44,17 @@ second = { tabs = ["assistant"] }
 [[shot]]
 name = "dark"
 theme = "dark"
-wait = { assistant = "working" }
+# Both pictures once the session has answered, so the swap between them changes only the theme.
+wait = { assistant = "waiting" }
 changed = { assistant = 1 }
 after_secs = 20
 timeout_secs = 300
 click = [0.42, 0.17]
+
+# The same moment in Lavender Watercolor (the light slot, though both themes are light), taken
+# as soon as the first is: `blogger-lavender.png`.
+[[shot]]
+name = "lavender"
+theme = "light"
+wait = { assistant = "waiting" }
+timeout_secs = 60

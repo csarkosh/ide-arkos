@@ -404,8 +404,8 @@ an effect in without touching the real setup.
 
 Things only a person at the screen can check, in order of value:
 
-- colours: vim or htop with a 256-colour scheme (`:set t_Co=256`, or htop's colour themes) shows the theme's colours (the cube blends the background, foreground and ANSI hues; the greys run from background to foreground), not the fixed xterm ones, in Navy and in Peach Material.
-- colours: Claude Code (theme `custom:arkos`) in Navy, then Peach Material, then back: the lines
+- colours: vim or htop with a 256-colour scheme (`:set t_Co=256`, or htop's colour themes) shows the theme's colours (the cube blends the background, foreground and ANSI hues; the greys run from background to foreground), not the fixed xterm ones, in Navy and in Peach Watercolor.
+- colours: Claude Code (theme `custom:arkos`) in Navy, then Peach Watercolor, then back: the lines
   drawn before each switch take the current theme along with the new ones, diffs show faint green
   and red bands in both, and the user message band is a faint tint of the background.
 - colours: Claude Code on its stock `dark` theme in Lavender Watercolor with watercolor: a diff's
@@ -425,8 +425,10 @@ Things only a person at the screen can check, in order of value:
   the ink line between Explorer and Worktrees, and strokes that fade in and out on the
   selected and hovered Explorer rows and the hovered tab; the window log says `effect
   watercolor: … ms per frame`
+- effects: under Peach Watercolor and Lavender Watercolor the Explorer is a light wash, its names
+  on near-white paper, with the drifting bubbles fainter over it than over the panes
 - effects: Lavender Watercolor shows every pane washed in its own lilac, rose or blue and none in
-  peach or apricot; Peach Material with `effect.name = "watercolor"` keeps its panes' peach,
+  peach or apricot; Peach Watercolor keeps its panes' peach,
   apricot, mauve and dusty rose
 - effects: watercolor on a dark theme (Navy with `effect.name = "watercolor"`) shows its panes
   washed in the theme's own colours as a glaze on the dark paper, each pane its own, with
@@ -503,7 +505,7 @@ Things only a person at the screen can check, in order of value:
   selected Explorer row as a light blue pill inset from the sidebar's edges (the same width at any
   indent) with a ripple as it is clicked, a hovered row or tab as a quiet grey pill with no
   ripple, and, while a pane's Claude session works, a thin progress
-  bar sweeping along the bottom of its tab strip; a terminal's text two points in from its card's
+  bar sweeping along the bottom of its tab strip; a terminal's text four points in from its card's
   sides; the text is plain DM Sans and Roboto Mono
 - terminal, block elements: a status line's context bar (`█░░░ 6%`) is a seamless bar of
   cells with its percentage clear after it, under Roboto Mono (Material) as under Menlo; a
@@ -545,7 +547,7 @@ Things only a person at the screen can check, in order of value:
 - effects, space: a window wholly covered by another app's window, or minimised, draws no wash
   frames (the process idle in Activity Monitor), and the sky moves again within half a second of
   the window being seen, without any input
-- effects, space: a light theme (Peach Material) with `effect.name = "space"` keeps its text dark
+- effects, space: a light theme (Peach Watercolor) with `effect.name = "space"` keeps its text dark
   and readable (a deep teal lean, no glow, not dimmed)
 - effects, space: in a release build with Navy and space on, the window idle in front, Activity
   Monitor's CPU for the process (write the figure here); the text is still, so it is redrawn
@@ -580,7 +582,7 @@ Things only a person at the screen can check, in order of value:
 - effects: Navy Runic: the rain, the pane edges and the glowing text in Navy's blue, the hints
   and comments plain; a config with `effect.name = "matrix"` still draws the runic effect
 - themes: Settings, Appearance: Dark theme lists navy, timo-purple, matrix and navy-runic, Light
-  theme lists peach-material, lavender-watercolor, lavender-material, composition-notebook and
+  theme lists peach-watercolor, lavender-watercolor, lavender-material, composition-notebook and
   material; a dark theme set under `[theme] light` shows there
   marked "(a dark theme)"
 - sandbox: `arkos sandbox ~/Projects/x` opens a second window titled "Arkos IDE (sandbox)" with
@@ -817,16 +819,17 @@ Things only a person at the screen can check, in order of value:
 - editing `~/.config/arkos/config.toml` while the app runs: `preset = "relaxed"` resizes every
   terminal within a second; a typo shows a banner with the line number and nothing else changes;
   fixing it clears the banner
-- System Settings > Appearance: Light switches to Peach Material and back, history included
+- System Settings > Appearance: Light switches to Peach Watercolor and back, history included
 - `mode = "dark"` pins Navy whatever the system says
 - Shift+Cmd+P: typing filters, Up/Down and Enter run a command, Escape and a click outside close it
 - "Text preset: compact" in the palette, then Cmd+= on one pane: only that pane grows; choosing
   a preset again resets it; the preset survives a relaunch of that folder
-- "Theme: peach-material" in the palette, then a config reload: the config's theme wins
-- a config naming `peach-light` or `lavender-light` (with no file of that name of your own in the
-  themes folder), then a launch: the file now says `peach-material` or `lavender-watercolor`,
+- "Theme: peach-watercolor" in the palette, then a config reload: the config's theme wins
+- a config naming `peach-light`, `peach-material` or `lavender-light` (with no file of that name of
+  your own in the themes folder), then a launch: the file now says `peach-watercolor` or
+  `lavender-watercolor`,
   comments kept, with no notice, and the window shows that theme
-- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Material." once, the file now says `peach-material` with its comments intact, and the next launch shows nothing; a dark slot naming `navy-light` moves silently to `navy`; editing the file back to `navy-light` while the app runs and reloading migrates it again
+- a config naming `navy-light` (with no `navy-light.toml` of your own in the themes folder), then a launch: the bell shows "Navy Light was removed; your light theme is now Peach Watercolor." once, the file now says `peach-watercolor` with its comments intact, and the next launch shows nothing; a dark slot naming `navy-light` moves silently to `navy`; editing the file back to `navy-light` while the app runs and reloading migrates it again
 - "Extract built-in themes", then editing `~/.config/arkos/themes/navy.toml`'s `window_bg` and
   reloading: the window follows the file; renaming it to `mine.toml` and setting `dark = "mine"`
 - `"split right" = "cmd-d"` under `[keybindings]`: Cmd+D splits, Cmd+\ does not; `""` unbinds
@@ -870,7 +873,7 @@ Things only a person at the screen can check, in order of value:
   `arkos theme current` showing it; afterwards `skills/arkos-ide/SKILL.md` exists in that
   session's config folder (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
 - the same with the skill installed (`arkos guide --install`) and the hooks removed
-- `arkos theme list` shows `navy`, `timo-purple`, `peach-material`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook` and `material` as built in, each dark or light; with Timo Purple
+- `arkos theme list` shows `navy`, `timo-purple`, `peach-watercolor`, `lavender-watercolor`, `lavender-material`, `matrix`, `navy-runic`, `composition-notebook` and `material` as built in, each dark or light; with Timo Purple
   chosen, the purple, cyan and green match the screenshot (check at the offsite demo)
 - About open, close the project window with the red button: the app quits
 - Settings opened from the chooser, a theme or text change, then a folder: the project window

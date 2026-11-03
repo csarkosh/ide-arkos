@@ -18,8 +18,8 @@ height = 860
 preset = "compact"
 sidebar_width = 240
 expanded = ["src"]
-# The built-in lavender-watercolor theme, Visual Studio's modern light look, in the picture.
-theme = { dark = "lavender-watercolor", light = "lavender-watercolor" }
+# The built-in lavender-material theme: lavender's colours as Material cards on a lavender frame.
+theme = { dark = "lavender-material", light = "lavender-material" }
 
 [[pane]]
 name = "rate limit"

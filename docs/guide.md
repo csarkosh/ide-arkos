@@ -406,7 +406,7 @@ Player". Audio still opens in QuickTime Player, and a `.webm` is shown in Finder
 ## Effects
 
 An effect is a shader that paints the project window: a wash under every surface, and
-optionally the text itself. Lavender Watercolor comes with `watercolor`: washes that hug each block with
+optionally the text itself. Peach Watercolor and Lavender Watercolor come with `watercolor`: washes that hug each block with
 a ragged rim, ink outlines with a slow wobble, bubbles drifting behind, the Explorer's selected
 and hovered rows and the hovered tab as fading strokes of pigment, glyphs and emoji written in ink, and UI
 text two points larger. `space` is hidden: Settings and `arkos effect list` leave it out, but a
@@ -419,7 +419,7 @@ with `runic`: faint columns of runes falling at different speeds behind everythi
 thin lines of the theme's accent (green under Matrix, blue under Navy Runic), and the text as glowing type; now and then a letter flickers, mirrored
 and brighter for a tenth of a second. In a terminal, a cell whose text changes scrambles through
 random characters for a moment before it settles (longer while Claude is working), and fresh
-text starts brighter and cools over a second and a half. Material, Peach Material and Lavender Material come with `material`: the
+text starts brighter and cools over a second and a half. Material and Lavender Material come with `material`: the
 title bar, sidebar and status bar are one pale frame with a search bar round the title, each pane
 is a card in the theme's page colour with rounded corners floating on it (white under Material), the pane's number sits on a coloured round
 chip (blue, green, yellow, red in turn), each active tab is underlined in the theme's accent, the selected
@@ -438,7 +438,7 @@ bar is clear over the wash and the page is outlined; on a light theme a page tha
 background of its own sits on the paper with the wash through it, as a document does. Any theme can
 carry any effect, since an effect reads the theme's colours. Pick one in Settings, Appearance (or
 `arkos effect use <name>`); "Theme's choice" follows the theme's own recommendation: `watercolor`
-for Lavender Watercolor, `runic` for Matrix and Navy Runic, `material` for Material, Peach Material and Lavender Material, `notebook` for Composition Notebook, and none for Navy (the default) and Timo
+for Peach Watercolor and Lavender Watercolor, `runic` for Matrix and Navy Runic, `material` for Material and Lavender Material, `notebook` for Composition Notebook, and none for Navy (the default) and Timo
 Purple.
 Effects stay out of About, Settings, Keybindings and the chooser, which keep their plain look.
 Under Reduce Motion the wash holds still and draws only when something changes, no letter
@@ -822,7 +822,7 @@ theme sets every key Claude Code documents, on the `dark-ansi` base:
 | `rainbow_violet_shimmer` | text | `ansi:white` | the `ultrathink` rainbow, shimmer |
 
 Themes are one TOML file each in `~/.config/arkos/themes/`; `navy`,
-`timo-purple`, `peach-material` (warm cream and peach, recommending `material`; it was `peach-light`, with watercolor), `lavender-watercolor` (a VS Code lavender look, recommending `watercolor`; it was `lavender-light`), `lavender-material` (the same colours and fonts, recommending `material`; the two old names still load, and a config naming one is moved to the new name at launch), `matrix` (black and phosphor green), `navy-runic` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) and `material` (white cards on a pale cool frame with a deep blue accent, DM Sans and Roboto Mono, recommending `material`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
+`timo-purple`, `peach-watercolor` (warm cream and peach, recommending `watercolor`; it was `peach-light`, and `peach-material` in 0.8.11), `lavender-watercolor` (a VS Code lavender look, recommending `watercolor`; it was `lavender-light`), `lavender-material` (the same colours and fonts, recommending `material`; the old names still load, and a config naming one is moved to the new name at launch), `matrix` (black and phosphor green), `navy-runic` (Navy's colours with rune rain in Navy's blue), the last two recommending the `runic` effect, `composition-notebook` (ruled off-white pages in blue-black ballpoint, Chalkboard SE and Monaspace Radon, recommending `notebook`) and `material` (white cards on a pale cool frame with a deep blue accent, DM Sans and Roboto Mono, recommending `material`) are built in. Each theme says whether it is dark or light, and Settings lists the dark ones under Dark theme and the light ones under Light theme. [themes.md](themes.md) documents every key;
 `arkos theme list` names the available themes and `arkos theme validate <file>` checks one
 (`ok: {name}`, or the error and exit status 1).
 "Extract built-in themes" in the palette writes the built-ins there to copy from. A theme chosen

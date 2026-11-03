@@ -1,0 +1,47 @@
+# The data analyst: the weekly signups report rendered on the left (a table to fill and a bar
+# chart), Claude Code on the right writing the script that computes this week's numbers and
+# putting them into the report, and the raw export below it. Shot in Material: white cards on a
+# cool frame, each pane's number on a chip of its own colour.
+
+[scene]
+name = "data-analyst"
+caption = "The data analyst"
+
+[demo]
+name = "metrics"
+dir = "~/Projects/metrics"
+fixture = "scripts/shoot/demo/metrics"
+
+[window]
+width = 1320
+height = 860
+preset = "compact"
+sidebar_width = 220
+expanded = ["data"]
+theme = { dark = "material", light = "material" }
+
+[[pane]]
+name = "report"
+view = "report.md"
+
+[[pane]]
+name = "numbers"
+claude = "Bring report.md up to this week. Write scripts/weekly.py (Python standard library only) that reads data/signups.csv and prints, for the latest week, visits, signups and conversion (signups over visits) by channel, with the change in signups from the week before. Run it, then fill the This week table in report.md with its numbers, add the latest week to the bar chart, and write one sentence under the table on what moved most. Keep the file's shape and change nothing else."
+
+[[pane]]
+name = "data"
+view = "data/signups.csv"
+
+[layout]
+split = "horizontal"
+ratio = 0.55
+first = { tabs = ["report"] }
+second = { split = "vertical", ratio = 0.6, first = { tabs = ["numbers"] }, second = { tabs = ["data"] } }
+
+[[shot]]
+name = "dark"
+theme = "dark"
+wait = { numbers = "waiting" }
+changed = { numbers = 1 }
+after_secs = 30
+timeout_secs = 300

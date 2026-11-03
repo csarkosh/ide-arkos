@@ -4621,7 +4621,7 @@ fn main() {
     motion::refresh();
     app_nap::hold();
     let config_path = paths::config_file();
-    // Navy Light is no longer built in: a config naming it is moved to Peach Material (or Navy for
+    // Navy Light is no longer built in: a config naming it is moved to Peach Watercolor (or Navy for
     // the dark slot) before it is parsed, and the window says so once when the light theme moved
     // (the file never names it again). Before the fingerprint, so the rewritten file is the one
     // fingerprinted.
