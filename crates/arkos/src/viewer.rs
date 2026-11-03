@@ -81,8 +81,10 @@ pub fn renders(path: &Path) -> bool {
 }
 
 /// A delimited file's book from its text: one sheet, named after the file's stem, split on the
-/// delimiter the text sniffs to.
+/// delimiter the text sniffs to. A leading byte order mark (a document's text carries its own) is
+/// never part of the first header name.
 pub fn delimited_book(text: &str, path: &Path) -> grid::Book {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let delimiter = grid::sniff(text, path);
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     grid::Book { sheets: vec![grid::parse(text, delimiter, &stem)], source: grid::Source::Delimited(delimiter) }
@@ -121,6 +123,13 @@ pub fn grid_place(book: Option<&grid::Book>, sheet: usize, sel: Option<grid::Sel
 /// document going to its grid, so edits made in raw mode show there.
 pub fn rebuilds_book(path: &Path, to: ViewMode, has_doc: bool) -> bool {
     to == ViewMode::Rendered && has_doc && grid::is_delimited(path)
+}
+
+/// Whether a grid rebuild started when `applied_then` loads had landed and its sequence was
+/// `seq_then` lands now: no load applied since (one that started and was ignored leaves the
+/// text the rebuild parsed on screen) and no newer rebuild started.
+pub fn rebuild_lands(applied_then: u64, applied_now: u64, seq_then: u64, seq_now: u64) -> bool {
+    applied_then == applied_now && seq_then == seq_now
 }
 
 /// Whether the mode pill shows: on a markdown document, and on a delimited file with its book,
@@ -798,6 +807,8 @@ pub struct Viewer {
     pub grid_scroll_x: f32,
     /// The find's hits in the grid, as cells.
     pub grid_hits: Vec<grid::Cell>,
+    /// Numbers every rebuild of the book from the document's text, so only the latest lands.
+    rebuilds: u64,
 }
 
 /// A video playing in the rendered page: its player, and the size of the poster it took the place
@@ -961,6 +972,7 @@ impl Viewer {
             grid_sel: None,
             grid_scroll_x: 0.0,
             grid_hits: Vec::new(),
+            rebuilds: 0,
         }
     }
 
@@ -1363,13 +1375,15 @@ impl Viewer {
         }
         self.mode = mode;
         // Raw mode's edits reach the grid: the book is parsed again from the document's text off
-        // this thread, the old one shown until it lands. A load that started meanwhile wins.
+        // this thread, the old one shown until it lands. A load that applied meanwhile wins, and
+        // so does a newer rebuild (`rebuild_lands`).
         if let Some(doc) = self.doc.as_ref().filter(|_| rebuilds_book(&self.path, mode, true)) {
-            let (text, path, loads) = (doc.to_text(), self.path.clone(), self.loads);
+            self.rebuilds += 1;
+            let (text, path, applied, seq) = (doc.to_text(), self.path.clone(), self.applied, self.rebuilds);
             cx.spawn(async move |this, cx| {
                 let book = cx.background_executor().spawn(async move { delimited_book(&text, &path) }).await;
                 let _ = this.update(cx, |v, cx| {
-                    if v.loads != loads {
+                    if !rebuild_lands(applied, v.applied, seq, v.rebuilds) {
                         return;
                     }
                     v.book = Some(book);
@@ -6560,6 +6574,21 @@ mod tests {
         let b = delimited_book(&doc.to_text(), path);
         assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()], vec!["Alan".into(), "41".into()]]);
         assert_eq!(b.sheets[0].name, "people");
+        // An Excel "CSV UTF-8" document writes its mark back in its text: never in the header.
+        let mut excel = edit::Document::from_text("\"id\",name\n1,Ada\n");
+        excel.bom = true;
+        assert!(excel.to_text().starts_with('\u{feff}'), "the text carries the mark");
+        let b = delimited_book(&excel.to_text(), path);
+        assert_eq!(b.sheets[0].header, ["id", "name"], "no mark, and the quoted first field opened");
+    }
+
+    #[test]
+    fn a_grid_rebuild_lands_unless_a_load_applied_or_a_newer_rebuild_started() {
+        assert!(rebuild_lands(4, 4, 1, 1), "nothing happened meanwhile");
+        assert!(rebuild_lands(4, 4, 1, 1), "a load that started but never applied (unchanged, ignored, a conflict) keeps it");
+        assert!(!rebuild_lands(4, 5, 1, 1), "a load that applied has the newer book");
+        assert!(!rebuild_lands(4, 4, 1, 2), "an older rebuild once a newer one started");
+        assert!(rebuild_lands(4, 4, 2, 2), "the newer one lands");
     }
 
     #[test]
