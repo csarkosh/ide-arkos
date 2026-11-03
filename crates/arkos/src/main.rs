@@ -2,6 +2,7 @@ mod about;
 mod agent_cli;
 mod app_nap;
 mod aux;
+mod bounded;
 mod av_player;
 mod cache;
 mod chooser_sessions;
@@ -4594,6 +4595,8 @@ fn main() {
         Some("config") => std::process::exit(agent_cli::config_cli(&args[2..])),
         Some("telemetry") => std::process::exit(telemetry_cli::telemetry_cli(&args[2..])),
         Some("sandbox") => std::process::exit(sandbox::sandbox_cli(&args[2..])),
+        // The spreadsheet helper the viewer starts (`workbook::read`); not in the usage text.
+        Some(workbook::HELPER_ARG) => std::process::exit(workbook::helper_cli(&args[2..])),
         Some("--help") | Some("-h") | Some("help") => {
             print!("{}", agent_cli::USAGE);
             return;

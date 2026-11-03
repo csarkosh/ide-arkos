@@ -143,8 +143,11 @@ A wide sheet scrolls sideways (Shift+wheel or a horizontal swipe) with the heade
 pinned both ways. Columns are capped at 45% of the pane's width and never wrap, and `[viewer]
 wide_tables` does not apply to grids. A grid keeps the first 200,000 rows and 1,000 columns of a
 sheet and says so in the strip above it ("first 200,000 rows shown, 50,000 more in the file").
-Files over 64 MB show the too-large notice. A CSV over `[viewer] highlight_limit_bytes` still
-shows a grid; only its raw view is plain.
+Files over 64 MB show the too-large notice. A spreadsheet is read in a helper process: one that
+would need more than 2 GB of memory to read (a sheet with cells far apart, or a compressed file
+that unpacks to far more than it looks), or takes more than 2 minutes, shows a notice saying so
+instead of slowing the Mac down. A CSV over `[viewer] highlight_limit_bytes` still shows a grid;
+only its raw view is plain.
 
 `arkos open file.csv` (or `.tsv`, or a spreadsheet) opens the grid in a pane, as do the sidebar,
 the palette's "Open file in pane" and markdown links. `--raw` has no effect on a CSV: the grid

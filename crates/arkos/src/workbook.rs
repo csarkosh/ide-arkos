@@ -1,12 +1,14 @@
-//! Reads spreadsheets (xlsx, xlsm, xlsb, xls, ods) into the grid model through calamine, and turns
-//! its cell values into the text Excel's General format would show.
+//! Reads spreadsheets (xlsx, xlsm, xlsb, xls, ods) into the grid model through calamine, in a
+//! helper process held to a memory ceiling and a time limit, and turns its cell values into the
+//! text Excel's General format would show.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use calamine::{open_workbook_auto, Data, Reader, SheetVisible, Sheets};
 
+use crate::bounded::{Ended, Limits};
 use crate::grid::{self, Book, Sheet, Source};
 use crate::viewer::MAX_PLAIN_BYTES;
 
@@ -18,10 +20,23 @@ pub fn is_workbook(path: &Path) -> bool {
     })
 }
 
-/// Reads the visible, non-empty sheets of a workbook in the workbook's order. A file over
-/// `MAX_PLAIN_BYTES` is refused before it is opened, and a panic inside the reader becomes an
-/// error. A workbook with nothing to show becomes one empty sheet named after the file. The
-/// error is the text the notice shows.
+/// The argument that runs the app binary as the spreadsheet helper: `arkos --read-workbook
+/// <path>` reads one workbook and prints its sheets on standard output.
+pub const HELPER_ARG: &str = "--read-workbook";
+
+/// What the helper may use. calamine builds each sheet as one dense block spanning its used
+/// corners, before any cap of ours applies, so two cells far apart in a small file can ask for
+/// billions of cells; a zip bomb can do the same with real ones. A helper past either limit is
+/// killed and the notice says why.
+const LIMITS: Limits = Limits { memory: 2 << 30, time: Duration::from_secs(120) };
+
+const UNREADABLE: &str = "the spreadsheet could not be read";
+
+/// Reads the visible, non-empty sheets of a workbook in the workbook's order, in a helper
+/// process held to `LIMITS`, so neither a sheet too big for memory nor a crash inside the
+/// reader can take the app down. A file over `MAX_PLAIN_BYTES` is refused before it is opened.
+/// A workbook with nothing to show becomes one empty sheet named after the file. The error is
+/// the text the notice shows.
 pub fn read(path: &Path) -> Result<Book, String> {
     let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if size > MAX_PLAIN_BYTES {
@@ -31,11 +46,65 @@ pub fn read(path: &Path) -> Result<Book, String> {
             MAX_PLAIN_BYTES >> 20
         ));
     }
-    catch_unwind(AssertUnwindSafe(|| read_unguarded(path)))
-        .unwrap_or_else(|_| Err("the spreadsheet could not be read".to_string()))
+    read_in_helper(path)
 }
 
-fn read_unguarded(path: &Path) -> Result<Book, String> {
+#[cfg(not(test))]
+fn read_in_helper(path: &Path) -> Result<Book, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut command = std::process::Command::new(exe);
+    command.arg(HELPER_ARG).arg(path);
+    match crate::bounded::run(command, LIMITS) {
+        Ok(printed) => arrived(&printed),
+        Err(why) => Err(stopped_text(&why)),
+    }
+}
+
+/// Unit tests run inside the test binary, which has no helper command to answer, so they read
+/// in this process. `bounded`'s own tests cover the limits.
+#[cfg(test)]
+fn read_in_helper(path: &Path) -> Result<Book, String> {
+    read_here(path)
+}
+
+/// The helper command: prints `helper_output` and exits.
+pub fn helper_cli(args: &[String]) -> i32 {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if out.write_all(&helper_output(args)).and_then(|()| out.flush()).is_ok() { 0 } else { 1 }
+}
+
+/// What the helper prints for its arguments, a single path: the book read from it, or the
+/// reader's error, as postcard bytes.
+pub fn helper_output(args: &[String]) -> Vec<u8> {
+    let read = match args {
+        [path] => read_here(Path::new(path)),
+        _ => Err(format!("{HELPER_ARG} reads one spreadsheet")),
+    };
+    let sheets: Result<Vec<Sheet>, String> = read.map(|book| book.sheets.into_iter().map(Arc::unwrap_or_clone).collect());
+    postcard::to_allocvec(&sheets).unwrap_or_default()
+}
+
+/// The book or error the helper printed. Output that is neither is an unreadable spreadsheet.
+pub fn arrived(printed: &[u8]) -> Result<Book, String> {
+    match postcard::from_bytes::<Result<Vec<Sheet>, String>>(printed) {
+        Ok(Ok(sheets)) => Ok(Book { sheets: sheets.into_iter().map(Arc::new).collect(), source: Source::Workbook }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(UNREADABLE.to_string()),
+    }
+}
+
+/// The notice for a helper that gave back nothing.
+pub fn stopped_text(why: &Ended) -> String {
+    match why {
+        Ended::Memory => format!("the spreadsheet needs more than {} GB of memory to show", LIMITS.memory >> 30),
+        Ended::Time => format!("the spreadsheet took more than {} minutes to read", LIMITS.time.as_secs() / 60),
+        Ended::Failed(_) => UNREADABLE.to_string(),
+    }
+}
+
+/// Reads the workbook in this process, unguarded: the helper's reader.
+pub fn read_here(path: &Path) -> Result<Book, String> {
     let mut workbook = open_workbook_auto(path).map_err(|e| e.to_string())?;
     // The 1904 date system is a property of the workbook. Ods dates arrive as ISO text, so it
     // does not apply there.
@@ -220,6 +289,39 @@ mod tests {
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid").join(name)
+    }
+
+    #[test]
+    fn a_book_the_helper_prints_arrives_as_it_was_read() {
+        let path = fixture("sheets.xlsx");
+        let printed = helper_output(&[path.to_string_lossy().into_owned()]);
+        assert_eq!(arrived(&printed), read_here(&path));
+        assert!(arrived(&printed).unwrap().sheets.len() > 1, "the fixture has more than one sheet");
+    }
+
+    #[test]
+    fn a_reader_error_the_helper_prints_arrives_as_its_message() {
+        let path = fixture("not-a-workbook.xlsx");
+        let printed = helper_output(&[path.to_string_lossy().into_owned()]);
+        let want = read_here(&path).unwrap_err();
+        assert_eq!(arrived(&printed), Err(want));
+    }
+
+    #[test]
+    fn the_helper_asked_for_no_file_prints_an_error() {
+        assert!(arrived(&helper_output(&[])).is_err());
+    }
+
+    #[test]
+    fn output_that_is_no_book_is_an_unreadable_spreadsheet() {
+        assert_eq!(arrived(b"running 0 tests"), Err("the spreadsheet could not be read".to_string()));
+    }
+
+    #[test]
+    fn a_stopped_helper_says_why_the_spreadsheet_is_not_shown() {
+        assert_eq!(stopped_text(&Ended::Memory), "the spreadsheet needs more than 2 GB of memory to show");
+        assert_eq!(stopped_text(&Ended::Time), "the spreadsheet took more than 2 minutes to read");
+        assert_eq!(stopped_text(&Ended::Failed("signal: 6".to_string())), "the spreadsheet could not be read");
     }
 
     fn book(name: &str) -> grid::Book {

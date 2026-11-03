@@ -408,6 +408,9 @@ spreadsheet (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`) as a read-only grid: a p
 numbers, zebra rows, number columns right-aligned, sniffed delimiters, cell and range selection
 with Cmd+C as tab-separated text, find, and a tab strip for a workbook's sheets. A grid keeps the
 first 200,000 rows and 1,000 columns of a sheet, and files over 64 MB show the too-large notice.
+A spreadsheet is read by the app binary run as a helper (`arkos --read-workbook <path>`, see
+`workbook.rs`), killed past 2 GB of footprint or 2 minutes (`bounded.rs`), because calamine
+allocates a sheet's whole used range before any cap applies.
 
 Things only a person at the screen can check, in order of value:
 

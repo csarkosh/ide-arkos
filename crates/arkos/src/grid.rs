@@ -38,7 +38,7 @@ impl Delimiter {
 const CANDIDATES: [Delimiter; 4] = [Delimiter::Comma, Delimiter::Tab, Delimiter::Semicolon, Delimiter::Pipe];
 
 /// How a column aligns and sorts: `Number` when every non-empty body cell is a number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ColumnKind {
     Text,
     Number,
@@ -46,7 +46,7 @@ pub enum ColumnKind {
 
 /// One table: a header, body rows that may be shorter than it (a missing cell reads as empty), a kind per column, the number the
 /// first body row shows, and what the caps dropped.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sheet {
     pub name: String,
     pub header: Vec<String>,
