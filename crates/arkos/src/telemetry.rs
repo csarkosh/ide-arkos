@@ -69,6 +69,8 @@ values! {
         Video => "video",
         Binary => "binary",
         TooLarge => "too_large",
+        Delimited => "delimited",
+        Workbook => "workbook",
     }
 }
 values! {
@@ -735,8 +737,15 @@ fn changed_keys_of(old: &toml::Table, new: &toml::Table) -> Vec<String> {
 /// coloured it (`coloured`, the highlighter's own rule), else plain. `None` for a file that could
 /// not be read (nothing was shown) and for text whose colouring is not known yet (`coloured` is
 /// `None` while the grammars load). An image or a video opened as a file is a binary; the two
-/// formats name what the rendered markdown shows.
-pub fn format_of(content: &Content, plain: bool, coloured: Option<bool>, path: &Path) -> Option<Format> {
+/// formats name what the rendered markdown shows. A file with a book (`Loaded::book`) is a
+/// delimited file or a workbook whatever its content, before the text cases.
+pub fn format_of(content: &Content, book: Option<&crate::grid::Book>, plain: bool, coloured: Option<bool>, path: &Path) -> Option<Format> {
+    if let Some(book) = book {
+        return Some(match book.source {
+            crate::grid::Source::Delimited(_) => Format::Delimited,
+            crate::grid::Source::Workbook => Format::Workbook,
+        });
+    }
     Some(match content {
         Content::Unreadable(_) => return None,
         Content::TooLarge(_) => Format::TooLarge,
@@ -752,14 +761,16 @@ pub fn format_of(content: &Content, plain: bool, coloured: Option<bool>, path: &
 
 /// The view a viewer's load records, once a viewer (`viewed`): `None` when it was recorded
 /// already, or when this load says nothing yet (unreadable, or code loaded before the grammars,
-/// whose reload once they land records it); whether a markdown file is shown rendered.
-pub fn next_view(viewed: &mut bool, content: &Content, plain: bool, coloured: Option<bool>, path: &Path, mode: crate::tree::ViewMode) -> Option<(Format, Shown)> {
+/// whose reload once they land records it); whether a markdown file is shown rendered, or a book
+/// as its grid.
+pub fn next_view(viewed: &mut bool, content: &Content, book: Option<&crate::grid::Book>, plain: bool, coloured: Option<bool>, path: &Path, mode: crate::tree::ViewMode) -> Option<(Format, Shown)> {
     if *viewed {
         return None;
     }
-    let format = format_of(content, plain, coloured, path)?;
+    let format = format_of(content, book, plain, coloured, path)?;
     *viewed = true;
-    let shown = if format == Format::Markdown && mode == crate::tree::ViewMode::Rendered { Shown::Rendered } else { Shown::Raw };
+    let rendered = (format == Format::Markdown && mode == crate::tree::ViewMode::Rendered) || crate::viewer::grid_shows(book, mode);
+    let shown = if rendered { Shown::Rendered } else { Shown::Raw };
     Some((format, shown))
 }
 
@@ -1018,8 +1029,8 @@ pub fn pane_close(tab: &Tab) {
 }
 
 /// A viewer's load landed: the view, once a viewer, when its format is known (`next_view`).
-pub fn viewed(viewed: &mut bool, content: &Content, plain: bool, coloured: Option<bool>, path: &Path, mode: crate::tree::ViewMode) {
-    if let Some((format, shown)) = next_view(viewed, content, plain, coloured, path, mode) {
+pub fn viewed(viewed: &mut bool, content: &Content, book: Option<&crate::grid::Book>, plain: bool, coloured: Option<bool>, path: &Path, mode: crate::tree::ViewMode) {
+    if let Some((format, shown)) = next_view(viewed, content, book, plain, coloured, path, mode) {
         with(|r, now| r.view(format, shown, now));
     }
 }
@@ -1844,7 +1855,7 @@ mod tests {
             let path = dir.path().join(name);
             std::fs::write(&path, "all:\n\techo hi\n").unwrap();
             let loaded = crate::viewer::read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
-            assert_eq!(format_of(&loaded.content, loaded.plain.is_some(), loaded.coloured, &path), Some(want), "{name}");
+            assert_eq!(format_of(&loaded.content, None, loaded.plain.is_some(), loaded.coloured, &path), Some(want), "{name}");
         }
         // Before the grammars load the colouring is not known yet.
         let path = dir.path().join("Makefile");
@@ -1866,32 +1877,55 @@ mod tests {
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let mut viewed = false;
         let early = crate::viewer::read_file(&path, None, None, 1 << 20, false).unwrap();
-        assert_eq!(next_view(&mut viewed, &early.content, early.plain.is_some(), early.coloured, &path, crate::tree::ViewMode::Rendered), None, "not known yet");
+        assert_eq!(next_view(&mut viewed, &early.content, None, early.plain.is_some(), early.coloured, &path, crate::tree::ViewMode::Rendered), None, "not known yet");
         assert!(!viewed);
         let coloured = crate::viewer::read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
-        assert_eq!(next_view(&mut viewed, &coloured.content, coloured.plain.is_some(), coloured.coloured, &path, crate::tree::ViewMode::Rendered), Some((Format::Code, Shown::Raw)));
+        assert_eq!(next_view(&mut viewed, &coloured.content, None, coloured.plain.is_some(), coloured.coloured, &path, crate::tree::ViewMode::Rendered), Some((Format::Code, Shown::Raw)));
         assert!(viewed);
-        assert_eq!(next_view(&mut viewed, &coloured.content, coloured.plain.is_some(), coloured.coloured, &path, crate::tree::ViewMode::Rendered), None, "once a viewer");
+        assert_eq!(next_view(&mut viewed, &coloured.content, None, coloured.plain.is_some(), coloured.coloured, &path, crate::tree::ViewMode::Rendered), None, "once a viewer");
         // Markdown records at its first load, rendered or raw as the tab shows it.
         let md = dir.path().join("README.md");
         std::fs::write(&md, "# Title\n").unwrap();
         let loaded = crate::viewer::read_file(&md, None, None, 1 << 20, false).unwrap();
         let mut viewed = false;
-        assert_eq!(next_view(&mut viewed, &loaded.content, loaded.plain.is_some(), loaded.coloured, &md, crate::tree::ViewMode::Rendered), Some((Format::Markdown, Shown::Rendered)));
+        assert_eq!(next_view(&mut viewed, &loaded.content, None, loaded.plain.is_some(), loaded.coloured, &md, crate::tree::ViewMode::Rendered), Some((Format::Markdown, Shown::Rendered)));
+    }
+
+    #[test]
+    fn a_csv_reports_delimited_and_a_workbook_reports_workbook_with_rendered() {
+        use crate::tree::ViewMode::{Raw, Rendered};
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("people.csv");
+        std::fs::write(&csv, "name,age\nAda,36\n").unwrap();
+        // Before the grammars load: a csv is known by its book, so it does not wait.
+        let loaded = crate::viewer::read_file(&csv, None, None, 1 << 20, false).unwrap();
+        assert_eq!(format_of(&loaded.content, loaded.book.as_ref(), loaded.plain.is_some(), loaded.coloured, &csv), Some(Format::Delimited));
+        let mut viewed = false;
+        assert_eq!(next_view(&mut viewed, &loaded.content, loaded.book.as_ref(), loaded.plain.is_some(), loaded.coloured, &csv, Rendered), Some((Format::Delimited, Shown::Rendered)), "the grid");
+        let mut viewed = false;
+        assert_eq!(next_view(&mut viewed, &loaded.content, loaded.book.as_ref(), loaded.plain.is_some(), loaded.coloured, &csv, Raw), Some((Format::Delimited, Shown::Raw)), "the code editor");
+        let xlsx = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid/sheets.xlsx");
+        let loaded = crate::viewer::read_file(&xlsx, None, None, 1 << 20, false).unwrap();
+        for mode in [Rendered, Raw] {
+            let mut viewed = false;
+            assert_eq!(next_view(&mut viewed, &loaded.content, loaded.book.as_ref(), loaded.plain.is_some(), loaded.coloured, &xlsx, mode), Some((Format::Workbook, Shown::Rendered)), "a workbook always shows its grid");
+        }
+        assert_eq!(Format::Delimited.as_str(), "delimited");
+        assert_eq!(Format::Workbook.as_str(), "workbook");
     }
 
     #[test]
     fn the_viewer_names_the_format_it_showed() {
         use crate::viewer::Content;
         let text = Content::Text { lines: std::sync::Arc::new(vec!["fn main() {}".into()]), spans: Vec::new() };
-        assert_eq!(format_of(&text, false, Some(false), Path::new("/p/README.md")), Some(Format::Markdown));
-        assert_eq!(format_of(&text, false, Some(true), Path::new("/p/main.rs")), Some(Format::Code));
-        assert_eq!(format_of(&text, true, Some(false), Path::new("/p/main.rs")), Some(Format::Plain), "shown without colours");
-        assert_eq!(format_of(&text, false, Some(false), Path::new("/p/notes.txt")), Some(Format::Plain), "no grammar but Plain Text");
-        assert_eq!(format_of(&text, false, None, Path::new("/p/main.rs")), None, "the grammars have not loaded yet");
-        assert_eq!(format_of(&Content::Binary, false, Some(false), Path::new("/p/logo.png")), Some(Format::Binary));
-        assert_eq!(format_of(&Content::TooLarge(1 << 30), false, Some(false), Path::new("/p/dump.sql")), Some(Format::TooLarge));
-        assert_eq!(format_of(&Content::Unreadable("denied".into()), false, Some(false), Path::new("/p/x")), None, "nothing was shown");
+        assert_eq!(format_of(&text, None, false, Some(false), Path::new("/p/README.md")), Some(Format::Markdown));
+        assert_eq!(format_of(&text, None, false, Some(true), Path::new("/p/main.rs")), Some(Format::Code));
+        assert_eq!(format_of(&text, None, true, Some(false), Path::new("/p/main.rs")), Some(Format::Plain), "shown without colours");
+        assert_eq!(format_of(&text, None, false, Some(false), Path::new("/p/notes.txt")), Some(Format::Plain), "no grammar but Plain Text");
+        assert_eq!(format_of(&text, None, false, None, Path::new("/p/main.rs")), None, "the grammars have not loaded yet");
+        assert_eq!(format_of(&Content::Binary, None, false, Some(false), Path::new("/p/logo.png")), Some(Format::Binary));
+        assert_eq!(format_of(&Content::TooLarge(1 << 30), None, false, Some(false), Path::new("/p/dump.sql")), Some(Format::TooLarge));
+        assert_eq!(format_of(&Content::Unreadable("denied".into()), None, false, Some(false), Path::new("/p/x")), None, "nothing was shown");
     }
 
     #[test]

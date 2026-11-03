@@ -1,9 +1,6 @@
 //! Reads spreadsheets (xlsx, xlsm, xlsb, xls, ods) into the grid model through calamine, and turns
 //! its cell values into the text Excel's General format would show.
 
-// Nothing outside the tests calls this yet; the grid view that does is a later task, which removes this.
-#![allow(dead_code)]
-
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 

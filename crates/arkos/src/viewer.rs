@@ -14,6 +14,7 @@ use crate::config_watch::fingerprint;
 use crate::diff::{self, DiffMarks};
 use crate::edit;
 use crate::find::{FindLook, BAR_TOP};
+use crate::grid;
 use crate::highlight::{self, CodeHighlight, Highlighter};
 use crate::line_edit::{self, Edit, LineEdit};
 use crate::md_blocks;
@@ -70,6 +71,64 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// `markdown` or `mdx`, in any case.
 pub fn is_markdown(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["md", "markdown", "mdx"].iter().any(|m| e.eq_ignore_ascii_case(m)))
+}
+
+/// Whether a viewer of `path` has a rendered view the mode pill and the toggle switch to: a
+/// markdown file's page, or a delimited file's grid. A workbook shows its grid in either mode and
+/// has no toggle.
+pub fn renders(path: &Path) -> bool {
+    is_markdown(path) || grid::is_delimited(path)
+}
+
+/// A delimited file's book from its text: one sheet, named after the file's stem, split on the
+/// delimiter the text sniffs to.
+pub fn delimited_book(text: &str, path: &Path) -> grid::Book {
+    let delimiter = grid::sniff(text, path);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    grid::Book { sheets: vec![grid::parse(text, delimiter, &stem)], source: grid::Source::Delimited(delimiter) }
+}
+
+/// Whether the grid shows: a workbook's always, a delimited file's in Rendered mode.
+pub fn grid_shows(book: Option<&grid::Book>, mode: ViewMode) -> bool {
+    book.is_some_and(|b| b.source == grid::Source::Workbook || mode == ViewMode::Rendered)
+}
+
+/// The book's sheet at `sheet`, `None` without a book or past its sheets.
+pub fn sheet_of(book: Option<&grid::Book>, sheet: usize) -> Option<&grid::Sheet> {
+    book.and_then(|b| b.sheets.get(sheet))
+}
+
+/// The rows the grid paints while it shows: the active sheet's body rows and its header. `None`
+/// when the grid does not show, so the text's rows count.
+pub fn grid_row_count(book: Option<&grid::Book>, sheet: usize, mode: ViewMode) -> Option<usize> {
+    grid_shows(book, mode).then(|| sheet_of(book, sheet).map_or(0, |s| s.rows.len() + 1))
+}
+
+/// The active sheet and the selection kept across a new book: the sheet index brought within the
+/// book's sheets and the selection within that sheet. Without a book, the first sheet and no
+/// selection.
+pub fn grid_place(book: Option<&grid::Book>, sheet: usize, sel: Option<grid::Selection>) -> (usize, Option<grid::Selection>) {
+    let Some(book) = book else { return (0, None) };
+    let sheet = sheet.min(book.sheets.len().saturating_sub(1));
+    let sel = match book.sheets.get(sheet) {
+        Some(s) => sel.map(|sel| sel.clamp(s)),
+        None => None,
+    };
+    (sheet, sel)
+}
+
+/// Whether switching to `to` parses the book again from the document's text: a delimited
+/// document going to its grid, so edits made in raw mode show there.
+pub fn rebuilds_book(path: &Path, to: ViewMode, has_doc: bool) -> bool {
+    to == ViewMode::Rendered && has_doc && grid::is_delimited(path)
+}
+
+/// Whether the mode pill shows: on a markdown document, and on a delimited file with its book,
+/// editable or not (a read-only CSV still switches between its text and its grid). A workbook has
+/// none.
+pub fn pill_shown(path: &Path, editable: bool, book: Option<&grid::Book>) -> bool {
+    let delimited = book.is_some_and(|b| matches!(b.source, grid::Source::Delimited(_)));
+    (editable && is_markdown(path)) || (delimited && grid::is_delimited(path))
 }
 
 /// Why a markdown file is shown read-only instead of as a document.
@@ -556,6 +615,9 @@ pub struct Loaded {
     /// A code document's highlight, built with its spans; `None` for markdown, for a read-only
     /// file and while the grammars load.
     pub code: Option<CodeHighlight>,
+    /// The grid's sheets: a delimited file's, parsed from its bytes beside the text, or a
+    /// workbook's, whose content is `Content::Binary`. `None` for any other file.
+    pub book: Option<grid::Book>,
 }
 
 pub struct Viewer {
@@ -726,6 +788,16 @@ pub struct Viewer {
     /// edit, load and fold.
     pub heads: Vec<md_fold::Head>,
     pub hidden: Vec<bool>,
+    /// The grid's sheets, from the last load or the last switch to the grid (`set_mode`).
+    pub book: Option<grid::Book>,
+    /// The active sheet's index in `book`.
+    pub sheet: usize,
+    /// The grid's selection; `None` until a cell is picked.
+    pub grid_sel: Option<grid::Selection>,
+    /// How far the grid is scrolled to the right, in points; `scroll` is its rows down.
+    pub grid_scroll_x: f32,
+    /// The find's hits in the grid, as cells.
+    pub grid_hits: Vec<grid::Cell>,
 }
 
 /// A video playing in the rendered page: its player, and the size of the poster it took the place
@@ -884,6 +956,11 @@ impl Viewer {
             folded: Default::default(),
             heads: Vec::new(),
             hidden: Vec::new(),
+            book: None,
+            sheet: 0,
+            grid_sel: None,
+            grid_scroll_x: 0.0,
+            grid_hits: Vec::new(),
         }
     }
 
@@ -988,9 +1065,20 @@ impl Viewer {
         }
     }
 
-    /// The rows the element paints: the lines, plus the deleted ones with the inline diff on.
+    /// The rows the element paints: the grid's sheet with its header while the grid shows, else
+    /// the lines, plus the deleted ones with the inline diff on.
     pub fn row_count(&self) -> usize {
-        diff::row_count(self.line_count(), self.diff.as_ref(), self.inline_diff)
+        grid_row_count(self.book.as_ref(), self.sheet, self.mode).unwrap_or_else(|| diff::row_count(self.line_count(), self.diff.as_ref(), self.inline_diff))
+    }
+
+    /// Whether the grid shows: a workbook's always, a delimited file's in Rendered mode.
+    pub fn grid_shown(&self) -> bool {
+        grid_shows(self.book.as_ref(), self.mode)
+    }
+
+    /// The active sheet, `None` without a book.
+    pub fn sheet(&self) -> Option<&grid::Sheet> {
+        sheet_of(self.book.as_ref(), self.sheet)
     }
 
     /// The furthest the view can scroll: the last row at the top of the viewport.
@@ -1034,8 +1122,14 @@ impl Viewer {
     }
 
     pub fn apply(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
-        crate::telemetry::viewed(&mut self.viewed, &loaded.content, loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
+        crate::telemetry::viewed(&mut self.viewed, &loaded.content, loaded.book.as_ref(), loaded.plain.is_some(), loaded.coloured, &self.path, self.mode);
         self.content = loaded.content;
+        // A new book replaces the old; the place in it is kept, within the new sheets. The
+        // sideways scroll stays a number the grid clamps against its widths.
+        self.book = loaded.book;
+        (self.sheet, self.grid_sel) = grid_place(self.book.as_ref(), self.sheet, self.grid_sel);
+        // The old hits point into the old cells.
+        self.grid_hits.clear();
         self.fingerprint = loaded.fingerprint;
         self.plain = loaded.plain;
         self.diff = loaded.diff;
@@ -1268,6 +1362,27 @@ impl Viewer {
             return;
         }
         self.mode = mode;
+        // Raw mode's edits reach the grid: the book is parsed again from the document's text off
+        // this thread, the old one shown until it lands. A load that started meanwhile wins.
+        if let Some(doc) = self.doc.as_ref().filter(|_| rebuilds_book(&self.path, mode, true)) {
+            let (text, path, loads) = (doc.to_text(), self.path.clone(), self.loads);
+            cx.spawn(async move |this, cx| {
+                let book = cx.background_executor().spawn(async move { delimited_book(&text, &path) }).await;
+                let _ = this.update(cx, |v, cx| {
+                    if v.loads != loads {
+                        return;
+                    }
+                    v.book = Some(book);
+                    (v.sheet, v.grid_sel) = grid_place(v.book.as_ref(), v.sheet, v.grid_sel);
+                    v.grid_hits.clear();
+                    v.scroll.clamp_max(v.max_scroll());
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        // The grid and the text count their rows apart.
+        self.scroll.clamp_max(self.max_scroll());
         // Only the rendered view presents.
         self.presenting = false;
         // The paragraph a click on the rendered view's tail promised belongs to that view: the
@@ -3485,11 +3600,50 @@ impl EntityInputHandler for Viewer {
 /// with one kind of line ending, in a file the user may write, becomes a document whose lines
 /// (tabs kept, the empty last line after a final break kept) are the content's, its blocks split
 /// here too; anything else is plain text, read-only, saying why.
+///
+/// A workbook is read into its book alone: binary content, no document and no diff, or the
+/// reader's message when it cannot be read. A delimited file's bytes are decoded for the grid
+/// (`grid::decode`) and parsed into its book beside the text the rest of this builds from the
+/// same bytes; one whose decoded text still holds a NUL is a binary. A UTF-16 file shows its
+/// decoded text read-only, since a save would write it back as UTF-8.
 pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&Highlighter>, limit: usize, with_diff: bool) -> Option<Loaded> {
     let fingerprint = fingerprint(path);
     if known.is_some() && fingerprint == known {
         return None;
     }
+    if crate::workbook::is_workbook(path) {
+        let mut book = None;
+        let content = match std::fs::metadata(path) {
+            Ok(m) if m.len() > MAX_PLAIN_BYTES => Content::TooLarge(m.len()),
+            _ => match crate::workbook::read(path) {
+                Ok(b) => {
+                    book = Some(b);
+                    Content::Binary
+                }
+                Err(e) => Content::Unreadable(e),
+            },
+        };
+        return Some(Loaded { content, fingerprint, plain: None, diff: None, doc: None, read_only: None, blocks: Vec::new(), coloured: Some(false), code: None, book });
+    }
+    let delimited = grid::is_delimited(path);
+    let mut book = None;
+    // A UTF-16 file's decoded text: its bytes are no text the flow below reads.
+    let mut utf16 = None;
+    let read = match read_capped(path, !delimited) {
+        Ok(Capped::Bytes(bytes)) if delimited => {
+            let text = grid::decode(&bytes);
+            if text.contains('\0') {
+                Ok(Capped::Binary)
+            } else {
+                book = Some(delimited_book(&text, path));
+                if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+                    utf16 = Some(text.into_owned());
+                }
+                Ok(Capped::Bytes(bytes))
+            }
+        }
+        other => other,
+    };
     let plain = |lines: Vec<String>| {
         let spans = vec![Vec::new(); lines.len()];
         Content::Text { lines: Arc::new(lines), spans }
@@ -3498,10 +3652,14 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
     let mut code = None;
     let mut read_only = None;
     let mut coloured = Some(false);
-    let (content, why_plain) = match read_capped(path) {
+    let (content, why_plain) = match read {
         Err(e) => (Content::Unreadable(e.to_string()), None),
         Ok(Capped::TooLarge(len)) => (Content::TooLarge(len), None),
         Ok(Capped::Binary) => (Content::Binary, None),
+        Ok(Capped::Bytes(_)) if utf16.is_some() => {
+            read_only = Some(ReadOnlyWhy::NotUtf8);
+            (plain(split_lines(utf16.as_deref().unwrap_or_default())), None)
+        }
         Ok(Capped::Bytes(bytes)) if is_markdown(path) => match text_document(&bytes).and_then(|d| if writable(path) { Ok(d) } else { Err(ReadOnlyWhy::NotWritable) }) {
             Ok(d) => {
                 let lines = d.shared_lines();
@@ -3561,11 +3719,12 @@ pub fn read_file(path: &Path, known: Option<(u128, u64)>, highlighter: Option<&H
         // The base is split the same way, so the document's text is too (tabs expanded, no empty
         // last line).
         (_, Some(d)) if with_diff => diff_of(path, &split_lines(&d.to_text())),
-        (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) => diff_of(path, lines),
+        // HEAD's bytes are not decoded as UTF-16, so such a file has no marks.
+        (Content::Text { lines, .. }, None) if with_diff && why_plain != Some(Plain::TooBig) && utf16.is_none() => diff_of(path, lines),
         _ => None,
     };
     let blocks = doc.as_ref().filter(|_| is_markdown(path)).map_or_else(Vec::new, |d| md_blocks::split(d.lines()));
-    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured, code })
+    Some(Loaded { content, fingerprint, plain: why_plain, diff, doc, read_only, blocks, coloured, code, book })
 }
 
 /// The file's changes against its worktree's HEAD (clean marks when there are none, so the mark
@@ -3582,9 +3741,10 @@ enum Capped {
     Bytes(Vec<u8>),
 }
 
-/// The file's bytes, unless it is over `MAX_PLAIN_BYTES` (not opened) or has a NUL in its first
-/// `SNIFF` bytes (nothing more read). A directory is refused before anything is opened.
-fn read_capped(path: &Path) -> std::io::Result<Capped> {
+/// The file's bytes, unless it is over `MAX_PLAIN_BYTES` (not opened) or, with `sniff`, has a NUL
+/// in its first `SNIFF` bytes (nothing more read). A directory is refused before anything is
+/// opened.
+fn read_capped(path: &Path, sniff: bool) -> std::io::Result<Capped> {
     let metadata = std::fs::metadata(path)?;
     if metadata.is_dir() {
         return Err(std::io::Error::other("is a directory"));
@@ -3596,7 +3756,7 @@ fn read_capped(path: &Path) -> std::io::Result<Capped> {
     let mut file = std::fs::File::open(path)?;
     let mut bytes = Vec::with_capacity(len as usize);
     (&mut file).take(SNIFF as u64).read_to_end(&mut bytes)?;
-    if bytes.contains(&0) {
+    if sniff && bytes.contains(&0) {
         return Ok(Capped::Binary);
     }
     // Capped again here: the file may have grown since the metadata was read.
@@ -4911,7 +5071,7 @@ impl Root {
                     return false;
                 }
                 let (code, spans) = built;
-                crate::telemetry::viewed(&mut v.viewed, &v.content, v.plain.is_some(), Some(code.coloured()), &v.path, v.mode);
+                crate::telemetry::viewed(&mut v.viewed, &v.content, v.book.as_ref(), v.plain.is_some(), Some(code.coloured()), &v.path, v.mode);
                 v.highlighter = Some(h);
                 v.highlight_limit = limit;
                 v.code = Some(code);
@@ -4977,12 +5137,13 @@ impl Root {
         written
     }
 
-    /// Flips a markdown tab between rendered and raw, in the layout (saved) and in its viewer. Raw
-    /// ends presentation mode (only the rendered view presents).
+    /// Flips a markdown or delimited tab between rendered (a delimited file's grid) and raw, in the
+    /// layout (saved) and in its viewer. Raw ends presentation mode (only the rendered view
+    /// presents). A workbook shows its grid either way and is left alone.
     pub fn toggle_markdown_view_for(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some((pane, idx)) = self.tree.locate(tab) else { return };
         let Some(Tab::Viewer { path, mode, .. }) = self.tree.pane(pane).and_then(|p| p.tabs.get(idx)).cloned() else { return };
-        if !is_markdown(&path) {
+        if !renders(&path) {
             return;
         }
         let next = match mode {
@@ -6215,5 +6376,236 @@ mod tests {
         assert_eq!(poster_press(true, None, None, false), PosterPress::Reveal, "a local webm is shown in Finder");
         assert_eq!(poster_press(true, Some(Media::Video), None, true), PosterPress::Link, "remote video is a web address");
         assert_eq!(poster_press(true, None, None, true), PosterPress::Link);
+    }
+
+    fn grid_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/grid").join(name)
+    }
+
+    fn book_of(l: &Loaded) -> &crate::grid::Book {
+        l.book.as_ref().expect("a book")
+    }
+
+    #[test]
+    fn a_csv_loads_as_a_document_with_a_book_and_its_highlight() {
+        let theme = crate::theme::builtin("navy").unwrap();
+        let h = Highlighter::new(&theme.viewer, theme.chrome.text);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("people.csv");
+        std::fs::write(&path, "name,age\nAda,36\nAlan,41\n").unwrap();
+        let l = read_file(&path, None, Some(&h), 1 << 20, false).unwrap();
+        assert!(l.doc.is_some(), "raw mode is the code editor");
+        assert!(l.code.is_some(), "with its highlight");
+        assert!(l.read_only.is_none());
+        assert!(matches!(&l.content, Content::Text { lines, .. } if lines[0] == "name,age"));
+        let b = book_of(&l);
+        assert_eq!(b.source, crate::grid::Source::Delimited(crate::grid::Delimiter::Comma));
+        assert_eq!(b.sheets.len(), 1);
+        assert_eq!(b.sheets[0].name, "people", "named after the file");
+        assert_eq!(b.sheets[0].header, ["name", "age"]);
+        assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()], vec!["Alan".into(), "41".into()]]);
+        // Over the highlight limit the text shows plain and the grid is still there.
+        let big = read_file(&path, None, Some(&h), 4, false).unwrap();
+        assert_eq!(big.plain, Some(Plain::TooBig));
+        assert_eq!(book_of(&big).sheets[0].rows.len(), 2);
+        // Over the read limit nothing is read, so there is no book.
+        let huge = dir.path().join("huge.csv");
+        std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
+        let l = read_file(&huge, None, None, 100, false).unwrap();
+        assert_eq!(l.content, Content::TooLarge(MAX_PLAIN_BYTES + 1));
+        assert!(l.book.is_none());
+        // Any other text file has none.
+        let rs = dir.path().join("main.rs");
+        std::fs::write(&rs, "a,b\n1,2\n").unwrap();
+        assert!(read_file(&rs, None, None, 1 << 20, false).unwrap().book.is_none());
+    }
+
+    #[test]
+    fn a_tsv_s_tabs_reach_the_cells() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.tsv");
+        std::fs::write(&path, "a\tb\n\"x\ty\"\tz\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        let b = book_of(&l);
+        assert_eq!(b.source, crate::grid::Source::Delimited(crate::grid::Delimiter::Tab));
+        assert_eq!(b.sheets[0].header, ["a", "b"]);
+        assert_eq!(b.sheets[0].rows, [vec!["x\ty".to_string(), "z".into()]], "parsed from the bytes, never the lines with tabs expanded");
+    }
+
+    #[test]
+    fn a_utf8_bom_is_not_in_the_first_header_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("excel.csv");
+        std::fs::write(&path, b"\xEF\xBB\xBFid,name\n1,Ada\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(book_of(&l).sheets[0].header, ["id", "name"]);
+        assert!(l.doc.as_ref().expect("a document").bom, "the document keeps its mark for the save");
+    }
+
+    #[test]
+    fn a_utf16_csv_with_a_bom_becomes_a_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("export.csv");
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "name,age\r\nAda,36\r\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        let b = book_of(&l);
+        assert_eq!(b.sheets[0].header, ["name", "age"]);
+        assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()]]);
+        // Raw mode shows the decoded text, read-only: a save would write UTF-8 over it.
+        assert!(matches!(&l.content, Content::Text { lines, .. } if lines.first().map(String::as_str) == Some("name,age")), "{:?}", l.content);
+        assert!(l.doc.is_none());
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotUtf8));
+    }
+
+    #[test]
+    fn a_windows_1252_csv_is_a_grid_with_replacement_characters_and_read_only_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.csv");
+        std::fs::write(&path, b"name,place\nZo\xe9,caf\xe9\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(book_of(&l).sheets[0].rows, [vec!["Zo\u{FFFD}".to_string(), "caf\u{FFFD}".into()]]);
+        assert!(l.doc.is_none());
+        assert_eq!(l.read_only, Some(ReadOnlyWhy::NotUtf8));
+        assert!(matches!(l.content, Content::Text { .. }));
+    }
+
+    #[test]
+    fn a_csv_with_a_nul_and_no_bom_is_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("renamed.csv");
+        std::fs::write(&path, b"a,b\n1,\x002\n").unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(l.content, Content::Binary);
+        assert!(l.book.is_none() && l.doc.is_none());
+        // UTF-16 without a mark is NULs all through: binary too, never a grid of NULs.
+        let mut bytes = Vec::new();
+        for u in "a,b\n1,2\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let l = read_file(&path, None, None, 1 << 20, false).unwrap();
+        assert_eq!(l.content, Content::Binary);
+        assert!(l.book.is_none());
+    }
+
+    #[test]
+    fn a_workbook_loads_as_binary_content_with_a_book_and_no_document() {
+        let path = grid_fixture("sheets.xlsx");
+        let l = read_file(&path, None, None, 1 << 20, true).unwrap();
+        assert_eq!(l.content, Content::Binary);
+        assert!(l.doc.is_none() && l.diff.is_none() && l.read_only.is_none() && l.code.is_none());
+        assert!(l.fingerprint.is_some());
+        let b = book_of(&l);
+        assert_eq!(b.source, crate::grid::Source::Workbook);
+        assert_eq!(b.sheets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Signups", "Notes"]);
+        assert!(read_file(&path, l.fingerprint, None, 1 << 20, true).is_none(), "an unchanged workbook is not read again");
+        // Over the size limit: the too-large notice, unread.
+        let dir = tempfile::tempdir().unwrap();
+        let huge = dir.path().join("huge.xlsx");
+        std::fs::File::create(&huge).unwrap().set_len(MAX_PLAIN_BYTES + 1).unwrap();
+        let l = read_file(&huge, None, None, 1 << 20, true).unwrap();
+        assert_eq!(l.content, Content::TooLarge(MAX_PLAIN_BYTES + 1));
+        assert!(l.book.is_none());
+    }
+
+    #[test]
+    fn a_broken_workbook_is_unreadable_with_its_message() {
+        let path = grid_fixture("not-a-workbook.xlsx");
+        let l = read_file(&path, None, None, 1 << 20, true).unwrap();
+        let want = crate::workbook::read(&path).unwrap_err();
+        assert_eq!(l.content, Content::Unreadable(want));
+        assert!(l.book.is_none() && l.doc.is_none());
+    }
+
+    #[test]
+    fn apply_keeps_and_clamps_the_sheet_selection_and_scroll() {
+        use crate::grid::{Cell, Scope, Selection};
+        let two = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
+        let csv = delimited_book("a,b,c\n1,2,3\n4,5,6\n7,8,9\n", Path::new("/p/x.csv"));
+        let sel = Selection { anchor: Cell { row: 1, col: 1 }, head: Cell { row: 3, col: 2 }, scope: Scope::Cells };
+        // The same shape: everything kept.
+        assert_eq!(grid_place(Some(&csv), 0, Some(sel)), (0, Some(sel)));
+        // A second sheet that is gone: the last one there is.
+        let (sheet, _) = grid_place(Some(&csv), 1, None);
+        assert_eq!(sheet, 0);
+        assert_eq!(grid_place(Some(&two), 1, None).0, 1, "a sheet still there is kept");
+        // A file rewritten shorter and narrower: the selection comes inside it.
+        let small = delimited_book("a,b\n1,2\n", Path::new("/p/x.csv"));
+        let (_, kept) = grid_place(Some(&small), 0, Some(sel));
+        assert_eq!(kept, Some(Selection { anchor: Cell { row: 1, col: 1 }, head: Cell { row: 1, col: 1 }, scope: Scope::Cells }));
+        // No book: no selection.
+        assert_eq!(grid_place(None, 3, Some(sel)), (0, None));
+        // The scroll is clamped to the new sheet's rows (and the header).
+        let mut scroll = ScrollAnimator::new();
+        scroll.jump_to(3.0);
+        scroll.clamp_max(grid_row_count(Some(&csv), 0, ViewMode::Rendered).unwrap().saturating_sub(1) as f32);
+        assert_eq!(scroll.current, 3.0, "four rows with the header: row 3 is still there");
+        scroll.clamp_max(grid_row_count(Some(&small), 0, ViewMode::Rendered).unwrap().saturating_sub(1) as f32);
+        assert_eq!(scroll.current, 1.0);
+    }
+
+    #[test]
+    fn switching_raw_to_grid_rebuilds_the_book_from_the_edited_text() {
+        let path = Path::new("/p/people.csv");
+        let mut doc = edit::Document::from_text("name,age\nAda,36\n");
+        let _ = doc.insert(edit::Caret::at(edit::Pos { line: 2, ch: 0 }), "Alan,41\n", Instant::now());
+        assert!(rebuilds_book(path, ViewMode::Rendered, true), "Raw to the grid with a document");
+        assert!(!rebuilds_book(path, ViewMode::Raw, true), "to Raw leaves the book alone");
+        assert!(!rebuilds_book(path, ViewMode::Rendered, false), "no document: the book from disk stays");
+        assert!(!rebuilds_book(Path::new("/p/a.md"), ViewMode::Rendered, true), "markdown has no book");
+        let b = delimited_book(&doc.to_text(), path);
+        assert_eq!(b.sheets[0].rows, [vec!["Ada".to_string(), "36".into()], vec!["Alan".into(), "41".into()]]);
+        assert_eq!(b.sheets[0].name, "people");
+    }
+
+    #[test]
+    fn a_workbook_ignores_the_mode_toggle() {
+        let wb = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
+        let path = grid_fixture("sheets.xlsx");
+        assert!(!renders(&path), "the toggle asks renders and does nothing");
+        assert!(grid_shows(Some(&wb), ViewMode::Rendered) && grid_shows(Some(&wb), ViewMode::Raw), "the grid shows in either mode");
+        assert!(!pill_shown(&path, false, Some(&wb)), "no pill");
+        assert!(!rebuilds_book(&path, ViewMode::Rendered, false));
+        let csv = delimited_book("a\n1\n", Path::new("/p/x.csv"));
+        assert!(grid_shows(Some(&csv), ViewMode::Rendered) && !grid_shows(Some(&csv), ViewMode::Raw), "a csv follows the mode");
+        assert!(!grid_shows(None, ViewMode::Rendered));
+    }
+
+    #[test]
+    fn renders_says_yes_to_markdown_csv_and_tsv_and_no_to_xlsx_and_rs() {
+        for p in ["a.md", "b.csv", "c.TSV", "d.mdx"] {
+            assert!(renders(Path::new(p)), "{p}");
+        }
+        for p in ["a.xlsx", "b.rs", "c.ods", "d.txt"] {
+            assert!(!renders(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn the_pill_reads_show_raw_then_show_grid_for_a_csv() {
+        use crate::pane_view::pill_label_for;
+        assert_eq!(pill_label_for(ViewMode::Rendered, true), "show raw");
+        assert_eq!(pill_label_for(ViewMode::Raw, true), "show grid");
+        assert_eq!(pill_label_for(ViewMode::Raw, false), "show rendered", "markdown's stays");
+        let csv = delimited_book("a\n1\n", Path::new("/p/x.csv"));
+        assert!(pill_shown(Path::new("/p/x.csv"), true, Some(&csv)), "a csv document has the pill");
+        assert!(pill_shown(Path::new("/p/x.csv"), false, Some(&csv)), "a read-only csv still has it");
+        assert!(!pill_shown(Path::new("/p/x.csv"), true, None), "no book, no grid to show");
+        assert!(pill_shown(Path::new("/p/a.md"), true, None) && !pill_shown(Path::new("/p/a.md"), false, None), "markdown's rule stays");
+        assert!(!pill_shown(Path::new("/p/a.rs"), true, None));
+    }
+
+    #[test]
+    fn row_count_is_the_sheet_s_rows_plus_the_header_while_the_grid_shows() {
+        let csv = delimited_book("a,b\n1,2\n3,4\n5,6\n", Path::new("/p/x.csv"));
+        assert_eq!(grid_row_count(Some(&csv), 0, ViewMode::Rendered), Some(4));
+        assert_eq!(grid_row_count(Some(&csv), 0, ViewMode::Raw), None, "the text's rows in Raw");
+        assert_eq!(grid_row_count(None, 0, ViewMode::Rendered), None);
+        let wb = crate::workbook::read(&grid_fixture("sheets.xlsx")).unwrap();
+        assert_eq!(grid_row_count(Some(&wb), 1, ViewMode::Raw), Some(wb.sheets[1].rows.len() + 1), "the active sheet's, in either mode");
     }
 }
