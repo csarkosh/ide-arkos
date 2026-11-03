@@ -11,7 +11,7 @@ another capture over the window at those pixels first.
 behind it, a caption on each (the scene's words), on a transparent ground; `compose-portrait`
 the same as a tall picture, for a place beside text:
 
-    python3 -I scripts/shoot/frame.py compose <out.png> <front.png>:"The multi tasker" <back.png>:"The web developer" [<back2.png>:"The blogger"]
+    python3 -I scripts/shoot/frame.py compose <out.png> <front.png>:"The multi tasker" <back.png>:"The web developer" [<back.png>:"The blogger" ...]
 
 Needs Pillow."""
 import sys
@@ -70,7 +70,8 @@ def captioned(still, text, align, scale, edge="bottom"):
     pad = round(PAD * scale)
     inset = 10 * SCALE
     px = {"left": pad + inset, "center": (still.width - pw) // 2, "right": still.width - pad - inset - pw}[align]
-    py = still.height - pad - ph // 2 if edge == "bottom" else pad - ph // 2
+    # A top caption stays inside the still, whose shadow padding may be less than half the pill.
+    py = still.height - pad - ph // 2 if edge == "bottom" else max(0, pad - ph // 2)
     out = still.copy()
     pill = Image.new("RGBA", out.size, (0, 0, 0, 0))
     ImageDraw.Draw(pill).rounded_rectangle((px, py, px + pw, py + ph), radius=ph // 2, fill=(17, 19, 24, 240), outline=(232, 234, 240, 70), width=SCALE)
@@ -81,35 +82,54 @@ def captioned(still, text, align, scale, edge="bottom"):
 
 def compose(out, pieces):
     """pieces: [(path, caption)], the first in front. The backs stand behind the front one,
-    a little higher and tilted, as Day Hike's postcards do, each showing most of itself so the
-    caption on its bottom edge stays in view; the front sits lower and centred."""
+    a little higher and tilted, as Day Hike's postcards do: in turn left and right, the first
+    pair against the edges with its captions on their bottom edges, each pair after it tucked
+    in, higher and smaller with its captions on their top edges (the part that shows), and an
+    odd last one at the top in the middle. The front sits lower and centred. One or two backs
+    lie as the three-window hero always had them."""
     W = CANVAS_W
     front_w = round(W * 0.46)
-    back_w = round(W * 0.38)
     src = Image.open(pieces[0][0]).convert("RGBA")
     front = src.resize((front_w, round(src.height * front_w / src.width)), Image.Resampling.LANCZOS)
     front = captioned(front, pieces[0][1], "center", front_w / src.width)
-    backs = []
+    rest = pieces[1:]
+    n = len(rest)
+    pairs = n // 2
+    deep = (pairs - 1) + (1 if n % 2 and n > 1 else 0)
+    # (still, x, y, depth): the outer pair's top sits this far down for each tier behind it.
+    lift = round(W * 0.075)
+    placed = []
     back_h = None
-    for i, (path, caption) in enumerate(pieces[1:]):
-        side = "left" if i % 2 == 0 else "right"
+    for i, (path, caption) in enumerate(rest):
+        middle = n % 2 == 1 and i == n - 1 and n > 1
+        j = pairs if middle else i // 2
+        side = "center" if middle else ("left" if i % 2 == 0 else "right")
+        width = round(W * (0.38 - 0.05 * j))
         src = Image.open(path).convert("RGBA")
-        # The backs share one height, the first one's at the back width, so a narrower still
-        # (the blogger's stacked panes) is drawn narrower rather than taller; each stays against
-        # its own edge, so the group keeps its width.
-        bw = back_w if back_h is None else round(src.width * back_h / src.height)
+        # The outer pair shares its first still's height, so a narrower still (the blogger's
+        # stacked panes) is drawn narrower rather than taller, and never wider than the tier's
+        # width, so a wide one does not outgrow the others.
+        bw = width if j or back_h is None else min(width, round(src.width * back_h / src.height))
         b = src.resize((bw, round(src.height * bw / src.width)), Image.Resampling.LANCZOS)
-        back_h = back_h or b.height
-        b = captioned(b, caption, side, bw / src.width)
-        b = b.rotate(2.5 if side == "left" else -2.5, expand=True, resample=Image.Resampling.BICUBIC)
-        backs.append((side, b))
-    front_x = (W - front_w) // 2
-    front_y = round(front.height * 0.10)
-    height = max([front_y + front.height] + [b.height for _, b in backs]) + 4 * SCALE
+        if j == 0:
+            back_h = back_h or b.height
+        b = captioned(b, caption, side, bw / src.width, edge="bottom" if j == 0 else "top")
+        tilt = 0.0 if middle else (2.5 - 0.8 * j) * (1 if side == "left" else -1)
+        b = b.rotate(tilt, expand=True, resample=Image.Resampling.BICUBIC)
+        y = (deep - j) * lift if j <= deep else 0
+        if middle:
+            x = (W - b.width) // 2
+        else:
+            inset = round(W * 0.10 * j)
+            x = inset if side == "left" else W - inset - b.width
+        placed.append((b, x, y, j))
+    base = deep * lift if n > 2 else 0
+    front_y = base + round(front.height * 0.10)
+    height = max([front_y + front.height] + [y + b.height for b, _, y, _ in placed]) + 4 * SCALE
     canvas = Image.new("RGBA", (W, height), (0, 0, 0, 0))
-    for side, b in backs:
-        canvas.alpha_composite(b, (0 if side == "left" else W - b.width, 0))
-    canvas.alpha_composite(front, (front_x, front_y))
+    for b, x, y, _ in sorted(placed, key=lambda p: -p[3]):
+        canvas.alpha_composite(b, (x, y))
+    canvas.alpha_composite(front, ((W - front_w) // 2, front_y))
     canvas = canvas.crop(canvas.getbbox())
     canvas = canvas.resize((OUT_W, round(canvas.height * OUT_W / canvas.width)), Image.Resampling.LANCZOS)
     canvas.save(out, optimize=True)
@@ -121,9 +141,11 @@ PORTRAIT_OUT_W = 1000
 
 
 def compose_portrait(out, pieces):
-    """The same three stills as a tall picture, for a place beside text (csarko.sh's card): the
+    """The same stills as a tall picture, for a place beside text (csarko.sh's card): the
     first behind-still at the top, the front one over its lower half, the second behind-still
     under the front one's lower half, tilted the other way; captions on the edges that show."""
+    if len(pieces) > 3:
+        return compose_portrait_fan(out, pieces)
     W = PORTRAIT_W
     front_w = round(W * 0.88)
     back_w = round(W * 0.78)
@@ -152,6 +174,56 @@ def compose_portrait(out, pieces):
     canvas.alpha_composite(top, (0, 0))
     if len(backs) > 1:
         canvas.alpha_composite(backs[1], (W - backs[1].width, bottom_y))
+    canvas.alpha_composite(front, ((W - front_w) // 2, front_y))
+    canvas = canvas.crop(canvas.getbbox())
+    canvas = canvas.resize((PORTRAIT_OUT_W, round(canvas.height * PORTRAIT_OUT_W / canvas.width)), Image.Resampling.LANCZOS)
+    canvas.save(out, optimize=True)
+    print(f"{out}: {canvas.width}x{canvas.height}")
+
+
+def compose_portrait_fan(out, pieces):
+    """The tall picture with more than two backs: the first half of them (rounded up) fanned in
+    a row above the front one, their captions on their top edges, the rest in a row under its
+    lower half, their captions on their bottom edges. A row of two stands against the edges,
+    tilted apart; a row of three has its middle one a little further out of the front's way
+    (higher above, lower below) and drawn first, so its caption shows between the others."""
+    W = PORTRAIT_W
+    front_w = round(W * 0.88)
+    src = Image.open(pieces[0][0]).convert("RGBA")
+    front = src.resize((front_w, round(src.height * front_w / src.width)), Image.Resampling.LANCZOS)
+    front = captioned(front, pieces[0][1], "center", front_w / src.width)
+    rest = pieces[1:]
+    half = (len(rest) + 1) // 2
+
+    def row(items, above):
+        k = len(items)
+        cards = []
+        for i, (path, caption) in enumerate(items):
+            middle = k == 3 and i == 1
+            align = "center" if middle else ("left" if i == 0 else "right")
+            if k == 1:
+                align = "left" if above else "right"
+            bw = round(W * (0.78 if k == 1 else 0.56 if middle else 0.6))
+            img = Image.open(path).convert("RGBA")
+            b = img.resize((bw, round(img.height * bw / img.width)), Image.Resampling.LANCZOS)
+            b = captioned(b, caption, align, bw / img.width, edge="top" if above else "bottom")
+            tilt = 0.0 if middle else (2.5 if align == "left" else -2.5)
+            b = b.rotate(tilt, expand=True, resample=Image.Resampling.BICUBIC)
+            x = (W - b.width) // 2 if middle else (0 if align == "left" else W - b.width)
+            cards.append((b, x, middle))
+        return cards
+
+    top, bottom = row(rest[:half], True), row(rest[half:], False)
+    shift = round(W * 0.06)
+    top_h = max(b.height for b, _, _ in top) + shift
+    front_y = round(top_h * 0.45)
+    bottom_y = front_y + round(front.height * 0.6)
+    height = max(front_y + front.height, bottom_y + max(b.height for b, _, _ in bottom) + shift) + 4 * SCALE
+    canvas = Image.new("RGBA", (W, height), (0, 0, 0, 0))
+    for b, x, middle in sorted(top, key=lambda c: not c[2]):
+        canvas.alpha_composite(b, (x, 0 if middle else shift))
+    for b, x, middle in sorted(bottom, key=lambda c: not c[2]):
+        canvas.alpha_composite(b, (x, bottom_y + (shift if middle else 0)))
     canvas.alpha_composite(front, ((W - front_w) // 2, front_y))
     canvas = canvas.crop(canvas.getbbox())
     canvas = canvas.resize((PORTRAIT_OUT_W, round(canvas.height * PORTRAIT_OUT_W / canvas.width)), Image.Resampling.LANCZOS)
