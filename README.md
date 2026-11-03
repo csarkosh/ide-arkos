@@ -85,9 +85,9 @@ new line for a moment before it settles, as on the audit's status line here.
 </picture>
 
 **The student** keeps a course in one folder: the week's lecture notes rendered on the left,
-with a problem set's code in the next tab, and Claude Code on the right explaining, as a
-classmate would, why the problem set's tests fail, fixing it, and adding practice questions to
-the notes, which change on the left as it writes. It is shot in Composition Notebook: a marbled
+with a problem set's code in the next tab, and Claude Code on the right, having explained as a
+classmate would why the problem set's tests failed, fixing the code and adding practice questions
+to the notes, which grow on the left as it writes. It is shot in Composition Notebook: a marbled
 cover over the title bar, ruled cream pages bound to the file tree by a wire spiral, and terminal
 text written in by hand.
 
@@ -95,13 +95,13 @@ text written in by hand.
   <img alt="An Arkos IDE window in Composition Notebook: a marbled black-and-white cover over the title bar, the file tree on a cream page bound by a wire spiral, the lecture notes on dynamic programming rendered on a ruled page with a table and a code block, and Claude Code on the right explaining a knapsack bug in handwritten type" src="docs/images/student-dark.png" width="760">
 </picture>
 
-**The data analyst** owns the weekly numbers: the signups report rendered on the left, its
-table being filled and its bar chart growing a week, Claude Code on the right writing the script
-that computes them, and the raw export below it. It is shot in Material: white cards on a cool
+**The data analyst** owns the weekly numbers: the signups report rendered on the left, this
+week's table filled in, a week added to its bar chart and a line on what moved most, all from the
+script Claude Code wrote and ran on the right, with the raw export below it. It is shot in Material: white cards on a cool
 frame, each pane's number on a chip of its own colour, the active tab underlined in blue.
 
 <picture>
-  <img alt="An Arkos IDE window in Material, its panes as white rounded cards on a pale frame: a weekly signups report rendered on the left with a table by channel and a blue bar chart, Claude Code on the right computing the week's numbers, and the CSV export of signups by week and channel below it" src="docs/images/data-analyst-dark.png" width="760">
+  <img alt="An Arkos IDE window in Material, its panes as white rounded cards on a pale frame: a weekly signups report rendered on the left with this week's table by channel filled in and a light blue bar chart, Claude Code on the right summing up the numbers it computed, and the CSV export of signups by week and channel below it" src="docs/images/data-analyst-dark.png" width="760">
 </picture>
 
 ## Privacy
