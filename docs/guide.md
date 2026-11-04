@@ -67,12 +67,7 @@ previews, Escape goes back to the pane.
 Under the Explorer, Worktrees lists `git worktree list`: each worktree's folder, branch and, once
 expanded, its changed files in the status colours with a count in the row (a collapsed worktree
 never runs `git status`). Click a changed file to read it in the viewer. Right click a worktree:
-Open terminal here, Remove worktree (refused while it has changes), Remove worktree, force. The
-"+" on the header creates one: a branch name, then the path (prefilled beside the project);
-an existing branch is checked out, a new one created. If the repository's own config sets
-filter drivers (`git lfs install --local`, for one), creating a worktree names them and asks for
-a second Enter, since the checkout runs them; a filter config with a driver name it cannot read
-safely creates nothing. The main checkout is first and cannot be removed. Ctrl+Shift+G puts the
+Open terminal here, Remove worktree (refused while it has changes), Remove worktree, force. The main checkout is first and cannot be removed. Ctrl+Shift+G puts the
 keyboard in the list. The tree's rows carry git status in the theme's pastels (added, modified,
 untracked) and a folder with changes inside carries a dot.
 

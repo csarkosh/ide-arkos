@@ -237,28 +237,6 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
         })))
         .when(outline_open, |d| d.child(crate::outline::render_rows(root, &theme, cx).opacity(outline_o)));
     let worktrees_open = root.sidebar.worktrees_open;
-    let plus = div()
-        .id("worktree-create")
-        .flex_none()
-        .px(px(4.0))
-        .text_size(px(style.ui(13.0)))
-        .cursor_pointer()
-        .hover(|s| s.text_color(c.text.hsla()))
-        .child("+")
-        .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
-            // The header under it would close the section on the same click.
-            cx.stop_propagation();
-            root.sidebar.worktrees_open = true;
-            // A prompt already open keeps what was typed; it just takes the keys.
-            if root.wt_prompt.value().is_none() {
-                root.wt_prompt.show(Prompt::new(), Instant::now());
-                root.read_prompt_drivers(cx);
-            }
-            root.wt_focused = true;
-            root.sidebar_focused = false;
-            root.save(cx);
-            cx.notify();
-        }));
     let worktrees = div()
         .flex_none()
         .flex()
@@ -285,18 +263,15 @@ pub fn render(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) -> O
                 .on_click(cx.listener(|root, _ev: &ClickEvent, _window, cx| {
                     root.sidebar.worktrees_open = !root.sidebar.worktrees_open;
                     if !root.sidebar.worktrees_open {
-                        // A closed section cannot hold the keys or a prompt.
+                        // A closed section cannot hold the keys.
                         root.wt_focused = false;
-                        root.wt_prompt.hide(Instant::now());
                     }
                     root.save(cx);
                     cx.notify();
-                }))
-                .child(plus),
+                })),
         )
         .when(worktrees_open, |d| {
-            d.children(render_prompt(root, &theme, worktrees_o, cx))
-                .child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
+            d.child(render_worktree_rows(root, window, &theme, cx).opacity(worktrees_o))
         });
     let column = div()
         .relative()
@@ -858,228 +833,6 @@ pub fn worktree_menu_items(wt: &Worktree, dirty: Option<usize>) -> Vec<(&'static
     v
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stage {
-    Branch,
-    Path,
-    /// The repository configures filter drivers, which the checkout runs: named, and a second
-    /// Enter creates.
-    Confirm,
-}
-
-/// The repository's filter drivers as the create prompt knows them. Only `Known` creates.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum Drivers {
-    /// The read has not landed.
-    #[default]
-    Unknown,
-    /// The drivers the repository's own config sets; empty when none.
-    Known(Vec<String>),
-    /// The config could not be read, or names a driver `read_filter_args` refuses.
-    Refused,
-}
-
-impl Drivers {
-    /// From `explorer::filter_drivers`.
-    pub fn from_read(read: Option<Vec<String>>) -> Self {
-        read.map_or(Drivers::Refused, Drivers::Known)
-    }
-}
-
-pub const CHECKING_FILTERS: &str = "checking the repository's filter config\u{2026}";
-pub const REFUSED_FILTERS: &str = "cannot create: unusual filter config";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PromptStep {
-    Stay,
-    Cancel,
-    Create { branch: String, path: PathBuf },
-}
-
-/// The two-step prompt under the Worktrees header: a branch name, then the path (prefilled),
-/// and, when the repository configures filter drivers, a confirmation naming them. Its focus
-/// handle is `Root.wt_prompt_focus`.
-pub struct Prompt {
-    pub branch: LineEdit,
-    pub path: LineEdit,
-    pub stage: Stage,
-    pub error: Option<String>,
-    /// `git worktree add` is running: every key but Escape waits for it.
-    pub creating: bool,
-    /// The filter drivers the confirmation names.
-    pub drivers: Vec<String>,
-    /// Enter on the path came before the drivers were read: said, and nothing created.
-    pub checking: bool,
-}
-
-impl Prompt {
-    pub fn new() -> Self {
-        Prompt { branch: LineEdit::new(), path: LineEdit::new(), stage: Stage::Branch, error: None, creating: false, drivers: Vec::new(), checking: false }
-    }
-
-    /// A key, with `drivers` the repository's filter drivers as known now. Fails closed: Enter on
-    /// the path creates only with `Drivers::Known`, at once when empty, after a confirmation
-    /// naming them otherwise; while the read is out it says so (Enter again once it lands, in
-    /// milliseconds), and a refused config never creates.
-    pub fn key(&mut self, ks: &Keystroke, root: &Path, drivers: &Drivers) -> PromptStep {
-        if self.creating {
-            // Escape closes the prompt; the running git finishes on its own and the list's
-            // refresh shows what it did.
-            return if ks.key == "escape" { PromptStep::Cancel } else { PromptStep::Stay };
-        }
-        self.checking = false;
-        let edit = match self.stage {
-            Stage::Branch => &mut self.branch,
-            Stage::Path => &mut self.path,
-            Stage::Confirm => {
-                return match ks.key.as_str() {
-                    "escape" => PromptStep::Cancel,
-                    "enter" if !ks.modifiers.modified() => {
-                        self.creating = true;
-                        PromptStep::Create { branch: self.branch.text.trim().to_string(), path: PathBuf::from(self.path.text.trim()) }
-                    }
-                    _ => PromptStep::Stay,
-                };
-            }
-        };
-        match edit.handle(ks) {
-            Edit::Cancel => PromptStep::Cancel,
-            Edit::Submit => match self.stage {
-                Stage::Branch => {
-                    let b = self.branch.text.trim().to_string();
-                    if b.is_empty() || b.contains(char::is_whitespace) {
-                        self.error = Some("a branch name, without spaces".into());
-                        return PromptStep::Stay;
-                    }
-                    self.error = None;
-                    self.path.set(&crate::worktrees::default_path(root, &b).to_string_lossy());
-                    self.stage = Stage::Path;
-                    PromptStep::Stay
-                }
-                Stage::Path => {
-                    let p = self.path.text.trim();
-                    if p.is_empty() {
-                        self.error = Some("a path for the worktree".into());
-                        return PromptStep::Stay;
-                    }
-                    let path = PathBuf::from(p);
-                    self.error = None;
-                    match drivers {
-                        Drivers::Unknown => {
-                            self.checking = true;
-                            PromptStep::Stay
-                        }
-                        Drivers::Refused => {
-                            self.error = Some(REFUSED_FILTERS.into());
-                            PromptStep::Stay
-                        }
-                        Drivers::Known(names) if !names.is_empty() => {
-                            self.drivers = names.clone();
-                            self.stage = Stage::Confirm;
-                            PromptStep::Stay
-                        }
-                        Drivers::Known(_) => {
-                            self.creating = true;
-                            PromptStep::Create { branch: self.branch.text.trim().to_string(), path }
-                        }
-                    }
-                }
-                // Its keys were answered above.
-                Stage::Confirm => PromptStep::Stay,
-            },
-            _ => PromptStep::Stay,
-        }
-    }
-
-    /// Pasted text goes into the field being edited, newlines and carriage returns dropped;
-    /// nothing while git creates or the confirmation is up.
-    pub fn paste(&mut self, text: &str) {
-        match self.stage {
-            _ if self.creating => {}
-            Stage::Branch => self.branch.insert_str(text),
-            Stage::Path => self.path.insert_str(text),
-            Stage::Confirm => {}
-        }
-    }
-
-    /// The dim line under the fields: the filter config is being read, or the confirmation
-    /// naming the drivers, until git starts.
-    pub fn note(&self) -> Option<String> {
-        if self.creating {
-            None
-        } else if self.checking {
-            Some(CHECKING_FILTERS.to_string())
-        } else {
-            (self.stage == Stage::Confirm).then(|| format!("creating runs this repository's filter driver(s): {}. Enter again to continue", self.drivers.join(", ")))
-        }
-    }
-}
-
-/// Where a failed `git worktree add` is said.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CreateFailure {
-    /// Under the prompt that is waiting for it, which stays open.
-    InPrompt,
-    /// In a notice: the prompt was closed (or closed and opened afresh) while git ran.
-    Notice,
-}
-
-pub fn create_failure_target(prompt_open_and_creating: bool) -> CreateFailure {
-    if prompt_open_and_creating {
-        CreateFailure::InPrompt
-    } else {
-        CreateFailure::Notice
-    }
-}
-
-/// The create prompt under the Worktrees header: the branch, then the path, and git's or the
-/// prompt's own complaint under them.
-/// `section` is the Worktrees rows' own opacity as the section opens; the prompt's fade
-/// multiplies it.
-fn render_prompt(root: &mut Root, theme: &Theme, section: f32, cx: &mut Context<Root>) -> Option<Div> {
-    let style = root.effect_style();
-    let (p, opacity) = root.wt_prompt.current(root.frame_now)?;
-    // Drawn while it fades out too; only the open prompt holds focus and takes clicks.
-    let live = root.wt_prompt.value().is_some();
-    let family = root.ui_family();
-    let label = |text: &'static str| div().flex_none().w(px(44.0)).text_color(theme.chrome.text_dim.hsla()).child(text);
-    let field = |edit: &LineEdit, placeholder: &str, active: bool| -> Div {
-        if active {
-            line_edit::render(edit, placeholder, theme, family.clone(), 12.0)
-        } else {
-            div().text_size(px(style.ui(12.0))).text_color(theme.chrome.text_dim.hsla()).child(edit.text.clone())
-        }
-    };
-    let row = |l: Div, f: Div| div().h(px(ROW_H)).px(px(10.0)).flex().items_center().gap(px(6.0)).child(l).child(div().min_w_0().flex_1().overflow_hidden().child(f));
-    Some(
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .relative()
-            .top(px(-motion::lift(opacity, motion::PANEL_LIFT)))
-            .opacity(opacity * section)
-            .text_size(px(style.ui(12.0)))
-            .bg(theme.chrome.tab_inactive.hsla())
-            // Keys reach `wt_key` through the section's listener; a click here takes them back.
-            .when(live, |d| {
-                d.track_focus(&root.wt_prompt_focus).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                        root.wt_focused = true;
-                        root.sidebar_focused = false;
-                        cx.notify();
-                    }),
-                )
-            })
-            .child(row(label("branch"), field(&p.branch, "feature/name", p.stage == Stage::Branch)))
-            .when(p.stage != Stage::Branch, |d| d.child(row(label("path"), field(&p.path, "", p.stage == Stage::Path))))
-            .when_some(p.note(), |d, t| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child(t)))
-            .when(p.creating, |d| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.chrome.text_dim.hsla()).child("creating\u{2026}")))
-            .when_some(p.error.clone().filter(|_| !p.creating), |d, e| d.child(div().px(px(10.0)).pb(px(4.0)).text_color(theme.tree.deleted.hsla()).child(e))),
-    )
-}
-
 /// The Worktrees rows: each worktree (a shimmer while its first `git status` runs) and, once
 /// expanded and loaded, its changed files easing in. Requests the next frame only while
 /// something moves and Reduce Motion is off.
@@ -1443,54 +1196,6 @@ impl Root {
         cx.notify();
     }
 
-    /// Reads the repository's filter drivers for the create prompt, off the UI thread.
-    /// `Drivers::Unknown` until the read lands.
-    pub fn read_prompt_drivers(&mut self, cx: &mut Context<Self>) {
-        self.wt_prompt_drivers = Drivers::Unknown;
-        let root = self.project.clone();
-        cx.spawn(async move |this, cx| {
-            let read = cx.background_executor().spawn(async move { explorer::filter_drivers(&root) }).await;
-            let _ = this.update(cx, |root, cx| {
-                root.wt_prompt_drivers = Drivers::from_read(read);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// `git worktree add` off the UI thread. Success closes the prompt; a failure shows git's
-    /// words in it and keeps it open, or in a notice when the prompt was closed meanwhile. The
-    /// list is read again either way.
-    pub fn create_worktree(&mut self, branch: String, path: PathBuf, cx: &mut Context<Self>) {
-        let root = self.project.clone();
-        cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { crate::worktrees::create(&root, &branch, &path) }).await;
-            let _ = this.update(cx, |root, cx| {
-                match result {
-                    Ok(()) => {
-                        root.wt_prompt.hide(Instant::now());
-                    }
-                    Err(e) => match create_failure_target(root.wt_prompt.value().is_some_and(|p| p.creating)) {
-                        CreateFailure::InPrompt => {
-                            if let Some(p) = root.wt_prompt.value_mut() {
-                                p.error = Some(e);
-                                p.creating = false;
-                                // Back to the path, which the error is most likely about.
-                                if p.stage == Stage::Confirm {
-                                    p.stage = Stage::Path;
-                                }
-                            }
-                        }
-                        CreateFailure::Notice => root.show_notice(format!("cannot create the worktree: {e}"), cx),
-                    },
-                }
-                root.refresh_worktrees(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// `git worktree remove` off the UI thread; git's refusal (changes, the main checkout) is a
     /// notice, and so are terminals left open in a removed one (they keep running).
     pub fn remove_worktree(&mut self, path: PathBuf, force: bool, cx: &mut Context<Self>) {
@@ -1514,28 +1219,8 @@ impl Root {
 
     /// Keys in the Worktrees section: Up/Down move, Enter or Right expands a worktree or opens a
     /// change pinned, Space previews it, Left collapses, Escape returns to the pane; with the
-    /// prompt open, the keys go to it (Cmd+V pastes).
+    /// prompt open, the .
     pub fn wt_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) {
-        let drivers = self.wt_prompt_drivers.clone();
-        if let Some(p) = self.wt_prompt.value_mut() {
-            if ks.modifiers.platform && ks.key == "v" {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    p.paste(&text);
-                }
-                cx.notify();
-                return;
-            }
-            match p.key(ks, &self.project.clone(), &drivers) {
-                PromptStep::Stay => {}
-                PromptStep::Cancel => {
-                    self.wt_prompt.hide(Instant::now());
-                    self.wt_focused = false;
-                }
-                PromptStep::Create { branch, path } => self.create_worktree(branch, path, cx),
-            }
-            cx.notify();
-            return;
-        }
         if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
             return;
         }
@@ -1917,136 +1602,6 @@ mod tests {
         assert!(worktree_menu_items(&bare, None).is_empty(), "a bare main checkout: no files to open a terminal in, and never removed");
         assert_eq!(worktree_menu_items(&feat, Some(0))[0].1, WtMenuAction::OpenTerminal("/p-f".into()));
         assert_eq!(worktree_menu_items(&feat, None)[2].1, WtMenuAction::RemoveForce("/p-f".into()));
-    }
-
-    #[test]
-    fn the_create_prompt_asks_for_the_branch_then_the_path() {
-        use gpui::Keystroke;
-        let key = |k: &str| Keystroke::parse(k).unwrap();
-        let root = std::path::Path::new("/Users/me/proj");
-        let none = Drivers::Known(vec![]);
-        let mut p = Prompt::new();
-        assert_eq!(p.stage, Stage::Branch);
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay, "an empty branch does not advance");
-        assert!(p.error.is_some());
-        // "c->c" is gpui's test syntax for a key that types its character.
-        for c in "feat/x".chars() {
-            p.key(&key(&format!("{c}->{c}")), root, &none);
-        }
-        assert_eq!(p.branch.text, "feat/x");
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay);
-        assert_eq!(p.stage, Stage::Path);
-        assert!(p.error.is_none(), "a good branch clears the error");
-        assert_eq!(p.path.text, "/Users/me/proj-feat-x", "the default path is filled in");
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Create { branch: "feat/x".into(), path: "/Users/me/proj-feat-x".into() });
-        assert!(p.creating);
-        assert_eq!(p.key(&key("enter"), root, &none), PromptStep::Stay, "a second Enter while git works runs nothing");
-        assert_eq!(p.key(&key("z->z"), root, &none), PromptStep::Stay);
-        assert_eq!(p.path.text, "/Users/me/proj-feat-x", "and types nothing");
-        assert!(p.creating);
-        assert_eq!(p.key(&key("escape"), root, &none), PromptStep::Cancel, "Escape still closes it");
-        let mut q = Prompt::new();
-        assert_eq!(q.key(&key("escape"), root, &none), PromptStep::Cancel);
-        for c in "a b".chars() {
-            q.key(&key(&format!("{c}->{c}")), root, &none);
-        }
-        assert_eq!(q.key(&key("enter"), root, &none), PromptStep::Stay, "a space is not a branch name");
-        assert_eq!((q.stage, q.error.is_some()), (Stage::Branch, true));
-    }
-
-    #[test]
-    fn with_filter_drivers_configured_the_prompt_names_them_and_a_second_enter_creates() {
-        use gpui::Keystroke;
-        let key = |k: &str| Keystroke::parse(k).unwrap();
-        let root = std::path::Path::new("/Users/me/proj");
-        let lfs = Drivers::Known(vec!["lfs".to_string()]);
-        let to_path = |p: &mut Prompt| {
-            for c in "feat".chars() {
-                p.key(&key(&format!("{c}->{c}")), root, &Drivers::Unknown);
-            }
-            assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay);
-            assert_eq!(p.stage, Stage::Path);
-            assert_eq!(p.note(), None);
-        };
-        let mut p = Prompt::new();
-        to_path(&mut p);
-        assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Stay, "the first Enter on the path names the drivers");
-        assert_eq!(p.stage, Stage::Confirm);
-        assert!(!p.creating);
-        assert_eq!(p.note().as_deref(), Some("creating runs this repository's filter driver(s): lfs. Enter again to continue"));
-        assert_eq!(p.key(&key("z->z"), root, &lfs), PromptStep::Stay, "a key is not a confirmation");
-        assert_eq!(p.path.text, "/Users/me/proj-feat", "and types nothing");
-        assert_eq!(p.key(&key("enter"), root, &lfs), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
-        assert!(p.creating);
-        assert_eq!(p.note(), None, "git is running: the line gives way to \"creating\"");
-        // Escape at the confirmation cancels.
-        let mut q = Prompt::new();
-        to_path(&mut q);
-        q.key(&key("enter"), root, &Drivers::Known(vec!["lfs".to_string(), "x".to_string()]));
-        assert_eq!(q.note().as_deref(), Some("creating runs this repository's filter driver(s): lfs, x. Enter again to continue"));
-        assert_eq!(q.key(&key("escape"), root, &lfs), PromptStep::Cancel);
-        // No drivers: one Enter creates, as before.
-        let mut r = Prompt::new();
-        to_path(&mut r);
-        assert_eq!(r.key(&key("enter"), root, &Drivers::Known(vec![])), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
-    }
-
-    #[test]
-    fn the_prompt_creates_nothing_until_the_filter_config_is_known_and_never_when_refused() {
-        use gpui::Keystroke;
-        let key = |k: &str| Keystroke::parse(k).unwrap();
-        let root = std::path::Path::new("/Users/me/proj");
-        let mut p = Prompt::new();
-        for c in "feat".chars() {
-            p.key(&key(&format!("{c}->{c}")), root, &Drivers::Unknown);
-        }
-        p.key(&key("enter"), root, &Drivers::Unknown);
-        // The read has not landed: said, and nothing created.
-        assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay);
-        assert_eq!((p.stage, p.creating), (Stage::Path, false));
-        assert_eq!(p.note().as_deref(), Some(CHECKING_FILTERS));
-        assert_eq!(p.key(&key("enter"), root, &Drivers::Unknown), PromptStep::Stay, "still not known: still nothing");
-        // It landed, with none: the next Enter creates.
-        assert_eq!(p.key(&key("enter"), root, &Drivers::Known(vec![])), PromptStep::Create { branch: "feat".into(), path: "/Users/me/proj-feat".into() });
-        // Refused: never creates, however often Enter comes.
-        let mut q = Prompt::new();
-        for c in "feat".chars() {
-            q.key(&key(&format!("{c}->{c}")), root, &Drivers::Refused);
-        }
-        q.key(&key("enter"), root, &Drivers::Refused);
-        for _ in 0..3 {
-            assert_eq!(q.key(&key("enter"), root, &Drivers::Refused), PromptStep::Stay);
-            assert_eq!(q.error.as_deref(), Some(REFUSED_FILTERS));
-            assert!(!q.creating);
-            assert_ne!(q.stage, Stage::Confirm);
-        }
-        assert_eq!(q.note(), None);
-        assert_eq!(Drivers::from_read(None), Drivers::Refused, "an unreadable or unusual config");
-        assert_eq!(Drivers::from_read(Some(vec![])), Drivers::Known(vec![]));
-    }
-
-    #[test]
-    fn a_paste_goes_into_the_field_being_edited_on_one_line() {
-        use gpui::Keystroke;
-        let root = std::path::Path::new("/Users/me/proj");
-        let mut p = Prompt::new();
-        p.paste("feat/\r\nx\n");
-        assert_eq!((p.branch.text.as_str(), p.branch.cursor), ("feat/x", 6));
-        p.key(&Keystroke::parse("enter").unwrap(), root, &Drivers::Known(vec!["lfs".to_string()]));
-        p.path.clear();
-        p.paste("/tmp/wt\n");
-        assert_eq!(p.path.text, "/tmp/wt");
-        assert_eq!(p.branch.text, "feat/x", "the path stage pastes into the path");
-        p.key(&Keystroke::parse("enter").unwrap(), root, &Drivers::Known(vec!["lfs".to_string()]));
-        assert_eq!(p.stage, Stage::Confirm);
-        p.paste("more");
-        assert_eq!(p.path.text, "/tmp/wt", "nothing is pasted at the confirmation");
-    }
-
-    #[test]
-    fn a_failed_create_shows_in_the_waiting_prompt_or_else_in_a_notice() {
-        assert_eq!(create_failure_target(true), CreateFailure::InPrompt);
-        assert_eq!(create_failure_target(false), CreateFailure::Notice, "closed, or reopened afresh, while git ran: not silent");
     }
 
     #[test]

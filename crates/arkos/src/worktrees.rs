@@ -75,13 +75,6 @@ pub fn list(root: &Path) -> Option<Vec<Worktree>> {
     Some(parse_worktree_list(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// Beside the project, `<project>-<branch>` with `/` in the branch turned into `-`.
-pub fn default_path(root: &Path, branch: &str) -> PathBuf {
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let parent = root.parent().unwrap_or(root);
-    parent.join(format!("{name}-{}", branch.replace('/', "-")))
-}
-
 fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     let out = git(root).args(args).stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run git: {e}"))?;
     if out.status.success() {
@@ -91,15 +84,13 @@ fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     }
 }
 
-fn branch_exists(root: &Path, branch: &str) -> bool {
-    let Some(mut cmd) = git_read(root) else { return false };
-    cmd.args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
-}
-
-/// `git worktree add <path> <branch>`, creating the branch when it does not exist yet.
+/// Test fixture: `git worktree add <path> <branch>`, creating the branch when it does not
+/// exist yet. The app never creates worktrees (Claude does); tests need some to list.
+#[cfg(test)]
 pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
     let path = path.to_string_lossy();
-    if branch_exists(root, branch) {
+    let exists = git_read(root).is_some_and(|mut cmd| cmd.args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false));
+    if exists {
         run(root, &["worktree", "add", "--", &path, branch])
     } else {
         run(root, &["worktree", "add", "-b", branch, "--", &path])
@@ -271,12 +262,6 @@ worktree /Users/me/odd\nname\0HEAD 89abcdef0123456789abcdef0123456789abcdef\0det
         assert!(!list[1].missing && !list[1].is_main, "locked is neither missing nor main");
         assert_eq!(list[2].branch, None);
         assert_eq!(list[2].path, PathBuf::from("/Users/me/odd\nname"), "with -z a newline is part of the path");
-    }
-
-    #[test]
-    fn default_path_sits_beside_the_project_named_after_the_branch() {
-        assert_eq!(default_path(Path::new("/Users/me/proj"), "feature/x"), PathBuf::from("/Users/me/proj-feature-x"));
-        assert_eq!(default_path(Path::new("/Users/me/proj"), "fix"), PathBuf::from("/Users/me/proj-fix"));
     }
 
     #[test]

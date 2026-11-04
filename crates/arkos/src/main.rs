@@ -290,16 +290,10 @@ pub struct Root {
     /// Keyboard focus is in the worktree list (Ctrl+Shift+G). Focusing a pane or a tab hands
     /// it back, as for the file tree.
     pub wt_focused: bool,
-    /// The create prompt under the Worktrees header while it is open; it holds the keys while
-    /// `wt_focused`.
-    pub wt_prompt: Transient<sidebar::Prompt>,
-    /// The repository's filter drivers, read as the prompt opens; `Unknown` until the read lands.
-    pub wt_prompt_drivers: sidebar::Drivers,
     /// A worktree row's right-click menu while it is open: the worktree and the click.
     pub wt_menu: Transient<(PathBuf, gpui::Point<gpui::Pixels>)>,
-    /// The Worktrees section's focus handle, and the create prompt's.
+    /// The Worktrees section's focus handle.
     pub wt_focus: FocusHandle,
-    pub wt_prompt_focus: FocusHandle,
     /// The text size new terminals start at, and that panes without a terminal measure with.
     /// Cmd+= and Cmd+- change the focused terminal's own size, not this.
     pub font_size: f32,
@@ -695,11 +689,8 @@ impl Root {
             worktrees,
             worktrees_seq: 0,
             wt_focused: false,
-            wt_prompt: Transient::Hidden,
-            wt_prompt_drivers: sidebar::Drivers::Unknown,
             wt_menu: Transient::Hidden,
             wt_focus: cx.focus_handle(),
-            wt_prompt_focus: cx.focus_handle(),
             font_size: preset.size,
             line_height: preset.line_height,
             text_preset,
@@ -1249,7 +1240,6 @@ impl Root {
             || self.wt_menu.animating(now)
             || self.palette.animating(now)
             || self.notice.animating(now)
-            || self.wt_prompt.animating(now)
             || self.url_prompt.animating(now)
             || self.drop_tints.values().any(|t| t.animating(now))
             || self.reorder.as_ref().is_some_and(|r| r.animating(now))
@@ -1283,7 +1273,6 @@ impl Root {
         self.wt_menu.settle(now);
         self.palette.settle(now);
         self.notice.settle(now);
-        self.wt_prompt.settle(now);
         self.url_prompt.settle(now);
     }
 
@@ -3136,7 +3125,7 @@ impl Root {
         idle::Chrome {
             palette: self.palette.value().is_some(),
             menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
-            prompt: self.wt_prompt.value().is_some() || self.url_prompt.value().is_some(),
+            prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
             unsaved: self.viewers.values().any(|v| {
@@ -3763,7 +3752,6 @@ impl Root {
             || self.context_menu.value().is_some()
             || self.link_menu.value().is_some()
             || self.md_menu.value().is_some()
-            || self.wt_prompt.value().is_some()
             || self.wt_menu.value().is_some()
             || self.drop_target.is_some()
             || self.reorder.is_some()
@@ -4250,8 +4238,6 @@ impl Render for Root {
             Some(self.url_prompt_focus.clone())
         } else if self.tab_rename.is_some() {
             Some(self.tab_rename_focus.clone())
-        } else if self.wt_focused && self.wt_prompt.value().is_some() {
-            Some(self.wt_prompt_focus.clone())
         } else if self.wt_focused {
             Some(self.wt_focus.clone())
         } else if self.sidebar_focused && self.new_file.value().is_some() {

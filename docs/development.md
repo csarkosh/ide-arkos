@@ -713,7 +713,7 @@ Things only a person at the screen can check, in order of value:
 - in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
   clears them within ten seconds
 - Worktrees: expand one: a shimmer, then its changed files fade in; collapse and expand again:
-  `git status` runs again (watch `ps`); + creates `../proj-feat` on a new branch; Remove on a
+  `git status` runs again (watch `ps`); Remove on a
   dirty one is refused with git's words, force removes it
 - Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
 - a worktree with 40 changes lists them readably, one per row, and the list scrolls
