@@ -895,8 +895,6 @@ async fn in_parallel<I: Send + 'static, T: Send + 'static>(this: &gpui::WeakEnti
 
 /// The Worktrees section's line when the file-system watcher is not running: on a network volume,
 /// when it could not start, or when the open folder itself went away; `None` while watching.
-// Task 8 draws it; until then only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn watched_notice(w: &crate::worktrees::Watched) -> Option<&'static str> {
     use crate::worktrees::Watched;
     match w {
@@ -905,6 +903,68 @@ pub fn watched_notice(w: &crate::worktrees::Watched) -> Option<&'static str> {
         Watched::Failed(_) => Some("not watched: the file watcher could not start"),
         Watched::FolderGone => Some("the folder is gone"),
     }
+}
+
+/// The Worktrees section's one dim line, drawn after the rows: the watcher's notice when it is
+/// not watching; else, with no repository listed, the first repository's error; else, with no
+/// rows, `no worktrees`. A repository that failed while others listed is left to the command.
+pub fn wt_section_line(watched: &crate::worktrees::Watched, none_listed: bool, first_error: Option<&str>, has_rows: bool) -> Option<String> {
+    if let Some(notice) = watched_notice(watched) {
+        return Some(notice.to_string());
+    }
+    match first_error {
+        Some(why) if none_listed => Some(why.to_string()),
+        _ => (!has_rows).then(|| "no worktrees".to_string()),
+    }
+}
+
+/// The row's name line: the folder name, and the branch only when it differs (`detached` when
+/// none, `bare` for a bare repository's entry).
+pub fn wt_row_label(wt: &Worktree) -> (String, Option<String>) {
+    let name = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.to_string_lossy().into_owned());
+    let branch = match (&wt.branch, wt.bare) {
+        (Some(b), _) if *b == name => None,
+        (Some(b), _) => Some(b.clone()),
+        (None, true) => Some("bare".to_string()),
+        (None, false) => Some("detached".to_string()),
+    };
+    (name, branch)
+}
+
+/// The row's place line: relative to `open` when inside it (the open folder itself reads as its
+/// own name), else `~`-shortened when under `home`, else the full path.
+pub fn wt_row_place(path: &Path, open: &Path, home: &Path) -> String {
+    if path == open {
+        return path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+    }
+    if let Ok(rel) = path.strip_prefix(open) {
+        return rel.to_string_lossy().into_owned();
+    }
+    if let Some(rel) = (!home.as_os_str().is_empty()).then(|| path.strip_prefix(home).ok()).flatten() {
+        return if rel.as_os_str().is_empty() { "~".to_string() } else { format!("~/{}", rel.to_string_lossy()) };
+    }
+    path.to_string_lossy().into_owned()
+}
+
+/// The age cell: `age_text` of the age, with `+` after a capped walk ("at least this recent"),
+/// `~` after a lagging one; empty with no age. A change stamped after `now` reads `now`.
+pub fn wt_row_age(age: Option<&crate::worktrees::Age>, now: SystemTime) -> String {
+    let Some(age) = age else { return String::new() };
+    let Some(changed) = age.changed else { return String::new() };
+    let mut text = crate::wt_scan::age_text(now.duration_since(changed).unwrap_or(Duration::ZERO));
+    if age.capped {
+        text.push('+');
+    }
+    if age.lagging {
+        text.push('~');
+    }
+    text
+}
+
+/// The canonical home folder, read once, for the rows' place lines.
+fn home_dir() -> &'static Path {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| std::env::var_os("HOME").map(|h| crate::wt_scan::canonical(Path::new(&h))).unwrap_or_default())
 }
 
 /// The notice after a removal that left terminals open in the removed worktree.
@@ -961,23 +1021,33 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
         .flex_col()
         .max_h(px(root.content.h * 0.4))
         .overflow_y_scroll()
-        .track_scroll(&root.sidebar.wt_scroll);
-    if root.worktrees.not_git() {
-        // A repository whose filter config turned git status off says that instead.
-        let why = root.explorer.status_off.unwrap_or("not a git repository");
-        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).child(why));
-    }
+        .track_scroll(&root.sidebar.wt_scroll)
+        // While the pointer is over the list its order holds, so a row does not move from under it.
+        .on_hover(cx.listener(|root, hovered: &bool, _window, cx| {
+            root.wt_hovered = *hovered;
+            cx.notify();
+        }));
+    // Read once a frame; the ages tick every ten seconds (`tick_worktree_ages`), so the text is
+    // made here from the stored time and never kept.
+    let wall = SystemTime::now();
+    let line = wt_section_line(&root.worktrees.watched, root.worktrees.by_repo.is_empty(), root.worktrees.errors.values().next().map(String::as_str), !rows.is_empty());
+    let (open, home) = (root.wt_open.clone(), home_dir());
     for (i, row) in rows.into_iter().enumerate() {
         // `flex_none`, or the capped column shrinks every row to fit and the rows overprint
         // each other; the list scrolls instead.
         let is_selected = selected.as_deref() == Some(row_path(&row).as_path());
+        // A worktree row has a second line, its place, at a smaller size.
+        let h = match row {
+            WtRow::Worktree { .. } => ROW_H + style.ui(14.0),
+            WtRow::Change { .. } => ROW_H,
+        };
         let base = div()
             .id(("worktree-row", i))
             .relative()
             .overflow_hidden()
             .w_full()
             .flex_none()
-            .h(px(ROW_H))
+            .h(px(h))
             .pr(px(8.0))
             .flex()
             .items_center()
@@ -986,7 +1056,7 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
             .hover(|s| s.bg(hover_bg))
             .cursor_pointer();
         let el = match row {
-            WtRow::Worktree { wt, age: _, expanded, loading, dirty } => {
+            WtRow::Worktree { wt, age, expanded, loading, dirty } => {
                 let band = loading.then(|| {
                     let phase = if still {
                         0.5
@@ -1003,12 +1073,10 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                 } else {
                     "\u{25b8}"
                 };
-                let name = wt.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| wt.path.to_string_lossy().into_owned());
-                let branch = match (&wt.branch, wt.bare) {
-                    (Some(b), _) => b.clone(),
-                    (None, true) => "bare".to_string(),
-                    (None, false) => format!("detached {}", wt.head),
-                };
+                let (name, branch) = wt_row_label(&wt);
+                let name_color = if root.worktrees.is_stale(&wt.path, wall) { dim } else { c.text.hsla() };
+                let age_text = wt_row_age(age.as_ref(), wall);
+                let place = wt_row_place(&wt.path, &open, home);
                 let count = dirty.map(|n| match n {
                     0 => ("clean".to_string(), dim),
                     1 => ("1 change".to_string(), theme.tree.modified.hsla()),
@@ -1018,11 +1086,37 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
                 let has_menu = !worktree_menu_items(&wt, dirty).is_empty();
                 base.pl(px(10.0))
                     .children(band)
-                    .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
-                    .child(div().flex_none().max_w(px(width * 0.5)).truncate().child(name))
-                    .child(div().min_w_0().flex_1().truncate().text_color(dim).child(branch))
-                    .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
-                    .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .line_height(px(style.ui(18.0)))
+                                    .child(div().flex_none().w(px(12.0)).text_color(dim).child(chevron))
+                                    .child(div().flex_none().max_w(px(width * 0.6)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(name_color).child(name))
+                                    .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(dim).children(branch))
+                                    .when(wt.missing, |d| d.child(div().flex_none().text_color(theme.tree.deleted.hsla()).child("missing")))
+                                    .children(count.map(|(text, color)| div().flex_none().text_size(px(style.ui(11.0))).text_color(color).child(text)))
+                                    .when(!age_text.is_empty(), |d| d.child(div().flex_none().text_size(px(style.ui(12.0))).text_color(dim).child(age_text))),
+                            )
+                            // Under the name: past the chevron's 12 and the gap's 6. Set tight
+                            // under its name, so the pair reads as one row with air before the next.
+                            // A definite width (the sidebar's less the row's 10 and 8 and the 18),
+                            // since gpui keeps a no-wrap text's first measure, taken without one,
+                            // and a long path would be clipped instead of ending in an ellipsis.
+                            .child(
+                                div()
+                                    .pl(px(18.0))
+                                    .line_height(px(style.ui(14.0)))
+                                    .child(div().w(px((width - 36.0).max(0.0))).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(style.ui(11.0))).text_color(dim).child(place)),
+                            ),
+                    )
                     .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
                         root.worktrees.selected = Some(p_click.clone());
                         root.worktrees.toggle(&p_click);
@@ -1067,8 +1161,8 @@ fn render_worktree_rows(root: &mut Root, window: &mut Window, theme: &Theme, cx:
         list = list.child(el);
     }
     // After the rows, so a row's child index stays its index in `rows()` for the scroll.
-    for why in root.worktrees.errors.values() {
-        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).truncate().child(why.clone()));
+    if let Some(line) = line {
+        list = list.child(div().flex_none().h(px(ROW_H)).px(px(10.0)).flex().items_center().text_color(dim).truncate().child(line));
     }
     if moving {
         window.request_animation_frame();
@@ -2270,5 +2364,50 @@ mod tests {
         // missing file is ticked with no fingerprint; a view made after the poll read its paths
         // waits for the next poll rather than being told its file is gone.
         assert_eq!(video_ticks(&views, &polled), vec![(1, Some((5, 10))), (2, None)]);
+    }
+
+    fn wt(path: &str, branch: Option<&str>) -> crate::worktrees::Worktree {
+        crate::worktrees::Worktree { path: path.into(), repo: "/p".into(), head: "abcd1234".into(), branch: branch.map(Into::into), missing: false, bare: false, locked: false, admin: None }
+    }
+
+    #[test]
+    fn a_row_names_the_folder_and_the_branch_only_when_it_differs() {
+        assert_eq!(wt_row_label(&wt("/p/.worktrees/csv-grid", Some("csv-grid"))), ("csv-grid".into(), None));
+        assert_eq!(wt_row_label(&wt("/p/.worktrees/release", Some("spinner-crossfade"))), ("release".into(), Some("spinner-crossfade".into())));
+        assert_eq!(wt_row_label(&wt("/p/x", None)), ("x".into(), Some("detached".into())));
+    }
+
+    #[test]
+    fn a_row_places_the_worktree_relative_to_the_open_folder_or_under_home() {
+        assert_eq!(wt_row_place(Path::new("/Users/me/Projects/a/.worktrees/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "a/.worktrees/w");
+        assert_eq!(wt_row_place(Path::new("/Users/me/other/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "~/other/w");
+        assert_eq!(wt_row_place(Path::new("/Volumes/x/w"), Path::new("/Users/me/Projects"), Path::new("/Users/me")), "/Volumes/x/w");
+        assert_eq!(wt_row_place(Path::new("/Users/me/Projects/w"), Path::new("/Users/me/Projects/w"), Path::new("/Users/me")), "w", "the open folder itself: its own name, never blank");
+    }
+
+    #[test]
+    fn the_age_cell_marks_a_capped_walk_and_a_lagging_one_and_is_blank_without_an_age() {
+        use crate::worktrees::Age;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let age = |secs: u64, capped: bool, lagging: bool| Age { changed: Some(now - Duration::from_secs(secs)), capped, lagging };
+        assert_eq!(wt_row_age(Some(&age(4 * 60, false, false)), now), "4 min");
+        assert_eq!(wt_row_age(Some(&age(4 * 60, true, false)), now), "4 min+");
+        assert_eq!(wt_row_age(Some(&age(4 * 60, false, true)), now), "4 min~");
+        assert_eq!(wt_row_age(Some(&age(4 * 60, true, true)), now), "4 min+~");
+        assert_eq!(wt_row_age(None, now), "");
+        assert_eq!(wt_row_age(Some(&Age { changed: None, capped: false, lagging: false }), now), "", "no change seen yet");
+        assert_eq!(wt_row_age(Some(&Age { changed: Some(now + Duration::from_secs(90)), capped: false, lagging: false }), now), "now", "a clock ahead reads now");
+    }
+
+    #[test]
+    fn the_section_line_says_why_it_is_not_watched_then_why_nothing_listed_then_that_there_is_nothing() {
+        use crate::worktrees::Watched;
+        let gone = Watched::FolderGone;
+        assert_eq!(wt_section_line(&gone, true, Some("fatal: x"), false).as_deref(), Some("the folder is gone"), "the watcher's notice first");
+        assert_eq!(wt_section_line(&Watched::NotLocal, false, None, true).as_deref(), Some("not watched: the folder is on a network volume"), "said under the rows too");
+        assert_eq!(wt_section_line(&Watched::Watching, true, Some("fatal: x"), false).as_deref(), Some("fatal: x"), "nothing listed: the first error");
+        assert_eq!(wt_section_line(&Watched::Watching, false, Some("fatal: x"), false).as_deref(), Some("no worktrees"), "a repository listed: its failed neighbour is not shown");
+        assert_eq!(wt_section_line(&Watched::Watching, true, None, false).as_deref(), Some("no worktrees"), "no repositories at all");
+        assert_eq!(wt_section_line(&Watched::Watching, false, Some("fatal: x"), true), None, "rows and watching: no line");
     }
 }

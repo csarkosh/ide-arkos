@@ -363,11 +363,6 @@ impl Worktrees {
         self.ages.get(path).and_then(|a| a.changed).is_some_and(|c| now.duration_since(c).is_ok_and(|d| d >= STALE_AFTER))
     }
 
-    /// No repository listed and none failed: the open folder holds no git repository.
-    pub fn not_git(&self) -> bool {
-        self.by_repo.is_empty() && self.errors.is_empty()
-    }
-
     /// Expands or collapses; a path the list does not have, a missing worktree and a bare one
     /// stay collapsed. Collapsing drops its changes.
     pub fn toggle(&mut self, path: &Path) -> bool {
@@ -499,9 +494,9 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         let f = wt("/p-f", "/p");
         let mut w = Worktrees::new(vec![]);
         assert!(w.rows().is_empty(), "nothing until the list lands");
-        assert!(w.not_git(), "no repositories and no errors");
+        assert!(w.by_repo.is_empty() && w.errors.is_empty(), "no repositories and no errors");
         w.set_repo(Path::new("/p"), vec![a.clone(), f.clone()]);
-        assert!(!w.not_git());
+        assert!(!w.by_repo.is_empty());
         assert_eq!(w.to_load(), Vec::<PathBuf>::new(), "collapsed worktrees never run status");
         assert!(w.toggle(Path::new("/p-f")));
         assert_eq!(w.to_load(), vec![PathBuf::from("/p-f")]);
@@ -537,7 +532,7 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         w.set_age(Path::new("/p-f"), Age { changed: Some(at), capped: true, lagging: false });
         assert!(matches!(&w.rows()[0], WtRow::Worktree { wt, age: Some(Age { changed: Some(c), capped: true, .. }), .. } if wt.path == Path::new("/p-f") && *c == at), "a row carries its age");
         w.remove_repo(Path::new("/p"));
-        assert!(w.not_git());
+        assert!(w.by_repo.is_empty());
         assert!(w.rows().is_empty());
         assert!(w.ages.is_empty(), "the repository's state goes with it");
     }
@@ -566,7 +561,6 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         let mut w = Worktrees::new(vec![PathBuf::from("/p-f")]);
         assert!(w.to_load().is_empty(), "saved expansions wait for the list");
         w.errors.insert(PathBuf::from("/p"), "fatal: not a git repository".into());
-        assert!(!w.not_git(), "an error is shown, not the not-git line");
         assert!(w.to_load().is_empty(), "a repository that cannot be listed: nothing loads");
         assert_eq!(w.expanded.len(), 1, "but the expansion is kept for the save");
         w.set_repo(Path::new("/p"), vec![feat.clone()]);

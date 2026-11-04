@@ -712,9 +712,12 @@ Things only a person at the screen can check, in order of value:
   finger with no lag and keeps gliding when the fingers lift; a mouse wheel's notches still ease
 - in a repo with a change: the file's row is amber and its folders carry a dot; `git stash`
   clears them within ten seconds
-- Worktrees: expand one: a shimmer, then its changed files fade in; collapse and expand again:
-  `git status` runs again (watch `ps`); Remove on a
-  dirty one is refused with git's words, force removes it
+- Worktrees on `~/Projects`: one row per side worktree of every repo, newest first; touch a file
+  in one: its age reads `now` within two seconds and it moves to the top (not while the pointer is
+  over the list); `cargo build` in one: its age holds; `rm -rf` one: `missing` within two
+  seconds; `git worktree add`: it appears; expand one: a shimmer, then its changed files; Remove
+  on a dirty one is refused with git's words, force removes it; open `~`: the sidebar does not
+  stall; Activity Monitor: Arkos idle while nothing changes
 - Ctrl+Shift+G, Down, Enter: a worktree expands from the keyboard
 - a worktree with 40 changes lists them readably, one per row, and the list scrolls
 - edit a tracked file in another app while the viewer shows it: the gutter bars appear within a

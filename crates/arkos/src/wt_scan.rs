@@ -141,8 +141,6 @@ pub fn newest_change(dir: &Path, budget: usize) -> Option<Newest> {
 }
 
 /// The short age: `now` under a minute, then `4 min`, `7 h`, `2 d`, `3 w`, `5 mo`, `2 y`.
-// Task 9 uses it; until then only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn age_text(age: Duration) -> String {
     let secs = age.as_secs();
     let days = secs / 86_400;
