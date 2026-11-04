@@ -67,7 +67,7 @@ newest change first, each with how long since any of its files changed; a spike 
 three weeks reads dimmer.
 
 <picture>
-  <img alt="The Worktrees section of the sidebar in Lavender Material: rate-limit, changed now, over old-spike, untouched for three weeks and dimmed, each with its folder under .worktrees" src="docs/images/web-developer-dark-worktrees.png" width="380">
+  <img alt="The Worktrees section of the sidebar in Lavender Material: rate-limit, changed now, with its two changed files under it, over old-spike, clean and untouched for three weeks, dimmed, each with its folder under .worktrees" src="docs/images/web-developer-dark-worktrees.png" width="380">
 </picture>
 
 **The blogger** lives in markdown: a launch plan rendered in the editor, with its status table
