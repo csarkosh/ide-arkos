@@ -803,7 +803,17 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
                         .track_focus(&rename_focus)
                         .w(px(150.0))
                         .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
+                        // A press in the field is not a press on the tab; it still closes an open menu,
+                        // as the window's press would have.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|root, _: &MouseDownEvent, _window, cx| {
+                                let now = std::time::Instant::now();
+                                root.md_menu.hide(now);
+                                root.view_menu.hide(now);
+                                cx.stop_propagation();
+                            }),
+                        )
                         .on_key_down(cx.listener(|root, ev: &KeyDownEvent, _window, cx| root.tab_rename_key(&ev.keystroke, cx)))
                         .child(line_edit::render(&edit, "name", &theme, family.clone(), 12.0))
                         .into_any_element(),
@@ -1034,14 +1044,23 @@ fn render_terminal(terminal: Entity<Terminal>, pane: PaneId, family: SharedStrin
                 // in the terminal. Stopping it also stops the pane's, so the pill focuses the pane.
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-                        root.focus_pane(pane, cx);
-                        cx.stop_propagation();
-                    }),
+                    cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| pill_press(root, pane, cx)),
                 )
                 .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| t.update(cx, |t, cx| t.jump_to_bottom(cx))))
         }))
         .children(find::render(&terminal, pane, theme, style, family, find_bars, now, cx))
+}
+
+/// A press on a pill or chip floating over a pane's text: not a click in the text below, so it
+/// stops there (the pane's own press would move the caret or close the find bar), which also
+/// stops the window's press; the menus that press would close are closed here, and the pill
+/// focuses the pane itself.
+fn pill_press(root: &mut Root, pane: PaneId, cx: &mut Context<Root>) {
+    let now = std::time::Instant::now();
+    root.md_menu.hide(now);
+    root.view_menu.hide(now);
+    root.focus_pane(pane, cx);
+    cx.stop_propagation();
 }
 
 /// The width of a delimited file's mode pill: fixed, so the inline-diff chip can sit beside it.
@@ -1114,7 +1133,7 @@ pub fn grid_strip(delimited: bool, banner: Option<String>) -> Option<Strip> {
 /// (`pill`) and another file's inline-diff chip (`chip`), the chip left of the pill.
 pub fn banner_right_pad(button: bool, pill: bool, chip: bool) -> f32 {
     if button {
-        return crate::view_menu::BUTTON + 8.0 + 14.0;
+        return crate::view_menu::RIGHT + crate::view_menu::BUTTON + 8.0;
     }
     match (pill, chip) {
         (true, true) => 14.0 + PILL_W + 8.0 + CHIP_W + 8.0,
@@ -1341,10 +1360,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             // where it is, so the chip focuses the pane itself.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-                    root.focus_pane(pane, cx);
-                    cx.stop_propagation();
-                }),
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| pill_press(root, pane, cx)),
             )
             .on_click(cx.listener(move |_root, _ev: &ClickEvent, _window, cx| v_chip.update(cx, |v, cx| v.toggle_inline_diff(cx))))
     });
@@ -1369,10 +1385,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
             // pane's, so the pill focuses the pane itself.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| {
-                    root.focus_pane(pane, cx);
-                    cx.stop_propagation();
-                }),
+                cx.listener(move |root, _ev: &MouseDownEvent, _window, cx| pill_press(root, pane, cx)),
             )
             .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_markdown_view_for(tab, cx)))
     });
@@ -1384,12 +1397,10 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
         banners.push(banner_row().items_center().bg(theme.chrome.banner.alpha(style.chrome_alpha)).child(text).children(strip_pill.map(|p| p.flex_none())));
     }
     let body = if banners.is_empty() { body } else { div().size_full().flex().flex_col().children(banners).child(div().flex_1().min_h_0().child(body)) };
-    // The `⋯` button and its menu; the outline row only for a document with headings, which is
-    // where the rail shows.
+    // The `⋯` button and its menu.
     let view_button_el = view_button.then(|| crate::view_menu::render_view_button(root, pane, tab, find_open, pill_bg(&theme), pill_border(&theme), cx));
     let view_menu_el = if view_button {
-        let mut rows = crate::view_menu::items(mode, delimited, editable, has_changes, inline, presenting, outline_on);
-        rows.retain(|i| has_heads || i.action != crate::view_menu::ViewAction::ToggleOutline);
+        let rows = crate::view_menu::items(mode, delimited, editable, has_changes, inline, presenting, outline_on, has_heads);
         crate::view_menu::render_view_menu(root, tab, &rows, find_open, cx)
     } else {
         None
@@ -1698,7 +1709,7 @@ mod tests {
 
     #[test]
     fn a_markdown_tab_s_banners_keep_clear_of_the_view_button() {
-        assert_eq!(banner_right_pad(true, false, false), crate::view_menu::BUTTON + 8.0 + 14.0);
+        assert_eq!(banner_right_pad(true, false, false), crate::view_menu::RIGHT + crate::view_menu::BUTTON + 8.0);
         assert_eq!(banner_right_pad(false, false, true), CHIP_W + 8.0 + 14.0, "a code file with changes keeps its chip");
         assert_eq!(banner_right_pad(false, true, false), PILL_W + 8.0 + 14.0, "a raw csv keeps its pill");
         assert_eq!(banner_right_pad(false, true, true), PILL_W + 8.0 + 14.0 + CHIP_W + 8.0, "the chip sits left of a raw csv's pill");

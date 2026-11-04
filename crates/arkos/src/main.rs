@@ -1333,6 +1333,8 @@ impl Root {
         self.link_menu.settle(now);
         self.md_menu.settle(now);
         self.view_menu.settle(now);
+        // Every other way the active tab or the focus moves (an agent's open, the tree, a jump).
+        self.drop_unseen_view_menu();
         self.outline_anim.retain(|_, t| {
             t.settle(now);
             !t.is_hidden()
@@ -1832,6 +1834,7 @@ impl Root {
         }
         let maximized = self.tree.maximized;
         self.tree.focus(pane);
+        self.drop_unseen_view_menu();
         self.acknowledge_focused(cx);
         if self.tree.maximized != maximized {
             self.save(cx);
@@ -1857,12 +1860,21 @@ impl Root {
         self.sidebar_focused = false;
         self.wt_focused = false;
         self.tree.activate(pane, idx);
+        self.drop_unseen_view_menu();
         self.acknowledge_focused(cx);
         if let Some(h) = self.bar_scroll.get(&pane) {
             h.scroll_to_item(idx);
         }
         self.save(cx);
         cx.notify();
+    }
+
+    /// Closes an open view menu at once when its tab is no longer the focused pane's active one:
+    /// it is drawn only there, so unseen it would hold Escape and a staged update back.
+    fn drop_unseen_view_menu(&mut self) {
+        if self.view_menu.value().is_some_and(|&t| !view_menu::stays_open(t, &self.tree)) {
+            self.view_menu.clear();
+        }
     }
 
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and ended

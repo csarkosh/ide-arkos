@@ -6,7 +6,7 @@
 //! else, Escape, the tab closing, or the button again.
 
 use crate::motion;
-use crate::tree::{PaneId, TabId, ViewMode};
+use crate::tree::{PaneId, TabId, Tree, ViewMode};
 use crate::Root;
 use gpui::{div, prelude::*, px, ClickEvent, Context, Div, MouseButton, MouseDownEvent, Stateful};
 use std::time::Instant;
@@ -46,9 +46,18 @@ pub fn pill_label_for(mode: ViewMode, delimited: bool) -> &'static str {
     }
 }
 
+/// Whether an open view menu on `tab` may stay open: its tab is the focused pane's active one,
+/// the only place it is drawn. A tab switch or a focus move elsewhere closes it, so it never
+/// holds Escape or an update back while unseen.
+pub fn stays_open(tab: TabId, tree: &Tree) -> bool {
+    tree.pane(tree.focused).is_some_and(|p| p.ids.get(p.active) == Some(&tab))
+}
+
 /// The menu's rows for a tab's state: the mode item only when `editable`, the diff item only with
-/// `has_changes`, present and outline always; the words name what a click turns to.
-pub fn items(mode: ViewMode, delimited: bool, editable: bool, has_changes: bool, inline: bool, presenting: bool, outline: bool) -> Vec<MenuItem> {
+/// `has_changes`, present always, outline only when the document `has_heads` (where the rail
+/// shows); the words name what a click turns to.
+#[allow(clippy::too_many_arguments)]
+pub fn items(mode: ViewMode, delimited: bool, editable: bool, has_changes: bool, inline: bool, presenting: bool, outline: bool, has_heads: bool) -> Vec<MenuItem> {
     let mut m = Vec::new();
     if editable {
         let label = match pill_label_for(mode, delimited) {
@@ -62,7 +71,9 @@ pub fn items(mode: ViewMode, delimited: bool, editable: bool, has_changes: bool,
         m.push(MenuItem { label: "Inline diff", keys: "⇧⌘D", checked: inline, action: ViewAction::ToggleInlineDiff });
     }
     m.push(MenuItem { label: if presenting { "Edit" } else { "Present" }, keys: "⌥⌘P", checked: presenting, action: ViewAction::TogglePresent });
-    m.push(MenuItem { label: "Outline", keys: "⌥⌘O", checked: outline, action: ViewAction::ToggleOutline });
+    if has_heads {
+        m.push(MenuItem { label: "Outline", keys: "⌥⌘O", checked: outline, action: ViewAction::ToggleOutline });
+    }
     m
 }
 
@@ -215,22 +226,22 @@ mod tests {
 
     #[test]
     fn the_menu_names_what_a_click_turns_to_with_its_keys() {
-        let m = items(ViewMode::Rendered, false, true, true, false, false, false);
+        let m = items(ViewMode::Rendered, false, true, true, false, false, false, true);
         assert_eq!(
             m.iter().map(|i| (i.label, i.keys, i.checked)).collect::<Vec<_>>(),
             vec![("Show raw", "⇧⌘M", false), ("Inline diff", "⇧⌘D", false), ("Present", "⌥⌘P", false), ("Outline", "⌥⌘O", false)]
         );
-        let m = items(ViewMode::Raw, false, true, true, true, false, true);
+        let m = items(ViewMode::Raw, false, true, true, true, false, true, true);
         assert_eq!(m[0].label, "Show rendered");
         assert!(m[1].checked, "the inline diff is on");
         assert!(m[3].checked, "the outline is open");
-        assert_eq!(items(ViewMode::Raw, true, true, false, false, false, false)[0].label, "Show grid");
-        assert_eq!(items(ViewMode::Rendered, false, true, false, false, true, false)[1].label, "Edit", "presenting, without changes Present is second and says Edit");
+        assert_eq!(items(ViewMode::Raw, true, true, false, false, false, false, true)[0].label, "Show grid");
+        assert_eq!(items(ViewMode::Rendered, false, true, false, false, true, false, true)[1].label, "Edit", "presenting, without changes Present is second and says Edit");
     }
 
     #[test]
     fn presenting_checks_present_and_each_row_runs_its_own_toggle() {
-        let m = items(ViewMode::Rendered, false, true, true, false, true, false);
+        let m = items(ViewMode::Rendered, false, true, true, false, true, false, true);
         let present = m.iter().find(|i| i.action == ViewAction::TogglePresent).unwrap();
         assert!(present.checked);
         assert_eq!(m.iter().map(|i| i.action.clone()).collect::<Vec<_>>(), vec![ViewAction::ToggleMode, ViewAction::ToggleInlineDiff, ViewAction::TogglePresent, ViewAction::ToggleOutline]);
@@ -238,10 +249,35 @@ mod tests {
 
     #[test]
     fn a_read_only_tab_s_menu_has_no_mode_item() {
-        let m = items(ViewMode::Rendered, false, false, false, false, false, false);
+        let m = items(ViewMode::Rendered, false, false, false, false, false, false, true);
         assert_eq!(m.iter().map(|i| i.label).collect::<Vec<_>>(), vec!["Present", "Outline"]);
-        let m = items(ViewMode::Rendered, false, false, true, false, false, false);
+        let m = items(ViewMode::Rendered, false, false, true, false, false, false, true);
         assert_eq!(m[0].label, "Inline diff", "with changes the diff item comes first");
+    }
+
+    #[test]
+    fn a_document_without_headings_has_no_outline_row() {
+        let m = items(ViewMode::Rendered, false, true, false, false, false, true, false);
+        assert_eq!(m.iter().map(|i| i.label).collect::<Vec<_>>(), vec!["Show raw", "Present"]);
+    }
+
+    #[test]
+    fn the_menu_stays_open_only_while_its_tab_is_the_focused_pane_s_active_one() {
+        use crate::tree::{Side, Tab};
+        let viewer = |p: &str| Tab::Viewer { path: p.into(), mode: ViewMode::default(), presenting: false, outline: false };
+        let mut tree = Tree::new(viewer("/p/a.md"));
+        let left = tree.focused;
+        let a = tree.tab_id(left, 0).unwrap();
+        assert!(stays_open(a, &tree));
+        let idx = tree.add_tab(left, viewer("/p/b.md"));
+        tree.activate(left, idx);
+        assert!(!stays_open(a, &tree), "a tab switch closes it");
+        tree.activate(left, 0);
+        let right = tree.split(left, Side::Right, viewer("/p/c.md")).unwrap();
+        tree.focus(right);
+        assert!(!stays_open(a, &tree), "a focus move to another pane closes it");
+        tree.focus(left);
+        assert!(stays_open(a, &tree));
     }
 
     #[test]

@@ -175,7 +175,7 @@ Shift+Cmd+M switches between them, and each tab remembers its mode across a rela
 The `⋯` button at the top right of a markdown tab (below the find bar when that is open) opens a
 small menu of the tab's view toggles, each with its shortcut and a check mark when it is on: Show
 raw or Show rendered (Shift+Cmd+M), Inline diff (Shift+Cmd+D, while the file has changes against
-git), Present or Edit (Alt+Cmd+P) and Outline (Option+Cmd+O, when the document has headings).
+git), Present or Edit (Option+Cmd+P) and Outline (Option+Cmd+O, when the document has headings).
 Choosing one does it and closes the menu; Escape or a click elsewhere closes it too.
 
 In Rendered mode one block is active at a time: the one holding the caret. A paragraph, heading,
