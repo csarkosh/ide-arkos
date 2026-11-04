@@ -103,6 +103,7 @@ mod wk_web_view;
 mod workbook;
 mod workspace;
 mod worktrees;
+mod wt_scan;
 
 use futures::channel::oneshot;
 use gpui::{
