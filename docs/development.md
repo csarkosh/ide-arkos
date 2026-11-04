@@ -485,7 +485,7 @@ Things only a person at the screen can check, in order of value:
   is untouched; under Navy (space) emoji are on the holo display with the text: their own
   colours tinted toward cyan, scanlined, a little dimmed and haloed, and still
 - effects: under Lavender Watercolor (watercolor) the link menu (right-click a URL), the file tree's
-  menu, a worktree's menu, the tab overflow menu and the title bar's popovers show the wash
+  menu, a worktree's menu and the title bar's popovers show the wash
   behind their text as a pane does (paper grain, a light pigment wash, the bubbles continuing
   from behind the menu, under the cream paper), square-cornered and outlined in the same
   wobbling ink line as the panes (drawn by the wash's menu stage above the panes), and in the
@@ -856,7 +856,7 @@ Things only a person at the screen can check, in order of value:
   and Shift+Enter step with the count; Escape or a click in the terminal closes it; `.` and `*`
   match literally; output arriving keeps the bar open
 - a pane with eight tabs: the bar scrolls, Option+Cmd+Right keeps the active tab in view, and
-  the ⋯ menu lists them all
+  there is no ⋯ button
 - closing a tab whose shell has ended, then Shift+Cmd+T: a new shell opens
 - Cmd+, opens Settings; "Open config" in the palette opens the config file in the default text
   editor
@@ -912,7 +912,7 @@ Things only a person at the screen can check, in order of value:
 - dragging a tab to each of the five drop zones, within a bar, and out of a pane
 - drag a tab across a pane's zones and on into another pane: the tint glides and fades,
   nothing pops; drop it: the tint fades where it was
-- open and close the ⋯ menu, a right-click menu, the palette and a find bar: each fades in and
+- open and close a right-click menu, the palette and a find bar: each fades in and
   out; a click while one fades out lands on what is under it
 - Cmd+B: the sidebar slides out and back in, the panes following
 - System Settings > Accessibility > Display > Reduce Motion on, then save the config so it is

@@ -152,14 +152,10 @@ fn tab_id(kind: &str, pane: PaneId, idx: usize) -> ElementId {
     ElementId::NamedInteger(format!("{kind}-{pane}").into(), idx as u64)
 }
 
-/// The overflow menu is worth a button once there is something to choose between.
-pub fn show_overflow(tabs: usize) -> bool {
-    tabs >= 2
-}
-
-/// (index, label, active) for the menu, in bar order.
-pub fn menu_rows(p: &Pane, labels: &[String]) -> Vec<(usize, String, bool)> {
-    labels.iter().enumerate().map(|(i, l)| (i, l.clone(), i == p.active)).collect()
+/// The bar's fixed children after the tabs, by name. Only the + button: tabs are reached by
+/// clicking them, by the bar scrolling to the active one, and by the keyboard.
+pub fn bar_items(_tabs: usize) -> Vec<&'static str> {
+    vec!["+"]
 }
 
 /// A URL as typed, with a scheme added when it has none: `http://` for this machine (a dev
@@ -374,7 +370,7 @@ pub struct TabRename {
     pub edit: LineEdit,
 }
 
-/// Every tab's label and mark, in bar order; the bar and the overflow menu both show the labels.
+/// Every tab's label and mark, in bar order; the bar shows the labels.
 /// A name the user gave the tab replaces the automatic label; the mark still follows the shell.
 /// A viewer with unsaved edits ends its label in " •".
 fn tab_labels(root: &Root, p: &Pane, cx: &Context<Root>) -> Vec<(String, TabMark)> {
@@ -443,7 +439,6 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
     let strip = (root.invite_pane == Some(pane)).then(|| render_invitation(root, cx));
     let body_top = bar_h + if strip.is_some() { INVITE_H } else { 0.0 };
     let bar = render_tab_bar(root, pane, &p, number, &tabs, bar_h, cx);
-    let labels: Vec<String> = tabs.into_iter().map(|(label, _)| label).collect();
     if !p.tabs.is_empty() {
         // A pane that shows tabs forgets its empty-state animation, so emptying it again replays.
         root.empty_anim.remove(&pane);
@@ -528,51 +523,6 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(measure)
         .child(body)
         .children(overlay);
-    if root.tab_menu.value() == Some(&pane) && !show_overflow(p.tabs.len()) {
-        // Down to one tab: the ⋯ button is gone, so its menu goes too and does not come back
-        // with the next tab.
-        root.tab_menu.hide(now);
-    }
-    // Drawn while it fades out too; only the open menu takes clicks.
-    let live = root.tab_menu.value() == Some(&pane);
-    let colors = crate::chrome::menu_colors(&theme, style.menus);
-    let menu = root.tab_menu.current(now).filter(|(p, _)| **p == pane).map(|(_, opacity)| {
-        let mut m = div()
-            .id(("menu", pane))
-            .absolute()
-            .top(px(bar_h - motion::lift(opacity, motion::MENU_LIFT)))
-            .right_0()
-            .opacity(opacity)
-            .min_w(px(180.0))
-            .flex()
-            .flex_col()
-            .py(px(4.0))
-            .map(|d| crate::chrome::menu_frame(d, &theme, &style))
-            .font_family(root.ui_family())
-            .text_size(px(style.ui(12.0)))
-            .when(live, |m| m.on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation()));
-        if style.menu_edges {
-            m = m.child(crate::chrome::menu_report(0x14 ^ (pane << 8), opacity, cx));
-        }
-        for (idx, label, active) in menu_rows(&p, &labels) {
-            m = m.child(
-                div()
-                    .id(tab_id("menu-row", pane, idx))
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .bg(if active { colors.hover } else { colors.bg })
-                    .text_color(if active { theme.chrome.text.hsla() } else { theme.chrome.text_dim.hsla() })
-                    .child(label)
-                    .when(live, |row| {
-                        row.cursor_pointer().on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| {
-                            root.close_tab_menu(cx);
-                            root.activate_tab(pane, idx, cx);
-                        }))
-                    }),
-            );
-        }
-        m
-    });
     // The focused pane glows at its edges instead of wearing a hard line: four strips that fade
     // from the focus colour to nothing, drawn over the pane so they never move its content, and
     // anchored to the pane's own edges (the pane wears a 1 px border, so offsets from the layout
@@ -624,7 +574,6 @@ pub fn render_pane(root: &mut Root, pane: PaneId, rect: Rect, window: &mut Windo
         .child(bar)
         .children(strip)
         .child(content)
-        .children(menu)
         .children(render_url_prompt(root, pane, bar_h, cx))
         .children(glow.into_iter().flatten())
 }
@@ -661,7 +610,7 @@ fn render_invitation(root: &mut Root, cx: &mut Context<Root>) -> Div {
         .child(button("invite-what-is-sent", crate::telemetry::WHAT_IS_SENT).on_click(cx.listener(|root, _: &ClickEvent, _window, cx| root.open_disclosure(cx))))
 }
 
-/// The tab bar, `height` tall: the pane number, a tab per entry, the + and the overflow menu;
+/// The tab bar, `height` tall: the pane number, a tab per entry and the +;
 /// every tab clicks, drags and takes drops.
 fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: &[(String, TabMark)], height: f32, cx: &mut Context<Root>) -> Stateful<Div> {
     let style = root.effect_style();
@@ -878,28 +827,21 @@ fn render_tab_bar(root: &mut Root, pane: PaneId, p: &Pane, number: usize, tabs: 
     if gaps[p.tabs.len()] > 0.5 {
         strip = strip.child(div().flex_none().h_full().w(px(gaps[p.tabs.len()])));
     }
-    bar = bar.child(strip).child(
-        div()
-            .id(("plus", pane))
-            .px(px(10.0))
-            .text_color(dim.hsla())
-            .hover(move |s| s.text_color(fg.hsla()))
-            .cursor_pointer()
-            .child("+")
-            .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
-    );
-    if show_overflow(p.tabs.len()) {
-        bar = bar.child(
-            div()
-                .id(("more", pane))
-                .px(px(8.0))
-                .text_color(dim.hsla())
-                .hover(move |s| s.text_color(fg.hsla()))
-                .cursor_pointer()
-                .child("\u{22ef}")
-                .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _window, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.toggle_tab_menu(pane, cx))),
-        );
+    bar = bar.child(strip);
+    for item in bar_items(p.tabs.len()) {
+        bar = match item {
+            "+" => bar.child(
+                div()
+                    .id(("plus", pane))
+                    .px(px(10.0))
+                    .text_color(dim.hsla())
+                    .hover(move |s| s.text_color(fg.hsla()))
+                    .cursor_pointer()
+                    .child("+")
+                    .on_click(cx.listener(move |root, _ev: &ClickEvent, _window, cx| root.new_terminal_tab(pane, cx))),
+            ),
+            other => unreachable!("bar_items names {other}, which the bar does not draw"),
+        };
     }
     bar
 }
@@ -928,7 +870,6 @@ fn open_link_menu(root: &mut Root, terminal: &Entity<Terminal>, ev: &MouseDownEv
     root.last_input = now;
     root.context_menu.hide(now);
     root.wt_menu.hide(now);
-    root.tab_menu.hide(now);
     root.close_popovers(now);
     root.url_prompt.hide(now);
     root.commit_tab_rename(cx);
@@ -1545,8 +1486,7 @@ fn render_viewer(root: &mut Root, pane: PaneId, tab: TabId, path: &std::path::Pa
                 root.last_input = now;
                 root.context_menu.hide(now);
                 root.wt_menu.hide(now);
-                root.tab_menu.hide(now);
-                root.link_menu.hide(now);
+                            root.link_menu.hide(now);
                 root.close_popovers(now);
                 let grid = v.read(cx).grid_shown();
                 let selection = if grid { v.read(cx).grid_sel.is_some() } else { v.read(cx).has_selection() };
@@ -1904,12 +1844,9 @@ mod tests {
 
 
     #[test]
-    fn overflow_menu_lists_every_tab_from_two() {
-        use crate::tree::{Pane, Tab};
-        use protocol::SessionId;
-        assert!(!show_overflow(0) && !show_overflow(1) && show_overflow(2));
-        let p = Pane { id: 1, tabs: vec![Tab::Terminal { session: SessionId(1), cwd: None }, Tab::Terminal { session: SessionId(2), cwd: None }], active: 1, mru: vec![1, 0], ids: vec![2, 3] };
-        let rows = menu_rows(&p, &["zsh".into(), "vim".into()]);
-        assert_eq!(rows, vec![(0, "zsh".to_string(), false), (1, "vim".to_string(), true)]);
+    fn the_tab_bar_offers_no_overflow_button_at_any_tab_count() {
+        assert_eq!(bar_items(1), vec!["+"]);
+        assert_eq!(bar_items(2), vec!["+"]);
+        assert_eq!(bar_items(9), vec!["+"]);
     }
 }

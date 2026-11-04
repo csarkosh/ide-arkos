@@ -457,8 +457,6 @@ pub struct Root {
     pub palette: Transient<command_palette::Palette>,
     /// Each pane's tab strip scroll state, so the active tab can be kept in view.
     pub bar_scroll: HashMap<PaneId, gpui::ScrollHandle>,
-    /// The pane whose tab overflow menu is open.
-    pub tab_menu: Transient<PaneId>,
     /// The badge: "update ready: <version>" for the release the daemon staged, else for the
     /// binary at the launch path when it differs from this one (`refresh_update_badge`).
     pub update_ready: Option<String>,
@@ -779,7 +777,6 @@ impl Root {
             notice_seq: 0,
             palette: Transient::Hidden,
             bar_scroll: HashMap::new(),
-            tab_menu: Transient::Hidden,
             update_ready: None,
             update_ready_on_disk: None,
             staged: None,
@@ -837,7 +834,6 @@ impl Root {
         self.wt_menu.hide(now);
         self.link_menu.hide(now);
         self.md_menu.hide(now);
-        self.tab_menu.hide(now);
         let next = self.popover.value().copied().unwrap_or_default().toggled(which);
         if next == chrome::Popover::Closed {
             self.close_popovers(now);
@@ -1263,8 +1259,7 @@ impl Root {
 
     /// Whether any transition is under way at `now`, so the next frame looks different.
     pub fn any_motion(&self, now: Instant) -> bool {
-        self.tab_menu.animating(now)
-            || self.context_menu.animating(now)
+        self.context_menu.animating(now)
             || self.new_file.animating(now)
             || self.link_menu.animating(now)
             || self.md_menu.animating(now)
@@ -1296,7 +1291,6 @@ impl Root {
         self.glow.settle(now, last_frame);
         self.handle_fades.settle(now, last_frame);
         self.find_bars.settle(now, last_frame);
-        self.tab_menu.settle(now);
         self.context_menu.settle(now);
         self.new_file.settle(now);
         self.link_menu.settle(now);
@@ -1697,10 +1691,6 @@ impl Root {
         self.bar_scroll.remove(&pane);
         self.drop_tints.remove(&pane);
         self.glow.remove(&pane);
-        if self.tab_menu.current(self.frame_now).is_some_and(|(p, _)| *p == pane) {
-            // The pane is gone, and the menu with nothing to fade over.
-            self.tab_menu.clear();
-        }
     }
 
     /// Forgets per-pane state for panes no longer in the tree, whatever removed them.
@@ -1831,23 +1821,6 @@ impl Root {
         }
         self.save(cx);
         cx.notify();
-    }
-
-    pub fn toggle_tab_menu(&mut self, pane: PaneId, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        if self.tab_menu.value() == Some(&pane) {
-            self.tab_menu.hide(now);
-        } else {
-            self.tab_menu.show(pane, now);
-            self.focus_pane(pane, cx);
-        }
-        cx.notify();
-    }
-
-    pub fn close_tab_menu(&mut self, cx: &mut Context<Self>) {
-        if self.tab_menu.hide(Instant::now()) {
-            cx.notify();
-        }
     }
 
     /// Closes a tab; the pane stays (spec 4). A terminal's session is detached at once and ended
@@ -3156,7 +3129,7 @@ impl Root {
     fn chrome_state(&self, cx: &App) -> idle::Chrome {
         idle::Chrome {
             palette: self.palette.value().is_some(),
-            menu: self.tab_menu.value().is_some() || self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
+            menu: self.context_menu.value().is_some() || self.wt_menu.value().is_some() || self.link_menu.value().is_some() || self.md_menu.value().is_some() || self.popover.value().is_some(),
             prompt: self.url_prompt.value().is_some(),
             find: self.active_terminal(cx).is_some_and(|t| t.read(cx).find.is_some()) || self.active_viewer().is_some_and(|v| v.read(cx).find.is_some()),
             drag: self.drop_target.is_some() || self.resizing.is_some() || self.sidebar_resizing,
@@ -3779,7 +3752,6 @@ impl Root {
     pub fn covered(&self) -> bool {
         self.palette.value().is_some()
             || self.url_prompt.value().is_some()
-            || self.tab_menu.value().is_some()
             || self.popover.value().is_some()
             || self.context_menu.value().is_some()
             || self.link_menu.value().is_some()
@@ -4397,7 +4369,6 @@ impl Render for Root {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|root, _ev: &MouseDownEvent, _window, cx| {
-                    root.close_tab_menu(cx);
                     // A press outside the URL prompt (it stops its own) cancels it, like a menu.
                     if root.url_prompt.hide(Instant::now()) {
                         cx.notify();
