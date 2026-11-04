@@ -185,13 +185,23 @@ pub fn create(root: &Path, branch: &str, path: &Path) -> Result<(), String> {
 /// the error is git's own text.
 /// The repository may be any one under the open folder, so it gets the reads' guard: the filter
 /// drivers its config names are emptied, and one whose name an override might miss refuses the
-/// removal (`explorer::STATUS_OFF`) before git starts.
+/// removal (`explorer::STATUS_OFF`) before git starts. Git's own check inside the removal runs in
+/// the worktree, which can carry config of its own (`config.worktree`, an include), so the guard
+/// reads it from there too while the folder exists, and the two sets of overrides both apply.
 pub fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
-    let args = match read_filter_args(root) {
+    let mut args = match read_filter_args(root) {
         Ok(args) => args,
         Err(NoRead::Refused) => return Err(STATUS_OFF.to_string()),
         Err(NoRead::NotRepo) => return Err(format!("{} is not a git repository", root.display())),
     };
+    if path.is_dir() {
+        match read_filter_args(path) {
+            Ok(more) => args.extend(more),
+            Err(NoRead::Refused) => return Err(STATUS_OFF.to_string()),
+            // A folder git no longer reads as a worktree: only the repository's config applies.
+            Err(NoRead::NotRepo) => {}
+        }
+    }
     let path = path.to_string_lossy();
     let mut cmd = git_with(root, &args);
     if force {
@@ -913,6 +923,22 @@ worktree /r-c\0HEAD 0123456789abcdef0123456789abcdef01234567\0branch refs/heads/
         let mut config = std::fs::OpenOptions::new().append(true).open(root.join(".git/config")).unwrap();
         std::io::Write::write_all(&mut config, b"[filter \"a b\"]\n\tclean = cat\n").unwrap();
         let err = remove(&root, &wt, true).unwrap_err();
+        assert_eq!(err, crate::explorer::STATUS_OFF);
+        assert!(wt.exists(), "nothing was removed");
+    }
+
+    #[test]
+    fn a_worktree_whose_own_config_names_an_unusual_filter_driver_is_never_asked_to_remove() {
+        let _lock = crate::client::fork_lock();
+        let (_dir, root) = repo();
+        let wt = root.parent().unwrap().join(format!("{}-own-config", root.file_name().unwrap().to_string_lossy()));
+        create(&root, "own-config", &wt).unwrap();
+        // The worktree's own config.worktree, which a read from the main checkout never sees:
+        // git's status inside `worktree remove` would run its filter program.
+        let ok = |args: &[&str]| assert!(crate::explorer::fixture_git(&wt).args(args).status().unwrap().success(), "git {args:?}");
+        ok(&["config", "extensions.worktreeConfig", "true"]);
+        ok(&["config", "--worktree", "filter.a b.clean", "cat"]);
+        let err = remove(&root, &wt, false).unwrap_err();
         assert_eq!(err, crate::explorer::STATUS_OFF);
         assert!(wt.exists(), "nothing was removed");
     }
