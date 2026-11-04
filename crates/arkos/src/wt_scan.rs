@@ -81,7 +81,8 @@ pub fn find_repos(open: &Path, budget: usize) -> Discovery {
             let path = entry.path();
             if path.join(".git").exists() {
                 below.push(path);
-            } else if depth < DISCOVERY_DEPTH {
+            } else if depth + 1 < DISCOVERY_DEPTH {
+                // Its own children would be at depth + 2, still within the cap only if this holds.
                 stack.push((path, depth + 1));
             }
         }
@@ -150,9 +151,11 @@ mod tests {
     fn the_depth_cap_and_the_budget_stop_the_walk() {
         let (_t, d) = fixture();
         mk(&d.join("1/2/3/4/.git"));
-        mk(&d.join("1/2/3/4/5/.git"));
-        let found = find_repos(&d, DISCOVERY_BUDGET);
-        assert_eq!(found.repos, vec![d.join("1/2/3/4")]);
+        assert_eq!(find_repos(&d, DISCOVERY_BUDGET).repos, vec![d.join("1/2/3/4")]);
+
+        let (_t3, deep) = fixture();
+        mk(&deep.join("1/2/3/4/5/.git"));
+        assert!(find_repos(&deep, DISCOVERY_BUDGET).repos.is_empty(), "depth 5 is past the cap");
 
         let (_t2, e) = fixture();
         for i in 0..30 {
